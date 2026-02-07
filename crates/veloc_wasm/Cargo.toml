@@ -1,0 +1,20 @@
+[package]
+name = "veloc_wasm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+veloc = { workspace = true }
+cranelift-entity = { workspace = true }
+libc = { workspace = true }
+mmap-rs = { workspace = true }
+wasmparser = { workspace = true }
+wat = { workspace = true }
+hashbrown = { workspace = true }
+elf_loader = { workspace = true }
+
+[features]
+default = ["std"]
+std = ["veloc/std"]
+
+[dev-dependencies]
