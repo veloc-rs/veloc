@@ -157,7 +157,11 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 InstructionData::Bconst { value } => {
                     write!(f, "bconst {}", value)?;
                 }
-                InstructionData::Call { func_id, args, ret_ty } => {
+                InstructionData::Call {
+                    func_id,
+                    args,
+                    ret_ty,
+                } => {
                     let name = module
                         .and_then(|m| m.functions.get(*func_id))
                         .map(|f| f.name.as_str());

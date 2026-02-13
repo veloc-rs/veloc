@@ -100,6 +100,10 @@ impl<'a> FunctionBuilder<'a> {
         builder
     }
 
+    pub fn current_block(&self) -> Option<Block> {
+        self.current_block
+    }
+
     pub fn func(&self) -> &Function {
         &self.module.functions[self.func_id]
     }
@@ -124,9 +128,7 @@ impl<'a> FunctionBuilder<'a> {
                 let sig_id = self.func_signature(*func_id);
                 *ret_ty = self.signature(sig_id).ret;
             }
-            InstructionData::CallIndirect {
-                sig_id, ret_ty, ..
-            } => {
+            InstructionData::CallIndirect { sig_id, ret_ty, .. } => {
                 *ret_ty = self.signature(*sig_id).ret;
             }
             InstructionData::Select { then_val, ty, .. } => {

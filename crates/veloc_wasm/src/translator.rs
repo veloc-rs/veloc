@@ -1301,10 +1301,9 @@ impl<'a> WasmTranslator<'a> {
             .builder
             .ins()
             .iconst(VelocType::I32, code as i32 as i64);
-        let code_val_i64 = self.builder.ins().extend_u(code_val, VelocType::I64);
         self.builder
             .ins()
-            .call(self.runtime.trap_handler, &[vmctx, code_val_i64]);
+            .call(self.runtime.trap_handler, &[vmctx, code_val]);
         self.builder.ins().unreachable();
         self.terminated = true;
     }

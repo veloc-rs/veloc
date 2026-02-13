@@ -630,10 +630,7 @@ impl Interpreter {
                 ControlFlow::Call(self.module_id, *func_id, call_args)
             }
             InstructionData::CallIndirect {
-                ptr,
-                args,
-                sig_id,
-                ..
+                ptr, args, sig_id, ..
             } => {
                 let sig = &program.modules[self.module_id.0].signatures[*sig_id];
                 let ty = sig.ret;
