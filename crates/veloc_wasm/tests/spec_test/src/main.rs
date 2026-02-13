@@ -283,7 +283,14 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                                     if actual as i32 != *val {
                                         if verbose {
                                             let (line, col) = span.linecol_in(&contents);
-                                            println!("Assertion failed at {}:{}:{}: expected i32 {}, got {}", path.display(), line + 1, col + 1, val, actual as i32);
+                                            println!(
+                                                "Assertion failed at {}:{}:{}: expected i32 {}, got {}",
+                                                path.display(),
+                                                line + 1,
+                                                col + 1,
+                                                val,
+                                                actual as i32
+                                            );
                                         }
                                         panic!("i32 mismatch");
                                     }
@@ -292,7 +299,14 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                                     if actual != *val {
                                         if verbose {
                                             let (line, col) = span.linecol_in(&contents);
-                                            println!("Assertion failed at {}:{}:{}: expected i64 {}, got {}", path.display(), line + 1, col + 1, val, actual);
+                                            println!(
+                                                "Assertion failed at {}:{}:{}: expected i64 {}, got {}",
+                                                path.display(),
+                                                line + 1,
+                                                col + 1,
+                                                val,
+                                                actual
+                                            );
                                         }
                                         panic!("i64 mismatch");
                                     }
@@ -302,7 +316,14 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                                         if actual as u32 != v.bits {
                                             if verbose {
                                                 let (line, col) = span.linecol_in(&contents);
-                                                println!("Assertion failed at {}:{}:{}: expected f32 bits {:x}, got {:x}", path.display(), line + 1, col + 1, v.bits, actual as u32);
+                                                println!(
+                                                    "Assertion failed at {}:{}:{}: expected f32 bits {:x}, got {:x}",
+                                                    path.display(),
+                                                    line + 1,
+                                                    col + 1,
+                                                    v.bits,
+                                                    actual as u32
+                                                );
                                             }
                                             panic!("f32 mismatch");
                                         }
@@ -313,7 +334,14 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                                         if actual as u64 != v.bits {
                                             if verbose {
                                                 let (line, col) = span.linecol_in(&contents);
-                                                println!("Assertion failed at {}:{}:{}: expected f64 bits {:x}, got {:x}", path.display(), line + 1, col + 1, v.bits, actual as u64);
+                                                println!(
+                                                    "Assertion failed at {}:{}:{}: expected f64 bits {:x}, got {:x}",
+                                                    path.display(),
+                                                    line + 1,
+                                                    col + 1,
+                                                    v.bits,
+                                                    actual as u64
+                                                );
                                             }
                                             panic!("f64 mismatch");
                                         }
@@ -374,7 +402,7 @@ fn main() -> Result<()> {
             .map(|e| e.path())
             .filter(|p| {
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                p.extension().map_or(false, |ext| ext == "wast") 
+                p.extension().map_or(false, |ext| ext == "wast")
                     && !name.starts_with("simd_")
                     && !name.contains("relaxed")
                     && !name.contains("i16x8")

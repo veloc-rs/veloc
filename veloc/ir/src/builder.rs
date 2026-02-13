@@ -1,9 +1,9 @@
-use super::dfg::{BlockCallData, JumpTableData};
 use super::function::{Function, StackSlotData};
 use super::inst::{FloatCC, InstructionData, IntCC, Opcode};
 use super::types::{
     Block, BlockCall, FuncId, JumpTable, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
+use crate::types::{BlockCallData, JumpTableData};
 use crate::{Linkage, Module, ModuleData, Result, SigId};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -116,7 +116,25 @@ impl<'a> FunctionBuilder<'a> {
         &self.module.signatures[sig_id]
     }
 
-    pub fn push_inst(&mut self, block: Block, data: InstructionData) -> Option<Value> {
+    pub fn push_inst(&mut self, block: Block, mut data: InstructionData) -> Option<Value> {
+        match &mut data {
+            InstructionData::Call {
+                func_id, ret_ty, ..
+            } => {
+                let sig_id = self.func_signature(*func_id);
+                *ret_ty = self.signature(sig_id).ret;
+            }
+            InstructionData::CallIndirect {
+                sig_id, ret_ty, ..
+            } => {
+                *ret_ty = self.signature(*sig_id).ret;
+            }
+            InstructionData::Select { then_val, ty, .. } => {
+                *ty = self.func().dfg.values[*then_val].ty;
+            }
+            _ => {}
+        }
+
         let ty = data.result_type();
         let inst = self.func_mut().dfg.instructions.push(data);
         let succs = self.func().dfg.analyze_successors(inst);
@@ -192,6 +210,10 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn value_type(&self, val: Value) -> Type {
         self.func().dfg.values[val].ty
+    }
+
+    pub fn set_value_name(&mut self, val: Value, name: &str) {
+        self.func_mut().dfg.value_names[val] = name.to_string();
     }
 
     pub fn add_block_param(&mut self, block: Block, ty: Type) -> Value {
@@ -1104,22 +1126,21 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Option<Value> {
-        let sig_id = self.builder.func_signature(func_id);
-        let sig = self.builder.signature(sig_id);
-        let ty = sig.returns.first().copied().unwrap_or(Type::Void);
         let args = self.builder.push_value_list(args);
-        self.push(InstructionData::Call { func_id, args, ty })
+        self.push(InstructionData::Call {
+            func_id,
+            args,
+            ret_ty: Type::Void,
+        })
     }
 
     pub fn call_indirect(&mut self, sig_id: SigId, ptr: Value, args: &[Value]) -> Option<Value> {
-        let sig = self.builder.signature(sig_id);
-        let ty = sig.returns.first().copied().unwrap_or(Type::Void);
         let args = self.builder.push_value_list(args);
         self.push(InstructionData::CallIndirect {
             ptr,
             args,
             sig_id,
-            ty,
+            ret_ty: Type::Void,
         })
     }
 
@@ -1164,12 +1185,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn select(&mut self, condition: Value, then_val: Value, else_val: Value) -> Value {
-        let ty = self.builder.value_type(then_val);
         self.push(InstructionData::Select {
             condition,
             then_val,
             else_val,
-            ty,
+            ty: Type::Void,
         })
         .unwrap()
     }

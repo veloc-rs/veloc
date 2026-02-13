@@ -57,19 +57,19 @@ impl RuntimeFunctions {
         // (ptr, i32) -> void
         let sig_p_i_v = Signature::new(
             vec![VelocType::Ptr, VelocType::I32],
-            vec![],
+            VelocType::Void,
             CallConv::SystemV,
         );
         // (ptr, i32, i32) -> void
         let sig_p_i_i_v = Signature::new(
             vec![VelocType::Ptr, VelocType::I32, VelocType::I32],
-            vec![],
+            VelocType::Void,
             CallConv::SystemV,
         );
         // (ptr, i32, i32) -> i32
         let sig_p_i_i_i = Signature::new(
             vec![VelocType::Ptr, VelocType::I32, VelocType::I32],
-            vec![VelocType::I32],
+            VelocType::I32,
             CallConv::SystemV,
         );
         // (ptr, i32, ptr, i32) -> i32
@@ -80,7 +80,7 @@ impl RuntimeFunctions {
                 VelocType::Ptr,
                 VelocType::I32,
             ],
-            vec![VelocType::I32],
+            VelocType::I32,
             CallConv::SystemV,
         );
         // (ptr, i32, i32, ptr, i32) -> void
@@ -92,7 +92,7 @@ impl RuntimeFunctions {
                 VelocType::Ptr,
                 VelocType::I32,
             ],
-            vec![],
+            VelocType::Void,
             CallConv::SystemV,
         );
         // (ptr, i32, i32, i32, i32, i32) -> void
@@ -105,7 +105,7 @@ impl RuntimeFunctions {
                 VelocType::I32,
                 VelocType::I32,
             ],
-            vec![],
+            VelocType::Void,
             CallConv::SystemV,
         );
         // (ptr, i32, i32, i32, i32) -> void
@@ -117,13 +117,13 @@ impl RuntimeFunctions {
                 VelocType::I32,
                 VelocType::I32,
             ],
-            vec![],
+            VelocType::Void,
             CallConv::SystemV,
         );
         // (ptr, i32, ptr) -> void
         let sig_p_i_p_v = Signature::new(
             vec![VelocType::Ptr, VelocType::I32, VelocType::Ptr],
-            vec![],
+            VelocType::Void,
             CallConv::SystemV,
         );
 
@@ -173,7 +173,7 @@ impl RuntimeFunctions {
                 // (ptr, i32) -> i32
                 Signature::new(
                     vec![VelocType::Ptr, VelocType::I32],
-                    vec![VelocType::I32],
+                    VelocType::I32,
                     CallConv::SystemV,
                 ),
                 Linkage::Import,
@@ -251,12 +251,12 @@ impl Module {
             if wasm_sig.results.len() > 1 {
                 params.push(VelocType::Ptr); // result ptr
             }
-            let results = if wasm_sig.results.len() == 1 {
-                vec![valtype_to_veloc(wasm_sig.results[0])]
+            let ret = if wasm_sig.results.len() == 1 {
+                valtype_to_veloc(wasm_sig.results[0])
             } else {
-                vec![]
+                VelocType::Void
             };
-            let sig = Signature::new(params, results, CallConv::SystemV);
+            let sig = Signature::new(params, ret, CallConv::SystemV);
             ir_sig_ids.push(ir.intern_signature(sig));
         }
         metadata.ir_sig_ids = ir_sig_ids.into_boxed_slice();
@@ -442,12 +442,12 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut Module
         if wasm_sig.results.len() > 1 {
             params.push(VelocType::Ptr); // result ptr
         }
-        let results = if wasm_sig.results.len() == 1 {
-            vec![valtype_to_veloc(wasm_sig.results[0])]
+        let ret = if wasm_sig.results.len() == 1 {
+            valtype_to_veloc(wasm_sig.results[0])
         } else {
-            vec![]
+            VelocType::Void
         };
-        let signature = Signature::new(params, results, CallConv::SystemV);
+        let signature = Signature::new(params, ret, CallConv::SystemV);
 
         let func_id = ir.declare_function(func_name.clone(), signature, linkage);
         metadata.functions[i].func_id = func_id;
@@ -455,13 +455,14 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut Module
         // 仅为本地定义的函数生成 Array-to-Wasm Trampoline
         if !is_import {
             let tramp_name = format!("{}_trampoline", func_name);
-            let mut tramp_results = vec![];
-            if wasm_sig.results.len() == 1 {
-                tramp_results.push(VelocType::I64);
-            }
+            let tramp_ret = if wasm_sig.results.len() == 1 {
+                VelocType::I64
+            } else {
+                VelocType::Void
+            };
             let tramp_sig = Signature::new(
                 vec![VelocType::Ptr, VelocType::Ptr],
-                tramp_results,
+                tramp_ret,
                 CallConv::SystemV,
             );
             let tramp_id = ir.declare_function(tramp_name, tramp_sig, Linkage::Export);
@@ -530,7 +531,11 @@ fn generate_veloc_init(
 ) -> veloc::ir::FuncId {
     let init_func_id = ir.declare_function(
         "__veloc_init".to_string(),
-        veloc::ir::Signature::new(vec![veloc::ir::Type::Ptr], vec![], CallConv::SystemV),
+        veloc::ir::Signature::new(
+            vec![veloc::ir::Type::Ptr],
+            veloc::ir::Type::Void,
+            CallConv::SystemV,
+        ),
         Linkage::Export,
     );
 

@@ -259,7 +259,7 @@ pub enum InstructionData {
     Call {
         func_id: FuncId,
         args: ValueList,
-        ty: Type,
+        ret_ty: Type,
     },
     Jump {
         dest: BlockCall,
@@ -297,7 +297,7 @@ pub enum InstructionData {
         ptr: Value,
         args: ValueList,
         sig_id: SigId,
-        ty: Type,
+        ret_ty: Type,
     },
     IntToPtr {
         arg: Value,
@@ -360,7 +360,7 @@ impl InstructionData {
             InstructionData::Iconst { ty, .. } => *ty,
             InstructionData::Fconst { ty, .. } => *ty,
             InstructionData::Bconst { .. } => Type::Bool,
-            InstructionData::Call { ty, .. } => *ty,
+            InstructionData::Call { ret_ty, .. } => *ret_ty,
             InstructionData::Jump { .. } => Type::Void,
             InstructionData::Br { .. } => Type::Void,
             InstructionData::BrTable { .. } => Type::Void,
@@ -369,7 +369,7 @@ impl InstructionData {
             InstructionData::IntCompare { ty, .. } => *ty,
             InstructionData::FloatCompare { ty, .. } => *ty,
             InstructionData::Unreachable => Type::Void,
-            InstructionData::CallIndirect { ty, .. } => *ty,
+            InstructionData::CallIndirect { ret_ty, .. } => *ret_ty,
             InstructionData::IntToPtr { .. } => Type::Ptr,
             InstructionData::PtrToInt { ty, .. } => *ty,
             InstructionData::Gep { .. } => Type::Ptr,

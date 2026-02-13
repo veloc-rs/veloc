@@ -633,9 +633,10 @@ impl Interpreter {
                 ptr,
                 args,
                 sig_id,
-                ty,
+                ..
             } => {
                 let sig = &program.modules[self.module_id.0].signatures[*sig_id];
+                let ty = sig.ret;
                 let call_conv = sig.call_conv;
                 let ptr_val = values[ptr.0 as usize].unwarp_i64() as usize;
                 let call_args: Vec<InterpreterValue> = func
@@ -656,8 +657,8 @@ impl Interpreter {
                     if ptr_val == 0 {
                         panic!("Interpreter error: native call to null pointer in CallIndirect");
                     }
-                    let res = unsafe { self.call_native(ptr_val, &call_args, *ty, call_conv) };
-                    ControlFlow::Continue(InterpreterValue::from_i64(res, *ty))
+                    let res = unsafe { self.call_native(ptr_val, &call_args, ty, call_conv) };
+                    ControlFlow::Continue(InterpreterValue::from_i64(res, ty))
                 }
             }
             InstructionData::IntToPtr { arg } => {

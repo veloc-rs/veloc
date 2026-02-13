@@ -1247,9 +1247,10 @@ impl TargetBackend for X86_64Backend {
                 condition,
                 then_val,
                 else_val,
-                ty,
+                ..
             } => {
-                let is_64 = self.is_64(*ty);
+                let ty = func.dfg.values[*then_val].ty;
+                let is_64 = self.is_64(ty);
                 self.emit_load_val(emitter, func, *condition, Reg::RAX);
                 emitter.emit_inst(X86_64Inst::TestRaxRax);
 

@@ -1,35 +1,17 @@
 use super::inst::InstructionData;
-use super::types::{Block, BlockCall, Inst, JumpTable, Type, Value, ValueList};
+use crate::types::{
+    Block, BlockCall, BlockCallData, Inst, JumpTable, JumpTableData, Type, Value, ValueData,
+    ValueList, ValueListData,
+};
+use alloc::string::String;
 use alloc::vec::Vec;
-use cranelift_entity::PrimaryMap;
-
-#[derive(Debug, Clone)]
-pub struct ValueData {
-    pub ty: Type,
-    pub defined_by: Option<Inst>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ValueListData {
-    pub offset: u32,
-    pub len: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BlockCallData {
-    pub block: Block,
-    pub args: ValueList,
-}
-
-#[derive(Debug, Clone)]
-pub struct JumpTableData {
-    pub targets: Box<[BlockCall]>,
-}
+use cranelift_entity::{PrimaryMap, SecondaryMap};
 
 #[derive(Debug, Clone)]
 pub struct DataFlowGraph {
     pub instructions: PrimaryMap<Inst, InstructionData>,
     pub values: PrimaryMap<Value, ValueData>,
+    pub value_names: SecondaryMap<Value, String>,
     pub value_lists: PrimaryMap<ValueList, ValueListData>,
     pub value_pool: Vec<Value>,
     pub block_calls: PrimaryMap<BlockCall, BlockCallData>,
@@ -45,6 +27,7 @@ impl DataFlowGraph {
         Self {
             instructions: PrimaryMap::new(),
             values: PrimaryMap::new(),
+            value_names: SecondaryMap::new(),
             value_lists,
             value_pool: Vec::new(),
             block_calls: PrimaryMap::new(),
@@ -75,17 +58,12 @@ impl DataFlowGraph {
     }
 
     pub fn inst_results(&self, inst: Inst) -> Option<Value> {
-        let ty = self.instructions[inst].result_type();
-        if ty == Type::Void {
-            None
-        } else {
-            // In our current simplified SSA, an instruction has at most one result.
-            // We can find the value that is defined by this instruction.
-            self.values
-                .iter()
-                .find(|(_, data)| data.defined_by == Some(inst))
-                .map(|(v, _)| v)
-        }
+        // In our current simplified SSA, an instruction has at most one result.
+        // We can find the value that is defined by this instruction.
+        self.values
+            .iter()
+            .find(|(_, data)| data.defined_by == Some(inst))
+            .map(|(v, _)| v)
     }
 
     pub fn analyze_successors(&self, inst: Inst) -> Vec<Block> {

@@ -296,7 +296,7 @@ impl Function {
             }
             InstructionData::Return { value } => {
                 let sig = &module.signatures[self.signature];
-                let expected = sig.returns.first().copied().unwrap_or(Type::Void);
+                let expected = sig.ret;
                 let got = value.map(|v| val_ty(v)).unwrap_or(Type::Void);
                 if expected != got {
                     return Err(ValidationError::ReturnMismatch { expected, got }.into());
@@ -311,7 +311,7 @@ impl Function {
                 condition,
                 then_val,
                 else_val,
-                ty,
+                ..
             } => {
                 let cond_ty = val_ty(*condition);
                 if cond_ty != Type::Bool {
@@ -319,12 +319,11 @@ impl Function {
                 }
                 let t_ty = val_ty(*then_val);
                 let f_ty = val_ty(*else_val);
-                if t_ty != *ty || f_ty != *ty {
-                    return Err(ValidationError::SelectMismatch {
+                if t_ty != f_ty {
+                    return Err(ValidationError::OperandTypeMismatch {
                         inst,
-                        expected: *ty,
-                        then_val: t_ty,
-                        else_val: f_ty,
+                        lhs: t_ty,
+                        rhs: f_ty,
                     }
                     .into());
                 }

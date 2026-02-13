@@ -153,7 +153,11 @@ pub(crate) fn register_builtins(program: &mut Program) {
         "wasm_trap_handler".to_string(),
         Arc::new(|args: &[InterpreterValue]| {
             let vmctx_ptr = args[0].unwarp_i64() as *mut crate::vm::VMContext;
-            let code = if args.len() > 1 { args[1].unwarp_i64() } else { 0 };
+            let code = if args.len() > 1 {
+                args[1].unwarp_i64()
+            } else {
+                0
+            };
             crate::module::wasm_trap_handler(vmctx_ptr, code as u32);
             InterpreterValue::None
         }) as HostFunction,

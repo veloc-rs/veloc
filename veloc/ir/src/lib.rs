@@ -42,6 +42,6 @@ pub use types::{
 };
 
 // Internal-only re-exports for the backend and passes
-pub use dfg::{BlockCallData, DataFlowGraph, JumpTableData, ValueData};
+pub use dfg::DataFlowGraph;
 pub use inst::{InstructionData, Opcode};
 pub use types::Inst;

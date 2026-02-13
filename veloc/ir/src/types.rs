@@ -56,18 +56,41 @@ entity_impl!(SigId, "sig");
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Signature {
     pub params: Box<[Type]>,
-    pub returns: Box<[Type]>,
+    pub ret: Type,
     pub call_conv: CallConv,
 }
 
 impl Signature {
-    pub fn new(params: Vec<Type>, returns: Vec<Type>, call_conv: CallConv) -> Self {
+    pub fn new(params: Vec<Type>, ret: Type, call_conv: CallConv) -> Self {
         Self {
             params: params.into_boxed_slice(),
-            returns: returns.into_boxed_slice(),
+            ret,
             call_conv,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ValueData {
+    pub ty: Type,
+    pub defined_by: Option<Inst>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ValueListData {
+    pub offset: u32,
+    pub len: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockCallData {
+    pub block: Block,
+    pub args: ValueList,
+}
+
+#[derive(Debug, Clone)]
+pub struct JumpTableData {
+    pub targets: Box<[BlockCall]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
