@@ -395,8 +395,7 @@ fn generate_init_expr(
             }
             GlobalInit::RefFunc(idx) => {
                 let offset = offsets.function_offset(*idx);
-                let offset_val = ins.iconst(VelocType::I64, offset as i64);
-                stack.push(ins.gep(vmctx, offset_val))
+                stack.push(ins.ptr_offset(vmctx, offset as i32))
             }
             GlobalInit::GlobalGet(idx) => {
                 let src_ptr = ins.load(VelocType::Ptr, vmctx, offsets.global_offset(*idx));

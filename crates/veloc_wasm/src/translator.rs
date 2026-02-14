@@ -183,11 +183,10 @@ impl<'a> WasmTranslator<'a> {
             }
             Operator::RefFunc { function_index } => {
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let offset = self.builder.ins().iconst(
-                    VelocType::I64,
-                    self.offsets.function_offset(function_index) as i64,
-                );
-                let ptr_addr = self.builder.ins().gep(vmctx, offset);
+                let ptr_addr = self
+                    .builder
+                    .ins()
+                    .ptr_offset(vmctx, self.offsets.function_offset(function_index) as i32);
                 self.stack.push(ptr_addr);
             }
             Operator::RefIsNull => {
@@ -248,7 +247,6 @@ impl<'a> WasmTranslator<'a> {
                 self.stack.push(val);
             }
             Operator::GlobalSet { global_index } => {
-                let _ty = self.metadata.globals[global_index as usize].ty;
                 let val = self.pop();
                 let global_val_ptr = self.get_global_ptr(global_index);
                 self.builder.ins().store(val, global_val_ptr, 0);
@@ -257,10 +255,8 @@ impl<'a> WasmTranslator<'a> {
                 let index = self.pop();
                 self.table_bounds_check(table, index);
                 let table_base = self.get_table_base(table);
-                let index_i64 = self.builder.ins().extend_u(index, VelocType::I64);
-                let stride = self.builder.ins().iconst(VelocType::I64, 8);
-                let offset = self.builder.ins().imul(index_i64, stride);
-                let addr = self.builder.ins().gep(table_base, offset);
+                let index_i64 = self.addr_to_i64(index);
+                let addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
 
                 let res = self.builder.ins().load(VelocType::Ptr, addr, 0);
                 self.stack.push(res);
@@ -270,10 +266,8 @@ impl<'a> WasmTranslator<'a> {
                 let index = self.pop();
                 self.table_bounds_check(table, index);
                 let table_base = self.get_table_base(table);
-                let index_i64 = self.builder.ins().extend_u(index, VelocType::I64);
-                let stride = self.builder.ins().iconst(VelocType::I64, 8);
-                let offset = self.builder.ins().imul(index_i64, stride);
-                let entry_addr = self.builder.ins().gep(table_base, offset);
+                let index_i64 = self.addr_to_i64(index);
+                let entry_addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
 
                 self.builder.ins().store(func_ref, entry_addr, 0);
                 self.terminated = false;
@@ -878,10 +872,8 @@ impl<'a> WasmTranslator<'a> {
                 self.builder.switch_to_block(check_null_block);
                 self.terminated = false;
 
-                // 3. Calculate offset = index * 8
-                let stride = self.builder.ins().iconst(VelocType::I64, 8);
-                let offset = self.builder.ins().imul(index_i64, stride);
-                let entry_ptr_addr = self.builder.ins().gep(table_base, offset);
+                // 3. Calculate entry_ptr_addr = table_base + index * 8
+                let entry_ptr_addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
                 let entry_ptr = self.builder.ins().load(VelocType::Ptr, entry_ptr_addr, 0);
 
                 // 4. Check if null
@@ -1473,14 +1465,24 @@ impl<'a> WasmTranslator<'a> {
         self.stack.push(res);
     }
 
+    /// Convert address to I64, extending if necessary
+    fn addr_to_i64(&mut self, addr: Value) -> Value {
+        let addr_ty = self.builder.value_type(addr);
+        if addr_ty == VelocType::I64 {
+            addr
+        } else {
+            self.builder.ins().extend_u(addr, VelocType::I64)
+        }
+    }
+
     fn translate_load(&mut self, ty: VelocType, memarg: wasmparser::MemArg) {
         let addr = self.pop();
         let mem_idx = memarg.memory;
         self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes());
         let mem_base = self.get_memory_base(mem_idx);
 
-        let addr_i64 = self.builder.ins().extend_u(addr, VelocType::I64);
-        let actual_ptr = self.builder.ins().gep(mem_base, addr_i64);
+        let addr_i64 = self.addr_to_i64(addr);
+        let actual_ptr = self.builder.ins().ptr_index(mem_base, addr_i64, 1, 0);
 
         let res = self
             .builder
@@ -1496,8 +1498,8 @@ impl<'a> WasmTranslator<'a> {
         self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes());
         let mem_base = self.get_memory_base(mem_idx);
 
-        let addr_i64 = self.builder.ins().extend_u(addr, VelocType::I64);
-        let actual_ptr = self.builder.ins().gep(mem_base, addr_i64);
+        let addr_i64 = self.addr_to_i64(addr);
+        let actual_ptr = self.builder.ins().ptr_index(mem_base, addr_i64, 1, 0);
 
         self.builder
             .ins()
@@ -1533,7 +1535,7 @@ impl<'a> WasmTranslator<'a> {
                 .load(VelocType::I64, def_ptr, VMMemory::current_length_offset());
 
         // Calculate addr + offset + access_size
-        let addr_i64 = self.builder.ins().extend_u(addr, VelocType::I64);
+        let addr_i64 = self.addr_to_i64(addr);
         let total_offset = self
             .builder
             .ins()
@@ -1573,7 +1575,7 @@ impl<'a> WasmTranslator<'a> {
             self.builder
                 .ins()
                 .load(VelocType::I64, def_ptr, VMTable::current_elements_offset());
-        let index_i64 = self.builder.ins().extend_u(index, VelocType::I64);
+        let index_i64 = self.addr_to_i64(index);
         let is_oob = self.builder.ins().icmp(IntCC::GeU, index_i64, table_len);
         self.trap_if(is_oob, TrapCode::TableOutOfBounds);
     }

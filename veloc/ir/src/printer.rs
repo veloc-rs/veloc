@@ -151,8 +151,23 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 InstructionData::PtrToInt { arg, ty } => {
                     write!(f, "ptrtoint.{} {}", ty, v(*arg))?;
                 }
-                InstructionData::Gep { ptr, offset } => {
-                    write!(f, "gep {}, {}", v(*ptr), v(*offset))?;
+                InstructionData::PtrOffset { ptr, offset } => {
+                    write!(f, "ptr_offset {}, {}", v(*ptr), offset)?;
+                }
+                InstructionData::PtrIndex {
+                    ptr,
+                    index,
+                    scale,
+                    offset,
+                } => {
+                    write!(
+                        f,
+                        "ptr_index {}, {}, {}, {}",
+                        v(*ptr),
+                        v(*index),
+                        scale,
+                        offset
+                    )?;
                 }
                 InstructionData::Bconst { value } => {
                     write!(f, "bconst {}", value)?;

@@ -1347,7 +1347,8 @@ impl TargetBackend for X86_64Backend {
             }
             InstructionData::IntToPtr { .. }
             | InstructionData::PtrToInt { .. }
-            | InstructionData::Gep { .. } => {
+            | InstructionData::PtrOffset { .. }
+            | InstructionData::PtrIndex { .. } => {
                 todo!("Implement codegen for pointer instructions")
             }
         }

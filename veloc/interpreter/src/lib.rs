@@ -669,10 +669,21 @@ impl Interpreter {
                     _ => ControlFlow::Continue(InterpreterValue::I64(v)),
                 }
             }
-            InstructionData::Gep { ptr, offset } => {
+            InstructionData::PtrOffset { ptr, offset } => {
                 let p = values[ptr.0 as usize].unwarp_i64();
-                let o = values[offset.0 as usize].unwarp_i64();
-                ControlFlow::Continue(InterpreterValue::I64(p + o))
+                ControlFlow::Continue(InterpreterValue::I64(p + *offset as i64))
+            }
+            InstructionData::PtrIndex {
+                ptr,
+                index,
+                scale,
+                offset,
+            } => {
+                let p = values[ptr.0 as usize].unwarp_i64();
+                let idx = values[index.0 as usize].unwarp_i64();
+                ControlFlow::Continue(InterpreterValue::I64(
+                    p + idx * (*scale as i64) + (*offset as i64),
+                ))
             }
             InstructionData::Unreachable => panic!("reached unreachable code"),
         }

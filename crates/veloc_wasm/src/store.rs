@@ -154,7 +154,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
         Arc::new(|args: &[InterpreterValue]| {
             let vmctx_ptr = args[0].unwarp_i64() as *mut crate::vm::VMContext;
             let code = if args.len() > 1 {
-                args[1].unwarp_i64()
+                args[1].unwarp_i32()
             } else {
                 0
             };

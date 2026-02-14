@@ -97,7 +97,7 @@ impl fmt::Display for ValidationError {
             Self::PointerArithmetic(inst, opcode) => {
                 write!(
                     f,
-                    "Pointer arithmetic not allowed for instruction {:?} ({:?}). Use GEP instead.",
+                    "Pointer arithmetic not allowed for instruction {:?} ({:?}). Use PtrOffset or PtrIndex instead.",
                     inst, opcode
                 )
             }
@@ -193,7 +193,9 @@ impl Function {
                         let is_valid = if arg_ty == Type::Bool {
                             *opcode == Opcode::ExtendU && ty.is_integer()
                         } else {
-                            arg_ty.is_integer() && ty.is_integer() && arg_ty.size_bytes() < ty.size_bytes()
+                            arg_ty.is_integer()
+                                && ty.is_integer()
+                                && arg_ty.size_bytes() < ty.size_bytes()
                         };
 
                         if !is_valid {
@@ -348,19 +350,29 @@ impl Function {
                 }
             }
             InstructionData::StackAddr { .. } => {}
-            InstructionData::Gep { ptr, offset } => {
+            InstructionData::PtrOffset { ptr, .. } => {
                 if val_ty(*ptr) != Type::Ptr {
                     return Err(ValidationError::TypeMismatch {
-                        opcode: Opcode::Gep,
+                        opcode: Opcode::PtrOffset,
                         expected: Type::Ptr,
                         got: val_ty(*ptr),
                     }
                     .into());
                 }
-                if !val_ty(*offset).is_integer() {
+            }
+            InstructionData::PtrIndex { ptr, index, .. } => {
+                if val_ty(*ptr) != Type::Ptr {
+                    return Err(ValidationError::TypeMismatch {
+                        opcode: Opcode::PtrIndex,
+                        expected: Type::Ptr,
+                        got: val_ty(*ptr),
+                    }
+                    .into());
+                }
+                if !val_ty(*index).is_integer() {
                     return Err(ValidationError::Other(alloc::format!(
-                        "GEP offset must be an integer, got {:?}",
-                        val_ty(*offset)
+                        "PtrIndex index must be an integer, got {:?}",
+                        val_ty(*index)
                     ))
                     .into());
                 }

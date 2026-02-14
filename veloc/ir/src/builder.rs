@@ -1115,8 +1115,19 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             .unwrap()
     }
 
-    pub fn gep(&mut self, ptr: Value, offset: Value) -> Value {
-        self.push(InstructionData::Gep { ptr, offset }).unwrap()
+    pub fn ptr_offset(&mut self, ptr: Value, offset: i32) -> Value {
+        self.push(InstructionData::PtrOffset { ptr, offset })
+            .unwrap()
+    }
+
+    pub fn ptr_index(&mut self, ptr: Value, index: Value, scale: u32, offset: i32) -> Value {
+        self.push(InstructionData::PtrIndex {
+            ptr,
+            index,
+            scale,
+            offset,
+        })
+        .unwrap()
     }
 
     pub fn int_to_ptr(&mut self, arg: Value) -> Value {

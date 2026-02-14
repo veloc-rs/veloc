@@ -124,7 +124,8 @@ pub enum Opcode {
     StackLoad,
     StackStore,
     StackAddr,
-    Gep,
+    PtrOffset,
+    PtrIndex,
     // Control Flow
     Call,
     CallIndirect,
@@ -195,7 +196,8 @@ impl fmt::Display for Opcode {
             Opcode::StackLoad => "stack_load",
             Opcode::StackStore => "stack_store",
             Opcode::StackAddr => "stack_addr",
-            Opcode::Gep => "gep",
+            Opcode::PtrOffset => "ptr_offset",
+            Opcode::PtrIndex => "ptr_index",
             Opcode::Call => "call",
             Opcode::CallIndirect => "call_indirect",
             Opcode::Jump => "jump",
@@ -306,9 +308,15 @@ pub enum InstructionData {
         arg: Value,
         ty: Type,
     },
-    Gep {
+    PtrOffset {
         ptr: Value,
-        offset: Value,
+        offset: i32,
+    },
+    PtrIndex {
+        ptr: Value,
+        index: Value,
+        scale: u32,
+        offset: i32,
     },
 }
 
@@ -337,7 +345,8 @@ impl InstructionData {
             InstructionData::CallIndirect { .. } => Opcode::CallIndirect,
             InstructionData::IntToPtr { .. } => Opcode::IntToPtr,
             InstructionData::PtrToInt { .. } => Opcode::PtrToInt,
-            InstructionData::Gep { .. } => Opcode::Gep,
+            InstructionData::PtrOffset { .. } => Opcode::PtrOffset,
+            InstructionData::PtrIndex { .. } => Opcode::PtrIndex,
         }
     }
 
@@ -372,7 +381,8 @@ impl InstructionData {
             InstructionData::CallIndirect { ret_ty, .. } => *ret_ty,
             InstructionData::IntToPtr { .. } => Type::Ptr,
             InstructionData::PtrToInt { ty, .. } => *ty,
-            InstructionData::Gep { .. } => Type::Ptr,
+            InstructionData::PtrOffset { .. } => Type::Ptr,
+            InstructionData::PtrIndex { .. } => Type::Ptr,
         }
     }
 }
