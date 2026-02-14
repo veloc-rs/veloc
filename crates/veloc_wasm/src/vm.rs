@@ -55,6 +55,37 @@ impl VMMemory {
         })
     }
 
+    pub fn grow(&mut self, delta_pages: u32) -> Option<u32> {
+        let old_size = self.current_length;
+        let old_pages = (old_size / WASM_PAGE_SIZE) as u32;
+        let new_pages = old_pages.checked_add(delta_pages)?;
+
+        if new_pages > self.maximum_pages {
+            return None;
+        }
+
+        let new_size = (new_pages as usize) * WASM_PAGE_SIZE;
+
+        if delta_pages > 0 {
+            unsafe {
+                let grow_ptr = self.base.add(old_size);
+                let grow_size = new_size - old_size;
+
+                if libc::mprotect(
+                    grow_ptr as *mut _,
+                    grow_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                ) != 0
+                {
+                    return None;
+                }
+            }
+        }
+
+        self.current_length = new_size;
+        Some(old_pages)
+    }
+
     pub const fn size() -> u32 {
         core::mem::size_of::<Self>() as u32
     }
@@ -144,11 +175,12 @@ impl VMFuncRef {
 pub struct VMTable {
     pub base: *mut *mut VMFuncRef,
     pub current_elements: usize,
+    pub maximum_elements: u32,
     pub element_type: wasmparser::RefType,
 }
 
 impl VMTable {
-    pub fn new(size: u32, element_type: wasmparser::RefType) -> Self {
+    pub fn new(size: u32, maximum: Option<u32>, element_type: wasmparser::RefType) -> Self {
         let mut elements = vec![ptr::null_mut::<VMFuncRef>(); size as usize];
         let base = elements.as_mut_ptr();
         let current_elements = elements.len();
@@ -157,18 +189,30 @@ impl VMTable {
         Self {
             base,
             current_elements,
+            maximum_elements: maximum.unwrap_or(u32::MAX),
             element_type,
         }
     }
 
-    pub fn grow(&mut self, delta: u32) {
+    pub fn grow(&mut self, delta: u32, init_val: *mut VMFuncRef) -> i32 {
         let old_size = self.current_elements;
         let new_size = old_size + delta as usize;
-        let mut elements = unsafe { Vec::from_raw_parts(self.base, old_size, old_size) };
-        elements.resize(new_size, ptr::null_mut());
-        self.base = elements.as_mut_ptr();
-        self.current_elements = elements.len();
-        std::mem::forget(elements);
+
+        if new_size > self.maximum_elements as usize {
+            return -1;
+        }
+
+        // We use from_raw_parts/resize/forget to manage the allocation
+        // Note: This assumes the original table was also created via a Vec and leaked.
+        unsafe {
+            let mut elements = Vec::from_raw_parts(self.base, old_size, old_size);
+            elements.resize(new_size, init_val);
+            self.base = elements.as_mut_ptr();
+            self.current_elements = elements.len();
+            std::mem::forget(elements);
+        }
+
+        old_size as i32
     }
 
     pub fn set(&mut self, index: u32, func_ref_ptr: *mut VMFuncRef) {
@@ -228,6 +272,35 @@ pub enum TrapCode {
     MemoryOutOfBounds = 4,
     IntegerOverflow = 5,
     IndirectCallBadSig = 6,
+    InvalidConversionToInteger = 7,
+    NullReference = 8,
+}
+
+impl TrapCode {
+    pub fn from_u32(code: u32) -> Option<Self> {
+        if code <= 8 {
+            Some(unsafe { core::mem::transmute(code) })
+        } else {
+            None
+        }
+    }
+}
+
+impl core::fmt::Display for TrapCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let s = match self {
+            TrapCode::Unreachable => "unreachable",
+            TrapCode::TableOutOfBounds => "table out of bounds",
+            TrapCode::IndirectCallNull => "indirect call null",
+            TrapCode::IntegerDivideByZero => "integer divide by zero",
+            TrapCode::MemoryOutOfBounds => "memory out of bounds",
+            TrapCode::IntegerOverflow => "integer overflow",
+            TrapCode::IndirectCallBadSig => "indirect call bad sig",
+            TrapCode::InvalidConversionToInteger => "invalid conversion to integer",
+            TrapCode::NullReference => "null reference",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 /// VMContext 是 JIT 代码执行时的上下文。

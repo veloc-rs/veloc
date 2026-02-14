@@ -29,6 +29,8 @@ pub enum Error {
     },
     /// Memory allocation error.
     Memory(String),
+    /// Unsupported WebAssembly feature.
+    Unsupported(String),
     /// Generic error message.
     Message(String),
 }
@@ -57,7 +59,7 @@ impl fmt::Display for Error {
             Error::Wasm(e) => write!(f, "Wasm error: {}", e),
             Error::Compile(s) => write!(f, "Compile error: {}", s),
             Error::Link(e) => write!(f, "Link error: {}", e),
-            Error::Trap(code) => write!(f, "Runtime trap: {:?}", code),
+            Error::Trap(code) => write!(f, "{}", code),
             Error::ExportNotFound(name) => write!(f, "Export not found: {}", name),
             Error::ImportNotFound { module, field } => {
                 write!(f, "Import not found: {}.{}", module, field)
@@ -73,6 +75,7 @@ impl fmt::Display for Error {
                 module, field, expected, actual
             ),
             Error::Memory(s) => write!(f, "Memory error: {}", s),
+            Error::Unsupported(s) => write!(f, "Unsupported feature: {}", s),
             Error::Message(s) => write!(f, "{}", s),
         }
     }

@@ -1,9 +1,9 @@
-use crate::Extern;
 use crate::Val;
 use crate::engine::Strategy;
 use crate::module::{GlobalInit, Module, ModuleArtifact};
-use crate::store::{InstanceId, Store};
+use crate::store::{Instance, Store};
 use crate::vm::{__sigsetjmp, TrapCode, VMContext, VMFuncRef};
+use crate::{Extern, Result};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -16,10 +16,10 @@ use wasmparser::{ExternalKind, ValType};
 
 pub type ExternMap = HashMap<String, Extern>;
 
-pub struct InstanceHandle(pub *mut Instance);
+pub(crate) struct InstanceHandle(pub *mut VMInstance);
 
 impl Deref for InstanceHandle {
-    type Target = Instance;
+    type Target = VMInstance;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.0 }
     }
@@ -35,8 +35,8 @@ impl Drop for InstanceHandle {
     fn drop(&mut self) {
         unsafe {
             let instance = &*self.0;
-            let offset_of_vmctx = std::mem::offset_of!(Instance, vmctx);
-            let total_size = (offset_of_vmctx as u32) + instance.module.inner.offsets.total_size;
+            let offset_of_vmctx = std::mem::offset_of!(VMInstance, vmctx);
+            let total_size = (offset_of_vmctx as u32) + instance.module.vm_offsets().total_size;
             let layout = std::alloc::Layout::from_size_align(total_size as usize, 16).unwrap();
 
             std::ptr::drop_in_place(self.0);
@@ -47,7 +47,7 @@ impl Drop for InstanceHandle {
 
 /// Instance 是 Module 绑定到对应 Store 后的运行实体
 #[repr(C)]
-pub struct Instance {
+pub(crate) struct VMInstance {
     pub(crate) module: Module,
     pub(crate) interpreter: Option<Interpreter>,
     pub(crate) vm: Option<veloc::interpreter::VM>,
@@ -58,48 +58,62 @@ pub struct Instance {
     pub(crate) vmctx: VMContext,
 }
 
-impl Instance {
-    pub(crate) unsafe fn from_vmctx(ptr: *mut VMContext) -> &'static mut Instance {
+impl VMInstance {
+    pub(crate) unsafe fn from_vmctx(ptr: *mut VMContext) -> &'static mut VMInstance {
         unsafe {
-            let offset = std::mem::offset_of!(Instance, vmctx);
-            let instance_ptr = (ptr as *mut u8).sub(offset) as *mut Instance;
+            let offset = std::mem::offset_of!(VMInstance, vmctx);
+            let instance_ptr = (ptr as *mut u8).sub(offset) as *mut VMInstance;
             &mut *instance_ptr
         }
     }
 
     pub(crate) fn handle_trap(&self, trap_val: u32) -> crate::error::Error {
-        let code = (trap_val - 1) as u32;
-        match code {
-            x if x == TrapCode::Unreachable as u32 => {
-                crate::error::Error::Trap(TrapCode::Unreachable)
-            }
-            x if x == TrapCode::TableOutOfBounds as u32 => {
-                crate::error::Error::Trap(TrapCode::TableOutOfBounds)
-            }
-            x if x == TrapCode::IndirectCallNull as u32 => {
-                crate::error::Error::Trap(TrapCode::IndirectCallNull)
-            }
-            x if x == TrapCode::IntegerDivideByZero as u32 => {
-                crate::error::Error::Trap(TrapCode::IntegerDivideByZero)
-            }
-            x if x == TrapCode::MemoryOutOfBounds as u32 => {
-                crate::error::Error::Trap(TrapCode::MemoryOutOfBounds)
-            }
-            x if x == TrapCode::IntegerOverflow as u32 => {
-                crate::error::Error::Trap(TrapCode::IntegerOverflow)
-            }
-            x if x == TrapCode::IndirectCallBadSig as u32 => {
-                crate::error::Error::Trap(TrapCode::IndirectCallBadSig)
-            }
-            _ => crate::error::Error::Message("Unknown trap code".to_string()),
+        let code = trap_val.saturating_sub(1);
+        if let Some(trap) = TrapCode::from_u32(code) {
+            crate::error::Error::Trap(trap)
+        } else {
+            crate::error::Error::Message(format!("Unknown trap code: {}", code))
         }
     }
 
+    #[inline]
+    fn vmctx_ptr(&self) -> *mut VMContext {
+        self.vmctx_self_reference
+    }
+
+    #[inline]
+    fn memories(&self) -> &mut [*mut crate::vm::VMMemory] {
+        let meta = self.module.metadata();
+        let offsets = self.module.vm_offsets();
+        unsafe { (*self.vmctx_ptr()).memories_mut(offsets, meta.memories.len()) }
+    }
+
+    #[inline]
+    fn tables(&self) -> &mut [*mut crate::vm::VMTable] {
+        let meta = self.module.metadata();
+        let offsets = self.module.vm_offsets();
+        unsafe { (*self.vmctx_ptr()).tables_mut(offsets, meta.tables.len()) }
+    }
+
+    #[inline]
+    fn globals(&self) -> &mut [*mut crate::vm::VMGlobal] {
+        let meta = self.module.metadata();
+        let offsets = self.module.vm_offsets();
+        unsafe { (*self.vmctx_ptr()).globals_mut(offsets, meta.globals.len()) }
+    }
+
+    #[inline]
+    fn functions(&self) -> &mut [crate::vm::VMFuncRef] {
+        let meta = self.module.metadata();
+        let offsets = self.module.vm_offsets();
+        unsafe { (*self.vmctx_ptr()).functions_mut(offsets, meta.functions.len()) }
+    }
+
     pub(crate) fn call_init(&mut self, program: &Program) -> crate::error::Result<()> {
-        let init_func_id = self.module.inner.init_func_id;
+        let init_func_id = self.module.init_func_id();
 
         let vmctx_ptr = self.vmctx_self_reference;
-        let offsets = &self.module.inner.offsets;
+        let offsets = self.module.vm_offsets();
         let jmp_buf_ptr = unsafe { (*vmctx_ptr).jmp_buf_ptr(offsets) };
 
         let trap_val = unsafe { crate::vm::__sigsetjmp(jmp_buf_ptr, 0) };
@@ -107,7 +121,7 @@ impl Instance {
             return Err(self.handle_trap(trap_val as u32));
         }
 
-        if self.module.inner.strategy == Strategy::Interpreter {
+        if self.module.strategy() == Strategy::Interpreter {
             let vm = self
                 .vm
                 .as_mut()
@@ -137,64 +151,37 @@ impl Instance {
     }
 
     pub(crate) fn get_memory(&self, index: u32) -> Option<&[u8]> {
-        let meta = self.module.metadata();
-        if index as usize >= meta.memories.len() {
-            return None;
-        }
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_memories = unsafe { (*vmctx).memories_mut(offsets, meta.memories.len()) };
-        let mem = unsafe { &*vm_memories[index as usize] };
+        let mem = unsafe { &**self.memories().get(index as usize)? };
         Some(unsafe { core::slice::from_raw_parts(mem.base, mem.current_length) })
     }
 
     pub(crate) fn get_memory_mut(&mut self, index: u32) -> Option<&mut [u8]> {
-        let meta = self.module.metadata();
-        if index as usize >= meta.memories.len() {
-            return None;
-        }
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_memories = unsafe { (*vmctx).memories_mut(offsets, meta.memories.len()) };
-        let mem = unsafe { &mut *vm_memories[index as usize] };
+        let mem = unsafe { &mut **self.memories().get(index as usize)? };
         Some(unsafe { core::slice::from_raw_parts_mut(mem.base, mem.current_length) })
     }
 
     pub(crate) fn memory_size(&self, index: u32) -> u32 {
-        let meta = self.module.metadata();
-        if index as usize >= meta.memories.len() {
-            return 0;
-        }
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_memories = unsafe { (*vmctx).memories_mut(offsets, meta.memories.len()) };
-        let def = unsafe { &*vm_memories[index as usize] };
-        (def.current_length / 65536) as u32
+        self.memories()
+            .get(index as usize)
+            .map(|&m| unsafe { (*m).current_length as u32 / 65536 })
+            .unwrap_or(0)
     }
 
     pub(crate) fn memory_grow(&mut self, index: u32, delta: u32) -> crate::error::Result<u32> {
-        let meta = self.module.metadata();
-        if index as usize >= meta.memories.len() {
-            return Err(crate::error::Error::Message(
-                "Memory index out of bounds".to_string(),
-            ));
-        }
-        let engine = &self.module.inner.engine;
-        let offsets = self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-
-        engine
-            .grow_memory(vmctx, index, meta.memories.len() as u32, delta, &offsets)
+        let mem = unsafe {
+            &mut **self.memories().get(index as usize).ok_or_else(|| {
+                crate::error::Error::Message("Memory index out of bounds".to_string())
+            })?
+        };
+        mem.grow(delta)
             .ok_or_else(|| crate::error::Error::Message("Memory grow failed".to_string()))
     }
 
     pub(crate) fn table_size(&self, index: u32) -> u32 {
-        let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_tables = unsafe { (*vmctx).tables_mut(offsets, meta.tables.len()) };
-        let table = unsafe { &*vm_tables[index as usize] };
-        table.current_elements as u32
+        self.tables()
+            .get(index as usize)
+            .map(|&t| unsafe { (*t).current_elements as u32 })
+            .unwrap_or(0)
     }
 
     pub(crate) fn table_grow(
@@ -203,37 +190,12 @@ impl Instance {
         init_val: *mut VMFuncRef,
         delta: u32,
     ) -> crate::error::Result<i32> {
-        let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_tables = unsafe { (*vmctx).tables_mut(offsets, meta.tables.len()) };
-        let table = unsafe { &mut *vm_tables[index as usize] };
-
-        let old_size = table.current_elements;
-        let new_size = old_size + delta as usize;
-
-        if let Some(max) = meta.tables[index as usize].maximum {
-            if new_size > max as usize {
-                return Ok(-1);
-            }
-        }
-
-        let mut new_vec = Vec::with_capacity(new_size);
-        unsafe {
-            let old_ptr = table.base;
-            core::ptr::copy_nonoverlapping(old_ptr, new_vec.as_mut_ptr(), old_size);
-            new_vec.set_len(old_size);
-            for _ in 0..delta {
-                new_vec.push(init_val);
-            }
-
-            let new_ptr = new_vec.as_mut_ptr();
-            core::mem::forget(new_vec);
-            table.base = new_ptr;
-            table.current_elements = new_size;
-        }
-
-        Ok(old_size as i32)
+        let table = unsafe {
+            &mut **self.tables().get(index as usize).ok_or_else(|| {
+                crate::error::Error::Message("Table index out of bounds".to_string())
+            })?
+        };
+        Ok(table.grow(delta, init_val))
     }
 
     pub(crate) fn table_fill(
@@ -243,11 +205,11 @@ impl Instance {
         val: *mut VMFuncRef,
         len: u32,
     ) -> crate::error::Result<()> {
-        let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_tables = unsafe { (*vmctx).tables_mut(offsets, meta.tables.len()) };
-        let table = unsafe { &mut *vm_tables[index as usize] };
+        let table = unsafe {
+            &mut **self.tables().get(index as usize).ok_or_else(|| {
+                crate::error::Error::Message("Table index out of bounds".to_string())
+            })?
+        };
 
         if (dst as usize)
             .checked_add(len as usize)
@@ -256,10 +218,9 @@ impl Instance {
             return Err(crate::error::Error::Trap(TrapCode::TableOutOfBounds));
         }
 
-        for i in 0..len {
-            unsafe {
-                *table.base.add((dst + i) as usize) = val;
-            }
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(table.base.add(dst as usize), len as usize);
+            slice.fill(val);
         }
         Ok(())
     }
@@ -272,13 +233,17 @@ impl Instance {
         src: u32,
         len: u32,
     ) -> crate::error::Result<()> {
-        let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_tables = unsafe { (*vmctx).tables_mut(offsets, meta.tables.len()) };
-
-        let dst_table = unsafe { &mut *vm_tables[dst_idx as usize] };
-        let src_table = unsafe { &mut *vm_tables[src_idx as usize] };
+        let tables = self.tables();
+        let dst_table = unsafe {
+            &mut **tables.get(dst_idx as usize).ok_or_else(|| {
+                crate::error::Error::Message("Table index out of bounds".to_string())
+            })?
+        };
+        let src_table = unsafe {
+            &**tables.get(src_idx as usize).ok_or_else(|| {
+                crate::error::Error::Message("Table index out of bounds".to_string())
+            })?
+        };
 
         if (dst as usize)
             .checked_add(len as usize)
@@ -309,10 +274,11 @@ impl Instance {
         len: u32,
     ) -> crate::error::Result<()> {
         let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_tables = unsafe { (*vmctx).tables_mut(offsets, meta.tables.len()) };
-        let table = unsafe { &mut *vm_tables[table_idx as usize] };
+        let table = unsafe {
+            &mut **self.tables().get(table_idx as usize).ok_or_else(|| {
+                crate::error::Error::Message("Table index out of bounds".to_string())
+            })?
+        };
 
         let elements = &meta.elements[elem_idx as usize];
         let elem_len = self.element_lengths[elem_idx as usize];
@@ -327,7 +293,8 @@ impl Instance {
             return Err(crate::error::Error::Trap(TrapCode::TableOutOfBounds));
         }
 
-        let vm_functions = unsafe { (*vmctx).functions_mut(offsets, meta.functions.len()) };
+        let functions = self.functions();
+        let globals = self.globals();
 
         for i in 0..len {
             let ops = &elements.items[(src + i) as usize];
@@ -335,15 +302,13 @@ impl Instance {
             for op in ops {
                 match op {
                     GlobalInit::RefFunc(func_idx) => {
-                        func_ref_ptr = &mut vm_functions[*func_idx as usize] as *mut VMFuncRef;
+                        func_ref_ptr = &mut functions[*func_idx as usize] as *mut VMFuncRef;
                     }
                     GlobalInit::RefNull => {
                         func_ref_ptr = std::ptr::null_mut();
                     }
                     GlobalInit::GlobalGet(global_idx) => {
-                        let vm_globals =
-                            unsafe { (*vmctx).globals_mut(offsets, meta.globals.len()) };
-                        let val_ptr = vm_globals[*global_idx as usize] as *mut *mut VMFuncRef;
+                        let val_ptr = globals[*global_idx as usize] as *mut *mut VMFuncRef;
                         func_ref_ptr = unsafe { *val_ptr };
                     }
                     _ => {}
@@ -357,7 +322,9 @@ impl Instance {
     }
 
     pub(crate) fn elem_drop(&mut self, elem_idx: u32) {
-        self.element_lengths[elem_idx as usize] = 0;
+        if let Some(len) = self.element_lengths.get_mut(elem_idx as usize) {
+            *len = 0;
+        }
     }
 
     pub(crate) fn memory_init(
@@ -369,10 +336,11 @@ impl Instance {
         len: u32,
     ) -> crate::error::Result<()> {
         let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_memories = unsafe { (*vmctx).memories_mut(offsets, meta.memories.len()) };
-        let memory = unsafe { &mut *vm_memories[mem_idx as usize] };
+        let memory = unsafe {
+            &mut **self.memories().get(mem_idx as usize).ok_or_else(|| {
+                crate::error::Error::Message("Memory index out of bounds".to_string())
+            })?
+        };
 
         let data = &meta.data[data_idx as usize];
         let data_len = self.data_lengths[data_idx as usize];
@@ -398,7 +366,9 @@ impl Instance {
     }
 
     pub(crate) fn data_drop(&mut self, data_idx: u32) {
-        self.data_lengths[data_idx as usize] = 0;
+        if let Some(len) = self.data_lengths.get_mut(data_idx as usize) {
+            *len = 0;
+        }
     }
 
     pub(crate) fn memory_copy(
@@ -409,13 +379,17 @@ impl Instance {
         src: u32,
         len: u32,
     ) -> crate::error::Result<()> {
-        let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_memories = unsafe { (*vmctx).memories_mut(offsets, meta.memories.len()) };
-
-        let dst_mem = unsafe { &mut *vm_memories[dst_idx as usize] };
-        let src_mem = unsafe { &mut *vm_memories[src_idx as usize] };
+        let memories = self.memories();
+        let dst_mem = unsafe {
+            &mut **memories.get(dst_idx as usize).ok_or_else(|| {
+                crate::error::Error::Message("Memory index out of bounds".to_string())
+            })?
+        };
+        let src_mem = unsafe {
+            &**memories.get(src_idx as usize).ok_or_else(|| {
+                crate::error::Error::Message("Memory index out of bounds".to_string())
+            })?
+        };
 
         if (dst as usize)
             .checked_add(len as usize)
@@ -444,11 +418,11 @@ impl Instance {
         val: u32,
         len: u32,
     ) -> crate::error::Result<()> {
-        let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_memories = unsafe { (*vmctx).memories_mut(offsets, meta.memories.len()) };
-        let memory = unsafe { &mut *vm_memories[mem_idx as usize] };
+        let memory = unsafe {
+            &mut **self.memories().get(mem_idx as usize).ok_or_else(|| {
+                crate::error::Error::Message("Memory index out of bounds".to_string())
+            })?
+        };
 
         if (dst as usize)
             .checked_add(len as usize)
@@ -464,16 +438,8 @@ impl Instance {
     }
 
     pub(crate) fn get_global(&self, index: u32) -> Option<crate::Val> {
-        let meta = self.module.metadata();
-        if index as usize >= meta.globals.len() {
-            return None;
-        }
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_globals = unsafe { (*vmctx).globals_mut(offsets, meta.globals.len()) };
-        let global_ptr = vm_globals[index as usize];
+        let global = unsafe { &**self.globals().get(index as usize)? };
         unsafe {
-            let global = &*global_ptr;
             match global.ty {
                 ValType::I32 => Some(crate::Val::I32(global.value.i32)),
                 ValType::I64 => Some(crate::Val::I64(global.value.i64)),
@@ -485,67 +451,42 @@ impl Instance {
     }
 
     pub(crate) fn set_global(&mut self, index: u32, val: crate::Val) -> crate::error::Result<()> {
-        let meta = self.module.metadata();
-        if index as usize >= meta.globals.len() {
+        let global = unsafe {
+            &mut **self.globals().get(index as usize).ok_or_else(|| {
+                crate::error::Error::Message("Global index out of bounds".to_string())
+            })?
+        };
+        if !global.mutable {
             return Err(crate::error::Error::Message(
-                "Global index out of bounds".to_string(),
+                "Global is immutable".to_string(),
             ));
         }
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-        let vm_globals = unsafe { (*vmctx).globals_mut(offsets, meta.globals.len()) };
-        let global_ptr = vm_globals[index as usize];
-        unsafe {
-            let global = &mut *global_ptr;
-            if !global.mutable {
+        match (val, global.ty) {
+            (crate::Val::I32(v), ValType::I32) => global.value.i32 = v,
+            (crate::Val::I64(v), ValType::I64) => global.value.i64 = v,
+            (crate::Val::F32(v), ValType::F32) => global.value.f32 = v,
+            (crate::Val::F64(v), ValType::F64) => global.value.f64 = v,
+            _ => {
                 return Err(crate::error::Error::Message(
-                    "Global is immutable".to_string(),
+                    "Global type mismatch".to_string(),
                 ));
-            }
-            match (val, global.ty) {
-                (crate::Val::I32(v), ValType::I32) => global.value.i32 = v,
-                (crate::Val::I64(v), ValType::I64) => global.value.i64 = v,
-                (crate::Val::F32(v), ValType::F32) => global.value.f32 = v,
-                (crate::Val::F64(v), ValType::F64) => global.value.f64 = v,
-                _ => {
-                    return Err(crate::error::Error::Message(
-                        "Global type mismatch".to_string(),
-                    ));
-                }
             }
         }
         Ok(())
     }
 
     pub(crate) fn get_export(&self, name: &str) -> Option<Extern> {
-        let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let (kind, idx) = meta.exports.get(name)?;
+        let (kind, idx) = self.module.metadata().exports.get(name)?;
         let idx = *idx as usize;
 
-        unsafe {
-            let vmctx_ptr = self.vmctx_self_reference;
-            let export = match kind {
-                ExternalKind::Func => {
-                    let func_refs = (*vmctx_ptr).functions_mut(offsets, meta.functions.len());
-                    Extern::Function(func_refs[idx])
-                }
-                ExternalKind::Memory => {
-                    let memories = (*vmctx_ptr).memories_mut(offsets, meta.memories.len());
-                    Extern::Memory(memories[idx])
-                }
-                ExternalKind::Table => {
-                    let tables = (*vmctx_ptr).tables_mut(offsets, meta.tables.len());
-                    Extern::Table(tables[idx])
-                }
-                ExternalKind::Global => {
-                    let globals = (*vmctx_ptr).globals_mut(offsets, meta.globals.len());
-                    Extern::Global(globals[idx])
-                }
-                _ => return None,
-            };
-            Some(export)
-        }
+        let export = match kind {
+            ExternalKind::Func => Extern::Function(self.functions()[idx]),
+            ExternalKind::Memory => Extern::Memory(self.memories()[idx]),
+            ExternalKind::Table => Extern::Table(self.tables()[idx]),
+            ExternalKind::Global => Extern::Global(self.globals()[idx]),
+            _ => return None,
+        };
+        Some(export)
     }
 
     pub(crate) unsafe fn init_table_segment(
@@ -554,45 +495,45 @@ impl Instance {
         offset: u32,
     ) -> crate::error::Result<()> {
         let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
-
         let element = &meta.elements[segment_idx as usize];
-        unsafe {
-            let vm_tables = (*vmctx).tables_mut(offsets, meta.tables.len());
-            let table_ptr = vm_tables[element.table_index as usize];
-            let table_def = &mut *table_ptr;
+        let table = unsafe {
+            &mut **self
+                .tables()
+                .get(element.table_index as usize)
+                .ok_or_else(|| {
+                    crate::error::Error::Message("Table index out of bounds".to_string())
+                })?
+        };
 
-            if (offset as usize)
-                .checked_add(element.items.len())
-                .map_or(true, |end| end > table_def.current_elements)
-            {
-                return Err(crate::error::Error::Trap(TrapCode::TableOutOfBounds));
-            }
+        if (offset as usize)
+            .checked_add(element.items.len())
+            .map_or(true, |end| end > table.current_elements)
+        {
+            return Err(crate::error::Error::Trap(TrapCode::TableOutOfBounds));
+        }
 
-            let vm_functions = (*vmctx).functions_mut(offsets, meta.functions.len());
+        let functions = self.functions();
+        let globals = self.globals();
 
-            for (i, ops) in element.items.iter().enumerate() {
-                let mut func_ref_ptr: *mut VMFuncRef = std::ptr::null_mut();
-                for op in ops {
-                    match op {
-                        GlobalInit::RefFunc(func_idx) => {
-                            func_ref_ptr = &mut vm_functions[*func_idx as usize] as *mut VMFuncRef;
-                        }
-                        GlobalInit::RefNull => {
-                            func_ref_ptr = std::ptr::null_mut();
-                        }
-                        GlobalInit::GlobalGet(global_idx) => {
-                            let vm_globals = (*vmctx).globals_mut(offsets, meta.globals.len());
-                            let val_ptr = vm_globals[*global_idx as usize] as *mut *mut VMFuncRef;
-                            func_ref_ptr = *val_ptr;
-                        }
-                        _ => {}
+        for (i, ops) in element.items.iter().enumerate() {
+            let mut func_ref_ptr: *mut VMFuncRef = std::ptr::null_mut();
+            for op in ops {
+                match op {
+                    GlobalInit::RefFunc(func_idx) => {
+                        func_ref_ptr = &mut functions[*func_idx as usize] as *mut VMFuncRef;
                     }
+                    GlobalInit::RefNull => {
+                        func_ref_ptr = std::ptr::null_mut();
+                    }
+                    GlobalInit::GlobalGet(global_idx) => {
+                        let val_ptr = globals[*global_idx as usize] as *mut *mut VMFuncRef;
+                        func_ref_ptr = unsafe { *val_ptr };
+                    }
+                    _ => {}
                 }
-
-                let dest = table_def.base.add((offset as usize) + i);
-                *dest = func_ref_ptr;
+            }
+            unsafe {
+                *table.base.add((offset as usize) + i) = func_ref_ptr;
             }
         }
         Ok(())
@@ -603,44 +544,78 @@ impl Instance {
         segment_idx: u32,
         offset: u32,
     ) -> crate::error::Result<()> {
-        let meta = self.module.metadata();
-        let offsets = &self.module.inner.offsets;
-        let vmctx = self.vmctx_self_reference;
+        let data = &self.module.metadata().data[segment_idx as usize];
+        let memory = unsafe {
+            &mut **self
+                .memories()
+                .get(data.memory_index as usize)
+                .ok_or_else(|| {
+                    crate::error::Error::Message("Memory index out of bounds".to_string())
+                })?
+        };
 
-        let data = &meta.data[segment_idx as usize];
-        let data_len = data.data.len();
+        if (offset as usize)
+            .checked_add(data.data.len())
+            .map_or(true, |end| end > memory.current_length)
+        {
+            return Err(crate::error::Error::Trap(TrapCode::MemoryOutOfBounds));
+        }
 
         unsafe {
-            let vm_memories = (*vmctx).memories_mut(offsets, meta.memories.len());
-            let memory_ptr = vm_memories[data.memory_index as usize];
-            let memory_def = &mut *memory_ptr;
-
-            if (offset as usize) + data_len <= memory_def.current_length {
-                core::ptr::copy_nonoverlapping(
-                    data.data.as_ptr(),
-                    memory_def.base.add(offset as usize),
-                    data_len,
-                );
-                Ok(())
-            } else {
-                Err(crate::error::Error::Trap(TrapCode::MemoryOutOfBounds))
-            }
+            core::ptr::copy_nonoverlapping(
+                data.data.as_ptr(),
+                memory.base.add(offset as usize),
+                data.data.len(),
+            );
         }
+        Ok(())
     }
 }
 
-impl Instance {
-    pub fn new(
+impl VMInstance {
+    pub(crate) fn new(
         store: &mut Store,
         module: Module,
-        extern_imports: &HashMap<String, ExternMap>,
-    ) -> crate::error::Result<InstanceId> {
+        extern_imports: &[Extern],
+    ) -> Result<Instance> {
         let meta = module.metadata();
-        let offsets = module.inner.offsets;
+        let offsets = module.vm_offsets();
+
+        if extern_imports.len() != meta.imports.len() {
+            return Err(crate::error::Error::Message(format!(
+                "Import count mismatch: expected {}, got {}",
+                meta.imports.len(),
+                extern_imports.len()
+            )));
+        }
+
+        // 分组导入
+        let mut imported_funcs = Vec::new();
+        let mut imported_tables = Vec::new();
+        let mut imported_memories = Vec::new();
+        let mut imported_globals = Vec::new();
+
+        for (i, ext) in extern_imports.iter().enumerate() {
+            let import_meta = &meta.imports[i];
+            match (import_meta.kind, ext) {
+                (ExternalKind::Func, Extern::Function(f)) => imported_funcs.push(*f),
+                (ExternalKind::Table, Extern::Table(t)) => imported_tables.push(*t),
+                (ExternalKind::Memory, Extern::Memory(m)) => imported_memories.push(*m),
+                (ExternalKind::Global, Extern::Global(g)) => imported_globals.push(*g),
+                (kind, _) => {
+                    return Err(crate::error::Error::IncompatibleImport {
+                        module: import_meta.module.clone(),
+                        field: import_meta.field.clone(),
+                        expected: format!("{:?}", kind),
+                        actual: "mismatched type".into(),
+                    });
+                }
+            }
+        }
 
         // 1. 如果是解释器模式，记录模块 ID
-        let interp_module_id = if module.inner.strategy == Strategy::Interpreter {
-            match &module.inner.artifact {
+        let interp_module_id = if module.strategy() == Strategy::Interpreter {
+            match module.artifact() {
                 ModuleArtifact::Interpreter(ir) => Some(store.program.register_module(ir.clone())),
                 _ => None,
             }
@@ -649,7 +624,7 @@ impl Instance {
         };
 
         // 2. 分配并初始化 joined block
-        let offset_of_vmctx = std::mem::offset_of!(Instance, vmctx);
+        let offset_of_vmctx = std::mem::offset_of!(VMInstance, vmctx);
         let total_size = (offset_of_vmctx as u32) + offsets.total_size;
         let layout = std::alloc::Layout::from_size_align(total_size as usize, 16).unwrap();
         let base_ptr = unsafe { std::alloc::alloc_zeroed(layout) };
@@ -657,11 +632,11 @@ impl Instance {
             return Err(crate::error::Error::Memory("Allocation failed".to_string()));
         }
 
-        let instance_ptr = base_ptr as *mut Instance;
+        let instance_ptr = base_ptr as *mut VMInstance;
         let vmctx_ptr = unsafe { base_ptr.add(offset_of_vmctx) as *mut VMContext };
 
         unsafe {
-            let mut vm = (module.inner.strategy == Strategy::Interpreter).then(VM::new);
+            let mut vm = (module.strategy() == Strategy::Interpreter).then(VM::new);
             if let Some(vm) = vm.as_mut() {
                 vm.register_region(MemoryRegion::new(
                     0,
@@ -671,7 +646,7 @@ impl Instance {
                 ));
             }
 
-            let instance = Instance {
+            let instance = VMInstance {
                 module: module.clone(),
                 interpreter: interp_module_id.map(Interpreter::new),
                 vm,
@@ -688,25 +663,38 @@ impl Instance {
 
         // 3. 实例化资源并填充 VMContext
         unsafe {
+            let instance = &mut *instance_ptr;
+
             // Signature Hashes
             let vm_hashes = (*vmctx_ptr).signature_hashes_mut(&offsets, meta.signatures.len());
-            for i in 0..meta.signatures.len() {
-                vm_hashes[i] = meta.signatures[i].hash;
+            for (i, sig) in meta.signatures.iter().enumerate() {
+                vm_hashes[i] = sig.hash;
             }
 
             // Globals
-            let vm_globals = (*vmctx_ptr).globals_mut(&offsets, meta.globals.len());
+            let vm_globals = instance.globals();
             for i in 0..meta.num_imported_globals {
-                let def_ptr = Self::resolve_import(
-                    meta,
-                    extern_imports,
-                    ExternalKind::Global,
-                    i,
-                    |e| match e {
-                        Extern::Global(ptr) => Some(*ptr),
-                        _ => None,
-                    },
-                )?;
+                let def_ptr = imported_globals[i];
+
+                // Type check
+                let actual_ty = (*def_ptr).ty;
+                let actual_mutable = (*def_ptr).mutable;
+                let expected_ty = meta.globals[i].ty;
+                let expected_mutable = meta.globals[i].mutable;
+                if actual_ty != expected_ty || actual_mutable != expected_mutable {
+                    let import = meta
+                        .imports
+                        .iter()
+                        .filter(|imp| imp.kind == ExternalKind::Global)
+                        .nth(i)
+                        .unwrap();
+                    return Err(crate::error::Error::IncompatibleImport {
+                        module: import.module.clone(),
+                        field: import.field.clone(),
+                        expected: format!("{:?} (mut:{})", expected_ty, expected_mutable),
+                        actual: format!("{:?} (mut:{})", actual_ty, actual_mutable),
+                    });
+                }
                 vm_globals[i] = def_ptr;
             }
             for i in meta.num_imported_globals..meta.globals.len() {
@@ -723,59 +711,79 @@ impl Instance {
             }
 
             // Functions
-            let vm_functions = (*vmctx_ptr).functions_mut(&offsets, meta.functions.len());
+            let vm_functions = instance.functions();
             for i in 0..meta.num_imported_funcs {
-                let func_ref = Self::resolve_import(
-                    meta,
-                    extern_imports,
-                    ExternalKind::Func,
-                    i,
-                    |e| match e {
-                        Extern::Function(f) => Some(*f),
-                        _ => None,
-                    },
-                )?;
+                let mut func_ref = imported_funcs[i];
+
+                // If it's a host function (vmctx is null), set it to the current vmctx
+                if func_ref.vmctx.is_null() {
+                    func_ref.vmctx = vmctx_ptr;
+                }
+
+                // Type check
+                let ty_idx = meta.functions[i].type_index;
+                let expected_hash = meta.signatures[ty_idx as usize].hash;
+                if func_ref.type_index != expected_hash {
+                    let import = meta
+                        .imports
+                        .iter()
+                        .filter(|imp| imp.kind == ExternalKind::Func)
+                        .nth(i)
+                        .unwrap();
+                    return Err(crate::error::Error::IncompatibleImport {
+                        module: import.module.clone(),
+                        field: import.field.clone(),
+                        expected: format!("sig hash {}", expected_hash),
+                        actual: format!("sig hash {}", func_ref.type_index),
+                    });
+                }
                 vm_functions[i] = func_ref;
             }
             for i in meta.num_imported_funcs..meta.functions.len() {
-                let func_name = &meta.functions[i].name;
+                let func_meta = &meta.functions[i];
                 let ptr = if let Some(loaded) = module.loaded() {
-                    let entry_sym = loaded.get::<*const ()>(func_name).ok_or_else(|| {
-                        crate::error::Error::Message(format!("Symbol {} not found", func_name))
+                    let entry_sym = loaded.get::<*const ()>(&func_meta.name).ok_or_else(|| {
+                        crate::error::Error::Message(format!("Symbol {} not found", func_meta.name))
                     })?;
                     *entry_sym as *const u8
                 } else {
                     let mid = interp_module_id.expect("Interpreter module not registered");
                     store
                         .program
-                        .get_interpreter_func_ptr(mid, meta.functions[i].func_id)
+                        .get_interpreter_func_ptr(mid, func_meta.func_id)
                 };
-
-                let ty_idx = meta.functions[i].type_index;
-                let sig_hash = meta.signatures[ty_idx as usize].hash_u64();
 
                 vm_functions[i] = VMFuncRef {
                     native_call: ptr as *const core::ffi::c_void,
                     vmctx: vmctx_ptr,
-                    type_index: sig_hash as u32,
+                    type_index: meta.signatures[func_meta.type_index as usize].hash,
                     offset: 0,
                     caller: core::ptr::null_mut(),
                 };
             }
 
             // Memories
-            let vm_memories = (*vmctx_ptr).memories_mut(&offsets, meta.memories.len());
+            let vm_memories = instance.memories();
             for i in 0..meta.num_imported_memories {
-                let def_ptr = Self::resolve_import(
-                    meta,
-                    extern_imports,
-                    ExternalKind::Memory,
-                    i,
-                    |e| match e {
-                        Extern::Memory(ptr) => Some(*ptr),
-                        _ => None,
-                    },
-                )?;
+                let def_ptr = imported_memories[i];
+
+                // Type check
+                let actual_pages = (*def_ptr).current_length / 65536;
+                let expected_pages = meta.memories[i].initial as usize;
+                if actual_pages < expected_pages {
+                    let import = meta
+                        .imports
+                        .iter()
+                        .filter(|imp| imp.kind == ExternalKind::Memory)
+                        .nth(i)
+                        .unwrap();
+                    return Err(crate::error::Error::IncompatibleImport {
+                        module: import.module.clone(),
+                        field: import.field.clone(),
+                        expected: format!("at least {} pages", expected_pages),
+                        actual: format!("{} pages", actual_pages),
+                    });
+                }
                 vm_memories[i] = def_ptr;
             }
             for i in meta.num_imported_memories..meta.memories.len() {
@@ -786,30 +794,22 @@ impl Instance {
             }
 
             // Tables
-            let vm_tables = (*vmctx_ptr).tables_mut(&offsets, meta.tables.len());
+            let vm_tables = instance.tables();
             for i in 0..meta.num_imported_tables {
-                let def_ptr = Self::resolve_import(
-                    meta,
-                    extern_imports,
-                    ExternalKind::Table,
-                    i,
-                    |e| match e {
-                        Extern::Table(ptr) => Some(*ptr),
-                        _ => None,
-                    },
-                )?;
+                let def_ptr = imported_tables[i];
                 vm_tables[i] = def_ptr;
             }
             for i in meta.num_imported_tables..meta.tables.len() {
-                let initial = meta.tables[i].initial;
-                let element_type = meta.tables[i].element_type;
-                let id = store.alloc_table(initial, element_type)?;
+                let table_meta = &meta.tables[i];
+                let id = store.alloc_table(
+                    table_meta.initial,
+                    table_meta.maximum,
+                    table_meta.element_type,
+                )?;
                 vm_tables[i] = store.get_table(id);
 
-                // 如果表有默认初始化值，应用它
-                if let Some(init_ops) = &meta.tables[i].init {
+                if let Some(init_ops) = &table_meta.init {
                     let table = &mut *vm_tables[i];
-
                     let mut func_ref_ptr: *mut VMFuncRef = std::ptr::null_mut();
                     for op in init_ops {
                         match op {
@@ -828,10 +828,8 @@ impl Instance {
                             _ => {}
                         }
                     }
-
-                    for j in 0..table.current_elements {
-                        *table.base.add(j) = func_ref_ptr;
-                    }
+                    core::slice::from_raw_parts_mut(table.base, table.current_elements)
+                        .fill(func_ref_ptr);
                 }
             }
         }
@@ -843,34 +841,9 @@ impl Instance {
 
         Ok(store.push_instance(InstanceHandle(instance_ptr)))
     }
-
-    fn resolve_import<T>(
-        meta: &crate::module::ModuleMetadata,
-        extern_imports: &HashMap<String, ExternMap>,
-        kind: ExternalKind,
-        index: usize,
-        resolver: impl FnOnce(&Extern) -> Option<T>,
-    ) -> crate::error::Result<T> {
-        let import = meta
-            .imports
-            .iter()
-            .filter(|imp| imp.kind == kind)
-            .nth(index)
-            .unwrap();
-        let resolved = extern_imports
-            .get(&import.module)
-            .and_then(|m| m.get(&import.field));
-
-        resolved.and_then(resolver).ok_or_else(|| {
-            crate::error::Error::Message(format!(
-                "{:?} import not found: {}.{}",
-                kind, import.module, import.field
-            ))
-        })
-    }
 }
 
-impl InstanceId {
+impl Instance {
     pub fn get_export(self, store: &Store, name: &str) -> Option<Extern> {
         store.get_instance(self).get_export(name)
     }
@@ -899,24 +872,28 @@ impl InstanceId {
             let ty_idx = meta.functions[func_idx].type_index;
             let sig = &meta.signatures[ty_idx as usize];
 
-            let tramp_ptr = if let Some(loaded) = instance.module.loaded() {
+            let kind = if instance.module.strategy() == Strategy::Interpreter {
+                TypedFuncKind::Interpreter {
+                    target_func_id: func_id,
+                }
+            } else {
                 let tramp_name = format!("{}_trampoline", name);
-                unsafe {
+                let tramp_ptr = instance.module.loaded().and_then(|loaded| unsafe {
                     loaded
                         .get::<*const ()>(&tramp_name)
                         .map(|s| *s as *const u8)
+                });
+
+                TypedFuncKind::JIT {
+                    trampoline_ptr: tramp_ptr?,
                 }
-            } else {
-                None
             };
 
             Some(TypedFunc {
                 params: sig.params.clone(),
                 results: sig.results.clone(),
-                instance_id: self,
                 func_ref,
-                trampoline_ptr: tramp_ptr,
-                func_id,
+                kind,
             })
         } else {
             None
@@ -958,30 +935,28 @@ impl InstanceId {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum TypedFuncKind {
+    JIT { trampoline_ptr: *const u8 },
+    Interpreter { target_func_id: FuncId },
+}
+
 /// 类型化函数句柄
 /// 可用于从宿主代码直接调用 Wasm 函数
 pub struct TypedFunc {
     params: Box<[ValType]>,
     results: Box<[ValType]>,
-    instance_id: InstanceId,
     func_ref: VMFuncRef,
-    trampoline_ptr: Option<*const u8>,
-    func_id: FuncId,
+    kind: TypedFuncKind,
 }
 
 impl TypedFunc {
     pub fn call(&self, store: &mut Store, args: &[Val]) -> crate::error::Result<Vec<Val>> {
-        let instance = store.get_instance(self.instance_id);
-
-        if instance.module.inner.strategy == Strategy::Interpreter {
-            return self.call_interpreter(store, args);
-        }
-
         let vmctx_ptr = self.func_ref.vmctx;
 
         unsafe {
-            let instance = Instance::from_vmctx(vmctx_ptr);
-            let offsets = &instance.module.inner.offsets;
+            let instance = VMInstance::from_vmctx(vmctx_ptr);
+            let offsets = &instance.module.vm_offsets();
             let jmp_buf_ptr = (*vmctx_ptr).jmp_buf_ptr(offsets);
 
             let trap_val = __sigsetjmp(jmp_buf_ptr, 0);
@@ -997,116 +972,69 @@ impl TypedFunc {
                 )));
             }
 
-            let mut results_raw = vec![0i64; self.results.len()];
-            let mut storage = [0i64; 17]; // max 16 args + potential results ptr
-            let mut actual_len = args.len();
-
-            if self.results.len() > 1 {
-                storage[actual_len] = results_raw.as_mut_ptr() as i64;
-                actual_len += 1;
-            }
-
-            if actual_len > 16 {
-                return Err(crate::error::Error::Message(format!(
-                    "Too many arguments: {}",
-                    actual_len
-                )));
-            }
-
-            for (i, arg) in args.iter().enumerate() {
-                // Type check (keep for safety, can be optimized out if trusted)
-                let expected = self.params[i];
-                let actual = match arg {
-                    Val::I32(_) => ValType::I32,
-                    Val::I64(_) => ValType::I64,
-                    Val::F32(_) => ValType::F32,
-                    Val::F64(_) => ValType::F64,
-                };
-                if actual != expected {
+            for (i, (arg, &expected)) in args.iter().zip(self.params.iter()).enumerate() {
+                if arg.ty() != expected {
                     return Err(crate::error::Error::Message(format!(
                         "Argument {} type mismatch: expected {:?}, got {:?}",
-                        i, expected, actual
+                        i,
+                        expected,
+                        arg.ty()
                     )));
                 }
-                storage[i] = arg.as_i64();
-            }
-
-            let tramp_ptr = self.trampoline_ptr.ok_or_else(|| {
-                crate::error::Error::Message("JIT trampoline not found".to_string())
-            })?;
-
-            let trampoline: extern "C" fn(*const VMContext, *const i64) -> i64 =
-                mem::transmute(tramp_ptr);
-            let res = trampoline(vmctx_ptr, storage.as_ptr());
-
-            let mut results_val = Vec::with_capacity(self.results.len());
-            if self.results.len() == 1 {
-                results_val.push(Val::from_i64(res, self.results[0]));
-            } else if self.results.len() > 1 {
-                for (i, &ty) in self.results.iter().enumerate() {
-                    results_val.push(Val::from_i64(results_raw[i], ty));
-                }
-            }
-
-            Ok(results_val)
-        }
-    }
-
-    pub fn call_interpreter(
-        &self,
-        store: &mut Store,
-        args: &[Val],
-    ) -> crate::error::Result<Vec<Val>> {
-        let vmctx_ptr = self.func_ref.vmctx;
-
-        unsafe {
-            let instance = Instance::from_vmctx(vmctx_ptr);
-            let offsets = &instance.module.inner.offsets;
-            let jmp_buf_ptr = (*vmctx_ptr).jmp_buf_ptr(offsets);
-
-            let trap_val = __sigsetjmp(jmp_buf_ptr, 0);
-            if trap_val != 0 {
-                return Err(instance.handle_trap(trap_val as u32));
-            }
-
-            let interpreter = instance.interpreter.as_mut().ok_or_else(|| {
-                crate::error::Error::Message("Interpreter not initialized".to_string())
-            })?;
-
-            let mut int_args = Vec::with_capacity(args.len() + 1);
-            int_args.push(InterpreterValue::I64(vmctx_ptr as i64));
-
-            for &arg in args {
-                int_args.push(match arg {
-                    Val::I32(v) => InterpreterValue::I32(v),
-                    Val::I64(v) => InterpreterValue::I64(v),
-                    Val::F32(v) => InterpreterValue::F32(v),
-                    Val::F64(v) => InterpreterValue::F64(v),
-                });
             }
 
             let mut results_raw = vec![0i64; self.results.len()];
-            if self.results.len() > 1 {
-                int_args.push(InterpreterValue::I64(results_raw.as_mut_ptr() as i64));
-            }
 
-            let vm = instance
-                .vm
-                .as_mut()
-                .ok_or_else(|| crate::error::Error::Message("VM not initialized".to_string()))?;
+            let res_bits = match self.kind {
+                TypedFuncKind::JIT { trampoline_ptr } => {
+                    let mut storage = [0i64; 17];
+                    for (i, arg) in args.iter().enumerate() {
+                        storage[i] = arg.as_i64();
+                    }
+                    let mut actual_len = args.len();
+                    if self.results.len() > 1 {
+                        storage[actual_len] = results_raw.as_mut_ptr() as i64;
+                        actual_len += 1;
+                    }
 
-            let res = interpreter.run_function(&store.program, vm, self.func_id, &int_args);
+                    if actual_len > 16 {
+                        return Err(crate::error::Error::Message("Too many arguments".into()));
+                    }
 
-            let mut results_val = Vec::with_capacity(self.results.len());
-            if self.results.len() == 1 {
-                results_val.push(Val::from_i64(res.to_i64_bits(), self.results[0]));
-            } else if self.results.len() > 1 {
-                for (i, &ty) in self.results.iter().enumerate() {
-                    results_val.push(Val::from_i64(results_raw[i], ty));
+                    let trampoline: extern "C" fn(*const VMContext, *const i64) -> i64 =
+                        mem::transmute(trampoline_ptr);
+                    trampoline(vmctx_ptr, storage.as_ptr())
                 }
-            }
+                TypedFuncKind::Interpreter { target_func_id } => {
+                    let mut int_args = Vec::with_capacity(args.len() + 2);
+                    int_args.push(InterpreterValue::I64(vmctx_ptr as i64));
+                    for arg in args {
+                        int_args.push(arg.to_interpreter_val());
+                    }
 
-            Ok(results_val)
+                    if self.results.len() > 1 {
+                        int_args.push(InterpreterValue::I64(results_raw.as_mut_ptr() as i64));
+                    }
+
+                    let interpreter = instance.interpreter.as_mut().unwrap();
+                    let vm = instance.vm.as_mut().unwrap();
+                    interpreter
+                        .run_function(&store.program, vm, target_func_id, &int_args)
+                        .to_i64_bits()
+                }
+            };
+
+            let results = if self.results.len() == 1 {
+                vec![Val::from_i64(res_bits, self.results[0])]
+            } else {
+                self.results
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &ty)| Val::from_i64(results_raw[i], ty))
+                    .collect()
+            };
+
+            Ok(results)
         }
     }
 }

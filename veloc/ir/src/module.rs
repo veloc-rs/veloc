@@ -57,13 +57,7 @@ impl ModuleData {
         }
     }
 
-    pub fn declare_function(
-        &mut self,
-        name: String,
-        signature: Signature,
-        linkage: Linkage,
-    ) -> FuncId {
-        let sig_id = self.intern_signature(signature);
+    pub fn declare_function(&mut self, name: String, sig_id: SigId, linkage: Linkage) -> FuncId {
         self.functions.push(Function::new(name, sig_id, linkage))
     }
 

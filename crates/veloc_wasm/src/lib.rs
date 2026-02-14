@@ -2,18 +2,21 @@ extern crate alloc;
 
 pub mod engine;
 pub mod error;
+pub mod func;
 pub mod instance;
 pub mod linker;
 pub mod module;
 pub mod store;
 pub mod translator;
 pub mod vm;
+pub mod wasi;
 
 pub use crate::engine::Engine;
-pub use crate::instance::{Instance, TypedFunc};
+pub use crate::func::{Caller, IntoFunc};
+pub use crate::instance::TypedFunc;
 pub use crate::linker::Linker;
 pub use crate::module::Module;
-pub use crate::store::{Global, InstanceId, Memory, Store, Table};
+pub use crate::store::{Global, Instance, Memory, Store, Table};
 
 use crate::vm::{VMFuncRef, VMGlobal, VMMemory, VMTable};
 
@@ -94,6 +97,15 @@ impl Val {
             Val::I64(_) => wasmparser::ValType::I64,
             Val::F32(_) => wasmparser::ValType::F32,
             Val::F64(_) => wasmparser::ValType::F64,
+        }
+    }
+
+    pub fn to_interpreter_val(&self) -> veloc::interpreter::InterpreterValue {
+        match *self {
+            Val::I32(v) => veloc::interpreter::InterpreterValue::I32(v),
+            Val::I64(v) => veloc::interpreter::InterpreterValue::I64(v),
+            Val::F32(v) => veloc::interpreter::InterpreterValue::F32(v),
+            Val::F64(v) => veloc::interpreter::InterpreterValue::F64(v),
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::module::types::{
-    GlobalInit, ModuleMetadata, WasmData, WasmElement, WasmFunction, WasmGlobal, WasmImport,
-    WasmMemory, WasmSignature, WasmTable,
+    GlobalInit, WasmData, WasmElement, WasmFunction, WasmGlobal, WasmImport, WasmMemory,
+    WasmMetadata, WasmSignature, WasmTable,
 };
 use alloc::format;
 use alloc::string::ToString;
@@ -11,18 +11,18 @@ use wasmparser::{
     Payload,
 };
 
-impl ModuleMetadata {
+impl WasmMetadata {
     pub fn collect(wasm_bin: &[u8]) -> crate::error::Result<Self> {
         let mut exports = HashMap::new();
         let mut functions = Vec::<WasmFunction>::new();
         let mut signatures = Vec::<WasmSignature>::new();
-        let ir_sig_ids = Vec::<veloc::ir::SigId>::new();
         let mut tables = Vec::<WasmTable>::new();
         let mut memories = Vec::<WasmMemory>::new();
         let mut elements = Vec::<WasmElement>::new();
         let mut data_list = Vec::<WasmData>::new();
         let mut imports = Vec::<WasmImport>::new();
         let mut globals = Vec::<WasmGlobal>::new();
+        let mut start_func = None;
         let mut num_imported_funcs = 0;
         let mut num_imported_tables = 0;
         let mut num_imported_memories = 0;
@@ -73,7 +73,11 @@ impl ModuleMetadata {
                                 });
                                 ExternalKind::Global
                             }
-                            wasmparser::TypeRef::Tag(_) => ExternalKind::Tag,
+                            wasmparser::TypeRef::Tag(_) => {
+                                return Err(crate::error::Error::Unsupported(
+                                    "Wasm tags (Exception Handling)".to_string(),
+                                ));
+                            }
                         };
                         imports.push(WasmImport {
                             module: import.module.to_string(),
@@ -91,11 +95,18 @@ impl ModuleMetadata {
                     for rec_group in reader {
                         let rec_group = rec_group?;
                         for ty in rec_group.types() {
-                            if let CompositeInnerType::Func(ft) = &ty.composite_type.inner {
-                                signatures.push(WasmSignature::new(
-                                    ft.params().iter().cloned().collect(),
-                                    ft.results().iter().cloned().collect(),
-                                ));
+                            match &ty.composite_type.inner {
+                                CompositeInnerType::Func(ft) => {
+                                    signatures.push(WasmSignature::new(
+                                        ft.params().iter().cloned().collect(),
+                                        ft.results().iter().cloned().collect(),
+                                    ));
+                                }
+                                _ => {
+                                    return Err(crate::error::Error::Unsupported(
+                                        "Wasm GC types (struct/array)".to_string(),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -160,11 +171,17 @@ impl ModuleMetadata {
                         }
                     }
                 }
+                Payload::TagSection(_) => {
+                    return Err(crate::error::Error::Unsupported(
+                        "Wasm Tags (Exception Handling)".to_string(),
+                    ));
+                }
                 Payload::ElementSection(reader) => {
                     for element in reader {
                         let element = element?;
                         let mut offset = Vec::new();
                         let mut is_active = false;
+                        let mut is_declared = false;
                         let table_index = match element.kind {
                             ElementKind::Active {
                                 table_index,
@@ -173,6 +190,10 @@ impl ModuleMetadata {
                                 is_active = true;
                                 offset = parse_init_expr(offset_expr.get_operators_reader())?;
                                 table_index.unwrap_or(0)
+                            }
+                            ElementKind::Declared => {
+                                is_declared = true;
+                                0
                             }
                             _ => 0,
                         };
@@ -191,18 +212,17 @@ impl ModuleMetadata {
                             }
                         }
 
-                        if !items.is_empty() {
-                            elements.push(WasmElement {
-                                offset: offset.into_boxed_slice(),
-                                items: items
-                                    .into_iter()
-                                    .map(|v| v.into_boxed_slice())
-                                    .collect::<Vec<_>>()
-                                    .into_boxed_slice(),
-                                table_index,
-                                is_active,
-                            });
-                        }
+                        elements.push(WasmElement {
+                            offset: offset.into_boxed_slice(),
+                            items: items
+                                .into_iter()
+                                .map(|v| v.into_boxed_slice())
+                                .collect::<Vec<_>>()
+                                .into_boxed_slice(),
+                            table_index,
+                            is_active,
+                            is_declared,
+                        });
                     }
                 }
                 Payload::DataSection(reader) => {
@@ -229,6 +249,9 @@ impl ModuleMetadata {
                         });
                     }
                 }
+                Payload::StartSection { func, .. } => {
+                    start_func = Some(func);
+                }
                 _ => {}
             }
         }
@@ -237,13 +260,13 @@ impl ModuleMetadata {
             exports,
             functions: functions.into_boxed_slice(),
             signatures: signatures.into_boxed_slice(),
-            ir_sig_ids: ir_sig_ids.into_boxed_slice(),
             tables: tables.into_boxed_slice(),
             memories: memories.into_boxed_slice(),
             elements: elements.into_boxed_slice(),
             data: data_list.into_boxed_slice(),
             imports: imports.into_boxed_slice(),
             globals: globals.into_boxed_slice(),
+            start_func,
             num_imported_funcs,
             num_imported_tables,
             num_imported_memories,
@@ -273,7 +296,20 @@ fn parse_init_expr(
             Operator::I64Sub => ops.push(GlobalInit::I64Sub),
             Operator::I64Mul => ops.push(GlobalInit::I64Mul),
             Operator::End => break,
-            _ => {}
+            op => {
+                // Check for GC related operators to fail fast
+                let op_str = format!("{:?}", op);
+                if op_str.contains("Struct")
+                    || op_str.contains("Array")
+                    || op_str.contains("Any")
+                    || op_str.contains("ExternConvert")
+                {
+                    return Err(crate::error::Error::Unsupported(format!(
+                        "Unsupported GC operator in init expr: {:?}",
+                        op
+                    )));
+                }
+            }
         }
     }
     Ok(ops)

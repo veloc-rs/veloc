@@ -2,7 +2,9 @@ use crate::instance::InstanceHandle;
 use crate::vm::{VMGlobal, VMMemory, VMTable};
 use alloc::sync::Arc;
 use cranelift_entity::{PrimaryMap, entity_impl};
+use std::sync::Mutex;
 use veloc::interpreter::{HostFunction, InterpreterValue, Program};
+use wasi_common::WasiCtx;
 use wasmparser::ValType;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -22,16 +24,17 @@ pub struct FuncRef(u32);
 entity_impl!(FuncRef, "funcref");
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct InstanceId(u32);
-entity_impl!(InstanceId, "instance");
+pub struct Instance(u32);
+entity_impl!(Instance, "instance");
 
 /// Store 保存运行时的资源状态
 pub struct Store {
     memories: PrimaryMap<Memory, Box<VMMemory>>,
     tables: PrimaryMap<Table, Box<VMTable>>,
     globals: PrimaryMap<Global, Box<VMGlobal>>,
-    instances: PrimaryMap<InstanceId, InstanceHandle>,
+    instances: PrimaryMap<Instance, InstanceHandle>,
     pub(crate) program: veloc::interpreter::Program,
+    pub(crate) wasi_ctx: Option<Arc<Mutex<WasiCtx>>>,
 }
 
 impl Store {
@@ -44,7 +47,12 @@ impl Store {
             globals: PrimaryMap::new(),
             instances: PrimaryMap::new(),
             program,
+            wasi_ctx: None,
         }
+    }
+
+    pub fn set_wasi(&mut self, wasi: WasiCtx) {
+        self.wasi_ctx = Some(Arc::new(Mutex::new(wasi)));
     }
 
     pub fn alloc_memory(
@@ -63,9 +71,10 @@ impl Store {
     pub fn alloc_table(
         &mut self,
         initial: u32,
+        maximum: Option<u32>,
         element_type: wasmparser::RefType,
     ) -> crate::error::Result<Table> {
-        let definition = Box::new(VMTable::new(initial, element_type));
+        let definition = Box::new(VMTable::new(initial, maximum, element_type));
         Ok(self.tables.push(definition))
     }
 
@@ -98,15 +107,15 @@ impl Store {
         self.globals[id].as_ref() as *const _ as *mut _
     }
 
-    pub(crate) fn push_instance(&mut self, handle: InstanceHandle) -> InstanceId {
+    pub(crate) fn push_instance(&mut self, handle: InstanceHandle) -> Instance {
         self.instances.push(handle)
     }
 
-    pub fn get_instance(&self, id: InstanceId) -> &InstanceHandle {
+    pub(crate) fn get_instance(&self, id: Instance) -> &InstanceHandle {
         &self.instances[id]
     }
 
-    pub fn get_instance_mut(&mut self, id: InstanceId) -> &mut InstanceHandle {
+    pub(crate) fn get_instance_mut(&mut self, id: Instance) -> &mut InstanceHandle {
         &mut self.instances[id]
     }
 

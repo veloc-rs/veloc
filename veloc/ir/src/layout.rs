@@ -8,6 +8,7 @@ pub struct BlockData {
     pub preds: Vec<Block>,
     pub succs: Vec<Block>,
     pub insts: Vec<Inst>,
+    pub is_sealed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,7 @@ impl Layout {
             preds: Vec::new(),
             succs: Vec::new(),
             insts: Vec::new(),
+            is_sealed: false,
         })
     }
 

@@ -1,53 +1,93 @@
-use veloc_wasm::{Engine, Module, Store};
+use anyhow::{Context, Result, anyhow};
+use clap::Parser;
+use std::path::PathBuf;
+use std::sync::Arc;
+use veloc_wasm::{
+    Engine, Module, Store,
+    engine::{Config, Strategy},
+};
 
-fn main() {
-    println!("=== Wasmtime-style JIT Runtime ===");
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path to the Wasm or WAT file
+    #[arg(value_name = "FILE")]
+    file: PathBuf,
+
+    /// Function to invoke
+    #[arg(short, long, default_value = "_start")]
+    invoke: String,
+
+    /// Execution strategy (auto, jit, interpreter)
+    #[arg(short, long, default_value = "interpreter")]
+    strategy: String,
+
+    /// Dump generated IR to stdout
+    #[arg(long)]
+    dump_ir: bool,
+
+    /// Enabled variable names in IR output (improves readability)
+    #[arg(long)]
+    ir_names: bool,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
 
     // 1. 初始化引擎
-    let mut config = veloc_wasm::engine::Config::default();
-    config.strategy = veloc_wasm::engine::Strategy::Interpreter;
-    let engine = std::sync::Arc::new(Engine::with_config(config));
+    let mut config = Config::default();
+    config.strategy = match args.strategy.to_lowercase().as_str() {
+        "jit" => Strategy::Jit,
+        "interpreter" => Strategy::Interpreter,
+        _ => Strategy::Auto,
+    };
+    config.dump_ir = args.dump_ir;
+    config.ir_names = args.ir_names;
+    let engine = Arc::new(Engine::with_config(config));
 
-    // 2. 准备 Wasm 字节码 (包含本地变量读写与复用)
-    // 计算: (x = 10; (x + x) * x) = 200
-    let wasm_text = r#"
-        (module
-            (func (export "main") (result i32)
-                (local i32)
-                i32.const 10
-                local.set 0
-                (i32.mul
-                    (i32.add (local.get 0) (local.get 0))
-                    (local.get 0)
-                )
-            )
-        )
-    "#;
-    let wasm_bin = wat::parse_str(wasm_text).expect("Failed to parse WAT");
+    // 2. 读取并解析 Wasm 字节码
+    let wasm_bin = if args.file.extension().and_then(|s| s.to_str()) == Some("wat") {
+        wat::parse_file(&args.file)
+            .with_context(|| format!("Failed to parse WAT file: {:?}", args.file))?
+    } else {
+        std::fs::read(&args.file)
+            .with_context(|| format!("Failed to read Wasm file: {:?}", args.file))?
+    };
 
     // 3. 编译模块
-    println!("[Module] Compiling Wasm with locals and value reuse...");
-    let module = Module::new(engine.clone(), &wasm_bin).expect("Failed to create Module");
+    let module =
+        Module::new(&engine, &wasm_bin).map_err(|e| anyhow!("Failed to create Module: {:?}", e))?;
 
     // 4. 初始化状态存储
     let mut store = Store::new();
 
     // 5. 实例化 (使用 Linker)
-    println!("[Instance] Instantiating via Linker...");
     let mut linker = veloc_wasm::linker::Linker::new();
+
+    // 6. 如果启用了 WASI
+
+    let wasi_ctx = veloc_wasm::wasi::default_wasi_ctx();
+    store.set_wasi(wasi_ctx);
+    linker
+        .add_wasi(&mut store)
+        .map_err(|e| anyhow!("Failed to add WASI: {:?}", e))?;
+
     let instance_id = linker
         .instantiate(&mut store, module)
-        .expect("Failed to instantiate via Linker");
+        .map_err(|e| anyhow!("Failed to instantiate module: {:?}", e))?;
 
-    // 6. 调用到处函数
-    println!("[Runtime] Calling 'main'...");
-    let main_func = instance_id
-        .get_func(&store, "main")
-        .expect("Export 'main' not found");
-    let result = main_func.call(&mut store, &[]).expect("wasm trap");
+    // 7. 调用导出函数
+    let func = instance_id
+        .get_func(&store, &args.invoke)
+        .ok_or_else(|| anyhow!("Export '{}' not found", args.invoke))?;
 
-    println!(
-        "\n[Result] Execution success! Result: {:?} (Expect: 200)",
-        result
-    );
+    let result = func
+        .call(&mut store, &[])
+        .map_err(|e| anyhow!("Wasm trap during execution: {:?}", e))?;
+
+    if !result.is_empty() {
+        println!("Result: {:?}", result);
+    }
+
+    Ok(())
 }

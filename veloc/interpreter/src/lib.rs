@@ -158,7 +158,7 @@ impl Program {
         val as *const u8
     }
 
-    fn decode_interpreter_ptr(&self, ptr_val: usize) -> Option<(ModuleId, FuncId)> {
+    pub fn decode_interpreter_ptr(&self, ptr_val: usize) -> Option<(ModuleId, FuncId)> {
         if ptr_val & 1 == 1 {
             let mid = (ptr_val >> 33) as usize;
             let fid = ((ptr_val >> 1) & 0xFFFFFFFF) as u32;
@@ -272,6 +272,7 @@ impl Interpreter {
 
         while self.stack.len() > initial_stack_depth {
             let mut frame = self.stack.pop().unwrap();
+            self.module_id = frame.module_id;
             // 如果有待处理的返回值，将其存入之前记录的结果目标中
             if let Some(target) = frame.pending_result_target.take() {
                 frame.values[target.0 as usize] = last_result;
@@ -296,45 +297,21 @@ impl Interpreter {
                 while frame.inst_idx < block_data.insts.len() {
                     let inst = block_data.insts[frame.inst_idx];
                     let idata = &func.dfg.instructions[inst];
-                    if let InstructionData::Load { ptr, .. } | InstructionData::Store { ptr, .. } =
-                        idata
-                    {
-                        if let InterpreterValue::None = frame.values[ptr.0 as usize] {
-                            println!(
-                                "  ERROR: Operand {:?} for instruction {:?} is None in block {:?} at idx {}",
-                                ptr, idata, frame.current_block, frame.inst_idx
-                            );
-                        }
-                    }
                     let res_val = func.dfg.inst_results(inst);
 
                     frame.inst_idx += 1;
 
-                    if let Some(rv) = res_val {
-                        if let InterpreterValue::None = frame.values[rv.0 as usize] {
-                            // This is fine if we haven't executed yet, but wait...
-                        }
-                    }
-
-                    match self.execute_inst(
+                    let flow = self.execute_inst(
                         program,
                         vm,
                         idata,
                         &mut frame.values,
                         &mut frame.stack_slots,
                         func_ptr,
-                    ) {
+                    );
+                    match flow {
                         ControlFlow::Continue(res) => {
                             if let Some(rv) = res_val {
-                                if let InterpreterValue::None = res {
-                                    let res_ty = idata.result_type();
-                                    if res_ty != Type::Void {
-                                        println!(
-                                            "  WARNING: Instruction {:?} produced None but expects result of type {:?}",
-                                            idata, res_ty
-                                        );
-                                    }
-                                }
                                 frame.values[rv.0 as usize] = res;
                             }
                         }
@@ -651,9 +628,6 @@ impl Interpreter {
                     let res = host_fn(&call_args);
                     ControlFlow::Continue(res)
                 } else {
-                    if ptr_val == 0 {
-                        panic!("Interpreter error: native call to null pointer in CallIndirect");
-                    }
                     let res = unsafe { self.call_native(ptr_val, &call_args, ty, call_conv) };
                     ControlFlow::Continue(InterpreterValue::from_i64(res, ty))
                 }
@@ -685,7 +659,7 @@ impl Interpreter {
                     p + idx * (*scale as i64) + (*offset as i64),
                 ))
             }
-            InstructionData::Unreachable => panic!("reached unreachable code"),
+            InstructionData::Unreachable => panic!("Unreachable code hit"),
         }
     }
 
@@ -1027,15 +1001,15 @@ impl Interpreter {
                 Opcode::TruncS | Opcode::TruncU => {
                     if res_ty == Type::I32 {
                         if opcode == Opcode::TruncS {
-                            InterpreterValue::I32(v as i32)
+                            InterpreterValue::I32(v.trunc() as i32)
                         } else {
-                            InterpreterValue::I32(v as u32 as i32)
+                            InterpreterValue::I32(v.trunc() as u32 as i32)
                         }
                     } else if res_ty == Type::I64 {
                         if opcode == Opcode::TruncS {
-                            InterpreterValue::I64(v as i64)
+                            InterpreterValue::I64(v.trunc() as i64)
                         } else {
-                            InterpreterValue::I64(v as u64 as i64)
+                            InterpreterValue::I64(v.trunc() as u64 as i64)
                         }
                     } else {
                         panic!("Invalid Trunc target: {:?}", res_ty)
@@ -1056,15 +1030,15 @@ impl Interpreter {
                 Opcode::TruncS | Opcode::TruncU => {
                     if res_ty == Type::I32 {
                         if opcode == Opcode::TruncS {
-                            InterpreterValue::I32(v as i32)
+                            InterpreterValue::I32(v.trunc() as i32)
                         } else {
-                            InterpreterValue::I32(v as u32 as i32)
+                            InterpreterValue::I32(v.trunc() as u32 as i32)
                         }
                     } else if res_ty == Type::I64 {
                         if opcode == Opcode::TruncS {
-                            InterpreterValue::I64(v as i64)
+                            InterpreterValue::I64(v.trunc() as i64)
                         } else {
-                            InterpreterValue::I64(v as u64 as i64)
+                            InterpreterValue::I64(v.trunc() as u64 as i64)
                         }
                     } else {
                         panic!("Invalid Trunc target: {:?}", res_ty)
@@ -1215,9 +1189,7 @@ impl Interpreter {
 
     fn read_memory(&self, vm: &VM, addr: usize, res_ty: Type) -> InterpreterValue {
         let size = self.type_size(res_ty);
-        let host_ptr = vm.translate_addr(addr, size).expect(
-            "Interpreter memory access error: logical address not found in any registered MemoryRegion",
-        );
+        let host_ptr = vm.translate_addr(addr, size).expect("Memory out of bounds");
 
         unsafe {
             match res_ty {
@@ -1252,9 +1224,7 @@ impl Interpreter {
 
     fn write_memory(&mut self, vm: &mut VM, addr: usize, val: InterpreterValue, res_ty: Type) {
         let size = self.type_size(res_ty);
-        let host_ptr = vm.translate_addr(addr, size).expect(
-            "Interpreter memory access error: logical address not found in any registered MemoryRegion",
-        );
+        let host_ptr = vm.translate_addr(addr, size).expect("Memory out of bounds");
 
         unsafe {
             match (val, res_ty) {

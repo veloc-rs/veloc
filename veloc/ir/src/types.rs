@@ -61,7 +61,7 @@ pub struct Signature {
 }
 
 impl Signature {
-    pub fn new(params: Vec<Type>, ret: Type, call_conv: CallConv) -> Self {
+    pub(crate) fn new(params: Vec<Type>, ret: Type, call_conv: CallConv) -> Self {
         Self {
             params: params.into_boxed_slice(),
             ret,

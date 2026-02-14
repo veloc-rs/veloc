@@ -12,6 +12,12 @@ wasmparser = { workspace = true }
 wat = { workspace = true }
 hashbrown = { workspace = true }
 elf_loader = { workspace = true }
+wasi_common = { workspace = true }
+wasi_cap_std_sync = { workspace = true }
+wiggle = { workspace = true }
+futures = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
 
 [features]
 default = ["std"]

@@ -1,9 +1,8 @@
-use crate::inst::InstructionData;
-use crate::{DataFlowGraph, Type, Value};
-
 use super::Linkage;
 use super::function::Function;
 use super::module::Module;
+use crate::inst::InstructionData;
+use crate::{DataFlowGraph, Type, Value};
 use core::fmt::{Display, Formatter, Result, Write};
 
 struct V<'a>(&'a DataFlowGraph, Value);
@@ -12,7 +11,7 @@ impl<'a> Display for V<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         let name = &self.0.value_names[self.1];
         if !name.is_empty() {
-            write!(f, "{}(v{})", name, self.1.0)
+            write!(f, "{}", name)
         } else {
             write!(f, "v{}", self.1.0)
         }
@@ -47,12 +46,25 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
         Linkage::Export => "export",
         Linkage::Import => "import",
     };
-    let cc_info = if let Some(m) = module {
-        alloc::format!("{:?}", m.signatures[func.signature].call_conv)
+
+    if let Some(m) = module {
+        let sig = &m.signatures[func.signature];
+        write!(f, "{} function {}(", linkage, func.name)?;
+        for (i, &param) in sig.params.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", param)?;
+        }
+        write!(f, ") -> {} ({:?})", sig.ret, sig.call_conv)?;
     } else {
-        alloc::format!("{:?}", func.signature)
-    };
-    writeln!(f, "{} function {}({})", linkage, func.name, cc_info)?;
+        write!(
+            f,
+            "{} function {}({:?})",
+            linkage, func.name, func.signature
+        )?;
+    }
+    writeln!(f)?;
 
     for (ss, data) in func.stack_slots.iter() {
         writeln!(f, "  {}: size {}", ss, data.size)?;

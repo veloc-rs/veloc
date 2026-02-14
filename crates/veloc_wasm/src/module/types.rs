@@ -1,7 +1,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
-use veloc::ir::{FuncId, Type as VelocType};
+use veloc::ir::{CallConv, FuncId, SigId, Type as VelocType};
 use wasmparser::{ExternalKind, RefType, ValType};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -32,6 +32,21 @@ impl WasmSignature {
 
     pub fn hash_u64(&self) -> u64 {
         self.hash as u64
+    }
+
+    pub fn intern_veloc_sig(&self, ir: &mut veloc::ir::ModuleBuilder) -> SigId {
+        let mut params = Vec::with_capacity(self.params.len() + 2);
+        params.push(VelocType::Ptr); // vmctx
+        params.extend(self.params.iter().map(|&t| valtype_to_veloc(t)));
+        if self.results.len() > 1 {
+            params.push(VelocType::Ptr); // result ptr
+        }
+        let ret = if self.results.len() == 1 {
+            valtype_to_veloc(self.results[0])
+        } else {
+            VelocType::Void
+        };
+        ir.make_signature(params, ret, CallConv::SystemV)
     }
 }
 
@@ -64,6 +79,7 @@ pub struct WasmElement {
     pub items: Box<[Box<[GlobalInit]>]>,
     pub table_index: u32,
     pub is_active: bool,
+    pub is_declared: bool,
 }
 
 pub struct WasmData {
@@ -97,17 +113,17 @@ pub struct WasmImport {
     pub index: u32,
 }
 
-pub struct ModuleMetadata {
+pub struct WasmMetadata {
     pub exports: HashMap<String, (ExternalKind, u32)>,
     pub functions: Box<[WasmFunction]>,
     pub signatures: Box<[WasmSignature]>,
-    pub ir_sig_ids: Box<[veloc::ir::SigId]>,
     pub tables: Box<[WasmTable]>,
     pub memories: Box<[WasmMemory]>,
     pub elements: Box<[WasmElement]>,
     pub data: Box<[WasmData]>,
     pub imports: Box<[WasmImport]>,
     pub globals: Box<[WasmGlobal]>,
+    pub start_func: Option<u32>,
     pub num_imported_funcs: usize,
     pub num_imported_tables: usize,
     pub num_imported_memories: usize,

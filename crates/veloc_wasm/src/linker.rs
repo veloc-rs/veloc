@@ -1,13 +1,15 @@
 use crate::Extern;
-use crate::instance::Instance;
+use crate::Result;
+use crate::func::IntoFunc;
+use crate::instance::VMInstance;
 use crate::module::Module;
-use crate::store::{InstanceId, Store};
+use crate::module::types::WasmSignature;
+use crate::store::{Instance, Store};
 use crate::vm::VMFuncRef;
+use crate::wasi;
 use alloc::format;
 use alloc::string::String;
-use alloc::sync::Arc;
 use hashbrown::HashMap;
-use veloc::interpreter::{HostFunction, InterpreterValue};
 
 pub struct Linker {
     definitions: HashMap<(String, String), Extern>,
@@ -48,22 +50,32 @@ impl Linker {
         &self.definitions
     }
 
-    pub fn func_wrap(
+    pub fn add_wasi(&mut self, store: &mut Store) -> Result<&mut Self> {
+        wasi::add_to_linker(self, store)?;
+        Ok(self)
+    }
+
+    pub fn func_wrap<Params, Results, F>(
         &mut self,
         store: &mut Store,
         module: &str,
         name: &str,
-        f: impl Fn(&[InterpreterValue]) -> InterpreterValue + Send + Sync + 'static,
-    ) -> &mut Self {
-        let host_fn = Arc::new(f) as HostFunction;
+        f: F,
+    ) -> &mut Self
+    where
+        F: IntoFunc<Params, Results>,
+    {
+        let (params, results, host_fn) = f.into_func();
         let full_name = format!("{}.{}", module, name);
         let id = store.program.register_host_function(full_name, host_fn);
         let native_call = store.program.get_host_func_ptr(id);
 
+        let sig = WasmSignature::new(params, results);
+
         let func_ref = VMFuncRef {
             native_call: native_call as *const core::ffi::c_void,
             vmctx: core::ptr::null_mut(),
-            type_index: 0,
+            type_index: sig.hash,
             offset: 0,
             caller: core::ptr::null_mut(),
         };
@@ -79,17 +91,11 @@ impl Linker {
         &mut self,
         store: &mut Store,
         module: Module,
-    ) -> crate::error::Result<InstanceId> {
-        let mut extern_imports: HashMap<String, HashMap<String, Extern>> = HashMap::new();
-
+    ) -> crate::error::Result<Instance> {
         let meta = module.metadata();
-        for import in &meta.imports {
-            if let Some(m) = extern_imports.get(&import.module) {
-                if m.contains_key(&import.field) {
-                    continue;
-                }
-            }
+        let mut resolved_imports = Vec::with_capacity(meta.imports.len());
 
+        for import in &meta.imports {
             let key = (import.module.clone(), import.field.clone());
             let resolved = self
                 .definitions
@@ -98,10 +104,7 @@ impl Linker {
                 .or_else(|| self.definitions_name.get(&import.field).cloned());
 
             if let Some(ext) = resolved {
-                let export_map = extern_imports
-                    .entry(import.module.clone())
-                    .or_insert_with(HashMap::new);
-                export_map.insert(import.field.clone(), ext);
+                resolved_imports.push(ext);
             } else {
                 return Err(crate::error::Error::Message(format!(
                     "Import not found: {}.{}",
@@ -110,6 +113,6 @@ impl Linker {
             }
         }
 
-        Instance::new(store, module, &extern_imports)
+        VMInstance::new(store, module, &resolved_imports)
     }
 }

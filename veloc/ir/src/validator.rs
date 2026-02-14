@@ -34,6 +34,7 @@ pub enum ValidationError {
         to: Type,
     },
     PointerArithmetic(Inst, Opcode),
+    UnsealedBlock(Block),
     Other(String),
 }
 
@@ -101,6 +102,7 @@ impl fmt::Display for ValidationError {
                     inst, opcode
                 )
             }
+            Self::UnsealedBlock(b) => write!(f, "Block {:?} is not sealed", b),
             Self::Other(s) => write!(f, "{}", s),
         }
     }
@@ -123,7 +125,11 @@ impl Function {
         let layout = &self.layout;
 
         for block in &layout.block_order {
-            let insts = &layout.blocks[*block].insts;
+            let block_data = &layout.blocks[*block];
+            if !block_data.is_sealed {
+                return Err(ValidationError::UnsealedBlock(*block).into());
+            }
+            let insts = &block_data.insts;
             if insts.is_empty() {
                 return Err(ValidationError::EmptyBlock(*block).into());
             }
@@ -501,22 +507,117 @@ impl Function {
                 }
             }
             InstructionData::Jump { dest } => {
-                let _dest_data = dfg.block_calls[*dest];
-                // TODO: we need to check block parameter types, but layout doesn't have it easily accessible here
-                // without looking at layout.blocks[dest].params and then checking their types in dfg.
+                let dest_data = dfg.block_calls[*dest];
+                let target_block = dest_data.block;
+                let expected_params = &self.layout.blocks[target_block].params;
+                let actual_args = dfg.get_value_list(dest_data.args);
+
+                if expected_params.len() != actual_args.len() {
+                    return Err(ValidationError::Other(alloc::format!(
+                        "Jump to block {:?} has {} arguments, but block expects {}",
+                        target_block,
+                        actual_args.len(),
+                        expected_params.len()
+                    ))
+                    .into());
+                }
+
+                for (i, (&param, &arg)) in
+                    expected_params.iter().zip(actual_args.iter()).enumerate()
+                {
+                    let expected_ty = dfg.values[param].ty;
+                    let actual_ty = dfg.values[arg].ty;
+                    if expected_ty != actual_ty {
+                        return Err(ValidationError::Other(alloc::format!(
+                            "Jump to block {:?} argument {} type mismatch: expected {:?}, got {:?}",
+                            target_block,
+                            i,
+                            expected_ty,
+                            actual_ty
+                        ))
+                        .into());
+                    }
+                }
             }
-            InstructionData::Br { condition, .. } => {
+            InstructionData::Br {
+                condition,
+                then_dest,
+                else_dest,
+            } => {
                 let cond_ty = val_ty(*condition);
                 if cond_ty != Type::Bool {
                     return Err(ValidationError::ConditionNotBool(inst, cond_ty).into());
                 }
+
+                for dest in [then_dest, else_dest] {
+                    let dest_data = dfg.block_calls[*dest];
+                    let target_block = dest_data.block;
+                    let expected_params = &self.layout.blocks[target_block].params;
+                    let actual_args = dfg.get_value_list(dest_data.args);
+
+                    if expected_params.len() != actual_args.len() {
+                        return Err(ValidationError::Other(alloc::format!(
+                            "Branch to block {:?} has {} arguments, but block expects {}",
+                            target_block,
+                            actual_args.len(),
+                            expected_params.len()
+                        ))
+                        .into());
+                    }
+
+                    for (i, (&param, &arg)) in
+                        expected_params.iter().zip(actual_args.iter()).enumerate()
+                    {
+                        let expected_ty = dfg.values[param].ty;
+                        let actual_ty = dfg.values[arg].ty;
+                        if expected_ty != actual_ty {
+                            return Err(ValidationError::Other(alloc::format!(
+                                "Branch to block {:?} argument {} type mismatch: expected {:?}, got {:?}",
+                                target_block, i, expected_ty, actual_ty
+                            ))
+                            .into());
+                        }
+                    }
+                }
             }
-            InstructionData::BrTable { index, .. } => {
+            InstructionData::BrTable { index, table } => {
                 if !val_ty(*index).is_integer() {
                     return Err(ValidationError::Other(alloc::format!(
                         "br_table index must be integer"
                     ))
                     .into());
+                }
+
+                let table_data = &dfg.jump_tables[*table];
+                for target_call in table_data.targets.iter() {
+                    let dest_data = dfg.block_calls[*target_call];
+                    let target_block = dest_data.block;
+                    let expected_params = &self.layout.blocks[target_block].params;
+                    let actual_args = dfg.get_value_list(dest_data.args);
+
+                    if expected_params.len() != actual_args.len() {
+                        return Err(ValidationError::Other(alloc::format!(
+                            "BrTable target block {:?} has {} arguments, but block expects {}",
+                            target_block,
+                            actual_args.len(),
+                            expected_params.len()
+                        ))
+                        .into());
+                    }
+
+                    for (i, (&param, &arg)) in
+                        expected_params.iter().zip(actual_args.iter()).enumerate()
+                    {
+                        let expected_ty = dfg.values[param].ty;
+                        let actual_ty = dfg.values[arg].ty;
+                        if expected_ty != actual_ty {
+                            return Err(ValidationError::Other(alloc::format!(
+                                "BrTable target block {:?} argument {} type mismatch: expected {:?}, got {:?}",
+                                target_block, i, expected_ty, actual_ty
+                            ))
+                            .into());
+                        }
+                    }
                 }
             }
             InstructionData::Return { value } => {
@@ -569,5 +670,42 @@ impl Function {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Linkage;
+    use crate::builder::ModuleBuilder;
+
+    #[test]
+    fn test_unsealed_block_validation() {
+        let mut mb = ModuleBuilder::new();
+        let sig_id = mb.make_signature(vec![], Type::Void, crate::CallConv::SystemV);
+        let func_id = mb.declare_function("test".to_string(), sig_id, Linkage::Export);
+        let mut builder = mb.builder(func_id);
+
+        // Explicitly initialize entry block
+        builder.init_entry_block();
+        // and give it a terminator
+        builder.ins().ret(None);
+
+        // Create an additional block and don't seal it
+        let block = builder.create_block();
+        builder.switch_to_block(block);
+        builder.ins().ret(None);
+
+        drop(builder);
+        let res = mb.validate();
+        match res {
+            Err(e) => {
+                let err = e.to_string();
+                if !err.contains("is not sealed") {
+                    panic!("Expected 'is not sealed' error, got: {}", err);
+                }
+            }
+            Ok(_) => panic!("Expected validation error, got Ok"),
+        }
     }
 }

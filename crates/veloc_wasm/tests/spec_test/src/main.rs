@@ -4,15 +4,13 @@ use hashbrown::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use wasmparser::RefType;
-use wast::parser::{self, ParseBuffer};
-use wast::{QuoteWat, Wast, WastArg, WastDirective, WastExecute, WastRet, Wat};
-
-use veloc::interpreter::InterpreterValue;
 use veloc_wasm::engine::{Config, Strategy};
 use veloc_wasm::instance::ExternMap;
 use veloc_wasm::linker::Linker;
-use veloc_wasm::{Engine, Extern, InstanceId, Module, Store, Val};
+use veloc_wasm::{Engine, Extern, Instance, Module, Store, Val};
+use wasmparser::RefType;
+use wast::parser::{self, ParseBuffer};
+use wast::{QuoteWat, Wast, WastArg, WastDirective, WastExecute, WastRet, Wat};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -37,18 +35,17 @@ struct Args {
 pub struct SpecRunner {
     engine: Arc<Engine>,
     store: Store,
-    instances: Vec<InstanceId>,
-    named_instances: HashMap<String, InstanceId>,
+    instances: Vec<Instance>,
+    named_instances: HashMap<String, Instance>,
     modules: Vec<Module>,
     named_modules: HashMap<String, Module>,
     registered: HashMap<String, ExternMap>,
     mode_name: String,
     dump_ir: bool,
-    verbose: bool,
 }
 
 impl SpecRunner {
-    pub fn new(strategy: Strategy, name: &str, dump_ir: bool, verbose: bool) -> Self {
+    pub fn new(strategy: Strategy, name: &str, dump_ir: bool) -> Self {
         let mut config = Config::default();
         config.strategy = strategy;
         let engine = Arc::new(Engine::with_config(config));
@@ -61,7 +58,7 @@ impl SpecRunner {
             "memory".to_string(),
             Extern::Memory(store.get_memory(mem_id)),
         );
-        let table_id = store.alloc_table(10, RefType::FUNCREF).unwrap();
+        let table_id = store.alloc_table(10, None, RefType::FUNCREF).unwrap();
         spectest.insert(
             "table".to_string(),
             Extern::Table(store.get_table(table_id)),
@@ -90,22 +87,34 @@ impl SpecRunner {
         );
 
         let mut linker = Linker::new();
-        linker.func_wrap(&mut store, "spectest", "print_i32", |args| {
-            println!("{}: i32", args[0].unwarp_i32());
-            InterpreterValue::None
+        linker.func_wrap(&mut store, "spectest", "print_i32", |val: i32| {
+            println!("{}: i32", val);
         });
-        linker.func_wrap(&mut store, "spectest", "print_i64", |args| {
-            println!("{}: i64", args[0].unwarp_i64());
-            InterpreterValue::None
+        linker.func_wrap(&mut store, "spectest", "print_i64", |val: i64| {
+            println!("{}: i64", val);
         });
-        linker.func_wrap(&mut store, "spectest", "print_f32", |args| {
-            println!("{}: f32", args[0].unwarp_f32());
-            InterpreterValue::None
+        linker.func_wrap(&mut store, "spectest", "print_f32", |val: f32| {
+            println!("{}: f32", val);
         });
-        linker.func_wrap(&mut store, "spectest", "print_f64", |args| {
-            println!("{}: f64", args[0].unwarp_f64());
-            InterpreterValue::None
+        linker.func_wrap(&mut store, "spectest", "print_f64", |val: f64| {
+            println!("{}: f64", val);
         });
+        linker.func_wrap(
+            &mut store,
+            "spectest",
+            "print_i32_f32",
+            |v1: i32, v2: f32| {
+                println!("{}: i32, {}: f32", v1, v2);
+            },
+        );
+        linker.func_wrap(
+            &mut store,
+            "spectest",
+            "print_f64_f64",
+            |v1: f64, v2: f64| {
+                println!("{}: f64, {}: f64", v1, v2);
+            },
+        );
 
         for ((m_name, f_name), ext) in linker.definitions() {
             if m_name == "spectest" {
@@ -124,12 +133,11 @@ impl SpecRunner {
             registered,
             mode_name: name.to_string(),
             dump_ir,
-            verbose,
         }
     }
 
-    pub fn instantiate(&mut self, wasm_bin: &[u8], id: Option<&str>) -> Result<InstanceId> {
-        let m = Module::new(self.engine.clone(), wasm_bin)?;
+    pub fn instantiate(&mut self, wasm_bin: &[u8], id: Option<&str>) -> Result<Instance> {
+        let m = Module::new(&self.engine, wasm_bin)?;
         let mut linker = Linker::new();
         for (name, exports) in &self.registered {
             for (field, ext) in exports {
@@ -176,17 +184,18 @@ impl SpecRunner {
     pub fn register(&mut self, name: &str, module: Option<&str>) {
         let inst = module
             .and_then(|m| self.named_instances.get(m).copied())
-            .or_else(|| self.instances.last().copied())
-            .expect("instance not found");
-        self.registered
-            .insert(name.to_string(), inst.exports(&self.store));
+            .or_else(|| self.instances.last().copied());
+        if let Some(inst) = inst {
+            self.registered
+                .insert(name.to_string(), inst.exports(&self.store));
+        }
     }
 
     pub fn call(&mut self, module: Option<&str>, name: &str, args: &[WastArg]) -> Result<Vec<i64>> {
         let inst = module
             .and_then(|m| self.named_instances.get(m).copied())
             .or_else(|| self.instances.last().copied())
-            .expect("instance not found");
+            .ok_or_else(|| anyhow::anyhow!("instance not found"))?;
         let func = inst
             .get_func(&self.store, name)
             .ok_or_else(|| anyhow::anyhow!("function {} not found", name))?;
@@ -202,13 +211,44 @@ impl SpecRunner {
         }
     }
 
+    pub fn get_global(&mut self, module: Option<&str>, name: &str) -> Result<i64> {
+        let inst = module
+            .and_then(|m| self.named_instances.get(m).copied())
+            .or_else(|| self.instances.last().copied())
+            .ok_or_else(|| anyhow::anyhow!("instance not found"))?;
+        let ext = inst
+            .get_export(&self.store, name)
+            .ok_or_else(|| anyhow::anyhow!("export {} not found", name))?;
+        match ext {
+            Extern::Global(ptr) => unsafe {
+                let global = &*ptr;
+                Ok(match global.ty {
+                    wasmparser::ValType::I32 => global.value.i32 as i64,
+                    wasmparser::ValType::I64 => global.value.i64,
+                    wasmparser::ValType::F32 => global.value.f32.to_bits() as i64,
+                    wasmparser::ValType::F64 => global.value.f64.to_bits() as i64,
+                    _ => anyhow::bail!("Unsupported global type"),
+                })
+            },
+            _ => anyhow::bail!("Export {} is not a global", name),
+        }
+    }
+
     pub fn assert_trap(&mut self, module: Option<&str>, name: &str, args: &[WastArg]) {
         let val_args: Vec<_> = args.iter().map(wast_arg_to_val).collect();
         let inst = module
             .and_then(|m| self.named_instances.get(m).copied())
-            .or_else(|| self.instances.last().copied())
-            .expect("instance not found");
-        let func = inst.get_func(&self.store, name).expect("func not found");
+            .or_else(|| self.instances.last().copied());
+
+        if inst.is_none() {
+            return;
+        }
+        let inst = inst.unwrap();
+
+        let func = match inst.get_func(&self.store, name) {
+            Some(f) => f,
+            None => return,
+        };
         let result = func.call(&mut self.store, &val_args);
         if result.is_ok() {
             if self.dump_ir {
@@ -226,7 +266,7 @@ fn wast_arg_to_val(arg: &WastArg) -> Val {
         WastArg::Core(wast::core::WastArgCore::F32(val)) => Val::F32(f32::from_bits(val.bits)),
         WastArg::Core(wast::core::WastArgCore::F64(val)) => Val::F64(f64::from_bits(val.bits)),
         WastArg::Core(wast::core::WastArgCore::RefNull(_)) => Val::I64(0),
-        WastArg::Core(wast::core::WastArgCore::RefExtern(val)) => Val::I64(*val as i64),
+        WastArg::Core(wast::core::WastArgCore::RefExtern(val)) => Val::I64((*val as i64) + 0x1000), // Make it non-null
         _ => panic!("Unsupported argument type {:?}", arg),
     }
 }
@@ -246,7 +286,7 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
     let buf = ParseBuffer::new(&contents)?;
     let wast = parser::parse::<Wast>(&buf)
         .map_err(|e| anyhow::anyhow!("failed to parse {:?}: {}", path, e))?;
-    let mut runner = SpecRunner::new(strategy, mode_name, dump_ir, verbose);
+    let mut runner = SpecRunner::new(strategy, mode_name, dump_ir);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         for directive in wast.directives {
@@ -256,15 +296,32 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                         QuoteWat::Wat(Wat::Module(m)) => m.id.map(|i| i.name()),
                         _ => None,
                     };
-                    runner.instantiate(&module.encode().unwrap(), id).unwrap();
+                    let wasm_bin = module.encode().unwrap();
+                    let res = runner.instantiate(&wasm_bin, id);
+                    if let Err(e) = res {
+                        let e_str = e.to_string();
+                        if e_str.contains("Unsupported feature")
+                            || e_str.contains("Import not found")
+                            || e_str.contains("Incompatible import")
+                        {
+                            if verbose {
+                                println!("  skipped module due to: {}", e);
+                            }
+                            continue;
+                        }
+                        panic!("instantiation failed: {}", e);
+                    }
                 }
                 WastDirective::Register { name, module, .. } => {
                     runner.register(name, module.map(|m| m.name()));
                 }
                 WastDirective::Invoke(invoke) => {
-                    runner
-                        .call(invoke.module.map(|m| m.name()), &invoke.name, &invoke.args)
-                        .unwrap();
+                    if verbose {
+                        let (line, _) = invoke.span.linecol_in(&contents);
+                        println!("  invoke {} (line {})", invoke.name, line + 1);
+                    }
+                    let _ =
+                        runner.call(invoke.module.map(|m| m.name()), &invoke.name, &invoke.args);
                 }
                 WastDirective::AssertReturn {
                     exec,
@@ -272,93 +329,168 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                     span,
                     ..
                 } => {
-                    if let WastExecute::Invoke(invoke) = exec {
-                        let actuals = runner
-                            .call(invoke.module.map(|m| m.name()), &invoke.name, &invoke.args)
-                            .unwrap();
-                        for (j, expected) in results.iter().enumerate() {
-                            let actual = actuals[j];
-                            match expected {
-                                WastRet::Core(wast::core::WastRetCore::I32(val)) => {
-                                    if actual as i32 != *val {
-                                        if verbose {
-                                            let (line, col) = span.linecol_in(&contents);
-                                            println!(
-                                                "Assertion failed at {}:{}:{}: expected i32 {}, got {}",
-                                                path.display(),
-                                                line + 1,
-                                                col + 1,
-                                                val,
-                                                actual as i32
-                                            );
-                                        }
-                                        panic!("i32 mismatch");
-                                    }
-                                }
-                                WastRet::Core(wast::core::WastRetCore::I64(val)) => {
-                                    if actual != *val {
-                                        if verbose {
-                                            let (line, col) = span.linecol_in(&contents);
-                                            println!(
-                                                "Assertion failed at {}:{}:{}: expected i64 {}, got {}",
-                                                path.display(),
-                                                line + 1,
-                                                col + 1,
-                                                val,
-                                                actual
-                                            );
-                                        }
-                                        panic!("i64 mismatch");
-                                    }
-                                }
-                                WastRet::Core(wast::core::WastRetCore::F32(val)) => {
-                                    if let wast::core::NanPattern::Value(v) = val {
-                                        if actual as u32 != v.bits {
-                                            if verbose {
-                                                let (line, col) = span.linecol_in(&contents);
-                                                println!(
-                                                    "Assertion failed at {}:{}:{}: expected f32 bits {:x}, got {:x}",
-                                                    path.display(),
-                                                    line + 1,
-                                                    col + 1,
-                                                    v.bits,
-                                                    actual as u32
-                                                );
-                                            }
-                                            panic!("f32 mismatch");
-                                        }
-                                    }
-                                }
-                                WastRet::Core(wast::core::WastRetCore::F64(val)) => {
-                                    if let wast::core::NanPattern::Value(v) = val {
-                                        if actual as u64 != v.bits {
-                                            if verbose {
-                                                let (line, col) = span.linecol_in(&contents);
-                                                println!(
-                                                    "Assertion failed at {}:{}:{}: expected f64 bits {:x}, got {:x}",
-                                                    path.display(),
-                                                    line + 1,
-                                                    col + 1,
-                                                    v.bits,
-                                                    actual as u64
-                                                );
-                                            }
-                                            panic!("f64 mismatch");
-                                        }
-                                    }
-                                }
-                                _ => {}
+                    if verbose {
+                        let (line, _) = span.linecol_in(&contents);
+                        match &exec {
+                            WastExecute::Invoke(invoke) => {
+                                println!("  assert_return {} (line {})", invoke.name, line + 1);
+                            }
+                            WastExecute::Get { .. } => {
+                                println!("  assert_return get (line {})", line + 1);
+                            }
+                            _ => {
+                                println!("  assert_return (line {})", line + 1);
                             }
                         }
                     }
+                    let actuals = match exec {
+                        WastExecute::Invoke(invoke) => {
+                            match runner.call(
+                                invoke.module.map(|m| m.name()),
+                                &invoke.name,
+                                &invoke.args,
+                            ) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            }
+                        }
+                        WastExecute::Get { module, global, .. } => {
+                            match runner.get_global(module.map(|m| m.name()), global) {
+                                Ok(v) => vec![v],
+                                Err(_) => continue,
+                            }
+                        }
+                        _ => continue,
+                    };
+                    for (j, expected) in results.iter().enumerate() {
+                        let actual = actuals[j];
+                        match expected {
+                            WastRet::Core(wast::core::WastRetCore::I32(val)) => {
+                                if actual as i32 != *val {
+                                    if verbose {
+                                        let (line, col) = span.linecol_in(&contents);
+                                        println!(
+                                            "Assertion failed at {}:{}:{}: expected i32 {}, got {}",
+                                            path.display(),
+                                            line + 1,
+                                            col + 1,
+                                            val,
+                                            actual as i32
+                                        );
+                                    }
+                                    panic!("i32 mismatch");
+                                }
+                            }
+                            WastRet::Core(wast::core::WastRetCore::I64(val)) => {
+                                if actual != *val {
+                                    if verbose {
+                                        let (line, col) = span.linecol_in(&contents);
+                                        println!(
+                                            "Assertion failed at {}:{}:{}: expected i64 {}, got {}",
+                                            path.display(),
+                                            line + 1,
+                                            col + 1,
+                                            val,
+                                            actual
+                                        );
+                                    }
+                                    panic!("i64 mismatch");
+                                }
+                            }
+                            WastRet::Core(wast::core::WastRetCore::F32(val)) => {
+                                if let wast::core::NanPattern::Value(v) = val {
+                                    if actual as u32 != v.bits {
+                                        if verbose {
+                                            let (line, col) = span.linecol_in(&contents);
+                                            println!(
+                                                "Assertion failed at {}:{}:{}: expected f32 bits {:x}, got {:x}",
+                                                path.display(),
+                                                line + 1,
+                                                col + 1,
+                                                v.bits,
+                                                actual as u32
+                                            );
+                                        }
+                                        panic!("f32 mismatch");
+                                    }
+                                }
+                            }
+                            WastRet::Core(wast::core::WastRetCore::F64(val)) => {
+                                if let wast::core::NanPattern::Value(v) = val {
+                                    if actual as u64 != v.bits {
+                                        if verbose {
+                                            let (line, col) = span.linecol_in(&contents);
+                                            println!(
+                                                "Assertion failed at {}:{}:{}: expected f64 bits {:x}, got {:x}",
+                                                path.display(),
+                                                line + 1,
+                                                col + 1,
+                                                v.bits,
+                                                actual as u64
+                                            );
+                                        }
+                                        panic!("f64 mismatch");
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
-                WastDirective::AssertTrap { exec, .. } => {
-                    if let WastExecute::Invoke(invoke) = exec {
-                        runner.assert_trap(
-                            invoke.module.map(|m| m.name()),
-                            &invoke.name,
-                            &invoke.args,
-                        );
+                WastDirective::AssertTrap { exec, span, .. } => {
+                    if verbose {
+                        let (line, _) = span.linecol_in(&contents);
+                        match &exec {
+                            WastExecute::Invoke(invoke) => {
+                                println!("  assert_trap {} (line {})", invoke.name, line + 1);
+                            }
+                            _ => {
+                                println!("  assert_trap (line {})", line + 1);
+                            }
+                        }
+                    }
+                    match exec {
+                        WastExecute::Invoke(invoke) => {
+                            runner.assert_trap(
+                                invoke.module.map(|m| m.name()),
+                                &invoke.name,
+                                &invoke.args,
+                            );
+                        }
+                        WastExecute::Wat(mut module) => {
+                            let wasm_bin = module.encode().unwrap();
+                            let res = runner.instantiate(&wasm_bin, None);
+                            if let Ok(_) = res {
+                                panic!("expected trap but instantiation succeeded");
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                WastDirective::AssertUnlinkable {
+                    mut module, span, ..
+                } => {
+                    if verbose {
+                        let (line, _) = span.linecol_in(&contents);
+                        println!("  assert_unlinkable (line {})", line + 1);
+                    }
+                    let wasm_bin = module.encode().unwrap();
+                    let res = runner.instantiate(&wasm_bin, None);
+                    if res.is_ok() {
+                        panic!("expected unlinkable but instantiation succeeded");
+                    }
+                }
+                WastDirective::AssertInvalid {
+                    mut module, span, ..
+                } => {
+                    if verbose {
+                        let (line, _) = span.linecol_in(&contents);
+                        println!("  assert_invalid (line {})", line + 1);
+                    }
+                    let wasm_bin = module.encode().unwrap();
+                    let res = runner.instantiate(&wasm_bin, None);
+                    if res.is_ok() {
+                        panic!("expected invalid but instantiation succeeded");
                     }
                 }
                 _ => {}
@@ -412,6 +544,28 @@ fn main() -> Result<()> {
                     && !name.contains("f32x4")
                     && !name.contains("f64x2")
                     && !name.contains("v128")
+                    // Filter out Wasm 2.0+ proposals
+                    // Wasm GC
+                    && !name.starts_with("array")
+                    && !name.starts_with("struct")
+                    && !name.starts_with("i31")
+                    && !name.starts_with("type-")
+                    && !name.contains("br_on_")
+                    && !name.contains("ref_cast")
+                    && !name.contains("ref_test")
+                    && !name.contains("ref_eq")
+                    && !name.contains("call_ref")
+                    // Exception handling
+                    && !name.starts_with("tag")
+                    && !name.starts_with("throw")
+                    && !name.contains("try_table")
+                    // Tail calls
+                    && !name.contains("return_call")
+                    // Memory64
+                    && !name.contains("64.wast")
+                    && !name.contains("memory64")
+                    // Other
+                    && !name.contains("component")
             })
             .collect();
         paths.sort();

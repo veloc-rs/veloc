@@ -4,7 +4,7 @@ use super::types::{
     Block, BlockCall, FuncId, JumpTable, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
 use crate::types::{BlockCallData, JumpTableData};
-use crate::{Linkage, Module, ModuleData, Result, SigId};
+use crate::{CallConv, Linkage, Module, ModuleData, Result, SigId};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
@@ -20,21 +20,17 @@ impl ModuleBuilder {
         }
     }
 
-    pub fn declare_function(
-        &mut self,
-        name: String,
-        signature: Signature,
-        linkage: Linkage,
-    ) -> FuncId {
-        self.data.declare_function(name, signature, linkage)
+    pub fn declare_function(&mut self, name: String, sig_id: SigId, linkage: Linkage) -> FuncId {
+        self.data.declare_function(name, sig_id, linkage)
+    }
+
+    pub fn make_signature(&mut self, params: Vec<Type>, ret: Type, call_conv: CallConv) -> SigId {
+        let sig = Signature::new(params, ret, call_conv);
+        self.data.intern_signature(sig)
     }
 
     pub fn get_func_id(&self, name: &str) -> Option<FuncId> {
         self.data.get_func_id(name)
-    }
-
-    pub fn intern_signature(&mut self, signature: Signature) -> SigId {
-        self.data.intern_signature(signature)
     }
 
     pub fn builder(&mut self, func_id: FuncId) -> FunctionBuilder<'_> {
@@ -82,22 +78,24 @@ impl<'a> FunctionBuilder<'a> {
             incomplete_phis: HashMap::new(),
         };
 
-        // 自动初始化 entry block 和参数
-        if builder.func().layout.block_order.is_empty() {
-            let entry = builder.create_block();
-            builder.switch_to_block(entry);
-            builder.seal_block(entry);
-
-            let sig_id = builder.func().signature;
-            let sig = builder.module.signatures[sig_id].clone();
-            for ty in sig.params {
-                builder.add_block_param(entry, ty);
-            }
-        } else if let Some(entry) = builder.func().entry_block {
+        if let Some(entry) = builder.func().entry_block {
             builder.current_block = Some(entry);
         }
 
         builder
+    }
+
+    pub fn init_entry_block(&mut self) -> Block {
+        let entry = self.create_block();
+        self.switch_to_block(entry);
+        self.seal_block(entry);
+
+        let sig_id = self.func().signature;
+        let sig = self.module.signatures[sig_id].clone();
+        for &ty in sig.params.iter() {
+            self.add_block_param(entry, ty);
+        }
+        entry
     }
 
     pub fn current_block(&self) -> Option<Block> {
@@ -419,6 +417,14 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
         self.sealed_blocks.push(block);
+        self.func_mut().layout.blocks[block].is_sealed = true;
+    }
+
+    pub fn seal_all_blocks(&mut self) {
+        let blocks: Vec<_> = self.func().layout.block_order.iter().copied().collect();
+        for block in blocks {
+            self.seal_block(block);
+        }
     }
 
     fn add_block_param_to_jump(&mut self, pred: Block, target: Block, index: usize, val: Value) {

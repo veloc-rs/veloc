@@ -28,6 +28,10 @@ hashbrown = { version = "0.14" }
 elf_loader = { path = "../elf_loader" }
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
+wiggle = "17.0.3"
+futures = "0.3"
+wasi_common = { package = "wasi-common", version = "17.0.3" }
+wasi_cap_std_sync = { package = "wasi-cap-std-sync", version = "17.0.3" }
 
 [dependencies]
 veloc_ir = { workspace = true }
