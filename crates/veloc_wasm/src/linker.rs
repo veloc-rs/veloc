@@ -67,7 +67,7 @@ impl Linker {
     {
         let (params, results, host_fn) = f.into_func();
         let full_name = format!("{}.{}", module, name);
-        let id = store.program.register_host_function(full_name, host_fn);
+        let id = store.program.register_raw(full_name, host_fn);
         let native_call = store.program.get_host_func_ptr(id);
 
         let sig = WasmSignature::new(params, results);

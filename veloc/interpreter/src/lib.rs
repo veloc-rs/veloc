@@ -4,13 +4,14 @@ extern crate alloc;
 extern crate std;
 
 use veloc_ir::{
-    Block, CallConv, FloatCC, FuncId, Function, InstructionData, IntCC, Module, Opcode, Type,
+    Block, FloatCC, FuncId, Function, InstructionData, IntCC, Module, Opcode, Type,
 };
 pub mod error;
 use ::alloc::string::String;
 use ::alloc::sync::Arc;
 use ::alloc::vec;
 use ::alloc::vec::Vec;
+use ::alloc::boxed::Box;
 pub use error::{Error, Result};
 use hashbrown::HashMap;
 
@@ -113,12 +114,133 @@ impl MemoryRegion {
     }
 }
 
+pub trait HostFuncArg: Copy {
+    fn from_val(v: InterpreterValue) -> Self;
+}
+
+pub trait HostFuncRet {
+    fn into_val(self) -> InterpreterValue;
+}
+
+macro_rules! impl_host_func_types {
+    ($($t:ty, $variant:ident, $unwarp:ident);*) => {
+        $(
+            impl HostFuncArg for $t {
+                fn from_val(v: InterpreterValue) -> Self { v.$unwarp() }
+            }
+            impl HostFuncRet for $t {
+                fn into_val(self) -> InterpreterValue { InterpreterValue::$variant(self) }
+            }
+        )*
+    };
+}
+
+impl_host_func_types! {
+    i32, I32, unwarp_i32;
+    i64, I64, unwarp_i64;
+    f32, F32, unwarp_f32;
+    f64, F64, unwarp_f64;
+    bool, Bool, unwarp_bool
+}
+
+pub trait HostFuncArgs {
+    fn arity() -> usize;
+    fn decode(args: &[InterpreterValue]) -> Self;
+}
+
+pub trait HostFuncRets {
+    fn encode(self, results: &mut [InterpreterValue]);
+}
+
+macro_rules! impl_args_rets {
+    ($n:expr => ($($t:ident),*)) => {
+        impl<$($t: HostFuncArg),*> HostFuncArgs for ($($t,)*) {
+            fn arity() -> usize { $n }
+            fn decode(args: &[InterpreterValue]) -> Self {
+                #[allow(unused_mut)]
+                let mut _iter = args.iter();
+                ( $( $t::from_val(*_iter.next().expect("missing arg")), )* )
+            }
+        }
+
+        impl<$($t: HostFuncRet),*> HostFuncRets for ($($t,)*) {
+            fn encode(self, _results: &mut [InterpreterValue]) {
+                #[allow(non_snake_case)]
+                let ($($t,)*) = self;
+                #[allow(unused_mut)]
+                let mut i = 0;
+                $(
+                    _results[i] = $t.into_val();
+                    i += 1;
+                )*
+                let _ = i;
+            }
+        }
+    };
+}
+
+impl_args_rets!(0 => ());
+impl_args_rets!(1 => (A));
+impl_args_rets!(2 => (A, B));
+impl_args_rets!(3 => (A, B, C));
+impl_args_rets!(4 => (A, B, C, D));
+impl_args_rets!(5 => (A, B, C, D, E));
+impl_args_rets!(6 => (A, B, C, D, E, F));
+impl_args_rets!(7 => (A, B, C, D, E, F, G));
+impl_args_rets!(8 => (A, B, C, D, E, F, G, H));
+
+impl<T: HostFuncRet> HostFuncRets for T {
+    fn encode(self, results: &mut [InterpreterValue]) {
+        results[0] = self.into_val();
+    }
+}
+
 pub type HostFunction = Arc<dyn Fn(&[InterpreterValue]) -> InterpreterValue + Send + Sync>;
+
+pub type TrampolineFn = unsafe extern "C" fn(env: *mut u8, args_results: *mut InterpreterValue, arity: usize);
+
+pub struct HostFunctionInner {
+    handler: TrampolineFn,
+    env: *mut u8,
+    drop_fn: fn(*mut u8),
+}
+
+unsafe impl Send for HostFunctionInner {}
+unsafe impl Sync for HostFunctionInner {}
+
+impl Drop for HostFunctionInner {
+    fn drop(&mut self) {
+        (self.drop_fn)(self.env);
+    }
+}
+
+#[derive(Clone)]
+pub struct HostFunc(pub Arc<HostFunctionInner>);
+
+impl core::fmt::Debug for HostFunc {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HostFunc").finish()
+    }
+}
+
+impl HostFunc {
+    pub fn call(&self, args: &mut [InterpreterValue]) -> InterpreterValue {
+        let arity = args.len();
+        unsafe {
+            (self.0.handler)(self.0.env, args.as_mut_ptr(), arity);
+        }
+        if arity > 0 {
+            args[0]
+        } else {
+            InterpreterValue::None
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Program {
-    pub host_functions: HashMap<String, HostFunction>,
-    pub host_functions_list: Vec<HostFunction>,
+    pub host_functions: HashMap<String, HostFunc>,
+    pub host_functions_list: Vec<HostFunc>,
     pub modules: Vec<Module>,
 }
 
@@ -137,10 +259,84 @@ impl Program {
         id
     }
 
-    pub fn register_host_function(&mut self, name: String, f: HostFunction) -> usize {
-        self.host_functions.insert(name, f.clone());
+    pub fn register_raw(
+        &mut self,
+        name: String,
+        f: HostFunction,
+    ) -> usize {
+        unsafe extern "C" fn trampoline(
+            env: *mut u8,
+            args_results: *mut InterpreterValue,
+            arity: usize,
+        ) {
+            unsafe {
+                let func = &*(env as *const HostFunction);
+                let args_slice = core::slice::from_raw_parts(args_results, arity);
+                let res = func(args_slice);
+                *args_results = res;
+            }
+        }
+
+        let env = Box::into_raw(Box::new(f)) as *mut u8;
+        let drop_fn = |ptr: *mut u8| {
+            unsafe {
+                let _ = Box::from_raw(ptr as *mut HostFunction);
+            }
+        };
+
+        let host_func = HostFunc(Arc::new(HostFunctionInner {
+            handler: trampoline,
+            env,
+            drop_fn,
+        }));
+
+        self.host_functions.insert(name, host_func.clone());
         let id = self.host_functions_list.len();
-        self.host_functions_list.push(f);
+        self.host_functions_list.push(host_func);
+        id
+    }
+
+    pub fn register_func<F, Args, Rets>(&mut self, name: String, func: F) -> usize
+    where
+        F: Fn(Args) -> Rets + Send + Sync + 'static,
+        Args: HostFuncArgs,
+        Rets: HostFuncRets,
+    {
+        unsafe extern "C" fn trampoline<F, Args, Rets>(
+            env: *mut u8,
+            args_results: *mut InterpreterValue,
+            arity: usize,
+        ) where
+            F: Fn(Args) -> Rets + Send + Sync + 'static,
+            Args: HostFuncArgs,
+            Rets: HostFuncRets,
+        {
+            unsafe {
+                let func = &*(env as *const F);
+                let args_slice = core::slice::from_raw_parts(args_results, arity);
+                let args = Args::decode(args_slice);
+                let rets = func(args);
+                let results_slice = core::slice::from_raw_parts_mut(args_results, 8.max(arity));
+                rets.encode(results_slice);
+            }
+        }
+
+        let env = Box::into_raw(Box::new(func)) as *mut u8;
+        let drop_fn = |ptr: *mut u8| {
+            unsafe {
+                let _ = Box::from_raw(ptr as *mut F);
+            }
+        };
+
+        let host_func = HostFunc(Arc::new(HostFunctionInner {
+            handler: trampoline::<F, Args, Rets>,
+            env,
+            drop_fn,
+        }));
+
+        self.host_functions.insert(name, host_func.clone());
+        let id = self.host_functions_list.len();
+        self.host_functions_list.push(host_func);
         id
     }
 
@@ -262,7 +458,8 @@ impl Interpreter {
         // 如果是外部函数，直接执行并返回
         if func.entry_block.is_none() {
             if let Some(host_fn) = program.host_functions.get(&func.name).cloned() {
-                return host_fn(args);
+                let mut args_vec = args.to_vec();
+                return host_fn.call(&mut args_vec);
             }
             panic!("External function {} not registered", func.name);
         }
@@ -323,7 +520,8 @@ impl Interpreter {
                                 if let Some(host_fn) =
                                     program.host_functions.get(&callee_func.name).cloned()
                                 {
-                                    let h_res = host_fn(&c_args);
+                                    let mut c_args = c_args;
+                                    let h_res = host_fn.call(&mut c_args);
                                     if let Some(rv) = res_val {
                                         frame.values[rv.0 as usize] = h_res;
                                     }
@@ -607,11 +805,8 @@ impl Interpreter {
                 ControlFlow::Call(self.module_id, *func_id, call_args)
             }
             InstructionData::CallIndirect {
-                ptr, args, sig_id, ..
+                ptr, args, sig_id: _, ..
             } => {
-                let sig = &program.modules[self.module_id.0].signatures[*sig_id];
-                let ty = sig.ret;
-                let call_conv = sig.call_conv;
                 let ptr_val = values[ptr.0 as usize].unwarp_i64() as usize;
                 let call_args: Vec<InterpreterValue> = func
                     .dfg
@@ -625,11 +820,11 @@ impl Interpreter {
                     ControlFlow::Call(module_id, func_id, call_args)
                 } else if let Some(host_id) = program.decode_host_ptr(ptr_val) {
                     let host_fn = &program.host_functions_list[host_id];
-                    let res = host_fn(&call_args);
+                    let mut call_args = call_args;
+                    let res = host_fn.call(&mut call_args);
                     ControlFlow::Continue(res)
                 } else {
-                    let res = unsafe { self.call_native(ptr_val, &call_args, ty, call_conv) };
-                    ControlFlow::Continue(InterpreterValue::from_i64(res, ty))
+                    panic!("Indirect call to raw pointer {:#x} is not supported. All host functions must be registered via register_func.", ptr_val);
                 }
             }
             InstructionData::IntToPtr { arg } => {
@@ -1050,140 +1245,6 @@ impl Interpreter {
                 "not yet implemented: Unary op {:?} for {:?} (arg_ty: {:?}, res_ty: {:?})",
                 opcode, val, arg_ty, res_ty
             ),
-        }
-    }
-
-    unsafe fn call_native(
-        &self,
-        ptr: usize,
-        args: &[InterpreterValue],
-        res_ty: Type,
-        _call_conv: CallConv,
-    ) -> i64 {
-        // TODO: Full SystemV ABI support is complex without libffi.
-        // This implementation handles up to 8 arguments, but assumes they are passed in GPRs
-        // unless we specifically handle float registers.
-        // For Wasm JIT/Interpreter, we often need to support mixed GPR/XMM.
-
-        let mut int_args = [0i64; 6];
-        let mut float_args = [0.0f64; 8];
-        let mut int_idx = 0;
-        let mut float_idx = 0;
-
-        for arg in args {
-            match arg {
-                InterpreterValue::I32(v) => {
-                    if int_idx < 6 {
-                        int_args[int_idx] = *v as i64;
-                        int_idx += 1;
-                    }
-                }
-                InterpreterValue::I64(v) => {
-                    if int_idx < 6 {
-                        int_args[int_idx] = *v;
-                        int_idx += 1;
-                    }
-                }
-                InterpreterValue::F32(v) => {
-                    if float_idx < 8 {
-                        float_args[float_idx] = *v as f64;
-                        float_idx += 1;
-                    }
-                }
-                InterpreterValue::F64(v) => {
-                    if float_idx < 8 {
-                        float_args[float_idx] = *v;
-                        float_idx += 1;
-                    }
-                }
-                InterpreterValue::Bool(v) => {
-                    if int_idx < 6 {
-                        int_args[int_idx] = if *v { 1 } else { 0 };
-                        int_idx += 1;
-                    }
-                }
-                InterpreterValue::None => {}
-            }
-        }
-
-        // The "Max Signature" trick for SystemV x86_64:
-        // We define a function signature that takes 6 GPRs and 8 XMMs.
-        // When we call it, the compiler will populate ALL these registers.
-        // If the target actual function takes fewer, it will just look at the ones it needs.
-        // This works for any combination as long as it's within register limits and NO stack arguments.
-
-        type NativeCallInt = extern "C" fn(
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-        ) -> i64;
-        type NativeCallFloat = extern "C" fn(
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-            f64,
-        ) -> f64;
-
-        unsafe {
-            if res_ty == Type::F32 || res_ty == Type::F64 {
-                let func: NativeCallFloat = core::mem::transmute(ptr);
-                let res = func(
-                    int_args[0],
-                    int_args[1],
-                    int_args[2],
-                    int_args[3],
-                    int_args[4],
-                    int_args[5],
-                    float_args[0],
-                    float_args[1],
-                    float_args[2],
-                    float_args[3],
-                    float_args[4],
-                    float_args[5],
-                    float_args[6],
-                    float_args[7],
-                );
-                res.to_bits() as i64
-            } else {
-                let func: NativeCallInt = core::mem::transmute(ptr);
-                func(
-                    int_args[0],
-                    int_args[1],
-                    int_args[2],
-                    int_args[3],
-                    int_args[4],
-                    int_args[5],
-                    float_args[0],
-                    float_args[1],
-                    float_args[2],
-                    float_args[3],
-                    float_args[4],
-                    float_args[5],
-                    float_args[6],
-                    float_args[7],
-                )
-            }
         }
     }
 

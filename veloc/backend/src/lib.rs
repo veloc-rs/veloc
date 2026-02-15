@@ -21,14 +21,13 @@ use veloc_ir::{Function, Linkage};
 // Remove local CallingConvention since we use veloc_ir's
 
 /// 重定位类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelocKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]#[allow(dead_code)]pub(crate) enum RelocKind {
     /// 32位相对偏移 (x86_64 PC32)
     X86_64Pc32,
     /// 32位 PLT 相对偏移
     X86_64Plt32,
     /// 64位绝对地址
-    X86_64_64_Reloc,
+    X86_64_64Reloc,
     /// 8位相对偏移 (用于短跳转)
     X86_64Rel8,
 }
@@ -53,6 +52,7 @@ pub(crate) struct Relocation {
 /// 编译后的节（Section）
 #[derive(Debug, Clone)]
 pub(crate) struct Section {
+    #[allow(dead_code)]
     pub name: String,
     pub data: Vec<u8>,
     pub relocs: Vec<Relocation>,
@@ -88,6 +88,7 @@ struct InstructionTemplate {
 /// Represents a machine instruction with metadata.
 trait TargetInstruction {
     fn template(&self) -> InstructionTemplate;
+    #[allow(dead_code)]
     fn name(&self) -> &'static str;
 }
 
@@ -97,8 +98,7 @@ macro_rules! define_backend_insts {
     ($enum_name:ident {
         $($variant:ident ($name:expr, $bytes:expr $(; $($key:ident = $val:expr),*)?);)*
     }) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum $enum_name {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]        #[allow(dead_code)]        pub enum $enum_name {
             $($variant),*
         }
 
@@ -504,7 +504,7 @@ trait TargetBackend {
                             RelocKind::X86_64Plt32 => {
                                 (RelocationKind::Relative, RelocationEncoding::X86Branch, 32)
                             }
-                            RelocKind::X86_64_64_Reloc => {
+                            RelocKind::X86_64_64Reloc => {
                                 (RelocationKind::Absolute, RelocationEncoding::Generic, 64)
                             }
                             RelocKind::X86_64Rel8 => {
