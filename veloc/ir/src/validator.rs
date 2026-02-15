@@ -581,10 +581,13 @@ impl Function {
                 }
             }
             InstructionData::BrTable { index, table } => {
-                if !val_ty(*index).is_integer() {
-                    return Err(ValidationError::Other(alloc::format!(
-                        "br_table index must be integer"
-                    ))
+                let idx_ty = val_ty(*index);
+                if idx_ty != Type::I32 {
+                    return Err(ValidationError::TypeMismatch {
+                        opcode: Opcode::BrTable,
+                        expected: Type::I32,
+                        got: idx_ty,
+                    }
                     .into());
                 }
 

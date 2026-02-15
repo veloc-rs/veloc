@@ -1,5 +1,5 @@
 use super::function::{Function, StackSlotData};
-use super::inst::{FloatCC, InstructionData, IntCC, Opcode};
+use super::inst::{FloatCC, InstructionData, IntCC, MemFlags, Opcode};
 use super::types::{
     Block, BlockCall, FuncId, JumpTable, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
@@ -191,7 +191,7 @@ impl<'a> FunctionBuilder<'a> {
             self.func_mut().layout.append_block(block);
         }
         self.current_block = Some(block);
-        if self.func().entry_block.is_none() {
+        if !self.func().is_defined() {
             self.func_mut().entry_block = Some(block);
         }
     }
@@ -1094,13 +1094,23 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         .unwrap()
     }
 
-    pub fn load(&mut self, ty: Type, ptr: Value, offset: u32) -> Value {
-        self.push(InstructionData::Load { ptr, offset, ty })
-            .unwrap()
+    pub fn load(&mut self, ty: Type, ptr: Value, offset: u32, flags: MemFlags) -> Value {
+        self.push(InstructionData::Load {
+            ptr,
+            offset,
+            ty,
+            flags,
+        })
+        .unwrap()
     }
 
-    pub fn store(&mut self, value: Value, ptr: Value, offset: u32) {
-        self.push(InstructionData::Store { ptr, value, offset });
+    pub fn store(&mut self, value: Value, ptr: Value, offset: u32, flags: MemFlags) {
+        self.push(InstructionData::Store {
+            ptr,
+            value,
+            offset,
+            flags,
+        });
     }
 
     pub fn stack_load(&mut self, ty: Type, slot: StackSlot, offset: u32) -> Value {
@@ -1176,6 +1186,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         else_block: Block,
         else_args: &[Value],
     ) {
+        debug_assert_eq!(
+            self.builder.value_type(condition),
+            Type::Bool,
+            "Condition for br must be a bool"
+        );
         let then_dest = self.builder.make_block_call(then_block, then_args);
         let else_dest = self.builder.make_block_call(else_block, else_args);
         self.push(InstructionData::Br {
@@ -1186,6 +1201,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn br_table(&mut self, index: Value, default_call: BlockCall, targets: &[BlockCall]) {
+        debug_assert_eq!(
+            self.builder.value_type(index),
+            Type::I32,
+            "Index for br_table must be an i32"
+        );
         let mut target_calls = Vec::with_capacity(targets.len() + 1);
         target_calls.push(default_call);
         target_calls.extend_from_slice(targets);
@@ -1204,11 +1224,22 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn select(&mut self, condition: Value, then_val: Value, else_val: Value) -> Value {
+        debug_assert_eq!(
+            self.builder.value_type(condition),
+            Type::Bool,
+            "Condition for select must be a bool"
+        );
+        let ty = self.builder.value_type(then_val);
+        debug_assert_eq!(
+            ty,
+            self.builder.value_type(else_val),
+            "Select types must match"
+        );
         self.push(InstructionData::Select {
             condition,
             then_val,
             else_val,
-            ty: Type::Void,
+            ty,
         })
         .unwrap()
     }

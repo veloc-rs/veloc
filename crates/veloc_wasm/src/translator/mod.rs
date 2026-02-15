@@ -1,7 +1,7 @@
 use crate::module::{RuntimeFunctions, WasmMetadata};
 use crate::vm::VMOffsets;
 use alloc::vec::Vec;
-use veloc::ir::{Block, FunctionBuilder, SigId, Type as VelocType, Value, Variable};
+use veloc::ir::{Block, FunctionBuilder, MemFlags, SigId, Type as VelocType, Value, Variable};
 use wasmparser::{BinaryReaderError, Operator, ValType};
 
 mod control;
@@ -181,10 +181,14 @@ impl<'a> WasmTranslator<'a> {
             let var = self.new_var(VelocType::Ptr);
             self.global_ptr_vars.push(var);
             let vmctx = self.vmctx.expect("vmctx not set");
-            let ptr = self
-                .builder
-                .ins()
-                .load(VelocType::Ptr, vmctx, self.offsets.global_offset(i));
+            let offset = self.offsets.global_offset(i);
+            let alignment = if offset % 16 == 0 { 16 } else { 8 };
+            let ptr = self.builder.ins().load(
+                VelocType::Ptr,
+                vmctx,
+                offset,
+                MemFlags::new().with_alignment(alignment),
+            );
             if self.use_names {
                 self.builder
                     .set_value_name(ptr, &format!("global{}_ptr", i));

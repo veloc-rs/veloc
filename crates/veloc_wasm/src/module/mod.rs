@@ -13,7 +13,7 @@ use crate::Result;
 use crate::engine::{Engine, Strategy};
 use crate::translator::WasmTranslator;
 use crate::vm::VMOffsets;
-use veloc::ir::{CallConv, FuncId, Linkage, Type as VelocType};
+use veloc::ir::{CallConv, FuncId, Linkage, MemFlags, Type as VelocType};
 use wasmparser::{Parser, Payload, Validator};
 
 pub use self::runtime::*;
@@ -357,9 +357,16 @@ fn generate_init_expr(
                 stack.push(ins.ptr_offset(vmctx, offset as i32))
             }
             GlobalInit::GlobalGet(idx) => {
-                let src_ptr = ins.load(VelocType::Ptr, vmctx, offsets.global_offset(*idx));
+                let offset = offsets.global_offset(*idx);
+                let align = if offset % 16 == 0 { 16 } else { 8 };
+                let src_ptr = ins.load(
+                    VelocType::Ptr,
+                    vmctx,
+                    offset,
+                    MemFlags::new().with_alignment(align),
+                );
                 let ty = valtype_to_veloc(metadata.globals[*idx as usize].ty);
-                stack.push(ins.load(ty, src_ptr, 0))
+                stack.push(ins.load(ty, src_ptr, 0, MemFlags::new().with_alignment(8)))
             }
             GlobalInit::I32Add | GlobalInit::I64Add => {
                 let rhs = stack.pop().unwrap();
@@ -432,7 +439,12 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
             let mut call_args = Vec::with_capacity(num_params + 1);
             call_args.push(vmctx);
             for j in 0..num_params {
-                let val_i64 = ins.load(VelocType::I64, args_ptr, (j * 8) as u32);
+                let val_i64 = ins.load(
+                    VelocType::I64,
+                    args_ptr,
+                    (j * 8) as u32,
+                    MemFlags::default(),
+                );
                 if j < sig.params.len() {
                     let w_ty = sig.params[j];
                     let v_ty = valtype_to_veloc(w_ty);
@@ -496,9 +508,16 @@ fn generate_veloc_init(
     // 1. Initialize globals
     for i in metadata.num_imported_globals..metadata.globals.len() {
         let global = &metadata.globals[i];
-        let dst_ptr = ins.load(VelocType::Ptr, vmctx, offsets.global_offset(i as u32));
+        let offset = offsets.global_offset(i as u32);
+        let align = if offset % 16 == 0 { 16 } else { 8 };
+        let dst_ptr = ins.load(
+            VelocType::Ptr,
+            vmctx,
+            offset,
+            MemFlags::new().with_alignment(align),
+        );
         let val = generate_init_expr(&mut ins, &global.init, vmctx, offsets, metadata);
-        ins.store(val, dst_ptr, 0);
+        ins.store(val, dst_ptr, 0, MemFlags::new().with_alignment(8));
     }
 
     // 1b. Initialize tables with their default initializers

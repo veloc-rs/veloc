@@ -33,4 +33,8 @@ impl Function {
             entry_block: None,
         }
     }
+
+    pub fn is_defined(&self) -> bool {
+        self.entry_block.is_some()
+    }
 }

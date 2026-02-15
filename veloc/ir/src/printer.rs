@@ -126,11 +126,35 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 InstructionData::Binary { opcode, args, ty } => {
                     write!(f, "{}.{} {}, {}", opcode, ty, v(args[0]), v(args[1]))?;
                 }
-                InstructionData::Load { ptr, offset, ty } => {
-                    write!(f, "load.{} {} + {}", ty, v(*ptr), offset)?;
+                InstructionData::Load {
+                    ptr,
+                    offset,
+                    ty,
+                    flags,
+                } => {
+                    write!(f, "load.{}", ty)?;
+                    if flags.is_trusted() {
+                        write!(f, ".trusted")?;
+                    }
+                    if flags.alignment() != 1 {
+                        write!(f, ".align{}", flags.alignment())?;
+                    }
+                    write!(f, " {} + {}", v(*ptr), offset)?;
                 }
-                InstructionData::Store { ptr, value, offset } => {
-                    write!(f, "store {}, {} + {}", v(*value), v(*ptr), offset)?;
+                InstructionData::Store {
+                    ptr,
+                    value,
+                    offset,
+                    flags,
+                } => {
+                    write!(f, "store")?;
+                    if flags.is_trusted() {
+                        write!(f, ".trusted")?;
+                    }
+                    if flags.alignment() != 1 {
+                        write!(f, ".align{}", flags.alignment())?;
+                    }
+                    write!(f, " {}, {} + {}", v(*value), v(*ptr), offset)?;
                 }
                 InstructionData::StackLoad { slot, offset, ty } => {
                     write!(f, "stack_load.{} {} + {}", ty, slot, offset)?;
@@ -288,11 +312,12 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     condition,
                     then_val,
                     else_val,
-                    ..
+                    ty,
                 } => {
                     write!(
                         f,
-                        "select {}, {}, {}",
+                        "select.{} {}, {}, {}",
+                        ty,
                         v(*condition),
                         v(*then_val),
                         v(*else_val)

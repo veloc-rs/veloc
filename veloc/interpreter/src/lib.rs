@@ -122,6 +122,18 @@ impl_host_func_types! {
     bool, Bool, unwarp_bool
 }
 
+impl HostFuncArg for InterpreterValue {
+    fn from_val(v: InterpreterValue) -> Self {
+        v
+    }
+}
+
+impl HostFuncRet for InterpreterValue {
+    fn into_val(self) -> InterpreterValue {
+        self
+    }
+}
+
 pub trait HostFuncArgs {
     fn arity() -> usize;
     fn decode(args: &[InterpreterValue]) -> Self;
@@ -171,6 +183,25 @@ impl_args_rets!(8 => (A, B, C, D, E, F, G, H));
 impl<T: HostFuncRet> HostFuncRets for T {
     fn encode(self, results: &mut [InterpreterValue]) {
         results[0] = self.into_val();
+    }
+}
+
+impl HostFuncArgs for Vec<InterpreterValue> {
+    fn arity() -> usize {
+        0
+    }
+    fn decode(args: &[InterpreterValue]) -> Self {
+        args.to_vec()
+    }
+}
+
+impl HostFuncRets for Vec<InterpreterValue> {
+    fn encode(self, results: &mut [InterpreterValue]) {
+        for (i, v) in self.into_iter().enumerate() {
+            if i < results.len() {
+                results[i] = v;
+            }
+        }
     }
 }
 
@@ -239,6 +270,27 @@ impl Program {
         id
     }
 
+    fn register_handler<F>(&mut self, name: String, handler: F, trampoline: TrampolineFn) -> usize
+    where
+        F: Send + Sync + 'static,
+    {
+        let env = Box::into_raw(Box::new(handler)) as *mut u8;
+        let drop_fn = |ptr: *mut u8| unsafe {
+            let _ = Box::from_raw(ptr as *mut F);
+        };
+
+        let host_func = HostFunc(Arc::new(HostFunctionInner {
+            handler: trampoline,
+            env,
+            drop_fn,
+        }));
+
+        self.host_functions.insert(name, host_func.clone());
+        let id = self.host_functions_list.len();
+        self.host_functions_list.push(host_func);
+        id
+    }
+
     pub fn register_raw(&mut self, name: String, f: HostFunction) -> usize {
         unsafe extern "C" fn trampoline(
             env: *mut u8,
@@ -253,21 +305,7 @@ impl Program {
             }
         }
 
-        let env = Box::into_raw(Box::new(f)) as *mut u8;
-        let drop_fn = |ptr: *mut u8| unsafe {
-            let _ = Box::from_raw(ptr as *mut HostFunction);
-        };
-
-        let host_func = HostFunc(Arc::new(HostFunctionInner {
-            handler: trampoline,
-            env,
-            drop_fn,
-        }));
-
-        self.host_functions.insert(name, host_func.clone());
-        let id = self.host_functions_list.len();
-        self.host_functions_list.push(host_func);
-        id
+        self.register_handler(name, f, trampoline)
     }
 
     pub fn register_func<F, Args, Rets>(&mut self, name: String, func: F) -> usize
@@ -295,21 +333,7 @@ impl Program {
             }
         }
 
-        let env = Box::into_raw(Box::new(func)) as *mut u8;
-        let drop_fn = |ptr: *mut u8| unsafe {
-            let _ = Box::from_raw(ptr as *mut F);
-        };
-
-        let host_func = HostFunc(Arc::new(HostFunctionInner {
-            handler: trampoline::<F, Args, Rets>,
-            env,
-            drop_fn,
-        }));
-
-        self.host_functions.insert(name, host_func.clone());
-        let id = self.host_functions_list.len();
-        self.host_functions_list.push(host_func);
-        id
+        self.register_handler(name, func, trampoline::<F, Args, Rets>)
     }
 
     pub fn get_host_func_ptr(&self, id: usize) -> *const u8 {
@@ -376,7 +400,7 @@ impl Interpreter {
     pub fn run_function<M: VirtualMemory>(
         &mut self,
         program: &Program,
-        vm: &mut M,
+        vm: &M,
         func_id: FuncId,
         args: &[InterpreterValue],
     ) -> InterpreterValue {
@@ -388,7 +412,7 @@ impl Interpreter {
         let func = &module.functions[func_id];
 
         // 如果是外部函数，直接执行并返回
-        if func.entry_block.is_none() {
+        if !func.is_defined() {
             if let Some(host_fn) = program.host_functions.get(&func.name).cloned() {
                 let mut args_vec = args.to_vec();
                 return host_fn.call(&mut args_vec);
@@ -448,7 +472,7 @@ impl Interpreter {
                             let callee_module = &program.modules[m_id.0];
                             let callee_func = &callee_module.functions[f_id];
 
-                            if callee_func.entry_block.is_none() {
+                            if !callee_func.is_defined() {
                                 if let Some(host_fn) =
                                     program.host_functions.get(&callee_func.name).cloned()
                                 {
@@ -518,7 +542,7 @@ impl Interpreter {
     fn execute_inst<M: VirtualMemory>(
         &mut self,
         program: &Program,
-        vm: &mut M,
+        vm: &M,
         idata: &InstructionData,
         values: &mut [InterpreterValue],
         stack_slots: &mut [Vec<u8>],
@@ -572,9 +596,7 @@ impl Interpreter {
             } => {
                 let cond = match values[condition.0 as usize] {
                     InterpreterValue::Bool(b) => b,
-                    InterpreterValue::I32(v) => v != 0,
-                    InterpreterValue::I64(v) => v != 0,
-                    _ => panic!("Invalid condition type for select"),
+                    _ => panic!("Invalid condition type for select: must be bool"),
                 };
                 let val = if cond {
                     values[then_val.0 as usize]
@@ -583,12 +605,16 @@ impl Interpreter {
                 };
                 ControlFlow::Continue(val)
             }
-            InstructionData::Load { ptr, offset, ty } => {
+            InstructionData::Load {
+                ptr, offset, ty, ..
+            } => {
                 let addr = values[ptr.0 as usize].unwarp_i64() as usize + *offset as usize;
                 let res = self.read_memory(vm, addr, *ty);
                 ControlFlow::Continue(res)
             }
-            InstructionData::Store { ptr, value, offset } => {
+            InstructionData::Store {
+                ptr, value, offset, ..
+            } => {
                 let addr = values[ptr.0 as usize].unwarp_i64() as usize + *offset as usize;
                 let val = values[value.0 as usize];
                 let ty = func.dfg.values[*value].ty;
@@ -683,9 +709,7 @@ impl Interpreter {
             } => {
                 let cond = match values[condition.0 as usize] {
                     InterpreterValue::Bool(b) => b,
-                    InterpreterValue::I32(v) => v != 0,
-                    InterpreterValue::I64(v) => v != 0,
-                    _ => panic!("Invalid condition type"),
+                    _ => panic!("Invalid condition type for br: must be bool"),
                 };
                 let dest = if cond { then_dest } else { else_dest };
                 let dest_data = func.dfg.block_calls[*dest];
@@ -708,8 +732,7 @@ impl Interpreter {
             InstructionData::BrTable { index, table } => {
                 let idx = match values[index.0 as usize] {
                     InterpreterValue::I32(v) => v as usize,
-                    InterpreterValue::I64(v) => v as usize,
-                    _ => panic!("Invalid index type for br_table"),
+                    _ => panic!("Invalid index type for br_table: must be i32"),
                 };
                 let table_data = &func.dfg.jump_tables[*table];
                 let target_call = if idx < table_data.targets.len() - 1 {
@@ -1223,7 +1246,7 @@ impl Interpreter {
 
     fn write_memory<M: VirtualMemory>(
         &mut self,
-        vm: &mut M,
+        vm: &M,
         addr: usize,
         val: InterpreterValue,
         res_ty: Type,

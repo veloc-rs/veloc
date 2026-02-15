@@ -1,5 +1,6 @@
 use super::types::{BlockCall, FuncId, JumpTable, StackSlot, Type, Value, ValueList};
 use crate::SigId;
+use bitflags::bitflags;
 use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +212,44 @@ impl fmt::Display for Opcode {
     }
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct MemFlags: u16 {
+        const TRUSTED = 1 << 0;
+        const ALIGN_MASK = 0b1111 << 1;
+    }
+}
+
+impl MemFlags {
+    pub const fn new() -> Self {
+        Self::empty()
+    }
+
+    pub const fn trusted() -> Self {
+        Self::TRUSTED
+    }
+
+    pub fn is_trusted(&self) -> bool {
+        self.contains(Self::TRUSTED)
+    }
+
+    pub fn with_alignment(self, align: u32) -> Self {
+        let log2 = align.trailing_zeros();
+        assert!(
+            1 << log2 == align && align != 0,
+            "Alignment must be a power of 2"
+        );
+        let log2 = log2.min(15) as u16;
+        let bits = (self.bits() & !Self::ALIGN_MASK.bits()) | (log2 << 1);
+        Self::from_bits_retain(bits)
+    }
+
+    pub fn alignment(&self) -> u32 {
+        let log2 = (self.bits() & Self::ALIGN_MASK.bits()) >> 1;
+        1 << log2
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum InstructionData {
     Unary {
@@ -227,11 +266,13 @@ pub enum InstructionData {
         ptr: Value,
         offset: u32,
         ty: Type,
+        flags: MemFlags,
     },
     Store {
         ptr: Value,
         value: Value,
         offset: u32,
+        flags: MemFlags,
     },
     StackLoad {
         slot: StackSlot,

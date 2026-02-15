@@ -1,7 +1,7 @@
 use super::{ControlFrame, WasmTranslator};
 use crate::vm::{TrapCode, VMFuncRef};
 use alloc::vec::Vec;
-use veloc::ir::{IntCC, Type as VelocType};
+use veloc::ir::{IntCC, MemFlags, Type as VelocType};
 use wasmparser::{BinaryReaderError, Operator};
 
 impl<'a> WasmTranslator<'a> {
@@ -210,7 +210,12 @@ impl<'a> WasmTranslator<'a> {
                         } else if let Some(ptr) = self.results_ptr {
                             for i in 0..frame.num_results {
                                 let val = self.builder.block_params(end_target)[i];
-                                self.builder.ins().store(val, ptr, (i * 8) as u32);
+                                self.builder.ins().store(
+                                    val,
+                                    ptr,
+                                    (i * 8) as u32,
+                                    MemFlags::default(),
+                                );
                             }
                             self.builder.ins().ret(None);
                         } else {
@@ -286,11 +291,13 @@ impl<'a> WasmTranslator<'a> {
                         VelocType::Ptr,
                         vmptr,
                         entry_offset + VMFuncRef::func_ptr_offset(),
+                        MemFlags::new().with_alignment(16),
                     );
                     let target_vmctx = self.builder.ins().load(
                         VelocType::Ptr,
                         vmptr,
                         entry_offset + VMFuncRef::vmctx_offset(),
+                        MemFlags::new().with_alignment(8),
                     );
                     args.insert(0, target_vmctx);
                     let func_id = self.metadata.functions[function_index as usize].func_id;
@@ -361,7 +368,10 @@ impl<'a> WasmTranslator<'a> {
                 self.builder.switch_to_block(check_null_block);
                 self.terminated = false;
                 let entry_ptr_addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
-                let entry_ptr = self.builder.ins().load(VelocType::Ptr, entry_ptr_addr, 0);
+                let entry_ptr =
+                    self.builder
+                        .ins()
+                        .load(VelocType::Ptr, entry_ptr_addr, 0, MemFlags::default());
                 let zero = self.builder.ins().iconst(VelocType::I64, 0);
                 let zero_ptr = self.builder.ins().int_to_ptr(zero);
                 let is_not_null = self.builder.ins().icmp(IntCC::Ne, entry_ptr, zero_ptr);
@@ -380,6 +390,7 @@ impl<'a> WasmTranslator<'a> {
                     VelocType::I32,
                     entry_ptr,
                     VMFuncRef::type_index_offset(),
+                    MemFlags::new().with_alignment(16),
                 );
                 let expected_sig_id = self
                     .builder
@@ -404,11 +415,14 @@ impl<'a> WasmTranslator<'a> {
                     VelocType::Ptr,
                     entry_ptr,
                     VMFuncRef::func_ptr_offset(),
+                    MemFlags::new().with_alignment(16),
                 );
-                let target_vmctx =
-                    self.builder
-                        .ins()
-                        .load(VelocType::Ptr, entry_ptr, VMFuncRef::vmctx_offset());
+                let target_vmctx = self.builder.ins().load(
+                    VelocType::Ptr,
+                    entry_ptr,
+                    VMFuncRef::vmctx_offset(),
+                    MemFlags::new().with_alignment(8),
+                );
                 args.insert(0, target_vmctx);
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
@@ -438,14 +452,18 @@ impl<'a> WasmTranslator<'a> {
                     args.push(self.pop());
                 }
                 args.reverse();
-                let func_ptr =
-                    self.builder
-                        .ins()
-                        .load(VelocType::Ptr, func_ref, VMFuncRef::func_ptr_offset());
-                let target_vmctx =
-                    self.builder
-                        .ins()
-                        .load(VelocType::Ptr, func_ref, VMFuncRef::vmctx_offset());
+                let func_ptr = self.builder.ins().load(
+                    VelocType::Ptr,
+                    func_ref,
+                    VMFuncRef::func_ptr_offset(),
+                    MemFlags::new().with_alignment(16),
+                );
+                let target_vmctx = self.builder.ins().load(
+                    VelocType::Ptr,
+                    func_ref,
+                    VMFuncRef::vmctx_offset(),
+                    MemFlags::new().with_alignment(8),
+                );
                 args.insert(0, target_vmctx);
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
@@ -532,7 +550,13 @@ impl<'a> WasmTranslator<'a> {
                             vals.push(self.pop());
                         }
                         for (i, val) in vals.into_iter().rev().enumerate() {
-                            self.builder.ins().store(val, ptr, (i * 8) as u32);
+                            let alignment = if (i * 8) % 16 == 0 { 16 } else { 8 };
+                            self.builder.ins().store(
+                                val,
+                                ptr,
+                                (i * 8) as u32,
+                                MemFlags::new().with_alignment(alignment),
+                            );
                         }
                         self.builder.ins().ret(None);
                     } else {

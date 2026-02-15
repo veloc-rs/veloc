@@ -1,6 +1,6 @@
 use super::WasmTranslator;
 use crate::vm::VMTable;
-use veloc::ir::{IntCC, Type as VelocType, Value};
+use veloc::ir::{IntCC, MemFlags, Type as VelocType, Value};
 use wasmparser::{BinaryReaderError, Operator};
 
 impl<'a> WasmTranslator<'a> {
@@ -12,7 +12,12 @@ impl<'a> WasmTranslator<'a> {
                 let table_base = self.get_table_base(table);
                 let index_i64 = self.addr_to_i64(index);
                 let addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
-                let res = self.builder.ins().load(VelocType::Ptr, addr, 0);
+                let res = self.builder.ins().load(
+                    VelocType::Ptr,
+                    addr,
+                    0,
+                    MemFlags::new().with_alignment(8),
+                );
                 self.stack.push(res);
             }
             Operator::TableSet { table } => {
@@ -22,7 +27,12 @@ impl<'a> WasmTranslator<'a> {
                 let table_base = self.get_table_base(table);
                 let index_i64 = self.addr_to_i64(index);
                 let entry_addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
-                self.builder.ins().store(func_ref, entry_addr, 0);
+                self.builder.ins().store(
+                    func_ref,
+                    entry_addr,
+                    0,
+                    MemFlags::new().with_alignment(8),
+                );
             }
             Operator::TableInit { table, elem_index } => {
                 let len = self.pop_i32();
@@ -93,18 +103,26 @@ impl<'a> WasmTranslator<'a> {
 
     pub(super) fn reload_table(&mut self, index: u32) {
         let vmctx = self.vmctx.expect("vmctx not set");
-        let def_ptr =
-            self.builder
-                .ins()
-                .load(VelocType::Ptr, vmctx, self.offsets.table_offset(index));
-        let base = self
-            .builder
-            .ins()
-            .load(VelocType::Ptr, def_ptr, VMTable::base_offset());
-        let length =
-            self.builder
-                .ins()
-                .load(VelocType::I64, def_ptr, VMTable::current_elements_offset());
+        let offset = self.offsets.table_offset(index);
+        let alignment = if offset % 16 == 0 { 16 } else { 8 };
+        let def_ptr = self.builder.ins().load(
+            VelocType::Ptr,
+            vmctx,
+            offset,
+            MemFlags::new().with_alignment(alignment),
+        );
+        let base = self.builder.ins().load(
+            VelocType::Ptr,
+            def_ptr,
+            VMTable::base_offset(),
+            MemFlags::new().with_alignment(8),
+        );
+        let length = self.builder.ins().load(
+            VelocType::I64,
+            def_ptr,
+            VMTable::current_elements_offset(),
+            MemFlags::new().with_alignment(8),
+        );
 
         if self.use_names {
             self.builder

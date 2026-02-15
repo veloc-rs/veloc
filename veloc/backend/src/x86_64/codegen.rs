@@ -839,10 +839,14 @@ impl TargetBackend for X86_64Backend {
             InstructionData::Binary { opcode, args, .. } => {
                 self.emit_binary(emitter, func, *opcode, args, res);
             }
-            InstructionData::Load { ptr, offset, ty } => {
+            InstructionData::Load {
+                ptr, offset, ty, ..
+            } => {
                 self.emit_load(emitter, func, *ptr, *offset as i32, *ty, res);
             }
-            InstructionData::Store { ptr, value, offset } => {
+            InstructionData::Store {
+                ptr, value, offset, ..
+            } => {
                 self.emit_store(emitter, func, *ptr, *value, *offset as i32);
             }
             InstructionData::IntCompare { kind, args, .. } => {

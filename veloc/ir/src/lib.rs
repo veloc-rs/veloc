@@ -34,7 +34,7 @@ impl core::fmt::Display for CallConv {
 pub use builder::{FunctionBuilder, InstBuilder, ModuleBuilder};
 pub use error::{Error, Result};
 pub use function::Function;
-pub use inst::{FloatCC, IntCC};
+pub use inst::{FloatCC, IntCC, MemFlags};
 pub use module::{Global, Linkage, Module, ModuleData};
 pub use types::{
     Block, BlockCall, FuncId, JumpTable, SigId, Signature, StackSlot, Type, Value, ValueList,

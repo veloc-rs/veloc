@@ -1,5 +1,5 @@
 use super::WasmTranslator;
-use veloc::ir::Value;
+use veloc::ir::{MemFlags, Value};
 use wasmparser::{BinaryReaderError, Operator};
 
 impl<'a> WasmTranslator<'a> {
@@ -24,13 +24,18 @@ impl<'a> WasmTranslator<'a> {
                 let ty = self.metadata.globals[global_index as usize].ty;
                 let veloc_ty = self.val_type_to_veloc(ty);
                 let global_val_ptr = self.get_global_ptr(global_index);
-                let val = self.builder.ins().load(veloc_ty, global_val_ptr, 0);
+                let val = self
+                    .builder
+                    .ins()
+                    .load(veloc_ty, global_val_ptr, 0, MemFlags::default());
                 self.stack.push(val);
             }
             Operator::GlobalSet { global_index } => {
                 let val = self.pop();
                 let global_val_ptr = self.get_global_ptr(global_index);
-                self.builder.ins().store(val, global_val_ptr, 0);
+                self.builder
+                    .ins()
+                    .store(val, global_val_ptr, 0, MemFlags::default());
             }
             _ => unreachable!("Non-variable operator in translate_variable"),
         }

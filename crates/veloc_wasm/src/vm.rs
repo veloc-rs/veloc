@@ -412,17 +412,17 @@ impl VMOffsets {
         let mut offset = 0;
 
         // 1. Memories (Hot，紧跟在 Header 后面, 指向 VMMemory 的指针)
-        offset = align(offset, core::mem::align_of::<*mut VMMemory>() as u32);
+        offset = align(offset, 16);
         let memories = offset;
         offset += num_memories * Self::memory_elem_size();
 
         // 2. Tables (指向 VMTable 的指针)
-        offset = align(offset, core::mem::align_of::<*mut VMTable>() as u32);
+        offset = align(offset, 16);
         let tables = offset;
         offset += num_tables * Self::table_elem_size();
 
         // 3. Globals (指向 VMGlobalDefinition 的指针)
-        offset = align(offset, core::mem::align_of::<*mut VMGlobal>() as u32);
+        offset = align(offset, 16);
         let globals = offset;
         offset += num_globals * Self::global_elem_size();
 
@@ -432,7 +432,7 @@ impl VMOffsets {
         offset += num_functions * VMFuncRef::size();
 
         // 5. Signature Hashes
-        offset = align(offset, core::mem::align_of::<u32>() as u32);
+        offset = align(offset, 16);
         let signature_hashes = offset;
         offset += num_signatures * core::mem::size_of::<u32>() as u32;
 
