@@ -12,6 +12,7 @@ pub struct DataFlowGraph {
     pub instructions: PrimaryMap<Inst, InstructionData>,
     pub values: PrimaryMap<Value, ValueData>,
     pub value_names: SecondaryMap<Value, String>,
+    pub inst_results: SecondaryMap<Inst, Option<Value>>,
     pub value_lists: PrimaryMap<ValueList, ValueListData>,
     pub value_pool: Vec<Value>,
     pub block_calls: PrimaryMap<BlockCall, BlockCallData>,
@@ -28,6 +29,7 @@ impl DataFlowGraph {
             instructions: PrimaryMap::new(),
             values: PrimaryMap::new(),
             value_names: SecondaryMap::new(),
+            inst_results: SecondaryMap::new(),
             value_lists,
             value_pool: Vec::new(),
             block_calls: PrimaryMap::new(),
@@ -58,12 +60,7 @@ impl DataFlowGraph {
     }
 
     pub fn inst_results(&self, inst: Inst) -> Option<Value> {
-        // In our current simplified SSA, an instruction has at most one result.
-        // We can find the value that is defined by this instruction.
-        self.values
-            .iter()
-            .find(|(_, data)| data.defined_by == Some(inst))
-            .map(|(v, _)| v)
+        self.inst_results[inst]
     }
 
     pub fn analyze_successors(&self, inst: Inst) -> Vec<Block> {

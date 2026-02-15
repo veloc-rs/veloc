@@ -50,6 +50,7 @@ impl Drop for InstanceHandle {
 pub(crate) struct VMInstance {
     pub(crate) module: Module,
     pub(crate) interpreter: Option<Interpreter>,
+    pub(crate) interp_module_id: Option<veloc::interpreter::ModuleId>,
     pub(crate) host_state: Box<dyn core::any::Any + Send + Sync>,
     pub(crate) element_lengths: Vec<usize>,
     pub(crate) data_lengths: Vec<usize>,
@@ -129,12 +130,17 @@ impl VMInstance {
         }
 
         if self.module.strategy() == Strategy::Interpreter {
-            let mut interpreter = self
-                .interpreter
-                .take()
-                .ok_or_else(|| crate::error::Error::Message("Interpreter not found".to_string()))?;
+            let mut interpreter = if let Some(int) = self.interpreter.take() {
+                int
+            } else if let Some(id) = self.interp_module_id {
+                Interpreter::new(id)
+            } else {
+                return Err(crate::error::Error::Message(
+                    "Interpreter not found".to_string(),
+                ));
+            };
 
-            let args = vec![InterpreterValue::I64(vmctx_ptr as i64)];
+            let args = vec![InterpreterValue::i64(vmctx_ptr as i64)];
 
             interpreter.run_function(program, self, init_func_id, &args);
             self.interpreter = Some(interpreter);
@@ -643,6 +649,7 @@ impl VMInstance {
             let instance = VMInstance {
                 module: module.clone(),
                 interpreter: interp_module_id.map(Interpreter::new),
+                interp_module_id,
                 host_state: Box::new(()),
                 vmctx_self_reference: vmctx_ptr,
                 vmctx: VMContext {
@@ -761,8 +768,8 @@ impl VMInstance {
                 let def_ptr = imported_memories[i];
 
                 // Type check
-                let actual_pages = (*def_ptr).current_length / 65536;
-                let expected_pages = meta.memories[i].initial as usize;
+                let actual_pages = ((*def_ptr).current_length / 65536) as u64;
+                let expected_pages = meta.memories[i].initial;
                 if actual_pages < expected_pages {
                     let import = meta
                         .imports
@@ -777,6 +784,26 @@ impl VMInstance {
                         actual: format!("{} pages", actual_pages),
                     });
                 }
+
+                // Maximum pages check
+                if let Some(expected_max) = meta.memories[i].maximum {
+                    let actual_max = (*def_ptr).maximum_pages;
+                    if actual_max > expected_max as u32 {
+                        let import = meta
+                            .imports
+                            .iter()
+                            .filter(|imp| imp.kind == ExternalKind::Memory)
+                            .nth(i)
+                            .unwrap();
+                        return Err(crate::error::Error::IncompatibleImport {
+                            module: import.module.clone(),
+                            field: import.field.clone(),
+                            expected: format!("maximum {} pages", expected_max),
+                            actual: format!("maximum {} pages", actual_max),
+                        });
+                    }
+                }
+
                 vm_memories[i] = def_ptr;
             }
             for i in meta.num_imported_memories..meta.memories.len() {
@@ -790,6 +817,59 @@ impl VMInstance {
             let vm_tables = instance.tables();
             for i in 0..meta.num_imported_tables {
                 let def_ptr = imported_tables[i];
+
+                // Type check
+                let actual_size = (*def_ptr).current_elements;
+                let expected_size = meta.tables[i].initial as usize;
+                if actual_size < expected_size {
+                    let import = meta
+                        .imports
+                        .iter()
+                        .filter(|imp| imp.kind == ExternalKind::Table)
+                        .nth(i)
+                        .unwrap();
+                    return Err(crate::error::Error::IncompatibleImport {
+                        module: import.module.clone(),
+                        field: import.field.clone(),
+                        expected: format!("at least {} elements", expected_size),
+                        actual: format!("{} elements", actual_size),
+                    });
+                }
+
+                // Maximum size check
+                if let Some(expected_max) = meta.tables[i].maximum {
+                    let actual_max = (*def_ptr).maximum_elements;
+                    if actual_max > expected_max {
+                        let import = meta
+                            .imports
+                            .iter()
+                            .filter(|imp| imp.kind == ExternalKind::Table)
+                            .nth(i)
+                            .unwrap();
+                        return Err(crate::error::Error::IncompatibleImport {
+                            module: import.module.clone(),
+                            field: import.field.clone(),
+                            expected: format!("maximum {} elements", expected_max),
+                            actual: format!("maximum {} elements", actual_max),
+                        });
+                    }
+                }
+
+                if (*def_ptr).element_type != meta.tables[i].element_type {
+                    let import = meta
+                        .imports
+                        .iter()
+                        .filter(|imp| imp.kind == ExternalKind::Table)
+                        .nth(i)
+                        .unwrap();
+                    return Err(crate::error::Error::IncompatibleImport {
+                        module: import.module.clone(),
+                        field: import.field.clone(),
+                        expected: format!("{:?} elements", meta.tables[i].element_type),
+                        actual: format!("{:?} elements", (*def_ptr).element_type),
+                    });
+                }
+
                 vm_tables[i] = def_ptr;
             }
             for i in meta.num_imported_tables..meta.tables.len() {
@@ -859,15 +939,25 @@ impl Instance {
 
         if let Extern::Function(func_ref) = export {
             let meta = instance.module.metadata();
-            let export_info = meta.exports.get(name)?;
+            let export_info = meta.exports.get(name).unwrap();
             let func_idx = export_info.1 as usize;
-            let func_id = meta.functions[func_idx].func_id;
             let ty_idx = meta.functions[func_idx].type_index;
             let sig = &meta.signatures[ty_idx as usize];
 
             let kind = if instance.module.strategy() == Strategy::Interpreter {
+                // For interpreter mode, the func_ref.native_call is a tagged pointer
+                // that encodes (ModuleId, FuncId). We should decode it to get the
+                // actual FuncId in the target module.
+                let (_, actual_func_id) = store
+                    .program
+                    .decode_interpreter_ptr(func_ref.native_call as usize)
+                    .unwrap_or((
+                        veloc::interpreter::ModuleId(0),
+                        meta.functions[func_idx].func_id,
+                    ));
+
                 TypedFuncKind::Interpreter {
-                    target_func_id: func_id,
+                    target_func_id: actual_func_id,
                 }
             } else {
                 let tramp_name = format!("{}_trampoline", name);
@@ -1000,19 +1090,24 @@ impl TypedFunc {
                 }
                 TypedFuncKind::Interpreter { target_func_id } => {
                     let mut int_args = Vec::with_capacity(args.len() + 2);
-                    int_args.push(InterpreterValue::I64(vmctx_ptr as i64));
+                    int_args.push(InterpreterValue::i64(vmctx_ptr as i64));
                     for arg in args {
                         int_args.push(arg.to_interpreter_val());
                     }
 
                     if self.results.len() > 1 {
-                        int_args.push(InterpreterValue::I64(results_raw.as_mut_ptr() as i64));
+                        int_args.push(InterpreterValue::i64(results_raw.as_mut_ptr() as i64));
                     }
 
-                    let mut interpreter = instance
-                        .interpreter
-                        .take()
-                        .expect("Interpreter not initialized");
+                    let mut interpreter = if let Some(int) = instance.interpreter.take() {
+                        int
+                    } else if let Some(id) = instance.interp_module_id {
+                        // 如果因为之前的 trap 导致解释器丢失，则重新创建一个
+                        Interpreter::new(id)
+                    } else {
+                        panic!("Interpreter not initialized and no module ID found");
+                    };
+
                     let res = interpreter
                         .run_function(&store.program, instance, target_func_id, &int_args)
                         .to_i64_bits();

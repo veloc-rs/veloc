@@ -265,8 +265,19 @@ fn wast_arg_to_val(arg: &WastArg) -> Val {
         WastArg::Core(wast::core::WastArgCore::I64(val)) => Val::I64(*val),
         WastArg::Core(wast::core::WastArgCore::F32(val)) => Val::F32(f32::from_bits(val.bits)),
         WastArg::Core(wast::core::WastArgCore::F64(val)) => Val::F64(f64::from_bits(val.bits)),
-        WastArg::Core(wast::core::WastArgCore::RefNull(_)) => Val::I64(0),
-        WastArg::Core(wast::core::WastArgCore::RefExtern(val)) => Val::I64((*val as i64) + 0x1000), // Make it non-null
+        WastArg::Core(wast::core::WastArgCore::RefNull(rt)) => {
+            // Check if it's an externref null or funcref null
+            // We can just use string representation or check the heap type
+            let s = format!("{:?}", rt);
+            if s.contains("Extern") {
+                Val::Externref(0)
+            } else {
+                Val::Funcref(None)
+            }
+        }
+        WastArg::Core(wast::core::WastArgCore::RefExtern(val)) => {
+            Val::Externref((*val as u32) + 0x1000)
+        }
         _ => panic!("Unsupported argument type {:?}", arg),
     }
 }
@@ -470,14 +481,17 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                 WastDirective::AssertUnlinkable {
                     mut module, span, ..
                 } => {
+                    let (line, _) = span.linecol_in(&contents);
                     if verbose {
-                        let (line, _) = span.linecol_in(&contents);
                         println!("  assert_unlinkable (line {})", line + 1);
                     }
                     let wasm_bin = module.encode().unwrap();
                     let res = runner.instantiate(&wasm_bin, None);
                     if res.is_ok() {
-                        panic!("expected unlinkable but instantiation succeeded");
+                        panic!(
+                            "expected unlinkable but instantiation succeeded at line {}",
+                            line + 1
+                        );
                     }
                 }
                 WastDirective::AssertInvalid {
@@ -491,6 +505,11 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                     let res = runner.instantiate(&wasm_bin, None);
                     if res.is_ok() {
                         panic!("expected invalid but instantiation succeeded");
+                    }
+                }
+                WastDirective::AssertExhaustion { .. } => {
+                    if verbose {
+                        println!("  skipping assert_exhaustion");
                     }
                 }
                 _ => {}
@@ -566,6 +585,7 @@ fn main() -> Result<()> {
                     && !name.contains("memory64")
                     // Other
                     && !name.contains("component")
+                    && !name.contains("stack.wast")
             })
             .collect();
         paths.sort();

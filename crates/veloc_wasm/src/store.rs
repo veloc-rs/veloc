@@ -98,6 +98,14 @@ impl Store {
             crate::Val::F64(v) => {
                 definition.value.f64 = v;
             }
+            crate::Val::Externref(v) => {
+                definition.value.i64 = v as i64;
+            }
+            crate::Val::Funcref(_v) => {
+                // This is a bit tricky, we need a stable pointer.
+                // For now, let's just use 0 if we can't get one.
+                definition.value.i64 = 0;
+            }
         };
 
         self.globals.push(definition)
@@ -169,7 +177,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             };
             crate::module::wasm_trap_handler(vmctx_ptr, code as u32);
             #[allow(unreachable_code)]
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -178,7 +186,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let vmctx_ptr = args[0].unwarp_i64() as *mut crate::vm::VMContext;
             let mem_idx = args[1].unwarp_i32() as u32;
             let res = crate::module::wasm_memory_size(vmctx_ptr, mem_idx);
-            InterpreterValue::I32(res as i32)
+            InterpreterValue::i32(res as i32)
         }) as HostFunction,
     );
     program.register_raw(
@@ -188,7 +196,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let mem_idx = args[1].unwarp_i32() as u32;
             let delta = args[2].unwarp_i32() as u32;
             let res = crate::module::wasm_memory_grow(vmctx_ptr, mem_idx, delta);
-            InterpreterValue::I32(res as i32)
+            InterpreterValue::i32(res as i32)
         }) as HostFunction,
     );
     program.register_raw(
@@ -197,7 +205,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let vmctx_ptr = args[0].unwarp_i64() as *mut crate::vm::VMContext;
             let table_idx = args[1].unwarp_i32() as u32;
             let res = crate::module::wasm_table_size(vmctx_ptr, table_idx);
-            InterpreterValue::I32(res as i32)
+            InterpreterValue::i32(res as i32)
         }) as HostFunction,
     );
     program.register_raw(
@@ -208,7 +216,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let init_val = args[2].unwarp_i64() as *mut crate::vm::VMFuncRef;
             let delta = args[3].unwarp_i32() as u32;
             let res = crate::module::wasm_table_grow(vmctx_ptr, table_idx, init_val, delta);
-            InterpreterValue::I32(res)
+            InterpreterValue::i32(res)
         }) as HostFunction,
     );
     program.register_raw(
@@ -220,7 +228,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let val = args[3].unwarp_i64() as *mut crate::vm::VMFuncRef;
             let len = args[4].unwarp_i32() as u32;
             crate::module::wasm_table_fill(vmctx_ptr, table_idx, dst, val, len);
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -233,7 +241,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let src = args[4].unwarp_i32() as u32;
             let len = args[5].unwarp_i32() as u32;
             crate::module::wasm_table_copy(vmctx_ptr, dst_idx, src_idx, dst, src, len);
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -246,7 +254,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let src = args[4].unwarp_i32() as u32;
             let len = args[5].unwarp_i32() as u32;
             crate::module::wasm_table_init(vmctx_ptr, table_idx, elem_idx, dst, src, len);
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -255,7 +263,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let vmctx_ptr = args[0].unwarp_i64() as *mut crate::vm::VMContext;
             let elem_idx = args[1].unwarp_i32() as u32;
             crate::module::wasm_elem_drop(vmctx_ptr, elem_idx);
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -268,7 +276,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let src = args[4].unwarp_i32() as u32;
             let len = args[5].unwarp_i32() as u32;
             crate::module::wasm_memory_init(vmctx_ptr, mem_idx, data_idx, dst, src, len);
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -277,7 +285,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let vmctx_ptr = args[0].unwarp_i64() as *mut crate::vm::VMContext;
             let data_idx = args[1].unwarp_i32() as u32;
             crate::module::wasm_data_drop(vmctx_ptr, data_idx);
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -290,7 +298,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let src = args[4].unwarp_i32() as u32;
             let len = args[5].unwarp_i32() as u32;
             crate::module::wasm_memory_copy(vmctx_ptr, dst_idx, src_idx, dst, src, len);
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -302,7 +310,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             let val = args[3].unwarp_i32() as u32;
             let len = args[4].unwarp_i32() as u32;
             crate::module::wasm_memory_fill(vmctx_ptr, mem_idx, dst, val, len);
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
 
@@ -315,7 +323,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             unsafe {
                 crate::module::wasm_init_table_element(vmctx_ptr, element_idx, offset);
             }
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -327,7 +335,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             unsafe {
                 crate::module::wasm_init_memory_data(vmctx_ptr, data_idx, offset);
             }
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
     program.register_raw(
@@ -339,7 +347,7 @@ pub(crate) fn register_builtins(program: &mut Program) {
             unsafe {
                 crate::module::wasm_init_table(vmctx_ptr, table_idx, val);
             }
-            InterpreterValue::None
+            InterpreterValue::none()
         }) as HostFunction,
     );
 }

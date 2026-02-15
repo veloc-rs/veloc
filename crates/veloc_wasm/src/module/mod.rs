@@ -25,11 +25,12 @@ pub enum ModuleArtifact {
 }
 
 struct ModuleInner {
-    engine: Engine,
+    _engine: Engine,
     artifact: ModuleArtifact,
     metadata: WasmMetadata,
     offsets: VMOffsets,
     init_func_id: FuncId,
+    strategy: Strategy,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -305,11 +306,12 @@ impl Module {
         };
 
         let inner = Arc::new(ModuleInner {
-            engine: engine.clone(),
+            _engine: engine.clone(),
             artifact,
             metadata,
             offsets,
             init_func_id,
+            strategy,
         });
 
         Ok(Self { inner })
@@ -320,7 +322,7 @@ impl Module {
     }
 
     pub(crate) fn strategy(&self) -> Strategy {
-        self.inner.engine.strategy()
+        self.inner.strategy
     }
 
     pub(crate) fn init_func_id(&self) -> FuncId {

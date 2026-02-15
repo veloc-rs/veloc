@@ -36,7 +36,7 @@ impl WasmTy for i32 {
         val.unwarp_i32()
     }
     fn to_val(self) -> InterpreterValue {
-        InterpreterValue::I32(self)
+        InterpreterValue::i32(self)
     }
 }
 
@@ -48,7 +48,7 @@ impl WasmTy for i64 {
         val.unwarp_i64()
     }
     fn to_val(self) -> InterpreterValue {
-        InterpreterValue::I64(self)
+        InterpreterValue::i64(self)
     }
 }
 
@@ -60,7 +60,7 @@ impl WasmTy for f32 {
         val.unwarp_f32()
     }
     fn to_val(self) -> InterpreterValue {
-        InterpreterValue::F32(self)
+        InterpreterValue::f32(self)
     }
 }
 
@@ -72,7 +72,7 @@ impl WasmTy for f64 {
         val.unwarp_f64()
     }
     fn to_val(self) -> InterpreterValue {
-        InterpreterValue::F64(self)
+        InterpreterValue::f64(self)
     }
 }
 
@@ -86,7 +86,7 @@ impl WasmRet for () {
         vec![]
     }
     fn to_vals(self) -> InterpreterValue {
-        InterpreterValue::None
+        InterpreterValue::none()
     }
 }
 

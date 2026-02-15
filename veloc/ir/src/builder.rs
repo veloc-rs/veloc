@@ -118,23 +118,7 @@ impl<'a> FunctionBuilder<'a> {
         &self.module.signatures[sig_id]
     }
 
-    pub fn push_inst(&mut self, block: Block, mut data: InstructionData) -> Option<Value> {
-        match &mut data {
-            InstructionData::Call {
-                func_id, ret_ty, ..
-            } => {
-                let sig_id = self.func_signature(*func_id);
-                *ret_ty = self.signature(sig_id).ret;
-            }
-            InstructionData::CallIndirect { sig_id, ret_ty, .. } => {
-                *ret_ty = self.signature(*sig_id).ret;
-            }
-            InstructionData::Select { then_val, ty, .. } => {
-                *ty = self.func().dfg.values[*then_val].ty;
-            }
-            _ => {}
-        }
-
+    pub fn push_inst(&mut self, block: Block, data: InstructionData) -> Option<Value> {
         let ty = data.result_type();
         let inst = self.func_mut().dfg.instructions.push(data);
         let succs = self.func().dfg.analyze_successors(inst);
@@ -147,8 +131,10 @@ impl<'a> FunctionBuilder<'a> {
         if ty != Type::Void {
             let val = self.func_mut().dfg.make_value(ty);
             self.func_mut().dfg.values[val].defined_by = Some(inst);
+            self.func_mut().dfg.inst_results[inst] = Some(val);
             Some(val)
         } else {
+            self.func_mut().dfg.inst_results[inst] = None;
             None
         }
     }
@@ -1155,21 +1141,24 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Option<Value> {
+        let sig_id = self.builder.func_signature(func_id);
+        let ret_ty = self.builder.signature(sig_id).ret;
         let args = self.builder.push_value_list(args);
         self.push(InstructionData::Call {
             func_id,
             args,
-            ret_ty: Type::Void,
+            ret_ty,
         })
     }
 
     pub fn call_indirect(&mut self, sig_id: SigId, ptr: Value, args: &[Value]) -> Option<Value> {
+        let ret_ty = self.builder.signature(sig_id).ret;
         let args = self.builder.push_value_list(args);
         self.push(InstructionData::CallIndirect {
             ptr,
             args,
             sig_id,
-            ret_ty: Type::Void,
+            ret_ty,
         })
     }
 

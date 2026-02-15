@@ -138,13 +138,7 @@ impl<'a> WasmTranslator<'a> {
         let mut local_idx = num_params;
         for _ in 0..locals_reader.get_count() {
             let (count, ty) = locals_reader.read()?;
-            let ty = match ty {
-                ValType::I32 => VelocType::I32,
-                ValType::I64 => VelocType::I64,
-                ValType::F32 => VelocType::F32,
-                ValType::F64 => VelocType::F64,
-                _ => VelocType::I64,
-            };
+            let ty = self.val_type_to_veloc(ty);
             for _ in 0..count {
                 let var = self.new_var(ty);
                 self.locals.push((var, ty));

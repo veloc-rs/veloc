@@ -13,79 +13,81 @@ use ::alloc::vec::Vec;
 pub use error::{Error, Result};
 use hashbrown::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InterpreterValue {
-    I32(i32),
-    I64(i64),
-    F32(f32),
-    F64(f64),
-    Bool(bool),
-    None,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[repr(transparent)]
+pub struct InterpreterValue(pub u64);
 
 impl InterpreterValue {
+    #[inline(always)]
+    pub fn i32(v: i32) -> Self {
+        Self(v as u32 as u64)
+    }
+
+    #[inline(always)]
+    pub fn i64(v: i64) -> Self {
+        Self(v as u64)
+    }
+
+    #[inline(always)]
+    pub fn f32(v: f32) -> Self {
+        Self(v.to_bits() as u64)
+    }
+
+    #[inline(always)]
+    pub fn f64(v: f64) -> Self {
+        Self(v.to_bits())
+    }
+
+    #[inline(always)]
+    pub fn bool(v: bool) -> Self {
+        Self(v as u64)
+    }
+
+    #[inline(always)]
+    pub fn none() -> Self {
+        Self(0)
+    }
+
+    #[inline(always)]
     pub fn unwarp_i32(self) -> i32 {
-        match self {
-            InterpreterValue::I32(v) => v,
-            _ => panic!("Expected I32 value, got {:?}", self),
-        }
+        self.0 as i32
     }
 
+    #[inline(always)]
     pub fn unwarp_i64(self) -> i64 {
-        match self {
-            InterpreterValue::I64(v) => v,
-            _ => panic!("Expected I64 value, got {:?}", self),
-        }
+        self.0 as i64
     }
 
+    #[inline(always)]
     pub fn unwarp_f32(self) -> f32 {
-        match self {
-            InterpreterValue::F32(v) => v,
-            _ => panic!("Expected F32 value, got {:?}", self),
-        }
+        f32::from_bits(self.0 as u32)
     }
 
+    #[inline(always)]
     pub fn unwarp_f64(self) -> f64 {
-        match self {
-            InterpreterValue::F64(v) => v,
-            _ => panic!("Expected F64 value, got {:?}", self),
-        }
+        f64::from_bits(self.0)
     }
 
+    #[inline(always)]
     pub fn unwarp_bool(self) -> bool {
-        match self {
-            InterpreterValue::Bool(v) => v,
-            _ => panic!("Expected Bool value, got {:?}", self),
-        }
+        self.0 != 0
     }
 
+    #[inline(always)]
     pub fn to_i64_bits(self) -> i64 {
-        match self {
-            InterpreterValue::I32(v) => v as i64,
-            InterpreterValue::I64(v) => v,
-            InterpreterValue::F32(v) => v.to_bits() as i64,
-            InterpreterValue::F64(v) => v.to_bits() as i64,
-            InterpreterValue::Bool(v) => {
-                if v {
-                    1
-                } else {
-                    0
-                }
-            }
-            InterpreterValue::None => 0,
-        }
+        self.0 as i64
     }
 
     pub fn from_i64(v: i64, res_ty: Type) -> Self {
         match res_ty {
-            Type::I8 => InterpreterValue::I32((v as i8) as i32),
-            Type::I16 => InterpreterValue::I32((v as i16) as i32),
-            Type::I32 => InterpreterValue::I32(v as i32),
-            Type::I64 | Type::Ptr => InterpreterValue::I64(v),
-            Type::F32 => InterpreterValue::F32(f32::from_bits(v as u32)),
-            Type::F64 => InterpreterValue::F64(f64::from_bits(v as u64)),
-            Type::Bool => InterpreterValue::Bool(v != 0),
-            Type::Void => InterpreterValue::None,
+            Type::I8 => InterpreterValue::i32((v as i8) as i32),
+            Type::I16 => InterpreterValue::i32((v as i16) as i32),
+            Type::I32 => InterpreterValue::i32(v as i32),
+            Type::I64 | Type::Ptr => InterpreterValue::i64(v),
+            Type::F32 => InterpreterValue::f32(f32::from_bits(v as u32)),
+            Type::F64 => InterpreterValue::f64(f64::from_bits(v as u64)),
+            Type::Bool => InterpreterValue::bool(v != 0),
+            _ => InterpreterValue::none(),
         }
     }
 }
@@ -102,24 +104,24 @@ pub trait HostFuncRet {
 }
 
 macro_rules! impl_host_func_types {
-    ($($t:ty, $variant:ident, $unwarp:ident);*) => {
+    ($($t:ty, $meth:ident, $unwarp:ident);*) => {
         $(
             impl HostFuncArg for $t {
                 fn from_val(v: InterpreterValue) -> Self { v.$unwarp() }
             }
             impl HostFuncRet for $t {
-                fn into_val(self) -> InterpreterValue { InterpreterValue::$variant(self) }
+                fn into_val(self) -> InterpreterValue { InterpreterValue::$meth(self) }
             }
         )*
     };
 }
 
 impl_host_func_types! {
-    i32, I32, unwarp_i32;
-    i64, I64, unwarp_i64;
-    f32, F32, unwarp_f32;
-    f64, F64, unwarp_f64;
-    bool, Bool, unwarp_bool
+    i32, i32, unwarp_i32;
+    i64, i64, unwarp_i64;
+    f32, f32, unwarp_f32;
+    f64, f64, unwarp_f64;
+    bool, bool, unwarp_bool
 }
 
 impl HostFuncArg for InterpreterValue {
@@ -243,7 +245,7 @@ impl HostFunc {
         if arity > 0 {
             args[0]
         } else {
-            InterpreterValue::None
+            InterpreterValue::none()
         }
     }
 }
@@ -375,17 +377,21 @@ pub trait VirtualMemory {
 
 pub struct Interpreter {
     pub module_id: ModuleId,
-    pub(crate) stack: Vec<StackFrame>,
+    // 统一的大栈，减少分配
+    pub(crate) value_stack: Vec<InterpreterValue>,
+    pub(crate) frames: Vec<StackFrame>,
 }
 
 struct StackFrame {
     module_id: ModuleId,
     func_id: FuncId,
-    values: Vec<InterpreterValue>,
+    // 基础偏移，用于索引 value_stack
+    base: usize,
     stack_slots: Vec<Vec<u8>>,
     current_block: Block,
     inst_idx: usize,
     block_args: Vec<InterpreterValue>,
+    // 记录返回值应该存放在之前帧的哪个 Value 中
     pending_result_target: Option<veloc_ir::Value>,
 }
 
@@ -393,7 +399,8 @@ impl Interpreter {
     pub fn new(module_id: ModuleId) -> Self {
         Self {
             module_id,
-            stack: Vec::new(),
+            value_stack: Vec::with_capacity(1024),
+            frames: Vec::with_capacity(64),
         }
     }
 
@@ -404,8 +411,8 @@ impl Interpreter {
         func_id: FuncId,
         args: &[InterpreterValue],
     ) -> InterpreterValue {
-        let initial_stack_depth = self.stack.len();
-        let mut last_result = InterpreterValue::None;
+        let initial_frame_depth = self.frames.len();
+        let mut last_result = InterpreterValue::none();
 
         // 初始帧
         let module = &program.modules[self.module_id.0];
@@ -421,15 +428,16 @@ impl Interpreter {
         }
 
         let first_frame = self.create_frame(program, self.module_id, func_id, args.to_vec());
-        self.stack.push(first_frame);
+        self.frames.push(first_frame);
 
-        while self.stack.len() > initial_stack_depth {
-            let mut frame = self.stack.pop().unwrap();
+        while self.frames.len() > initial_frame_depth {
+            let mut frame = self.frames.pop().unwrap();
             self.module_id = frame.module_id;
+
             // 如果有待处理的返回值，将其存入之前记录的结果目标中
             if let Some(target) = frame.pending_result_target.take() {
-                frame.values[target.0 as usize] = last_result;
-                last_result = InterpreterValue::None;
+                self.value_stack[frame.base + target.0 as usize] = last_result;
+                last_result = InterpreterValue::none();
             }
 
             let func_ptr =
@@ -443,7 +451,7 @@ impl Interpreter {
                 // 如果是新进入一个块（inst_idx == 0），设置块参数
                 if frame.inst_idx == 0 {
                     for (param, arg) in block_data.params.iter().zip(frame.block_args.iter()) {
-                        frame.values[param.0 as usize] = *arg;
+                        self.value_stack[frame.base + param.0 as usize] = *arg;
                     }
                 }
 
@@ -454,18 +462,20 @@ impl Interpreter {
 
                     frame.inst_idx += 1;
 
+                    // 优化：内联常见指令执行，减少 ControlFlow 开销
                     let flow = self.execute_inst(
                         program,
                         vm,
                         idata,
-                        &mut frame.values,
+                        frame.base,
                         &mut frame.stack_slots,
                         func_ptr,
                     );
+
                     match flow {
                         ControlFlow::Continue(res) => {
                             if let Some(rv) = res_val {
-                                frame.values[rv.0 as usize] = res;
+                                self.value_stack[frame.base + rv.0 as usize] = res;
                             }
                         }
                         ControlFlow::Call(m_id, f_id, c_args) => {
@@ -479,21 +489,23 @@ impl Interpreter {
                                     let mut c_args = c_args;
                                     let h_res = host_fn.call(&mut c_args);
                                     if let Some(rv) = res_val {
-                                        frame.values[rv.0 as usize] = h_res;
+                                        self.value_stack[frame.base + rv.0 as usize] = h_res;
                                     }
                                 } else {
                                     panic!("External function {} not registered", callee_func.name);
                                 }
                             } else {
                                 frame.pending_result_target = res_val;
-                                self.stack.push(frame);
+                                self.frames.push(frame);
                                 let new_frame = self.create_frame(program, m_id, f_id, c_args);
-                                self.stack.push(new_frame);
+                                self.frames.push(new_frame);
                                 break 'frame_loop;
                             }
                         }
                         ControlFlow::Return(res) => {
                             last_result = res;
+                            // 函数结束，清理当前函数的栈空间
+                            self.value_stack.truncate(frame.base);
                             break 'frame_loop;
                         }
                         ControlFlow::Jump(next_block, next_args) => {
@@ -511,7 +523,7 @@ impl Interpreter {
     }
 
     fn create_frame(
-        &self,
+        &mut self,
         program: &Program,
         module_id: ModuleId,
         func_id: FuncId,
@@ -519,7 +531,12 @@ impl Interpreter {
     ) -> StackFrame {
         let module = &program.modules[module_id.0];
         let func = &module.functions[func_id];
-        let values = vec![InterpreterValue::None; func.dfg.values.len()];
+
+        // 分配栈空间
+        let base = self.value_stack.len();
+        self.value_stack
+            .resize(base + func.dfg.values.len(), InterpreterValue::none());
+
         let stack_slots = func
             .stack_slots
             .iter()
@@ -530,7 +547,7 @@ impl Interpreter {
         StackFrame {
             module_id,
             func_id,
-            values,
+            base,
             stack_slots,
             current_block,
             inst_idx: 0,
@@ -544,7 +561,7 @@ impl Interpreter {
         program: &Program,
         vm: &M,
         idata: &InstructionData,
-        values: &mut [InterpreterValue],
+        base: usize,
         stack_slots: &mut [Vec<u8>],
         func_ptr: *const Function,
     ) -> ControlFlow {
@@ -552,41 +569,43 @@ impl Interpreter {
         match idata {
             InstructionData::Iconst { value, ty } => match ty {
                 Type::I8 | Type::I16 | Type::I32 => {
-                    ControlFlow::Continue(InterpreterValue::I32(*value as i32))
+                    ControlFlow::Continue(InterpreterValue::i32(*value as i32))
                 }
-                Type::I64 | Type::Ptr => ControlFlow::Continue(InterpreterValue::I64(*value)),
-                Type::Bool => ControlFlow::Continue(InterpreterValue::Bool(*value != 0)),
+                Type::I64 | Type::Ptr => ControlFlow::Continue(InterpreterValue::i64(*value)),
+                Type::Bool => ControlFlow::Continue(InterpreterValue::bool(*value != 0)),
                 _ => panic!("Invalid type for iconst: {:?}", ty),
             },
             InstructionData::Fconst { value, ty } => {
                 if *ty == Type::F32 {
-                    ControlFlow::Continue(InterpreterValue::F32(f32::from_bits(*value as u32)))
+                    ControlFlow::Continue(InterpreterValue::f32(f32::from_bits(*value as u32)))
                 } else {
-                    ControlFlow::Continue(InterpreterValue::F64(f64::from_bits(*value)))
+                    ControlFlow::Continue(InterpreterValue::f64(f64::from_bits(*value)))
                 }
             }
             InstructionData::Bconst { value } => {
-                ControlFlow::Continue(InterpreterValue::Bool(*value))
+                ControlFlow::Continue(InterpreterValue::bool(*value))
             }
-            InstructionData::Binary { opcode, args, .. } => {
-                let lhs = values[args[0].0 as usize];
-                let rhs = values[args[1].0 as usize];
-                ControlFlow::Continue(self.exec_binary(*opcode, lhs, rhs))
+            InstructionData::Binary { opcode, args, ty } => {
+                let lhs = self.value_stack[base + args[0].0 as usize];
+                let rhs = self.value_stack[base + args[1].0 as usize];
+                ControlFlow::Continue(self.exec_binary(*opcode, lhs, rhs, *ty))
             }
             InstructionData::Unary { opcode, arg, ty } => {
-                let val = values[arg.0 as usize];
+                let val = self.value_stack[base + arg.0 as usize];
                 let arg_ty = func.dfg.values[*arg].ty;
                 ControlFlow::Continue(self.exec_unary(*opcode, val, arg_ty, *ty))
             }
             InstructionData::IntCompare { kind, args, .. } => {
-                let lhs = values[args[0].0 as usize];
-                let rhs = values[args[1].0 as usize];
-                ControlFlow::Continue(self.exec_icmp(*kind, lhs, rhs))
+                let lhs = self.value_stack[base + args[0].0 as usize];
+                let rhs = self.value_stack[base + args[1].0 as usize];
+                let ty = func.dfg.values[args[0]].ty;
+                ControlFlow::Continue(self.exec_icmp(*kind, lhs, rhs, ty))
             }
             InstructionData::FloatCompare { kind, args, .. } => {
-                let lhs = values[args[0].0 as usize];
-                let rhs = values[args[1].0 as usize];
-                ControlFlow::Continue(self.exec_fcmp(*kind, lhs, rhs))
+                let lhs = self.value_stack[base + args[0].0 as usize];
+                let rhs = self.value_stack[base + args[1].0 as usize];
+                let ty = func.dfg.values[args[0]].ty;
+                ControlFlow::Continue(self.exec_fcmp(*kind, lhs, rhs, ty))
             }
             InstructionData::Select {
                 condition,
@@ -594,61 +613,52 @@ impl Interpreter {
                 else_val,
                 ..
             } => {
-                let cond = match values[condition.0 as usize] {
-                    InterpreterValue::Bool(b) => b,
-                    _ => panic!("Invalid condition type for select: must be bool"),
-                };
+                let cond = self.value_stack[base + condition.0 as usize].unwarp_bool();
                 let val = if cond {
-                    values[then_val.0 as usize]
+                    self.value_stack[base + then_val.0 as usize]
                 } else {
-                    values[else_val.0 as usize]
+                    self.value_stack[base + else_val.0 as usize]
                 };
                 ControlFlow::Continue(val)
             }
             InstructionData::Load {
                 ptr, offset, ty, ..
             } => {
-                let addr = values[ptr.0 as usize].unwarp_i64() as usize + *offset as usize;
+                let addr = self.value_stack[base + ptr.0 as usize].unwarp_i64() as usize
+                    + *offset as usize;
                 let res = self.read_memory(vm, addr, *ty);
                 ControlFlow::Continue(res)
             }
             InstructionData::Store {
                 ptr, value, offset, ..
             } => {
-                let addr = values[ptr.0 as usize].unwarp_i64() as usize + *offset as usize;
-                let val = values[value.0 as usize];
+                let addr = self.value_stack[base + ptr.0 as usize].unwarp_i64() as usize
+                    + *offset as usize;
+                let val = self.value_stack[base + value.0 as usize];
                 let ty = func.dfg.values[*value].ty;
                 self.write_memory(vm, addr, val, ty);
-                ControlFlow::Continue(InterpreterValue::None)
+                ControlFlow::Continue(InterpreterValue::none())
             }
             InstructionData::StackAddr { slot, offset } => {
                 let addr = stack_slots[(*slot).0 as usize].as_mut_ptr() as i64 + (*offset as i64);
-                ControlFlow::Continue(InterpreterValue::I64(addr))
+                ControlFlow::Continue(InterpreterValue::i64(addr))
             }
             InstructionData::StackStore {
                 slot,
                 value,
                 offset,
             } => {
-                let val = values[value.0 as usize];
+                let val = self.value_stack[base + value.0 as usize];
                 let ty = func.dfg.values[*value].ty;
                 let slot_data = &mut stack_slots[slot.0 as usize];
-                if let InterpreterValue::None = val {
-                    panic!(
-                        "Interpreter error: attempting to store None to stack slot {:?} at offset {} from value {:?}. Instruction: {:?}",
-                        slot, offset, value, idata
-                    );
-                }
                 let bytes = match (val, ty) {
-                    (InterpreterValue::I32(v), Type::I8) => (v as u8).to_le_bytes().to_vec(),
-                    (InterpreterValue::I32(v), Type::I16) => (v as u16).to_le_bytes().to_vec(),
-                    (InterpreterValue::I32(v), _) => v.to_le_bytes().to_vec(),
-                    (InterpreterValue::I64(v), Type::I8) => (v as u8).to_le_bytes().to_vec(),
-                    (InterpreterValue::I64(v), Type::I16) => (v as u16).to_le_bytes().to_vec(),
-                    (InterpreterValue::I64(v), Type::I32) => (v as u32).to_le_bytes().to_vec(),
-                    (InterpreterValue::I64(v), _) => v.to_le_bytes().to_vec(),
-                    (InterpreterValue::F32(v), _) => v.to_bits().to_le_bytes().to_vec(),
-                    (InterpreterValue::F64(v), _) => v.to_bits().to_le_bytes().to_vec(),
+                    (v, Type::I8) => (v.unwarp_i32() as u8).to_le_bytes().to_vec(),
+                    (v, Type::I16) => (v.unwarp_i32() as u16).to_le_bytes().to_vec(),
+                    (v, Type::I32) => v.unwarp_i32().to_le_bytes().to_vec(),
+                    (v, Type::I64) => v.unwarp_i64().to_le_bytes().to_vec(),
+                    (v, Type::Ptr) => v.unwarp_i64().to_le_bytes().to_vec(),
+                    (v, Type::F32) => v.unwarp_f32().to_bits().to_le_bytes().to_vec(),
+                    (v, Type::F64) => v.unwarp_f64().to_bits().to_le_bytes().to_vec(),
                     _ => panic!(
                         "Unsupported stack store value: {:?} with type {:?}",
                         val, ty
@@ -656,37 +666,37 @@ impl Interpreter {
                 };
                 let off = *offset as usize;
                 slot_data[off..off + bytes.len()].copy_from_slice(&bytes);
-                ControlFlow::Continue(InterpreterValue::None)
+                ControlFlow::Continue(InterpreterValue::none())
             }
             InstructionData::StackLoad { slot, offset, ty } => {
                 let slot_data = &stack_slots[slot.0 as usize];
                 let off = *offset as usize;
                 let res = match ty {
-                    Type::I8 => InterpreterValue::I32(slot_data[off] as i32),
+                    Type::I8 => InterpreterValue::i32(slot_data[off] as i32),
                     Type::I16 => {
                         let mut b = [0u8; 2];
                         b.copy_from_slice(&slot_data[off..off + 2]);
-                        InterpreterValue::I32(u16::from_le_bytes(b) as i32)
+                        InterpreterValue::i32(u16::from_le_bytes(b) as i32)
                     }
                     Type::I32 => {
                         let mut b = [0u8; 4];
                         b.copy_from_slice(&slot_data[off..off + 4]);
-                        InterpreterValue::I32(i32::from_le_bytes(b))
+                        InterpreterValue::i32(i32::from_le_bytes(b))
                     }
                     Type::I64 => {
                         let mut b = [0u8; 8];
                         b.copy_from_slice(&slot_data[off..off + 8]);
-                        InterpreterValue::I64(i64::from_le_bytes(b))
+                        InterpreterValue::i64(i64::from_le_bytes(b))
                     }
                     Type::F32 => {
                         let mut b = [0u8; 4];
                         b.copy_from_slice(&slot_data[off..off + 4]);
-                        InterpreterValue::F32(f32::from_bits(u32::from_le_bytes(b)))
+                        InterpreterValue::f32(f32::from_bits(u32::from_le_bytes(b)))
                     }
                     Type::F64 => {
                         let mut b = [0u8; 8];
                         b.copy_from_slice(&slot_data[off..off + 8]);
-                        InterpreterValue::F64(f64::from_bits(u64::from_le_bytes(b)))
+                        InterpreterValue::f64(f64::from_bits(u64::from_le_bytes(b)))
                     }
                     _ => panic!("Unsupported stack load type"),
                 };
@@ -698,7 +708,7 @@ impl Interpreter {
                     .dfg
                     .get_value_list(dest_data.args)
                     .iter()
-                    .map(|&v| values[v.0 as usize])
+                    .map(|&v| self.value_stack[base + v.0 as usize])
                     .collect();
                 ControlFlow::Jump(dest_data.block, j_args)
             }
@@ -707,33 +717,27 @@ impl Interpreter {
                 then_dest,
                 else_dest,
             } => {
-                let cond = match values[condition.0 as usize] {
-                    InterpreterValue::Bool(b) => b,
-                    _ => panic!("Invalid condition type for br: must be bool"),
-                };
+                let cond = self.value_stack[base + condition.0 as usize].unwarp_bool();
                 let dest = if cond { then_dest } else { else_dest };
                 let dest_data = func.dfg.block_calls[*dest];
                 let j_args = func
                     .dfg
                     .get_value_list(dest_data.args)
                     .iter()
-                    .map(|&v| values[v.0 as usize])
+                    .map(|&v| self.value_stack[base + v.0 as usize])
                     .collect();
                 ControlFlow::Jump(dest_data.block, j_args)
             }
             InstructionData::Return { value } => {
                 let res = if let Some(v) = value {
-                    values[v.0 as usize]
+                    self.value_stack[base + v.0 as usize]
                 } else {
-                    InterpreterValue::None
+                    InterpreterValue::none()
                 };
                 ControlFlow::Return(res)
             }
             InstructionData::BrTable { index, table } => {
-                let idx = match values[index.0 as usize] {
-                    InterpreterValue::I32(v) => v as usize,
-                    _ => panic!("Invalid index type for br_table: must be i32"),
-                };
+                let idx = self.value_stack[base + index.0 as usize].unwarp_i32() as usize;
                 let table_data = &func.dfg.jump_tables[*table];
                 let target_call = if idx < table_data.targets.len() - 1 {
                     table_data.targets[idx + 1]
@@ -746,7 +750,7 @@ impl Interpreter {
                     .dfg
                     .get_value_list(target_data.args)
                     .iter()
-                    .map(|&v| values[v.0 as usize])
+                    .map(|&v| self.value_stack[base + v.0 as usize])
                     .collect();
                 ControlFlow::Jump(target_data.block, j_args)
             }
@@ -755,7 +759,7 @@ impl Interpreter {
                     .dfg
                     .get_value_list(*args)
                     .iter()
-                    .map(|&v| values[v.0 as usize])
+                    .map(|&v| self.value_stack[base + v.0 as usize])
                     .collect();
                 ControlFlow::Call(self.module_id, *func_id, call_args)
             }
@@ -765,12 +769,12 @@ impl Interpreter {
                 sig_id: _,
                 ..
             } => {
-                let ptr_val = values[ptr.0 as usize].unwarp_i64() as usize;
+                let ptr_val = self.value_stack[base + ptr.0 as usize].unwarp_i64() as usize;
                 let call_args: Vec<InterpreterValue> = func
                     .dfg
                     .get_value_list(*args)
                     .iter()
-                    .map(|&v| values[v.0 as usize])
+                    .map(|&v| self.value_stack[base + v.0 as usize])
                     .collect();
 
                 // 检查是否为虚拟指针 (Tagged Pointer)
@@ -789,19 +793,19 @@ impl Interpreter {
                 }
             }
             InstructionData::IntToPtr { arg } => {
-                let v = values[arg.0 as usize].unwarp_i64();
-                ControlFlow::Continue(InterpreterValue::I64(v))
+                let v = self.value_stack[base + arg.0 as usize].unwarp_i64();
+                ControlFlow::Continue(InterpreterValue::i64(v))
             }
             InstructionData::PtrToInt { arg, ty } => {
-                let v = values[arg.0 as usize].unwarp_i64();
+                let v = self.value_stack[base + arg.0 as usize].unwarp_i64();
                 match ty {
-                    Type::I32 => ControlFlow::Continue(InterpreterValue::I32(v as i32)),
-                    _ => ControlFlow::Continue(InterpreterValue::I64(v)),
+                    Type::I32 => ControlFlow::Continue(InterpreterValue::i32(v as i32)),
+                    _ => ControlFlow::Continue(InterpreterValue::i64(v)),
                 }
             }
             InstructionData::PtrOffset { ptr, offset } => {
-                let p = values[ptr.0 as usize].unwarp_i64();
-                ControlFlow::Continue(InterpreterValue::I64(p + *offset as i64))
+                let p = self.value_stack[base + ptr.0 as usize].unwarp_i64();
+                ControlFlow::Continue(InterpreterValue::i64(p + *offset as i64))
             }
             InstructionData::PtrIndex {
                 ptr,
@@ -809,9 +813,9 @@ impl Interpreter {
                 scale,
                 offset,
             } => {
-                let p = values[ptr.0 as usize].unwarp_i64();
-                let idx = values[index.0 as usize].unwarp_i64();
-                ControlFlow::Continue(InterpreterValue::I64(
+                let p = self.value_stack[base + ptr.0 as usize].unwarp_i64();
+                let idx = self.value_stack[base + index.0 as usize].unwarp_i64();
+                ControlFlow::Continue(InterpreterValue::i64(
                     p + idx * (*scale as i64) + (*offset as i64),
                 ))
             }
@@ -824,97 +828,162 @@ impl Interpreter {
         opcode: Opcode,
         lhs: InterpreterValue,
         rhs: InterpreterValue,
+        ty: Type,
     ) -> InterpreterValue {
-        match lhs {
-            InterpreterValue::I32(a) => {
-                let b = rhs.unwarp_i32();
-                let res = match opcode {
-                    Opcode::Iadd => a.wrapping_add(b),
-                    Opcode::Isub => a.wrapping_sub(b),
-                    Opcode::Imul => a.wrapping_mul(b),
-                    Opcode::Idiv => a.wrapping_div(b),
-                    Opcode::Udiv => (a as u32 / b as u32) as i32,
-                    Opcode::Irem => a.wrapping_rem(b),
-                    Opcode::Urem => (a as u32 % b as u32) as i32,
-                    Opcode::And => a & b,
-                    Opcode::Or => a | b,
-                    Opcode::Xor => a ^ b,
-                    Opcode::Shl => a.wrapping_shl(b as u32),
-                    Opcode::ShrS => a.wrapping_shr(b as u32),
-                    Opcode::ShrU => ((a as u32).wrapping_shr(b as u32 & 31)) as i32,
-                    Opcode::Rotl => a.rotate_left(b as u32),
-                    Opcode::Rotr => a.rotate_right(b as u32),
-                    _ => panic!("Unsupported I32 binary op: {:?}", opcode),
-                };
-                InterpreterValue::I32(res)
-            }
-            InterpreterValue::I64(a) => {
-                let b = rhs.unwarp_i64();
-                match opcode {
-                    Opcode::Iadd => InterpreterValue::I64(a.wrapping_add(b)),
-                    Opcode::Isub => InterpreterValue::I64(a.wrapping_sub(b)),
-                    Opcode::Imul => InterpreterValue::I64(a.wrapping_mul(b)),
-                    Opcode::Idiv => InterpreterValue::I64(a.wrapping_div(b)),
-                    Opcode::Udiv => InterpreterValue::I64((a as u64 / b as u64) as i64),
-                    Opcode::Irem => InterpreterValue::I64(a.wrapping_rem(b)),
-                    Opcode::Urem => InterpreterValue::I64((a as u64 % b as u64) as i64),
-                    Opcode::And => InterpreterValue::I64(a & b),
-                    Opcode::Or => InterpreterValue::I64(a | b),
-                    Opcode::Xor => InterpreterValue::I64(a ^ b),
-                    Opcode::Shl => InterpreterValue::I64(a.wrapping_shl(b as u32)),
-                    Opcode::ShrS => InterpreterValue::I64(a.wrapping_shr(b as u32)),
-                    Opcode::ShrU => {
-                        InterpreterValue::I64(((a as u64).wrapping_shr(b as u32 & 63)) as i64)
-                    }
-                    Opcode::Rotl => InterpreterValue::I64(a.rotate_left(b as u32)),
-                    Opcode::Rotr => InterpreterValue::I64(a.rotate_right(b as u32)),
-                    Opcode::Copysign => {
-                        let fa = f64::from_bits(a as u64);
-                        let fb = f64::from_bits(b as u64);
-                        InterpreterValue::F64(fa.copysign(fb))
-                    }
-                    _ => panic!("Unsupported I64 binary op: {:?}", opcode),
+        match opcode {
+            Opcode::Iadd => {
+                if ty == Type::I32 {
+                    InterpreterValue::i32(lhs.unwarp_i32().wrapping_add(rhs.unwarp_i32()))
+                } else {
+                    InterpreterValue::i64(lhs.unwarp_i64().wrapping_add(rhs.unwarp_i64()))
                 }
             }
-            InterpreterValue::F32(a) => {
-                let b = rhs.unwarp_f32();
-                let res = match opcode {
-                    Opcode::Fadd => a + b,
-                    Opcode::Fsub => a - b,
-                    Opcode::Fmul => a * b,
-                    Opcode::Fdiv => a / b,
-                    Opcode::Min => a.min(b),
-                    Opcode::Max => a.max(b),
-                    Opcode::Copysign => a.copysign(b),
-                    _ => panic!("Unsupported F32 binary op: {:?}", opcode),
-                };
-                InterpreterValue::F32(res)
+            Opcode::Isub => {
+                if ty == Type::I32 {
+                    InterpreterValue::i32(lhs.unwarp_i32().wrapping_sub(rhs.unwarp_i32()))
+                } else {
+                    InterpreterValue::i64(lhs.unwarp_i64().wrapping_sub(rhs.unwarp_i64()))
+                }
             }
-            InterpreterValue::F64(a) => {
-                let b = rhs.unwarp_f64();
-                let res = match opcode {
-                    Opcode::Fadd => a + b,
-                    Opcode::Fsub => a - b,
-                    Opcode::Fmul => a * b,
-                    Opcode::Fdiv => a / b,
-                    Opcode::Min => a.min(b),
-                    Opcode::Max => a.max(b),
-                    Opcode::Copysign => a.copysign(b),
-                    _ => panic!("Unsupported F64 binary op: {:?}", opcode),
-                };
-                InterpreterValue::F64(res)
+            Opcode::Imul => {
+                if ty == Type::I32 {
+                    InterpreterValue::i32(lhs.unwarp_i32().wrapping_mul(rhs.unwarp_i32()))
+                } else {
+                    InterpreterValue::i64(lhs.unwarp_i64().wrapping_mul(rhs.unwarp_i64()))
+                }
             }
-            InterpreterValue::Bool(a) => {
-                let b = rhs.unwarp_bool();
-                let res = match opcode {
-                    Opcode::And => a & b,
-                    Opcode::Or => a | b,
-                    Opcode::Xor => a ^ b,
-                    _ => panic!("Unsupported Bool binary op: {:?}", opcode),
-                };
-                InterpreterValue::Bool(res)
+            Opcode::Idiv => {
+                if ty == Type::I32 {
+                    let a = lhs.unwarp_i32();
+                    let b = rhs.unwarp_i32();
+                    InterpreterValue::i32(a.wrapping_div(b))
+                } else {
+                    let a = lhs.unwarp_i64();
+                    let b = rhs.unwarp_i64();
+                    InterpreterValue::i64(a.wrapping_div(b))
+                }
             }
-            _ => todo!("Binary op {:?} for {:?}", opcode, lhs),
+            Opcode::Udiv => {
+                if ty == Type::I32 {
+                    let a = lhs.unwarp_i32() as u32;
+                    let b = rhs.unwarp_i32() as u32;
+                    InterpreterValue::i32((a / b) as i32)
+                } else {
+                    let a = lhs.0;
+                    let b = rhs.0;
+                    InterpreterValue::i64((a / b) as i64)
+                }
+            }
+            Opcode::Irem => {
+                if ty == Type::I32 {
+                    let a = lhs.unwarp_i32();
+                    let b = rhs.unwarp_i32();
+                    InterpreterValue::i32(a.wrapping_rem(b))
+                } else {
+                    let a = lhs.unwarp_i64();
+                    let b = rhs.unwarp_i64();
+                    InterpreterValue::i64(a.wrapping_rem(b))
+                }
+            }
+            Opcode::Urem => {
+                if ty == Type::I32 {
+                    let a = lhs.unwarp_i32() as u32;
+                    let b = rhs.unwarp_i32() as u32;
+                    InterpreterValue::i32((a % b) as i32)
+                } else {
+                    let a = lhs.0;
+                    let b = rhs.0;
+                    InterpreterValue::i64((a % b) as i64)
+                }
+            }
+            Opcode::And => InterpreterValue(lhs.0 & rhs.0),
+            Opcode::Or => InterpreterValue(lhs.0 | rhs.0),
+            Opcode::Xor => InterpreterValue(lhs.0 ^ rhs.0),
+            Opcode::Shl => {
+                if ty == Type::I32 {
+                    InterpreterValue::i32(lhs.unwarp_i32().wrapping_shl(rhs.0 as u32 % 32))
+                } else {
+                    InterpreterValue::i64(lhs.unwarp_i64().wrapping_shl(rhs.0 as u32 % 64))
+                }
+            }
+            Opcode::ShrS => {
+                if ty == Type::I32 {
+                    InterpreterValue::i32(lhs.unwarp_i32().wrapping_shr(rhs.0 as u32 % 32))
+                } else {
+                    InterpreterValue::i64(lhs.unwarp_i64().wrapping_shr(rhs.0 as u32 % 64))
+                }
+            }
+            Opcode::ShrU => {
+                if ty == Type::I32 {
+                    InterpreterValue::i32((lhs.0 as u32).wrapping_shr(rhs.0 as u32 % 32) as i32)
+                } else {
+                    InterpreterValue::i64(lhs.0.wrapping_shr(rhs.0 as u32 % 64) as i64)
+                }
+            }
+            Opcode::Rotl => {
+                if ty == Type::I32 {
+                    InterpreterValue::i32((lhs.0 as u32).rotate_left(rhs.0 as u32 % 32) as i32)
+                } else {
+                    InterpreterValue::i64(lhs.0.rotate_left(rhs.0 as u32 % 64) as i64)
+                }
+            }
+            Opcode::Rotr => {
+                if ty == Type::I32 {
+                    InterpreterValue::i32((lhs.0 as u32).rotate_right(rhs.0 as u32 % 32) as i32)
+                } else {
+                    InterpreterValue::i64(lhs.0.rotate_right(rhs.0 as u32 % 64) as i64)
+                }
+            }
+            Opcode::Fadd => {
+                if ty == Type::F32 {
+                    InterpreterValue::f32(lhs.unwarp_f32() + rhs.unwarp_f32())
+                } else {
+                    InterpreterValue::f64(lhs.unwarp_f64() + rhs.unwarp_f64())
+                }
+            }
+            Opcode::Fsub => {
+                if ty == Type::F32 {
+                    InterpreterValue::f32(lhs.unwarp_f32() - rhs.unwarp_f32())
+                } else {
+                    InterpreterValue::f64(lhs.unwarp_f64() - rhs.unwarp_f64())
+                }
+            }
+            Opcode::Fmul => {
+                if ty == Type::F32 {
+                    InterpreterValue::f32(lhs.unwarp_f32() * rhs.unwarp_f32())
+                } else {
+                    InterpreterValue::f64(lhs.unwarp_f64() * rhs.unwarp_f64())
+                }
+            }
+            Opcode::Fdiv => {
+                if ty == Type::F32 {
+                    InterpreterValue::f32(lhs.unwarp_f32() / rhs.unwarp_f32())
+                } else {
+                    InterpreterValue::f64(lhs.unwarp_f64() / rhs.unwarp_f64())
+                }
+            }
+            Opcode::Min => {
+                if ty == Type::F32 {
+                    InterpreterValue::f32(lhs.unwarp_f32().min(rhs.unwarp_f32()))
+                } else {
+                    InterpreterValue::f64(lhs.unwarp_f64().min(rhs.unwarp_f64()))
+                }
+            }
+            Opcode::Max => {
+                if ty == Type::F32 {
+                    InterpreterValue::f32(lhs.unwarp_f32().max(rhs.unwarp_f32()))
+                } else {
+                    InterpreterValue::f64(lhs.unwarp_f64().max(rhs.unwarp_f64()))
+                }
+            }
+            Opcode::Copysign => {
+                if ty == Type::F32 {
+                    InterpreterValue::f32(lhs.unwarp_f32().copysign(rhs.unwarp_f32()))
+                } else {
+                    InterpreterValue::f64(lhs.unwarp_f64().copysign(rhs.unwarp_f64()))
+                }
+            }
+            _ => todo!("Implement more binary ops: {:?}", opcode),
         }
     }
 
@@ -923,58 +992,45 @@ impl Interpreter {
         kind: IntCC,
         lhs: InterpreterValue,
         rhs: InterpreterValue,
+        ty: Type,
     ) -> InterpreterValue {
-        let res = match lhs {
-            InterpreterValue::I32(a) => {
-                let b = rhs.unwarp_i32();
-                match kind {
-                    IntCC::Eq => a == b,
-                    IntCC::Ne => a != b,
-                    IntCC::LtS => a < b,
-                    IntCC::LeS => a <= b,
-                    IntCC::GtS => a > b,
-                    IntCC::GeS => a >= b,
-                    IntCC::LtU => (a as u32) < (b as u32),
-                    IntCC::LeU => (a as u32) <= (b as u32),
-                    IntCC::GtU => (a as u32) > (b as u32),
-                    IntCC::GeU => (a as u32) >= (b as u32),
+        let res = match kind {
+            IntCC::Eq => lhs.0 == rhs.0,
+            IntCC::Ne => lhs.0 != rhs.0,
+            IntCC::LtS => {
+                if ty == Type::I32 {
+                    lhs.unwarp_i32() < rhs.unwarp_i32()
+                } else {
+                    lhs.unwarp_i64() < rhs.unwarp_i64()
                 }
             }
-            InterpreterValue::I64(_) | InterpreterValue::None => {
-                let b = rhs.unwarp_i64();
-                let a = lhs.unwarp_i64();
-                match kind {
-                    IntCC::Eq => a == b,
-                    IntCC::Ne => a != b,
-                    IntCC::LtS => a < b,
-                    IntCC::LeS => a <= b,
-                    IntCC::GtS => a > b,
-                    IntCC::GeS => a >= b,
-                    IntCC::LtU => (a as u64) < (b as u64),
-                    IntCC::LeU => (a as u64) <= (b as u64),
-                    IntCC::GtU => (a as u64) > (b as u64),
-                    IntCC::GeU => (a as u64) >= (b as u64),
+            IntCC::LeS => {
+                if ty == Type::I32 {
+                    lhs.unwarp_i32() <= rhs.unwarp_i32()
+                } else {
+                    lhs.unwarp_i64() <= rhs.unwarp_i64()
                 }
             }
-            InterpreterValue::Bool(a) => {
-                let b = rhs.unwarp_bool();
-                match kind {
-                    IntCC::Eq => a == b,
-                    IntCC::Ne => a != b,
-                    _ => panic!("Unsupported icmp kind for Bool: {:?}", kind),
+            IntCC::GtS => {
+                if ty == Type::I32 {
+                    lhs.unwarp_i32() > rhs.unwarp_i32()
+                } else {
+                    lhs.unwarp_i64() > rhs.unwarp_i64()
                 }
             }
-            _ => {
-                let a = lhs.unwarp_i64();
-                let b = rhs.unwarp_i64();
-                match kind {
-                    IntCC::Eq => a == b,
-                    IntCC::Ne => a != b,
-                    _ => panic!("Unsupported icmp types: {:?}, {:?}", lhs, rhs),
+            IntCC::GeS => {
+                if ty == Type::I32 {
+                    lhs.unwarp_i32() >= rhs.unwarp_i32()
+                } else {
+                    lhs.unwarp_i64() >= rhs.unwarp_i64()
                 }
             }
+            IntCC::LtU => lhs.0 < rhs.0,
+            IntCC::LeU => lhs.0 <= rhs.0,
+            IntCC::GtU => lhs.0 > rhs.0,
+            IntCC::GeU => lhs.0 >= rhs.0,
         };
-        InterpreterValue::Bool(res)
+        InterpreterValue::bool(res)
     }
 
     fn exec_fcmp(
@@ -982,33 +1038,32 @@ impl Interpreter {
         kind: FloatCC,
         lhs: InterpreterValue,
         rhs: InterpreterValue,
+        ty: Type,
     ) -> InterpreterValue {
-        let res = match lhs {
-            InterpreterValue::F32(a) => {
-                let b = rhs.unwarp_f32();
-                match kind {
-                    FloatCC::Eq => a == b,
-                    FloatCC::Ne => a != b,
-                    FloatCC::Lt => a < b,
-                    FloatCC::Le => a <= b,
-                    FloatCC::Gt => a > b,
-                    FloatCC::Ge => a >= b,
-                }
+        let res = if ty == Type::F32 {
+            let a = lhs.unwarp_f32();
+            let b = rhs.unwarp_f32();
+            match kind {
+                FloatCC::Eq => a == b,
+                FloatCC::Ne => a != b,
+                FloatCC::Lt => a < b,
+                FloatCC::Le => a <= b,
+                FloatCC::Gt => a > b,
+                FloatCC::Ge => a >= b,
             }
-            InterpreterValue::F64(a) => {
-                let b = rhs.unwarp_f64();
-                match kind {
-                    FloatCC::Eq => a == b,
-                    FloatCC::Ne => a != b,
-                    FloatCC::Lt => a < b,
-                    FloatCC::Le => a <= b,
-                    FloatCC::Gt => a > b,
-                    FloatCC::Ge => a >= b,
-                }
+        } else {
+            let a = lhs.unwarp_f64();
+            let b = rhs.unwarp_f64();
+            match kind {
+                FloatCC::Eq => a == b,
+                FloatCC::Ne => a != b,
+                FloatCC::Lt => a < b,
+                FloatCC::Le => a <= b,
+                FloatCC::Gt => a > b,
+                FloatCC::Ge => a >= b,
             }
-            _ => panic!("Invalid types for fcmp: {:?}", lhs),
         };
-        InterpreterValue::Bool(res)
+        InterpreterValue::bool(res)
     }
 
     fn exec_unary(
@@ -1018,194 +1073,162 @@ impl Interpreter {
         arg_ty: Type,
         res_ty: Type,
     ) -> InterpreterValue {
-        match val {
-            InterpreterValue::Bool(v) => match opcode {
-                Opcode::ExtendU => {
-                    let bits = if v { 1i64 } else { 0i64 };
-                    if res_ty == Type::I32 {
-                        InterpreterValue::I32(bits as i32)
+        match opcode {
+            Opcode::Ineg => {
+                if res_ty == Type::I32 {
+                    InterpreterValue::i32(val.unwarp_i32().wrapping_neg())
+                } else {
+                    InterpreterValue::i64(val.unwarp_i64().wrapping_neg())
+                }
+            }
+            Opcode::Eqz => InterpreterValue::bool(val.0 == 0),
+            Opcode::Clz => {
+                if res_ty == Type::I32 {
+                    InterpreterValue::i32((val.0 as u32).leading_zeros() as i32)
+                } else {
+                    InterpreterValue::i64(val.0.leading_zeros() as i64)
+                }
+            }
+            Opcode::Ctz => {
+                if res_ty == Type::I32 {
+                    InterpreterValue::i32((val.0 as u32).trailing_zeros() as i32)
+                } else {
+                    InterpreterValue::i64(val.0.trailing_zeros() as i64)
+                }
+            }
+            Opcode::Popcnt => {
+                if res_ty == Type::I32 {
+                    InterpreterValue::i32((val.0 as u32).count_ones() as i32)
+                } else {
+                    InterpreterValue::i64(val.0.count_ones() as i64)
+                }
+            }
+            Opcode::Abs => {
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(val.unwarp_f32().abs())
+                } else {
+                    InterpreterValue::f64(val.unwarp_f64().abs())
+                }
+            }
+            Opcode::Fneg => {
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(-val.unwarp_f32())
+                } else {
+                    InterpreterValue::f64(-val.unwarp_f64())
+                }
+            }
+            Opcode::Sqrt => {
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(val.unwarp_f32().sqrt())
+                } else {
+                    InterpreterValue::f64(val.unwarp_f64().sqrt())
+                }
+            }
+            Opcode::Ceil => {
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(val.unwarp_f32().ceil())
+                } else {
+                    InterpreterValue::f64(val.unwarp_f64().ceil())
+                }
+            }
+            Opcode::Floor => {
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(val.unwarp_f32().floor())
+                } else {
+                    InterpreterValue::f64(val.unwarp_f64().floor())
+                }
+            }
+            Opcode::Trunc => {
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(val.unwarp_f32().trunc())
+                } else {
+                    InterpreterValue::f64(val.unwarp_f64().trunc())
+                }
+            }
+            Opcode::Nearest => {
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(val.unwarp_f32().round_ties_even())
+                } else {
+                    InterpreterValue::f64(val.unwarp_f64().round_ties_even())
+                }
+            }
+            Opcode::ExtendS => {
+                let v = val.0;
+                match arg_ty {
+                    Type::I8 => InterpreterValue::i64(v as i8 as i64),
+                    Type::I16 => InterpreterValue::i64(v as i16 as i64),
+                    Type::I32 => InterpreterValue::i64(v as i32 as i64),
+                    _ => val,
+                }
+            }
+            Opcode::ExtendU => {
+                let v = val.0;
+                match arg_ty {
+                    Type::I8 => InterpreterValue::i64(v as u8 as i64),
+                    Type::I16 => InterpreterValue::i64(v as u16 as i64),
+                    Type::I32 => InterpreterValue::i64(v as u32 as i64),
+                    _ => val,
+                }
+            }
+            Opcode::Wrap => InterpreterValue::i32(val.0 as i32),
+            Opcode::Promote => InterpreterValue::f64(val.unwarp_f32() as f64),
+            Opcode::Demote => InterpreterValue::f32(val.unwarp_f64() as f32),
+            Opcode::ConvertS => {
+                let v = if arg_ty == Type::I32 {
+                    val.unwarp_i32() as i64
+                } else {
+                    val.unwarp_i64()
+                };
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(v as f32)
+                } else {
+                    InterpreterValue::f64(v as f64)
+                }
+            }
+            Opcode::ConvertU => {
+                let v = if arg_ty == Type::I32 {
+                    val.unwarp_i32() as u32 as u64
+                } else {
+                    val.unwarp_i64() as u64
+                };
+                if res_ty == Type::F32 {
+                    InterpreterValue::f32(v as f32)
+                } else {
+                    InterpreterValue::f64(v as f64)
+                }
+            }
+            Opcode::TruncS => {
+                if res_ty == Type::I32 {
+                    if arg_ty == Type::F32 {
+                        InterpreterValue::i32(val.unwarp_f32() as i32)
                     } else {
-                        InterpreterValue::I64(bits)
+                        InterpreterValue::i32(val.unwarp_f64() as i32)
                     }
-                }
-                _ => panic!("Unary op {:?} for Bool", opcode),
-            },
-            InterpreterValue::I32(v) => match opcode {
-                Opcode::Ineg => InterpreterValue::I32(v.wrapping_neg()),
-                Opcode::Eqz => InterpreterValue::Bool(v == 0),
-                Opcode::Clz => InterpreterValue::I32(v.leading_zeros() as i32),
-                Opcode::Ctz => InterpreterValue::I32(v.trailing_zeros() as i32),
-                Opcode::Popcnt => InterpreterValue::I32(v.count_ones() as i32),
-                Opcode::ExtendS => {
-                    let bits = v as i64;
-                    match (arg_ty, res_ty) {
-                        (Type::I8, Type::I32) => InterpreterValue::I32((bits as i8) as i32),
-                        (Type::I8, Type::I64) | (Type::I8, Type::Ptr) => {
-                            InterpreterValue::I64((bits as i8) as i64)
-                        }
-                        (Type::I16, Type::I32) => InterpreterValue::I32((bits as i16) as i32),
-                        (Type::I16, Type::I64) | (Type::I16, Type::Ptr) => {
-                            InterpreterValue::I64((bits as i16) as i64)
-                        }
-                        (Type::I32, Type::I64) | (Type::I32, Type::Ptr) => {
-                            InterpreterValue::I64(v as i32 as i64)
-                        }
-                        _ => panic!("Invalid ExtendS: {:?} -> {:?}", arg_ty, res_ty),
-                    }
-                }
-                Opcode::ExtendU => {
-                    let bits = v as u64;
-                    match (arg_ty, res_ty) {
-                        (Type::I8, Type::I32) => InterpreterValue::I32((bits as u8) as i32),
-                        (Type::I8, Type::I64) | (Type::I8, Type::Ptr) => {
-                            InterpreterValue::I64((bits as u8) as i64)
-                        }
-                        (Type::I16, Type::I32) => InterpreterValue::I32((bits as u16) as i32),
-                        (Type::I16, Type::I64) | (Type::I16, Type::Ptr) => {
-                            InterpreterValue::I64((bits as u16) as i64)
-                        }
-                        (Type::I32, Type::I64) | (Type::I32, Type::Ptr) => {
-                            InterpreterValue::I64(v as u32 as i64)
-                        }
-                        _ => panic!("Invalid ExtendU: {:?} -> {:?}", arg_ty, res_ty),
-                    }
-                }
-                Opcode::Wrap => InterpreterValue::I32(v), // Already I32
-                Opcode::Reinterpret => {
-                    if res_ty == Type::F32 {
-                        InterpreterValue::F32(f32::from_bits(v as u32))
+                } else {
+                    if arg_ty == Type::F32 {
+                        InterpreterValue::i64(val.unwarp_f32() as i64)
                     } else {
-                        val
+                        InterpreterValue::i64(val.unwarp_f64() as i64)
                     }
                 }
-                Opcode::ConvertS | Opcode::ConvertU => {
-                    if res_ty == Type::F32 {
-                        if opcode == Opcode::ConvertS {
-                            InterpreterValue::F32(v as f32)
-                        } else {
-                            InterpreterValue::F32(v as u32 as f32)
-                        }
-                    } else if res_ty == Type::F64 {
-                        if opcode == Opcode::ConvertS {
-                            InterpreterValue::F64(v as f64)
-                        } else {
-                            InterpreterValue::F64(v as u32 as f64)
-                        }
+            }
+            Opcode::TruncU => {
+                if res_ty == Type::I32 {
+                    if arg_ty == Type::F32 {
+                        InterpreterValue::i32(val.unwarp_f32() as u32 as i32)
                     } else {
-                        panic!("Invalid Convert target: {:?}", res_ty)
+                        InterpreterValue::i32(val.unwarp_f64() as u32 as i32)
                     }
-                }
-                _ => todo!("Unary op {:?} for I32", opcode),
-            },
-            InterpreterValue::I64(v) => match opcode {
-                Opcode::Ineg => InterpreterValue::I64(v.wrapping_neg()),
-                Opcode::Eqz => InterpreterValue::Bool(v == 0),
-                Opcode::Clz => InterpreterValue::I64(v.leading_zeros() as i64),
-                Opcode::Ctz => InterpreterValue::I64(v.trailing_zeros() as i64),
-                Opcode::Popcnt => InterpreterValue::I64(v.count_ones() as i64),
-                Opcode::Wrap => InterpreterValue::I32(v as i32),
-                Opcode::ExtendS => {
-                    if arg_ty == Type::I32 {
-                        InterpreterValue::I64(v as i32 as i64)
+                } else {
+                    if arg_ty == Type::F32 {
+                        InterpreterValue::i64(val.unwarp_f32() as u64 as i64)
                     } else {
-                        val
+                        InterpreterValue::i64(val.unwarp_f64() as u64 as i64)
                     }
                 }
-                Opcode::ExtendU => {
-                    if arg_ty == Type::I32 {
-                        InterpreterValue::I64(v as u32 as i64)
-                    } else {
-                        val
-                    }
-                }
-                Opcode::Reinterpret => {
-                    if res_ty == Type::F64 {
-                        InterpreterValue::F64(f64::from_bits(v as u64))
-                    } else {
-                        val
-                    }
-                }
-                Opcode::ConvertS | Opcode::ConvertU => {
-                    if res_ty == Type::F32 {
-                        if opcode == Opcode::ConvertS {
-                            InterpreterValue::F32(v as f32)
-                        } else {
-                            InterpreterValue::F32(v as u64 as f32)
-                        }
-                    } else if res_ty == Type::F64 {
-                        if opcode == Opcode::ConvertS {
-                            InterpreterValue::F64(v as f64)
-                        } else {
-                            InterpreterValue::F64(v as u64 as f64)
-                        }
-                    } else {
-                        panic!("Invalid Convert target: {:?}", res_ty)
-                    }
-                }
-                _ => todo!("Unary op {:?} for I64", opcode),
-            },
-            InterpreterValue::F32(v) => match opcode {
-                Opcode::Fneg => InterpreterValue::F32(-v),
-                Opcode::Abs => InterpreterValue::F32(v.abs()),
-                Opcode::Sqrt => InterpreterValue::F32(v.sqrt()),
-                Opcode::Ceil => InterpreterValue::F32(v.ceil()),
-                Opcode::Floor => InterpreterValue::F32(v.floor()),
-                Opcode::Trunc => InterpreterValue::F32(v.trunc()),
-                Opcode::Nearest => InterpreterValue::F32(v.round_ties_even()),
-                Opcode::Promote => InterpreterValue::F64(v as f64),
-                Opcode::Reinterpret => InterpreterValue::I32(v.to_bits() as i32),
-                Opcode::TruncS | Opcode::TruncU => {
-                    if res_ty == Type::I32 {
-                        if opcode == Opcode::TruncS {
-                            InterpreterValue::I32(v.trunc() as i32)
-                        } else {
-                            InterpreterValue::I32(v.trunc() as u32 as i32)
-                        }
-                    } else if res_ty == Type::I64 {
-                        if opcode == Opcode::TruncS {
-                            InterpreterValue::I64(v.trunc() as i64)
-                        } else {
-                            InterpreterValue::I64(v.trunc() as u64 as i64)
-                        }
-                    } else {
-                        panic!("Invalid Trunc target: {:?}", res_ty)
-                    }
-                }
-                _ => todo!("Unary op {:?} for F32", opcode),
-            },
-            InterpreterValue::F64(v) => match opcode {
-                Opcode::Fneg => InterpreterValue::F64(-v),
-                Opcode::Abs => InterpreterValue::F64(v.abs()),
-                Opcode::Sqrt => InterpreterValue::F64(v.sqrt()),
-                Opcode::Ceil => InterpreterValue::F64(v.ceil()),
-                Opcode::Floor => InterpreterValue::F64(v.floor()),
-                Opcode::Trunc => InterpreterValue::F64(v.trunc()),
-                Opcode::Nearest => InterpreterValue::F64(v.round_ties_even()),
-                Opcode::Demote => InterpreterValue::F32(v as f32),
-                Opcode::Reinterpret => InterpreterValue::I64(v.to_bits() as i64),
-                Opcode::TruncS | Opcode::TruncU => {
-                    if res_ty == Type::I32 {
-                        if opcode == Opcode::TruncS {
-                            InterpreterValue::I32(v.trunc() as i32)
-                        } else {
-                            InterpreterValue::I32(v.trunc() as u32 as i32)
-                        }
-                    } else if res_ty == Type::I64 {
-                        if opcode == Opcode::TruncS {
-                            InterpreterValue::I64(v.trunc() as i64)
-                        } else {
-                            InterpreterValue::I64(v.trunc() as u64 as i64)
-                        }
-                    } else {
-                        panic!("Invalid Trunc target: {:?}", res_ty)
-                    }
-                }
-                _ => todo!("Unary op {:?} for F64", opcode),
-            },
-            _ => panic!(
-                "not yet implemented: Unary op {:?} for {:?} (arg_ty: {:?}, res_ty: {:?})",
-                opcode, val, arg_ty, res_ty
-            ),
+            }
+            Opcode::Reinterpret => val,
+            _ => todo!("Implement more unary ops: {:?}", opcode),
         }
     }
 
@@ -1217,27 +1240,27 @@ impl Interpreter {
             match res_ty {
                 Type::I8 => {
                     let val = core::ptr::read_unaligned(host_ptr as *const i8);
-                    InterpreterValue::I32(val as i32)
+                    InterpreterValue::i32(val as i32)
                 }
                 Type::I16 => {
                     let val = core::ptr::read_unaligned(host_ptr as *const i16);
-                    InterpreterValue::I32(val as i32)
+                    InterpreterValue::i32(val as i32)
                 }
                 Type::I32 => {
                     let val = core::ptr::read_unaligned(host_ptr as *const i32);
-                    InterpreterValue::I32(val)
+                    InterpreterValue::i32(val)
                 }
                 Type::I64 | Type::Ptr => {
                     let val = core::ptr::read_unaligned(host_ptr as *const i64);
-                    InterpreterValue::I64(val)
+                    InterpreterValue::i64(val)
                 }
                 Type::F32 => {
                     let val = core::ptr::read_unaligned(host_ptr as *const f32);
-                    InterpreterValue::F32(val)
+                    InterpreterValue::f32(val)
                 }
                 Type::F64 => {
                     let val = core::ptr::read_unaligned(host_ptr as *const f64);
-                    InterpreterValue::F64(val)
+                    InterpreterValue::f64(val)
                 }
                 _ => todo!("Implement more memory read types: {:?}", res_ty),
             }
@@ -1255,39 +1278,26 @@ impl Interpreter {
         let host_ptr = vm.translate_addr(addr, size).expect("Memory out of bounds");
 
         unsafe {
-            match (val, res_ty) {
-                (InterpreterValue::I32(v), Type::I8) => {
-                    core::ptr::write_unaligned(host_ptr as *mut i8, v as i8);
+            match res_ty {
+                Type::I8 => {
+                    core::ptr::write_unaligned(host_ptr as *mut i8, val.0 as i8);
                 }
-                (InterpreterValue::I32(v), Type::I16) => {
-                    core::ptr::write_unaligned(host_ptr as *mut i16, v as i16);
+                Type::I16 => {
+                    core::ptr::write_unaligned(host_ptr as *mut i16, val.0 as i16);
                 }
-                (InterpreterValue::I32(v), Type::I32) => {
-                    core::ptr::write_unaligned(host_ptr as *mut i32, v);
+                Type::I32 => {
+                    core::ptr::write_unaligned(host_ptr as *mut i32, val.0 as i32);
                 }
-                (InterpreterValue::I64(v), Type::I8) => {
-                    core::ptr::write_unaligned(host_ptr as *mut i8, v as i8);
+                Type::I64 | Type::Ptr => {
+                    core::ptr::write_unaligned(host_ptr as *mut i64, val.0 as i64);
                 }
-                (InterpreterValue::I64(v), Type::I16) => {
-                    core::ptr::write_unaligned(host_ptr as *mut i16, v as i16);
+                Type::F32 => {
+                    core::ptr::write_unaligned(host_ptr as *mut f32, val.unwarp_f32());
                 }
-                (InterpreterValue::I64(v), Type::I32) => {
-                    core::ptr::write_unaligned(host_ptr as *mut i32, v as i32);
+                Type::F64 => {
+                    core::ptr::write_unaligned(host_ptr as *mut f64, val.unwarp_f64());
                 }
-                (InterpreterValue::I64(v), Type::I64) | (InterpreterValue::I64(v), Type::Ptr) => {
-                    core::ptr::write_unaligned(host_ptr as *mut i64, v);
-                }
-                (InterpreterValue::F32(v), _) => {
-                    core::ptr::write_unaligned(host_ptr as *mut f32, v);
-                }
-                (InterpreterValue::F64(v), _) => {
-                    core::ptr::write_unaligned(host_ptr as *mut f64, v);
-                }
-                _ => todo!(
-                    "Implement more memory write types: {:?} to {:?}",
-                    val,
-                    res_ty
-                ),
+                _ => todo!("Implement more memory write types: {:?}", res_ty),
             }
         }
     }

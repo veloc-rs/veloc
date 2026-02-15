@@ -69,6 +69,8 @@ pub enum Val {
     I64(i64),
     F32(f32),
     F64(f64),
+    Externref(u32),
+    Funcref(Option<crate::vm::VMFuncRef>),
 }
 
 impl Val {
@@ -78,15 +80,35 @@ impl Val {
             Val::I64(v) => v,
             Val::F32(v) => v.to_bits() as i64,
             Val::F64(v) => v.to_bits() as i64,
+            Val::Externref(v) => v as i64,
+            Val::Funcref(v) => match v {
+                Some(f) => &f as *const _ as i64, // This is not quite right but used for return mapping
+                None => 0,
+            },
         }
     }
 
     pub fn from_i64(v: i64, ty: wasmparser::ValType) -> Self {
         match ty {
             wasmparser::ValType::I32 => Val::I32(v as i32),
-            wasmparser::ValType::I64 | wasmparser::ValType::Ref(_) => Val::I64(v),
+            wasmparser::ValType::I64 => Val::I64(v),
             wasmparser::ValType::F32 => Val::F32(f32::from_bits(v as u32)),
             wasmparser::ValType::F64 => Val::F64(f64::from_bits(v as u64)),
+            wasmparser::ValType::Ref(rt) => {
+                if rt.is_extern_ref() {
+                    if v == 0 {
+                        Val::Externref(0)
+                    } else {
+                        Val::Externref(v as u32)
+                    }
+                } else {
+                    if v == 0 {
+                        Val::Funcref(None)
+                    } else {
+                        unsafe { Val::Funcref(Some(*(v as *const crate::vm::VMFuncRef))) }
+                    }
+                }
+            }
             _ => panic!("Unsupported type: {:?}", ty),
         }
     }
@@ -97,15 +119,22 @@ impl Val {
             Val::I64(_) => wasmparser::ValType::I64,
             Val::F32(_) => wasmparser::ValType::F32,
             Val::F64(_) => wasmparser::ValType::F64,
+            Val::Externref(_) => wasmparser::ValType::EXTERNREF,
+            Val::Funcref(_) => wasmparser::ValType::FUNCREF,
         }
     }
 
     pub fn to_interpreter_val(&self) -> veloc::interpreter::InterpreterValue {
         match *self {
-            Val::I32(v) => veloc::interpreter::InterpreterValue::I32(v),
-            Val::I64(v) => veloc::interpreter::InterpreterValue::I64(v),
-            Val::F32(v) => veloc::interpreter::InterpreterValue::F32(v),
-            Val::F64(v) => veloc::interpreter::InterpreterValue::F64(v),
+            Val::I32(v) => veloc::interpreter::InterpreterValue::i32(v),
+            Val::I64(v) => veloc::interpreter::InterpreterValue::i64(v),
+            Val::F32(v) => veloc::interpreter::InterpreterValue::f32(v),
+            Val::F64(v) => veloc::interpreter::InterpreterValue::f64(v),
+            Val::Externref(v) => veloc::interpreter::InterpreterValue::i64(v as i64),
+            Val::Funcref(v) => match v {
+                Some(f) => veloc::interpreter::InterpreterValue::i64(&f as *const _ as i64),
+                None => veloc::interpreter::InterpreterValue::i64(0),
+            },
         }
     }
 }
