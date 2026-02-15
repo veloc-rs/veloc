@@ -21,7 +21,9 @@ use veloc_ir::{Function, Linkage};
 // Remove local CallingConvention since we use veloc_ir's
 
 /// 重定位类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]#[allow(dead_code)]pub(crate) enum RelocKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum RelocKind {
     /// 32位相对偏移 (x86_64 PC32)
     X86_64Pc32,
     /// 32位 PLT 相对偏移

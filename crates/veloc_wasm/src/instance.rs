@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use hashbrown::HashMap;
 use std::mem;
-use veloc::interpreter::{Interpreter, InterpreterValue, MemoryRegion, Program, VM};
+use veloc::interpreter::{Interpreter, InterpreterValue, Program, VirtualMemory};
 use veloc::ir::FuncId;
 use wasmparser::{ExternalKind, ValType};
 
@@ -50,12 +50,19 @@ impl Drop for InstanceHandle {
 pub(crate) struct VMInstance {
     pub(crate) module: Module,
     pub(crate) interpreter: Option<Interpreter>,
-    pub(crate) vm: Option<veloc::interpreter::VM>,
     pub(crate) host_state: Box<dyn core::any::Any + Send + Sync>,
     pub(crate) element_lengths: Vec<usize>,
     pub(crate) data_lengths: Vec<usize>,
     pub(crate) vmctx_self_reference: *mut VMContext,
     pub(crate) vmctx: VMContext,
+}
+
+impl VirtualMemory for VMInstance {
+    #[inline(always)]
+    fn translate_addr(&self, logical_addr: usize, _size: usize) -> Option<*mut u8> {
+        // 在 Wasm 翻译层中已经将地址转换为了 host pointer，因此这里直接返回。
+        Some(logical_addr as *mut u8)
+    }
 }
 
 impl VMInstance {
@@ -122,18 +129,15 @@ impl VMInstance {
         }
 
         if self.module.strategy() == Strategy::Interpreter {
-            let vm = self
-                .vm
-                .as_mut()
-                .ok_or_else(|| crate::error::Error::Message("VM not found".to_string()))?;
-            let interpreter = self
+            let mut interpreter = self
                 .interpreter
-                .as_mut()
+                .take()
                 .ok_or_else(|| crate::error::Error::Message("Interpreter not found".to_string()))?;
 
             let args = vec![InterpreterValue::I64(vmctx_ptr as i64)];
 
-            interpreter.run_function(program, vm, init_func_id, &args);
+            interpreter.run_function(program, self, init_func_id, &args);
+            self.interpreter = Some(interpreter);
         } else {
             let loaded = self.module.loaded().ok_or_else(|| {
                 crate::error::Error::Message("Loaded object not found".to_string())
@@ -636,20 +640,9 @@ impl VMInstance {
         let vmctx_ptr = unsafe { base_ptr.add(offset_of_vmctx) as *mut VMContext };
 
         unsafe {
-            let mut vm = (module.strategy() == Strategy::Interpreter).then(VM::new);
-            if let Some(vm) = vm.as_mut() {
-                vm.register_region(MemoryRegion::new(
-                    0,
-                    0,
-                    usize::MAX,
-                    "host_memory".to_string(),
-                ));
-            }
-
             let instance = VMInstance {
                 module: module.clone(),
                 interpreter: interp_module_id.map(Interpreter::new),
-                vm,
                 host_state: Box::new(()),
                 vmctx_self_reference: vmctx_ptr,
                 vmctx: VMContext {
@@ -1016,11 +1009,15 @@ impl TypedFunc {
                         int_args.push(InterpreterValue::I64(results_raw.as_mut_ptr() as i64));
                     }
 
-                    let interpreter = instance.interpreter.as_mut().unwrap();
-                    let vm = instance.vm.as_mut().unwrap();
-                    interpreter
-                        .run_function(&store.program, vm, target_func_id, &int_args)
-                        .to_i64_bits()
+                    let mut interpreter = instance
+                        .interpreter
+                        .take()
+                        .expect("Interpreter not initialized");
+                    let res = interpreter
+                        .run_function(&store.program, instance, target_func_id, &int_args)
+                        .to_i64_bits();
+                    instance.interpreter = Some(interpreter);
+                    res
                 }
             };
 

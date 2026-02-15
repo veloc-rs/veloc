@@ -3,15 +3,13 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-use veloc_ir::{
-    Block, FloatCC, FuncId, Function, InstructionData, IntCC, Module, Opcode, Type,
-};
+use veloc_ir::{Block, FloatCC, FuncId, Function, InstructionData, IntCC, Module, Opcode, Type};
 pub mod error;
+use ::alloc::boxed::Box;
 use ::alloc::string::String;
 use ::alloc::sync::Arc;
 use ::alloc::vec;
 use ::alloc::vec::Vec;
-use ::alloc::boxed::Box;
 pub use error::{Error, Result};
 use hashbrown::HashMap;
 
@@ -94,25 +92,6 @@ impl InterpreterValue {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId(pub usize);
-
-#[derive(Debug, Clone)]
-pub struct MemoryRegion {
-    pub logical_base: usize,
-    pub host_base: *mut u8,
-    pub size: usize,
-    pub name: String,
-}
-
-impl MemoryRegion {
-    pub fn new(logical_base: u64, host_base: u64, size: usize, name: String) -> Self {
-        Self {
-            logical_base: logical_base as usize,
-            host_base: host_base as *mut u8,
-            size,
-            name,
-        }
-    }
-}
 
 pub trait HostFuncArg: Copy {
     fn from_val(v: InterpreterValue) -> Self;
@@ -197,7 +176,8 @@ impl<T: HostFuncRet> HostFuncRets for T {
 
 pub type HostFunction = Arc<dyn Fn(&[InterpreterValue]) -> InterpreterValue + Send + Sync>;
 
-pub type TrampolineFn = unsafe extern "C" fn(env: *mut u8, args_results: *mut InterpreterValue, arity: usize);
+pub type TrampolineFn =
+    unsafe extern "C" fn(env: *mut u8, args_results: *mut InterpreterValue, arity: usize);
 
 pub struct HostFunctionInner {
     handler: TrampolineFn,
@@ -259,11 +239,7 @@ impl Program {
         id
     }
 
-    pub fn register_raw(
-        &mut self,
-        name: String,
-        f: HostFunction,
-    ) -> usize {
+    pub fn register_raw(&mut self, name: String, f: HostFunction) -> usize {
         unsafe extern "C" fn trampoline(
             env: *mut u8,
             args_results: *mut InterpreterValue,
@@ -278,10 +254,8 @@ impl Program {
         }
 
         let env = Box::into_raw(Box::new(f)) as *mut u8;
-        let drop_fn = |ptr: *mut u8| {
-            unsafe {
-                let _ = Box::from_raw(ptr as *mut HostFunction);
-            }
+        let drop_fn = |ptr: *mut u8| unsafe {
+            let _ = Box::from_raw(ptr as *mut HostFunction);
         };
 
         let host_func = HostFunc(Arc::new(HostFunctionInner {
@@ -322,10 +296,8 @@ impl Program {
         }
 
         let env = Box::into_raw(Box::new(func)) as *mut u8;
-        let drop_fn = |ptr: *mut u8| {
-            unsafe {
-                let _ = Box::from_raw(ptr as *mut F);
-            }
+        let drop_fn = |ptr: *mut u8| unsafe {
+            let _ = Box::from_raw(ptr as *mut F);
         };
 
         let host_func = HostFunc(Arc::new(HostFunctionInner {
@@ -373,48 +345,8 @@ impl Program {
     }
 }
 
-pub struct VM {
-    pub memories: Vec<MemoryRegion>,
-}
-
-impl VM {
-    pub fn new() -> Self {
-        Self {
-            memories: Vec::new(),
-        }
-    }
-
-    pub fn register_region(&mut self, region: MemoryRegion) {
-        self.memories.push(region);
-    }
-
-    pub fn clear_regions(&mut self) {
-        self.memories.clear();
-    }
-
-    #[inline(always)]
-    fn translate_addr(&self, logical_addr: usize, size: usize) -> Option<*mut u8> {
-        // 性能优化：对于单内存（如标准 Wasm）进行快速处理
-        if self.memories.len() == 1 {
-            let region = &self.memories[0];
-            if logical_addr >= region.logical_base
-                && logical_addr + size <= region.logical_base + region.size
-            {
-                return unsafe { Some(region.host_base.add(logical_addr - region.logical_base)) };
-            }
-            return None;
-        }
-
-        // 通用多内存搜索
-        for region in &self.memories {
-            if logical_addr >= region.logical_base
-                && logical_addr + size <= region.logical_base + region.size
-            {
-                return unsafe { Some(region.host_base.add(logical_addr - region.logical_base)) };
-            }
-        }
-        None
-    }
+pub trait VirtualMemory {
+    fn translate_addr(&self, logical_addr: usize, size: usize) -> Option<*mut u8>;
 }
 
 pub struct Interpreter {
@@ -441,10 +373,10 @@ impl Interpreter {
         }
     }
 
-    pub fn run_function(
+    pub fn run_function<M: VirtualMemory>(
         &mut self,
         program: &Program,
-        vm: &mut VM,
+        vm: &mut M,
         func_id: FuncId,
         args: &[InterpreterValue],
     ) -> InterpreterValue {
@@ -583,10 +515,10 @@ impl Interpreter {
         }
     }
 
-    fn execute_inst(
+    fn execute_inst<M: VirtualMemory>(
         &mut self,
         program: &Program,
-        vm: &mut VM,
+        vm: &mut M,
         idata: &InstructionData,
         values: &mut [InterpreterValue],
         stack_slots: &mut [Vec<u8>],
@@ -805,7 +737,10 @@ impl Interpreter {
                 ControlFlow::Call(self.module_id, *func_id, call_args)
             }
             InstructionData::CallIndirect {
-                ptr, args, sig_id: _, ..
+                ptr,
+                args,
+                sig_id: _,
+                ..
             } => {
                 let ptr_val = values[ptr.0 as usize].unwarp_i64() as usize;
                 let call_args: Vec<InterpreterValue> = func
@@ -824,7 +759,10 @@ impl Interpreter {
                     let res = host_fn.call(&mut call_args);
                     ControlFlow::Continue(res)
                 } else {
-                    panic!("Indirect call to raw pointer {:#x} is not supported. All host functions must be registered via register_func.", ptr_val);
+                    panic!(
+                        "Indirect call to raw pointer {:#x} is not supported. All host functions must be registered via register_func.",
+                        ptr_val
+                    );
                 }
             }
             InstructionData::IntToPtr { arg } => {
@@ -1248,7 +1186,7 @@ impl Interpreter {
         }
     }
 
-    fn read_memory(&self, vm: &VM, addr: usize, res_ty: Type) -> InterpreterValue {
+    fn read_memory<M: VirtualMemory>(&self, vm: &M, addr: usize, res_ty: Type) -> InterpreterValue {
         let size = self.type_size(res_ty);
         let host_ptr = vm.translate_addr(addr, size).expect("Memory out of bounds");
 
@@ -1283,7 +1221,13 @@ impl Interpreter {
         }
     }
 
-    fn write_memory(&mut self, vm: &mut VM, addr: usize, val: InterpreterValue, res_ty: Type) {
+    fn write_memory<M: VirtualMemory>(
+        &mut self,
+        vm: &mut M,
+        addr: usize,
+        val: InterpreterValue,
+        res_ty: Type,
+    ) {
         let size = self.type_size(res_ty);
         let host_ptr = vm.translate_addr(addr, size).expect("Memory out of bounds");
 
