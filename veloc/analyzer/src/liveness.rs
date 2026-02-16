@@ -1,5 +1,5 @@
 use hashbrown::HashMap;
-use veloc_ir::{Function, InstructionData, Value};
+use veloc_ir::{Function, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveInterval {
@@ -43,7 +43,7 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
                 );
             }
 
-            visit_operands(&func.dfg.instructions[inst], &func.dfg, |v| {
+            inst.visit_operands(&func.dfg, |v| {
                 if let Some(int) = intervals.get_mut(&v) {
                     int.end = inst_pc;
                 }
@@ -63,25 +63,7 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
 
             let mut successors = Vec::new();
             if let Some(&last_inst) = func.layout.blocks[block].insts.last() {
-                match &func.dfg.instructions[last_inst] {
-                    InstructionData::Jump { dest } => {
-                        successors.push(func.dfg.block_calls[*dest].block);
-                    }
-                    InstructionData::Br {
-                        then_dest,
-                        else_dest,
-                        ..
-                    } => {
-                        successors.push(func.dfg.block_calls[*then_dest].block);
-                        successors.push(func.dfg.block_calls[*else_dest].block);
-                    }
-                    InstructionData::BrTable { table, .. } => {
-                        for &dest in &func.dfg.jump_tables[*table].targets {
-                            successors.push(func.dfg.block_calls[dest].block);
-                        }
-                    }
-                    _ => {}
-                }
+                successors = func.dfg.analyze_successors(last_inst);
             }
 
             for succ in successors {
@@ -102,85 +84,4 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
     }
 
     Liveness { intervals }
-}
-
-pub fn visit_operands<F: FnMut(Value)>(
-    idata: &InstructionData,
-    dfg: &veloc_ir::DataFlowGraph,
-    mut f: F,
-) {
-    use InstructionData::*;
-    match idata {
-        Unary { arg, .. }
-        | IntToPtr { arg }
-        | PtrToInt { arg, .. }
-        | PtrOffset { ptr: arg, .. }
-        | Load { ptr: arg, .. } => f(*arg),
-        Binary { args, .. } | IntCompare { args, .. } | FloatCompare { args, .. } => {
-            f(args[0]);
-            f(args[1]);
-        }
-        Store { ptr, value, .. } => {
-            f(*ptr);
-            f(*value);
-        }
-        StackStore { value, .. } => f(*value),
-        Select {
-            condition,
-            then_val,
-            else_val,
-            ..
-        } => {
-            f(*condition);
-            f(*then_val);
-            f(*else_val);
-        }
-        Jump { dest } => {
-            for &v in dfg.get_value_list(dfg.block_calls[*dest].args) {
-                f(v);
-            }
-        }
-        Br {
-            condition,
-            then_dest,
-            else_dest,
-        } => {
-            f(*condition);
-            for &v in dfg.get_value_list(dfg.block_calls[*then_dest].args) {
-                f(v);
-            }
-            for &v in dfg.get_value_list(dfg.block_calls[*else_dest].args) {
-                f(v);
-            }
-        }
-        BrTable { index, table } => {
-            f(*index);
-            for &dest in &dfg.jump_tables[*table].targets {
-                for &v in dfg.get_value_list(dfg.block_calls[dest].args) {
-                    f(v);
-                }
-            }
-        }
-        Return { value } => {
-            if let Some(v) = value {
-                f(*v);
-            }
-        }
-        Call { args, .. } => {
-            for &v in dfg.get_value_list(*args) {
-                f(v);
-            }
-        }
-        CallIndirect { ptr, args, .. } => {
-            f(*ptr);
-            for &v in dfg.get_value_list(*args) {
-                f(v);
-            }
-        }
-        PtrIndex { ptr, index, .. } => {
-            f(*ptr);
-            f(*index);
-        }
-        _ => {}
-    }
 }

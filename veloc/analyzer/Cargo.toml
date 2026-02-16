@@ -7,3 +7,4 @@ edition = "2024"
 veloc_ir = { workspace = true }
 hashbrown = { workspace = true }
 bitvec = { workspace = true }
+cranelift-entity = { workspace = true }

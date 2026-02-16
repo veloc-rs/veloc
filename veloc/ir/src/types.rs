@@ -1,19 +1,24 @@
+use alloc::vec::Vec;
 use core::fmt;
 use cranelift_entity::entity_impl;
 
 use crate::CallConv;
+use crate::constant::Constant;
+use crate::inst::Inst;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Value(pub u32);
 entity_impl!(Value, "v");
 
+impl Value {
+    pub fn as_const(self, dfg: &crate::dfg::DataFlowGraph) -> Option<Constant> {
+        dfg.as_const(self)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Block(pub u32);
 entity_impl!(Block, "block");
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Inst(pub u32);
-entity_impl!(Inst, "inst");
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StackSlot(pub u32);
@@ -70,10 +75,16 @@ impl Signature {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValueDef {
+    Inst(Inst),
+    Param(Block),
+}
+
 #[derive(Debug, Clone)]
 pub struct ValueData {
     pub ty: Type,
-    pub defined_by: Option<Inst>,
+    pub def: ValueDef,
 }
 
 #[derive(Debug, Clone, Copy)]

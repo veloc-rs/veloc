@@ -1,5 +1,6 @@
 use super::function::{Function, StackSlotData};
-use super::inst::{FloatCC, InstructionData, IntCC, MemFlags, Opcode};
+use super::inst::InstructionData;
+use super::opcode::{FloatCC, IntCC, MemFlags, Opcode};
 use super::types::{
     Block, BlockCall, FuncId, JumpTable, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
@@ -121,30 +122,23 @@ impl<'a> FunctionBuilder<'a> {
     pub fn push_inst(&mut self, block: Block, data: InstructionData) -> Option<Value> {
         let ty = data.result_type();
         let inst = self.func_mut().dfg.instructions.push(data);
-        let succs = self.func().dfg.analyze_successors(inst);
+
         self.func_mut().layout.append_inst(block, inst);
 
-        for succ in succs {
-            self.func_mut().layout.add_edge(block, succ);
-        }
-
         if ty != Type::Void {
-            let val = self.func_mut().dfg.make_value(ty);
-            self.func_mut().dfg.values[val].defined_by = Some(inst);
-            self.func_mut().dfg.inst_results[inst] = Some(val);
-            Some(val)
+            Some(self.func_mut().dfg.append_result(inst, ty))
         } else {
             self.func_mut().dfg.inst_results[inst] = None;
             None
         }
     }
 
-    pub fn push_value_list(&mut self, values: &[Value]) -> ValueList {
-        self.func_mut().dfg.push_value_list(values)
+    pub fn make_value_list(&mut self, values: &[Value]) -> ValueList {
+        self.func_mut().dfg.make_value_list(values)
     }
 
     pub fn make_block_call(&mut self, block: Block, args: &[Value]) -> BlockCall {
-        let args_list = self.push_value_list(args);
+        let args_list = self.make_value_list(args);
         self.func_mut().dfg.block_calls.push(BlockCallData {
             block,
             args: args_list,
@@ -195,7 +189,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn value_type(&self, val: Value) -> Type {
-        self.func().dfg.values[val].ty
+        self.func().dfg.value_type(val)
     }
 
     pub fn set_value_name(&mut self, val: Value, name: &str) {
@@ -203,7 +197,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn add_block_param(&mut self, block: Block, ty: Type) -> Value {
-        let val = self.func_mut().dfg.make_value(ty);
+        let val = self.func_mut().dfg.append_block_param(block, ty);
         self.func_mut().layout.blocks[block].params.push(val);
         val
     }
@@ -238,15 +232,7 @@ impl<'a> FunctionBuilder<'a> {
     pub fn is_current_block_terminated(&self) -> bool {
         let block = self.current_block.expect("No current block");
         if let Some(&last_inst) = self.func().layout.blocks[block].insts.last() {
-            let idata = &self.func().dfg.instructions[last_inst];
-            matches!(
-                idata,
-                InstructionData::Jump { .. }
-                    | InstructionData::Br { .. }
-                    | InstructionData::BrTable { .. }
-                    | InstructionData::Return { .. }
-                    | InstructionData::Unreachable
-            )
+            self.func().dfg.inst(last_inst).is_terminator()
         } else {
             false
         }
@@ -416,21 +402,21 @@ impl<'a> FunctionBuilder<'a> {
     fn add_block_param_to_jump(&mut self, pred: Block, target: Block, index: usize, val: Value) {
         if let Some(&last_inst) = self.func().layout.blocks[pred].insts.last() {
             let dfg = &mut self.module.functions[self.func_id].dfg;
-            let idata = dfg.instructions[last_inst].clone();
+            let idata = dfg.inst(last_inst).clone();
 
             match idata {
                 InstructionData::Jump { mut dest } => {
                     let mut dest_data = dfg.block_calls[dest];
                     if dest_data.block == target {
-                        let mut vec = dfg.get_value_list(dest_data.args).to_vec();
+                        let mut vec = dfg.block_call_args(dest).to_vec();
                         if index >= vec.len() {
                             vec.resize(index + 1, val);
                         } else {
                             vec[index] = val;
                         }
-                        dest_data.args = dfg.push_value_list(&vec);
+                        dest_data.args = dfg.make_value_list(&vec);
                         dest = dfg.block_calls.push(dest_data);
-                        dfg.instructions[last_inst] = InstructionData::Jump { dest };
+                        *dfg.inst_mut(last_inst) = InstructionData::Jump { dest };
                     }
                 }
                 InstructionData::Br {
@@ -441,31 +427,31 @@ impl<'a> FunctionBuilder<'a> {
                     let mut changed = false;
                     let mut then_data = dfg.block_calls[then_dest];
                     if then_data.block == target {
-                        let mut vec = dfg.get_value_list(then_data.args).to_vec();
+                        let mut vec = dfg.block_call_args(then_dest).to_vec();
                         if index >= vec.len() {
                             vec.resize(index + 1, val);
                         } else {
                             vec[index] = val;
                         }
-                        then_data.args = dfg.push_value_list(&vec);
+                        then_data.args = dfg.make_value_list(&vec);
                         then_dest = dfg.block_calls.push(then_data);
                         changed = true;
                     }
                     let mut else_data = dfg.block_calls[else_dest];
                     if else_data.block == target {
-                        let mut vec = dfg.get_value_list(else_data.args).to_vec();
+                        let mut vec = dfg.block_call_args(else_dest).to_vec();
                         if index >= vec.len() {
                             vec.resize(index + 1, val);
                         } else {
                             vec[index] = val;
                         }
-                        else_data.args = dfg.push_value_list(&vec);
+                        else_data.args = dfg.make_value_list(&vec);
                         else_dest = dfg.block_calls.push(else_data);
                         changed = true;
                     }
 
                     if changed {
-                        dfg.instructions[last_inst] = InstructionData::Br {
+                        *dfg.inst_mut(last_inst) = InstructionData::Br {
                             condition,
                             then_dest,
                             else_dest,
@@ -476,18 +462,18 @@ impl<'a> FunctionBuilder<'a> {
                     index: idx_val,
                     table,
                 } => {
-                    let mut targets_data = dfg.jump_tables[table].targets.clone();
+                    let mut targets_data = dfg.jump_table_targets(table).to_vec();
                     let mut changed = false;
                     for target_call in targets_data.iter_mut() {
                         let mut dest_data = dfg.block_calls[*target_call];
                         if dest_data.block == target {
-                            let mut vec = dfg.get_value_list(dest_data.args).to_vec();
+                            let mut vec = dfg.block_call_args(*target_call).to_vec();
                             if index >= vec.len() {
                                 vec.resize(index + 1, val);
                             } else {
                                 vec[index] = val;
                             }
-                            dest_data.args = dfg.push_value_list(&vec);
+                            dest_data.args = dfg.make_value_list(&vec);
                             *target_call = dfg.block_calls.push(dest_data);
                             changed = true;
                         }
@@ -495,9 +481,9 @@ impl<'a> FunctionBuilder<'a> {
 
                     if changed {
                         let new_table = dfg.jump_tables.push(JumpTableData {
-                            targets: targets_data,
+                            targets: targets_data.into_boxed_slice(),
                         });
-                        dfg.instructions[last_inst] = InstructionData::BrTable {
+                        *dfg.inst_mut(last_inst) = InstructionData::BrTable {
                             index: idx_val,
                             table: new_table,
                         };
@@ -1143,7 +1129,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Option<Value> {
         let sig_id = self.builder.func_signature(func_id);
         let ret_ty = self.builder.signature(sig_id).ret;
-        let args = self.builder.push_value_list(args);
+        let args = self.builder.make_value_list(args);
         self.push(InstructionData::Call {
             func_id,
             args,
@@ -1153,7 +1139,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn call_indirect(&mut self, sig_id: SigId, ptr: Value, args: &[Value]) -> Option<Value> {
         let ret_ty = self.builder.signature(sig_id).ret;
-        let args = self.builder.push_value_list(args);
+        let args = self.builder.make_value_list(args);
         self.push(InstructionData::CallIndirect {
             ptr,
             args,
@@ -1164,7 +1150,9 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn jump(&mut self, destination: Block, args: &[Value]) {
         let dest = self.builder.make_block_call(destination, args);
+        let block = self.block();
         self.push(InstructionData::Jump { dest });
+        self.builder.func_mut().layout.add_edge(block, destination);
     }
 
     pub fn br(
@@ -1182,11 +1170,14 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         );
         let then_dest = self.builder.make_block_call(then_block, then_args);
         let else_dest = self.builder.make_block_call(else_block, else_args);
+        let block = self.block();
         self.push(InstructionData::Br {
             condition,
             then_dest,
             else_dest,
         });
+        self.builder.func_mut().layout.add_edge(block, then_block);
+        self.builder.func_mut().layout.add_edge(block, else_block);
     }
 
     pub fn br_table(&mut self, index: Value, default_call: BlockCall, targets: &[BlockCall]) {
@@ -1195,9 +1186,16 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             Type::I32,
             "Index for br_table must be an i32"
         );
+        let block = self.block();
         let mut target_calls = Vec::with_capacity(targets.len() + 1);
         target_calls.push(default_call);
         target_calls.extend_from_slice(targets);
+
+        for &call in &target_calls {
+            let target_block = self.builder.func().dfg.block_call_block(call);
+            self.builder.func_mut().layout.add_edge(block, target_block);
+        }
+
         let table = self.builder.func_mut().dfg.jump_tables.push(JumpTableData {
             targets: target_calls.into_boxed_slice(),
         });

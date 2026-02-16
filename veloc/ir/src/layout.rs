@@ -1,4 +1,5 @@
-use super::types::{Block, Inst, Value};
+use super::inst::Inst;
+use super::types::{Block, Value};
 use alloc::vec::Vec;
 use cranelift_entity::PrimaryMap;
 

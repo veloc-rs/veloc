@@ -348,6 +348,9 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     }
                     write!(f, ")")?;
                 }
+                InstructionData::Nop => {
+                    write!(f, "nop")?;
+                }
             }
             writeln!(f)?;
         }

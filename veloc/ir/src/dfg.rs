@@ -1,6 +1,7 @@
-use super::inst::InstructionData;
+use super::inst::{Inst, InstructionData};
+use crate::constant::Constant;
 use crate::types::{
-    Block, BlockCall, BlockCallData, Inst, JumpTable, JumpTableData, Type, Value, ValueData,
+    Block, BlockCall, BlockCallData, JumpTable, JumpTableData, Type, Value, ValueData, ValueDef,
     ValueList, ValueListData,
 };
 use alloc::string::String;
@@ -37,7 +38,7 @@ impl DataFlowGraph {
         }
     }
 
-    pub fn push_value_list(&mut self, values: &[Value]) -> ValueList {
+    pub fn make_value_list(&mut self, values: &[Value]) -> ValueList {
         if values.is_empty() {
             return ValueList::empty();
         }
@@ -52,10 +53,19 @@ impl DataFlowGraph {
         &self.value_pool[data.offset as usize..(data.offset + data.len) as usize]
     }
 
-    pub fn make_value(&mut self, ty: Type) -> Value {
+    pub fn append_result(&mut self, inst: Inst, ty: Type) -> Value {
+        let val = self.values.push(ValueData {
+            ty,
+            def: ValueDef::Inst(inst),
+        });
+        self.inst_results[inst] = Some(val);
+        val
+    }
+
+    pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
         self.values.push(ValueData {
             ty,
-            defined_by: None,
+            def: ValueDef::Param(block),
         })
     }
 
@@ -63,27 +73,90 @@ impl DataFlowGraph {
         self.inst_results[inst]
     }
 
+    pub fn inst(&self, inst: Inst) -> &InstructionData {
+        &self.instructions[inst]
+    }
+
+    pub fn inst_mut(&mut self, inst: Inst) -> &mut InstructionData {
+        &mut self.instructions[inst]
+    }
+
+    pub fn value_type(&self, val: Value) -> Type {
+        self.values[val].ty
+    }
+
+    pub fn value_def(&self, val: Value) -> ValueDef {
+        self.values[val].def
+    }
+
+    pub fn value_inst(&self, val: Value) -> Option<Inst> {
+        match self.value_def(val) {
+            ValueDef::Inst(inst) => Some(inst),
+            ValueDef::Param(_) => None,
+        }
+    }
+
+    pub fn as_const(&self, val: Value) -> Option<Constant> {
+        if let ValueDef::Inst(inst) = self.value_def(val) {
+            match &self.instructions[inst] {
+                InstructionData::Iconst { value, ty } => match ty {
+                    Type::I8 => Some(Constant::I8(*value as i8)),
+                    Type::I16 => Some(Constant::I16(*value as i16)),
+                    Type::I32 => Some(Constant::I32(*value as i32)),
+                    Type::I64 => Some(Constant::I64(*value)),
+                    _ => None,
+                },
+                InstructionData::Fconst { value, ty } => match ty {
+                    Type::F32 => Some(Constant::F32(f32::from_bits(*value as u32))),
+                    Type::F64 => Some(Constant::F64(f64::from_bits(*value))),
+                    _ => None,
+                },
+                InstructionData::Bconst { value } => Some(Constant::Bool(*value)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn block_call_block(&self, call: BlockCall) -> Block {
+        self.block_calls[call].block
+    }
+
+    pub fn block_call_args(&self, call: BlockCall) -> &[Value] {
+        self.get_value_list(self.block_calls[call].args)
+    }
+
+    pub fn jump_table_targets(&self, table: JumpTable) -> &[BlockCall] {
+        &self.jump_tables[table].targets
+    }
+
     pub fn analyze_successors(&self, inst: Inst) -> Vec<Block> {
         match &self.instructions[inst] {
-            InstructionData::Jump { dest } => vec![self.block_calls[*dest].block],
+            InstructionData::Jump { dest } => vec![self.block_call_block(*dest)],
             InstructionData::Br {
                 then_dest,
                 else_dest,
                 ..
             } => {
                 vec![
-                    self.block_calls[*then_dest].block,
-                    self.block_calls[*else_dest].block,
+                    self.block_call_block(*then_dest),
+                    self.block_call_block(*else_dest),
                 ]
             }
             InstructionData::BrTable { table, .. } => {
                 let mut succs = Vec::new();
-                for target_call in &self.jump_tables[*table].targets {
-                    succs.push(self.block_calls[*target_call].block);
+                for &target_call in self.jump_table_targets(*table) {
+                    succs.push(self.block_call_block(target_call));
                 }
                 succs
             }
             _ => vec![],
         }
+    }
+
+    pub fn remove_inst(&mut self, inst: Inst) {
+        self.instructions[inst] = InstructionData::Nop;
+        self.inst_results[inst] = None;
     }
 }

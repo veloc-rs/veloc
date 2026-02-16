@@ -14,6 +14,7 @@ pub struct Interpreter {
     pub value_stack: Vec<InterpreterValue>,
     pub stack_memory: Vec<u8>,
     pub frames: Vec<StackFrame>,
+    args_buffer: Vec<InterpreterValue>,
 }
 
 pub struct StackFrame {
@@ -28,9 +29,10 @@ pub struct StackFrame {
 impl Interpreter {
     pub fn new() -> Self {
         Self {
-            value_stack: Vec::with_capacity(1024),
-            stack_memory: Vec::with_capacity(16 * 1024 * 1024), // Reserve 16MB
-            frames: Vec::with_capacity(64),
+            value_stack: Vec::with_capacity(4096),
+            stack_memory: Vec::with_capacity(1024 * 1024),
+            frames: Vec::with_capacity(128),
+            args_buffer: Vec::with_capacity(32),
         }
     }
 
@@ -73,6 +75,7 @@ impl Interpreter {
         self.execute(program, mem)
     }
 
+    #[inline(always)]
     fn execute(&mut self, program: &Program, mem: &dyn VirtualMemory) -> Option<InterpreterValue> {
         let frame = self.frames.pop().unwrap();
         let mut pc = frame.pc;
@@ -81,307 +84,324 @@ impl Interpreter {
         let mut func = frame.func.clone();
         let mut mid = frame.mid;
 
-        macro_rules! read_u16 {
-            () => {{
-                let v = u16::from_le_bytes(func.code[pc..pc + 2].try_into().unwrap());
-                pc += 2;
-                v
-            }};
-        }
-        macro_rules! reg {
-            ($r:expr) => {
-                self.value_stack[base + $r as usize]
-            };
-        }
-
-        macro_rules! bin_op {
-            ($op:ident, $u:ident, $w:ident, $method:ident) => {{
-                let (d, l, r) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u();
-                let rv = reg!(r).$u();
-                reg!(d) = InterpreterValue::$w(lv.$method(rv as _));
-            }};
-            ($op:ident, $u:ident, $w:ident, $builtin:tt) => {{
-                let (d, l, r) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u();
-                let rv = reg!(r).$u();
-                reg!(d) = InterpreterValue::$w(lv $builtin rv);
-            }};
-            ($op:ident, $u:ident, $w:ident, $builtin:tt, $as_ty:ty) => {{
-                let (d, l, r) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u() as $as_ty;
-                let rv = reg!(r).$u() as $as_ty;
-                reg!(d) = InterpreterValue::$w((lv $builtin rv) as _);
-            }};
-        }
-
-        macro_rules! imm_op {
-            ($op:ident, $u:ident, $w:ident, $method:ident, $ity:ty) => {{
-                let (d, l, i) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u();
-                reg!(d) = InterpreterValue::$w(lv.$method(i as $ity as _));
-            }};
-            ($op:ident, $u:ident, $w:ident, $builtin:tt, $ity:ty) => {{
-                let (d, l, i) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u();
-                reg!(d) = InterpreterValue::$w(lv $builtin (i as $ity));
-            }};
-        }
-
-        macro_rules! cmp_op {
-            ($op:ident, $u:ident, $builtin:tt) => {{
-                let (d, l, r) = decode_into!($op, pc, func.code);
-                reg!(d) = InterpreterValue::bool(reg!(l).$u() $builtin reg!(r).$u());
-            }};
-            ($op:ident, $u:ident, $as_ty:ty, $builtin:tt) => {{
-                let (d, l, r) = decode_into!($op, pc, func.code);
-                reg!(d) = InterpreterValue::bool((reg!(l).$u() as $as_ty) $builtin (reg!(r).$u() as $as_ty));
-            }};
-        }
-
-        macro_rules! unary_op {
-            ($op:ident, $u:ident, $w:ident, $method:ident) => {{
-                let (d, s) = decode_into!($op, pc, func.code);
-                reg!(d) = InterpreterValue::$w(reg!(s).$u().$method() as _);
-            }};
-            ($op:ident, $u:ident, $w:ident, $builtin:tt) => {{
-                let (d, s) = decode_into!($op, pc, func.code);
-                reg!(d) = InterpreterValue::$w($builtin reg!(s).$u());
-            }};
-        }
-
-        macro_rules! cmp_zero_op {
-            ($op:ident, $u:ident) => {{
-                let (d, s) = decode_into!($op, pc, func.code);
-                reg!(d) = InterpreterValue::bool(reg!(s).$u() == 0);
-            }};
-        }
-
-        macro_rules! conv_op {
-            ($op:ident, $u:ident, $w:ident, $ty:ty) => {{
-                let (d, s) = decode_into!($op, pc, func.code);
-                reg!(d) = InterpreterValue::$w(reg!(s).$u() as $ty);
-            }};
-            ($op:ident, $u:ident, $w:ident, $ity:ty, $ty:ty) => {{
-                let (d, s) = decode_into!($op, pc, func.code);
-                reg!(d) = InterpreterValue::$w(reg!(s).$u() as $ity as $ty);
-            }};
-        }
-
-        macro_rules! move_op {
-            ($op:ident) => {{
-                let (d, s) = decode_into!($op, pc, func.code);
-                reg!(d) = reg!(s);
-            }};
-        }
-
-        macro_rules! load_op {
-            ($op:ident, $w:ident, $ptr_ty:ty, $size:expr) => {{
-                let (d, p, o) = decode_into!($op, pc, func.code);
-                let addr = reg!(p).unwarp_i64() as usize + o as usize;
-                let ptr = mem.translate_addr(addr, $size).expect("Segment fault");
-                reg!(d) =
-                    InterpreterValue::$w(unsafe { (ptr as *const $ptr_ty).read_unaligned() } as _);
-            }};
-        }
-
-        macro_rules! store_op {
-            ($op:ident, $u:ident, $ptr_ty:ty, $size:expr) => {{
-                let (v, p, o) = decode_into!($op, pc, func.code);
-                let addr = reg!(p).unwarp_i64() as usize + o as usize;
-                let ptr = mem.translate_addr(addr, $size).expect("Segment fault");
-                unsafe { (ptr as *mut $ptr_ty).write_unaligned(reg!(v).$u() as _) };
-            }};
-        }
-
-        macro_rules! shift_op {
-            ($op:ident, $u:ident, $w:ident, $method:ident) => {{
-                let (d, l, r) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u();
-                let rv = reg!(r).$u() as u32;
-                reg!(d) = InterpreterValue::$w(lv.$method(rv));
-            }};
-            ($op:ident, $u:ident, $w:ident, $method:ident, $uty:ty) => {{
-                let (d, l, r) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u() as $uty;
-                let rv = reg!(r).$u() as u32;
-                reg!(d) = InterpreterValue::$w(lv.$method(rv) as _);
-            }};
-        }
-
-        macro_rules! shift_imm_op {
-            ($op:ident, $u:ident, $w:ident, $method:ident) => {{
-                let (d, l, i) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u();
-                reg!(d) = InterpreterValue::$w(lv.$method(i as u32));
-            }};
-            ($op:ident, $u:ident, $w:ident, $method:ident, $uty:ty) => {{
-                let (d, l, i) = decode_into!($op, pc, func.code);
-                let lv = reg!(l).$u() as $uty;
-                reg!(d) = InterpreterValue::$w(lv.$method(i as u32) as _);
-            }};
-        }
-
-        // --- High-level Semantic Macros for Clarity ---
-        macro_rules! i32_bin {
-            ($op:ident, $method:ident) => {
-                bin_op!($op, unwarp_i32, i32, $method)
-            };
-            ($op:ident, $oper:tt) => {
-                bin_op!($op, unwarp_i32, i32, $oper)
-            };
-            ($op:ident, $oper:tt, $as_ty:ty) => {
-                bin_op!($op, unwarp_i32, i32, $oper, $as_ty)
-            };
-        }
-        macro_rules! i32_imm {
-            ($op:ident, $method:ident) => {
-                imm_op!($op, unwarp_i32, i32, $method, i32)
-            };
-            ($op:ident, $oper:tt) => {
-                imm_op!($op, unwarp_i32, i32, $oper, i32)
-            };
-        }
-        macro_rules! i32_shift {
-            ($op:ident, $method:ident) => {
-                shift_op!($op, unwarp_i32, i32, $method)
-            };
-            ($op:ident, $method:ident, $uty:ty) => {
-                shift_op!($op, unwarp_i32, i32, $method, $uty)
-            };
-        }
-        macro_rules! i32_shift_imm {
-            ($op:ident, $method:ident) => {
-                shift_imm_op!($op, unwarp_i32, i32, $method)
-            };
-            ($op:ident, $method:ident, $uty:ty) => {
-                shift_imm_op!($op, unwarp_i32, i32, $method, $uty)
-            };
-        }
-        macro_rules! i32_cmp {
-            ($op:ident, $oper:tt) => {
-                cmp_op!($op, unwarp_i32, $oper)
-            };
-            ($op:ident, $as_ty:ty, $oper:tt) => {
-                cmp_op!($op, unwarp_i32, $as_ty, $oper)
-            };
-        }
-        macro_rules! i32_unary {
-            ($op:ident, $method:ident) => {
-                unary_op!($op, unwarp_i32, i32, $method)
-            };
-            ($op:ident, $oper:tt) => {
-                unary_op!($op, unwarp_i32, i32, $oper)
-            };
-        }
-        macro_rules! i32_eqz {
-            ($op:ident) => {
-                cmp_zero_op!($op, unwarp_i32)
-            };
-        }
-        macro_rules! i64_bin {
-            ($op:ident, $method:ident) => {
-                bin_op!($op, unwarp_i64, i64, $method)
-            };
-            ($op:ident, $oper:tt) => {
-                bin_op!($op, unwarp_i64, i64, $oper)
-            };
-            ($op:ident, $oper:tt, $as_ty:ty) => {
-                bin_op!($op, unwarp_i64, i64, $oper, $as_ty)
-            };
-        }
-        macro_rules! i64_imm {
-            ($op:ident, $method:ident) => {
-                imm_op!($op, unwarp_i64, i64, $method, i64)
-            };
-            ($op:ident, $oper:tt) => {
-                imm_op!($op, unwarp_i64, i64, $oper, i64)
-            };
-        }
-        macro_rules! i64_shift {
-            ($op:ident, $method:ident) => {
-                shift_op!($op, unwarp_i64, i64, $method)
-            };
-            ($op:ident, $method:ident, $uty:ty) => {
-                shift_op!($op, unwarp_i64, i64, $method, $uty)
-            };
-        }
-        macro_rules! i64_shift_imm {
-            ($op:ident, $method:ident) => {
-                shift_imm_op!($op, unwarp_i64, i64, $method)
-            };
-            ($op:ident, $method:ident, $uty:ty) => {
-                shift_imm_op!($op, unwarp_i64, i64, $method, $uty)
-            };
-        }
-        macro_rules! i64_cmp {
-            ($op:ident, $oper:tt) => {
-                cmp_op!($op, unwarp_i64, $oper)
-            };
-            ($op:ident, $as_ty:ty, $oper:tt) => {
-                cmp_op!($op, unwarp_i64, $as_ty, $oper)
-            };
-        }
-        macro_rules! i64_unary {
-            ($op:ident, $method:ident) => {
-                unary_op!($op, unwarp_i64, i64, $method)
-            };
-            ($op:ident, $oper:tt) => {
-                unary_op!($op, unwarp_i64, i64, $oper)
-            };
-        }
-        macro_rules! i64_eqz {
-            ($op:ident) => {
-                cmp_zero_op!($op, unwarp_i64)
-            };
-        }
-
-        macro_rules! f32_bin {
-            ($op:ident, $method:ident) => {
-                bin_op!($op, unwarp_f32, f32, $method)
-            };
-            ($op:ident, $oper:tt) => {
-                bin_op!($op, unwarp_f32, f32, $oper)
-            };
-        }
-        macro_rules! f32_unary {
-            ($op:ident, $method:ident) => {
-                unary_op!($op, unwarp_f32, f32, $method)
-            };
-            ($op:ident, $oper:tt) => {
-                unary_op!($op, unwarp_f32, f32, $oper)
-            };
-        }
-        macro_rules! f32_cmp {
-            ($op:ident, $oper:tt) => {
-                cmp_op!($op, unwarp_f32, $oper)
-            };
-        }
-        macro_rules! f64_bin {
-            ($op:ident, $method:ident) => {
-                bin_op!($op, unwarp_f64, f64, $method)
-            };
-            ($op:ident, $oper:tt) => {
-                bin_op!($op, unwarp_f64, f64, $oper)
-            };
-        }
-        macro_rules! f64_unary {
-            ($op:ident, $method:ident) => {
-                unary_op!($op, unwarp_f64, f64, $method)
-            };
-            ($op:ident, $oper:tt) => {
-                unary_op!($op, unwarp_f64, f64, $oper)
-            };
-        }
-        macro_rules! f64_cmp {
-            ($op:ident, $oper:tt) => {
-                cmp_op!($op, unwarp_f64, $oper)
-            };
-        }
-
         'main_loop: loop {
+            let code_ptr = func.code.as_ptr();
+            let code_len = func.code.len();
+            let mut values_ptr = self.value_stack.as_mut_ptr();
+
+            macro_rules! read_u16 {
+                () => {{
+                    let v = unsafe {
+                        let ptr = code_ptr.add(pc) as *const u16;
+                        pc += 2;
+                        u16::from_le(ptr.read_unaligned())
+                    };
+                    v
+                }};
+            }
+            macro_rules! reg {
+                ($r:expr) => {
+                    unsafe { &mut *values_ptr.add(base + $r as usize) }
+                };
+            }
+            macro_rules! reg_val {
+                ($r:expr) => {
+                    unsafe { *values_ptr.add(base + $r as usize) }
+                };
+            }
+
+            macro_rules! bin_op {
+                ($op:ident, $u:ident, $w:ident, $method:ident) => {{
+                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u();
+                    let rv = reg_val!(r).$u();
+                    *reg!(d) = InterpreterValue::$w(lv.$method(rv as _));
+                }};
+                ($op:ident, $u:ident, $w:ident, $builtin:tt) => {{
+                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u();
+                    let rv = reg_val!(r).$u();
+                    *reg!(d) = InterpreterValue::$w(lv $builtin rv);
+                }};
+                ($op:ident, $u:ident, $w:ident, $builtin:tt, $as_ty:ty) => {{
+                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u() as $as_ty;
+                    let rv = reg_val!(r).$u() as $as_ty;
+                    *reg!(d) = InterpreterValue::$w((lv $builtin rv) as _);
+                }};
+            }
+
+            macro_rules! imm_op {
+                ($op:ident, $u:ident, $w:ident, $method:ident, $ity:ty) => {{
+                    let (d, l, i) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u();
+                    *reg!(d) = InterpreterValue::$w(lv.$method(i as $ity as _));
+                }};
+                ($op:ident, $u:ident, $w:ident, $builtin:tt, $ity:ty) => {{
+                    let (d, l, i) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u();
+                    *reg!(d) = InterpreterValue::$w(lv $builtin (i as $ity));
+                }};
+            }
+
+            macro_rules! cmp_op {
+                ($op:ident, $u:ident, $builtin:tt) => {{
+                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    *reg!(d) = InterpreterValue::bool(reg_val!(l).$u() $builtin reg_val!(r).$u());
+                }};
+                ($op:ident, $u:ident, $as_ty:ty, $builtin:tt) => {{
+                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    *reg!(d) = InterpreterValue::bool((reg_val!(l).$u() as $as_ty) $builtin (reg_val!(r).$u() as $as_ty));
+                }};
+            }
+
+            macro_rules! unary_op {
+                ($op:ident, $u:ident, $w:ident, $method:ident) => {{
+                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    *reg!(d) = InterpreterValue::$w(reg_val!(s).$u().$method() as _);
+                }};
+                ($op:ident, $u:ident, $w:ident, $builtin:tt) => {{
+                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    *reg!(d) = InterpreterValue::$w($builtin reg_val!(s).$u());
+                }};
+            }
+
+            macro_rules! cmp_zero_op {
+                ($op:ident, $u:ident) => {{
+                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    *reg!(d) = InterpreterValue::bool(reg_val!(s).$u() == 0);
+                }};
+            }
+
+            macro_rules! conv_op {
+                ($op:ident, $u:ident, $w:ident, $ty:ty) => {{
+                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    *reg!(d) = InterpreterValue::$w(reg_val!(s).$u() as $ty);
+                }};
+                ($op:ident, $u:ident, $w:ident, $ity:ty, $ty:ty) => {{
+                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    *reg!(d) = InterpreterValue::$w(reg_val!(s).$u() as $ity as $ty);
+                }};
+            }
+
+            macro_rules! move_op {
+                ($op:ident) => {{
+                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    *reg!(d) = reg_val!(s);
+                }};
+            }
+
+            macro_rules! load_op {
+                ($op:ident, $w:ident, $ptr_ty:ty, $size:expr) => {{
+                    let (d, p, o) = decode_into!($op, pc, code_ptr);
+                    let addr = reg_val!(p).unwarp_i64() as usize + o as usize;
+                    let ptr = mem.translate_addr(addr, $size).expect("Segment fault");
+                    *reg!(d) =
+                        InterpreterValue::$w(
+                            unsafe { (ptr as *const $ptr_ty).read_unaligned() } as _
+                        );
+                }};
+            }
+
+            macro_rules! store_op {
+                ($op:ident, $u:ident, $ptr_ty:ty, $size:expr) => {{
+                    let (v, p, o) = decode_into!($op, pc, code_ptr);
+                    let addr = reg_val!(p).unwarp_i64() as usize + o as usize;
+                    let ptr = mem.translate_addr(addr, $size).expect("Segment fault");
+                    #[allow(unused_unsafe)]
+                    unsafe {
+                        (ptr as *mut $ptr_ty).write_unaligned(reg_val!(v).$u() as _)
+                    };
+                }};
+            }
+
+            macro_rules! shift_op {
+                ($op:ident, $u:ident, $w:ident, $method:ident) => {{
+                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u();
+                    let rv = reg_val!(r).$u() as u32;
+                    *reg!(d) = InterpreterValue::$w(lv.$method(rv));
+                }};
+                ($op:ident, $u:ident, $w:ident, $method:ident, $uty:ty) => {{
+                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u() as $uty;
+                    let rv = reg_val!(r).$u() as u32;
+                    *reg!(d) = InterpreterValue::$w(lv.$method(rv) as _);
+                }};
+            }
+
+            macro_rules! shift_imm_op {
+                ($op:ident, $u:ident, $w:ident, $method:ident) => {{
+                    let (d, l, i) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u();
+                    *reg!(d) = InterpreterValue::$w(lv.$method(i as u32));
+                }};
+                ($op:ident, $u:ident, $w:ident, $method:ident, $uty:ty) => {{
+                    let (d, l, i) = decode_into!($op, pc, code_ptr);
+                    let lv = reg_val!(l).$u() as $uty;
+                    *reg!(d) = InterpreterValue::$w(lv.$method(i as u32) as _);
+                }};
+            }
+
+            // --- High-level Semantic Macros for Clarity ---
+            macro_rules! i32_bin {
+                ($op:ident, $method:ident) => {
+                    bin_op!($op, unwarp_i32, i32, $method)
+                };
+                ($op:ident, $oper:tt) => {
+                    bin_op!($op, unwarp_i32, i32, $oper)
+                };
+                ($op:ident, $oper:tt, $as_ty:ty) => {
+                    bin_op!($op, unwarp_i32, i32, $oper, $as_ty)
+                };
+            }
+            macro_rules! i32_imm {
+                ($op:ident, $method:ident) => {
+                    imm_op!($op, unwarp_i32, i32, $method, i32)
+                };
+                ($op:ident, $oper:tt) => {
+                    imm_op!($op, unwarp_i32, i32, $oper, i32)
+                };
+            }
+            macro_rules! i32_shift {
+                ($op:ident, $method:ident) => {
+                    shift_op!($op, unwarp_i32, i32, $method)
+                };
+                ($op:ident, $method:ident, $uty:ty) => {
+                    shift_op!($op, unwarp_i32, i32, $method, $uty)
+                };
+            }
+            macro_rules! i32_shift_imm {
+                ($op:ident, $method:ident) => {
+                    shift_imm_op!($op, unwarp_i32, i32, $method)
+                };
+                ($op:ident, $method:ident, $uty:ty) => {
+                    shift_imm_op!($op, unwarp_i32, i32, $method, $uty)
+                };
+            }
+            macro_rules! i32_cmp {
+                ($op:ident, $oper:tt) => {
+                    cmp_op!($op, unwarp_i32, $oper)
+                };
+                ($op:ident, $as_ty:ty, $oper:tt) => {
+                    cmp_op!($op, unwarp_i32, $as_ty, $oper)
+                };
+            }
+            macro_rules! i32_unary {
+                ($op:ident, $method:ident) => {
+                    unary_op!($op, unwarp_i32, i32, $method)
+                };
+                ($op:ident, $oper:tt) => {
+                    unary_op!($op, unwarp_i32, i32, $oper)
+                };
+            }
+            macro_rules! i32_eqz {
+                ($op:ident) => {
+                    cmp_zero_op!($op, unwarp_i32)
+                };
+            }
+            macro_rules! i64_bin {
+                ($op:ident, $method:ident) => {
+                    bin_op!($op, unwarp_i64, i64, $method)
+                };
+                ($op:ident, $oper:tt) => {
+                    bin_op!($op, unwarp_i64, i64, $oper)
+                };
+                ($op:ident, $oper:tt, $as_ty:ty) => {
+                    bin_op!($op, unwarp_i64, i64, $oper, $as_ty)
+                };
+            }
+            macro_rules! i64_imm {
+                ($op:ident, $method:ident) => {
+                    imm_op!($op, unwarp_i64, i64, $method, i64)
+                };
+                ($op:ident, $oper:tt) => {
+                    imm_op!($op, unwarp_i64, i64, $oper, i64)
+                };
+            }
+            macro_rules! i64_shift {
+                ($op:ident, $method:ident) => {
+                    shift_op!($op, unwarp_i64, i64, $method)
+                };
+                ($op:ident, $method:ident, $uty:ty) => {
+                    shift_op!($op, unwarp_i64, i64, $method, $uty)
+                };
+            }
+            macro_rules! i64_shift_imm {
+                ($op:ident, $method:ident) => {
+                    shift_imm_op!($op, unwarp_i64, i64, $method)
+                };
+                ($op:ident, $method:ident, $uty:ty) => {
+                    shift_imm_op!($op, unwarp_i64, i64, $method, $uty)
+                };
+            }
+            macro_rules! i64_cmp {
+                ($op:ident, $oper:tt) => {
+                    cmp_op!($op, unwarp_i64, $oper)
+                };
+                ($op:ident, $as_ty:ty, $oper:tt) => {
+                    cmp_op!($op, unwarp_i64, $as_ty, $oper)
+                };
+            }
+            macro_rules! i64_unary {
+                ($op:ident, $method:ident) => {
+                    unary_op!($op, unwarp_i64, i64, $method)
+                };
+                ($op:ident, $oper:tt) => {
+                    unary_op!($op, unwarp_i64, i64, $oper)
+                };
+            }
+            macro_rules! i64_eqz {
+                ($op:ident) => {
+                    cmp_zero_op!($op, unwarp_i64)
+                };
+            }
+
+            macro_rules! f32_bin {
+                ($op:ident, $method:ident) => {
+                    bin_op!($op, unwarp_f32, f32, $method)
+                };
+                ($op:ident, $oper:tt) => {
+                    bin_op!($op, unwarp_f32, f32, $oper)
+                };
+            }
+            macro_rules! f32_unary {
+                ($op:ident, $method:ident) => {
+                    unary_op!($op, unwarp_f32, f32, $method)
+                };
+                ($op:ident, $oper:tt) => {
+                    unary_op!($op, unwarp_f32, f32, $oper)
+                };
+            }
+            macro_rules! f32_cmp {
+                ($op:ident, $oper:tt) => {
+                    cmp_op!($op, unwarp_f32, $oper)
+                };
+            }
+            macro_rules! f64_bin {
+                ($op:ident, $method:ident) => {
+                    bin_op!($op, unwarp_f64, f64, $method)
+                };
+                ($op:ident, $oper:tt) => {
+                    bin_op!($op, unwarp_f64, f64, $oper)
+                };
+            }
+            macro_rules! f64_unary {
+                ($op:ident, $method:ident) => {
+                    unary_op!($op, unwarp_f64, f64, $method)
+                };
+                ($op:ident, $oper:tt) => {
+                    unary_op!($op, unwarp_f64, f64, $oper)
+                };
+            }
+            macro_rules! f64_cmp {
+                ($op:ident, $oper:tt) => {
+                    cmp_op!($op, unwarp_f64, $oper)
+                };
+            }
+
             macro_rules! prepare_call {
-                ($target_mid:expr, $target_fid:expr, $dst_reg:expr, $args_vec:expr) => {{
+                ($target_mid:expr, $target_fid:expr, $dst_reg:expr, $args:expr) => {{
                     if program.compiled_modules[$target_mid.0][$target_fid.0 as usize].is_none() {
                         panic!(
                             "Calling uncompiled function: mid={:?}, fid={:?}",
@@ -415,31 +435,32 @@ impl Interpreter {
 
                     // Initialize parameters
                     for (i, &new_idx) in func.param_indices.iter().enumerate() {
-                        if i < $args_vec.len() {
-                            self.value_stack[base + new_idx as usize] = $args_vec[i];
+                        if i < $args.len() {
+                            self.value_stack[base + new_idx as usize] = $args[i];
                         }
                     }
                     continue 'main_loop;
                 }};
             }
 
-            while let Some(&opcode_byte) = func.code.get(pc) {
+            while pc < code_len {
+                let opcode_byte = unsafe { *code_ptr.add(pc) };
                 pc += 1;
                 let opcode: Opcode = unsafe { core::mem::transmute(opcode_byte) };
 
                 match opcode {
                     // --- Constants ---
                     Opcode::Iconst => {
-                        let (d, v) = decode_into!(Iconst, pc, func.code);
-                        reg!(d) = InterpreterValue::i64(v as i64);
+                        let (d, v) = decode_into!(Iconst, pc, code_ptr);
+                        *reg!(d) = InterpreterValue::i64(v as i64);
                     }
                     Opcode::Fconst => {
-                        let (d, v) = decode_into!(Fconst, pc, func.code);
-                        reg!(d) = InterpreterValue(v);
+                        let (d, v) = decode_into!(Fconst, pc, code_ptr);
+                        *reg!(d) = InterpreterValue(v);
                     }
                     Opcode::Bconst => {
-                        let (d, v) = decode_into!(Bconst, pc, func.code);
-                        reg!(d) = InterpreterValue::bool(v != 0);
+                        let (d, v) = decode_into!(Bconst, pc, code_ptr);
+                        *reg!(d) = InterpreterValue::bool(v != 0);
                     }
 
                     // --- I32 Operations ---
@@ -586,26 +607,26 @@ impl Interpreter {
                     Opcode::Wrap => conv_op!(Wrap, unwarp_i64, i32, i32),
                     Opcode::Bitcast => move_op!(Bitcast),
                     Opcode::ExtendS => {
-                        let (d, s, from_ty) = decode_into!(ExtendS, pc, func.code);
-                        let val = reg!(s).unwarp_i64();
+                        let (d, s, from_ty) = decode_into!(ExtendS, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_i64();
                         let res = match from_ty {
                             EXTEND_TYPE_I8 => val as i8 as i64,
                             EXTEND_TYPE_I16 => val as i16 as i64,
                             EXTEND_TYPE_I32 => val as i32 as i64,
                             _ => unreachable!(),
                         };
-                        reg!(d) = InterpreterValue::i64(res);
+                        *reg!(d) = InterpreterValue::i64(res);
                     }
                     Opcode::ExtendU => {
-                        let (d, s, from_ty) = decode_into!(ExtendU, pc, func.code);
-                        let val = reg!(s).unwarp_i64();
+                        let (d, s, from_ty) = decode_into!(ExtendU, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_i64();
                         let res = match from_ty {
                             EXTEND_TYPE_I8 => (val as u8) as u64,
                             EXTEND_TYPE_I16 => (val as u16) as u64,
                             EXTEND_TYPE_I32 => (val as u32) as u64,
                             _ => unreachable!(),
                         };
-                        reg!(d) = InterpreterValue::i64(res as i64);
+                        *reg!(d) = InterpreterValue::i64(res as i64);
                     }
 
                     // --- Memory Access ---
@@ -624,16 +645,16 @@ impl Interpreter {
 
                     // --- Stack Operations ---
                     Opcode::StackAddr => {
-                        let (d, o) = decode_into!(StackAddr, pc, func.code);
+                        let (d, o) = decode_into!(StackAddr, pc, code_ptr);
                         let addr = stack_base + o as usize;
                         let ptr = unsafe { self.stack_memory.as_ptr().add(addr) };
-                        reg!(d) = InterpreterValue::i64(ptr as i64);
+                        *reg!(d) = InterpreterValue::i64(ptr as i64);
                     }
                     Opcode::StackLoad => {
-                        let (d, o, ty) = decode_into!(StackLoad, pc, func.code);
+                        let (d, o, ty) = decode_into!(StackLoad, pc, code_ptr);
                         let addr = stack_base + o as usize;
                         let ptr = unsafe { self.stack_memory.as_ptr().add(addr) };
-                        reg!(d) = match ty {
+                        *reg!(d) = match ty {
                             STACK_TYPE_I8 => {
                                 InterpreterValue::i32(
                                     unsafe { (ptr as *const i8).read_unaligned() } as i32,
@@ -659,10 +680,10 @@ impl Interpreter {
                         };
                     }
                     Opcode::StackStore => {
-                        let (v, o, ty) = decode_into!(StackStore, pc, func.code);
+                        let (v, o, ty) = decode_into!(StackStore, pc, code_ptr);
                         let addr = stack_base + o as usize;
                         let ptr = unsafe { self.stack_memory.as_mut_ptr().add(addr) };
-                        let val = reg!(v);
+                        let val = reg_val!(v);
                         match ty {
                             STACK_TYPE_I8 => unsafe {
                                 (ptr as *mut i8).write_unaligned(val.unwarp_i32() as i8)
@@ -688,22 +709,19 @@ impl Interpreter {
 
                     // --- Control Flow & Pointers ---
                     Opcode::Jump => {
-                        let target = decode_into!(Jump, pc, func.code);
+                        let target = decode_into!(Jump, pc, code_ptr);
                         pc = target as usize;
                     }
                     Opcode::BrIf => {
-                        let (cond, target) = decode_into!(BrIf, pc, func.code);
-                        if reg!(cond).unwarp_bool() {
+                        let (cond, target) = decode_into!(BrIf, pc, code_ptr);
+                        if reg_val!(cond).unwarp_bool() {
                             pc = target as usize;
                         }
                     }
                     Opcode::BrTable => {
-                        let (idx_reg, num_targets) = decode_into!(BrTable, pc, func.code);
-                        let idx = reg!(idx_reg).unwarp_i32();
+                        let (idx_reg, num_targets) = decode_into!(BrTable, pc, code_ptr);
+                        let idx = reg_val!(idx_reg).unwarp_i32();
 
-                        // In our IR, default_call is at index 0, followed by other targets.
-                        // Wasm index 0 maps to IR index 1, etc.
-                        // If Wasm index is out of bounds, use IR index 0 (default).
                         let target_idx = if idx >= 0 && (idx as u32) < (num_targets - 1) {
                             (idx as usize) + 1
                         } else {
@@ -711,17 +729,16 @@ impl Interpreter {
                         };
 
                         let target_pc_pos = pc + target_idx * 4;
-                        let target_pc = u32::from_le_bytes(
-                            func.code[target_pc_pos..target_pc_pos + 4]
-                                .try_into()
-                                .unwrap(),
-                        );
+                        let target_pc = unsafe {
+                            let ptr = code_ptr.add(target_pc_pos) as *const u32;
+                            u32::from_le(ptr.read_unaligned())
+                        };
                         pc = target_pc as usize;
                     }
                     Opcode::Return => {
-                        let (has_res, res_reg) = decode_into!(Return, pc, func.code);
+                        let (has_res, res_reg) = decode_into!(Return, pc, code_ptr);
                         let return_val = if has_res == RETURN_HAS_VALUE {
-                            Some(reg!(res_reg))
+                            Some(reg_val!(res_reg))
                         } else {
                             None
                         };
@@ -739,7 +756,9 @@ impl Interpreter {
 
                             if dst_reg != 0 {
                                 if let Some(v) = return_val {
-                                    reg!(dst_reg) = v;
+                                    // Refresh values_ptr after possible realloc in pop?
+                                    // Actually pop doesn't realloc value_stack, but we are back in main_loop soon.
+                                    self.value_stack[base + dst_reg as usize] = v;
                                 }
                             }
                             continue 'main_loop;
@@ -748,9 +767,12 @@ impl Interpreter {
                         }
                     }
                     Opcode::Call => {
-                        let (dst, f_id, num_args) = decode_into!(Call, pc, func.code);
-                        let mut args_vec: Vec<InterpreterValue> =
-                            (0..num_args).map(|_| reg!(read_u16!())).collect();
+                        let (dst, f_id, num_args) = decode_into!(Call, pc, code_ptr);
+                        self.args_buffer.clear();
+                        for _ in 0..num_args {
+                            let arg_reg = read_u16!();
+                            self.args_buffer.push(reg_val!(arg_reg));
+                        }
 
                         let target_fid = veloc_ir::FuncId::from_u32(f_id);
                         let (call_mid, call_fid) =
@@ -759,9 +781,10 @@ impl Interpreter {
                                     crate::host::ImportTarget::Module(m, f) => (*m, *f),
                                     crate::host::ImportTarget::Host(h_id) => {
                                         let host_func = &program.host_functions_list[*h_id];
-                                        let res = host_func.call(&mut args_vec);
+                                        let res = host_func.call(&mut self.args_buffer);
+                                        values_ptr = self.value_stack.as_mut_ptr();
                                         if dst != 0 {
-                                            reg!(dst) = res;
+                                            *reg!(dst) = res;
                                         }
                                         continue;
                                     }
@@ -770,13 +793,16 @@ impl Interpreter {
                                 (mid, target_fid)
                             };
 
-                        prepare_call!(call_mid, call_fid, dst, args_vec);
+                        prepare_call!(call_mid, call_fid, dst, self.args_buffer);
                     }
                     Opcode::CallIndirect => {
-                        let (dst, ptr_reg, num_args) = decode_into!(CallIndirect, pc, func.code);
-                        let mut args_vec: Vec<InterpreterValue> =
-                            (0..num_args).map(|_| reg!(read_u16!())).collect();
-                        let ptr_val = reg!(ptr_reg).0 as usize;
+                        let (dst, ptr_reg, num_args) = decode_into!(CallIndirect, pc, code_ptr);
+                        self.args_buffer.clear();
+                        for _ in 0..num_args {
+                            let arg_reg = read_u16!();
+                            self.args_buffer.push(reg_val!(arg_reg));
+                        }
+                        let ptr_val = reg_val!(ptr_reg).0 as usize;
 
                         let (call_mid, call_fid) = if let Some((target_mid, target_fid)) =
                             program.decode_interpreter_ptr(ptr_val)
@@ -784,32 +810,33 @@ impl Interpreter {
                             (target_mid, target_fid)
                         } else if let Some(host_id) = program.decode_host_ptr(ptr_val) {
                             let host_func = &program.host_functions_list[host_id];
-                            let res = host_func.call(&mut args_vec);
+                            let res = host_func.call(&mut self.args_buffer);
+                            values_ptr = self.value_stack.as_mut_ptr();
                             if dst != 0 {
-                                reg!(dst) = res;
+                                *reg!(dst) = res;
                             }
                             continue;
                         } else {
                             panic!("Invalid function pointer: {:x}", ptr_val);
                         };
 
-                        prepare_call!(call_mid, call_fid, dst, args_vec);
+                        prepare_call!(call_mid, call_fid, dst, self.args_buffer);
                     }
                     Opcode::PtrIndex => {
-                        let (d, p, i, s, o) = decode_into!(PtrIndex, pc, func.code);
-                        let ptr = reg!(p).unwarp_i64();
-                        let idx = reg!(i).unwarp_i64();
+                        let (d, p, i, s, o) = decode_into!(PtrIndex, pc, code_ptr);
+                        let ptr = reg_val!(p).unwarp_i64();
+                        let idx = reg_val!(i).unwarp_i64();
                         let res = ptr
                             .wrapping_add(idx.wrapping_mul(s as i64))
                             .wrapping_add(o as i64);
-                        reg!(d) = InterpreterValue::i64(res);
+                        *reg!(d) = InterpreterValue::i64(res);
                     }
                     Opcode::Select => {
-                        let (dst, cond, t, e) = decode_into!(Select, pc, func.code);
-                        if reg!(cond).unwarp_bool() {
-                            reg!(dst) = reg!(t);
+                        let (dst, cond, t, e) = decode_into!(Select, pc, code_ptr);
+                        if reg_val!(cond).unwarp_bool() {
+                            *reg!(dst) = reg_val!(t);
                         } else {
-                            reg!(dst) = reg!(e);
+                            *reg!(dst) = reg_val!(e);
                         }
                     }
                     Opcode::RegMove => move_op!(RegMove),

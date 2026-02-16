@@ -1347,6 +1347,7 @@ name = "veloc_analyzer"
 version = "0.1.0"
 dependencies = [
  "bitvec",
+ "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "veloc_ir",
 ]
@@ -1378,6 +1379,16 @@ dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "veloc_optimizer"
+version = "0.1.0"
+dependencies = [
+ "hashbrown 0.14.5",
+ "log",
+ "veloc_analyzer",
+ "veloc_ir",
 ]
 
 [[package]]

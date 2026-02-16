@@ -1355,6 +1355,7 @@ impl TargetBackend for X86_64Backend {
             | InstructionData::PtrIndex { .. } => {
                 todo!("Implement codegen for pointer instructions")
             }
+            InstructionData::Nop => {}
         }
     }
 

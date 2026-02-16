@@ -1,4 +1,5 @@
-use crate::{Block, Function, Inst, InstructionData, ModuleData, Opcode, Result, Type, Value};
+use crate::inst::Inst;
+use crate::{Block, Function, InstructionData, ModuleData, Opcode, Result, Type, Value};
 use alloc::string::String;
 use core::fmt;
 
@@ -670,6 +671,7 @@ impl Function {
                 }
             }
             InstructionData::Unreachable => {}
+            InstructionData::Nop => {}
         }
 
         Ok(())

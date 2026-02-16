@@ -1,7 +1,7 @@
 use crate::host::ModuleId;
 use ::alloc::vec::Vec;
 use hashbrown::HashMap;
-use veloc_analyzer::{LiveInterval, analyze_liveness, visit_operands};
+use veloc_analyzer::{LiveInterval, analyze_liveness};
 use veloc_ir::{FuncId, Function, InstructionData, Opcode as IrOpcode, Type, Value};
 
 pub const STACK_TYPE_I8: u8 = 1;
@@ -32,6 +32,12 @@ macro_rules! define_opcodes {
                 #[allow(non_snake_case)]
                 #[inline(always)]
                 pub fn $name(code: &mut Vec<u8>, $($arg : $ty),*) {
+                    #[allow(unused_mut)]
+                    let mut size = 1;
+                    $(
+                        size += core::mem::size_of::<$ty>();
+                    )*
+                    code.reserve(size);
                     code.push(Opcode::$name as u8);
                     $(
                         code.extend_from_slice(&$arg.to_le_bytes());
@@ -43,18 +49,20 @@ macro_rules! define_opcodes {
         #[macro_export]
         macro_rules! decode_into {
             $(
-                ($name, $pc:expr, $code:expr) => {
-                    (
-                        $(
-                            {
-                                let start = $pc;
-                                let end = start + core::mem::size_of::<$ty>();
-                                let v = $ty::from_le_bytes($code[start..end].try_into().unwrap());
-                                $pc = end;
-                                v
-                            }
-                        ),*
-                    )
+                ($name, $pc:expr, $code_ptr:expr) => {
+                    {
+                        #[allow(unused_assignments)]
+                        let res = (
+                            $(
+                                unsafe {
+                                    let v = ($code_ptr.add($pc) as *const $ty).read_unaligned();
+                                    $pc += core::mem::size_of::<$ty>();
+                                    $ty::from_le(v)
+                                }
+                            ),*
+                        );
+                        res
+                    }
                 };
             )*
         }
@@ -257,21 +265,28 @@ pub struct CompiledFunction {
     pub stack_slots_sizes: Vec<usize>,
     pub param_indices: Vec<u16>,
     pub register_count: usize,
-    pub call_args: Vec<Vec<u16>>,        // Payload for Call/CallIndirect
-    pub br_table_targets: Vec<Vec<u32>>, // Payload for BrTable
 }
 
 struct ValueMapper {
-    map: HashMap<Value, u16>,
+    map: Vec<u16>,
     free_registers: Vec<u16>,
     next_register: u16,
-    intervals: HashMap<Value, LiveInterval>,
+    intervals: Vec<Option<LiveInterval>>,
 }
 
 impl ValueMapper {
-    fn new(intervals: HashMap<Value, LiveInterval>) -> Self {
+    fn new(num_values: usize, intervals_map: HashMap<Value, LiveInterval>) -> Self {
+        let mut intervals = Vec::with_capacity(num_values);
+        intervals.resize(num_values, None);
+        for (v, interval) in intervals_map {
+            if (v.0 as usize) < num_values {
+                intervals[v.0 as usize] = Some(interval);
+            }
+        }
+        let mut map = Vec::with_capacity(num_values);
+        map.resize(num_values, 0);
         Self {
-            map: HashMap::new(),
+            map,
             free_registers: Vec::new(),
             next_register: 1,
             intervals,
@@ -279,15 +294,17 @@ impl ValueMapper {
     }
 
     fn get_mapped(&self, val: Value) -> u16 {
-        match self.map.get(&val) {
-            Some(&reg) => reg,
-            None => panic!("Value {:?} used before defined or mapping missing", val),
+        let reg = self.map[val.0 as usize];
+        if reg == 0 {
+            panic!("Value {:?} used before defined or mapping missing", val);
         }
+        reg
     }
 
-    fn alloc_and_map(&mut self, val: Value, _current_pc: u32) -> u16 {
-        if let Some(&reg) = self.map.get(&val) {
-            return reg;
+    fn alloc_and_map(&mut self, val: Value) -> u16 {
+        let existing = self.map[val.0 as usize];
+        if existing != 0 {
+            return existing;
         }
 
         let reg = if let Some(r) = self.free_registers.pop() {
@@ -297,65 +314,53 @@ impl ValueMapper {
             self.next_register += 1;
             r
         };
-        self.map.insert(val, reg);
+        self.map[val.0 as usize] = reg;
         reg
     }
 
     fn free_if_last_use(&mut self, val: Value, pc: u32) {
-        if let Some(interval) = self.intervals.get(&val) {
-            if interval.end <= pc {
-                if let Some(reg) = self.map.remove(&val) {
-                    self.free_registers.push(reg);
+        if (val.0 as usize) < self.intervals.len() {
+            if let Some(interval) = &self.intervals[val.0 as usize] {
+                if interval.end <= pc {
+                    let reg = self.map[val.0 as usize];
+                    if reg != 0 {
+                        self.map[val.0 as usize] = 0;
+                        self.free_registers.push(reg);
+                    }
                 }
             }
         }
     }
 }
 
-fn get_const_val(func: &Function, val: Value) -> Option<i64> {
-    if let Some(inst) = func.dfg.values[val].defined_by {
-        match &func.dfg.instructions[inst] {
-            InstructionData::Iconst { value, .. } => Some(*value),
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
-
 pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -> CompiledFunction {
     let intervals = analyze_liveness(func).intervals;
 
-    let mut stack_slots_sizes = Vec::new();
     let mut slot_to_offset = HashMap::new();
     let mut current_offset = 0u32;
     for (id, data) in &func.stack_slots {
         slot_to_offset.insert(id, current_offset);
         current_offset += data.size;
-        stack_slots_sizes.push(data.size as usize);
     }
 
-    let mut mapper = ValueMapper::new(intervals);
+    let mut mapper = ValueMapper::new(func.dfg.values.len(), intervals);
     let mut code = Vec::new();
     let mut param_indices = Vec::new();
     let mut block_to_pc = HashMap::new();
     let mut jump_fixups = Vec::new();
 
-    let call_args_payload = Vec::new();
-    let br_table_payload = Vec::new();
-
     macro_rules! binary_op {
         ($imm_op:ident, $reg_op:ident, $imm_ty:ty, $lhs:expr, $rhs:expr, $args:expr, $code:expr, $dst:expr) => {
-            if let Some(v) = get_const_val(func, $args[1]) {
+            if let Some(v) = func.dfg.as_const($args[1]).and_then(|c| c.as_i64()) {
                 emit::$imm_op($code, $dst, $lhs, v as $imm_ty);
             } else {
                 emit::$reg_op($code, $dst, $lhs, $rhs);
             }
         };
         ($imm_op:ident, $reg_op:ident, $imm_ty:ty, $lhs:expr, $rhs:expr, $args:expr, $code:expr, $dst:expr, commutative) => {
-            if let Some(v) = get_const_val(func, $args[1]) {
+            if let Some(v) = func.dfg.as_const($args[1]).and_then(|c| c.as_i64()) {
                 emit::$imm_op($code, $dst, $lhs, v as $imm_ty);
-            } else if let Some(v) = get_const_val(func, $args[0]) {
+            } else if let Some(v) = func.dfg.as_const($args[0]).and_then(|c| c.as_i64()) {
                 emit::$imm_op($code, $dst, $rhs, v as $imm_ty);
             } else {
                 emit::$reg_op($code, $dst, $lhs, $rhs);
@@ -395,7 +400,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
 
     if let Some(entry_block) = func.entry_block {
         for &param in &func.layout.blocks[entry_block].params {
-            param_indices.push(mapper.alloc_and_map(param, 0));
+            param_indices.push(mapper.alloc_and_map(param));
         }
     }
 
@@ -407,15 +412,13 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
         // Ensure all parameters of this block are mapped
         // Ensure all parameters of this block are mapped
         for &param in &block_data.params {
-            mapper.alloc_and_map(param, current_ir_inst_idx);
+            mapper.alloc_and_map(param);
         }
 
         for &inst in &block_data.insts {
             let idata = &func.dfg.instructions[inst];
             let res_val = func.dfg.inst_results(inst);
-            let dst = res_val
-                .map(|v| mapper.alloc_and_map(v, current_ir_inst_idx))
-                .unwrap_or(0);
+            let dst = res_val.map(|v| mapper.alloc_and_map(v)).unwrap_or(0);
 
             match idata {
                 InstructionData::Iconst { value, .. } => {
@@ -984,10 +987,11 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 InstructionData::Unreachable => {
                     emit::Unreachable(&mut code);
                 }
+                InstructionData::Nop => {}
             }
 
             // Free registers
-            visit_operands(idata, &func.dfg, |v| {
+            idata.visit_operands(&func.dfg, |v| {
                 mapper.free_if_last_use(v, current_ir_inst_idx)
             });
             if let Some(rv) = res_val {
@@ -1013,8 +1017,6 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
             .collect(),
         param_indices,
         register_count: mapper.next_register as usize,
-        call_args: call_args_payload,
-        br_table_targets: br_table_payload,
     }
 }
 
@@ -1023,7 +1025,7 @@ fn emit_moves(
     call: veloc_ir::types::BlockCall,
     mapper: &mut ValueMapper,
     code: &mut Vec<u8>,
-    current_pc: u32,
+    _current_pc: u32,
 ) {
     let target_block = func.dfg.block_calls[call].block;
     let args = func.dfg.get_value_list(func.dfg.block_calls[call].args);
@@ -1032,7 +1034,7 @@ fn emit_moves(
     // 1. Collect all move requests
     let mut moves: Vec<(u16, u16)> = Vec::new();
     for (&p, &a) in params.iter().zip(args.iter()) {
-        let d = mapper.alloc_and_map(p, current_pc);
+        let d = mapper.alloc_and_map(p);
         let s = mapper.get_mapped(a);
         if d != s {
             moves.push((d, s));

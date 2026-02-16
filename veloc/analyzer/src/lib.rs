@@ -1,5 +1,7 @@
 pub mod liveness;
-pub mod regalloc;
+pub mod manager;
+pub mod use_def;
 
 pub use liveness::*;
-pub use regalloc::*;
+pub use manager::*;
+pub use use_def::*;

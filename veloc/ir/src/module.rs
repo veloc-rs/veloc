@@ -37,9 +37,19 @@ pub struct ModuleData {
     pub signatures: PrimaryMap<SigId, Signature>,
     pub globals: Vec<Global>,
     sig_map: HashMap<Signature, SigId>,
+    /// 当前模块的修订版本
+    revision: u64,
 }
 
 impl ModuleData {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn bump_revision(&mut self) {
+        self.revision += 1;
+    }
+
     pub fn get_func_id(&self, name: &str) -> Option<FuncId> {
         self.functions
             .iter()

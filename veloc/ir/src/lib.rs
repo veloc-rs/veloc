@@ -12,10 +12,12 @@ pub mod inst;
 
 pub mod layout;
 pub mod module;
-pub mod passes;
 pub mod printer;
 pub mod types;
 pub mod validator;
+
+pub mod constant;
+mod opcode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallConv {
@@ -34,14 +36,13 @@ impl core::fmt::Display for CallConv {
 pub use builder::{FunctionBuilder, InstBuilder, ModuleBuilder};
 pub use error::{Error, Result};
 pub use function::Function;
-pub use inst::{FloatCC, IntCC, MemFlags};
 pub use module::{Global, Linkage, Module, ModuleData};
+pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 pub use types::{
-    Block, BlockCall, FuncId, JumpTable, SigId, Signature, StackSlot, Type, Value, ValueList,
-    Variable,
+    Block, BlockCall, FuncId, JumpTable, SigId, Signature, StackSlot, Type, Value, ValueDef,
+    ValueList, Variable,
 };
 
 // Internal-only re-exports for the backend and passes
 pub use dfg::DataFlowGraph;
-pub use inst::{InstructionData, Opcode};
-pub use types::Inst;
+pub use inst::{Inst, InstructionData};

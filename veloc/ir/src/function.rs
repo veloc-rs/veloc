@@ -19,6 +19,8 @@ pub struct Function {
     pub layout: Layout,
     pub stack_slots: PrimaryMap<StackSlot, StackSlotData>,
     pub entry_block: Option<Block>,
+    /// 当前函数的修订版本，用于缓存失效
+    revision: u64,
 }
 
 impl Function {
@@ -31,10 +33,19 @@ impl Function {
             layout: Layout::new(),
             stack_slots: PrimaryMap::new(),
             entry_block: None,
+            revision: 0,
         }
     }
 
     pub fn is_defined(&self) -> bool {
         self.entry_block.is_some()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn bump_revision(&mut self) {
+        self.revision += 1;
     }
 }
