@@ -1,15 +1,9 @@
 [package]
-name = "veloc_interpreter"
+name = "veloc_analyzer"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 veloc_ir = { workspace = true }
-veloc_analyzer = { workspace = true }
 hashbrown = { workspace = true }
-
-[features]
-default = ["std"]
-std = ["veloc_ir/std"]
-
-
+bitvec = { workspace = true }

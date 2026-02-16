@@ -632,7 +632,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     pub fn idiv(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
-            opcode: Opcode::Idiv,
+            opcode: Opcode::DivS,
             args: [lhs, rhs],
             ty,
         })
@@ -642,7 +642,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     pub fn udiv(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
-            opcode: Opcode::Udiv,
+            opcode: Opcode::DivU,
             args: [lhs, rhs],
             ty,
         })
@@ -662,7 +662,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     pub fn irem(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
-            opcode: Opcode::Irem,
+            opcode: Opcode::RemS,
             args: [lhs, rhs],
             ty,
         })
@@ -672,7 +672,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     pub fn urem(&mut self, lhs: Value, rhs: Value) -> Value {
         let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
-            opcode: Opcode::Urem,
+            opcode: Opcode::RemU,
             args: [lhs, rhs],
             ty,
         })

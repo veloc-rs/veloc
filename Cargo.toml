@@ -10,6 +10,7 @@ members = [
     "veloc/ir",
     "veloc/interpreter",
     "veloc/backend",
+    "veloc/analyzer",
 ]
 
 [workspace.dependencies]
@@ -23,8 +24,10 @@ veloc = { path = "." }
 veloc_ir = { path = "veloc/ir" }
 veloc_interpreter = { path = "veloc/interpreter" }
 veloc_backend = { path = "veloc/backend" }
+veloc_analyzer = { path = "veloc/analyzer" }
 veloc_wasm = { path = "crates/veloc_wasm" }
 hashbrown = { version = "0.14" }
+bitvec = "1.0"
 elf_loader = { path = "../elf_loader" }
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
@@ -40,8 +43,9 @@ veloc_backend = { workspace = true }
 cranelift-entity = { workspace = true }
 hashbrown = { workspace = true }
 
-
-
 [features]
 default = ["std"]
 std = ["hashbrown/default"]
+
+[profile.release]
+debug = true

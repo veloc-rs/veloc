@@ -553,8 +553,8 @@ impl X86_64Backend {
                     self.rex(emitter, is_64);
                     emitter.emit_inst(op);
                 }
-                Opcode::Idiv | Opcode::Udiv | Opcode::Irem | Opcode::Urem => {
-                    if opcode == Opcode::Udiv || opcode == Opcode::Urem {
+                Opcode::DivS | Opcode::DivU | Opcode::RemS | Opcode::RemU => {
+                    if opcode == Opcode::DivU || opcode == Opcode::RemU {
                         if is_64 {
                             emitter.emit_inst(X86_64Inst::XorRdxRdx64);
                         } else {
@@ -569,13 +569,13 @@ impl X86_64Backend {
                     }
 
                     let inst = if is_64 {
-                        if opcode == Opcode::Udiv || opcode == Opcode::Urem {
+                        if opcode == Opcode::DivU || opcode == Opcode::RemU {
                             X86_64Inst::DivRcx64
                         } else {
                             X86_64Inst::IdivRcx64
                         }
                     } else {
-                        if opcode == Opcode::Udiv || opcode == Opcode::Urem {
+                        if opcode == Opcode::DivU || opcode == Opcode::RemU {
                             X86_64Inst::DivRcx
                         } else {
                             X86_64Inst::IdivRcx
@@ -583,7 +583,7 @@ impl X86_64Backend {
                     };
                     emitter.emit_inst(inst);
 
-                    if opcode == Opcode::Irem || opcode == Opcode::Urem {
+                    if opcode == Opcode::RemS || opcode == Opcode::RemU {
                         emitter.emit_inst(if is_64 {
                             X86_64Inst::MovRaxRdx64
                         } else {

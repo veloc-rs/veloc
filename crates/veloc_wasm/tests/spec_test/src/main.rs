@@ -356,6 +356,9 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
                     }
                     let actuals = match exec {
                         WastExecute::Invoke(invoke) => {
+                            if runner.dump_ir {
+                                runner.dump_ir_for(invoke.module.map(|m| m.name()));
+                            }
                             match runner.call(
                                 invoke.module.map(|m| m.name()),
                                 &invoke.name,

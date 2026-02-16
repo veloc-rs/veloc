@@ -132,8 +132,8 @@ impl VMInstance {
         if self.module.strategy() == Strategy::Interpreter {
             let mut interpreter = if let Some(int) = self.interpreter.take() {
                 int
-            } else if let Some(id) = self.interp_module_id {
-                Interpreter::new(id)
+            } else if let Some(_) = self.interp_module_id {
+                Interpreter::new()
             } else {
                 return Err(crate::error::Error::Message(
                     "Interpreter not found".to_string(),
@@ -142,7 +142,9 @@ impl VMInstance {
 
             let args = vec![InterpreterValue::i64(vmctx_ptr as i64)];
 
-            interpreter.run_function(program, self, init_func_id, &args);
+            if let Some(id) = self.interp_module_id {
+                interpreter.run_function(program, self, id, init_func_id, &args);
+            }
             self.interpreter = Some(interpreter);
         } else {
             let loaded = self.module.loaded().ok_or_else(|| {
@@ -626,7 +628,42 @@ impl VMInstance {
         // 1. 如果是解释器模式，记录模块 ID
         let interp_module_id = if module.strategy() == Strategy::Interpreter {
             match module.artifact() {
-                ModuleArtifact::Interpreter(ir) => Some(store.program.register_module(ir.clone())),
+                ModuleArtifact::Interpreter(ir) => {
+                    let mid = store.program.register_module(ir.clone());
+                    // 链接运行时函数
+                    let runtime_names = [
+                        "wasm_trap_handler",
+                        "wasm_memory_size",
+                        "wasm_memory_grow",
+                        "wasm_table_size",
+                        "wasm_table_grow",
+                        "wasm_table_fill",
+                        "wasm_table_copy",
+                        "wasm_table_init",
+                        "wasm_elem_drop",
+                        "wasm_memory_init",
+                        "wasm_data_drop",
+                        "wasm_memory_copy",
+                        "wasm_memory_fill",
+                        "wasm_init_table_element",
+                        "wasm_init_memory_data",
+                        "wasm_init_table",
+                    ];
+                    for name in runtime_names {
+                        if let Some(fid) = ir.get_func_id(name) {
+                            if let Some(host_func) = store.program.host_functions.get(name) {
+                                let host_id = store
+                                    .program
+                                    .host_functions_list
+                                    .iter()
+                                    .position(|f| alloc::sync::Arc::ptr_eq(&f.0, &host_func.0))
+                                    .expect("Host function not found in list");
+                                store.program.link_host(mid, fid, host_id);
+                            }
+                        }
+                    }
+                    Some(mid)
+                }
                 _ => None,
             }
         } else {
@@ -648,7 +685,7 @@ impl VMInstance {
         unsafe {
             let instance = VMInstance {
                 module: module.clone(),
-                interpreter: interp_module_id.map(Interpreter::new),
+                interpreter: interp_module_id.map(|_| Interpreter::new()),
                 interp_module_id,
                 host_state: Box::new(()),
                 vmctx_self_reference: vmctx_ptr,
@@ -738,6 +775,18 @@ impl VMInstance {
                     });
                 }
                 vm_functions[i] = func_ref;
+
+                if let Some(mid) = interp_module_id {
+                    let fid = meta.functions[i].func_id;
+                    let ptr_val = func_ref.native_call as usize;
+                    if let Some((target_mid, target_fid)) =
+                        store.program.decode_interpreter_ptr(ptr_val)
+                    {
+                        store.program.link_import(mid, fid, target_mid, target_fid);
+                    } else if let Some(host_id) = store.program.decode_host_ptr(ptr_val) {
+                        store.program.link_host(mid, fid, host_id);
+                    }
+                }
             }
             for i in meta.num_imported_funcs..meta.functions.len() {
                 let func_meta = &meta.functions[i];
@@ -1101,15 +1150,22 @@ impl TypedFunc {
 
                     let mut interpreter = if let Some(int) = instance.interpreter.take() {
                         int
-                    } else if let Some(id) = instance.interp_module_id {
+                    } else if let Some(_) = instance.interp_module_id {
                         // 如果因为之前的 trap 导致解释器丢失，则重新创建一个
-                        Interpreter::new(id)
+                        Interpreter::new()
                     } else {
                         panic!("Interpreter not initialized and no module ID found");
                     };
 
                     let res = interpreter
-                        .run_function(&store.program, instance, target_func_id, &int_args)
+                        .run_function(
+                            &store.program,
+                            instance,
+                            instance.interp_module_id.expect("Module ID missing"),
+                            target_func_id,
+                            &int_args,
+                        )
+                        .unwrap_or(InterpreterValue::none())
                         .to_i64_bits();
                     instance.interpreter = Some(interpreter);
                     res
