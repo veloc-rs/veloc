@@ -55,9 +55,9 @@ pub struct RuntimeFunctions {
 
 impl RuntimeFunctions {
     pub fn declare(ir: &mut veloc::ir::ModuleBuilder) -> Self {
-        let p = VelocType::Ptr;
+        let p = VelocType::PTR;
         let i = VelocType::I32;
-        let v = VelocType::Void;
+        let v = VelocType::VOID;
 
         let sig =
             |ir: &mut veloc::ir::ModuleBuilder, params: Vec<VelocType>, ret: Vec<VelocType>| {
@@ -363,7 +363,7 @@ fn generate_init_expr(
                 let offset = offsets.global_offset(*idx);
                 let align = if offset % 16 == 0 { 16 } else { 8 };
                 let src_ptr = ins.load(
-                    VelocType::Ptr,
+                    VelocType::PTR,
                     vmctx,
                     offset,
                     MemFlags::new().with_alignment(align),
@@ -418,7 +418,7 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
                 .map(|_| VelocType::I64)
                 .collect();
             let tramp_sig_id = ir.make_signature(
-                vec![VelocType::Ptr, VelocType::Ptr],
+                vec![VelocType::PTR, VelocType::PTR],
                 tramp_ret,
                 CallConv::SystemV,
             );
@@ -451,7 +451,7 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
                         ins.reinterpret(b, VelocType::F32)
                     }
                     VelocType::F64 => ins.reinterpret(val_i64, VelocType::F64),
-                    VelocType::Ptr => ins.int_to_ptr(val_i64),
+                    VelocType::PTR => ins.int_to_ptr(val_i64),
                     _ => val_i64,
                 };
                 call_args.push(val);
@@ -470,7 +470,7 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
                         ins.extend_u(i32_val, VelocType::I64)
                     }
                     VelocType::F64 => ins.reinterpret(res_val, VelocType::I64),
-                    VelocType::Ptr => ins.ptr_to_int(res_val, VelocType::I64),
+                    VelocType::PTR => ins.ptr_to_int(res_val, VelocType::I64),
                     _ => res_val,
                 };
                 ret_vals.push(res_i64);
@@ -487,7 +487,7 @@ fn generate_veloc_init(
     offsets: &VMOffsets,
     runtime: &RuntimeFunctions,
 ) -> veloc::ir::FuncId {
-    let init_sig_id = ir.make_signature(vec![veloc::ir::Type::Ptr], vec![], CallConv::SystemV);
+    let init_sig_id = ir.make_signature(vec![veloc::ir::Type::PTR], vec![], CallConv::SystemV);
     let init_func_id =
         ir.declare_function("__veloc_init".to_string(), init_sig_id, Linkage::Export);
 
@@ -502,7 +502,7 @@ fn generate_veloc_init(
         let offset = offsets.global_offset(i as u32);
         let align = if offset % 16 == 0 { 16 } else { 8 };
         let dst_ptr = ins.load(
-            VelocType::Ptr,
+            VelocType::PTR,
             vmctx,
             offset,
             MemFlags::new().with_alignment(align),

@@ -13,7 +13,7 @@ impl<'a> WasmTranslator<'a> {
                 let index_i64 = self.addr_to_i64(index);
                 let addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
                 let res = self.builder.ins().load(
-                    VelocType::Ptr,
+                    VelocType::PTR,
                     addr,
                     0,
                     MemFlags::new().with_alignment(8),
@@ -107,13 +107,13 @@ impl<'a> WasmTranslator<'a> {
         let offset = self.offsets.table_offset(index);
         let alignment = if offset % 16 == 0 { 16 } else { 8 };
         let def_ptr = self.builder.ins().load(
-            VelocType::Ptr,
+            VelocType::PTR,
             vmctx,
             offset,
             MemFlags::new().with_alignment(alignment),
         );
         let base = self.builder.ins().load(
-            VelocType::Ptr,
+            VelocType::PTR,
             def_ptr,
             VMTable::base_offset(),
             MemFlags::new().with_alignment(8),

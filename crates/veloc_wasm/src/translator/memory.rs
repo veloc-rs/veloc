@@ -175,13 +175,13 @@ impl<'a> WasmTranslator<'a> {
         let offset = self.offsets.memory_offset(index);
         let alignment = if offset % 16 == 0 { 16 } else { 8 };
         let def_ptr = self.builder.ins().load(
-            VelocType::Ptr,
+            VelocType::PTR,
             vmctx,
             offset,
             MemFlags::new().with_alignment(alignment),
         );
         let base = self.builder.ins().load(
-            VelocType::Ptr,
+            VelocType::PTR,
             def_ptr,
             VMMemory::base_offset(),
             MemFlags::new().with_alignment(8),
@@ -208,7 +208,7 @@ impl<'a> WasmTranslator<'a> {
     fn translate_load(&mut self, ty: VelocType, memarg: MemArg) {
         let addr = self.pop();
         let mem_idx = memarg.memory;
-        self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes());
+        self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes() as u32);
         let mem_base = self.get_memory_base(mem_idx);
         let addr_i64 = self.addr_to_i64(addr);
         let actual_ptr = self.builder.ins().ptr_index(mem_base, addr_i64, 1, 0);
@@ -224,7 +224,7 @@ impl<'a> WasmTranslator<'a> {
         let val = self.pop();
         let addr = self.pop();
         let mem_idx = memarg.memory;
-        self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes());
+        self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes() as u32);
         let mem_base = self.get_memory_base(mem_idx);
         let addr_i64 = self.addr_to_i64(addr);
         let actual_ptr = self.builder.ins().ptr_index(mem_base, addr_i64, 1, 0);

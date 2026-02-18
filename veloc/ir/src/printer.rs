@@ -66,15 +66,14 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
     if let Some(m) = module {
         let sig = &m.signatures[func.signature];
         write!(f, "{} function {}(", linkage, func.name)?;
-        for (i, &param) in sig.params.iter().enumerate() {
+        for (i, param) in sig.params.iter().cloned().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
             write!(f, "{}", param)?;
         }
         write!(f, ") -> ")?;
-        fmt_ret_types(f, &sig.ret)?;
-        write!(f, " ({:?})", sig.call_conv)?;
+        fmt_ret_types(f, &sig.returns)?;
     } else {
         write!(
             f,
@@ -246,7 +245,7 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                         .map(|f| f.name.as_str());
                     let ret_tys: Option<&[Type]> = module.map(|m| {
                         let sig_id = m.functions[*func_id].signature;
-                        m.signatures[sig_id].ret.as_ref()
+                        m.signatures[sig_id].returns.as_ref()
                     });
 
                     if let Some(name) = name {
@@ -395,7 +394,7 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 }
                 InstructionData::CallIndirect { ptr, args, sig_id } => {
                     let ret_tys: Option<&[Type]> =
-                        module.map(|m| m.signatures[*sig_id].ret.as_ref());
+                        module.map(|m| m.signatures[*sig_id].returns.as_ref());
                     if let Some(ret) = ret_tys {
                         write!(f, "call_indirect.{:?}.", sig_id)?;
                         fmt_ret_types(f, ret)?;
@@ -418,7 +417,7 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     sig_id,
                 } => {
                     let ret_tys: Option<&[Type]> =
-                        module.map(|m| m.signatures[*sig_id].ret.as_ref());
+                        module.map(|m| m.signatures[*sig_id].returns.as_ref());
                     if let Some(ret) = ret_tys {
                         write!(f, "call_intrinsic.")?;
                         fmt_ret_types(f, ret)?;

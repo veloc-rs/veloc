@@ -154,7 +154,7 @@ impl Function {
     fn validate_inst(&self, module: &ModuleData, inst: Inst) -> Result<()> {
         let dfg = &self.dfg;
         let data = &dfg.instructions[inst];
-        let val_ty = |v: Value| dfg.values[v].ty;
+        let val_ty = |v: Value| dfg.values[v].ty.clone();
 
         match data {
             InstructionData::Unary { opcode, arg } => {
@@ -164,9 +164,9 @@ impl Function {
                     .inst_results(inst)
                     .first()
                     .map(|&v| val_ty(v))
-                    .unwrap_or(Type::Void);
+                    .unwrap_or(Type::VOID);
 
-                if arg_ty == Type::Ptr || result_ty == Type::Ptr {
+                if arg_ty == Type::PTR || result_ty == Type::PTR {
                     return Err(ValidationError::PointerArithmetic(inst, *opcode).into());
                 }
 
@@ -198,10 +198,10 @@ impl Function {
                         }
                     }
                     Opcode::IEqz => {
-                        if !arg_ty.is_integer() || result_ty != Type::Bool {
+                        if !arg_ty.is_integer() || result_ty != Type::BOOL {
                             return Err(ValidationError::TypeMismatch {
                                 opcode: Opcode::IEqz,
-                                expected: Type::Bool,
+                                expected: Type::BOOL,
                                 got: result_ty,
                             }
                             .into());
@@ -209,7 +209,7 @@ impl Function {
                     }
                     // Conversion operators
                     Opcode::ExtendS | Opcode::ExtendU => {
-                        let is_valid = if arg_ty == Type::Bool {
+                        let is_valid = if arg_ty == Type::BOOL {
                             *opcode == Opcode::ExtendU && result_ty.is_integer()
                         } else {
                             arg_ty.is_integer()
@@ -296,9 +296,9 @@ impl Function {
                     .inst_results(inst)
                     .first()
                     .map(|&v| val_ty(v))
-                    .unwrap_or(Type::Void);
+                    .unwrap_or(Type::VOID);
 
-                if lhs_ty == Type::Ptr || rhs_ty == Type::Ptr || result_ty == Type::Ptr {
+                if lhs_ty == Type::PTR || rhs_ty == Type::PTR || result_ty == Type::PTR {
                     return Err(ValidationError::PointerArithmetic(inst, *opcode).into());
                 }
 
@@ -312,10 +312,10 @@ impl Function {
                 }
             }
             InstructionData::Load { ptr, .. } => {
-                if val_ty(*ptr) != Type::Ptr {
+                if val_ty(*ptr) != Type::PTR {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::Load,
-                        expected: Type::Ptr,
+                        expected: Type::PTR,
                         got: val_ty(*ptr),
                     }
                     .into());
@@ -325,8 +325,8 @@ impl Function {
                     .inst_results(inst)
                     .first()
                     .map(|&v| val_ty(v))
-                    .unwrap_or(Type::Void);
-                if result_ty == Type::Void {
+                    .unwrap_or(Type::VOID);
+                if result_ty == Type::VOID {
                     return Err(ValidationError::Other(alloc::format!(
                         "Cannot load void type at {:?}",
                         inst
@@ -335,15 +335,15 @@ impl Function {
                 }
             }
             InstructionData::Store { ptr, value, .. } => {
-                if val_ty(*ptr) != Type::Ptr {
+                if val_ty(*ptr) != Type::PTR {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::Store,
-                        expected: Type::Ptr,
+                        expected: Type::PTR,
                         got: val_ty(*ptr),
                     }
                     .into());
                 }
-                if val_ty(*value) == Type::Void {
+                if val_ty(*value) == Type::VOID {
                     return Err(ValidationError::Other(alloc::format!(
                         "Cannot store void type at {:?}",
                         inst
@@ -357,8 +357,8 @@ impl Function {
                     .inst_results(inst)
                     .first()
                     .map(|&v| val_ty(v))
-                    .unwrap_or(Type::Void);
-                if result_ty == Type::Void {
+                    .unwrap_or(Type::VOID);
+                if result_ty == Type::VOID {
                     return Err(ValidationError::Other(alloc::format!(
                         "Cannot stack_load void type at {:?}",
                         inst
@@ -367,7 +367,7 @@ impl Function {
                 }
             }
             InstructionData::StackStore { value, .. } => {
-                if val_ty(*value) == Type::Void {
+                if val_ty(*value) == Type::VOID {
                     return Err(ValidationError::Other(alloc::format!(
                         "Cannot stack_store void type at {:?}",
                         inst
@@ -377,20 +377,20 @@ impl Function {
             }
             InstructionData::StackAddr { .. } => {}
             InstructionData::PtrOffset { ptr, .. } => {
-                if val_ty(*ptr) != Type::Ptr {
+                if val_ty(*ptr) != Type::PTR {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::PtrOffset,
-                        expected: Type::Ptr,
+                        expected: Type::PTR,
                         got: val_ty(*ptr),
                     }
                     .into());
                 }
             }
             InstructionData::PtrIndex { ptr, index, .. } => {
-                if val_ty(*ptr) != Type::Ptr {
+                if val_ty(*ptr) != Type::PTR {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::PtrIndex,
-                        expected: Type::Ptr,
+                        expected: Type::PTR,
                         got: val_ty(*ptr),
                     }
                     .into());
@@ -414,10 +414,10 @@ impl Function {
                 }
             }
             InstructionData::PtrToInt { arg } => {
-                if val_ty(*arg) != Type::Ptr {
+                if val_ty(*arg) != Type::PTR {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::PtrToInt,
-                        expected: Type::Ptr,
+                        expected: Type::PTR,
                         got: val_ty(*arg),
                     }
                     .into());
@@ -427,7 +427,7 @@ impl Function {
                     .inst_results(inst)
                     .first()
                     .map(|&v| val_ty(v))
-                    .unwrap_or(Type::Void);
+                    .unwrap_or(Type::VOID);
                 if !result_ty.is_integer() {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::PtrToInt,
@@ -455,10 +455,10 @@ impl Function {
                     .into());
                 }
 
-                for (i, (&arg, &expected_ty)) in call_args.iter().zip(sig.params.iter()).enumerate()
+                for (i, (&arg, expected_ty)) in call_args.iter().zip(sig.params.iter()).enumerate()
                 {
                     let got_ty = val_ty(arg);
-                    if got_ty != expected_ty {
+                    if got_ty != *expected_ty {
                         return Err(ValidationError::Other(alloc::format!(
                             "Call to {} argument {} type mismatch: expected {:?}, got {:?}",
                             callee.name,
@@ -471,10 +471,10 @@ impl Function {
                 }
             }
             InstructionData::CallIndirect { ptr, args, sig_id } => {
-                if val_ty(*ptr) != Type::Ptr {
+                if val_ty(*ptr) != Type::PTR {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::CallIndirect,
-                        expected: Type::Ptr,
+                        expected: Type::PTR,
                         got: val_ty(*ptr),
                     }
                     .into());
@@ -491,10 +491,10 @@ impl Function {
                     .into());
                 }
 
-                for (i, (&arg, &expected_ty)) in call_args.iter().zip(sig.params.iter()).enumerate()
+                for (i, (&arg, expected_ty)) in call_args.iter().zip(sig.params.iter()).enumerate()
                 {
                     let got_ty = val_ty(arg);
-                    if got_ty != expected_ty {
+                    if got_ty != *expected_ty {
                         return Err(ValidationError::Other(alloc::format!(
                             "CallIndirect argument {} type mismatch: expected {:?}, got {:?}",
                             i,
@@ -524,8 +524,8 @@ impl Function {
                 for (i, (&param, &arg)) in
                     expected_params.iter().zip(actual_args.iter()).enumerate()
                 {
-                    let expected_ty = dfg.values[param].ty;
-                    let actual_ty = dfg.values[arg].ty;
+                    let expected_ty = dfg.values[param].ty.clone();
+                    let actual_ty = dfg.values[arg].ty.clone();
                     if expected_ty != actual_ty {
                         return Err(ValidationError::Other(alloc::format!(
                             "Jump to block {:?} argument {} type mismatch: expected {:?}, got {:?}",
@@ -544,7 +544,7 @@ impl Function {
                 else_dest,
             } => {
                 let cond_ty = val_ty(*condition);
-                if cond_ty != Type::Bool {
+                if cond_ty != Type::BOOL {
                     return Err(ValidationError::ConditionNotBool(inst, cond_ty).into());
                 }
 
@@ -567,8 +567,8 @@ impl Function {
                     for (i, (&param, &arg)) in
                         expected_params.iter().zip(actual_args.iter()).enumerate()
                     {
-                        let expected_ty = dfg.values[param].ty;
-                        let actual_ty = dfg.values[arg].ty;
+                        let expected_ty = dfg.values[param].ty.clone();
+                        let actual_ty = dfg.values[arg].ty.clone();
                         if expected_ty != actual_ty {
                             return Err(ValidationError::Other(alloc::format!(
                                 "Branch to block {:?} argument {} type mismatch: expected {:?}, got {:?}",
@@ -610,8 +610,8 @@ impl Function {
                     for (i, (&param, &arg)) in
                         expected_params.iter().zip(actual_args.iter()).enumerate()
                     {
-                        let expected_ty = dfg.values[param].ty;
-                        let actual_ty = dfg.values[arg].ty;
+                        let expected_ty = dfg.values[param].ty.clone();
+                        let actual_ty = dfg.values[arg].ty.clone();
                         if expected_ty != actual_ty {
                             return Err(ValidationError::Other(alloc::format!(
                                 "BrTable target block {:?} argument {} type mismatch: expected {:?}, got {:?}",
@@ -627,24 +627,24 @@ impl Function {
                 let ret_values = dfg.get_value_list(*values);
 
                 // 检查返回值数量
-                if ret_values.len() != sig.ret.len() {
+                if ret_values.len() != sig.returns.len() {
                     return Err(ValidationError::Other(alloc::format!(
                         "Return value count mismatch: expected {}, got {}",
-                        sig.ret.len(),
+                        sig.returns.len(),
                         ret_values.len()
                     ))
                     .into());
                 }
 
                 // 检查每个返回值的类型
-                for (i, (&ret_val, &expected_ty)) in
-                    ret_values.iter().zip(sig.ret.iter()).enumerate()
+                for (i, (&ret_val, expected_ty)) in
+                    ret_values.iter().zip(sig.returns.iter()).enumerate()
                 {
                     let got_ty = val_ty(ret_val);
-                    if got_ty != expected_ty {
+                    if got_ty != *expected_ty {
                         return Err(ValidationError::ReturnMismatch {
                             index: i,
-                            expected: expected_ty,
+                            expected: expected_ty.clone(),
                             got: got_ty,
                         }
                         .into());
@@ -657,7 +657,7 @@ impl Function {
                 else_val,
             } => {
                 let cond_ty = val_ty(*condition);
-                if cond_ty != Type::Bool {
+                if cond_ty != Type::BOOL {
                     return Err(ValidationError::ConditionNotBool(inst, cond_ty).into());
                 }
                 let t_ty = val_ty(*then_val);
@@ -667,7 +667,7 @@ impl Function {
                     .inst_results(inst)
                     .first()
                     .map(|&v| val_ty(v))
-                    .unwrap_or(Type::Void);
+                    .unwrap_or(Type::VOID);
                 if t_ty != f_ty || t_ty != result_ty {
                     return Err(ValidationError::SelectMismatch {
                         inst,
@@ -695,8 +695,8 @@ impl Function {
                     .inst_results(inst)
                     .first()
                     .map(|&v| val_ty(v))
-                    .unwrap_or(Type::Void);
-                if result_ty != Type::Bool {
+                    .unwrap_or(Type::VOID);
+                if result_ty != Type::BOOL {
                     return Err(ValidationError::ConditionNotBool(inst, result_ty).into());
                 }
             }

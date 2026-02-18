@@ -274,13 +274,13 @@ impl<'a> WasmTranslator<'a> {
                     let entry_offset = self.offsets.function_offset(function_index as u32);
                     let vmptr = self.vmctx.expect("vmctx not set");
                     let func_ptr = self.builder.ins().load(
-                        VelocType::Ptr,
+                        VelocType::PTR,
                         vmptr,
                         entry_offset + VMFuncRef::func_ptr_offset(),
                         MemFlags::new().with_alignment(16),
                     );
                     let target_vmctx = self.builder.ins().load(
-                        VelocType::Ptr,
+                        VelocType::PTR,
                         vmptr,
                         entry_offset + VMFuncRef::vmctx_offset(),
                         MemFlags::new().with_alignment(8),
@@ -335,7 +335,7 @@ impl<'a> WasmTranslator<'a> {
                 let entry_ptr =
                     self.builder
                         .ins()
-                        .load(VelocType::Ptr, entry_ptr_addr, 0, MemFlags::default());
+                        .load(VelocType::PTR, entry_ptr_addr, 0, MemFlags::default());
                 let zero = self.builder.ins().iconst(VelocType::I64, 0);
                 let zero_ptr = self.builder.ins().int_to_ptr(zero);
                 let is_not_null = self.builder.ins().icmp(IntCC::Ne, entry_ptr, zero_ptr);
@@ -376,13 +376,13 @@ impl<'a> WasmTranslator<'a> {
                 self.builder.switch_to_block(sig_ok_block);
                 self.terminated = false;
                 let func_ptr = self.builder.ins().load(
-                    VelocType::Ptr,
+                    VelocType::PTR,
                     entry_ptr,
                     VMFuncRef::func_ptr_offset(),
                     MemFlags::new().with_alignment(16),
                 );
                 let target_vmctx = self.builder.ins().load(
-                    VelocType::Ptr,
+                    VelocType::PTR,
                     entry_ptr,
                     VMFuncRef::vmctx_offset(),
                     MemFlags::new().with_alignment(8),
@@ -405,13 +405,13 @@ impl<'a> WasmTranslator<'a> {
                 }
                 args.reverse();
                 let func_ptr = self.builder.ins().load(
-                    VelocType::Ptr,
+                    VelocType::PTR,
                     func_ref,
                     VMFuncRef::func_ptr_offset(),
                     MemFlags::new().with_alignment(16),
                 );
                 let target_vmctx = self.builder.ins().load(
-                    VelocType::Ptr,
+                    VelocType::PTR,
                     func_ref,
                     VMFuncRef::vmctx_offset(),
                     MemFlags::new().with_alignment(8),

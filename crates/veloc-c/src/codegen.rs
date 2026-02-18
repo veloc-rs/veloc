@@ -77,7 +77,7 @@ fn type_from_specifiers(specifiers: &[DeclarationSpecifier]) -> Result<Type> {
     for spec in specifiers {
         if let DeclarationSpecifier::TypeSpecifier(ts) = spec {
             match ts {
-                TypeSpecifier::Void => return Ok(Type::Void),
+                TypeSpecifier::Void => return Ok(Type::VOID),
                 TypeSpecifier::Char => return Ok(Type::I8),
                 TypeSpecifier::Short => return Ok(Type::I16),
                 TypeSpecifier::Long => return Ok(Type::I64),

@@ -62,7 +62,7 @@ impl X86_64Backend {
 
     fn emit_store_val(&self, emitter: &mut Emitter, func: &Function, v: Value, src_reg: Reg) {
         let offset = self.val_offset(func, v);
-        let ty = func.dfg.values[v].ty;
+        let ty = func.dfg.values[v].ty.clone();
         if (src_reg as u8) >= 16 {
             let inst = if ty == veloc_ir::Type::F32 {
                 X86_64Inst::MovssRbpOffX
@@ -71,7 +71,7 @@ impl X86_64Backend {
             };
             emitter.inst(inst).reg(src_reg).imm(offset as u64).emit();
         } else {
-            let inst = if self.is_64(ty) {
+            let inst = if self.is_64(&ty) {
                 X86_64Inst::MovRbpOffR
             } else {
                 X86_64Inst::MovRbpOffR32
@@ -82,7 +82,7 @@ impl X86_64Backend {
 
     fn emit_load_val(&self, emitter: &mut Emitter, func: &Function, v: Value, dst_reg: Reg) {
         let offset = self.val_offset(func, v);
-        let ty = func.dfg.values[v].ty;
+        let ty = func.dfg.values[v].ty.clone();
         if (dst_reg as u8) >= 16 {
             let inst = if ty == veloc_ir::Type::F32 {
                 X86_64Inst::MovssXRbpOff
@@ -91,7 +91,7 @@ impl X86_64Backend {
             };
             emitter.inst(inst).reg(dst_reg).imm(offset as u64).emit();
         } else {
-            let inst = if self.is_64(ty) {
+            let inst = if self.is_64(&ty) {
                 X86_64Inst::MovRRbpOff
             } else {
                 X86_64Inst::MovR32RbpOff
@@ -134,12 +134,12 @@ impl X86_64Backend {
         emitter.inst(inst).reg(xmm_idx).imm(offset as u64).emit();
     }
 
-    fn is_64(&self, ty: veloc_ir::Type) -> bool {
-        ty == veloc_ir::Type::I64 || ty == veloc_ir::Type::F64
+    fn is_64(&self, ty: &veloc_ir::Type) -> bool {
+        *ty == veloc_ir::Type::I64 || *ty == veloc_ir::Type::F64
     }
 
-    fn is_float(&self, ty: veloc_ir::Type) -> bool {
-        ty == veloc_ir::Type::F32 || ty == veloc_ir::Type::F64
+    fn is_float(&self, ty: &veloc_ir::Type) -> bool {
+        *ty == veloc_ir::Type::F32 || *ty == veloc_ir::Type::F64
     }
 
     fn emit_unary(
@@ -151,10 +151,10 @@ impl X86_64Backend {
         res_ty: veloc_ir::Type,
         res: Option<Value>,
     ) {
-        let src_ty = func.dfg.values[arg].ty;
-        let is_64_src = self.is_64(src_ty);
-        let is_64_dest = self.is_64(res_ty);
-        let is_float_dest = self.is_float(res_ty);
+        let src_ty = func.dfg.values[arg].ty.clone();
+        let is_64_src = self.is_64(&src_ty);
+        let is_64_dest = self.is_64(&res_ty);
+        let is_float_dest = self.is_float(&res_ty);
 
         self.emit_load_val(emitter, func, arg, Reg::RAX);
 
@@ -302,35 +302,31 @@ impl X86_64Backend {
                 }
             }
             Opcode::Wrap if res_ty == veloc_ir::Type::I32 => {
+                let _ = &src_ty; // used
                 emitter.emit_inst(X86_64Inst::MovEaxEax);
             }
             Opcode::ExtendS | Opcode::ExtendU => {
                 let is_signed = opcode == Opcode::ExtendS;
-                match src_ty {
-                    veloc_ir::Type::I8 => {
-                        self.rex(emitter, is_64_dest);
-                        emitter.emit_inst(if is_signed {
-                            X86_64Inst::Movsx8RaxRax
-                        } else {
-                            X86_64Inst::Movzx8RaxRax
-                        });
-                    }
-                    veloc_ir::Type::I16 => {
-                        self.rex(emitter, is_64_dest);
-                        emitter.emit_inst(if is_signed {
-                            X86_64Inst::Movsx16RaxRax
-                        } else {
-                            X86_64Inst::Movzx16RaxRax
-                        });
-                    }
-                    veloc_ir::Type::I32 if is_64_dest => {
-                        emitter.emit_inst(if is_signed {
-                            X86_64Inst::MovsxdRaxEax
-                        } else {
-                            X86_64Inst::MovEaxEax
-                        });
-                    }
-                    _ => {}
+                if src_ty == veloc_ir::Type::I8 {
+                    self.rex(emitter, is_64_dest);
+                    emitter.emit_inst(if is_signed {
+                        X86_64Inst::Movsx8RaxRax
+                    } else {
+                        X86_64Inst::Movzx8RaxRax
+                    });
+                } else if src_ty == veloc_ir::Type::I16 {
+                    self.rex(emitter, is_64_dest);
+                    emitter.emit_inst(if is_signed {
+                        X86_64Inst::Movsx16RaxRax
+                    } else {
+                        X86_64Inst::Movzx16RaxRax
+                    });
+                } else if src_ty == veloc_ir::Type::I32 && is_64_dest {
+                    emitter.emit_inst(if is_signed {
+                        X86_64Inst::MovsxdRaxEax
+                    } else {
+                        X86_64Inst::MovEaxEax
+                    });
                 }
             }
             Opcode::FloatPromote => {
@@ -412,12 +408,13 @@ impl X86_64Backend {
         args: &[Value],
         res: Option<Value>,
     ) {
-        let ty = func.dfg.values[args[0]].ty;
-        let is_64 = self.is_64(ty);
-        let is_float = self.is_float(ty);
+        let ty = func.dfg.values[args[0]].ty.clone();
+        let is_64 = self.is_64(&ty);
+        let is_float = self.is_float(&ty);
 
         if is_float {
             let is_f32 = ty == veloc_ir::Type::F32;
+            let _ = &ty; // mark as used for borrow checker
             self.emit_load_xmm(emitter, func, args[0], Reg::XMM0, is_f32);
             self.emit_load_xmm(emitter, func, args[1], Reg::XMM1, is_f32);
 
@@ -610,8 +607,8 @@ impl X86_64Backend {
         res: Option<Value>,
     ) {
         self.emit_load_val(emitter, func, ptr, Reg::RAX);
-        if self.is_float(ty) {
-            let inst = if ty == veloc_ir::Type::F32 {
+        if self.is_float(&ty) {
+            let inst = if &ty == &veloc_ir::Type::F32 {
                 X86_64Inst::MovssXR64Off
             } else {
                 X86_64Inst::MovsdXR64Off
@@ -626,12 +623,16 @@ impl X86_64Backend {
                 self.emit_store_val(emitter, func, v, Reg::XMM0);
             }
         } else {
-            let inst = match ty {
-                veloc_ir::Type::I64 => X86_64Inst::MovR64R64Off,
-                veloc_ir::Type::I32 => X86_64Inst::MovR32R64Off,
-                veloc_ir::Type::I16 => X86_64Inst::Movzx16R64R64Off,
-                veloc_ir::Type::I8 => X86_64Inst::Movzx8R64R64Off,
-                _ => return,
+            let inst = if ty == veloc_ir::Type::I64 {
+                X86_64Inst::MovR64R64Off
+            } else if ty == veloc_ir::Type::I32 {
+                X86_64Inst::MovR32R64Off
+            } else if ty == veloc_ir::Type::I16 {
+                X86_64Inst::Movzx16R64R64Off
+            } else if ty == veloc_ir::Type::I8 {
+                X86_64Inst::Movzx8R64R64Off
+            } else {
+                return;
             };
             emitter
                 .inst(inst)
@@ -653,11 +654,11 @@ impl X86_64Backend {
         value: Value,
         offset: i32,
     ) {
-        let ty = func.dfg.values[value].ty;
+        let ty = func.dfg.values[value].ty.clone();
         self.emit_load_val(emitter, func, ptr, Reg::RAX);
-        if self.is_float(ty) {
+        if self.is_float(&ty) {
             self.emit_load_val(emitter, func, value, Reg::XMM0);
-            let inst = if ty == veloc_ir::Type::F32 {
+            let inst = if &ty == &veloc_ir::Type::F32 {
                 X86_64Inst::MovssR64OffX
             } else {
                 X86_64Inst::MovsdR64OffX
@@ -670,12 +671,16 @@ impl X86_64Backend {
                 .emit();
         } else {
             self.emit_load_val(emitter, func, value, Reg::RBX);
-            let inst = match ty {
-                veloc_ir::Type::I64 => X86_64Inst::MovR64OffR64,
-                veloc_ir::Type::I32 => X86_64Inst::MovR64OffR32,
-                veloc_ir::Type::I16 => X86_64Inst::MovR64OffR16,
-                veloc_ir::Type::I8 => X86_64Inst::MovR64OffR8,
-                _ => return,
+            let inst = if ty == veloc_ir::Type::I64 {
+                X86_64Inst::MovR64OffR64
+            } else if ty == veloc_ir::Type::I32 {
+                X86_64Inst::MovR64OffR32
+            } else if ty == veloc_ir::Type::I16 {
+                X86_64Inst::MovR64OffR16
+            } else if ty == veloc_ir::Type::I8 {
+                X86_64Inst::MovR64OffR8
+            } else {
+                return;
             };
             emitter
                 .inst(inst)
@@ -714,8 +719,8 @@ impl TargetBackend for X86_64Backend {
             let mut float_idx = 0;
 
             for &param in params {
-                let ty = func.dfg.values[param].ty;
-                if self.is_float(ty) {
+                let ty = func.dfg.values[param].ty.clone();
+                if self.is_float(&ty) {
                     if float_idx < float_regs.len() {
                         self.emit_store_val(emitter, func, param, float_regs[float_idx]);
                         float_idx += 1;
@@ -759,8 +764,8 @@ impl TargetBackend for X86_64Backend {
         let mut float_idx = 0;
 
         for &param in params {
-            let ty = func.dfg.values[param].ty;
-            if self.is_float(ty) {
+            let ty = func.dfg.values[param].ty.clone();
+            if self.is_float(&ty) {
                 if float_idx < float_regs.len() {
                     self.emit_store_val(emitter, func, param, float_regs[float_idx]);
                     float_idx += 1;
@@ -849,7 +854,7 @@ impl TargetBackend for X86_64Backend {
                 self.emit_binary(emitter, func, *opcode, args, res_vals.first().copied());
             }
             InstructionData::Load { ptr, offset, .. } => {
-                let ty = result_ty.unwrap_or(veloc_ir::Type::Void);
+                let ty = result_ty.unwrap_or(veloc_ir::Type::VOID);
                 self.emit_load(
                     emitter,
                     func,
@@ -864,7 +869,7 @@ impl TargetBackend for X86_64Backend {
                 self.emit_store(emitter, func, *ptr, *value, 0);
             }
             InstructionData::IntCompare { kind, args, .. } => {
-                let ty = func.dfg.values[args[0]].ty;
+                let ty = func.dfg.values[args[0]].ty.clone();
                 let is_64 = ty == veloc_ir::Type::I64;
 
                 self.emit_load_val(emitter, func, args[0], Reg::RAX); // RAX = args[0]
@@ -893,7 +898,7 @@ impl TargetBackend for X86_64Backend {
                 }
             }
             InstructionData::Unary { opcode, arg } => {
-                let res_ty = result_ty.unwrap_or(veloc_ir::Type::Void);
+                let res_ty = result_ty.unwrap_or(veloc_ir::Type::VOID);
                 self.emit_unary(
                     emitter,
                     func,
@@ -904,9 +909,9 @@ impl TargetBackend for X86_64Backend {
                 );
             }
             InstructionData::StackLoad { slot, offset } => {
-                let ty = result_ty.unwrap_or(veloc_ir::Type::Void);
+                let ty = result_ty.clone().unwrap_or(veloc_ir::Type::VOID);
                 let sso = self.ss_offset(func, *slot) + (*offset as i32);
-                if self.is_float(ty) {
+                if self.is_float(&ty) {
                     let inst = if ty == veloc_ir::Type::F32 {
                         X86_64Inst::MovssXRbpOff
                     } else {
@@ -931,9 +936,9 @@ impl TargetBackend for X86_64Backend {
                 value,
                 offset,
             } => {
-                let ty = func.dfg.values[*value].ty;
+                let ty = func.dfg.values[*value].ty.clone();
                 let sso = self.ss_offset(func, *slot) + (*offset as i32);
-                if self.is_float(ty) {
+                if self.is_float(&ty) {
                     self.emit_load_val(emitter, func, *value, Reg::XMM0);
                     let inst = if ty == veloc_ir::Type::F32 {
                         X86_64Inst::MovssRbpOffX
@@ -965,8 +970,8 @@ impl TargetBackend for X86_64Backend {
                 // TODO: 完整支持多返回值（通过寄存器或栈返回多个值）
                 // 目前只处理第一个返回值以保持向后兼容
                 if let Some(&value) = ret_vals.first() {
-                    let ty = func.dfg.values[value].ty;
-                    if self.is_float(ty) {
+                    let ty = func.dfg.values[value].ty.clone();
+                    if self.is_float(&ty) {
                         self.emit_load_val(emitter, func, value, Reg::XMM0);
                         if ty == veloc_ir::Type::F32 {
                             emitter
@@ -995,8 +1000,8 @@ impl TargetBackend for X86_64Backend {
                     self.get_param_regs(module.signatures[func.signature].call_conv);
 
                 for &arg in func.dfg.get_value_list(*args) {
-                    let arg_ty = func.dfg.values[arg].ty;
-                    if self.is_float(arg_ty) {
+                    let arg_ty = func.dfg.values[arg].ty.clone();
+                    if self.is_float(&arg_ty) {
                         if float_idx < float_regs.len() {
                             self.emit_load_val(emitter, func, arg, float_regs[float_idx]);
                             float_idx += 1;
@@ -1027,8 +1032,8 @@ impl TargetBackend for X86_64Backend {
                 });
 
                 if let Some(&v) = res_vals.first() {
-                    let ty = func.dfg.values[v].ty;
-                    if self.is_float(ty) {
+                    let ty = func.dfg.values[v].ty.clone();
+                    if self.is_float(&ty) {
                         self.emit_store_val(emitter, func, v, Reg::XMM0);
                     } else {
                         self.emit_store_val(emitter, func, v, Reg::RAX);
@@ -1043,8 +1048,8 @@ impl TargetBackend for X86_64Backend {
 
                 let dest_data = func.dfg.block_calls[*dest];
                 for &arg in func.dfg.get_value_list(dest_data.args) {
-                    let ty = func.dfg.values[arg].ty;
-                    if self.is_float(ty) {
+                    let ty = func.dfg.values[arg].ty.clone();
+                    if self.is_float(&ty) {
                         if float_idx < float_regs.len() {
                             self.emit_load_val(emitter, func, arg, float_regs[float_idx]);
                             float_idx += 1;
@@ -1086,8 +1091,8 @@ impl TargetBackend for X86_64Backend {
                 let mut int_idx = 0;
                 let mut float_idx = 0;
                 for &arg in func.dfg.get_value_list(then_data.args) {
-                    let ty = func.dfg.values[arg].ty;
-                    if self.is_float(ty) {
+                    let ty = func.dfg.values[arg].ty.clone();
+                    if self.is_float(&ty) {
                         if float_idx < float_regs.len() {
                             self.emit_load_val(emitter, func, arg, float_regs[float_idx]);
                             float_idx += 1;
@@ -1119,8 +1124,8 @@ impl TargetBackend for X86_64Backend {
                 let mut int_idx = 0;
                 let mut float_idx = 0;
                 for &arg in func.dfg.get_value_list(else_data.args) {
-                    let ty = func.dfg.values[arg].ty;
-                    if self.is_float(ty) {
+                    let ty = func.dfg.values[arg].ty.clone();
+                    if self.is_float(&ty) {
                         if float_idx < float_regs.len() {
                             self.emit_load_val(emitter, func, arg, float_regs[float_idx]);
                             float_idx += 1;
@@ -1169,8 +1174,8 @@ impl TargetBackend for X86_64Backend {
                     let mut int_idx = 0;
                     let mut float_idx = 0;
                     for &arg in func.dfg.get_value_list(bc_data.args) {
-                        let ty = func.dfg.values[arg].ty;
-                        if self.is_float(ty) {
+                        let ty = func.dfg.values[arg].ty.clone();
+                        if self.is_float(&ty) {
                             if float_idx < float_regs.len() {
                                 self.emit_load_val(emitter, func, arg, float_regs[float_idx]);
                                 float_idx += 1;
@@ -1205,8 +1210,8 @@ impl TargetBackend for X86_64Backend {
                 let mut int_idx = 0;
                 let mut float_idx = 0;
                 for &arg in func.dfg.get_value_list(default_bc_data.args) {
-                    let ty = func.dfg.values[arg].ty;
-                    if self.is_float(ty) {
+                    let ty = func.dfg.values[arg].ty.clone();
+                    if self.is_float(&ty) {
                         if float_idx < float_regs.len() {
                             self.emit_load_val(emitter, func, arg, float_regs[float_idx]);
                             float_idx += 1;
@@ -1240,8 +1245,8 @@ impl TargetBackend for X86_64Backend {
 
                 // TODO: retrieve args from ValueList side table
                 for &arg in &[] {
-                    let arg_ty = func.dfg.values[arg].ty;
-                    if self.is_float(arg_ty) {
+                    let arg_ty = func.dfg.values[arg].ty.clone();
+                    if self.is_float(&arg_ty) {
                         if float_idx < float_regs.len() {
                             self.emit_load_val(emitter, func, arg, float_regs[float_idx]);
                             float_idx += 1;
@@ -1261,8 +1266,8 @@ impl TargetBackend for X86_64Backend {
                 emitter.inst(X86_64Inst::CallReg).reg(Reg::RAX).emit();
 
                 if let Some(&v) = res_vals.first() {
-                    let res_ty = func.dfg.values[v].ty;
-                    if self.is_float(res_ty) {
+                    let res_ty = func.dfg.values[v].ty.clone();
+                    if self.is_float(&res_ty) {
                         self.emit_store_val(emitter, func, v, Reg::XMM0);
                     } else {
                         self.emit_store_val(emitter, func, v, Reg::RAX);
@@ -1275,8 +1280,8 @@ impl TargetBackend for X86_64Backend {
                 else_val,
                 ..
             } => {
-                let ty = func.dfg.values[*then_val].ty;
-                let is_64 = self.is_64(ty);
+                let ty = func.dfg.values[*then_val].ty.clone();
+                let is_64 = self.is_64(&ty);
                 self.emit_load_val(emitter, func, *condition, Reg::RAX);
                 emitter.emit_inst(X86_64Inst::TestRaxRax);
 
@@ -1327,7 +1332,7 @@ impl TargetBackend for X86_64Backend {
                 }
             }
             InstructionData::FloatCompare { kind, args } => {
-                let lhs_ty = func.dfg.values[args[0]].ty;
+                let lhs_ty = func.dfg.values[args[0]].ty.clone();
                 let is_f64 = lhs_ty == veloc_ir::Type::F64;
                 self.emit_load_val(emitter, func, args[0], Reg::XMM0);
                 self.emit_load_val(emitter, func, args[1], Reg::XMM1);

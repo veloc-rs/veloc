@@ -134,9 +134,9 @@ impl<'a> WasmTranslator<'a> {
                 self.locals.push((var, ty));
                 let zero = if ty.is_float() {
                     self.builder.ins().fconst(ty, 0)
-                } else if ty == VelocType::Bool {
+                } else if ty == VelocType::BOOL {
                     self.builder.ins().bconst(false)
-                } else if ty == VelocType::Ptr {
+                } else if ty == VelocType::PTR {
                     let null_i64 = self.builder.ins().iconst(VelocType::I64, 0);
                     self.builder.ins().int_to_ptr(null_i64)
                 } else {
@@ -153,25 +153,25 @@ impl<'a> WasmTranslator<'a> {
 
         // Initialize memory and table variables
         for i in 0..self.metadata.memories.len() as u32 {
-            let base_var = self.new_var(VelocType::Ptr);
+            let base_var = self.new_var(VelocType::PTR);
             let len_var = self.new_var(VelocType::I64);
             self.memory_vars.push((base_var, len_var));
             self.reload_memory(i);
         }
         for i in 0..self.metadata.tables.len() as u32 {
-            let base_var = self.new_var(VelocType::Ptr);
+            let base_var = self.new_var(VelocType::PTR);
             let len_var = self.new_var(VelocType::I64);
             self.table_vars.push((base_var, len_var));
             self.reload_table(i);
         }
         for i in 0..self.metadata.globals.len() as u32 {
-            let var = self.new_var(VelocType::Ptr);
+            let var = self.new_var(VelocType::PTR);
             self.global_ptr_vars.push(var);
             let vmctx = self.vmctx.expect("vmctx not set");
             let offset = self.offsets.global_offset(i);
             let alignment = if offset % 16 == 0 { 16 } else { 8 };
             let ptr = self.builder.ins().load(
-                VelocType::Ptr,
+                VelocType::PTR,
                 vmctx,
                 offset,
                 MemFlags::new().with_alignment(alignment),
@@ -238,7 +238,7 @@ impl<'a> WasmTranslator<'a> {
             Operator::RefIsNull => {
                 let v = self.pop();
                 let v_ty = self.builder.value_type(v);
-                let zero = if v_ty == VelocType::Ptr {
+                let zero = if v_ty == VelocType::PTR {
                     let z = self.builder.ins().iconst(VelocType::I64, 0);
                     self.builder.ins().int_to_ptr(z)
                 } else {
@@ -253,7 +253,7 @@ impl<'a> WasmTranslator<'a> {
             Operator::RefAsNonNull => {
                 let v = self.pop();
                 let v_ty = self.builder.value_type(v);
-                let zero = if v_ty == VelocType::Ptr {
+                let zero = if v_ty == VelocType::PTR {
                     let z = self.builder.ins().iconst(VelocType::I64, 0);
                     self.builder.ins().int_to_ptr(z)
                 } else {
@@ -363,7 +363,7 @@ impl<'a> WasmTranslator<'a> {
             ValType::I64 => VelocType::I64,
             ValType::F32 => VelocType::F32,
             ValType::F64 => VelocType::F64,
-            ValType::Ref(_) => VelocType::Ptr,
+            ValType::Ref(_) => VelocType::PTR,
             _ => VelocType::I64,
         }
     }

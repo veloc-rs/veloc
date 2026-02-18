@@ -36,7 +36,7 @@ impl WasmSignature {
 
     pub fn intern_veloc_sig(&self, ir: &mut veloc::ir::ModuleBuilder) -> SigId {
         let mut params = Vec::with_capacity(self.params.len() + 1);
-        params.push(VelocType::Ptr); // vmctx
+        params.push(VelocType::PTR); // vmctx
         params.extend(self.params.iter().map(|&t| valtype_to_veloc(t)));
         // 返回值：支持多返回值，直接通过 IR 多返回返回
         let ret: Vec<VelocType> = self.results.iter().map(|&t| valtype_to_veloc(t)).collect();
@@ -130,7 +130,7 @@ pub(crate) fn valtype_to_veloc(ty: ValType) -> VelocType {
         ValType::I64 => VelocType::I64,
         ValType::F32 => VelocType::F32,
         ValType::F64 => VelocType::F64,
-        ValType::Ref(_) => VelocType::Ptr,
+        ValType::Ref(_) => VelocType::PTR,
         _ => VelocType::I64,
     }
 }

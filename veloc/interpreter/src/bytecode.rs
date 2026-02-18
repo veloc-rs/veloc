@@ -460,170 +460,253 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     let ty = res_vals
                         .first()
                         .map(|&v| func.dfg.value_type(v))
-                        .unwrap_or(Type::Void);
+                        .unwrap_or(Type::VOID);
 
-                    match (ty, *opcode) {
-                        (Type::I32, IrOpcode::IAdd) => binary_op!(
-                            I32AddImm,
-                            I32Add,
-                            u32,
-                            lhs,
-                            rhs,
-                            args,
-                            &mut code,
-                            dst,
-                            commutative
-                        ),
-                        (Type::I32, IrOpcode::ISub) => {
-                            binary_op!(I32SubImm, I32Sub, u32, lhs, rhs, args, &mut code, dst)
+                    if ty == Type::I32 {
+                        match *opcode {
+                            IrOpcode::IAdd => binary_op!(
+                                I32AddImm,
+                                I32Add,
+                                u32,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::ISub => {
+                                binary_op!(I32SubImm, I32Sub, u32, lhs, rhs, args, &mut code, dst)
+                            }
+                            IrOpcode::IMul => emit::I32Mul(&mut code, dst, lhs, rhs),
+                            IrOpcode::IAnd => binary_op!(
+                                I32AndImm,
+                                I32And,
+                                u32,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::IOr => binary_op!(
+                                I32OrImm,
+                                I32Or,
+                                u32,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::IXor => binary_op!(
+                                I32XorImm,
+                                I32Xor,
+                                u32,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::IShl => {
+                                binary_op!(I32ShlImm, I32Shl, u32, lhs, rhs, args, &mut code, dst)
+                            }
+                            IrOpcode::IShrS => {
+                                binary_op!(I32ShrSImm, I32ShrS, u32, lhs, rhs, args, &mut code, dst)
+                            }
+                            IrOpcode::IShrU => {
+                                binary_op!(I32ShrUImm, I32ShrU, u32, lhs, rhs, args, &mut code, dst)
+                            }
+                            IrOpcode::IDivS => emit::I32DivS(&mut code, dst, lhs, rhs),
+                            IrOpcode::IDivU => emit::I32DivU(&mut code, dst, lhs, rhs),
+                            IrOpcode::IRemS => emit::I32RemS(&mut code, dst, lhs, rhs),
+                            IrOpcode::IRemU => emit::I32RemU(&mut code, dst, lhs, rhs),
+                            IrOpcode::IRotl => emit::I32RotL(&mut code, dst, lhs, rhs),
+                            IrOpcode::IRotr => emit::I32RotR(&mut code, dst, lhs, rhs),
+                            _ => panic!(
+                                "Unsupported binary opcode {:?} for type {:?}",
+                                opcode,
+                                ty.clone()
+                            ),
                         }
-                        (Type::I64, IrOpcode::IAdd) => binary_op!(
-                            I64AddImm,
-                            I64Add,
-                            u64,
-                            lhs,
-                            rhs,
-                            args,
-                            &mut code,
-                            dst,
-                            commutative
-                        ),
-                        (Type::I64, IrOpcode::ISub) => {
-                            binary_op!(I64SubImm, I64Sub, u64, lhs, rhs, args, &mut code, dst)
+                    } else if ty == Type::I64 {
+                        match *opcode {
+                            IrOpcode::IAdd => binary_op!(
+                                I64AddImm,
+                                I64Add,
+                                u64,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::ISub => {
+                                binary_op!(I64SubImm, I64Sub, u64, lhs, rhs, args, &mut code, dst)
+                            }
+                            IrOpcode::IMul => emit::I64Mul(&mut code, dst, lhs, rhs),
+                            IrOpcode::IAnd => binary_op!(
+                                I64AndImm,
+                                I64And,
+                                u64,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::IOr => binary_op!(
+                                I64OrImm,
+                                I64Or,
+                                u64,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::IXor => binary_op!(
+                                I64XorImm,
+                                I64Xor,
+                                u64,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::IShl => {
+                                binary_op!(I64ShlImm, I64Shl, u64, lhs, rhs, args, &mut code, dst)
+                            }
+                            IrOpcode::IShrS => {
+                                binary_op!(I64ShrSImm, I64ShrS, u64, lhs, rhs, args, &mut code, dst)
+                            }
+                            IrOpcode::IShrU => {
+                                binary_op!(I64ShrUImm, I64ShrU, u64, lhs, rhs, args, &mut code, dst)
+                            }
+                            IrOpcode::IDivS => emit::I64DivS(&mut code, dst, lhs, rhs),
+                            IrOpcode::IDivU => emit::I64DivU(&mut code, dst, lhs, rhs),
+                            IrOpcode::IRemS => emit::I64RemS(&mut code, dst, lhs, rhs),
+                            IrOpcode::IRemU => emit::I64RemU(&mut code, dst, lhs, rhs),
+                            IrOpcode::IRotl => emit::I64RotL(&mut code, dst, lhs, rhs),
+                            IrOpcode::IRotr => emit::I64RotR(&mut code, dst, lhs, rhs),
+                            _ => panic!(
+                                "Unsupported binary opcode {:?} for type {:?}",
+                                opcode,
+                                ty.clone()
+                            ),
                         }
-                        (Type::I32, IrOpcode::IMul) => emit::I32Mul(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::IMul) => emit::I64Mul(&mut code, dst, lhs, rhs),
-                        (Type::I32 | Type::Bool, IrOpcode::IAnd) => binary_op!(
-                            I32AndImm,
-                            I32And,
-                            u32,
-                            lhs,
-                            rhs,
-                            args,
-                            &mut code,
-                            dst,
-                            commutative
-                        ),
-                        (Type::I32 | Type::Bool, IrOpcode::IOr) => binary_op!(
-                            I32OrImm,
-                            I32Or,
-                            u32,
-                            lhs,
-                            rhs,
-                            args,
-                            &mut code,
-                            dst,
-                            commutative
-                        ),
-                        (Type::I32 | Type::Bool, IrOpcode::IXor) => binary_op!(
-                            I32XorImm,
-                            I32Xor,
-                            u32,
-                            lhs,
-                            rhs,
-                            args,
-                            &mut code,
-                            dst,
-                            commutative
-                        ),
-                        (Type::I64, IrOpcode::IAnd) => binary_op!(
-                            I64AndImm,
-                            I64And,
-                            u64,
-                            lhs,
-                            rhs,
-                            args,
-                            &mut code,
-                            dst,
-                            commutative
-                        ),
-                        (Type::I64, IrOpcode::IOr) => binary_op!(
-                            I64OrImm,
-                            I64Or,
-                            u64,
-                            lhs,
-                            rhs,
-                            args,
-                            &mut code,
-                            dst,
-                            commutative
-                        ),
-                        (Type::I64, IrOpcode::IXor) => binary_op!(
-                            I64XorImm,
-                            I64Xor,
-                            u64,
-                            lhs,
-                            rhs,
-                            args,
-                            &mut code,
-                            dst,
-                            commutative
-                        ),
-                        (Type::I32, IrOpcode::IShl) => {
-                            binary_op!(I32ShlImm, I32Shl, u32, lhs, rhs, args, &mut code, dst)
+                    } else if ty == Type::BOOL {
+                        // Bool uses I32 operations
+                        match *opcode {
+                            IrOpcode::IAnd => binary_op!(
+                                I32AndImm,
+                                I32And,
+                                u32,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::IOr => binary_op!(
+                                I32OrImm,
+                                I32Or,
+                                u32,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            IrOpcode::IXor => binary_op!(
+                                I32XorImm,
+                                I32Xor,
+                                u32,
+                                lhs,
+                                rhs,
+                                args,
+                                &mut code,
+                                dst,
+                                commutative
+                            ),
+                            _ => panic!(
+                                "Unsupported binary opcode {:?} for type {:?}",
+                                opcode,
+                                ty.clone()
+                            ),
                         }
-                        (Type::I32, IrOpcode::IShrS) => {
-                            binary_op!(I32ShrSImm, I32ShrS, u32, lhs, rhs, args, &mut code, dst)
+                    } else if ty == Type::F32 {
+                        match *opcode {
+                            IrOpcode::FAdd => emit::F32Add(&mut code, dst, lhs, rhs),
+                            IrOpcode::FSub => emit::F32Sub(&mut code, dst, lhs, rhs),
+                            IrOpcode::FMul => emit::F32Mul(&mut code, dst, lhs, rhs),
+                            IrOpcode::FDiv => emit::F32Div(&mut code, dst, lhs, rhs),
+                            IrOpcode::FMin => emit::F32Min(&mut code, dst, lhs, rhs),
+                            IrOpcode::FMax => emit::F32Max(&mut code, dst, lhs, rhs),
+                            IrOpcode::FCopysign => emit::F32CopySign(&mut code, dst, lhs, rhs),
+                            _ => panic!(
+                                "Unsupported binary opcode {:?} for type {:?}",
+                                opcode,
+                                ty.clone()
+                            ),
                         }
-                        (Type::I32, IrOpcode::IShrU) => {
-                            binary_op!(I32ShrUImm, I32ShrU, u32, lhs, rhs, args, &mut code, dst)
+                    } else if ty == Type::F64 {
+                        match *opcode {
+                            IrOpcode::FAdd => emit::F64Add(&mut code, dst, lhs, rhs),
+                            IrOpcode::FSub => emit::F64Sub(&mut code, dst, lhs, rhs),
+                            IrOpcode::FMul => emit::F64Mul(&mut code, dst, lhs, rhs),
+                            IrOpcode::FDiv => emit::F64Div(&mut code, dst, lhs, rhs),
+                            IrOpcode::FMin => emit::F64Min(&mut code, dst, lhs, rhs),
+                            IrOpcode::FMax => emit::F64Max(&mut code, dst, lhs, rhs),
+                            IrOpcode::FCopysign => emit::F64CopySign(&mut code, dst, lhs, rhs),
+                            _ => panic!(
+                                "Unsupported binary opcode {:?} for type {:?}",
+                                opcode,
+                                ty.clone()
+                            ),
                         }
-                        (Type::I64, IrOpcode::IShl) => {
-                            binary_op!(I64ShlImm, I64Shl, u64, lhs, rhs, args, &mut code, dst)
-                        }
-                        (Type::I64, IrOpcode::IShrS) => {
-                            binary_op!(I64ShrSImm, I64ShrS, u64, lhs, rhs, args, &mut code, dst)
-                        }
-                        (Type::I64, IrOpcode::IShrU) => {
-                            binary_op!(I64ShrUImm, I64ShrU, u64, lhs, rhs, args, &mut code, dst)
-                        }
-                        (Type::I32, IrOpcode::IDivS) => emit::I32DivS(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::IDivU) => emit::I32DivU(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::IDivS) => emit::I64DivS(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::IDivU) => emit::I64DivU(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::IRemS) => emit::I32RemS(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::IRemU) => emit::I32RemU(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::IRemS) => emit::I64RemS(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::IRemU) => emit::I64RemU(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::IRotl) => emit::I32RotL(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::IRotr) => emit::I32RotR(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::IRotl) => emit::I64RotL(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::IRotr) => emit::I64RotR(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::FAdd) => emit::F32Add(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::FSub) => emit::F32Sub(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::FMul) => emit::F32Mul(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::FDiv) => emit::F32Div(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::FMin) => emit::F32Min(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::FMax) => emit::F32Max(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::FCopysign) => {
-                            emit::F32CopySign(&mut code, dst, lhs, rhs)
-                        }
-                        (Type::F64, IrOpcode::FAdd) => emit::F64Add(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::FSub) => emit::F64Sub(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::FMul) => emit::F64Mul(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::FDiv) => emit::F64Div(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::FMin) => emit::F64Min(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::FMax) => emit::F64Max(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::FCopysign) => {
-                            emit::F64CopySign(&mut code, dst, lhs, rhs)
-                        }
-                        _ => panic!("Unsupported binary opcode {:?} for type {:?}", opcode, ty),
+                    } else {
+                        panic!(
+                            "Unsupported binary opcode {:?} for type {:?}",
+                            opcode,
+                            ty.clone()
+                        );
                     }
                 }
                 InstructionData::IntCompare { kind, args, .. } => {
                     let lhs = mapper.get_mapped(args[0]);
                     let rhs = mapper.get_mapped(args[1]);
-                    let operand_ty = func.dfg.values[args[0]].ty;
-                    match operand_ty {
-                        Type::I32 => icmp_op!(
+                    let operand_ty = func.dfg.values[args[0]].ty.clone();
+                    if operand_ty == Type::I32 {
+                        icmp_op!(
                             kind, lhs, rhs, &mut code, dst, I32Eq, I32Ne, I32LtS, I32LtU, I32LeS,
                             I32LeU, I32GtS, I32GtU, I32GeS, I32GeU
-                        ),
-                        Type::I64 | Type::Ptr | Type::Bool => icmp_op!(
+                        )
+                    } else if operand_ty == Type::I64
+                        || operand_ty == Type::PTR
+                        || operand_ty == Type::BOOL
+                    {
+                        icmp_op!(
                             kind, lhs, rhs, &mut code, dst, I64Eq, I64Ne, I64LtS, I64LtU, I64LeS,
                             I64LeU, I64GtS, I64GtU, I64GeS, I64GeU
-                        ),
-                        _ => panic!("Unsupported icmp kind {:?} for type {:?}", kind, operand_ty),
+                        )
+                    } else {
+                        panic!(
+                            "Unsupported icmp kind {:?} for type {:?}",
+                            kind,
+                            operand_ty.clone()
+                        );
                     }
                 }
                 InstructionData::StackAddr { slot, offset, .. } => {
@@ -635,30 +718,42 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     let ty = res_vals
                         .first()
                         .map(|&v| func.dfg.value_type(v))
-                        .unwrap_or(Type::Void);
-                    let ty_val = match &ty {
-                        Type::I32 => STACK_TYPE_I32,
-                        Type::I64 | Type::Ptr => STACK_TYPE_I64,
-                        Type::F32 => STACK_TYPE_F32,
-                        Type::F64 => STACK_TYPE_F64,
-                        Type::I8 => STACK_TYPE_I8,
-                        Type::I16 => STACK_TYPE_I16,
-                        _ => panic!("Unsupported type for StackLoad: {:?}", ty),
+                        .unwrap_or(Type::VOID);
+                    let ty_val = if ty == Type::I32 {
+                        STACK_TYPE_I32
+                    } else if ty == Type::I64 || ty == Type::PTR {
+                        STACK_TYPE_I64
+                    } else if ty == Type::F32 {
+                        STACK_TYPE_F32
+                    } else if ty == Type::F64 {
+                        STACK_TYPE_F64
+                    } else if ty == Type::I8 {
+                        STACK_TYPE_I8
+                    } else if ty == Type::I16 {
+                        STACK_TYPE_I16
+                    } else {
+                        panic!("Unsupported type for StackLoad: {:?}", ty)
                     };
                     emit::StackLoad(&mut code, dst, base_offset + *offset, ty_val);
                 }
                 InstructionData::StackStore { slot, value, .. } => {
                     let base_offset = slot_to_offset[*slot];
                     let val_reg = mapper.get_mapped(*value);
-                    let ty = func.dfg.values[*value].ty;
-                    let ty_val = match ty {
-                        Type::I32 => STACK_TYPE_I32,
-                        Type::I64 | Type::Ptr => STACK_TYPE_I64,
-                        Type::F32 => STACK_TYPE_F32,
-                        Type::F64 => STACK_TYPE_F64,
-                        Type::I8 => STACK_TYPE_I8,
-                        Type::I16 => STACK_TYPE_I16,
-                        _ => panic!("Unsupported type for StackStore: {:?}", ty),
+                    let ty = func.dfg.values[*value].ty.clone();
+                    let ty_val = if ty == Type::I32 {
+                        STACK_TYPE_I32
+                    } else if ty == Type::I64 || ty == Type::PTR {
+                        STACK_TYPE_I64
+                    } else if ty == Type::F32 {
+                        STACK_TYPE_F32
+                    } else if ty == Type::F64 {
+                        STACK_TYPE_F64
+                    } else if ty == Type::I8 {
+                        STACK_TYPE_I8
+                    } else if ty == Type::I16 {
+                        STACK_TYPE_I16
+                    } else {
+                        panic!("Unsupported type for StackStore: {:?}", ty);
                     };
                     emit::StackStore(&mut code, val_reg, base_offset, ty_val);
                 }
@@ -667,15 +762,21 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     let ty = res_vals
                         .first()
                         .map(|&v| func.dfg.value_type(v))
-                        .unwrap_or(Type::Void);
-                    match &ty {
-                        Type::I32 => emit::I32Load(&mut code, dst, ptr_reg, *offset),
-                        Type::I64 | Type::Ptr => emit::I64Load(&mut code, dst, ptr_reg, *offset),
-                        Type::F32 => emit::F32Load(&mut code, dst, ptr_reg, *offset),
-                        Type::F64 => emit::F64Load(&mut code, dst, ptr_reg, *offset),
-                        Type::I8 => emit::I8Load(&mut code, dst, ptr_reg, *offset),
-                        Type::I16 => emit::I16Load(&mut code, dst, ptr_reg, *offset),
-                        _ => panic!("Unsupported load type {:?}", ty),
+                        .unwrap_or(Type::VOID);
+                    if ty == Type::I32 {
+                        emit::I32Load(&mut code, dst, ptr_reg, *offset)
+                    } else if ty == Type::I64 || ty == Type::PTR {
+                        emit::I64Load(&mut code, dst, ptr_reg, *offset)
+                    } else if ty == Type::F32 {
+                        emit::F32Load(&mut code, dst, ptr_reg, *offset)
+                    } else if ty == Type::F64 {
+                        emit::F64Load(&mut code, dst, ptr_reg, *offset)
+                    } else if ty == Type::I8 {
+                        emit::I8Load(&mut code, dst, ptr_reg, *offset)
+                    } else if ty == Type::I16 {
+                        emit::I16Load(&mut code, dst, ptr_reg, *offset)
+                    } else {
+                        panic!("Unsupported load type {:?}", ty)
                     }
                 }
                 InstructionData::Store {
@@ -683,17 +784,21 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 } => {
                     let ptr_reg = mapper.get_mapped(*ptr);
                     let val_reg = mapper.get_mapped(*value);
-                    let ty = func.dfg.values[*value].ty;
-                    match ty {
-                        Type::I32 => emit::I32Store(&mut code, val_reg, ptr_reg, *offset),
-                        Type::I64 | Type::Ptr => {
-                            emit::I64Store(&mut code, val_reg, ptr_reg, *offset)
-                        }
-                        Type::F32 => emit::F32Store(&mut code, val_reg, ptr_reg, *offset),
-                        Type::F64 => emit::F64Store(&mut code, val_reg, ptr_reg, *offset),
-                        Type::I8 => emit::I8Store(&mut code, val_reg, ptr_reg, *offset),
-                        Type::I16 => emit::I16Store(&mut code, val_reg, ptr_reg, *offset),
-                        _ => panic!("Unsupported store type {:?}", ty),
+                    let ty = func.dfg.values[*value].ty.clone();
+                    if ty == Type::I32 {
+                        emit::I32Store(&mut code, val_reg, ptr_reg, *offset);
+                    } else if ty == Type::I64 || ty == Type::PTR {
+                        emit::I64Store(&mut code, val_reg, ptr_reg, *offset);
+                    } else if ty == Type::F32 {
+                        emit::F32Store(&mut code, val_reg, ptr_reg, *offset);
+                    } else if ty == Type::F64 {
+                        emit::F64Store(&mut code, val_reg, ptr_reg, *offset);
+                    } else if ty == Type::I8 {
+                        emit::I8Store(&mut code, val_reg, ptr_reg, *offset);
+                    } else if ty == Type::I16 {
+                        emit::I16Store(&mut code, val_reg, ptr_reg, *offset);
+                    } else {
+                        panic!("Unsupported store type {:?}", ty);
                     }
                 }
                 InstructionData::Jump { dest } => {
@@ -775,16 +880,22 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 InstructionData::FloatCompare { kind, args, .. } => {
                     let lhs = mapper.get_mapped(args[0]);
                     let rhs = mapper.get_mapped(args[1]);
-                    match func.dfg.values[args[0]].ty {
-                        Type::F32 => fcmp_op!(
+                    let operand_ty = func.dfg.values[args[0]].ty.clone();
+                    if operand_ty == Type::F32 {
+                        fcmp_op!(
                             kind, lhs, rhs, &mut code, dst, F32Eq, F32Ne, F32Lt, F32Le, F32Gt,
                             F32Ge
-                        ),
-                        Type::F64 => fcmp_op!(
+                        )
+                    } else if operand_ty == Type::F64 {
+                        fcmp_op!(
                             kind, lhs, rhs, &mut code, dst, F64Eq, F64Ne, F64Lt, F64Le, F64Gt,
                             F64Ge
-                        ),
-                        ty => panic!("Unsupported float compare {:?} for type {:?}", kind, ty),
+                        )
+                    } else {
+                        panic!(
+                            "Unsupported float compare {:?} for type {:?}",
+                            kind, operand_ty
+                        );
                     }
                 }
                 InstructionData::Select {
@@ -808,23 +919,29 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 }
                 InstructionData::Unary { opcode, arg, .. } => {
                     let arg_reg = mapper.get_mapped(*arg);
-                    let from_ty = func.dfg.values[*arg].ty;
+                    let from_ty = func.dfg.values[*arg].ty.clone();
                     match opcode {
                         IrOpcode::ExtendS => {
-                            let ty_val = match from_ty {
-                                Type::I8 => EXTEND_TYPE_I8,
-                                Type::I16 => EXTEND_TYPE_I16,
-                                Type::I32 => EXTEND_TYPE_I32,
-                                _ => panic!("Unsupported extend from type {:?}", from_ty),
+                            let ty_val = if from_ty == Type::I8 {
+                                EXTEND_TYPE_I8
+                            } else if from_ty == Type::I16 {
+                                EXTEND_TYPE_I16
+                            } else if from_ty == Type::I32 {
+                                EXTEND_TYPE_I32
+                            } else {
+                                panic!("Unsupported extend from type {:?}", from_ty);
                             };
                             emit::ExtendS(&mut code, dst, arg_reg, ty_val);
                         }
                         IrOpcode::ExtendU => {
-                            let ty_val = match from_ty {
-                                Type::I8 => EXTEND_TYPE_I8,
-                                Type::I16 => EXTEND_TYPE_I16,
-                                Type::I32 => EXTEND_TYPE_I32,
-                                _ => panic!("Unsupported extend from type {:?}", from_ty),
+                            let ty_val = if from_ty == Type::I8 {
+                                EXTEND_TYPE_I8
+                            } else if from_ty == Type::I16 {
+                                EXTEND_TYPE_I16
+                            } else if from_ty == Type::I32 {
+                                EXTEND_TYPE_I32
+                            } else {
+                                panic!("Unsupported extend from type {:?}", from_ty);
                             };
                             emit::ExtendU(&mut code, dst, arg_reg, ty_val);
                         }
@@ -832,111 +949,111 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             emit::Wrap(&mut code, dst, arg_reg);
                         }
                         IrOpcode::FloatToIntS => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty;
-                            match (to_ty, from_ty) {
-                                (Type::I32, Type::F32) => {
-                                    emit::I32TruncF32S(&mut code, dst, arg_reg)
-                                }
-                                (Type::I32, Type::F64) => {
-                                    emit::I32TruncF64S(&mut code, dst, arg_reg)
-                                }
-                                (Type::I64, Type::F32) => {
-                                    emit::I64TruncF32S(&mut code, dst, arg_reg)
-                                }
-                                (Type::I64, Type::F64) => {
-                                    emit::I64TruncF64S(&mut code, dst, arg_reg)
-                                }
-                                _ => panic!("Unsupported TruncS: {:?} -> {:?}", from_ty, to_ty),
+                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
+                            if to_ty == Type::I32 && from_ty == Type::F32 {
+                                emit::I32TruncF32S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I32 && from_ty == Type::F64 {
+                                emit::I32TruncF64S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I64 && from_ty == Type::F32 {
+                                emit::I64TruncF32S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I64 && from_ty == Type::F64 {
+                                emit::I64TruncF64S(&mut code, dst, arg_reg);
+                            } else {
+                                panic!(
+                                    "Unsupported TruncS: {:?} -> {:?}",
+                                    from_ty.clone(),
+                                    to_ty.clone()
+                                );
                             }
                         }
                         IrOpcode::FloatToIntU => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty;
-                            match (to_ty, from_ty) {
-                                (Type::I32, Type::F32) => {
-                                    emit::I32TruncF32U(&mut code, dst, arg_reg)
-                                }
-                                (Type::I32, Type::F64) => {
-                                    emit::I32TruncF64U(&mut code, dst, arg_reg)
-                                }
-                                (Type::I64, Type::F32) => {
-                                    emit::I64TruncF32U(&mut code, dst, arg_reg)
-                                }
-                                (Type::I64, Type::F64) => {
-                                    emit::I64TruncF64U(&mut code, dst, arg_reg)
-                                }
-                                _ => panic!("Unsupported TruncU: {:?} -> {:?}", from_ty, to_ty),
+                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
+                            if to_ty == Type::I32 && from_ty == Type::F32 {
+                                emit::I32TruncF32U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I32 && from_ty == Type::F64 {
+                                emit::I32TruncF64U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I64 && from_ty == Type::F32 {
+                                emit::I64TruncF32U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I64 && from_ty == Type::F64 {
+                                emit::I64TruncF64U(&mut code, dst, arg_reg);
+                            } else {
+                                panic!(
+                                    "Unsupported TruncU: {:?} -> {:?}",
+                                    from_ty.clone(),
+                                    to_ty.clone()
+                                );
                             }
                         }
                         IrOpcode::FloatToIntSatS => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty;
-                            match (to_ty, from_ty) {
-                                (Type::I32, Type::F32) => {
-                                    emit::I32TruncSatF32S(&mut code, dst, arg_reg)
-                                }
-                                (Type::I32, Type::F64) => {
-                                    emit::I32TruncSatF64S(&mut code, dst, arg_reg)
-                                }
-                                (Type::I64, Type::F32) => {
-                                    emit::I64TruncSatF32S(&mut code, dst, arg_reg)
-                                }
-                                (Type::I64, Type::F64) => {
-                                    emit::I64TruncSatF64S(&mut code, dst, arg_reg)
-                                }
-                                _ => panic!("Unsupported TruncSatS: {:?} -> {:?}", from_ty, to_ty),
+                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
+                            if to_ty == Type::I32 && from_ty == Type::F32 {
+                                emit::I32TruncSatF32S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I32 && from_ty == Type::F64 {
+                                emit::I32TruncSatF64S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I64 && from_ty == Type::F32 {
+                                emit::I64TruncSatF32S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I64 && from_ty == Type::F64 {
+                                emit::I64TruncSatF64S(&mut code, dst, arg_reg);
+                            } else {
+                                panic!(
+                                    "Unsupported TruncSatS: {:?} -> {:?}",
+                                    from_ty.clone(),
+                                    to_ty.clone()
+                                );
                             }
                         }
                         IrOpcode::FloatToIntSatU => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty;
-                            match (to_ty, from_ty) {
-                                (Type::I32, Type::F32) => {
-                                    emit::I32TruncSatF32U(&mut code, dst, arg_reg)
-                                }
-                                (Type::I32, Type::F64) => {
-                                    emit::I32TruncSatF64U(&mut code, dst, arg_reg)
-                                }
-                                (Type::I64, Type::F32) => {
-                                    emit::I64TruncSatF32U(&mut code, dst, arg_reg)
-                                }
-                                (Type::I64, Type::F64) => {
-                                    emit::I64TruncSatF64U(&mut code, dst, arg_reg)
-                                }
-                                _ => panic!("Unsupported TruncSatU: {:?} -> {:?}", from_ty, to_ty),
+                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
+                            if to_ty == Type::I32 && from_ty == Type::F32 {
+                                emit::I32TruncSatF32U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I32 && from_ty == Type::F64 {
+                                emit::I32TruncSatF64U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I64 && from_ty == Type::F32 {
+                                emit::I64TruncSatF32U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::I64 && from_ty == Type::F64 {
+                                emit::I64TruncSatF64U(&mut code, dst, arg_reg);
+                            } else {
+                                panic!(
+                                    "Unsupported TruncSatU: {:?} -> {:?}",
+                                    from_ty.clone(),
+                                    to_ty.clone()
+                                );
                             }
                         }
                         IrOpcode::IntToFloatS => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty;
-                            match (to_ty, from_ty) {
-                                (Type::F32, Type::I32) => {
-                                    emit::F32ConvertI32S(&mut code, dst, arg_reg)
-                                }
-                                (Type::F32, Type::I64) => {
-                                    emit::F32ConvertI64S(&mut code, dst, arg_reg)
-                                }
-                                (Type::F64, Type::I32) => {
-                                    emit::F64ConvertI32S(&mut code, dst, arg_reg)
-                                }
-                                (Type::F64, Type::I64) => {
-                                    emit::F64ConvertI64S(&mut code, dst, arg_reg)
-                                }
-                                _ => panic!("Unsupported ConvertS: {:?} -> {:?}", from_ty, to_ty),
+                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
+                            if to_ty == Type::F32 && from_ty == Type::I32 {
+                                emit::F32ConvertI32S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::F32 && from_ty == Type::I64 {
+                                emit::F32ConvertI64S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::F64 && from_ty == Type::I32 {
+                                emit::F64ConvertI32S(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::F64 && from_ty == Type::I64 {
+                                emit::F64ConvertI64S(&mut code, dst, arg_reg);
+                            } else {
+                                panic!(
+                                    "Unsupported ConvertS: {:?} -> {:?}",
+                                    from_ty.clone(),
+                                    to_ty.clone()
+                                );
                             }
                         }
                         IrOpcode::IntToFloatU => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty;
-                            match (to_ty, from_ty) {
-                                (Type::F32, Type::I32) => {
-                                    emit::F32ConvertI32U(&mut code, dst, arg_reg)
-                                }
-                                (Type::F32, Type::I64) => {
-                                    emit::F32ConvertI64U(&mut code, dst, arg_reg)
-                                }
-                                (Type::F64, Type::I32) => {
-                                    emit::F64ConvertI32U(&mut code, dst, arg_reg)
-                                }
-                                (Type::F64, Type::I64) => {
-                                    emit::F64ConvertI64U(&mut code, dst, arg_reg)
-                                }
-                                _ => panic!("Unsupported ConvertU: {:?} -> {:?}", from_ty, to_ty),
+                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
+                            if to_ty == Type::F32 && from_ty == Type::I32 {
+                                emit::F32ConvertI32U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::F32 && from_ty == Type::I64 {
+                                emit::F32ConvertI64U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::F64 && from_ty == Type::I32 {
+                                emit::F64ConvertI32U(&mut code, dst, arg_reg);
+                            } else if to_ty == Type::F64 && from_ty == Type::I64 {
+                                emit::F64ConvertI64U(&mut code, dst, arg_reg);
+                            } else {
+                                panic!(
+                                    "Unsupported ConvertU: {:?} -> {:?}",
+                                    from_ty.clone(),
+                                    to_ty.clone()
+                                );
                             }
                         }
                         IrOpcode::FloatDemote => emit::F32DemoteF64(&mut code, dst, arg_reg),
@@ -944,65 +1061,109 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                         IrOpcode::Reinterpret => {
                             emit::RegMove(&mut code, dst, arg_reg);
                         }
-                        IrOpcode::FAbs => match from_ty {
-                            Type::F32 => emit::F32Abs(&mut code, dst, arg_reg),
-                            Type::F64 => emit::F64Abs(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Abs for type {:?}", from_ty),
-                        },
-                        IrOpcode::FNeg => match from_ty {
-                            Type::F32 => emit::F32Neg(&mut code, dst, arg_reg),
-                            Type::F64 => emit::F64Neg(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Fneg for type {:?}", from_ty),
-                        },
+                        IrOpcode::FAbs => {
+                            if from_ty == Type::F32 {
+                                emit::F32Abs(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::F64 {
+                                emit::F64Abs(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Abs for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::FNeg => {
+                            if from_ty == Type::F32 {
+                                emit::F32Neg(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::F64 {
+                                emit::F64Neg(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Fneg for type {:?}", from_ty);
+                            }
+                        }
                         IrOpcode::INeg => {
                             // ... implement if needed
                             todo!("Ineg not implemented");
                         }
-                        IrOpcode::FSqrt => match from_ty {
-                            Type::F32 => emit::F32Sqrt(&mut code, dst, arg_reg),
-                            Type::F64 => emit::F64Sqrt(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Sqrt for type {:?}", from_ty),
-                        },
-                        IrOpcode::FCeil => match from_ty {
-                            Type::F32 => emit::F32Ceil(&mut code, dst, arg_reg),
-                            Type::F64 => emit::F64Ceil(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Ceil for type {:?}", from_ty),
-                        },
-                        IrOpcode::FFloor => match from_ty {
-                            Type::F32 => emit::F32Floor(&mut code, dst, arg_reg),
-                            Type::F64 => emit::F64Floor(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Floor for type {:?}", from_ty),
-                        },
-                        IrOpcode::FTrunc => match from_ty {
-                            Type::F32 => emit::F32Trunc(&mut code, dst, arg_reg),
-                            Type::F64 => emit::F64Trunc(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Trunc for type {:?}", from_ty),
-                        },
-                        IrOpcode::FNearest => match from_ty {
-                            Type::F32 => emit::F32Nearest(&mut code, dst, arg_reg),
-                            Type::F64 => emit::F64Nearest(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Nearest for type {:?}", from_ty),
-                        },
-                        IrOpcode::IClz => match from_ty {
-                            Type::I32 => emit::I32Clz(&mut code, dst, arg_reg),
-                            Type::I64 => emit::I64Clz(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Clz for type {:?}", from_ty),
-                        },
-                        IrOpcode::ICtz => match from_ty {
-                            Type::I32 => emit::I32Ctz(&mut code, dst, arg_reg),
-                            Type::I64 => emit::I64Ctz(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Ctz for type {:?}", from_ty),
-                        },
-                        IrOpcode::IPopcnt => match from_ty {
-                            Type::I32 => emit::I32Popcnt(&mut code, dst, arg_reg),
-                            Type::I64 => emit::I64Popcnt(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Popcnt for type {:?}", from_ty),
-                        },
-                        IrOpcode::IEqz => match from_ty {
-                            Type::I32 => emit::I32Eqz(&mut code, dst, arg_reg),
-                            Type::I64 => emit::I64Eqz(&mut code, dst, arg_reg),
-                            _ => panic!("Unsupported Eqz for type {:?}", from_ty),
-                        },
+                        IrOpcode::FSqrt => {
+                            if from_ty == Type::F32 {
+                                emit::F32Sqrt(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::F64 {
+                                emit::F64Sqrt(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Sqrt for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::FCeil => {
+                            if from_ty == Type::F32 {
+                                emit::F32Ceil(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::F64 {
+                                emit::F64Ceil(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Ceil for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::FFloor => {
+                            if from_ty == Type::F32 {
+                                emit::F32Floor(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::F64 {
+                                emit::F64Floor(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Floor for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::FTrunc => {
+                            if from_ty == Type::F32 {
+                                emit::F32Trunc(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::F64 {
+                                emit::F64Trunc(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Trunc for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::FNearest => {
+                            if from_ty == Type::F32 {
+                                emit::F32Nearest(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::F64 {
+                                emit::F64Nearest(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Nearest for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::IClz => {
+                            if from_ty == Type::I32 {
+                                emit::I32Clz(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::I64 {
+                                emit::I64Clz(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Clz for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::ICtz => {
+                            if from_ty == Type::I32 {
+                                emit::I32Ctz(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::I64 {
+                                emit::I64Ctz(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Ctz for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::IPopcnt => {
+                            if from_ty == Type::I32 {
+                                emit::I32Popcnt(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::I64 {
+                                emit::I64Popcnt(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Popcnt for type {:?}", from_ty);
+                            }
+                        }
+                        IrOpcode::IEqz => {
+                            if from_ty == Type::I32 {
+                                emit::I32Eqz(&mut code, dst, arg_reg);
+                            } else if from_ty == Type::I64 {
+                                emit::I64Eqz(&mut code, dst, arg_reg);
+                            } else {
+                                panic!("Unsupported Eqz for type {:?}", from_ty);
+                            }
+                        }
                         _ => {
                             todo!("Unsupported unary op {:?}", opcode);
                         }

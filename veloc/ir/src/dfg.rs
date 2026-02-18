@@ -41,9 +41,9 @@ impl DataFlowGraph {
     pub fn append_results(&mut self, inst: Inst, types: &[Type]) -> ValueList {
         let values: Vec<Value> = types
             .iter()
-            .map(|&ty| {
+            .map(|ty| {
                 self.values.push(ValueData {
-                    ty,
+                    ty: ty.clone(),
                     def: ValueDef::Inst(inst),
                 })
             })
@@ -102,7 +102,7 @@ impl DataFlowGraph {
     }
 
     pub fn value_type(&self, val: Value) -> Type {
-        self.values[val].ty
+        self.values[val].ty.clone()
     }
 
     pub fn value_def(&self, val: Value) -> ValueDef {
@@ -120,18 +120,28 @@ impl DataFlowGraph {
         if let ValueDef::Inst(inst) = self.value_def(val) {
             let ty = self.value_type(val);
             match &self.instructions[inst] {
-                InstructionData::Iconst { value } => match ty {
-                    Type::I8 => Some(Constant::I8(*value as i8)),
-                    Type::I16 => Some(Constant::I16(*value as i16)),
-                    Type::I32 => Some(Constant::I32(*value as i32)),
-                    Type::I64 => Some(Constant::I64(*value)),
-                    _ => None,
-                },
-                InstructionData::Fconst { value } => match ty {
-                    Type::F32 => Some(Constant::F32(f32::from_bits(*value as u32))),
-                    Type::F64 => Some(Constant::F64(f64::from_bits(*value))),
-                    _ => None,
-                },
+                InstructionData::Iconst { value } => {
+                    if ty == Type::I8 {
+                        Some(Constant::I8(*value as i8))
+                    } else if ty == Type::I16 {
+                        Some(Constant::I16(*value as i16))
+                    } else if ty == Type::I32 {
+                        Some(Constant::I32(*value as i32))
+                    } else if ty == Type::I64 {
+                        Some(Constant::I64(*value))
+                    } else {
+                        None
+                    }
+                }
+                InstructionData::Fconst { value } => {
+                    if ty == Type::F32 {
+                        Some(Constant::F32(f32::from_bits(*value as u32)))
+                    } else if ty == Type::F64 {
+                        Some(Constant::F64(f64::from_bits(*value)))
+                    } else {
+                        None
+                    }
+                }
                 InstructionData::Bconst { value } => Some(Constant::Bool(*value)),
                 _ => None,
             }

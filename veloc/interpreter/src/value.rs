@@ -71,10 +71,10 @@ impl InterpreterValue {
             Type::I8 => InterpreterValue::i32((v as i8) as i32),
             Type::I16 => InterpreterValue::i32((v as i16) as i32),
             Type::I32 => InterpreterValue::i32(v as i32),
-            Type::I64 | Type::Ptr => InterpreterValue::i64(v),
+            Type::I64 | Type::PTR => InterpreterValue::i64(v),
             Type::F32 => InterpreterValue::f32(f32::from_bits(v as u32)),
             Type::F64 => InterpreterValue::f64(f64::from_bits(v as u64)),
-            Type::Bool => InterpreterValue::bool(v != 0),
+            Type::BOOL => InterpreterValue::bool(v != 0),
             _ => InterpreterValue::none(),
         }
     }

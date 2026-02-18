@@ -99,7 +99,7 @@ impl<'a> FunctionBuilder<'a> {
 
         let sig_id = self.func().signature;
         let sig = self.module.signatures[sig_id].clone();
-        for &ty in sig.params.iter() {
+        for ty in sig.params.iter().cloned() {
             self.add_block_param(entry, ty);
         }
         entry
@@ -136,7 +136,7 @@ impl<'a> FunctionBuilder<'a> {
             // Overflow variants return (result, overflow_flag) tuple
             InstructionData::Binary { opcode, args, .. } => match opcode {
                 Opcode::IAddWithOverflow | Opcode::ISubWithOverflow | Opcode::IMulWithOverflow => {
-                    smallvec![self.value_type(args[0]), Type::Bool]
+                    smallvec![self.value_type(args[0]), Type::BOOL]
                 }
                 _ => smallvec![self.value_type(args[0])],
             },
@@ -151,15 +151,15 @@ impl<'a> FunctionBuilder<'a> {
             ),
 
             // Instructions with fixed result type
-            InstructionData::Bconst { .. } => smallvec![Type::Bool],
-            InstructionData::StackAddr { .. } => smallvec![Type::Ptr],
-            InstructionData::IntToPtr { .. } => smallvec![Type::Ptr],
-            InstructionData::PtrOffset { .. } => smallvec![Type::Ptr],
-            InstructionData::PtrIndex { .. } => smallvec![Type::Ptr],
+            InstructionData::Bconst { .. } => smallvec![Type::BOOL],
+            InstructionData::StackAddr { .. } => smallvec![Type::PTR],
+            InstructionData::IntToPtr { .. } => smallvec![Type::PTR],
+            InstructionData::PtrOffset { .. } => smallvec![Type::PTR],
+            InstructionData::PtrIndex { .. } => smallvec![Type::PTR],
 
             // Comparisons: always return Bool
             InstructionData::IntCompare { .. } | InstructionData::FloatCompare { .. } => {
-                smallvec![Type::Bool]
+                smallvec![Type::BOOL]
             }
 
             // Select: result type same as then_val/else_val
@@ -177,17 +177,21 @@ impl<'a> FunctionBuilder<'a> {
             // Call instructions: return types are obtained from the signature
             InstructionData::Call { func_id, .. } => {
                 let sig_id = self.module.functions[*func_id].signature;
-                self.module.signatures[sig_id].ret.iter().copied().collect()
+                self.module.signatures[sig_id]
+                    .returns
+                    .iter()
+                    .cloned()
+                    .collect()
             }
             InstructionData::CallIndirect { sig_id, .. } => self.module.signatures[*sig_id]
-                .ret
+                .returns
                 .iter()
-                .copied()
+                .cloned()
                 .collect(),
             InstructionData::CallIntrinsic { sig_id, .. } => self.module.signatures[*sig_id]
-                .ret
+                .returns
                 .iter()
-                .copied()
+                .cloned()
                 .collect(),
 
             InstructionData::Nop => smallvec![],
@@ -226,7 +230,7 @@ impl<'a> FunctionBuilder<'a> {
         let inst = self.func_mut().dfg.instructions.push(data);
         self.func_mut().layout.append_inst(block, inst);
 
-        if ty != Type::Void {
+        if ty != Type::VOID {
             let list = self.func_mut().dfg.append_results(inst, &[ty]);
             Some(self.func().dfg.get_value_list(list)[0])
         } else {
@@ -247,9 +251,10 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn make_jump_table(&mut self, targets: Vec<BlockCall>) -> JumpTable {
-        self.func_mut().dfg.jump_tables.push(JumpTableData {
-            targets: targets.into_boxed_slice(),
-        })
+        self.func_mut()
+            .dfg
+            .jump_tables
+            .push(JumpTableData { targets })
     }
 
     pub fn is_pristine(&self) -> bool {
@@ -439,7 +444,7 @@ impl<'a> FunctionBuilder<'a> {
         let val;
         if !self.sealed_blocks.contains(&block) {
             // Incomplete phi
-            let ty = self.var_types[&var];
+            let ty = self.var_types[&var].clone();
             val = self.add_block_param(block, ty);
             self.incomplete_phis
                 .entry(block)
@@ -450,7 +455,7 @@ impl<'a> FunctionBuilder<'a> {
             if preds.len() == 1 {
                 val = self.use_var_on_block(preds[0], var);
             } else {
-                let ty = self.var_types[&var];
+                let ty = self.var_types[&var].clone();
                 val = self.add_block_param(block, ty);
                 // Break recursion
                 self.def_map
@@ -494,7 +499,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn seal_all_blocks(&mut self) {
-        let blocks: Vec<_> = self.func().layout.block_order.iter().copied().collect();
+        let blocks: Vec<_> = self.func().layout.block_order.iter().cloned().collect();
         for block in blocks {
             self.seal_block(block);
         }
@@ -582,7 +587,7 @@ impl<'a> FunctionBuilder<'a> {
 
                     if changed {
                         let new_table = dfg.jump_tables.push(JumpTableData {
-                            targets: targets_data.into_boxed_slice(),
+                            targets: targets_data,
                         });
                         *dfg.inst_mut(last_inst) = InstructionData::BrTable {
                             index: idx_val,
@@ -651,11 +656,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
-        match ty {
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 => self
-                .push_with_type(InstructionData::Iconst { value: val }, ty)
-                .unwrap(),
-            _ => panic!("iconst only supports integer types"),
+        if ty.is_integer() {
+            self.push_with_type(InstructionData::Iconst { value: val }, ty)
+                .unwrap()
+        } else {
+            panic!("iconst only supports integer types")
         }
     }
 
@@ -891,7 +896,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
                 opcode: Opcode::IEqz,
                 arg: val,
             },
-            Type::Bool,
+            Type::BOOL,
         )
         .unwrap()
     }
@@ -1175,7 +1180,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     ) {
         debug_assert_eq!(
             self.builder.value_type(condition),
-            Type::Bool,
+            Type::BOOL,
             "Condition for br must be a bool"
         );
         let then_dest = self.builder.make_block_call(then_block, then_args);
@@ -1207,7 +1212,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         }
 
         let table = self.builder.func_mut().dfg.jump_tables.push(JumpTableData {
-            targets: target_calls.into_boxed_slice(),
+            targets: target_calls,
         });
         self.push(InstructionData::BrTable { index, table });
     }
@@ -1224,7 +1229,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     pub fn select(&mut self, condition: Value, then_val: Value, else_val: Value) -> Value {
         debug_assert_eq!(
             self.builder.value_type(condition),
-            Type::Bool,
+            Type::BOOL,
             "Condition for select must be a bool"
         );
         let ty = self.builder.value_type(then_val);
