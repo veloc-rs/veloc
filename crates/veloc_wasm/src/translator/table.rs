@@ -66,11 +66,12 @@ impl<'a> WasmTranslator<'a> {
                 let init_val = self.pop();
                 let vmctx = self.vmctx.expect("vmctx not set");
                 let table_idx = self.builder.ins().iconst(VelocType::I32, table as i64);
-                let res = self.builder.ins().call(
+                let call_inst = self.builder.ins().call(
                     self.runtime.table_grow,
                     &[vmctx, table_idx, init_val, delta],
                 );
-                self.stack.push(res.unwrap());
+                let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
+                self.stack.push(res_val);
                 self.reload_table(table);
             }
             Operator::TableSize { table } => {

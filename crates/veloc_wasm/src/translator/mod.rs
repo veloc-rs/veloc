@@ -146,6 +146,9 @@ impl<'a> WasmTranslator<'a> {
                     self.builder.ins().fconst(ty, 0)
                 } else if ty == VelocType::Bool {
                     self.builder.ins().bconst(false)
+                } else if ty == VelocType::Ptr {
+                    let null_i64 = self.builder.ins().iconst(VelocType::I64, 0);
+                    self.builder.ins().int_to_ptr(null_i64)
                 } else {
                     self.builder.ins().iconst(ty, 0)
                 };

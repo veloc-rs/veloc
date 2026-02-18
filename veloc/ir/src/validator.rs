@@ -13,6 +13,7 @@ pub enum ValidationError {
         got: Type,
     },
     ReturnMismatch {
+        index: usize,
         expected: Type,
         got: Type,
     },
@@ -55,11 +56,15 @@ impl fmt::Display for ValidationError {
                     opcode, expected, got
                 )
             }
-            Self::ReturnMismatch { expected, got } => {
+            Self::ReturnMismatch {
+                index,
+                expected,
+                got,
+            } => {
                 write!(
                     f,
-                    "Return type mismatch: expected {:?}, got {:?}",
-                    expected, got
+                    "Return type mismatch at index {}: expected {:?}, got {:?}",
+                    index, expected, got
                 )
             }
             Self::OperandTypeMismatch { inst, lhs, rhs } => {
@@ -154,10 +159,11 @@ impl Function {
         match data {
             InstructionData::Unary { opcode, arg } => {
                 let arg_ty = val_ty(*arg);
-                // Get the result type from the instruction's result
+                // Get the result type from the instruction's first result
                 let result_ty = dfg
                     .inst_results(inst)
-                    .map(|v| val_ty(v))
+                    .first()
+                    .map(|&v| val_ty(v))
                     .unwrap_or(Type::Void);
 
                 if arg_ty == Type::Ptr || result_ty == Type::Ptr {
@@ -285,9 +291,11 @@ impl Function {
             InstructionData::Binary { opcode, args } => {
                 let lhs_ty = val_ty(args[0]);
                 let rhs_ty = val_ty(args[1]);
+                // Get the result type from the instruction first result
                 let result_ty = dfg
                     .inst_results(inst)
-                    .map(|v| val_ty(v))
+                    .first()
+                    .map(|&v| val_ty(v))
                     .unwrap_or(Type::Void);
 
                 if lhs_ty == Type::Ptr || rhs_ty == Type::Ptr || result_ty == Type::Ptr {
@@ -312,9 +320,11 @@ impl Function {
                     }
                     .into());
                 }
+                // Get the result type from the instruction first result
                 let result_ty = dfg
                     .inst_results(inst)
-                    .map(|v| val_ty(v))
+                    .first()
+                    .map(|&v| val_ty(v))
                     .unwrap_or(Type::Void);
                 if result_ty == Type::Void {
                     return Err(ValidationError::Other(alloc::format!(
@@ -342,9 +352,11 @@ impl Function {
                 }
             }
             InstructionData::StackLoad { .. } => {
+                // Get the result type from the instruction first result
                 let result_ty = dfg
                     .inst_results(inst)
-                    .map(|v| val_ty(v))
+                    .first()
+                    .map(|&v| val_ty(v))
                     .unwrap_or(Type::Void);
                 if result_ty == Type::Void {
                     return Err(ValidationError::Other(alloc::format!(
@@ -410,9 +422,11 @@ impl Function {
                     }
                     .into());
                 }
+                // Get the result type from the instruction first result
                 let result_ty = dfg
                     .inst_results(inst)
-                    .map(|v| val_ty(v))
+                    .first()
+                    .map(|&v| val_ty(v))
                     .unwrap_or(Type::Void);
                 if !result_ty.is_integer() {
                     return Err(ValidationError::TypeMismatch {
@@ -608,12 +622,33 @@ impl Function {
                     }
                 }
             }
-            InstructionData::Return { value } => {
+            InstructionData::Return { values } => {
                 let sig = &module.signatures[self.signature];
-                let expected = sig.ret;
-                let got = value.map(|v| val_ty(v)).unwrap_or(Type::Void);
-                if expected != got {
-                    return Err(ValidationError::ReturnMismatch { expected, got }.into());
+                let ret_values = dfg.get_value_list(*values);
+
+                // 检查返回值数量
+                if ret_values.len() != sig.ret.len() {
+                    return Err(ValidationError::Other(alloc::format!(
+                        "Return value count mismatch: expected {}, got {}",
+                        sig.ret.len(),
+                        ret_values.len()
+                    ))
+                    .into());
+                }
+
+                // 检查每个返回值的类型
+                for (i, (&ret_val, &expected_ty)) in
+                    ret_values.iter().zip(sig.ret.iter()).enumerate()
+                {
+                    let got_ty = val_ty(ret_val);
+                    if got_ty != expected_ty {
+                        return Err(ValidationError::ReturnMismatch {
+                            index: i,
+                            expected: expected_ty,
+                            got: got_ty,
+                        }
+                        .into());
+                    }
                 }
             }
             InstructionData::Select {
@@ -627,9 +662,11 @@ impl Function {
                 }
                 let t_ty = val_ty(*then_val);
                 let f_ty = val_ty(*else_val);
+                // Get the result type from the instruction first result
                 let result_ty = dfg
                     .inst_results(inst)
-                    .map(|v| val_ty(v))
+                    .first()
+                    .map(|&v| val_ty(v))
                     .unwrap_or(Type::Void);
                 if t_ty != f_ty || t_ty != result_ty {
                     return Err(ValidationError::SelectMismatch {
@@ -653,9 +690,11 @@ impl Function {
                     }
                     .into());
                 }
+                // Get the result type from the instruction first result
                 let result_ty = dfg
                     .inst_results(inst)
-                    .map(|v| val_ty(v))
+                    .first()
+                    .map(|&v| val_ty(v))
                     .unwrap_or(Type::Void);
                 if result_ty != Type::Bool {
                     return Err(ValidationError::ConditionNotBool(inst, result_ty).into());
@@ -670,136 +709,35 @@ impl Function {
                 // Note: validation logic can be extended here
                 let _args = dfg.get_value_list(*args);
             }
-            InstructionData::ExtractValue { val, index } => {
-                let value_type = val_ty(*val);
-                // The value being extracted from must be a MultiValue
-                if value_type != Type::MultiValue {
-                    return Err(ValidationError::TypeMismatch {
-                        opcode: Opcode::ExtractValue,
-                        expected: Type::MultiValue,
-                        got: value_type,
-                    }
-                    .into());
-                }
-                let result_ty = dfg
-                    .inst_results(inst)
-                    .map(|v| val_ty(v))
-                    .unwrap_or(Type::Void);
-                // Get the component types of the MultiValue by finding its producer
-                if let Some(component_types) = self.get_multivalue_components(*val, module) {
-                    let idx = *index as usize;
-                    if idx >= component_types.len() {
-                        return Err(ValidationError::Other(alloc::format!(
-                            "ExtractValue index {} out of bounds (MultiValue has {} components)",
-                            idx,
-                            component_types.len()
-                        ))
-                        .into());
-                    }
-                    let expected_ty = component_types[idx];
-                    if expected_ty != result_ty {
-                        return Err(ValidationError::TypeMismatch {
-                            opcode: Opcode::ExtractValue,
-                            expected: expected_ty,
-                            got: result_ty,
-                        }
-                        .into());
-                    }
-                }
-                // If we can't determine the component types (e.g., from a parameter),
-                // we skip the detailed check
-            }
-            InstructionData::ConstructMulti { values } => {
-                let _vals = dfg.get_value_list(*values);
-                // All values being combined must not be Void or MultiValue
-                for &v in _vals {
-                    let t = val_ty(v);
-                    if t == Type::Void || t == Type::MultiValue {
-                        return Err(ValidationError::Other(alloc::format!(
-                            "ConstructMulti cannot include values of type {:?}",
-                            t
-                        ))
-                        .into());
-                    }
-                }
-            }
             InstructionData::Unreachable => {}
             InstructionData::Nop => {}
         }
 
         Ok(())
     }
-
-    /// Get the component types of a MultiValue by analyzing its producer.
-    /// Returns None if the producer cannot be determined (e.g., block parameter).
-    fn get_multivalue_components(&self, val: Value, module: &ModuleData) -> Option<Vec<Type>> {
-        use crate::ValueDef;
-
-        match self.dfg.value_def(val) {
-            ValueDef::Inst(inst) => {
-                let data = &self.dfg.instructions[inst];
-                match data {
-                    InstructionData::Call { func_id, .. } => {
-                        let callee = &module.functions[*func_id];
-                        let sig = &module.signatures[callee.signature];
-                        if sig.ret == Type::MultiValue {
-                            // For now, we don't store multi-value component types in signature
-                            // This would need to be extended when signatures support multi-value returns
-                            None
-                        } else {
-                            None
-                        }
-                    }
-                    InstructionData::CallIndirect { sig_id, .. } => {
-                        let sig = &module.signatures[*sig_id];
-                        if sig.ret == Type::MultiValue {
-                            None // Same as above
-                        } else {
-                            None
-                        }
-                    }
-                    InstructionData::CallIntrinsic { sig_id, .. } => {
-                        let sig = &module.signatures[*sig_id];
-                        if sig.ret == Type::MultiValue {
-                            None // Same as above
-                        } else {
-                            None
-                        }
-                    }
-                    InstructionData::ConstructMulti { values } => {
-                        let vals = self.dfg.get_value_list(*values);
-                        Some(vals.iter().map(|&v| self.dfg.value_type(v)).collect())
-                    }
-                    _ => None,
-                }
-            }
-            ValueDef::Param(_) => None, // Block parameters don't have known component types
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::Linkage;
     use crate::builder::ModuleBuilder;
 
     #[test]
     fn test_unsealed_block_validation() {
         let mut mb = ModuleBuilder::new();
-        let sig_id = mb.make_signature(vec![], Type::Void, crate::CallConv::SystemV);
+        let sig_id = mb.make_signature(vec![], vec![], crate::CallConv::SystemV);
         let func_id = mb.declare_function("test".to_string(), sig_id, Linkage::Export);
         let mut builder = mb.builder(func_id);
 
         // Explicitly initialize entry block
         builder.init_entry_block();
         // and give it a terminator
-        builder.ins().ret(None);
+        builder.ins().ret(&[]);
 
         // Create an additional block and don't seal it
         let block = builder.create_block();
         builder.switch_to_block(block);
-        builder.ins().ret(None);
+        builder.ins().ret(&[]);
 
         drop(builder);
         let res = mb.validate();

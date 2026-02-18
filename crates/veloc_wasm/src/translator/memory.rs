@@ -116,12 +116,12 @@ impl<'a> WasmTranslator<'a> {
                 let delta = self.pop();
                 let vmctx = self.vmctx.expect("vmctx not set");
                 let mem_idx = self.builder.ins().iconst(VelocType::I32, mem as i64);
-                let res = self
+                let call_inst = self
                     .builder
                     .ins()
                     .call(self.runtime.memory_grow, &[vmctx, mem_idx, delta]);
-                self.stack
-                    .push(res.expect("memory.grow should return a value"));
+                let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
+                self.stack.push(res_val);
                 self.reload_memory(mem);
             }
             Operator::MemoryInit { data_index, mem } => {

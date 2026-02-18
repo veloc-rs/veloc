@@ -74,8 +74,8 @@ pub enum InstructionData {
     },
     /// 跳转表
     BrTable { index: Value, table: JumpTable },
-    /// 函数返回
-    Return { value: Option<Value> },
+    /// 函数返回（支持多返回值）
+    Return { values: ValueList },
     /// 条件选择
     Select {
         condition: Value,
@@ -112,10 +112,6 @@ pub enum InstructionData {
         args: ValueList,
         sig_id: SigId,
     },
-    /// 从多值中提取单个值
-    ExtractValue { val: Value, index: u32 },
-    /// 构造多返回值
-    ConstructMulti { values: ValueList },
     /// 空操作
     Nop,
 }
@@ -184,9 +180,9 @@ impl InstructionData {
                     }
                 }
             }
-            InstructionData::Return { value } => {
-                if let Some(v) = value {
-                    f(*v);
+            InstructionData::Return { values } => {
+                for &v in dfg.get_value_list(*values) {
+                    f(v);
                 }
             }
             InstructionData::Select {
@@ -217,14 +213,6 @@ impl InstructionData {
             }
             InstructionData::CallIntrinsic { args, .. } => {
                 for &arg in dfg.get_value_list(*args) {
-                    f(arg);
-                }
-            }
-            InstructionData::ExtractValue { val, .. } => {
-                f(*val);
-            }
-            InstructionData::ConstructMulti { values } => {
-                for &arg in dfg.get_value_list(*values) {
                     f(arg);
                 }
             }
@@ -259,8 +247,6 @@ impl InstructionData {
             InstructionData::PtrOffset { .. } => Opcode::PtrOffset,
             InstructionData::PtrIndex { .. } => Opcode::PtrIndex,
             InstructionData::CallIntrinsic { .. } => Opcode::CallIntrinsic,
-            InstructionData::ExtractValue { .. } => Opcode::ExtractValue,
-            InstructionData::ConstructMulti { .. } => Opcode::ConstructMulti,
             InstructionData::Nop => Opcode::Nop,
         }
     }

@@ -30,7 +30,8 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
         }
 
         for &inst in &func.layout.blocks[block].insts {
-            if let Some(v) = func.dfg.inst_results(inst) {
+            // 处理多返回值：每个结果值设置生存期
+            for &v in func.dfg.inst_results(inst) {
                 intervals[v] = LiveInterval {
                     start: inst_pc,
                     end: inst_pc,

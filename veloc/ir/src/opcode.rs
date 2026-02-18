@@ -135,8 +135,6 @@ pub enum Opcode {
     Return,
     Select,
     Unreachable,
-    ExtractValue,
-    ConstructMulti,
     Nop,
 }
 
@@ -210,8 +208,6 @@ impl fmt::Display for Opcode {
             Opcode::Return => "return",
             Opcode::Select => "select",
             Opcode::Unreachable => "unreachable",
-            Opcode::ExtractValue => "extract_value",
-            Opcode::ConstructMulti => "construct_multi",
             Opcode::Nop => "nop",
         };
         write!(f, "{}", s)

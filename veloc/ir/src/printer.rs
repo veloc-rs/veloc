@@ -5,6 +5,22 @@ use crate::inst::InstructionData;
 use crate::{DataFlowGraph, Type, Value};
 use core::fmt::{Display, Formatter, Result, Write};
 
+/// 辅助函数：打印返回类型列表（支持多返回值）
+fn fmt_ret_types(f: &mut dyn Write, ret: &[Type]) -> Result {
+    if ret.len() == 1 {
+        write!(f, "{}", ret[0])
+    } else {
+        write!(f, "(")?;
+        for (i, ty) in ret.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", ty)?;
+        }
+        write!(f, ")")
+    }
+}
+
 struct V<'a>(&'a DataFlowGraph, Value);
 
 impl<'a> Display for V<'a> {
@@ -56,7 +72,9 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
             }
             write!(f, "{}", param)?;
         }
-        write!(f, ") -> {} ({:?})", sig.ret, sig.call_conv)?;
+        write!(f, ") -> ")?;
+        fmt_ret_types(f, &sig.ret)?;
+        write!(f, " ({:?})", sig.call_conv)?;
     } else {
         write!(
             f,
@@ -110,17 +128,29 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
 
         for &inst in &func.layout.blocks[block].insts {
             let idata = &func.dfg.instructions[inst];
-            let res = func.dfg.inst_results(inst);
+            let results = func.dfg.inst_results(inst);
             let dfg = &func.dfg;
             let v = |val| V(dfg, val);
 
             write!(f, "  ")?;
-            if let Some(r) = res {
-                write!(f, "{} = ", v(r))?;
+            if !results.is_empty() {
+                if results.len() == 1 {
+                    write!(f, "{} = ", v(results[0]))?;
+                } else {
+                    // 多返回值打印：(v1, v2, ...) =
+                    write!(f, "(")?;
+                    for (i, &r) in results.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", v(r))?;
+                    }
+                    write!(f, ") = ")?;
+                }
             }
 
-            // Get the result type from the instruction's result value
-            let ty = res.map(|r| func.dfg.value_type(r));
+            // Get the result type from the instruction's first result value (if any)
+            let ty = results.first().map(|&r| func.dfg.value_type(r));
 
             match idata {
                 InstructionData::Unary { opcode, arg } => {
@@ -214,9 +244,9 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     let name = module
                         .and_then(|m| m.functions.get(*func_id))
                         .map(|f| f.name.as_str());
-                    let ret_ty = module.map(|m| {
+                    let ret_tys: Option<&[Type]> = module.map(|m| {
                         let sig_id = m.functions[*func_id].signature;
-                        m.signatures[sig_id].ret
+                        m.signatures[sig_id].ret.as_ref()
                     });
 
                     if let Some(name) = name {
@@ -233,8 +263,9 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                         write!(f, "{}", v(arg))?;
                     }
 
-                    if let Some(ret) = ret_ty {
-                        write!(f, ") -> {}", ret)?;
+                    if let Some(ret) = ret_tys {
+                        write!(f, ") -> ")?;
+                        fmt_ret_types(f, ret)?;
                     } else {
                         write!(f, ")")?;
                     }
@@ -308,10 +339,21 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     }
                     write!(f, "]")?;
                 }
-                InstructionData::Return { value } => {
-                    write!(f, "return")?;
-                    if let Some(v_val) = value {
-                        write!(f, " {}", v(*v_val))?;
+                InstructionData::Return { values } => {
+                    let ret_vals = dfg.get_value_list(*values);
+                    if ret_vals.is_empty() {
+                        write!(f, "return")?;
+                    } else if ret_vals.len() == 1 {
+                        write!(f, "return {}", v(ret_vals[0]))?;
+                    } else {
+                        write!(f, "return (")?;
+                        for (i, &val) in ret_vals.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}", v(val))?;
+                        }
+                        write!(f, ")")?;
                     }
                 }
                 InstructionData::Select {
@@ -352,9 +394,12 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     write!(f, "unreachable")?;
                 }
                 InstructionData::CallIndirect { ptr, args, sig_id } => {
-                    let ret_ty = module.map(|m| m.signatures[*sig_id].ret);
-                    if let Some(ret) = ret_ty {
-                        write!(f, "call_indirect.{:?}.{} {} (", sig_id, ret, v(*ptr))?;
+                    let ret_tys: Option<&[Type]> =
+                        module.map(|m| m.signatures[*sig_id].ret.as_ref());
+                    if let Some(ret) = ret_tys {
+                        write!(f, "call_indirect.{:?}.", sig_id)?;
+                        fmt_ret_types(f, ret)?;
+                        write!(f, " {} (", v(*ptr))?;
                     } else {
                         write!(f, "call_indirect.{:?} {} (", sig_id, v(*ptr))?;
                     }
@@ -372,26 +417,16 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     args,
                     sig_id,
                 } => {
-                    let ret_ty = module.map(|m| m.signatures[*sig_id].ret);
-                    if let Some(ret) = ret_ty {
-                        write!(f, "call_intrinsic.{} {}(", ret, intrinsic)?;
+                    let ret_tys: Option<&[Type]> =
+                        module.map(|m| m.signatures[*sig_id].ret.as_ref());
+                    if let Some(ret) = ret_tys {
+                        write!(f, "call_intrinsic.")?;
+                        fmt_ret_types(f, ret)?;
+                        write!(f, " {}(", intrinsic)?;
                     } else {
                         write!(f, "call_intrinsic {}(", intrinsic)?;
                     }
                     for (i, &arg) in dfg.get_value_list(*args).iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}", v(arg))?;
-                    }
-                    write!(f, ")")?;
-                }
-                InstructionData::ExtractValue { val, index } => {
-                    write!(f, "extract_value.{:?} {}[{}]", ty.unwrap(), v(*val), index)?;
-                }
-                InstructionData::ConstructMulti { values } => {
-                    write!(f, "construct_multi(")?;
-                    for (i, &arg) in dfg.get_value_list(*values).iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }

@@ -1,10 +1,15 @@
 use alloc::vec::Vec;
 use core::fmt;
-use cranelift_entity::entity_impl;
+use cranelift_entity::{EntityList, ListPool, entity_impl};
 
 use crate::CallConv;
 use crate::constant::Constant;
 use crate::inst::Inst;
+
+/// Value 列表的内存池
+pub type ValueListPool = ListPool<Value>;
+/// Value 列表（使用 cranelift-entity 的紧凑表示）
+pub type ValueList = EntityList<Value>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Value(pub u32);
@@ -33,20 +38,6 @@ pub struct Variable(pub u32);
 entity_impl!(Variable, "var");
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ValueList(pub u32);
-entity_impl!(ValueList, "vlist");
-
-impl ValueList {
-    pub fn is_empty(&self) -> bool {
-        self.0 == 0
-    }
-
-    pub fn empty() -> Self {
-        Self(0)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct JumpTable(pub u32);
 entity_impl!(JumpTable, "jt");
 
@@ -61,17 +52,29 @@ entity_impl!(SigId, "sig");
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Signature {
     pub params: Box<[Type]>,
-    pub ret: Type,
+    /// 支持多返回值（如 WebAssembly 多返回值提案）
+    pub ret: Box<[Type]>,
     pub call_conv: CallConv,
 }
 
 impl Signature {
-    pub fn new(params: Vec<Type>, ret: Type, call_conv: CallConv) -> Self {
+    /// 创建函数签名（支持多返回值）
+    pub fn new(params: Vec<Type>, ret: Vec<Type>, call_conv: CallConv) -> Self {
         Self {
             params: params.into_boxed_slice(),
-            ret,
+            ret: ret.into_boxed_slice(),
             call_conv,
         }
+    }
+
+    /// 获取返回值数量
+    pub fn num_rets(&self) -> usize {
+        self.ret.len()
+    }
+
+    /// 是否是多返回值
+    pub fn is_multi_value(&self) -> bool {
+        self.ret.len() > 1
     }
 }
 
@@ -85,12 +88,6 @@ pub enum ValueDef {
 pub struct ValueData {
     pub ty: Type,
     pub def: ValueDef,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ValueListData {
-    pub offset: u32,
-    pub len: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

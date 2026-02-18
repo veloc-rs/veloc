@@ -782,10 +782,10 @@ impl TargetBackend for X86_64Backend {
         inst: Inst,
     ) {
         let idata = &func.dfg.instructions[inst];
-        let res = func.dfg.inst_results(inst);
+        let res_vals = func.dfg.inst_results(inst);
 
-        // Get the result type from the instruction's result value
-        let result_ty = res.map(|v| func.dfg.value_type(v));
+        // Get the result type from the instruction's first result value
+        let result_ty = res_vals.first().map(|&v| func.dfg.value_type(v));
 
         match idata {
             InstructionData::Iconst { value } => {
@@ -806,7 +806,7 @@ impl TargetBackend for X86_64Backend {
                                 .emit();
                         }
 
-                        if let Some(v) = res {
+                        if let Some(&v) = res_vals.first() {
                             self.emit_store_val(emitter, func, v, Reg::RAX);
                         }
                     }
@@ -829,7 +829,7 @@ impl TargetBackend for X86_64Backend {
                             .emit();
                     }
 
-                    if let Some(v) = res {
+                    if let Some(&v) = res_vals.first() {
                         self.emit_store_val(emitter, func, v, Reg::RAX);
                     }
                 }
@@ -841,16 +841,23 @@ impl TargetBackend for X86_64Backend {
                     .imm(if *value { 1 } else { 0 })
                     .emit();
 
-                if let Some(v) = res {
+                if let Some(&v) = res_vals.first() {
                     self.emit_store_val(emitter, func, v, Reg::RAX);
                 }
             }
             InstructionData::Binary { opcode, args, .. } => {
-                self.emit_binary(emitter, func, *opcode, args, res);
+                self.emit_binary(emitter, func, *opcode, args, res_vals.first().copied());
             }
             InstructionData::Load { ptr, offset, .. } => {
                 let ty = result_ty.unwrap_or(veloc_ir::Type::Void);
-                self.emit_load(emitter, func, *ptr, *offset as i32, ty, res);
+                self.emit_load(
+                    emitter,
+                    func,
+                    *ptr,
+                    *offset as i32,
+                    ty,
+                    res_vals.first().copied(),
+                );
             }
             InstructionData::Store { ptr, value, .. } => {
                 // Note: offset removed from Store, use 0 as default
@@ -881,13 +888,20 @@ impl TargetBackend for X86_64Backend {
                 emitter.emit_inst(setcc);
                 emitter.emit_inst(X86_64Inst::MovzxEaxAl);
 
-                if let Some(v) = res {
+                if let Some(&v) = res_vals.first() {
                     self.emit_store_val(emitter, func, v, Reg::RAX);
                 }
             }
             InstructionData::Unary { opcode, arg } => {
                 let res_ty = result_ty.unwrap_or(veloc_ir::Type::Void);
-                self.emit_unary(emitter, func, *opcode, *arg, res_ty, res);
+                self.emit_unary(
+                    emitter,
+                    func,
+                    *opcode,
+                    *arg,
+                    res_ty,
+                    res_vals.first().copied(),
+                );
             }
             InstructionData::StackLoad { slot, offset } => {
                 let ty = result_ty.unwrap_or(veloc_ir::Type::Void);
@@ -899,7 +913,7 @@ impl TargetBackend for X86_64Backend {
                         X86_64Inst::MovsdXRbpOff
                     };
                     emitter.inst(inst).reg(Reg::XMM0).imm(sso as u64).emit();
-                    if let Some(v) = res {
+                    if let Some(&v) = res_vals.first() {
                         self.emit_store_val(emitter, func, v, Reg::XMM0);
                     }
                 } else {
@@ -907,7 +921,7 @@ impl TargetBackend for X86_64Backend {
                         .inst(X86_64Inst::MovRaxRbpOff)
                         .imm(sso as u64)
                         .emit();
-                    if let Some(v) = res {
+                    if let Some(&v) = res_vals.first() {
                         self.emit_store_val(emitter, func, v, Reg::RAX);
                     }
                 }
@@ -942,15 +956,18 @@ impl TargetBackend for X86_64Backend {
                     .imm(sso as u64)
                     .emit();
 
-                if let Some(v) = res {
+                if let Some(&v) = res_vals.first() {
                     self.emit_store_val(emitter, func, v, Reg::RAX);
                 }
             }
-            InstructionData::Return { value } => {
-                if let Some(value) = value {
-                    let ty = func.dfg.values[*value].ty;
+            InstructionData::Return { values } => {
+                let ret_vals = func.dfg.get_value_list(*values);
+                // TODO: 完整支持多返回值（通过寄存器或栈返回多个值）
+                // 目前只处理第一个返回值以保持向后兼容
+                if let Some(&value) = ret_vals.first() {
+                    let ty = func.dfg.values[value].ty;
                     if self.is_float(ty) {
-                        self.emit_load_val(emitter, func, *value, Reg::XMM0);
+                        self.emit_load_val(emitter, func, value, Reg::XMM0);
                         if ty == veloc_ir::Type::F32 {
                             emitter
                                 .inst(X86_64Inst::MovdRX)
@@ -965,7 +982,7 @@ impl TargetBackend for X86_64Backend {
                                 .emit();
                         }
                     } else {
-                        self.emit_load_val(emitter, func, *value, Reg::RAX);
+                        self.emit_load_val(emitter, func, value, Reg::RAX);
                     }
                 }
 
@@ -1009,7 +1026,7 @@ impl TargetBackend for X86_64Backend {
                     addend: -4,
                 });
 
-                if let Some(v) = res {
+                if let Some(&v) = res_vals.first() {
                     let ty = func.dfg.values[v].ty;
                     if self.is_float(ty) {
                         self.emit_store_val(emitter, func, v, Reg::XMM0);
@@ -1243,7 +1260,7 @@ impl TargetBackend for X86_64Backend {
                 // Indirect call
                 emitter.inst(X86_64Inst::CallReg).reg(Reg::RAX).emit();
 
-                if let Some(v) = res {
+                if let Some(&v) = res_vals.first() {
                     let res_ty = func.dfg.values[v].ty;
                     if self.is_float(res_ty) {
                         self.emit_store_val(emitter, func, v, Reg::XMM0);
@@ -1292,7 +1309,7 @@ impl TargetBackend for X86_64Backend {
                     emitter.emit_inst(X86_64Inst::CmovnzRaxRbx);
                 }
 
-                if let Some(v) = res {
+                if let Some(&v) = res_vals.first() {
                     let offset_res = self.val_offset(func, v);
                     if is_64 {
                         emitter
@@ -1350,7 +1367,7 @@ impl TargetBackend for X86_64Backend {
                     FloatCC::Ge => emitter.emit_inst(X86_64Inst::SetaeAl),
                 }
 
-                if let Some(v) = res {
+                if let Some(&v) = res_vals.first() {
                     self.emit_store_val(emitter, func, v, Reg::RAX);
                 }
             }
@@ -1362,12 +1379,6 @@ impl TargetBackend for X86_64Backend {
             }
             InstructionData::CallIntrinsic { .. } => {
                 todo!("Implement codegen for intrinsic calls")
-            }
-            InstructionData::ExtractValue { .. } => {
-                todo!("Implement codegen for extract_value")
-            }
-            InstructionData::ConstructMulti { .. } => {
-                todo!("Implement codegen for construct_multi")
             }
             InstructionData::Nop => {}
         }

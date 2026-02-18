@@ -203,10 +203,10 @@ impl<'a> WasmTranslator<'a> {
                 if self.control_stack.is_empty() {
                     if !self.terminated {
                         if frame.num_results == 0 {
-                            self.builder.ins().ret(None);
+                            self.builder.ins().ret(&[]);
                         } else if frame.num_results == 1 {
                             let val = self.builder.block_params(end_target)[0];
-                            self.builder.ins().ret(Some(val));
+                            self.builder.ins().ret(&[val]);
                         } else if let Some(ptr) = self.results_ptr {
                             for i in 0..frame.num_results {
                                 let val = self.builder.block_params(end_target)[i];
@@ -217,9 +217,9 @@ impl<'a> WasmTranslator<'a> {
                                     MemFlags::default(),
                                 );
                             }
-                            self.builder.ins().ret(None);
+                            self.builder.ins().ret(&[]);
                         } else {
-                            self.builder.ins().ret(None);
+                            self.builder.ins().ret(&[]);
                         }
                         self.terminated = true;
                     }
@@ -303,9 +303,10 @@ impl<'a> WasmTranslator<'a> {
                     let func_id = self.metadata.functions[function_index as usize].func_id;
                     let sig_id = self.builder.func_signature(func_id);
                     if results.len() <= 1 {
-                        let res = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
+                        let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
                         if results.len() == 1 {
-                            self.stack.push(res.expect("Missing call result"));
+                            let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
+                            self.stack.push(res_val);
                         }
                     } else {
                         let ss = self.builder.create_stack_slot((results.len() * 8) as u32);
@@ -322,9 +323,10 @@ impl<'a> WasmTranslator<'a> {
                     args.insert(0, self.vmctx.expect("vmctx not set"));
                     let func_id = self.metadata.functions[function_index as usize].func_id;
                     if results.len() <= 1 {
-                        let res = self.builder.ins().call(func_id, &args);
+                        let call_inst = self.builder.ins().call(func_id, &args);
                         if results.len() == 1 {
-                            self.stack.push(res.expect("call should have result"));
+                            let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
+                            self.stack.push(res_val);
                         }
                     } else {
                         let ss = self.builder.create_stack_slot((results.len() * 8) as u32);
@@ -427,10 +429,10 @@ impl<'a> WasmTranslator<'a> {
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
                 if results.len() <= 1 {
-                    let res = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
+                    let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
                     if results.len() == 1 {
-                        self.stack
-                            .push(res.expect("call_indirect should have result"));
+                        let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
+                        self.stack.push(res_val);
                     }
                 } else {
                     let ss = self.builder.create_stack_slot((results.len() * 8) as u32);
@@ -468,10 +470,10 @@ impl<'a> WasmTranslator<'a> {
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
                 if results.len() <= 1 {
-                    let res = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
+                    let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
                     if results.len() == 1 {
-                        self.stack
-                            .push(res.expect("call_indirect should have result"));
+                        let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
+                        self.stack.push(res_val);
                     }
                 } else {
                     let ss = self.builder.create_stack_slot((results.len() * 8) as u32);
@@ -540,10 +542,10 @@ impl<'a> WasmTranslator<'a> {
             Operator::Return => {
                 if !self.terminated {
                     if self.results.is_empty() {
-                        self.builder.ins().ret(None);
+                        self.builder.ins().ret(&[]);
                     } else if self.results.len() == 1 {
                         let val = self.pop();
-                        self.builder.ins().ret(Some(val));
+                        self.builder.ins().ret(&[val]);
                     } else if let Some(ptr) = self.results_ptr {
                         let mut vals = Vec::new();
                         for _ in 0..self.results.len() {
@@ -558,9 +560,9 @@ impl<'a> WasmTranslator<'a> {
                                 MemFlags::new().with_alignment(alignment),
                             );
                         }
-                        self.builder.ins().ret(None);
+                        self.builder.ins().ret(&[]);
                     } else {
-                        self.builder.ins().ret(None);
+                        self.builder.ins().ret(&[]);
                     }
                     self.terminated = true;
                 }

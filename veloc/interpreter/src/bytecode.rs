@@ -427,8 +427,12 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
 
         for &inst in &block_data.insts {
             let idata = &func.dfg.instructions[inst];
-            let res_val = func.dfg.inst_results(inst);
-            let dst = res_val.map(|v| mapper.alloc_and_map(v)).unwrap_or(0);
+            let res_vals = func.dfg.inst_results(inst);
+            // TODO: 完整支持多返回值的寄存器分配
+            let dst = res_vals
+                .first()
+                .map(|&v| mapper.alloc_and_map(v))
+                .unwrap_or(0);
 
             match idata {
                 InstructionData::Iconst { value } => {
@@ -443,8 +447,9 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 InstructionData::Binary { opcode, args } => {
                     let lhs = mapper.get_mapped(args[0]);
                     let rhs = mapper.get_mapped(args[1]);
-                    let ty = res_val
-                        .map(|v| func.dfg.value_type(v))
+                    let ty = res_vals
+                        .first()
+                        .map(|&v| func.dfg.value_type(v))
                         .unwrap_or(Type::Void);
 
                     match (ty, *opcode) {
@@ -617,8 +622,9 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 }
                 InstructionData::StackLoad { slot, offset } => {
                     let base_offset = slot_to_offset[*slot];
-                    let ty = res_val
-                        .map(|v| func.dfg.value_type(v))
+                    let ty = res_vals
+                        .first()
+                        .map(|&v| func.dfg.value_type(v))
                         .unwrap_or(Type::Void);
                     let ty_val = match &ty {
                         Type::I32 => STACK_TYPE_I32,
@@ -648,8 +654,9 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 }
                 InstructionData::Load { ptr, offset, .. } => {
                     let ptr_reg = mapper.get_mapped(*ptr);
-                    let ty = res_val
-                        .map(|v| func.dfg.value_type(v))
+                    let ty = res_vals
+                        .first()
+                        .map(|&v| func.dfg.value_type(v))
                         .unwrap_or(Type::Void);
                     match &ty {
                         Type::I32 => emit::I32Load(&mut code, dst, ptr_reg, *offset),
@@ -781,9 +788,12 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     let else_reg = mapper.get_mapped(*else_val);
                     emit::Select(&mut code, dst, cond_reg, then_reg, else_reg);
                 }
-                InstructionData::Return { value } => {
-                    if let Some(value) = value {
-                        emit::Return(&mut code, RETURN_HAS_VALUE, mapper.get_mapped(*value));
+                InstructionData::Return { values } => {
+                    let ret_vals = func.dfg.get_value_list(*values);
+                    // TODO: 完整支持多返回值
+                    // 目前只处理第一个返回值以保持向后兼容
+                    if let Some(&value) = ret_vals.first() {
+                        emit::Return(&mut code, RETURN_HAS_VALUE, mapper.get_mapped(value));
                     } else {
                         emit::Return(&mut code, RETURN_VOID, 0);
                     }
@@ -814,7 +824,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             emit::Wrap(&mut code, dst, arg_reg);
                         }
                         IrOpcode::TruncS => {
-                            let to_ty = func.dfg.values[res_val.unwrap()].ty;
+                            let to_ty = func.dfg.values[res_vals[0]].ty;
                             match (to_ty, from_ty) {
                                 (Type::I32, Type::F32) => {
                                     emit::I32TruncF32S(&mut code, dst, arg_reg)
@@ -832,7 +842,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             }
                         }
                         IrOpcode::TruncU => {
-                            let to_ty = func.dfg.values[res_val.unwrap()].ty;
+                            let to_ty = func.dfg.values[res_vals[0]].ty;
                             match (to_ty, from_ty) {
                                 (Type::I32, Type::F32) => {
                                     emit::I32TruncF32U(&mut code, dst, arg_reg)
@@ -850,7 +860,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             }
                         }
                         IrOpcode::ConvertS => {
-                            let to_ty = func.dfg.values[res_val.unwrap()].ty;
+                            let to_ty = func.dfg.values[res_vals[0]].ty;
                             match (to_ty, from_ty) {
                                 (Type::F32, Type::I32) => {
                                     emit::F32ConvertI32S(&mut code, dst, arg_reg)
@@ -868,7 +878,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             }
                         }
                         IrOpcode::ConvertU => {
-                            let to_ty = func.dfg.values[res_val.unwrap()].ty;
+                            let to_ty = func.dfg.values[res_vals[0]].ty;
                             match (to_ty, from_ty) {
                                 (Type::F32, Type::I32) => {
                                     emit::F32ConvertI32U(&mut code, dst, arg_reg)
@@ -1024,12 +1034,6 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 InstructionData::Unreachable => {
                     emit::Unreachable(&mut code);
                 }
-                InstructionData::ExtractValue { .. } => {
-                    todo!("Implement bytecode for extract_value")
-                }
-                InstructionData::ConstructMulti { .. } => {
-                    todo!("Implement bytecode for construct_multi")
-                }
                 InstructionData::Nop => {}
             }
 
@@ -1037,7 +1041,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
             idata.visit_operands(&func.dfg, |v| {
                 mapper.free_if_last_use(v, current_ir_inst_idx)
             });
-            if let Some(rv) = res_val {
+            if let Some(&rv) = res_vals.first() {
                 mapper.free_if_last_use(rv, current_ir_inst_idx);
             }
             current_ir_inst_idx += 1;

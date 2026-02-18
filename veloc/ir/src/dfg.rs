@@ -2,7 +2,7 @@ use super::inst::{Inst, InstructionData, PtrIndexImm, PtrIndexImmId};
 use crate::constant::Constant;
 use crate::types::{
     Block, BlockCall, BlockCallData, JumpTable, JumpTableData, Type, Value, ValueData, ValueDef,
-    ValueList, ValueListData,
+    ValueList, ValueListPool,
 };
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -14,9 +14,8 @@ pub struct DataFlowGraph {
     pub instructions: PrimaryMap<Inst, InstructionData>,
     pub values: PrimaryMap<Value, ValueData>,
     pub value_names: SecondaryMap<Value, String>,
-    pub inst_results: SecondaryMap<Inst, Option<Value>>,
-    pub value_lists: PrimaryMap<ValueList, ValueListData>,
-    pub value_pool: Vec<Value>,
+    pub inst_results: SecondaryMap<Inst, ValueList>,
+    value_list_pool: ValueListPool,
     pub block_calls: PrimaryMap<BlockCall, BlockCallData>,
     pub jump_tables: PrimaryMap<JumpTable, JumpTableData>,
     pub ptr_imm_pool: PrimaryMap<PtrIndexImmId, PtrIndexImm>,
@@ -25,22 +24,39 @@ pub struct DataFlowGraph {
 
 impl DataFlowGraph {
     pub fn new() -> Self {
-        let mut value_lists = PrimaryMap::new();
-        // Index 0 is the empty list
-        value_lists.push(ValueListData { offset: 0, len: 0 });
-
         Self {
             instructions: PrimaryMap::new(),
             values: PrimaryMap::new(),
             value_names: SecondaryMap::new(),
             inst_results: SecondaryMap::new(),
-            value_lists,
-            value_pool: Vec::new(),
+            value_list_pool: ValueListPool::new(),
             block_calls: PrimaryMap::new(),
             jump_tables: PrimaryMap::new(),
             ptr_imm_pool: PrimaryMap::new(),
             ptr_imm_map: HashMap::new(),
         }
+    }
+
+    /// 为指令添加多个结果值（支持多返回值）
+    pub fn append_results(&mut self, inst: Inst, types: &[Type]) -> ValueList {
+        let values: Vec<Value> = types
+            .iter()
+            .map(|&ty| {
+                self.values.push(ValueData {
+                    ty,
+                    def: ValueDef::Inst(inst),
+                })
+            })
+            .collect();
+
+        let list = self.make_value_list(&values);
+        self.inst_results[inst] = list;
+        list
+    }
+
+    /// 获取指令的所有结果值
+    pub fn inst_results(&self, inst: Inst) -> &[Value] {
+        self.inst_results[inst].as_slice(&self.value_list_pool)
     }
 
     pub fn make_ptr_imm(&mut self, offset: i32, scale: u32) -> PtrIndexImmId {
@@ -60,28 +76,14 @@ impl DataFlowGraph {
         &self.ptr_imm_pool[id]
     }
 
+    /// 从切片创建 ValueList
     pub fn make_value_list(&mut self, values: &[Value]) -> ValueList {
-        if values.is_empty() {
-            return ValueList::empty();
-        }
-        let offset = self.value_pool.len() as u32;
-        let len = values.len() as u32;
-        self.value_pool.extend_from_slice(values);
-        self.value_lists.push(ValueListData { offset, len })
+        ValueList::from_slice(values, &mut self.value_list_pool)
     }
 
+    /// 获取 ValueList 的切片引用
     pub fn get_value_list(&self, list: ValueList) -> &[Value] {
-        let data = self.value_lists[list];
-        &self.value_pool[data.offset as usize..(data.offset + data.len) as usize]
-    }
-
-    pub fn append_result(&mut self, inst: Inst, ty: Type) -> Value {
-        let val = self.values.push(ValueData {
-            ty,
-            def: ValueDef::Inst(inst),
-        });
-        self.inst_results[inst] = Some(val);
-        val
+        list.as_slice(&self.value_list_pool)
     }
 
     pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
@@ -89,10 +91,6 @@ impl DataFlowGraph {
             ty,
             def: ValueDef::Param(block),
         })
-    }
-
-    pub fn inst_results(&self, inst: Inst) -> Option<Value> {
-        self.inst_results[inst]
     }
 
     pub fn inst(&self, inst: Inst) -> &InstructionData {
@@ -147,7 +145,7 @@ impl DataFlowGraph {
     }
 
     pub fn block_call_args(&self, call: BlockCall) -> &[Value] {
-        self.get_value_list(self.block_calls[call].args)
+        self.block_calls[call].args.as_slice(&self.value_list_pool)
     }
 
     pub fn jump_table_targets(&self, table: JumpTable) -> &[BlockCall] {
@@ -180,6 +178,6 @@ impl DataFlowGraph {
 
     pub fn remove_inst(&mut self, inst: Inst) {
         self.instructions[inst] = InstructionData::Nop;
-        self.inst_results[inst] = None;
+        self.inst_results[inst] = ValueList::default();
     }
 }

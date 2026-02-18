@@ -45,7 +45,8 @@ impl CodeGenContext {
         let sig = self.signature_from_declarator(&func.declarator, &func.specifiers)?;
 
         let builder = self.module_builder.as_mut().unwrap();
-        let sig_id = builder.make_signature(sig.params.to_vec(), sig.ret, CallConv::SystemV);
+        let sig_id =
+            builder.make_signature(sig.params.to_vec(), sig.ret.to_vec(), CallConv::SystemV);
         let func_id = builder.declare_function(name, sig_id, Linkage::Export);
 
         let mut func_builder = builder.builder(func_id);
@@ -53,7 +54,7 @@ impl CodeGenContext {
 
         // Generate return 0 for now
         let zero = func_builder.ins().i64const(0);
-        func_builder.ins().ret(Some(zero));
+        func_builder.ins().ret(&[zero]);
         func_builder.seal_all_blocks();
 
         Ok(())
@@ -67,7 +68,7 @@ impl CodeGenContext {
     ) -> Result<Signature> {
         let ret_type = type_from_specifiers(specifiers)?;
         let params = Vec::new();
-        Ok(Signature::new(params, ret_type, CallConv::SystemV))
+        Ok(Signature::new(params, vec![ret_type], CallConv::SystemV))
     }
 }
 
