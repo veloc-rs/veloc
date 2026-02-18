@@ -1,0 +1,16 @@
+[package]
+name = "veloc-c"
+version = "0.1.0"
+edition = "2024"
+authors = ["Veloc Team"]
+description = "C language compiler frontend for Veloc"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+log = { workspace = true }
+hashbrown = { workspace = true }
+anyhow = { workspace = true }
+thiserror = "2.0"
+veloc_ir = { workspace = true }
+
+[dev-dependencies]

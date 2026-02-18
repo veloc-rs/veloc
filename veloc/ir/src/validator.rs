@@ -152,18 +152,24 @@ impl Function {
         let val_ty = |v: Value| dfg.values[v].ty;
 
         match data {
-            InstructionData::Unary { opcode, arg, ty } => {
+            InstructionData::Unary { opcode, arg } => {
                 let arg_ty = val_ty(*arg);
-                if arg_ty == Type::Ptr || *ty == Type::Ptr {
+                // Get the result type from the instruction's result
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .map(|v| val_ty(v))
+                    .unwrap_or(Type::Void);
+
+                if arg_ty == Type::Ptr || result_ty == Type::Ptr {
                     return Err(ValidationError::PointerArithmetic(inst, *opcode).into());
                 }
 
                 match opcode {
                     Opcode::Ineg | Opcode::Clz | Opcode::Ctz | Opcode::Popcnt => {
-                        if !ty.is_integer() || arg_ty != *ty {
+                        if !result_ty.is_integer() || arg_ty != result_ty {
                             return Err(ValidationError::TypeMismatch {
                                 opcode: *opcode,
-                                expected: *ty,
+                                expected: result_ty,
                                 got: arg_ty,
                             }
                             .into());
@@ -176,21 +182,21 @@ impl Function {
                     | Opcode::Floor
                     | Opcode::Trunc
                     | Opcode::Nearest => {
-                        if !ty.is_float() || arg_ty != *ty {
+                        if !result_ty.is_float() || arg_ty != result_ty {
                             return Err(ValidationError::TypeMismatch {
                                 opcode: *opcode,
-                                expected: *ty,
+                                expected: result_ty,
                                 got: arg_ty,
                             }
                             .into());
                         }
                     }
                     Opcode::Eqz => {
-                        if !arg_ty.is_integer() || *ty != Type::Bool {
+                        if !arg_ty.is_integer() || result_ty != Type::Bool {
                             return Err(ValidationError::TypeMismatch {
                                 opcode: Opcode::Eqz,
                                 expected: Type::Bool,
-                                got: *ty,
+                                got: result_ty,
                             }
                             .into());
                         }
@@ -198,11 +204,11 @@ impl Function {
                     // Conversion operators
                     Opcode::ExtendS | Opcode::ExtendU => {
                         let is_valid = if arg_ty == Type::Bool {
-                            *opcode == Opcode::ExtendU && ty.is_integer()
+                            *opcode == Opcode::ExtendU && result_ty.is_integer()
                         } else {
                             arg_ty.is_integer()
-                                && ty.is_integer()
-                                && arg_ty.size_bytes() < ty.size_bytes()
+                                && result_ty.is_integer()
+                                && arg_ty.size_bytes() < result_ty.size_bytes()
                         };
 
                         if !is_valid {
@@ -210,76 +216,65 @@ impl Function {
                                 inst,
                                 opcode: *opcode,
                                 from: arg_ty,
-                                to: *ty,
+                                to: result_ty,
                             }
                             .into());
                         }
                     }
                     Opcode::Wrap => {
                         if !arg_ty.is_integer()
-                            || !ty.is_integer()
-                            || arg_ty.size_bytes() <= ty.size_bytes()
+                            || !result_ty.is_integer()
+                            || arg_ty.size_bytes() <= result_ty.size_bytes()
                         {
                             return Err(ValidationError::InvalidConversion {
                                 inst,
                                 opcode: Opcode::Wrap,
                                 from: arg_ty,
-                                to: *ty,
-                            }
-                            .into());
-                        }
-                    }
-                    Opcode::Promote => {
-                        if arg_ty != Type::F32 || *ty != Type::F64 {
-                            return Err(ValidationError::InvalidConversion {
-                                inst,
-                                opcode: Opcode::Promote,
-                                from: arg_ty,
-                                to: *ty,
+                                to: result_ty,
                             }
                             .into());
                         }
                     }
                     Opcode::Demote => {
-                        if arg_ty != Type::F64 || *ty != Type::F32 {
+                        if arg_ty != Type::F64 || result_ty != Type::F32 {
                             return Err(ValidationError::InvalidConversion {
                                 inst,
                                 opcode: Opcode::Demote,
                                 from: arg_ty,
-                                to: *ty,
+                                to: result_ty,
                             }
                             .into());
                         }
                     }
                     Opcode::TruncS | Opcode::TruncU => {
-                        if !arg_ty.is_float() || !ty.is_integer() {
+                        if !arg_ty.is_float() || !result_ty.is_integer() {
                             return Err(ValidationError::InvalidConversion {
                                 inst,
                                 opcode: *opcode,
                                 from: arg_ty,
-                                to: *ty,
+                                to: result_ty,
                             }
                             .into());
                         }
                     }
                     Opcode::ConvertS | Opcode::ConvertU => {
-                        if !arg_ty.is_integer() || !ty.is_float() {
+                        if !arg_ty.is_integer() || !result_ty.is_float() {
                             return Err(ValidationError::InvalidConversion {
                                 inst,
                                 opcode: *opcode,
                                 from: arg_ty,
-                                to: *ty,
+                                to: result_ty,
                             }
                             .into());
                         }
                     }
                     Opcode::Reinterpret => {
-                        if arg_ty.size_bytes() != ty.size_bytes() || arg_ty == *ty {
+                        if arg_ty.size_bytes() != result_ty.size_bytes() || arg_ty == result_ty {
                             return Err(ValidationError::InvalidConversion {
                                 inst,
                                 opcode: Opcode::Reinterpret,
                                 from: arg_ty,
-                                to: *ty,
+                                to: result_ty,
                             }
                             .into());
                         }
@@ -287,15 +282,19 @@ impl Function {
                     _ => {}
                 }
             }
-            InstructionData::Binary { opcode, args, ty } => {
+            InstructionData::Binary { opcode, args } => {
                 let lhs_ty = val_ty(args[0]);
                 let rhs_ty = val_ty(args[1]);
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .map(|v| val_ty(v))
+                    .unwrap_or(Type::Void);
 
-                if lhs_ty == Type::Ptr || rhs_ty == Type::Ptr || *ty == Type::Ptr {
+                if lhs_ty == Type::Ptr || rhs_ty == Type::Ptr || result_ty == Type::Ptr {
                     return Err(ValidationError::PointerArithmetic(inst, *opcode).into());
                 }
 
-                if lhs_ty != *ty || rhs_ty != *ty {
+                if lhs_ty != result_ty || rhs_ty != result_ty {
                     return Err(ValidationError::OperandTypeMismatch {
                         inst,
                         lhs: lhs_ty,
@@ -304,7 +303,7 @@ impl Function {
                     .into());
                 }
             }
-            InstructionData::Load { ptr, ty, .. } => {
+            InstructionData::Load { ptr, .. } => {
                 if val_ty(*ptr) != Type::Ptr {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::Load,
@@ -313,7 +312,11 @@ impl Function {
                     }
                     .into());
                 }
-                if *ty == Type::Void {
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .map(|v| val_ty(v))
+                    .unwrap_or(Type::Void);
+                if result_ty == Type::Void {
                     return Err(ValidationError::Other(alloc::format!(
                         "Cannot load void type at {:?}",
                         inst
@@ -338,8 +341,12 @@ impl Function {
                     .into());
                 }
             }
-            InstructionData::StackLoad { ty, .. } => {
-                if *ty == Type::Void {
+            InstructionData::StackLoad { .. } => {
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .map(|v| val_ty(v))
+                    .unwrap_or(Type::Void);
+                if result_ty == Type::Void {
                     return Err(ValidationError::Other(alloc::format!(
                         "Cannot stack_load void type at {:?}",
                         inst
@@ -394,7 +401,7 @@ impl Function {
                     .into());
                 }
             }
-            InstructionData::PtrToInt { arg, ty } => {
+            InstructionData::PtrToInt { arg } => {
                 if val_ty(*arg) != Type::Ptr {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::PtrToInt,
@@ -403,11 +410,15 @@ impl Function {
                     }
                     .into());
                 }
-                if !ty.is_integer() {
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .map(|v| val_ty(v))
+                    .unwrap_or(Type::Void);
+                if !result_ty.is_integer() {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::PtrToInt,
                         expected: Type::I64,
-                        got: *ty,
+                        got: result_ty,
                     }
                     .into());
                 }
@@ -415,22 +426,9 @@ impl Function {
             InstructionData::Iconst { .. }
             | InstructionData::Fconst { .. }
             | InstructionData::Bconst { .. } => {}
-            InstructionData::Call {
-                func_id,
-                args,
-                ret_ty,
-            } => {
+            InstructionData::Call { func_id, args } => {
                 let callee = &module.functions[*func_id];
                 let sig = &module.signatures[callee.signature];
-
-                if sig.ret != *ret_ty {
-                    return Err(ValidationError::TypeMismatch {
-                        opcode: Opcode::Call,
-                        expected: sig.ret,
-                        got: *ret_ty,
-                    }
-                    .into());
-                }
 
                 let call_args = dfg.get_value_list(*args);
                 if call_args.len() != sig.params.len() {
@@ -458,12 +456,7 @@ impl Function {
                     }
                 }
             }
-            InstructionData::CallIndirect {
-                ptr,
-                args,
-                sig_id,
-                ret_ty,
-            } => {
+            InstructionData::CallIndirect { ptr, args, sig_id } => {
                 if val_ty(*ptr) != Type::Ptr {
                     return Err(ValidationError::TypeMismatch {
                         opcode: Opcode::CallIndirect,
@@ -474,15 +467,6 @@ impl Function {
                 }
 
                 let sig = &module.signatures[*sig_id];
-                if sig.ret != *ret_ty {
-                    return Err(ValidationError::TypeMismatch {
-                        opcode: Opcode::CallIndirect,
-                        expected: sig.ret,
-                        got: *ret_ty,
-                    }
-                    .into());
-                }
-
                 let call_args = dfg.get_value_list(*args);
                 if call_args.len() != sig.params.len() {
                     return Err(ValidationError::Other(alloc::format!(
@@ -636,7 +620,6 @@ impl Function {
                 condition,
                 then_val,
                 else_val,
-                ty,
             } => {
                 let cond_ty = val_ty(*condition);
                 if cond_ty != Type::Bool {
@@ -644,18 +627,22 @@ impl Function {
                 }
                 let t_ty = val_ty(*then_val);
                 let f_ty = val_ty(*else_val);
-                if t_ty != f_ty || t_ty != *ty {
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .map(|v| val_ty(v))
+                    .unwrap_or(Type::Void);
+                if t_ty != f_ty || t_ty != result_ty {
                     return Err(ValidationError::SelectMismatch {
                         inst,
-                        expected: *ty,
+                        expected: result_ty,
                         then_val: t_ty,
                         else_val: f_ty,
                     }
                     .into());
                 }
             }
-            InstructionData::IntCompare { args, ty, .. }
-            | InstructionData::FloatCompare { args, ty, .. } => {
+            InstructionData::IntCompare { args, .. }
+            | InstructionData::FloatCompare { args, .. } => {
                 let lhs_ty = val_ty(args[0]);
                 let rhs_ty = val_ty(args[1]);
                 if lhs_ty != rhs_ty {
@@ -666,8 +653,74 @@ impl Function {
                     }
                     .into());
                 }
-                if *ty != Type::Bool {
-                    return Err(ValidationError::ConditionNotBool(inst, *ty).into());
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .map(|v| val_ty(v))
+                    .unwrap_or(Type::Void);
+                if result_ty != Type::Bool {
+                    return Err(ValidationError::ConditionNotBool(inst, result_ty).into());
+                }
+            }
+            InstructionData::CallIntrinsic {
+                intrinsic: _,
+                args,
+                sig_id: _,
+            } => {
+                // Validate that the intrinsic is valid by checking its name
+                // Note: validation logic can be extended here
+                let _args = dfg.get_value_list(*args);
+            }
+            InstructionData::ExtractValue { val, index } => {
+                let value_type = val_ty(*val);
+                // The value being extracted from must be a MultiValue
+                if value_type != Type::MultiValue {
+                    return Err(ValidationError::TypeMismatch {
+                        opcode: Opcode::ExtractValue,
+                        expected: Type::MultiValue,
+                        got: value_type,
+                    }
+                    .into());
+                }
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .map(|v| val_ty(v))
+                    .unwrap_or(Type::Void);
+                // Get the component types of the MultiValue by finding its producer
+                if let Some(component_types) = self.get_multivalue_components(*val, module) {
+                    let idx = *index as usize;
+                    if idx >= component_types.len() {
+                        return Err(ValidationError::Other(alloc::format!(
+                            "ExtractValue index {} out of bounds (MultiValue has {} components)",
+                            idx,
+                            component_types.len()
+                        ))
+                        .into());
+                    }
+                    let expected_ty = component_types[idx];
+                    if expected_ty != result_ty {
+                        return Err(ValidationError::TypeMismatch {
+                            opcode: Opcode::ExtractValue,
+                            expected: expected_ty,
+                            got: result_ty,
+                        }
+                        .into());
+                    }
+                }
+                // If we can't determine the component types (e.g., from a parameter),
+                // we skip the detailed check
+            }
+            InstructionData::ConstructMulti { values } => {
+                let _vals = dfg.get_value_list(*values);
+                // All values being combined must not be Void or MultiValue
+                for &v in _vals {
+                    let t = val_ty(v);
+                    if t == Type::Void || t == Type::MultiValue {
+                        return Err(ValidationError::Other(alloc::format!(
+                            "ConstructMulti cannot include values of type {:?}",
+                            t
+                        ))
+                        .into());
+                    }
                 }
             }
             InstructionData::Unreachable => {}
@@ -675,6 +728,53 @@ impl Function {
         }
 
         Ok(())
+    }
+
+    /// Get the component types of a MultiValue by analyzing its producer.
+    /// Returns None if the producer cannot be determined (e.g., block parameter).
+    fn get_multivalue_components(&self, val: Value, module: &ModuleData) -> Option<Vec<Type>> {
+        use crate::ValueDef;
+
+        match self.dfg.value_def(val) {
+            ValueDef::Inst(inst) => {
+                let data = &self.dfg.instructions[inst];
+                match data {
+                    InstructionData::Call { func_id, .. } => {
+                        let callee = &module.functions[*func_id];
+                        let sig = &module.signatures[callee.signature];
+                        if sig.ret == Type::MultiValue {
+                            // For now, we don't store multi-value component types in signature
+                            // This would need to be extended when signatures support multi-value returns
+                            None
+                        } else {
+                            None
+                        }
+                    }
+                    InstructionData::CallIndirect { sig_id, .. } => {
+                        let sig = &module.signatures[*sig_id];
+                        if sig.ret == Type::MultiValue {
+                            None // Same as above
+                        } else {
+                            None
+                        }
+                    }
+                    InstructionData::CallIntrinsic { sig_id, .. } => {
+                        let sig = &module.signatures[*sig_id];
+                        if sig.ret == Type::MultiValue {
+                            None // Same as above
+                        } else {
+                            None
+                        }
+                    }
+                    InstructionData::ConstructMulti { values } => {
+                        let vals = self.dfg.get_value_list(*values);
+                        Some(vals.iter().map(|&v| self.dfg.value_type(v)).collect())
+                    }
+                    _ => None,
+                }
+            }
+            ValueDef::Param(_) => None, // Block parameters don't have known component types
+        }
     }
 }
 

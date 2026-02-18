@@ -119,20 +119,25 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 write!(f, "{} = ", v(r))?;
             }
 
+            // Get the result type from the instruction's result value
+            let ty = res.map(|r| func.dfg.value_type(r));
+
             match idata {
-                InstructionData::Unary { opcode, arg, ty } => {
-                    write!(f, "{}.{} {}", opcode, ty, v(*arg))?;
+                InstructionData::Unary { opcode, arg } => {
+                    write!(f, "{}.{:?} {}", opcode, ty.unwrap(), v(*arg))?;
                 }
-                InstructionData::Binary { opcode, args, ty } => {
-                    write!(f, "{}.{} {}, {}", opcode, ty, v(args[0]), v(args[1]))?;
+                InstructionData::Binary { opcode, args } => {
+                    write!(
+                        f,
+                        "{}.{:?} {}, {}",
+                        opcode,
+                        ty.unwrap(),
+                        v(args[0]),
+                        v(args[1])
+                    )?;
                 }
-                InstructionData::Load {
-                    ptr,
-                    offset,
-                    ty,
-                    flags,
-                } => {
-                    write!(f, "load.{}", ty)?;
+                InstructionData::Load { ptr, offset, flags } => {
+                    write!(f, "load.{:?}", ty.unwrap())?;
                     if flags.is_trusted() {
                         write!(f, ".trusted")?;
                     }
@@ -156,8 +161,8 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     }
                     write!(f, " {}, {} + {}", v(*value), v(*ptr), offset)?;
                 }
-                InstructionData::StackLoad { slot, offset, ty } => {
-                    write!(f, "stack_load.{} {} + {}", ty, slot, offset)?;
+                InstructionData::StackLoad { slot, offset } => {
+                    write!(f, "stack_load.{:?} {} + {}", ty.unwrap(), slot, offset)?;
                 }
                 InstructionData::StackStore {
                     slot,
@@ -169,23 +174,24 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 InstructionData::StackAddr { slot, offset } => {
                     write!(f, "stack_addr {} + {}", slot, offset)?;
                 }
-                InstructionData::Iconst { value, ty } => {
-                    write!(f, "iconst.{} {}", ty, value)?;
+                InstructionData::Iconst { value } => {
+                    write!(f, "iconst.{:?} {}", ty.unwrap(), value)?;
                 }
-                InstructionData::Fconst { value, ty } => {
-                    if *ty == Type::F32 {
+                InstructionData::Fconst { value } => {
+                    let ty = ty.unwrap();
+                    if ty == Type::F32 {
                         let float = f32::from_bits(*value as u32);
-                        write!(f, "fconst.{} {:?} (0x{:08x})", ty, float, *value as u32)?;
+                        write!(f, "fconst.{:?} {:?} (0x{:08x})", ty, float, *value as u32)?;
                     } else {
                         let float = f64::from_bits(*value);
-                        write!(f, "fconst.{} {:?} (0x{:016x})", ty, float, value)?;
+                        write!(f, "fconst.{:?} {:?} (0x{:016x})", ty, float, value)?;
                     }
                 }
                 InstructionData::IntToPtr { arg } => {
                     write!(f, "inttoptr {}", v(*arg))?;
                 }
-                InstructionData::PtrToInt { arg, ty } => {
-                    write!(f, "ptrtoint.{} {}", ty, v(*arg))?;
+                InstructionData::PtrToInt { arg } => {
+                    write!(f, "ptrtoint.{:?} {}", ty.unwrap(), v(*arg))?;
                 }
                 InstructionData::PtrOffset { ptr, offset } => {
                     write!(f, "ptr_offset {}, {}", v(*ptr), offset)?;
@@ -208,14 +214,14 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 InstructionData::Bconst { value } => {
                     write!(f, "bconst {}", value)?;
                 }
-                InstructionData::Call {
-                    func_id,
-                    args,
-                    ret_ty,
-                } => {
+                InstructionData::Call { func_id, args } => {
                     let name = module
                         .and_then(|m| m.functions.get(*func_id))
                         .map(|f| f.name.as_str());
+                    let ret_ty = module.map(|m| {
+                        let sig_id = m.functions[*func_id].signature;
+                        m.signatures[sig_id].ret
+                    });
 
                     if let Some(name) = name {
                         write!(f, "call {} (", name)?;
@@ -231,7 +237,11 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                         write!(f, "{}", v(arg))?;
                     }
 
-                    write!(f, ") -> {}", ret_ty)?;
+                    if let Some(ret) = ret_ty {
+                        write!(f, ") -> {}", ret)?;
+                    } else {
+                        write!(f, ")")?;
+                    }
                 }
                 InstructionData::Jump { dest } => {
                     let dest_data = dfg.block_calls[*dest];
@@ -312,35 +322,80 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     condition,
                     then_val,
                     else_val,
-                    ty,
                 } => {
                     write!(
                         f,
-                        "select.{} {}, {}, {}",
-                        ty,
+                        "select.{:?} {}, {}, {}",
+                        ty.unwrap(),
                         v(*condition),
                         v(*then_val),
                         v(*else_val)
                     )?;
                 }
-                InstructionData::IntCompare { kind, args, ty } => {
-                    write!(f, "icmp.{} {} {}, {}", ty, kind, v(args[0]), v(args[1]))?;
+                InstructionData::IntCompare { kind, args } => {
+                    write!(
+                        f,
+                        "icmp.{:?} {} {}, {}",
+                        ty.unwrap(),
+                        kind,
+                        v(args[0]),
+                        v(args[1])
+                    )?;
                 }
-                InstructionData::FloatCompare { kind, args, ty } => {
-                    write!(f, "fcmp.{} {} {}, {}", ty, kind, v(args[0]), v(args[1]))?;
+                InstructionData::FloatCompare { kind, args } => {
+                    write!(
+                        f,
+                        "fcmp.{:?} {} {}, {}",
+                        ty.unwrap(),
+                        kind,
+                        v(args[0]),
+                        v(args[1])
+                    )?;
                 }
                 InstructionData::Unreachable => {
                     write!(f, "unreachable")?;
                 }
-                InstructionData::CallIndirect {
-                    ptr,
-                    args,
-                    sig_id,
-                    ret_ty,
-                } => {
-                    write!(f, "call_indirect.{:?}.{} {} (", sig_id, ret_ty, v(*ptr))?;
+                InstructionData::CallIndirect { ptr, args, sig_id } => {
+                    let ret_ty = module.map(|m| m.signatures[*sig_id].ret);
+                    if let Some(ret) = ret_ty {
+                        write!(f, "call_indirect.{:?}.{} {} (", sig_id, ret, v(*ptr))?;
+                    } else {
+                        write!(f, "call_indirect.{:?} {} (", sig_id, v(*ptr))?;
+                    }
                     let args = dfg.get_value_list(*args);
                     for (i, &arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", v(arg))?;
+                    }
+                    write!(f, ")")?;
+                }
+                InstructionData::CallIntrinsic {
+                    intrinsic,
+                    args,
+                    sig_id,
+                } => {
+                    let ret_ty = module.map(|m| m.signatures[*sig_id].ret);
+                    if let Some(ret) = ret_ty {
+                        write!(f, "call_intrinsic.{} {}(", ret, intrinsic)?;
+                    } else {
+                        write!(f, "call_intrinsic {}(", intrinsic)?;
+                    }
+                    for (i, &arg) in dfg.get_value_list(*args).iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", v(arg))?;
+                    }
+                    write!(f, ")")?;
+                }
+                InstructionData::ExtractValue { val, index } => {
+                    write!(f, "extract_value.{:?} {}[{}]", ty.unwrap(), v(*val), index)?;
+                }
+                InstructionData::ConstructMulti { values } => {
+                    write!(f, "construct_multi(")?;
+                    for (i, &arg) in dfg.get_value_list(*values).iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }

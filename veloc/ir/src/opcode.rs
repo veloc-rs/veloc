@@ -128,12 +128,15 @@ pub enum Opcode {
     // Control Flow
     Call,
     CallIndirect,
+    CallIntrinsic,
     Jump,
     Br,
     BrTable,
     Return,
     Select,
     Unreachable,
+    ExtractValue,
+    ConstructMulti,
     Nop,
 }
 
@@ -200,12 +203,15 @@ impl fmt::Display for Opcode {
             Opcode::PtrIndex => "ptr_index",
             Opcode::Call => "call",
             Opcode::CallIndirect => "call_indirect",
+            Opcode::CallIntrinsic => "call_intrinsic",
             Opcode::Jump => "jump",
             Opcode::Br => "br",
             Opcode::BrTable => "br_table",
             Opcode::Return => "return",
             Opcode::Select => "select",
             Opcode::Unreachable => "unreachable",
+            Opcode::ExtractValue => "extract_value",
+            Opcode::ConstructMulti => "construct_multi",
             Opcode::Nop => "nop",
         };
         write!(f, "{}", s)

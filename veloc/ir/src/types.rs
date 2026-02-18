@@ -66,7 +66,7 @@ pub struct Signature {
 }
 
 impl Signature {
-    pub(crate) fn new(params: Vec<Type>, ret: Type, call_conv: CallConv) -> Self {
+    pub fn new(params: Vec<Type>, ret: Type, call_conv: CallConv) -> Self {
         Self {
             params: params.into_boxed_slice(),
             ret,
@@ -115,6 +115,9 @@ pub enum Type {
     Bool,
     Ptr,
     Void,
+    /// 多值标记，表示这是一个多返回值聚合值
+    /// 具体类型信息需要通过上下文（如函数签名）获取
+    MultiValue,
 }
 
 impl fmt::Display for Type {
@@ -129,6 +132,7 @@ impl fmt::Display for Type {
             Type::Bool => "bool",
             Type::Ptr => "ptr",
             Type::Void => "void",
+            Type::MultiValue => "multi",
         };
         write!(f, "{}", s)
     }
@@ -143,13 +147,13 @@ impl Type {
         matches!(self, Type::F32 | Type::F64)
     }
 
-    pub fn size_bytes(self) -> u32 {
+    pub fn size_bytes(&self) -> u32 {
         match self {
             Type::I8 | Type::Bool => 1,
             Type::I16 => 2,
             Type::I32 | Type::F32 => 4,
             Type::I64 | Type::F64 | Type::Ptr => 8,
-            Type::Void => 0,
+            Type::Void | Type::MultiValue => 0,
         }
     }
 }

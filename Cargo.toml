@@ -28,6 +28,7 @@ veloc_interpreter = { path = "veloc/interpreter" }
 veloc_backend = { path = "veloc/backend" }
 veloc_analyzer = { path = "veloc/analyzer" }
 veloc_wasm = { path = "crates/veloc_wasm" }
+veloc_c = { path = "crates/veloc-c" }
 log = "0.4"
 hashbrown = { version = "0.14" }
 bitvec = "1.0"

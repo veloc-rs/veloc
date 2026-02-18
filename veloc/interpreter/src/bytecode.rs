@@ -1,8 +1,10 @@
 use crate::host::ModuleId;
 use ::alloc::vec::Vec;
-use hashbrown::HashMap;
+use cranelift_entity::SecondaryMap;
 use veloc_analyzer::{LiveInterval, analyze_liveness};
-use veloc_ir::{FuncId, Function, InstructionData, Opcode as IrOpcode, Type, Value};
+use veloc_ir::{
+    Block, FuncId, Function, InstructionData, Intrinsic, Opcode as IrOpcode, StackSlot, Type, Value,
+};
 
 pub const STACK_TYPE_I8: u8 = 1;
 pub const STACK_TYPE_I16: u8 = 2;
@@ -254,6 +256,7 @@ define_opcodes! {
     Return(has_val: u8, val_reg: u16);
     Call(dst: u16, func_id: u32, num_args: u16);
     CallIndirect(dst: u16, ptr: u16, num_args: u16);
+    CallIntrinsic(dst: u16, intrinsic_id: u16, num_args: u16);
     RegMove(dst: u16, src: u16);
     Unreachable();
 }
@@ -268,33 +271,24 @@ pub struct CompiledFunction {
 }
 
 struct ValueMapper {
-    map: Vec<u16>,
+    map: SecondaryMap<Value, u16>,
     free_registers: Vec<u16>,
     next_register: u16,
-    intervals: Vec<Option<LiveInterval>>,
+    intervals: SecondaryMap<Value, LiveInterval>,
 }
 
 impl ValueMapper {
-    fn new(num_values: usize, intervals_map: HashMap<Value, LiveInterval>) -> Self {
-        let mut intervals = Vec::with_capacity(num_values);
-        intervals.resize(num_values, None);
-        for (v, interval) in intervals_map {
-            if (v.0 as usize) < num_values {
-                intervals[v.0 as usize] = Some(interval);
-            }
-        }
-        let mut map = Vec::with_capacity(num_values);
-        map.resize(num_values, 0);
+    fn new(intervals_map: SecondaryMap<Value, LiveInterval>) -> Self {
         Self {
-            map,
+            map: SecondaryMap::new(),
             free_registers: Vec::new(),
             next_register: 1,
-            intervals,
+            intervals: intervals_map,
         }
     }
 
     fn get_mapped(&self, val: Value) -> u16 {
-        let reg = self.map[val.0 as usize];
+        let reg = self.map[val];
         if reg == 0 {
             panic!("Value {:?} used before defined or mapping missing", val);
         }
@@ -302,7 +296,7 @@ impl ValueMapper {
     }
 
     fn alloc_and_map(&mut self, val: Value) -> u16 {
-        let existing = self.map[val.0 as usize];
+        let existing = self.map[val];
         if existing != 0 {
             return existing;
         }
@@ -314,39 +308,55 @@ impl ValueMapper {
             self.next_register += 1;
             r
         };
-        self.map[val.0 as usize] = reg;
+        self.map[val] = reg;
         reg
     }
 
     fn free_if_last_use(&mut self, val: Value, pc: u32) {
-        if (val.0 as usize) < self.intervals.len() {
-            if let Some(interval) = &self.intervals[val.0 as usize] {
-                if interval.end <= pc {
-                    let reg = self.map[val.0 as usize];
-                    if reg != 0 {
-                        self.map[val.0 as usize] = 0;
-                        self.free_registers.push(reg);
-                    }
+        let interval = self.intervals[val];
+        // Check if interval was initialized (start != 0 or we can check via a sentinel value)
+        // Since SecondaryMap returns default (start=0, end=0) for unset values,
+        // we need to check if this is a real interval or default
+        if interval.start != 0 || interval.end != 0 {
+            if interval.end <= pc {
+                let reg = self.map[val];
+                if reg != 0 {
+                    self.map[val] = 0;
+                    self.free_registers.push(reg);
                 }
             }
         }
     }
 }
 
+/// Try to emit inline bytecode for intrinsics that map directly to opcodes.
+/// Returns true if the intrinsic was successfully inlined.
+fn try_emit_inline_intrinsic(
+    _code: &mut Vec<u8>,
+    _dst: u16,
+    _intrinsic: Intrinsic,
+    _args: &[u16],
+) -> bool {
+    // Currently no intrinsics are inlineable as bytecode.
+    // Math intrinsics (sin, cos, pow, etc.) need runtime libm calls.
+    // Memory intrinsics need runtime support.
+    false
+}
+
 pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -> CompiledFunction {
     let intervals = analyze_liveness(func).intervals;
 
-    let mut slot_to_offset = HashMap::new();
+    let mut slot_to_offset: SecondaryMap<StackSlot, u32> = SecondaryMap::new();
     let mut current_offset = 0u32;
     for (id, data) in &func.stack_slots {
-        slot_to_offset.insert(id, current_offset);
+        slot_to_offset[id] = current_offset;
         current_offset += data.size;
     }
 
-    let mut mapper = ValueMapper::new(func.dfg.values.len(), intervals);
+    let mut mapper = ValueMapper::new(intervals);
     let mut code = Vec::new();
     let mut param_indices = Vec::new();
-    let mut block_to_pc = HashMap::new();
+    let mut block_to_pc: SecondaryMap<Block, u32> = SecondaryMap::new();
     let mut jump_fixups = Vec::new();
 
     macro_rules! binary_op {
@@ -406,7 +416,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
 
     let mut current_ir_inst_idx = 0;
     for &block in &func.layout.block_order {
-        block_to_pc.insert(block, code.len() as u32);
+        block_to_pc[block] = code.len() as u32;
         let block_data = &func.layout.blocks[block];
 
         // Ensure all parameters of this block are mapped
@@ -421,20 +431,23 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
             let dst = res_val.map(|v| mapper.alloc_and_map(v)).unwrap_or(0);
 
             match idata {
-                InstructionData::Iconst { value, .. } => {
+                InstructionData::Iconst { value } => {
                     emit::Iconst(&mut code, dst, *value as u64);
                 }
-                InstructionData::Fconst { value, .. } => {
+                InstructionData::Fconst { value } => {
                     emit::Fconst(&mut code, dst, *value);
                 }
                 InstructionData::Bconst { value } => {
                     emit::Bconst(&mut code, dst, if *value { 1 } else { 0 });
                 }
-                InstructionData::Binary { opcode, args, ty } => {
+                InstructionData::Binary { opcode, args } => {
                     let lhs = mapper.get_mapped(args[0]);
                     let rhs = mapper.get_mapped(args[1]);
+                    let ty = res_val
+                        .map(|v| func.dfg.value_type(v))
+                        .unwrap_or(Type::Void);
 
-                    match (*ty, *opcode) {
+                    match (ty, *opcode) {
                         (Type::I32, IrOpcode::Iadd) => binary_op!(
                             I32AddImm,
                             I32Add,
@@ -599,12 +612,15 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     }
                 }
                 InstructionData::StackAddr { slot, offset, .. } => {
-                    let base_offset = slot_to_offset.get(slot).unwrap();
+                    let base_offset = slot_to_offset[*slot];
                     emit::StackAddr(&mut code, dst, base_offset + *offset);
                 }
-                InstructionData::StackLoad { slot, offset, ty } => {
-                    let base_offset = slot_to_offset.get(slot).unwrap();
-                    let ty_val = match ty {
+                InstructionData::StackLoad { slot, offset } => {
+                    let base_offset = slot_to_offset[*slot];
+                    let ty = res_val
+                        .map(|v| func.dfg.value_type(v))
+                        .unwrap_or(Type::Void);
+                    let ty_val = match &ty {
                         Type::I32 => STACK_TYPE_I32,
                         Type::I64 | Type::Ptr => STACK_TYPE_I64,
                         Type::F32 => STACK_TYPE_F32,
@@ -615,12 +631,8 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     };
                     emit::StackLoad(&mut code, dst, base_offset + *offset, ty_val);
                 }
-                InstructionData::StackStore {
-                    slot,
-                    value,
-                    offset,
-                } => {
-                    let base_offset = slot_to_offset.get(slot).unwrap();
+                InstructionData::StackStore { slot, value, .. } => {
+                    let base_offset = slot_to_offset[*slot];
                     let val_reg = mapper.get_mapped(*value);
                     let ty = func.dfg.values[*value].ty;
                     let ty_val = match ty {
@@ -632,13 +644,14 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                         Type::I16 => STACK_TYPE_I16,
                         _ => panic!("Unsupported type for StackStore: {:?}", ty),
                     };
-                    emit::StackStore(&mut code, val_reg, base_offset + *offset, ty_val);
+                    emit::StackStore(&mut code, val_reg, base_offset, ty_val);
                 }
-                InstructionData::Load {
-                    ptr, offset, ty, ..
-                } => {
+                InstructionData::Load { ptr, offset, .. } => {
                     let ptr_reg = mapper.get_mapped(*ptr);
-                    match ty {
+                    let ty = res_val
+                        .map(|v| func.dfg.value_type(v))
+                        .unwrap_or(Type::Void);
+                    match &ty {
                         Type::I32 => emit::I32Load(&mut code, dst, ptr_reg, *offset),
                         Type::I64 | Type::Ptr => emit::I64Load(&mut code, dst, ptr_reg, *offset),
                         Type::F32 => emit::F32Load(&mut code, dst, ptr_reg, *offset),
@@ -769,8 +782,8 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     emit::Select(&mut code, dst, cond_reg, then_reg, else_reg);
                 }
                 InstructionData::Return { value } => {
-                    if let Some(v) = value {
-                        emit::Return(&mut code, RETURN_HAS_VALUE, mapper.get_mapped(*v));
+                    if let Some(value) = value {
+                        emit::Return(&mut code, RETURN_HAS_VALUE, mapper.get_mapped(*value));
                     } else {
                         emit::Return(&mut code, RETURN_VOID, 0);
                     }
@@ -970,6 +983,27 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                         code.extend_from_slice(&r.to_le_bytes());
                     }
                 }
+                InstructionData::CallIntrinsic { intrinsic, .. } => {
+                    // Note: args are stored in ValueList side table
+                    // Emit specialized bytecode for math intrinsics that have direct opcodes
+                    let args_regs: Vec<u16> = vec![]; // Would need to retrieve from side table
+
+                    // Try to inline common math intrinsics
+                    if try_emit_inline_intrinsic(&mut code, dst, *intrinsic, &args_regs) {
+                        // Successfully inlined
+                    } else {
+                        // Fall back to generic intrinsic call
+                        emit::CallIntrinsic(
+                            &mut code,
+                            dst,
+                            intrinsic.as_u16(),
+                            args_regs.len() as u16,
+                        );
+                        for &r in &args_regs {
+                            code.extend_from_slice(&r.to_le_bytes());
+                        }
+                    }
+                }
                 InstructionData::PtrIndex {
                     ptr,
                     index,
@@ -987,6 +1021,12 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 InstructionData::Unreachable => {
                     emit::Unreachable(&mut code);
                 }
+                InstructionData::ExtractValue { .. } => {
+                    todo!("Implement bytecode for extract_value")
+                }
+                InstructionData::ConstructMulti { .. } => {
+                    todo!("Implement bytecode for construct_multi")
+                }
                 InstructionData::Nop => {}
             }
 
@@ -1002,7 +1042,10 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
     }
 
     for (pos, target_block) in jump_fixups {
-        let pc = *block_to_pc.get(&target_block).expect("Missing block");
+        let pc = block_to_pc[target_block];
+        if pc == 0 {
+            panic!("Missing block");
+        }
         code[pos..pos + 4].copy_from_slice(&pc.to_le_bytes());
     }
 

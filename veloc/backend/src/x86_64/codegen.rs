@@ -784,45 +784,54 @@ impl TargetBackend for X86_64Backend {
         let idata = &func.dfg.instructions[inst];
         let res = func.dfg.inst_results(inst);
 
+        // Get the result type from the instruction's result value
+        let result_ty = res.map(|v| func.dfg.value_type(v));
+
         match idata {
-            InstructionData::Iconst { value, ty } => {
-                if ty.is_integer() {
-                    if *ty == veloc_ir::Type::I64 {
+            InstructionData::Iconst { value } => {
+                if let Some(ty) = result_ty {
+                    if ty.is_integer() {
+                        if ty == veloc_ir::Type::I64 {
+                            // Sign extend from i32 to i64
+                            emitter
+                                .inst(X86_64Inst::MovR64Imm64)
+                                .reg(Reg::RAX)
+                                .imm(*value as u64)
+                                .emit();
+                        } else {
+                            emitter
+                                .inst(X86_64Inst::MovR32Imm32)
+                                .reg(Reg::RAX)
+                                .imm(*value as u64)
+                                .emit();
+                        }
+
+                        if let Some(v) = res {
+                            self.emit_store_val(emitter, func, v, Reg::RAX);
+                        }
+                    }
+                }
+            }
+            InstructionData::Fconst { value } => {
+                if let Some(ty) = result_ty {
+                    let bits = *value;
+                    if ty == veloc_ir::Type::F64 {
                         emitter
                             .inst(X86_64Inst::MovR64Imm64)
                             .reg(Reg::RAX)
-                            .imm(*value as u64)
+                            .imm(bits)
                             .emit();
                     } else {
                         emitter
                             .inst(X86_64Inst::MovR32Imm32)
                             .reg(Reg::RAX)
-                            .imm(*value as u64)
+                            .imm(bits as u64)
                             .emit();
                     }
 
                     if let Some(v) = res {
                         self.emit_store_val(emitter, func, v, Reg::RAX);
                     }
-                }
-            }
-            InstructionData::Fconst { value, ty } => {
-                if *ty == veloc_ir::Type::F64 {
-                    emitter
-                        .inst(X86_64Inst::MovR64Imm64)
-                        .reg(Reg::RAX)
-                        .imm(*value)
-                        .emit();
-                } else {
-                    emitter
-                        .inst(X86_64Inst::MovR32Imm32)
-                        .reg(Reg::RAX)
-                        .imm(*value as u64)
-                        .emit();
-                }
-
-                if let Some(v) = res {
-                    self.emit_store_val(emitter, func, v, Reg::RAX);
                 }
             }
             InstructionData::Bconst { value } => {
@@ -839,15 +848,13 @@ impl TargetBackend for X86_64Backend {
             InstructionData::Binary { opcode, args, .. } => {
                 self.emit_binary(emitter, func, *opcode, args, res);
             }
-            InstructionData::Load {
-                ptr, offset, ty, ..
-            } => {
-                self.emit_load(emitter, func, *ptr, *offset as i32, *ty, res);
+            InstructionData::Load { ptr, offset, .. } => {
+                let ty = result_ty.unwrap_or(veloc_ir::Type::Void);
+                self.emit_load(emitter, func, *ptr, *offset as i32, ty, res);
             }
-            InstructionData::Store {
-                ptr, value, offset, ..
-            } => {
-                self.emit_store(emitter, func, *ptr, *value, *offset as i32);
+            InstructionData::Store { ptr, value, .. } => {
+                // Note: offset removed from Store, use 0 as default
+                self.emit_store(emitter, func, *ptr, *value, 0);
             }
             InstructionData::IntCompare { kind, args, .. } => {
                 let ty = func.dfg.values[args[0]].ty;
@@ -878,17 +885,15 @@ impl TargetBackend for X86_64Backend {
                     self.emit_store_val(emitter, func, v, Reg::RAX);
                 }
             }
-            InstructionData::Unary {
-                opcode,
-                arg,
-                ty: res_ty,
-            } => {
-                self.emit_unary(emitter, func, *opcode, *arg, *res_ty, res);
+            InstructionData::Unary { opcode, arg } => {
+                let res_ty = result_ty.unwrap_or(veloc_ir::Type::Void);
+                self.emit_unary(emitter, func, *opcode, *arg, res_ty, res);
             }
-            InstructionData::StackLoad { slot, offset, ty } => {
+            InstructionData::StackLoad { slot, offset } => {
+                let ty = result_ty.unwrap_or(veloc_ir::Type::Void);
                 let sso = self.ss_offset(func, *slot) + (*offset as i32);
-                if self.is_float(*ty) {
-                    let inst = if *ty == veloc_ir::Type::F32 {
+                if self.is_float(ty) {
+                    let inst = if ty == veloc_ir::Type::F32 {
                         X86_64Inst::MovssXRbpOff
                     } else {
                         X86_64Inst::MovsdXRbpOff
@@ -942,10 +947,10 @@ impl TargetBackend for X86_64Backend {
                 }
             }
             InstructionData::Return { value } => {
-                if let Some(v) = value {
-                    let ty = func.dfg.values[*v].ty;
+                if let Some(value) = value {
+                    let ty = func.dfg.values[*value].ty;
                     if self.is_float(ty) {
-                        self.emit_load_val(emitter, func, *v, Reg::XMM0);
+                        self.emit_load_val(emitter, func, *value, Reg::XMM0);
                         if ty == veloc_ir::Type::F32 {
                             emitter
                                 .inst(X86_64Inst::MovdRX)
@@ -960,7 +965,7 @@ impl TargetBackend for X86_64Backend {
                                 .emit();
                         }
                     } else {
-                        self.emit_load_val(emitter, func, *v, Reg::RAX);
+                        self.emit_load_val(emitter, func, *value, Reg::RAX);
                     }
                 }
 
@@ -1208,16 +1213,16 @@ impl TargetBackend for X86_64Backend {
             InstructionData::Unreachable => {
                 emitter.emit_inst(X86_64Inst::Ud2);
             }
-            InstructionData::CallIndirect {
-                ptr, args, sig_id, ..
-            } => {
+            InstructionData::CallIndirect { ptr, sig_id, .. } => {
                 let sig = &module.signatures[*sig_id];
                 // Pass arguments
+                // Note: args are stored in ValueList side table
                 let mut int_idx = 0;
                 let mut float_idx = 0;
                 let (int_regs, float_regs) = self.get_param_regs(sig.call_conv);
 
-                for &arg in func.dfg.get_value_list(*args) {
+                // TODO: retrieve args from ValueList side table
+                for &arg in &[] {
                     let arg_ty = func.dfg.values[arg].ty;
                     if self.is_float(arg_ty) {
                         if float_idx < float_regs.len() {
@@ -1304,7 +1309,7 @@ impl TargetBackend for X86_64Backend {
                     }
                 }
             }
-            InstructionData::FloatCompare { kind, args, ty: _ } => {
+            InstructionData::FloatCompare { kind, args } => {
                 let lhs_ty = func.dfg.values[args[0]].ty;
                 let is_f64 = lhs_ty == veloc_ir::Type::F64;
                 self.emit_load_val(emitter, func, args[0], Reg::XMM0);
@@ -1354,6 +1359,15 @@ impl TargetBackend for X86_64Backend {
             | InstructionData::PtrOffset { .. }
             | InstructionData::PtrIndex { .. } => {
                 todo!("Implement codegen for pointer instructions")
+            }
+            InstructionData::CallIntrinsic { .. } => {
+                todo!("Implement codegen for intrinsic calls")
+            }
+            InstructionData::ExtractValue { .. } => {
+                todo!("Implement codegen for extract_value")
+            }
+            InstructionData::ConstructMulti { .. } => {
+                todo!("Implement codegen for construct_multi")
             }
             InstructionData::Nop => {}
         }

@@ -1,6 +1,6 @@
 use super::dfg::DataFlowGraph;
-use super::types::{BlockCall, FuncId, JumpTable, StackSlot, Type, Value, ValueList};
-use crate::{FloatCC, IntCC, MemFlags, Opcode, SigId};
+use crate::types::{BlockCall, FuncId, JumpTable, StackSlot, Value, ValueList};
+use crate::{FloatCC, IntCC, Intrinsic, MemFlags, Opcode, SigId};
 use core::fmt;
 use cranelift_entity::entity_impl;
 
@@ -19,113 +19,95 @@ impl Inst {
 
 #[derive(Debug, Clone)]
 pub enum InstructionData {
-    Unary {
-        opcode: Opcode,
-        arg: Value,
-        ty: Type,
-    },
-    Binary {
-        opcode: Opcode,
-        args: [Value; 2],
-        ty: Type,
-    },
+    /// 一元运算
+    Unary { opcode: Opcode, arg: Value },
+    /// 二元运算
+    Binary { opcode: Opcode, args: [Value; 2] },
+    /// 从内存加载
     Load {
         ptr: Value,
         offset: u32,
-        ty: Type,
         flags: MemFlags,
     },
+    /// 存储到内存
     Store {
         ptr: Value,
         value: Value,
         offset: u32,
         flags: MemFlags,
     },
-    StackLoad {
-        slot: StackSlot,
-        offset: u32,
-        ty: Type,
-    },
+    /// 从栈槽加载
+    StackLoad { slot: StackSlot, offset: u32 },
+    /// 存储到栈槽
     StackStore {
         slot: StackSlot,
         value: Value,
         offset: u32,
     },
-    StackAddr {
-        slot: StackSlot,
-        offset: u32,
-    },
-    Iconst {
-        value: i64,
-        ty: Type,
-    },
-    Fconst {
-        value: u64,
-        ty: Type,
-    },
-    Bconst {
-        value: bool,
-    },
-    Call {
-        func_id: FuncId,
-        args: ValueList,
-        ret_ty: Type,
-    },
-    Jump {
-        dest: BlockCall,
-    },
+    /// 获取栈槽地址
+    StackAddr { slot: StackSlot, offset: u32 },
+    /// 整数常量
+    Iconst { value: i64 },
+    /// 浮点常量
+    Fconst { value: u64 },
+    /// 布尔常量
+    Bconst { value: bool },
+    /// 直接函数调用
+    Call { func_id: FuncId, args: ValueList },
+    /// 无条件跳转
+    Jump { dest: BlockCall },
+    /// 条件分支
     Br {
         condition: Value,
         then_dest: BlockCall,
         else_dest: BlockCall,
     },
-    BrTable {
-        index: Value,
-        table: JumpTable,
-    },
-    Return {
-        value: Option<Value>,
-    },
+    /// 跳转表
+    BrTable { index: Value, table: JumpTable },
+    /// 函数返回
+    Return { value: Option<Value> },
+    /// 条件选择
     Select {
         condition: Value,
         then_val: Value,
         else_val: Value,
-        ty: Type,
     },
-    IntCompare {
-        kind: IntCC,
-        args: [Value; 2],
-        ty: Type,
-    },
-    FloatCompare {
-        kind: FloatCC,
-        args: [Value; 2],
-        ty: Type,
-    },
+    /// 整数比较
+    IntCompare { kind: IntCC, args: [Value; 2] },
+    /// 浮点比较
+    FloatCompare { kind: FloatCC, args: [Value; 2] },
+    /// 不可达代码
     Unreachable,
+    /// 间接函数调用
     CallIndirect {
         ptr: Value,
         args: ValueList,
         sig_id: SigId,
-        ret_ty: Type,
     },
-    IntToPtr {
-        arg: Value,
-    },
-    PtrToInt {
-        arg: Value,
-        ty: Type,
-    },
-    PtrOffset {
-        ptr: Value,
-        offset: i32,
-    },
+    /// 整数转指针
+    IntToPtr { arg: Value },
+    /// 指针转整数
+    PtrToInt { arg: Value },
+    /// 指针偏移
+    PtrOffset { ptr: Value, offset: i32 },
+    /// 指针索引
     PtrIndex {
         ptr: Value,
         index: Value,
         scale: u32,
         offset: i32,
     },
+    /// 内建函数调用
+    CallIntrinsic {
+        intrinsic: Intrinsic,
+        args: ValueList,
+        sig_id: SigId,
+    },
+    /// 从多值中提取单个值
+    ExtractValue { val: Value, index: u32 },
+    /// 构造多返回值
+    ConstructMulti { values: ValueList },
+    /// 空操作
     Nop,
 }
 
@@ -224,6 +206,19 @@ impl InstructionData {
                 f(*ptr);
                 f(*index);
             }
+            InstructionData::CallIntrinsic { args, .. } => {
+                for &arg in dfg.get_value_list(*args) {
+                    f(arg);
+                }
+            }
+            InstructionData::ExtractValue { val, .. } => {
+                f(*val);
+            }
+            InstructionData::ConstructMulti { values } => {
+                for &arg in dfg.get_value_list(*values) {
+                    f(arg);
+                }
+            }
             InstructionData::Nop => {}
         }
     }
@@ -254,6 +249,9 @@ impl InstructionData {
             InstructionData::PtrToInt { .. } => Opcode::PtrToInt,
             InstructionData::PtrOffset { .. } => Opcode::PtrOffset,
             InstructionData::PtrIndex { .. } => Opcode::PtrIndex,
+            InstructionData::CallIntrinsic { .. } => Opcode::CallIntrinsic,
+            InstructionData::ExtractValue { .. } => Opcode::ExtractValue,
+            InstructionData::ConstructMulti { .. } => Opcode::ConstructMulti,
             InstructionData::Nop => Opcode::Nop,
         }
     }
@@ -265,42 +263,13 @@ impl InstructionData {
         )
     }
 
-    pub fn result_type(&self) -> Type {
-        match self {
-            InstructionData::Unary { ty, .. } => *ty,
-            InstructionData::Binary { ty, .. } => *ty,
-            InstructionData::Load { ty, .. } => *ty,
-            InstructionData::Store { .. } => Type::Void,
-            InstructionData::StackLoad { ty, .. } => *ty,
-            InstructionData::StackStore { .. } => Type::Void,
-            InstructionData::StackAddr { .. } => Type::Ptr,
-            InstructionData::Iconst { ty, .. } => *ty,
-            InstructionData::Fconst { ty, .. } => *ty,
-            InstructionData::Bconst { .. } => Type::Bool,
-            InstructionData::Call { ret_ty, .. } => *ret_ty,
-            InstructionData::Jump { .. } => Type::Void,
-            InstructionData::Br { .. } => Type::Void,
-            InstructionData::BrTable { .. } => Type::Void,
-            InstructionData::Return { .. } => Type::Void,
-            InstructionData::Select { ty, .. } => *ty,
-            InstructionData::IntCompare { ty, .. } => *ty,
-            InstructionData::FloatCompare { ty, .. } => *ty,
-            InstructionData::Unreachable => Type::Void,
-            InstructionData::CallIndirect { ret_ty, .. } => *ret_ty,
-            InstructionData::IntToPtr { .. } => Type::Ptr,
-            InstructionData::PtrToInt { ty, .. } => *ty,
-            InstructionData::PtrOffset { .. } => Type::Ptr,
-            InstructionData::PtrIndex { .. } => Type::Ptr,
-            InstructionData::Nop => Type::Void,
-        }
-    }
-
     pub fn has_side_effects(&self) -> bool {
         match self.opcode() {
             Opcode::Store
             | Opcode::StackStore
             | Opcode::Call
             | Opcode::CallIndirect
+            | Opcode::CallIntrinsic
             | Opcode::Return
             | Opcode::Jump
             | Opcode::Br

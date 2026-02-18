@@ -5,7 +5,7 @@ use super::types::{
     Block, BlockCall, FuncId, JumpTable, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
 use crate::types::{BlockCallData, JumpTableData};
-use crate::{CallConv, Linkage, Module, ModuleData, Result, SigId};
+use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
@@ -120,9 +120,96 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn push_inst(&mut self, block: Block, data: InstructionData) -> Option<Value> {
-        let ty = data.result_type();
+        let ty = self.inst_result_type(&data);
         let inst = self.func_mut().dfg.instructions.push(data);
 
+        self.func_mut().layout.append_inst(block, inst);
+
+        if ty != Type::Void {
+            Some(self.func_mut().dfg.append_result(inst, ty))
+        } else {
+            self.func_mut().dfg.inst_results[inst] = None;
+            None
+        }
+    }
+
+    /// Compute the result type of an instruction.
+    /// This method requires `&self` to access operand types and module signatures.
+    fn inst_result_type(&self, data: &InstructionData) -> Type {
+        use super::inst::InstructionData;
+        match data {
+            // Unary/Binary ops: result type same as input operand
+            InstructionData::Unary { arg, .. } => self.value_type(*arg),
+            InstructionData::Binary { args, .. } => self.value_type(args[0]),
+
+            // Load/StackLoad: type must be provided by caller (via push_inst_with_type)
+            // These will be handled specially
+            InstructionData::Load { .. } => {
+                panic!("Load result type must be provided explicitly")
+            }
+            InstructionData::StackLoad { .. } => {
+                panic!("StackLoad result type must be provided explicitly")
+            }
+
+            // Constants: type must be provided by caller
+            InstructionData::Iconst { .. } => {
+                panic!("Iconst result type must be provided explicitly")
+            }
+            InstructionData::Fconst { .. } => {
+                panic!("Fconst result type must be provided explicitly")
+            }
+            InstructionData::PtrToInt { .. } => {
+                panic!("PtrToInt result type must be provided explicitly")
+            }
+            InstructionData::ExtractValue { .. } => {
+                panic!("ExtractValue result type must be provided explicitly")
+            }
+
+            // Instructions with fixed result type
+            InstructionData::Bconst { .. } => Type::Bool,
+            InstructionData::StackAddr { .. } => Type::Ptr,
+            InstructionData::IntToPtr { .. } => Type::Ptr,
+            InstructionData::PtrOffset { .. } => Type::Ptr,
+            InstructionData::PtrIndex { .. } => Type::Ptr,
+
+            // Comparisons: always return Bool
+            InstructionData::IntCompare { .. } | InstructionData::FloatCompare { .. } => Type::Bool,
+
+            // Select: result type same as then_val/else_val
+            InstructionData::Select { then_val, .. } => self.value_type(*then_val),
+
+            // Instructions that never produce a value
+            InstructionData::Store { .. }
+            | InstructionData::StackStore { .. }
+            | InstructionData::Jump { .. }
+            | InstructionData::Br { .. }
+            | InstructionData::BrTable { .. }
+            | InstructionData::Return { .. }
+            | InstructionData::Unreachable => Type::Void,
+
+            // Call instructions: return type is obtained from the signature
+            InstructionData::Call { func_id, .. } => {
+                let sig_id = self.module.functions[*func_id].signature;
+                self.module.signatures[sig_id].ret
+            }
+            InstructionData::CallIndirect { sig_id, .. } => self.module.signatures[*sig_id].ret,
+            InstructionData::CallIntrinsic { sig_id, .. } => self.module.signatures[*sig_id].ret,
+
+            // Multi-value construction
+            InstructionData::ConstructMulti { .. } => Type::MultiValue,
+
+            InstructionData::Nop => Type::Void,
+        }
+    }
+
+    /// Push an instruction that requires explicit result type (like Load, Iconst, etc.)
+    fn push_inst_with_type(
+        &mut self,
+        block: Block,
+        data: InstructionData,
+        ty: Type,
+    ) -> Option<Value> {
+        let inst = self.func_mut().dfg.instructions.push(data);
         self.func_mut().layout.append_inst(block, inst);
 
         if ty != Type::Void {
@@ -525,9 +612,18 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.builder.push_inst(block, data)
     }
 
+    fn push_with_type(&mut self, data: InstructionData, ty: Type) -> Option<Value> {
+        let block = self.block();
+        self.builder.push_inst_with_type(block, data, ty)
+    }
+
     pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
-        self.push(InstructionData::Iconst { value: val, ty })
-            .unwrap()
+        match ty {
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 => self
+                .push_with_type(InstructionData::Iconst { value: val }, ty)
+                .unwrap(),
+            _ => panic!("iconst only supports integer types"),
+        }
     }
 
     pub fn i32const(&mut self, val: i32) -> Value {
@@ -539,7 +635,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn fconst(&mut self, ty: Type, val: u64) -> Value {
-        self.push(InstructionData::Fconst { value: val, ty })
+        self.push_with_type(InstructionData::Fconst { value: val }, ty)
             .unwrap()
     }
 
@@ -556,191 +652,153 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Iadd,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Isub,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Imul,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Fadd,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Fsub,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Fmul,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn idiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::DivS,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn udiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::DivU,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Fdiv,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn irem(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::RemS,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn urem(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::RemU,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn and(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::And,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn or(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Or,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn xor(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Xor,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn shl(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Shl,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn shr_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::ShrS,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn shr_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::ShrU,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn rotl(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Rotl,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn rotr(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Rotr,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
@@ -749,7 +807,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.push(InstructionData::IntCompare {
             kind,
             args: [lhs, rhs],
-            ty: Type::Bool,
         })
         .unwrap()
     }
@@ -758,7 +815,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.push(InstructionData::FloatCompare {
             kind,
             args: [lhs, rhs],
-            ty: Type::Bool,
         })
         .unwrap()
     }
@@ -828,252 +884,241 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn eqz(&mut self, val: Value) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::Eqz,
-            arg: val,
-            ty: Type::Bool,
-        })
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::Eqz,
+                arg: val,
+            },
+            Type::Bool,
+        )
         .unwrap()
     }
 
     pub fn clz(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Clz,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn ctz(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Ctz,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn popcnt(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Popcnt,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn ineg(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Ineg,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn fneg(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Fneg,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn abs(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Abs,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn sqrt(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Sqrt,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn ceil(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Ceil,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn floor(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Floor,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn trunc(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Trunc,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn nearest(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
         self.push(InstructionData::Unary {
             opcode: Opcode::Nearest,
             arg: val,
-            ty,
         })
         .unwrap()
     }
 
     pub fn min(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Min,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn max(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Max,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn copysign(&mut self, lhs: Value, rhs: Value) -> Value {
-        let ty = self.builder.value_type(lhs);
         self.push(InstructionData::Binary {
             opcode: Opcode::Copysign,
             args: [lhs, rhs],
-            ty,
         })
         .unwrap()
     }
 
     pub fn extend_s(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::ExtendS,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ExtendS,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn extend_u(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::ExtendU,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ExtendU,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn wrap(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::Wrap,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::Wrap,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn trunc_s(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::TruncS,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::TruncS,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn trunc_u(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::TruncU,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::TruncU,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn convert_s(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::ConvertS,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ConvertS,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn convert_u(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::ConvertU,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ConvertU,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn promote(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::Promote,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::Promote,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn demote(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::Demote,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::Demote,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn reinterpret(&mut self, val: Value, ty: Type) -> Value {
-        self.push(InstructionData::Unary {
-            opcode: Opcode::Reinterpret,
-            arg: val,
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::Reinterpret,
+                arg: val,
+            },
             ty,
-        })
+        )
         .unwrap()
     }
 
     pub fn load(&mut self, ty: Type, ptr: Value, offset: u32, flags: MemFlags) -> Value {
-        self.push(InstructionData::Load {
-            ptr,
-            offset,
-            ty,
-            flags,
-        })
-        .unwrap()
+        self.push_with_type(InstructionData::Load { ptr, offset, flags }, ty)
+            .unwrap()
     }
 
     pub fn store(&mut self, value: Value, ptr: Value, offset: u32, flags: MemFlags) {
@@ -1086,7 +1131,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn stack_load(&mut self, ty: Type, slot: StackSlot, offset: u32) -> Value {
-        self.push(InstructionData::StackLoad { slot, offset, ty })
+        self.push_with_type(InstructionData::StackLoad { slot, offset }, ty)
             .unwrap()
     }
 
@@ -1122,30 +1167,18 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.push(InstructionData::IntToPtr { arg }).unwrap()
     }
 
-    pub fn ptr_to_int(&mut self, arg: Value, ty: Type) -> Value {
-        self.push(InstructionData::PtrToInt { arg, ty }).unwrap()
+    pub fn ptr_to_int(&mut self, arg: Value, _ty: Type) -> Value {
+        self.push(InstructionData::PtrToInt { arg }).unwrap()
     }
 
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Option<Value> {
-        let sig_id = self.builder.func_signature(func_id);
-        let ret_ty = self.builder.signature(sig_id).ret;
         let args = self.builder.make_value_list(args);
-        self.push(InstructionData::Call {
-            func_id,
-            args,
-            ret_ty,
-        })
+        self.push(InstructionData::Call { func_id, args })
     }
 
     pub fn call_indirect(&mut self, sig_id: SigId, ptr: Value, args: &[Value]) -> Option<Value> {
-        let ret_ty = self.builder.signature(sig_id).ret;
         let args = self.builder.make_value_list(args);
-        self.push(InstructionData::CallIndirect {
-            ptr,
-            args,
-            sig_id,
-            ret_ty,
-        })
+        self.push(InstructionData::CallIndirect { ptr, args, sig_id })
     }
 
     pub fn jump(&mut self, destination: Block, args: &[Value]) {
@@ -1226,8 +1259,51 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             condition,
             then_val,
             else_val,
-            ty,
         })
         .unwrap()
+    }
+
+    /// Call an intrinsic function.
+    /// Returns `None` if the intrinsic returns void, otherwise returns the result value.
+    pub fn call_intrinsic(
+        &mut self,
+        intrinsic: Intrinsic,
+        sig_id: SigId,
+        args: &[Value],
+    ) -> Option<Value> {
+        let args = self.builder.make_value_list(args);
+        self.push(InstructionData::CallIntrinsic {
+            intrinsic,
+            args,
+            sig_id,
+        })
+    }
+
+    /// Extract a single value from a multi-value.
+    /// The `index` specifies which element to extract (0-indexed).
+    /// The `ty` specifies the expected type of the extracted value.
+    pub fn extract_value(&mut self, val: Value, index: u32, _ty: Type) -> Value {
+        debug_assert_eq!(
+            self.builder.value_type(val),
+            Type::MultiValue,
+            "Can only extract from MultiValue type"
+        );
+        self.push(InstructionData::ExtractValue { val, index })
+            .unwrap()
+    }
+
+    /// Construct a multi-value from multiple values.
+    /// This is typically used at the end of a function to bundle multiple return values.
+    pub fn construct_multi(&mut self, values: &[Value]) -> Value {
+        for &v in values {
+            let t = self.builder.value_type(v);
+            debug_assert!(
+                t != Type::Void && t != Type::MultiValue,
+                "Cannot include Void or MultiValue in ConstructMulti"
+            );
+        }
+        let values = self.builder.make_value_list(values);
+        self.push(InstructionData::ConstructMulti { values })
+            .unwrap()
     }
 }

@@ -249,8 +249,8 @@ impl<'a> WasmTranslator<'a> {
             }
             Operator::BrIf { relative_depth } => {
                 let cond_i32 = self.pop();
-                let cond_ty = self.builder.value_type(cond_i32);
-                let zero = self.builder.ins().iconst(cond_ty, 0);
+                // BrIf condition must be i32 in WebAssembly
+                let zero = self.builder.ins().i32const(0);
                 let cond = self.builder.ins().icmp(IntCC::Ne, cond_i32, zero);
                 let frame_idx = self.control_stack.len() - 1 - relative_depth as usize;
                 let frame = &self.control_stack[frame_idx];

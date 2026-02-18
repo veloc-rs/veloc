@@ -7,6 +7,8 @@ edition = "2024"
 veloc_ir = { workspace = true }
 veloc_analyzer = { workspace = true }
 hashbrown = { workspace = true }
+cranelift-entity = { workspace = true }
+libm = "0.2"
 
 [features]
 default = ["std"]

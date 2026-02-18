@@ -17,6 +17,7 @@ pub mod types;
 pub mod validator;
 
 pub mod constant;
+pub mod intrinsic;
 mod opcode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -36,6 +37,7 @@ impl core::fmt::Display for CallConv {
 pub use builder::{FunctionBuilder, InstBuilder, ModuleBuilder};
 pub use error::{Error, Result};
 pub use function::Function;
+pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{Global, Linkage, Module, ModuleData};
 pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 pub use types::{
