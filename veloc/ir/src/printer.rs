@@ -196,19 +196,15 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 InstructionData::PtrOffset { ptr, offset } => {
                     write!(f, "ptr_offset {}, {}", v(*ptr), offset)?;
                 }
-                InstructionData::PtrIndex {
-                    ptr,
-                    index,
-                    scale,
-                    offset,
-                } => {
+                InstructionData::PtrIndex { ptr, index, imm_id } => {
+                    let imm = dfg.get_ptr_imm(*imm_id);
                     write!(
                         f,
                         "ptr_index {}, {}, {}, {}",
                         v(*ptr),
                         v(*index),
-                        scale,
-                        offset
+                        imm.scale,
+                        imm.offset
                     )?;
                 }
                 InstructionData::Bconst { value } => {

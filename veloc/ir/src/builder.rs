@@ -1154,13 +1154,9 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn ptr_index(&mut self, ptr: Value, index: Value, scale: u32, offset: i32) -> Value {
-        self.push(InstructionData::PtrIndex {
-            ptr,
-            index,
-            scale,
-            offset,
-        })
-        .unwrap()
+        let imm_id = self.builder.func_mut().dfg.make_ptr_imm(offset, scale);
+        self.push(InstructionData::PtrIndex { ptr, index, imm_id })
+            .unwrap()
     }
 
     pub fn int_to_ptr(&mut self, arg: Value) -> Value {

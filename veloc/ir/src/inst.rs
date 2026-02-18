@@ -4,6 +4,16 @@ use crate::{FloatCC, IntCC, Intrinsic, MemFlags, Opcode, SigId};
 use core::fmt;
 use cranelift_entity::entity_impl;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PtrIndexImm {
+    pub offset: i32,
+    pub scale: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PtrIndexImmId(pub u32);
+entity_impl!(PtrIndexImmId, "ptr_index_imm");
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Inst(pub u32);
 entity_impl!(Inst, "inst");
@@ -90,12 +100,11 @@ pub enum InstructionData {
     PtrToInt { arg: Value },
     /// 指针偏移
     PtrOffset { ptr: Value, offset: i32 },
-    /// 指针索引
+    /// 带有立即数的指针索引
     PtrIndex {
         ptr: Value,
         index: Value,
-        scale: u32,
-        offset: i32,
+        imm_id: PtrIndexImmId,
     },
     /// 内建函数调用
     CallIntrinsic {

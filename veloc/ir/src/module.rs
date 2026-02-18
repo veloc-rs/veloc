@@ -37,7 +37,6 @@ pub struct ModuleData {
     pub signatures: PrimaryMap<SigId, Signature>,
     pub globals: Vec<Global>,
     sig_map: HashMap<Signature, SigId>,
-    /// 当前模块的修订版本
     revision: u64,
 }
 
@@ -57,7 +56,7 @@ impl ModuleData {
             .map(|(id, _)| id)
     }
 
-    pub fn intern_signature(&mut self, signature: Signature) -> SigId {
+    pub(crate) fn intern_signature(&mut self, signature: Signature) -> SigId {
         if let Some(&id) = self.sig_map.get(&signature) {
             id
         } else {

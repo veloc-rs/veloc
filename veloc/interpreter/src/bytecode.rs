@@ -1004,15 +1004,18 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                         }
                     }
                 }
-                InstructionData::PtrIndex {
-                    ptr,
-                    index,
-                    scale,
-                    offset,
-                } => {
+                InstructionData::PtrIndex { ptr, index, imm_id } => {
                     let ptr_reg = mapper.get_mapped(*ptr);
                     let index_reg = mapper.get_mapped(*index);
-                    emit::PtrIndex(&mut code, dst, ptr_reg, index_reg, *scale, *offset);
+                    let imm = func.dfg.get_ptr_imm(*imm_id);
+                    emit::PtrIndex(
+                        &mut code,
+                        dst,
+                        ptr_reg,
+                        index_reg,
+                        imm.scale as u32,
+                        imm.offset,
+                    );
                 }
                 InstructionData::PtrOffset { ptr, offset } => {
                     let ptr_reg = mapper.get_mapped(*ptr);

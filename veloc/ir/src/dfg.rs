@@ -1,4 +1,4 @@
-use super::inst::{Inst, InstructionData};
+use super::inst::{Inst, InstructionData, PtrIndexImm, PtrIndexImmId};
 use crate::constant::Constant;
 use crate::types::{
     Block, BlockCall, BlockCallData, JumpTable, JumpTableData, Type, Value, ValueData, ValueDef,
@@ -7,6 +7,7 @@ use crate::types::{
 use alloc::string::String;
 use alloc::vec::Vec;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
+use hashbrown::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct DataFlowGraph {
@@ -18,6 +19,8 @@ pub struct DataFlowGraph {
     pub value_pool: Vec<Value>,
     pub block_calls: PrimaryMap<BlockCall, BlockCallData>,
     pub jump_tables: PrimaryMap<JumpTable, JumpTableData>,
+    pub ptr_imm_pool: PrimaryMap<PtrIndexImmId, PtrIndexImm>,
+    ptr_imm_map: HashMap<PtrIndexImm, PtrIndexImmId>,
 }
 
 impl DataFlowGraph {
@@ -35,7 +38,26 @@ impl DataFlowGraph {
             value_pool: Vec::new(),
             block_calls: PrimaryMap::new(),
             jump_tables: PrimaryMap::new(),
+            ptr_imm_pool: PrimaryMap::new(),
+            ptr_imm_map: HashMap::new(),
         }
+    }
+
+    pub fn make_ptr_imm(&mut self, offset: i32, scale: u32) -> PtrIndexImmId {
+        let key = PtrIndexImm { offset, scale };
+
+        if let Some(&id) = self.ptr_imm_map.get(&key) {
+            return id;
+        }
+
+        let id = self.ptr_imm_pool.push(key);
+        self.ptr_imm_map.insert(key, id);
+        id
+    }
+
+    /// 通过 ID 获取 PtrIndex 静态配置
+    pub fn get_ptr_imm(&self, id: PtrIndexImmId) -> &PtrIndexImm {
+        &self.ptr_imm_pool[id]
     }
 
     pub fn make_value_list(&mut self, values: &[Value]) -> ValueList {
