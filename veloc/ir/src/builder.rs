@@ -135,7 +135,7 @@ impl<'a> FunctionBuilder<'a> {
             // Binary ops: result type same as input operand
             // Overflow variants return (result, overflow_flag) tuple
             InstructionData::Binary { opcode, args, .. } => match opcode {
-                Opcode::IaddOverflow | Opcode::IsubOverflow | Opcode::ImulOverflow => {
+                Opcode::IAddWithOverflow | Opcode::ISubWithOverflow | Opcode::IMulWithOverflow => {
                     smallvec![self.value_type(args[0]), Type::Bool]
                 }
                 _ => smallvec![self.value_type(args[0])],
@@ -685,22 +685,22 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Iadd, lhs, rhs)
+        self.push_binary(Opcode::IAdd, lhs, rhs)
     }
 
     pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Isub, lhs, rhs)
+        self.push_binary(Opcode::ISub, lhs, rhs)
     }
 
     pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Imul, lhs, rhs)
+        self.push_binary(Opcode::IMul, lhs, rhs)
     }
 
     /// Integer add with overflow detection.
     /// Returns (result, overflow_flag) tuple.
-    pub fn iadd_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
+    pub fn iadd_with_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
         let inst = self.push_raw(InstructionData::Binary {
-            opcode: Opcode::IaddOverflow,
+            opcode: Opcode::IAddWithOverflow,
             args: [lhs, rhs],
         });
         let results = self.builder.func().dfg.inst_results(inst);
@@ -709,9 +709,9 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     /// Integer subtract with overflow detection.
     /// Returns (result, overflow_flag) tuple.
-    pub fn isub_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
+    pub fn isub_with_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
         let inst = self.push_raw(InstructionData::Binary {
-            opcode: Opcode::IsubOverflow,
+            opcode: Opcode::ISubWithOverflow,
             args: [lhs, rhs],
         });
         let results = self.builder.func().dfg.inst_results(inst);
@@ -720,77 +720,89 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     /// Integer multiply with overflow detection.
     /// Returns (result, overflow_flag) tuple.
-    pub fn imul_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
+    pub fn imul_with_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
         let inst = self.push_raw(InstructionData::Binary {
-            opcode: Opcode::ImulOverflow,
+            opcode: Opcode::IMulWithOverflow,
             args: [lhs, rhs],
         });
         let results = self.builder.func().dfg.inst_results(inst);
         (results[0], results[1])
     }
 
+    /// Integer saturating addition.
+    /// Returns the result clamped to the integer type's minimum/maximum value on overflow.
+    pub fn iadd_sat(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IAddSat, lhs, rhs)
+    }
+
+    /// Integer saturating subtraction.
+    /// Returns the result clamped to the integer type's minimum/maximum value on underflow.
+    pub fn isub_sat(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::ISubSat, lhs, rhs)
+    }
+
     pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Fadd, lhs, rhs)
+        self.push_binary(Opcode::FAdd, lhs, rhs)
     }
 
     pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Fsub, lhs, rhs)
+        self.push_binary(Opcode::FSub, lhs, rhs)
     }
 
     pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Fmul, lhs, rhs)
+        self.push_binary(Opcode::FMul, lhs, rhs)
     }
 
-    pub fn idiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::DivS, lhs, rhs)
+    pub fn idiv_s(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IDivS, lhs, rhs)
     }
 
-    pub fn udiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::DivU, lhs, rhs)
+    pub fn idiv_u(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IDivU, lhs, rhs)
     }
 
     pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Fdiv, lhs, rhs)
+        self.push_binary(Opcode::FDiv, lhs, rhs)
     }
 
-    pub fn irem(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::RemS, lhs, rhs)
+    pub fn irem_s(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IRemS, lhs, rhs)
     }
 
-    pub fn urem(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::RemU, lhs, rhs)
+    pub fn irem_u(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IRemU, lhs, rhs)
     }
 
-    pub fn and(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::And, lhs, rhs)
+    pub fn iand(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IAnd, lhs, rhs)
     }
 
-    pub fn or(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Or, lhs, rhs)
+    pub fn ior(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IOr, lhs, rhs)
     }
 
-    pub fn xor(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Xor, lhs, rhs)
+    pub fn ixor(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IXor, lhs, rhs)
     }
 
-    pub fn shl(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Shl, lhs, rhs)
+    pub fn ishl(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IShl, lhs, rhs)
     }
 
-    pub fn shr_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::ShrS, lhs, rhs)
+    pub fn ishr_s(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IShrS, lhs, rhs)
     }
 
-    pub fn shr_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::ShrU, lhs, rhs)
+    pub fn ishr_u(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IShrU, lhs, rhs)
     }
 
-    pub fn rotl(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Rotl, lhs, rhs)
+    pub fn irotl(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IRotl, lhs, rhs)
     }
 
-    pub fn rotr(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Rotr, lhs, rhs)
+    pub fn irotr(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::IRotr, lhs, rhs)
     }
 
     pub fn icmp(&mut self, kind: IntCC, lhs: Value, rhs: Value) -> Value {
@@ -873,10 +885,10 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.fcmp(FloatCC::Ge, lhs, rhs)
     }
 
-    pub fn eqz(&mut self, val: Value) -> Value {
+    pub fn ieqz(&mut self, val: Value) -> Value {
         self.push_with_type(
             InstructionData::Unary {
-                opcode: Opcode::Eqz,
+                opcode: Opcode::IEqz,
                 arg: val,
             },
             Type::Bool,
@@ -884,60 +896,60 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         .unwrap()
     }
 
-    pub fn clz(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Clz, val)
+    pub fn iclz(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::IClz, val)
     }
 
-    pub fn ctz(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Ctz, val)
+    pub fn ictz(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::ICtz, val)
     }
 
-    pub fn popcnt(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Popcnt, val)
+    pub fn ipopcnt(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::IPopcnt, val)
     }
 
     pub fn ineg(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Ineg, val)
+        self.push_unary(Opcode::INeg, val)
     }
 
     pub fn fneg(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Fneg, val)
+        self.push_unary(Opcode::FNeg, val)
     }
 
-    pub fn abs(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Abs, val)
+    pub fn fabs(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::FAbs, val)
     }
 
-    pub fn sqrt(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Sqrt, val)
+    pub fn fsqrt(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::FSqrt, val)
     }
 
-    pub fn ceil(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Ceil, val)
+    pub fn fceil(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::FCeil, val)
     }
 
-    pub fn floor(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Floor, val)
+    pub fn ffloor(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::FFloor, val)
     }
 
-    pub fn trunc(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Trunc, val)
+    pub fn ftrunc(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::FTrunc, val)
     }
 
-    pub fn nearest(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::Nearest, val)
+    pub fn fnearest(&mut self, val: Value) -> Value {
+        self.push_unary(Opcode::FNearest, val)
     }
 
-    pub fn min(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Min, lhs, rhs)
+    pub fn fmin(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::FMin, lhs, rhs)
     }
 
-    pub fn max(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Max, lhs, rhs)
+    pub fn fmax(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::FMax, lhs, rhs)
     }
 
-    pub fn copysign(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::Copysign, lhs, rhs)
+    pub fn fcopysign(&mut self, lhs: Value, rhs: Value) -> Value {
+        self.push_binary(Opcode::FCopysign, lhs, rhs)
     }
 
     pub fn extend_s(&mut self, val: Value, ty: Type) -> Value {
@@ -973,10 +985,12 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         .unwrap()
     }
 
-    pub fn trunc_s(&mut self, val: Value, ty: Type) -> Value {
+    /// Float to signed int (saturating)
+    /// On overflow, returns the min/max value of the target type
+    pub fn float_to_int_sat_s(&mut self, val: Value, ty: Type) -> Value {
         self.push_with_type(
             InstructionData::Unary {
-                opcode: Opcode::TruncS,
+                opcode: Opcode::FloatToIntSatS,
                 arg: val,
             },
             ty,
@@ -984,10 +998,12 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         .unwrap()
     }
 
-    pub fn trunc_u(&mut self, val: Value, ty: Type) -> Value {
+    /// Float to unsigned int (saturating)
+    /// On overflow, returns the min/max value of the target type
+    pub fn float_to_int_sat_u(&mut self, val: Value, ty: Type) -> Value {
         self.push_with_type(
             InstructionData::Unary {
-                opcode: Opcode::TruncU,
+                opcode: Opcode::FloatToIntSatU,
                 arg: val,
             },
             ty,
@@ -995,10 +1011,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         .unwrap()
     }
 
-    pub fn convert_s(&mut self, val: Value, ty: Type) -> Value {
+    /// Float to signed int (truncate)
+    pub fn float_to_int_s(&mut self, val: Value, ty: Type) -> Value {
         self.push_with_type(
             InstructionData::Unary {
-                opcode: Opcode::ConvertS,
+                opcode: Opcode::FloatToIntS,
                 arg: val,
             },
             ty,
@@ -1006,10 +1023,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         .unwrap()
     }
 
-    pub fn convert_u(&mut self, val: Value, ty: Type) -> Value {
+    /// Float to unsigned int (truncate)
+    pub fn float_to_int_u(&mut self, val: Value, ty: Type) -> Value {
         self.push_with_type(
             InstructionData::Unary {
-                opcode: Opcode::ConvertU,
+                opcode: Opcode::FloatToIntU,
                 arg: val,
             },
             ty,
@@ -1017,10 +1035,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         .unwrap()
     }
 
-    pub fn promote(&mut self, val: Value, ty: Type) -> Value {
+    /// Signed int to float
+    pub fn int_to_float_s(&mut self, val: Value, ty: Type) -> Value {
         self.push_with_type(
             InstructionData::Unary {
-                opcode: Opcode::Promote,
+                opcode: Opcode::IntToFloatS,
                 arg: val,
             },
             ty,
@@ -1028,10 +1047,35 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         .unwrap()
     }
 
-    pub fn demote(&mut self, val: Value, ty: Type) -> Value {
+    /// Unsigned int to float
+    pub fn int_to_float_u(&mut self, val: Value, ty: Type) -> Value {
         self.push_with_type(
             InstructionData::Unary {
-                opcode: Opcode::Demote,
+                opcode: Opcode::IntToFloatU,
+                arg: val,
+            },
+            ty,
+        )
+        .unwrap()
+    }
+
+    /// F32 to F64 promotion
+    pub fn float_promote(&mut self, val: Value, ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::FloatPromote,
+                arg: val,
+            },
+            ty,
+        )
+        .unwrap()
+    }
+
+    /// F64 to F32 demotion
+    pub fn float_demote(&mut self, val: Value, ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::FloatDemote,
                 arg: val,
             },
             ty,

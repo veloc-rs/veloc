@@ -108,7 +108,7 @@ impl<'a> WasmTranslator<'a> {
                 let (_, len_var) = self.memory_vars[mem as usize];
                 let size_bytes = self.builder.use_var(len_var);
                 let page_size = self.builder.ins().iconst(VelocType::I64, 65536);
-                let size_pages = self.builder.ins().udiv(size_bytes, page_size);
+                let size_pages = self.builder.ins().idiv_u(size_bytes, page_size);
                 let size_i32 = self.builder.ins().wrap(size_pages, VelocType::I32);
                 self.stack.push(size_i32);
             }

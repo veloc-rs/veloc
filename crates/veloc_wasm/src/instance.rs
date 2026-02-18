@@ -1153,14 +1153,13 @@ impl TypedFunc {
                         panic!("Interpreter not initialized and no module ID found");
                     };
 
-                    let interp_results = interpreter
-                        .run_function(
-                            &store.program,
-                            instance,
-                            instance.interp_module_id.expect("Module ID missing"),
-                            target_func_id,
-                            &int_args,
-                        );
+                    let interp_results = interpreter.run_function(
+                        &store.program,
+                        instance,
+                        instance.interp_module_id.expect("Module ID missing"),
+                        target_func_id,
+                        &int_args,
+                    );
                     instance.interpreter = Some(interpreter);
                     // Copy results to results_raw
                     for (i, val) in interp_results.iter().enumerate() {

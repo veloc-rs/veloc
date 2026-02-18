@@ -171,7 +171,7 @@ impl Function {
                 }
 
                 match opcode {
-                    Opcode::Ineg | Opcode::Clz | Opcode::Ctz | Opcode::Popcnt => {
+                    Opcode::INeg | Opcode::IClz | Opcode::ICtz | Opcode::IPopcnt => {
                         if !result_ty.is_integer() || arg_ty != result_ty {
                             return Err(ValidationError::TypeMismatch {
                                 opcode: *opcode,
@@ -181,13 +181,13 @@ impl Function {
                             .into());
                         }
                     }
-                    Opcode::Fneg
-                    | Opcode::Abs
-                    | Opcode::Sqrt
-                    | Opcode::Ceil
-                    | Opcode::Floor
-                    | Opcode::Trunc
-                    | Opcode::Nearest => {
+                    Opcode::FNeg
+                    | Opcode::FAbs
+                    | Opcode::FSqrt
+                    | Opcode::FCeil
+                    | Opcode::FFloor
+                    | Opcode::FTrunc
+                    | Opcode::FNearest => {
                         if !result_ty.is_float() || arg_ty != result_ty {
                             return Err(ValidationError::TypeMismatch {
                                 opcode: *opcode,
@@ -197,10 +197,10 @@ impl Function {
                             .into());
                         }
                     }
-                    Opcode::Eqz => {
+                    Opcode::IEqz => {
                         if !arg_ty.is_integer() || result_ty != Type::Bool {
                             return Err(ValidationError::TypeMismatch {
-                                opcode: Opcode::Eqz,
+                                opcode: Opcode::IEqz,
                                 expected: Type::Bool,
                                 got: result_ty,
                             }
@@ -241,18 +241,18 @@ impl Function {
                             .into());
                         }
                     }
-                    Opcode::Demote => {
+                    Opcode::FloatDemote => {
                         if arg_ty != Type::F64 || result_ty != Type::F32 {
                             return Err(ValidationError::InvalidConversion {
                                 inst,
-                                opcode: Opcode::Demote,
+                                opcode: Opcode::FloatDemote,
                                 from: arg_ty,
                                 to: result_ty,
                             }
                             .into());
                         }
                     }
-                    Opcode::TruncS | Opcode::TruncU => {
+                    Opcode::FloatToIntS | Opcode::FloatToIntU => {
                         if !arg_ty.is_float() || !result_ty.is_integer() {
                             return Err(ValidationError::InvalidConversion {
                                 inst,
@@ -263,7 +263,7 @@ impl Function {
                             .into());
                         }
                     }
-                    Opcode::ConvertS | Opcode::ConvertU => {
+                    Opcode::IntToFloatS | Opcode::IntToFloatU => {
                         if !arg_ty.is_integer() || !result_ty.is_float() {
                             return Err(ValidationError::InvalidConversion {
                                 inst,

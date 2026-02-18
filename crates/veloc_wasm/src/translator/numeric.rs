@@ -17,14 +17,14 @@ impl<'a> WasmTranslator<'a> {
             Operator::I64RemS => self.translate_rem_s(true),
             Operator::I32RemU => self.translate_rem_u(false),
             Operator::I64RemU => self.translate_rem_u(true),
-            Operator::I32And | Operator::I64And => self.bin(|b, l, r| b.and(l, r)),
-            Operator::I32Or | Operator::I64Or => self.bin(|b, l, r| b.or(l, r)),
-            Operator::I32Xor | Operator::I64Xor => self.bin(|b, l, r| b.xor(l, r)),
-            Operator::I32Shl | Operator::I64Shl => self.bin(|b, l, r| b.shl(l, r)),
-            Operator::I32ShrS | Operator::I64ShrS => self.bin(|b, l, r| b.shr_s(l, r)),
-            Operator::I32ShrU | Operator::I64ShrU => self.bin(|b, l, r| b.shr_u(l, r)),
-            Operator::I32Rotl | Operator::I64Rotl => self.bin(|b, l, r| b.rotl(l, r)),
-            Operator::I32Rotr | Operator::I64Rotr => self.bin(|b, l, r| b.rotr(l, r)),
+            Operator::I32And | Operator::I64And => self.bin(|b, l, r| b.iand(l, r)),
+            Operator::I32Or | Operator::I64Or => self.bin(|b, l, r| b.ior(l, r)),
+            Operator::I32Xor | Operator::I64Xor => self.bin(|b, l, r| b.ixor(l, r)),
+            Operator::I32Shl | Operator::I64Shl => self.bin(|b, l, r| b.ishl(l, r)),
+            Operator::I32ShrS | Operator::I64ShrS => self.bin(|b, l, r| b.ishr_s(l, r)),
+            Operator::I32ShrU | Operator::I64ShrU => self.bin(|b, l, r| b.ishr_u(l, r)),
+            Operator::I32Rotl | Operator::I64Rotl => self.bin(|b, l, r| b.irotl(l, r)),
+            Operator::I32Rotr | Operator::I64Rotr => self.bin(|b, l, r| b.irotr(l, r)),
             Operator::I32Eq | Operator::I64Eq => self.bin_cmp(|b, l, r| b.eq(l, r)),
             Operator::I32Ne | Operator::I64Ne => self.bin_cmp(|b, l, r| b.ne(l, r)),
             Operator::I32LtS | Operator::I64LtS => self.bin_cmp(|b, l, r| b.lt_s(l, r)),
@@ -35,10 +35,10 @@ impl<'a> WasmTranslator<'a> {
             Operator::I32LeU | Operator::I64LeU => self.bin_cmp(|b, l, r| b.le_u(l, r)),
             Operator::I32GeS | Operator::I64GeS => self.bin_cmp(|b, l, r| b.ge_s(l, r)),
             Operator::I32GeU | Operator::I64GeU => self.bin_cmp(|b, l, r| b.ge_u(l, r)),
-            Operator::I32Eqz | Operator::I64Eqz => self.un_cmp(|b, v| b.eqz(v)),
-            Operator::I32Clz | Operator::I64Clz => self.un(|b, v| b.clz(v)),
-            Operator::I32Ctz | Operator::I64Ctz => self.un(|b, v| b.ctz(v)),
-            Operator::I32Popcnt | Operator::I64Popcnt => self.un(|b, v| b.popcnt(v)),
+            Operator::I32Eqz | Operator::I64Eqz => self.un_cmp(|b, v| b.ieqz(v)),
+            Operator::I32Clz | Operator::I64Clz => self.un(|b, v| b.iclz(v)),
+            Operator::I32Ctz | Operator::I64Ctz => self.un(|b, v| b.ictz(v)),
+            Operator::I32Popcnt | Operator::I64Popcnt => self.un(|b, v| b.ipopcnt(v)),
 
             Operator::I32Extend8S => self.un(|b, v| {
                 let tmp = b.wrap(v, VelocType::I8);
@@ -73,26 +73,26 @@ impl<'a> WasmTranslator<'a> {
             Operator::F32Mul => self.bin(|b, l, r| b.fmul(l, r)),
             Operator::F32Div => self.bin(|b, l, r| b.fdiv(l, r)),
             Operator::F32Neg => self.un(|b, v| b.fneg(v)),
-            Operator::F32Abs => self.un(|b, v| b.abs(v)),
+            Operator::F32Abs => self.un(|b, v| b.fabs(v)),
             Operator::F64Neg => self.un(|b, v| b.fneg(v)),
-            Operator::F64Abs => self.un(|b, v| b.abs(v)),
-            Operator::F32Sqrt => self.un(|b, v| b.sqrt(v)),
-            Operator::F64Sqrt => self.un(|b, v| b.sqrt(v)),
-            Operator::F32Ceil => self.un(|b, v| b.ceil(v)),
-            Operator::F64Ceil => self.un(|b, v| b.ceil(v)),
-            Operator::F32Floor => self.un(|b, v| b.floor(v)),
-            Operator::F64Floor => self.un(|b, v| b.floor(v)),
-            Operator::F32Trunc => self.un(|b, v| b.trunc(v)),
-            Operator::F64Trunc => self.un(|b, v| b.trunc(v)),
-            Operator::F32Nearest => self.un(|b, v| b.nearest(v)),
-            Operator::F64Nearest => self.un(|b, v| b.nearest(v)),
+            Operator::F64Abs => self.un(|b, v| b.fabs(v)),
+            Operator::F32Sqrt => self.un(|b, v| b.fsqrt(v)),
+            Operator::F64Sqrt => self.un(|b, v| b.fsqrt(v)),
+            Operator::F32Ceil => self.un(|b, v| b.fceil(v)),
+            Operator::F64Ceil => self.un(|b, v| b.fceil(v)),
+            Operator::F32Floor => self.un(|b, v| b.ffloor(v)),
+            Operator::F64Floor => self.un(|b, v| b.ffloor(v)),
+            Operator::F32Trunc => self.un(|b, v| b.ftrunc(v)),
+            Operator::F64Trunc => self.un(|b, v| b.ftrunc(v)),
+            Operator::F32Nearest => self.un(|b, v| b.fnearest(v)),
+            Operator::F64Nearest => self.un(|b, v| b.fnearest(v)),
 
             Operator::F32Min => self.translate_fmin_fmax(false, true),
             Operator::F64Min => self.translate_fmin_fmax(true, true),
             Operator::F32Max => self.translate_fmin_fmax(false, false),
             Operator::F64Max => self.translate_fmin_fmax(true, false),
-            Operator::F32Copysign => self.bin(|b, l, r| b.copysign(l, r)),
-            Operator::F64Copysign => self.bin(|b, l, r| b.copysign(l, r)),
+            Operator::F32Copysign => self.bin(|b, l, r| b.fcopysign(l, r)),
+            Operator::F64Copysign => self.bin(|b, l, r| b.fcopysign(l, r)),
 
             Operator::F32Eq => self.bin_cmp(|b, l, r| b.feq(l, r)),
             Operator::F32Ne => self.bin_cmp(|b, l, r| b.fne(l, r)),
@@ -107,18 +107,18 @@ impl<'a> WasmTranslator<'a> {
             Operator::F64Le => self.bin_cmp(|b, l, r| b.fle(l, r)),
             Operator::F64Ge => self.bin_cmp(|b, l, r| b.fge(l, r)),
 
-            Operator::F64PromoteF32 => self.un(|b, v| b.promote(v, VelocType::F64)),
-            Operator::F32DemoteF64 => self.un(|b, v| b.demote(v, VelocType::F32)),
-            Operator::F32ConvertI32S => self.un(|b, v| b.convert_s(v, VelocType::F32)),
-            Operator::F32ConvertI32U => self.un(|b, v| b.convert_u(v, VelocType::F32)),
-            Operator::F32ConvertI64S => self.un(|b, v| b.convert_s(v, VelocType::F32)),
-            Operator::F32ConvertI64U => self.un(|b, v| b.convert_u(v, VelocType::F32)),
+            Operator::F64PromoteF32 => self.un(|b, v| b.float_promote(v, VelocType::F64)),
+            Operator::F32DemoteF64 => self.un(|b, v| b.float_demote(v, VelocType::F32)),
+            Operator::F32ConvertI32S => self.un(|b, v| b.int_to_float_s(v, VelocType::F32)),
+            Operator::F32ConvertI32U => self.un(|b, v| b.int_to_float_u(v, VelocType::F32)),
+            Operator::F32ConvertI64S => self.un(|b, v| b.int_to_float_s(v, VelocType::F32)),
+            Operator::F32ConvertI64U => self.un(|b, v| b.int_to_float_u(v, VelocType::F32)),
             Operator::I32TruncF32S => self.translate_trunc(true, VelocType::F32, VelocType::I32),
             Operator::I32TruncF32U => self.translate_trunc(false, VelocType::F32, VelocType::I32),
-            Operator::F64ConvertI32S => self.un(|b, v| b.convert_s(v, VelocType::F64)),
-            Operator::F64ConvertI32U => self.un(|b, v| b.convert_u(v, VelocType::F64)),
-            Operator::F64ConvertI64S => self.un(|b, v| b.convert_s(v, VelocType::F64)),
-            Operator::F64ConvertI64U => self.un(|b, v| b.convert_u(v, VelocType::F64)),
+            Operator::F64ConvertI32S => self.un(|b, v| b.int_to_float_s(v, VelocType::F64)),
+            Operator::F64ConvertI32U => self.un(|b, v| b.int_to_float_u(v, VelocType::F64)),
+            Operator::F64ConvertI64S => self.un(|b, v| b.int_to_float_s(v, VelocType::F64)),
+            Operator::F64ConvertI64U => self.un(|b, v| b.int_to_float_u(v, VelocType::F64)),
             Operator::I32TruncF64S => self.translate_trunc(true, VelocType::F64, VelocType::I32),
             Operator::I32TruncF64U => self.translate_trunc(false, VelocType::F64, VelocType::I32),
             Operator::I64TruncF64S => self.translate_trunc(true, VelocType::F64, VelocType::I64),
@@ -300,9 +300,9 @@ impl<'a> WasmTranslator<'a> {
         self.trap_if(is_under, TrapCode::IntegerOverflow);
 
         let res = if is_signed {
-            self.builder.ins().trunc_s(val, dst_ty)
+            self.builder.ins().float_to_int_s(val, dst_ty)
         } else {
-            self.builder.ins().trunc_u(val, dst_ty)
+            self.builder.ins().float_to_int_u(val, dst_ty)
         };
         self.stack.push(res);
     }
@@ -401,9 +401,9 @@ impl<'a> WasmTranslator<'a> {
         };
 
         let tr = if is_signed {
-            self.builder.ins().trunc_s(val, dst_ty)
+            self.builder.ins().float_to_int_s(val, dst_ty)
         } else {
-            self.builder.ins().trunc_u(val, dst_ty)
+            self.builder.ins().float_to_int_u(val, dst_ty)
         };
 
         let max_const = self.builder.ins().iconst(dst_ty, max_i);
@@ -428,7 +428,7 @@ impl<'a> WasmTranslator<'a> {
         let zero = self.builder.ins().fconst(ty, 0);
         let l_is_zero = self.builder.ins().fcmp(FloatCC::Eq, l, zero);
         let r_is_zero = self.builder.ins().fcmp(FloatCC::Eq, r, zero);
-        let both_zero = self.builder.ins().and(l_is_zero, r_is_zero);
+        let both_zero = self.builder.ins().iand(l_is_zero, r_is_zero);
         let res_var = self.new_var(ty);
 
         self.builder.if_else(
@@ -442,18 +442,18 @@ impl<'a> WasmTranslator<'a> {
                 let l_bits = b.ins().reinterpret(l, ity);
                 let r_bits = b.ins().reinterpret(r, ity);
                 let res_bits = if is_min {
-                    b.ins().or(l_bits, r_bits)
+                    b.ins().ior(l_bits, r_bits)
                 } else {
-                    b.ins().and(l_bits, r_bits)
+                    b.ins().iand(l_bits, r_bits)
                 };
                 let res = b.ins().reinterpret(res_bits, ty);
                 b.def_var(res_var, res);
             },
             |b| {
                 let res = if is_min {
-                    b.ins().min(l, r)
+                    b.ins().fmin(l, r)
                 } else {
-                    b.ins().max(l, r)
+                    b.ins().fmax(l, r)
                 };
                 b.def_var(res_var, res);
             },
@@ -480,9 +480,9 @@ impl<'a> WasmTranslator<'a> {
         let min = self.builder.ins().iconst(ty, min_val);
         let is_min = self.builder.ins().icmp(IntCC::Eq, l, min);
         let is_neg_one = self.builder.ins().icmp(IntCC::Eq, r, neg_one);
-        let is_overflow = self.builder.ins().and(is_min, is_neg_one);
+        let is_overflow = self.builder.ins().iand(is_min, is_neg_one);
         self.trap_if(is_overflow, TrapCode::IntegerOverflow);
-        let res = self.builder.ins().idiv(l, r);
+        let res = self.builder.ins().idiv_s(l, r);
         self.stack.push(res);
     }
 
@@ -497,7 +497,7 @@ impl<'a> WasmTranslator<'a> {
         let zero = self.builder.ins().iconst(ty, 0);
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
-        let res = self.builder.ins().udiv(l, r);
+        let res = self.builder.ins().idiv_u(l, r);
         self.stack.push(res);
     }
 
@@ -517,7 +517,7 @@ impl<'a> WasmTranslator<'a> {
         let min = self.builder.ins().iconst(ty, min_val);
         let is_min = self.builder.ins().icmp(IntCC::Eq, l, min);
         let is_neg_one = self.builder.ins().icmp(IntCC::Eq, r, neg_one);
-        let is_overflow = self.builder.ins().and(is_min, is_neg_one);
+        let is_overflow = self.builder.ins().iand(is_min, is_neg_one);
         let res_var = self.new_var(ty);
 
         self.builder.if_else(
@@ -527,7 +527,7 @@ impl<'a> WasmTranslator<'a> {
                 b.def_var(res_var, zero_res);
             },
             |b| {
-                let rem_res = b.ins().irem(l, r);
+                let rem_res = b.ins().irem_s(l, r);
                 b.def_var(res_var, rem_res);
             },
         );
@@ -547,7 +547,7 @@ impl<'a> WasmTranslator<'a> {
         let zero = self.builder.ins().iconst(ty, 0);
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
-        let res = self.builder.ins().urem(l, r);
+        let res = self.builder.ins().irem_u(l, r);
         self.stack.push(res);
     }
 }

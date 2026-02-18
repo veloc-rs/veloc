@@ -159,7 +159,7 @@ impl X86_64Backend {
         self.emit_load_val(emitter, func, arg, Reg::RAX);
 
         match opcode {
-            Opcode::Eqz => {
+            Opcode::IEqz => {
                 emitter.emit_inst(if is_64_src {
                     X86_64Inst::TestRaxRax
                 } else {
@@ -168,35 +168,35 @@ impl X86_64Backend {
                 emitter.emit_inst(X86_64Inst::SeteAl);
                 emitter.emit_inst(X86_64Inst::MovzxEaxAl);
             }
-            Opcode::Clz | Opcode::Ctz | Opcode::Popcnt => {
+            Opcode::IClz | Opcode::ICtz | Opcode::IPopcnt => {
                 let inst = if is_64_src {
                     match opcode {
-                        Opcode::Clz => X86_64Inst::LzcntR64R64,
-                        Opcode::Ctz => X86_64Inst::TzcntR64R64,
+                        Opcode::IClz => X86_64Inst::LzcntR64R64,
+                        Opcode::ICtz => X86_64Inst::TzcntR64R64,
                         _ => X86_64Inst::PopcntR64R64,
                     }
                 } else {
                     match opcode {
-                        Opcode::Clz => X86_64Inst::LzcntRR,
-                        Opcode::Ctz => X86_64Inst::TzcntRR,
+                        Opcode::IClz => X86_64Inst::LzcntRR,
+                        Opcode::ICtz => X86_64Inst::TzcntRR,
                         _ => X86_64Inst::PopcntRR,
                     }
                 };
                 emitter.inst(inst).reg(Reg::RAX).reg(Reg::RAX).emit();
             }
-            Opcode::Ineg
-            | Opcode::Fneg
-            | Opcode::Abs
-            | Opcode::Sqrt
-            | Opcode::Ceil
-            | Opcode::Floor
-            | Opcode::Trunc
-            | Opcode::Nearest => {
+            Opcode::INeg
+            | Opcode::FNeg
+            | Opcode::FAbs
+            | Opcode::FSqrt
+            | Opcode::FCeil
+            | Opcode::FFloor
+            | Opcode::FTrunc
+            | Opcode::FNearest => {
                 if is_float_dest {
                     let is_f32 = src_ty == veloc_ir::Type::F32;
                     self.emit_load_xmm(emitter, func, arg, Reg::XMM0, is_f32);
                     match opcode {
-                        Opcode::Fneg => {
+                        Opcode::FNeg => {
                             if is_f32 {
                                 emitter
                                     .inst(X86_64Inst::MovR32Imm32)
@@ -231,7 +231,7 @@ impl X86_64Backend {
                                     .emit();
                             }
                         }
-                        Opcode::Abs => {
+                        Opcode::FAbs => {
                             if is_f32 {
                                 emitter
                                     .inst(X86_64Inst::MovR32Imm32)
@@ -266,7 +266,7 @@ impl X86_64Backend {
                                     .emit();
                             }
                         }
-                        Opcode::Sqrt => {
+                        Opcode::FSqrt => {
                             let inst = if is_f32 {
                                 X86_64Inst::SqrtssXX
                             } else {
@@ -274,11 +274,11 @@ impl X86_64Backend {
                             };
                             emitter.inst(inst).reg(Reg::XMM0).reg(Reg::XMM0).emit();
                         }
-                        Opcode::Ceil | Opcode::Floor | Opcode::Trunc | Opcode::Nearest => {
+                        Opcode::FCeil | Opcode::FFloor | Opcode::FTrunc | Opcode::FNearest => {
                             let imm = match opcode {
-                                Opcode::Ceil => 0x02,
-                                Opcode::Floor => 0x01,
-                                Opcode::Trunc => 0x03,
+                                Opcode::FCeil => 0x02,
+                                Opcode::FFloor => 0x01,
+                                Opcode::FTrunc => 0x03,
                                 _ => 0x00, // Nearest
                             };
                             let inst = if is_f32 {
@@ -333,7 +333,7 @@ impl X86_64Backend {
                     _ => {}
                 }
             }
-            Opcode::Promote => {
+            Opcode::FloatPromote => {
                 self.emit_load_xmm(emitter, func, arg, Reg::XMM0, true);
                 emitter
                     .inst(X86_64Inst::Cvtss2sdXX)
@@ -341,7 +341,7 @@ impl X86_64Backend {
                     .reg(Reg::XMM0)
                     .emit();
             }
-            Opcode::Demote => {
+            Opcode::FloatDemote => {
                 self.emit_load_xmm(emitter, func, arg, Reg::XMM0, false);
                 emitter
                     .inst(X86_64Inst::Cvtsd2ssXX)
@@ -349,7 +349,7 @@ impl X86_64Backend {
                     .reg(Reg::XMM0)
                     .emit();
             }
-            Opcode::ConvertS | Opcode::ConvertU => {
+            Opcode::IntToFloatS | Opcode::IntToFloatU => {
                 let inst = match (res_ty == veloc_ir::Type::F64, is_64_src) {
                     (true, true) => X86_64Inst::Cvtsi2sdXR64,
                     (true, false) => X86_64Inst::Cvtsi2sdXR,
@@ -358,7 +358,7 @@ impl X86_64Backend {
                 };
                 emitter.inst(inst).reg(Reg::RAX).reg(Reg::XMM0).emit();
             }
-            Opcode::TruncS | Opcode::TruncU => {
+            Opcode::FloatToIntS | Opcode::FloatToIntU => {
                 self.emit_load_xmm(emitter, func, arg, Reg::XMM0, src_ty == veloc_ir::Type::F32);
                 let inst = match (src_ty == veloc_ir::Type::F64, is_64_dest) {
                     (true, true) => X86_64Inst::Cvttsd2siRX64,
@@ -422,7 +422,7 @@ impl X86_64Backend {
             self.emit_load_xmm(emitter, func, args[1], Reg::XMM1, is_f32);
 
             match opcode {
-                Opcode::Fadd => {
+                Opcode::FAdd => {
                     let inst = if is_f32 {
                         X86_64Inst::AddssXX
                     } else {
@@ -430,7 +430,7 @@ impl X86_64Backend {
                     };
                     emitter.inst(inst).reg(Reg::XMM1).reg(Reg::XMM0).emit();
                 }
-                Opcode::Fsub => {
+                Opcode::FSub => {
                     let inst = if is_f32 {
                         X86_64Inst::SubssXX
                     } else {
@@ -438,7 +438,7 @@ impl X86_64Backend {
                     };
                     emitter.inst(inst).reg(Reg::XMM1).reg(Reg::XMM0).emit();
                 }
-                Opcode::Fmul => {
+                Opcode::FMul => {
                     let inst = if is_f32 {
                         X86_64Inst::MulssXX
                     } else {
@@ -446,7 +446,7 @@ impl X86_64Backend {
                     };
                     emitter.inst(inst).reg(Reg::XMM1).reg(Reg::XMM0).emit();
                 }
-                Opcode::Fdiv => {
+                Opcode::FDiv => {
                     let inst = if is_f32 {
                         X86_64Inst::DivssXX
                     } else {
@@ -454,7 +454,7 @@ impl X86_64Backend {
                     };
                     emitter.inst(inst).reg(Reg::XMM1).reg(Reg::XMM0).emit();
                 }
-                Opcode::Min => {
+                Opcode::FMin => {
                     let inst = if is_f32 {
                         X86_64Inst::MinssXX
                     } else {
@@ -462,7 +462,7 @@ impl X86_64Backend {
                     };
                     emitter.inst(inst).reg(Reg::XMM1).reg(Reg::XMM0).emit();
                 }
-                Opcode::Max => {
+                Opcode::FMax => {
                     let inst = if is_f32 {
                         X86_64Inst::MaxssXX
                     } else {
@@ -470,7 +470,7 @@ impl X86_64Backend {
                     };
                     emitter.inst(inst).reg(Reg::XMM1).reg(Reg::XMM0).emit();
                 }
-                Opcode::Copysign => {
+                Opcode::FCopysign => {
                     if is_f32 {
                         emitter
                             .inst(X86_64Inst::MovR32Imm32)
@@ -535,26 +535,26 @@ impl X86_64Backend {
             self.emit_load_val(emitter, func, args[0], Reg::RAX);
             self.emit_load_val(emitter, func, args[1], Reg::RCX);
             match opcode {
-                Opcode::Iadd => self.bin_op(emitter, is_64, X86_64Inst::AddR32R32),
-                Opcode::Isub => self.bin_op(emitter, is_64, X86_64Inst::SubR32R32),
-                Opcode::Imul => self.bin_op(emitter, is_64, X86_64Inst::MulR32R32),
-                Opcode::And => self.bin_op(emitter, is_64, X86_64Inst::AndR32R32),
-                Opcode::Or => self.bin_op(emitter, is_64, X86_64Inst::OrR32R32),
-                Opcode::Xor => self.bin_op(emitter, is_64, X86_64Inst::XorR32R32),
-                Opcode::Shl | Opcode::ShrU | Opcode::ShrS | Opcode::Rotl | Opcode::Rotr => {
+                Opcode::IAdd => self.bin_op(emitter, is_64, X86_64Inst::AddR32R32),
+                Opcode::ISub => self.bin_op(emitter, is_64, X86_64Inst::SubR32R32),
+                Opcode::IMul => self.bin_op(emitter, is_64, X86_64Inst::MulR32R32),
+                Opcode::IAnd => self.bin_op(emitter, is_64, X86_64Inst::AndR32R32),
+                Opcode::IOr => self.bin_op(emitter, is_64, X86_64Inst::OrR32R32),
+                Opcode::IXor => self.bin_op(emitter, is_64, X86_64Inst::XorR32R32),
+                Opcode::IShl | Opcode::IShrU | Opcode::IShrS | Opcode::IRotl | Opcode::IRotr => {
                     emitter.emit_inst(X86_64Inst::MovEcxEcx);
                     let op = match opcode {
-                        Opcode::Shl => X86_64Inst::ShlEaxCl,
-                        Opcode::ShrU => X86_64Inst::ShrEaxCl,
-                        Opcode::ShrS => X86_64Inst::SarEaxCl,
-                        Opcode::Rotl => X86_64Inst::RolEaxCl,
+                        Opcode::IShl => X86_64Inst::ShlEaxCl,
+                        Opcode::IShrU => X86_64Inst::ShrEaxCl,
+                        Opcode::IShrS => X86_64Inst::SarEaxCl,
+                        Opcode::IRotl => X86_64Inst::RolEaxCl,
                         _ => X86_64Inst::RorEaxCl,
                     };
                     self.rex(emitter, is_64);
                     emitter.emit_inst(op);
                 }
-                Opcode::DivS | Opcode::DivU | Opcode::RemS | Opcode::RemU => {
-                    if opcode == Opcode::DivU || opcode == Opcode::RemU {
+                Opcode::IDivS | Opcode::IDivU | Opcode::IRemS | Opcode::IRemU => {
+                    if opcode == Opcode::IDivU || opcode == Opcode::IRemU {
                         if is_64 {
                             emitter.emit_inst(X86_64Inst::XorRdxRdx64);
                         } else {
@@ -569,13 +569,13 @@ impl X86_64Backend {
                     }
 
                     let inst = if is_64 {
-                        if opcode == Opcode::DivU || opcode == Opcode::RemU {
+                        if opcode == Opcode::IDivU || opcode == Opcode::IRemU {
                             X86_64Inst::DivRcx64
                         } else {
                             X86_64Inst::IdivRcx64
                         }
                     } else {
-                        if opcode == Opcode::DivU || opcode == Opcode::RemU {
+                        if opcode == Opcode::IDivU || opcode == Opcode::IRemU {
                             X86_64Inst::DivRcx
                         } else {
                             X86_64Inst::IdivRcx
@@ -583,7 +583,7 @@ impl X86_64Backend {
                     };
                     emitter.emit_inst(inst);
 
-                    if opcode == Opcode::RemS || opcode == Opcode::RemU {
+                    if opcode == Opcode::IRemS || opcode == Opcode::IRemU {
                         emitter.emit_inst(if is_64 {
                             X86_64Inst::MovRaxRdx64
                         } else {

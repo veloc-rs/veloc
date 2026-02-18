@@ -1,6 +1,6 @@
 use crate::bytecode::{
-    CompiledFunction, EXTEND_TYPE_I8, EXTEND_TYPE_I16, EXTEND_TYPE_I32, Opcode,
-    STACK_TYPE_F32, STACK_TYPE_F64, STACK_TYPE_I8, STACK_TYPE_I16, STACK_TYPE_I32, STACK_TYPE_I64,
+    CompiledFunction, EXTEND_TYPE_I8, EXTEND_TYPE_I16, EXTEND_TYPE_I32, Opcode, STACK_TYPE_F32,
+    STACK_TYPE_F64, STACK_TYPE_I8, STACK_TYPE_I16, STACK_TYPE_I32, STACK_TYPE_I64,
 };
 use crate::host::{ModuleId, Program};
 use crate::value::InterpreterValue;

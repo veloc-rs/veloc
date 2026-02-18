@@ -454,7 +454,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                         .unwrap_or(Type::Void);
 
                     match (ty, *opcode) {
-                        (Type::I32, IrOpcode::Iadd) => binary_op!(
+                        (Type::I32, IrOpcode::IAdd) => binary_op!(
                             I32AddImm,
                             I32Add,
                             u32,
@@ -465,10 +465,10 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             dst,
                             commutative
                         ),
-                        (Type::I32, IrOpcode::Isub) => {
+                        (Type::I32, IrOpcode::ISub) => {
                             binary_op!(I32SubImm, I32Sub, u32, lhs, rhs, args, &mut code, dst)
                         }
-                        (Type::I64, IrOpcode::Iadd) => binary_op!(
+                        (Type::I64, IrOpcode::IAdd) => binary_op!(
                             I64AddImm,
                             I64Add,
                             u64,
@@ -479,12 +479,12 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             dst,
                             commutative
                         ),
-                        (Type::I64, IrOpcode::Isub) => {
+                        (Type::I64, IrOpcode::ISub) => {
                             binary_op!(I64SubImm, I64Sub, u64, lhs, rhs, args, &mut code, dst)
                         }
-                        (Type::I32, IrOpcode::Imul) => emit::I32Mul(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::Imul) => emit::I64Mul(&mut code, dst, lhs, rhs),
-                        (Type::I32 | Type::Bool, IrOpcode::And) => binary_op!(
+                        (Type::I32, IrOpcode::IMul) => emit::I32Mul(&mut code, dst, lhs, rhs),
+                        (Type::I64, IrOpcode::IMul) => emit::I64Mul(&mut code, dst, lhs, rhs),
+                        (Type::I32 | Type::Bool, IrOpcode::IAnd) => binary_op!(
                             I32AndImm,
                             I32And,
                             u32,
@@ -495,7 +495,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             dst,
                             commutative
                         ),
-                        (Type::I32 | Type::Bool, IrOpcode::Or) => binary_op!(
+                        (Type::I32 | Type::Bool, IrOpcode::IOr) => binary_op!(
                             I32OrImm,
                             I32Or,
                             u32,
@@ -506,7 +506,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             dst,
                             commutative
                         ),
-                        (Type::I32 | Type::Bool, IrOpcode::Xor) => binary_op!(
+                        (Type::I32 | Type::Bool, IrOpcode::IXor) => binary_op!(
                             I32XorImm,
                             I32Xor,
                             u32,
@@ -517,7 +517,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             dst,
                             commutative
                         ),
-                        (Type::I64, IrOpcode::And) => binary_op!(
+                        (Type::I64, IrOpcode::IAnd) => binary_op!(
                             I64AndImm,
                             I64And,
                             u64,
@@ -528,7 +528,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             dst,
                             commutative
                         ),
-                        (Type::I64, IrOpcode::Or) => binary_op!(
+                        (Type::I64, IrOpcode::IOr) => binary_op!(
                             I64OrImm,
                             I64Or,
                             u64,
@@ -539,7 +539,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             dst,
                             commutative
                         ),
-                        (Type::I64, IrOpcode::Xor) => binary_op!(
+                        (Type::I64, IrOpcode::IXor) => binary_op!(
                             I64XorImm,
                             I64Xor,
                             u64,
@@ -550,52 +550,52 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             dst,
                             commutative
                         ),
-                        (Type::I32, IrOpcode::Shl) => {
+                        (Type::I32, IrOpcode::IShl) => {
                             binary_op!(I32ShlImm, I32Shl, u32, lhs, rhs, args, &mut code, dst)
                         }
-                        (Type::I32, IrOpcode::ShrS) => {
+                        (Type::I32, IrOpcode::IShrS) => {
                             binary_op!(I32ShrSImm, I32ShrS, u32, lhs, rhs, args, &mut code, dst)
                         }
-                        (Type::I32, IrOpcode::ShrU) => {
+                        (Type::I32, IrOpcode::IShrU) => {
                             binary_op!(I32ShrUImm, I32ShrU, u32, lhs, rhs, args, &mut code, dst)
                         }
-                        (Type::I64, IrOpcode::Shl) => {
+                        (Type::I64, IrOpcode::IShl) => {
                             binary_op!(I64ShlImm, I64Shl, u64, lhs, rhs, args, &mut code, dst)
                         }
-                        (Type::I64, IrOpcode::ShrS) => {
+                        (Type::I64, IrOpcode::IShrS) => {
                             binary_op!(I64ShrSImm, I64ShrS, u64, lhs, rhs, args, &mut code, dst)
                         }
-                        (Type::I64, IrOpcode::ShrU) => {
+                        (Type::I64, IrOpcode::IShrU) => {
                             binary_op!(I64ShrUImm, I64ShrU, u64, lhs, rhs, args, &mut code, dst)
                         }
-                        (Type::I32, IrOpcode::DivS) => emit::I32DivS(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::DivU) => emit::I32DivU(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::DivS) => emit::I64DivS(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::DivU) => emit::I64DivU(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::RemS) => emit::I32RemS(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::RemU) => emit::I32RemU(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::RemS) => emit::I64RemS(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::RemU) => emit::I64RemU(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::Rotl) => emit::I32RotL(&mut code, dst, lhs, rhs),
-                        (Type::I32, IrOpcode::Rotr) => emit::I32RotR(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::Rotl) => emit::I64RotL(&mut code, dst, lhs, rhs),
-                        (Type::I64, IrOpcode::Rotr) => emit::I64RotR(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::Fadd) => emit::F32Add(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::Fsub) => emit::F32Sub(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::Fmul) => emit::F32Mul(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::Fdiv) => emit::F32Div(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::Min) => emit::F32Min(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::Max) => emit::F32Max(&mut code, dst, lhs, rhs),
-                        (Type::F32, IrOpcode::Copysign) => {
+                        (Type::I32, IrOpcode::IDivS) => emit::I32DivS(&mut code, dst, lhs, rhs),
+                        (Type::I32, IrOpcode::IDivU) => emit::I32DivU(&mut code, dst, lhs, rhs),
+                        (Type::I64, IrOpcode::IDivS) => emit::I64DivS(&mut code, dst, lhs, rhs),
+                        (Type::I64, IrOpcode::IDivU) => emit::I64DivU(&mut code, dst, lhs, rhs),
+                        (Type::I32, IrOpcode::IRemS) => emit::I32RemS(&mut code, dst, lhs, rhs),
+                        (Type::I32, IrOpcode::IRemU) => emit::I32RemU(&mut code, dst, lhs, rhs),
+                        (Type::I64, IrOpcode::IRemS) => emit::I64RemS(&mut code, dst, lhs, rhs),
+                        (Type::I64, IrOpcode::IRemU) => emit::I64RemU(&mut code, dst, lhs, rhs),
+                        (Type::I32, IrOpcode::IRotl) => emit::I32RotL(&mut code, dst, lhs, rhs),
+                        (Type::I32, IrOpcode::IRotr) => emit::I32RotR(&mut code, dst, lhs, rhs),
+                        (Type::I64, IrOpcode::IRotl) => emit::I64RotL(&mut code, dst, lhs, rhs),
+                        (Type::I64, IrOpcode::IRotr) => emit::I64RotR(&mut code, dst, lhs, rhs),
+                        (Type::F32, IrOpcode::FAdd) => emit::F32Add(&mut code, dst, lhs, rhs),
+                        (Type::F32, IrOpcode::FSub) => emit::F32Sub(&mut code, dst, lhs, rhs),
+                        (Type::F32, IrOpcode::FMul) => emit::F32Mul(&mut code, dst, lhs, rhs),
+                        (Type::F32, IrOpcode::FDiv) => emit::F32Div(&mut code, dst, lhs, rhs),
+                        (Type::F32, IrOpcode::FMin) => emit::F32Min(&mut code, dst, lhs, rhs),
+                        (Type::F32, IrOpcode::FMax) => emit::F32Max(&mut code, dst, lhs, rhs),
+                        (Type::F32, IrOpcode::FCopysign) => {
                             emit::F32CopySign(&mut code, dst, lhs, rhs)
                         }
-                        (Type::F64, IrOpcode::Fadd) => emit::F64Add(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::Fsub) => emit::F64Sub(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::Fmul) => emit::F64Mul(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::Fdiv) => emit::F64Div(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::Min) => emit::F64Min(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::Max) => emit::F64Max(&mut code, dst, lhs, rhs),
-                        (Type::F64, IrOpcode::Copysign) => {
+                        (Type::F64, IrOpcode::FAdd) => emit::F64Add(&mut code, dst, lhs, rhs),
+                        (Type::F64, IrOpcode::FSub) => emit::F64Sub(&mut code, dst, lhs, rhs),
+                        (Type::F64, IrOpcode::FMul) => emit::F64Mul(&mut code, dst, lhs, rhs),
+                        (Type::F64, IrOpcode::FDiv) => emit::F64Div(&mut code, dst, lhs, rhs),
+                        (Type::F64, IrOpcode::FMin) => emit::F64Min(&mut code, dst, lhs, rhs),
+                        (Type::F64, IrOpcode::FMax) => emit::F64Max(&mut code, dst, lhs, rhs),
+                        (Type::F64, IrOpcode::FCopysign) => {
                             emit::F64CopySign(&mut code, dst, lhs, rhs)
                         }
                         _ => panic!("Unsupported binary opcode {:?} for type {:?}", opcode, ty),
@@ -790,7 +790,8 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     emit::Select(&mut code, dst, cond_reg, then_reg, else_reg);
                 }
                 InstructionData::Return { values } => {
-                    let ret_vals: Vec<_> = func.dfg.get_value_list(*values).iter().copied().collect();
+                    let ret_vals: Vec<_> =
+                        func.dfg.get_value_list(*values).iter().copied().collect();
                     emit::Return(&mut code, ret_vals.len() as u16);
                     for &value in &ret_vals {
                         code.extend_from_slice(&mapper.get_mapped(value).to_le_bytes());
@@ -821,7 +822,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                         IrOpcode::Wrap => {
                             emit::Wrap(&mut code, dst, arg_reg);
                         }
-                        IrOpcode::TruncS => {
+                        IrOpcode::FloatToIntS => {
                             let to_ty = func.dfg.values[res_vals[0]].ty;
                             match (to_ty, from_ty) {
                                 (Type::I32, Type::F32) => {
@@ -839,7 +840,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                                 _ => panic!("Unsupported TruncS: {:?} -> {:?}", from_ty, to_ty),
                             }
                         }
-                        IrOpcode::TruncU => {
+                        IrOpcode::FloatToIntU => {
                             let to_ty = func.dfg.values[res_vals[0]].ty;
                             match (to_ty, from_ty) {
                                 (Type::I32, Type::F32) => {
@@ -857,7 +858,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                                 _ => panic!("Unsupported TruncU: {:?} -> {:?}", from_ty, to_ty),
                             }
                         }
-                        IrOpcode::ConvertS => {
+                        IrOpcode::IntToFloatS => {
                             let to_ty = func.dfg.values[res_vals[0]].ty;
                             match (to_ty, from_ty) {
                                 (Type::F32, Type::I32) => {
@@ -875,7 +876,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                                 _ => panic!("Unsupported ConvertS: {:?} -> {:?}", from_ty, to_ty),
                             }
                         }
-                        IrOpcode::ConvertU => {
+                        IrOpcode::IntToFloatU => {
                             let to_ty = func.dfg.values[res_vals[0]].ty;
                             match (to_ty, from_ty) {
                                 (Type::F32, Type::I32) => {
@@ -893,66 +894,66 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                                 _ => panic!("Unsupported ConvertU: {:?} -> {:?}", from_ty, to_ty),
                             }
                         }
-                        IrOpcode::Demote => emit::F32DemoteF64(&mut code, dst, arg_reg),
-                        IrOpcode::Promote => emit::F64PromoteF32(&mut code, dst, arg_reg),
+                        IrOpcode::FloatDemote => emit::F32DemoteF64(&mut code, dst, arg_reg),
+                        IrOpcode::FloatPromote => emit::F64PromoteF32(&mut code, dst, arg_reg),
                         IrOpcode::Reinterpret => {
                             emit::RegMove(&mut code, dst, arg_reg);
                         }
-                        IrOpcode::Abs => match from_ty {
+                        IrOpcode::FAbs => match from_ty {
                             Type::F32 => emit::F32Abs(&mut code, dst, arg_reg),
                             Type::F64 => emit::F64Abs(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Abs for type {:?}", from_ty),
                         },
-                        IrOpcode::Fneg => match from_ty {
+                        IrOpcode::FNeg => match from_ty {
                             Type::F32 => emit::F32Neg(&mut code, dst, arg_reg),
                             Type::F64 => emit::F64Neg(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Fneg for type {:?}", from_ty),
                         },
-                        IrOpcode::Ineg => {
+                        IrOpcode::INeg => {
                             // ... implement if needed
                             todo!("Ineg not implemented");
                         }
-                        IrOpcode::Sqrt => match from_ty {
+                        IrOpcode::FSqrt => match from_ty {
                             Type::F32 => emit::F32Sqrt(&mut code, dst, arg_reg),
                             Type::F64 => emit::F64Sqrt(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Sqrt for type {:?}", from_ty),
                         },
-                        IrOpcode::Ceil => match from_ty {
+                        IrOpcode::FCeil => match from_ty {
                             Type::F32 => emit::F32Ceil(&mut code, dst, arg_reg),
                             Type::F64 => emit::F64Ceil(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Ceil for type {:?}", from_ty),
                         },
-                        IrOpcode::Floor => match from_ty {
+                        IrOpcode::FFloor => match from_ty {
                             Type::F32 => emit::F32Floor(&mut code, dst, arg_reg),
                             Type::F64 => emit::F64Floor(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Floor for type {:?}", from_ty),
                         },
-                        IrOpcode::Trunc => match from_ty {
+                        IrOpcode::FTrunc => match from_ty {
                             Type::F32 => emit::F32Trunc(&mut code, dst, arg_reg),
                             Type::F64 => emit::F64Trunc(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Trunc for type {:?}", from_ty),
                         },
-                        IrOpcode::Nearest => match from_ty {
+                        IrOpcode::FNearest => match from_ty {
                             Type::F32 => emit::F32Nearest(&mut code, dst, arg_reg),
                             Type::F64 => emit::F64Nearest(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Nearest for type {:?}", from_ty),
                         },
-                        IrOpcode::Clz => match from_ty {
+                        IrOpcode::IClz => match from_ty {
                             Type::I32 => emit::I32Clz(&mut code, dst, arg_reg),
                             Type::I64 => emit::I64Clz(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Clz for type {:?}", from_ty),
                         },
-                        IrOpcode::Ctz => match from_ty {
+                        IrOpcode::ICtz => match from_ty {
                             Type::I32 => emit::I32Ctz(&mut code, dst, arg_reg),
                             Type::I64 => emit::I64Ctz(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Ctz for type {:?}", from_ty),
                         },
-                        IrOpcode::Popcnt => match from_ty {
+                        IrOpcode::IPopcnt => match from_ty {
                             Type::I32 => emit::I32Popcnt(&mut code, dst, arg_reg),
                             Type::I64 => emit::I64Popcnt(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Popcnt for type {:?}", from_ty),
                         },
-                        IrOpcode::Eqz => match from_ty {
+                        IrOpcode::IEqz => match from_ty {
                             Type::I32 => emit::I32Eqz(&mut code, dst, arg_reg),
                             Type::I64 => emit::I64Eqz(&mut code, dst, arg_reg),
                             _ => panic!("Unsupported Eqz for type {:?}", from_ty),
@@ -979,7 +980,12 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                         .iter()
                         .map(|&v| mapper.get_mapped(v))
                         .collect();
-                    emit::Call(&mut code, ret_regs.len() as u16, func_id.as_u32(), args_regs.len() as u16);
+                    emit::Call(
+                        &mut code,
+                        ret_regs.len() as u16,
+                        func_id.as_u32(),
+                        args_regs.len() as u16,
+                    );
                     for &r in &ret_regs {
                         code.extend_from_slice(&r.to_le_bytes());
                     }
@@ -1001,7 +1007,12 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                         .iter()
                         .map(|&v| mapper.get_mapped(v))
                         .collect();
-                    emit::CallIndirect(&mut code, ret_regs.len() as u16, ptr_reg, args_regs.len() as u16);
+                    emit::CallIndirect(
+                        &mut code,
+                        ret_regs.len() as u16,
+                        ptr_reg,
+                        args_regs.len() as u16,
+                    );
                     for &r in &ret_regs {
                         code.extend_from_slice(&r.to_le_bytes());
                     }
@@ -1021,7 +1032,9 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     }
 
                     // Try to inline common math intrinsics
-                    if ret_regs.len() <= 1 && try_emit_inline_intrinsic(&mut code, dst, *intrinsic, &args_regs) {
+                    if ret_regs.len() <= 1
+                        && try_emit_inline_intrinsic(&mut code, dst, *intrinsic, &args_regs)
+                    {
                         // Successfully inlined
                     } else {
                         // Fall back to generic intrinsic call
