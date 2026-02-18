@@ -35,19 +35,11 @@ impl WasmSignature {
     }
 
     pub fn intern_veloc_sig(&self, ir: &mut veloc::ir::ModuleBuilder) -> SigId {
-        let mut params = Vec::with_capacity(self.params.len() + 2);
+        let mut params = Vec::with_capacity(self.params.len() + 1);
         params.push(VelocType::Ptr); // vmctx
         params.extend(self.params.iter().map(|&t| valtype_to_veloc(t)));
-        // 支持多返回值：当有多于1个返回值时，添加 results_ptr 参数
-        if self.results.len() > 1 {
-            params.push(VelocType::Ptr); // results_ptr
-        }
-        // 返回值：单值或无返回值直接返回，多返回值通过 results_ptr 写入
-        let ret: Vec<VelocType> = if self.results.len() > 1 {
-            vec![] // 多返回值通过指针写入，不直接返回
-        } else {
-            self.results.iter().map(|&t| valtype_to_veloc(t)).collect()
-        };
+        // 返回值：支持多返回值，直接通过 IR 多返回返回
+        let ret: Vec<VelocType> = self.results.iter().map(|&t| valtype_to_veloc(t)).collect();
         ir.make_signature(params, ret, CallConv::SystemV)
     }
 }

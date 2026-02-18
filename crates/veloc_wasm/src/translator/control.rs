@@ -202,25 +202,11 @@ impl<'a> WasmTranslator<'a> {
                 self.terminated = !frame.reachable_at_start;
                 if self.control_stack.is_empty() {
                     if !self.terminated {
-                        if frame.num_results == 0 {
-                            self.builder.ins().ret(&[]);
-                        } else if frame.num_results == 1 {
-                            let val = self.builder.block_params(end_target)[0];
-                            self.builder.ins().ret(&[val]);
-                        } else if let Some(ptr) = self.results_ptr {
-                            for i in 0..frame.num_results {
-                                let val = self.builder.block_params(end_target)[i];
-                                self.builder.ins().store(
-                                    val,
-                                    ptr,
-                                    (i * 8) as u32,
-                                    MemFlags::default(),
-                                );
-                            }
-                            self.builder.ins().ret(&[]);
-                        } else {
-                            self.builder.ins().ret(&[]);
+                        let mut vals = Vec::with_capacity(frame.num_results);
+                        for i in 0..frame.num_results {
+                            vals.push(self.builder.block_params(end_target)[i]);
                         }
+                        self.builder.ins().ret(&vals);
                         self.terminated = true;
                     }
                 } else {
@@ -302,42 +288,18 @@ impl<'a> WasmTranslator<'a> {
                     args.insert(0, target_vmctx);
                     let func_id = self.metadata.functions[function_index as usize].func_id;
                     let sig_id = self.builder.func_signature(func_id);
-                    if results.len() <= 1 {
-                        let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
-                        if results.len() == 1 {
-                            let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
-                            self.stack.push(res_val);
-                        }
-                    } else {
-                        let ss = self.builder.create_stack_slot((results.len() * 8) as u32);
-                        let res_ptr = self.builder.ins().stack_addr(ss, 0);
-                        args.push(res_ptr);
-                        self.builder.ins().call_indirect(sig_id, func_ptr, &args);
-                        for i in 0..results.len() {
-                            let ty = self.val_type_to_veloc(results[i]);
-                            let val = self.builder.ins().stack_load(ty, ss, (i * 8) as u32);
-                            self.stack.push(val);
-                        }
+                    let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
+                    for i in 0..results.len() {
+                        let res_val = self.builder.func().dfg.inst_results(call_inst)[i];
+                        self.stack.push(res_val);
                     }
                 } else {
                     args.insert(0, self.vmctx.expect("vmctx not set"));
                     let func_id = self.metadata.functions[function_index as usize].func_id;
-                    if results.len() <= 1 {
-                        let call_inst = self.builder.ins().call(func_id, &args);
-                        if results.len() == 1 {
-                            let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
-                            self.stack.push(res_val);
-                        }
-                    } else {
-                        let ss = self.builder.create_stack_slot((results.len() * 8) as u32);
-                        let res_ptr = self.builder.ins().stack_addr(ss, 0);
-                        args.push(res_ptr);
-                        self.builder.ins().call(func_id, &args);
-                        for i in 0..results.len() {
-                            let ty = self.val_type_to_veloc(results[i]);
-                            let val = self.builder.ins().stack_load(ty, ss, (i * 8) as u32);
-                            self.stack.push(val);
-                        }
+                    let call_inst = self.builder.ins().call(func_id, &args);
+                    for i in 0..results.len() {
+                        let res_val = self.builder.func().dfg.inst_results(call_inst)[i];
+                        self.stack.push(res_val);
                     }
                 }
             }
@@ -428,22 +390,10 @@ impl<'a> WasmTranslator<'a> {
                 args.insert(0, target_vmctx);
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
-                if results.len() <= 1 {
-                    let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
-                    if results.len() == 1 {
-                        let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
-                        self.stack.push(res_val);
-                    }
-                } else {
-                    let ss = self.builder.create_stack_slot((results.len() * 8) as u32);
-                    let res_ptr = self.builder.ins().stack_addr(ss, 0);
-                    args.push(res_ptr);
-                    self.builder.ins().call_indirect(sig_id, func_ptr, &args);
-                    for i in 0..results.len() {
-                        let ty = self.val_type_to_veloc(results[i]);
-                        let val = self.builder.ins().stack_load(ty, ss, (i * 8) as u32);
-                        self.stack.push(val);
-                    }
+                let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
+                for i in 0..results.len() {
+                    let res_val = self.builder.func().dfg.inst_results(call_inst)[i];
+                    self.stack.push(res_val);
                 }
             }
             Operator::CallRef { type_index } => {
@@ -469,22 +419,10 @@ impl<'a> WasmTranslator<'a> {
                 args.insert(0, target_vmctx);
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
-                if results.len() <= 1 {
-                    let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
-                    if results.len() == 1 {
-                        let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
-                        self.stack.push(res_val);
-                    }
-                } else {
-                    let ss = self.builder.create_stack_slot((results.len() * 8) as u32);
-                    let res_ptr = self.builder.ins().stack_addr(ss, 0);
-                    args.push(res_ptr);
-                    self.builder.ins().call_indirect(sig_id, func_ptr, &args);
-                    for i in 0..results.len() {
-                        let ty = self.val_type_to_veloc(results[i]);
-                        let val = self.builder.ins().stack_load(ty, ss, (i * 8) as u32);
-                        self.stack.push(val);
-                    }
+                let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
+                for i in 0..results.len() {
+                    let res_val = self.builder.func().dfg.inst_results(call_inst)[i];
+                    self.stack.push(res_val);
                 }
             }
             Operator::BrTable { targets } => {
@@ -541,29 +479,12 @@ impl<'a> WasmTranslator<'a> {
             }
             Operator::Return => {
                 if !self.terminated {
-                    if self.results.is_empty() {
-                        self.builder.ins().ret(&[]);
-                    } else if self.results.len() == 1 {
-                        let val = self.pop();
-                        self.builder.ins().ret(&[val]);
-                    } else if let Some(ptr) = self.results_ptr {
-                        let mut vals = Vec::new();
-                        for _ in 0..self.results.len() {
-                            vals.push(self.pop());
-                        }
-                        for (i, val) in vals.into_iter().rev().enumerate() {
-                            let alignment = if (i * 8) % 16 == 0 { 16 } else { 8 };
-                            self.builder.ins().store(
-                                val,
-                                ptr,
-                                (i * 8) as u32,
-                                MemFlags::new().with_alignment(alignment),
-                            );
-                        }
-                        self.builder.ins().ret(&[]);
-                    } else {
-                        self.builder.ins().ret(&[]);
+                    let mut vals = Vec::with_capacity(self.results.len());
+                    for _ in 0..self.results.len() {
+                        vals.push(self.pop());
                     }
+                    vals.reverse();
+                    self.builder.ins().ret(&vals);
                     self.terminated = true;
                 }
             }

@@ -1138,14 +1138,10 @@ impl TypedFunc {
                     trampoline(vmctx_ptr, storage.as_ptr())
                 }
                 TypedFuncKind::Interpreter { target_func_id } => {
-                    let mut int_args = Vec::with_capacity(args.len() + 2);
+                    let mut int_args = Vec::with_capacity(args.len() + 1);
                     int_args.push(InterpreterValue::i64(vmctx_ptr as i64));
                     for arg in args {
                         int_args.push(arg.to_interpreter_val());
-                    }
-
-                    if self.results.len() > 1 {
-                        int_args.push(InterpreterValue::i64(results_raw.as_mut_ptr() as i64));
                     }
 
                     let mut interpreter = if let Some(int) = instance.interpreter.take() {
@@ -1157,18 +1153,23 @@ impl TypedFunc {
                         panic!("Interpreter not initialized and no module ID found");
                     };
 
-                    let res = interpreter
+                    let interp_results = interpreter
                         .run_function(
                             &store.program,
                             instance,
                             instance.interp_module_id.expect("Module ID missing"),
                             target_func_id,
                             &int_args,
-                        )
-                        .unwrap_or(InterpreterValue::none())
-                        .to_i64_bits();
+                        );
                     instance.interpreter = Some(interpreter);
-                    res
+                    // Copy results to results_raw
+                    for (i, val) in interp_results.iter().enumerate() {
+                        if i < results_raw.len() {
+                            results_raw[i] = val.to_i64_bits();
+                        }
+                    }
+                    // Return first result as res_bits (for single result case)
+                    interp_results.first().map(|v| v.to_i64_bits()).unwrap_or(0)
                 }
             };
 

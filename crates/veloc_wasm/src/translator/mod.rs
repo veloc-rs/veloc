@@ -17,7 +17,6 @@ pub struct WasmTranslator<'a> {
     next_var_idx: u32,
     control_stack: Vec<ControlFrame>,
     vmctx: Option<Value>,
-    results_ptr: Option<Value>,
     results: Vec<VelocType>,
     terminated: bool,
     use_names: bool,
@@ -60,7 +59,6 @@ impl<'a> WasmTranslator<'a> {
             locals: Vec::new(),
             control_stack: Vec::new(),
             vmctx: None,
-            results_ptr: None,
             results,
             terminated: false,
             metadata,
@@ -122,14 +120,6 @@ impl<'a> WasmTranslator<'a> {
             self.builder.def_var(var, val);
             if self.use_names {
                 self.builder.set_value_name(val, &format!("param{}", i));
-            }
-        }
-
-        if self.results.len() > 1 {
-            let ptr = params_iter.next().expect("Missing results_ptr parameter");
-            self.results_ptr = Some(ptr);
-            if self.use_names {
-                self.builder.set_value_name(ptr, "results_ptr");
             }
         }
 

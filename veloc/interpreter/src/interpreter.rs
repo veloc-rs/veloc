@@ -1,5 +1,5 @@
 use crate::bytecode::{
-    CompiledFunction, EXTEND_TYPE_I8, EXTEND_TYPE_I16, EXTEND_TYPE_I32, Opcode, RETURN_HAS_VALUE,
+    CompiledFunction, EXTEND_TYPE_I8, EXTEND_TYPE_I16, EXTEND_TYPE_I32, Opcode,
     STACK_TYPE_F32, STACK_TYPE_F64, STACK_TYPE_I8, STACK_TYPE_I16, STACK_TYPE_I32, STACK_TYPE_I64,
 };
 use crate::host::{ModuleId, Program};
@@ -24,7 +24,7 @@ pub struct StackFrame {
     pub pc: usize,
     pub base: usize,
     pub stack_base: usize,
-    pub dst_reg: u16, // Where to put the result after returning
+    pub dst_regs: Vec<u16>, // Where to put the results after returning (support multi-value)
 }
 
 impl Interpreter {
@@ -44,7 +44,7 @@ impl Interpreter {
         mid: ModuleId,
         fid: veloc_ir::FuncId,
         args: &[InterpreterValue],
-    ) -> Option<InterpreterValue> {
+    ) -> Vec<InterpreterValue> {
         let func = program.get_compiled_func(mid, fid);
         let base = self.value_stack.len();
         self.value_stack
@@ -70,14 +70,14 @@ impl Interpreter {
             pc: 0,
             base,
             stack_base,
-            dst_reg: 0,
+            dst_regs: Vec::new(),
         });
 
         self.execute(program, mem)
     }
 
     #[inline(always)]
-    fn execute(&mut self, program: &Program, mem: &dyn VirtualMemory) -> Option<InterpreterValue> {
+    fn execute(&mut self, program: &Program, mem: &dyn VirtualMemory) -> Vec<InterpreterValue> {
         let frame = self.frames.pop().unwrap();
         let mut pc = frame.pc;
         let mut base = frame.base;
@@ -402,7 +402,7 @@ impl Interpreter {
             }
 
             macro_rules! prepare_call {
-                ($target_mid:expr, $target_fid:expr, $dst_reg:expr, $args:expr) => {{
+                ($target_mid:expr, $target_fid:expr, $dst_regs:expr, $args:expr) => {{
                     if program.compiled_modules[$target_mid.0][$target_fid.0 as usize].is_none() {
                         panic!(
                             "Calling uncompiled function: mid={:?}, fid={:?}",
@@ -417,7 +417,7 @@ impl Interpreter {
                         pc,
                         base,
                         stack_base,
-                        dst_reg: $dst_reg,
+                        dst_regs: $dst_regs,
                     });
 
                     mid = $target_mid;
@@ -737,38 +737,53 @@ impl Interpreter {
                         pc = target_pc as usize;
                     }
                     Opcode::Return => {
-                        let (has_res, res_reg) = decode_into!(Return, pc, code_ptr);
-                        let return_val = if has_res == RETURN_HAS_VALUE {
-                            Some(reg_val!(res_reg))
-                        } else {
-                            None
-                        };
+                        let num_vals: u16 = read_u16!();
+                        let mut return_vals = Vec::with_capacity(num_vals as usize);
+                        for _ in 0..num_vals {
+                            let reg = read_u16!();
+                            return_vals.push(reg_val!(reg));
+                        }
 
                         self.value_stack.truncate(base);
                         self.stack_memory.truncate(stack_base);
 
-                        if let Some(prev_frame) = self.frames.pop() {
-                            let dst_reg = prev_frame.dst_reg;
-                            pc = prev_frame.pc;
-                            base = prev_frame.base;
-                            stack_base = prev_frame.stack_base;
-                            func = prev_frame.func.clone();
-                            mid = prev_frame.mid;
+                        // Pop the previous frame first to get caller's context
+                        let prev_frame = match self.frames.pop() {
+                            Some(f) => f,
+                            None => return return_vals,
+                        };
 
-                            if dst_reg != 0 {
-                                if let Some(v) = return_val {
-                                    // Refresh values_ptr after possible realloc in pop?
-                                    // Actually pop doesn't realloc value_stack, but we are back in main_loop soon.
-                                    self.value_stack[base + dst_reg as usize] = v;
-                                }
+                        // Restore caller's context
+                        let dst_regs = prev_frame.dst_regs;
+                        pc = prev_frame.pc;
+                        base = prev_frame.base;
+                        stack_base = prev_frame.stack_base;
+                        func = prev_frame.func.clone();
+                        mid = prev_frame.mid;
+
+                        // Refresh the values pointer after stack operations
+                        values_ptr = self.value_stack.as_mut_ptr();
+
+                        // Write return values to caller's destination registers
+                        for (i, &dst_reg) in dst_regs.iter().enumerate() {
+                            if i < return_vals.len() {
+                                *reg!(dst_reg) = return_vals[i];
                             }
-                            continue 'main_loop;
-                        } else {
-                            return return_val;
                         }
+                        continue 'main_loop;
                     }
                     Opcode::Call => {
-                        let (dst, f_id, num_args) = decode_into!(Call, pc, code_ptr);
+                        let num_rets: u16 = read_u16!();
+                        let f_id: u32 = unsafe {
+                            let v = (code_ptr.add(pc) as *const u32).read_unaligned();
+                            pc += 4;
+                            u32::from_le(v)
+                        };
+                        let num_args: u16 = read_u16!();
+                        let mut dst_regs = Vec::with_capacity(num_rets as usize);
+                        for _ in 0..num_rets {
+                            dst_regs.push(read_u16!());
+                        }
                         self.args_buffer.clear();
                         for _ in 0..num_args {
                             let arg_reg = read_u16!();
@@ -784,8 +799,10 @@ impl Interpreter {
                                         let host_func = &program.host_functions_list[*h_id];
                                         let res = host_func.call(&mut self.args_buffer);
                                         values_ptr = self.value_stack.as_mut_ptr();
-                                        if dst != 0 {
-                                            *reg!(dst) = res;
+                                        if let Some(&dst) = dst_regs.first() {
+                                            if dst != 0 {
+                                                *reg!(dst) = res;
+                                            }
                                         }
                                         continue;
                                     }
@@ -794,10 +811,16 @@ impl Interpreter {
                                 (mid, target_fid)
                             };
 
-                        prepare_call!(call_mid, call_fid, dst, self.args_buffer);
+                        prepare_call!(call_mid, call_fid, dst_regs, self.args_buffer);
                     }
                     Opcode::CallIndirect => {
-                        let (dst, ptr_reg, num_args) = decode_into!(CallIndirect, pc, code_ptr);
+                        let num_rets: u16 = read_u16!();
+                        let ptr_reg: u16 = read_u16!();
+                        let num_args: u16 = read_u16!();
+                        let mut dst_regs = Vec::with_capacity(num_rets as usize);
+                        for _ in 0..num_rets {
+                            dst_regs.push(read_u16!());
+                        }
                         self.args_buffer.clear();
                         for _ in 0..num_args {
                             let arg_reg = read_u16!();
@@ -813,15 +836,17 @@ impl Interpreter {
                             let host_func = &program.host_functions_list[host_id];
                             let res = host_func.call(&mut self.args_buffer);
                             values_ptr = self.value_stack.as_mut_ptr();
-                            if dst != 0 {
-                                *reg!(dst) = res;
+                            if let Some(&dst) = dst_regs.first() {
+                                if dst != 0 {
+                                    *reg!(dst) = res;
+                                }
                             }
                             continue;
                         } else {
                             panic!("Invalid function pointer: {:x}", ptr_val);
                         };
 
-                        prepare_call!(call_mid, call_fid, dst, self.args_buffer);
+                        prepare_call!(call_mid, call_fid, dst_regs, self.args_buffer);
                     }
                     Opcode::PtrIndex => {
                         let (d, p, i, s, o) = decode_into!(PtrIndex, pc, code_ptr);
@@ -842,8 +867,13 @@ impl Interpreter {
                     }
                     Opcode::RegMove => move_op!(RegMove),
                     Opcode::CallIntrinsic => {
-                        let (dst, intrinsic_id, num_args) =
-                            decode_into!(CallIntrinsic, pc, code_ptr);
+                        let num_rets: u16 = read_u16!();
+                        let intrinsic_id: u16 = read_u16!();
+                        let num_args: u16 = read_u16!();
+                        let mut dst_regs = Vec::with_capacity(num_rets as usize);
+                        for _ in 0..num_rets {
+                            dst_regs.push(read_u16!());
+                        }
                         self.args_buffer.clear();
                         for _ in 0..num_args {
                             let arg_reg = read_u16!();
@@ -852,8 +882,10 @@ impl Interpreter {
 
                         let result = execute_intrinsic(intrinsic_id, &self.args_buffer);
                         values_ptr = self.value_stack.as_mut_ptr();
-                        if dst != 0 {
-                            *reg!(dst) = result;
+                        if let Some(&dst) = dst_regs.first() {
+                            if dst != 0 {
+                                *reg!(dst) = result;
+                            }
                         }
                     }
                     Opcode::Unreachable => panic!("Unreachable code executed"),

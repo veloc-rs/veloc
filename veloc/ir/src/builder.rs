@@ -130,9 +130,16 @@ impl<'a> FunctionBuilder<'a> {
     fn inst_result_types(&self, data: &InstructionData) -> SmallVec<[Type; 2]> {
         use super::inst::InstructionData;
         match data {
-            // Unary/Binary ops: result type same as input operand
+            // Unary ops: result type same as input operand
             InstructionData::Unary { arg, .. } => smallvec![self.value_type(*arg)],
-            InstructionData::Binary { args, .. } => smallvec![self.value_type(args[0])],
+            // Binary ops: result type same as input operand
+            // Overflow variants return (result, overflow_flag) tuple
+            InstructionData::Binary { opcode, args, .. } => match opcode {
+                Opcode::IaddOverflow | Opcode::IsubOverflow | Opcode::ImulOverflow => {
+                    smallvec![self.value_type(args[0]), Type::Bool]
+                }
+                _ => smallvec![self.value_type(args[0])],
+            },
 
             // Load/StackLoad/PtrToInt: type must be provided by caller (via push_inst_with_type)
             InstructionData::Load { .. }
@@ -687,6 +694,39 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
         self.push_binary(Opcode::Imul, lhs, rhs)
+    }
+
+    /// Integer add with overflow detection.
+    /// Returns (result, overflow_flag) tuple.
+    pub fn iadd_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
+        let inst = self.push_raw(InstructionData::Binary {
+            opcode: Opcode::IaddOverflow,
+            args: [lhs, rhs],
+        });
+        let results = self.builder.func().dfg.inst_results(inst);
+        (results[0], results[1])
+    }
+
+    /// Integer subtract with overflow detection.
+    /// Returns (result, overflow_flag) tuple.
+    pub fn isub_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
+        let inst = self.push_raw(InstructionData::Binary {
+            opcode: Opcode::IsubOverflow,
+            args: [lhs, rhs],
+        });
+        let results = self.builder.func().dfg.inst_results(inst);
+        (results[0], results[1])
+    }
+
+    /// Integer multiply with overflow detection.
+    /// Returns (result, overflow_flag) tuple.
+    pub fn imul_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
+        let inst = self.push_raw(InstructionData::Binary {
+            opcode: Opcode::ImulOverflow,
+            args: [lhs, rhs],
+        });
+        let results = self.builder.func().dfg.inst_results(inst);
+        (results[0], results[1])
     }
 
     pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {

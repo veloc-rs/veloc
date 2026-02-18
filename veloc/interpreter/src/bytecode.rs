@@ -253,10 +253,10 @@ define_opcodes! {
     BrIf(cond: u16, pc: u32);
     BrTable(index: u16, num_targets: u32);
     Select(dst: u16, cond: u16, then_val: u16, else_val: u16);
-    Return(has_val: u8, val_reg: u16);
-    Call(dst: u16, func_id: u32, num_args: u16);
-    CallIndirect(dst: u16, ptr: u16, num_args: u16);
-    CallIntrinsic(dst: u16, intrinsic_id: u16, num_args: u16);
+    Return(num_vals: u16); // Followed by num_vals register indices
+    Call(num_rets: u16, func_id: u32, num_args: u16); // Followed by num_rets dst registers, then args
+    CallIndirect(num_rets: u16, ptr: u16, num_args: u16); // Followed by num_rets dst registers, then args
+    CallIntrinsic(num_rets: u16, intrinsic_id: u16, num_args: u16); // Followed by num_rets dst registers, then args
     RegMove(dst: u16, src: u16);
     Unreachable();
 }
@@ -267,6 +267,7 @@ pub struct CompiledFunction {
     pub code: Vec<u8>,
     pub stack_slots_sizes: Vec<usize>,
     pub param_indices: Vec<u16>,
+    pub ret_indices: Vec<u16>, // Return value register indices (support multi-value)
     pub register_count: usize,
 }
 
@@ -789,13 +790,10 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     emit::Select(&mut code, dst, cond_reg, then_reg, else_reg);
                 }
                 InstructionData::Return { values } => {
-                    let ret_vals = func.dfg.get_value_list(*values);
-                    // TODO: 完整支持多返回值
-                    // 目前只处理第一个返回值以保持向后兼容
-                    if let Some(&value) = ret_vals.first() {
-                        emit::Return(&mut code, RETURN_HAS_VALUE, mapper.get_mapped(value));
-                    } else {
-                        emit::Return(&mut code, RETURN_VOID, 0);
+                    let ret_vals: Vec<_> = func.dfg.get_value_list(*values).iter().copied().collect();
+                    emit::Return(&mut code, ret_vals.len() as u16);
+                    for &value in &ret_vals {
+                        code.extend_from_slice(&mapper.get_mapped(value).to_le_bytes());
                     }
                 }
                 InstructionData::Unary { opcode, arg, .. } => {
@@ -969,26 +967,44 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     emit::RegMove(&mut code, dst, arg_reg);
                 }
                 InstructionData::Call { func_id, args, .. } => {
+                    // Get result values and allocate registers for them
+                    let res_vals: Vec<_> = func.dfg.inst_results(inst).iter().copied().collect();
+                    let mut ret_regs = Vec::with_capacity(res_vals.len());
+                    for &v in &res_vals {
+                        ret_regs.push(mapper.alloc_and_map(v));
+                    }
                     let args_regs: Vec<u16> = func
                         .dfg
                         .get_value_list(*args)
                         .iter()
                         .map(|&v| mapper.get_mapped(v))
                         .collect();
-                    emit::Call(&mut code, dst, func_id.as_u32(), args_regs.len() as u16);
+                    emit::Call(&mut code, ret_regs.len() as u16, func_id.as_u32(), args_regs.len() as u16);
+                    for &r in &ret_regs {
+                        code.extend_from_slice(&r.to_le_bytes());
+                    }
                     for &r in &args_regs {
                         code.extend_from_slice(&r.to_le_bytes());
                     }
                 }
                 InstructionData::CallIndirect { ptr, args, .. } => {
                     let ptr_reg = mapper.get_mapped(*ptr);
+                    // Get result values and allocate registers for them
+                    let res_vals: Vec<_> = func.dfg.inst_results(inst).iter().copied().collect();
+                    let mut ret_regs = Vec::with_capacity(res_vals.len());
+                    for &v in &res_vals {
+                        ret_regs.push(mapper.alloc_and_map(v));
+                    }
                     let args_regs: Vec<u16> = func
                         .dfg
                         .get_value_list(*args)
                         .iter()
                         .map(|&v| mapper.get_mapped(v))
                         .collect();
-                    emit::CallIndirect(&mut code, dst, ptr_reg, args_regs.len() as u16);
+                    emit::CallIndirect(&mut code, ret_regs.len() as u16, ptr_reg, args_regs.len() as u16);
+                    for &r in &ret_regs {
+                        code.extend_from_slice(&r.to_le_bytes());
+                    }
                     for &r in &args_regs {
                         code.extend_from_slice(&r.to_le_bytes());
                     }
@@ -997,18 +1013,27 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     // Note: args are stored in ValueList side table
                     // Emit specialized bytecode for math intrinsics that have direct opcodes
                     let args_regs: Vec<u16> = vec![]; // Would need to retrieve from side table
+                    // Get result values and allocate registers for them
+                    let res_vals: Vec<_> = func.dfg.inst_results(inst).iter().copied().collect();
+                    let mut ret_regs = Vec::with_capacity(res_vals.len());
+                    for &v in &res_vals {
+                        ret_regs.push(mapper.alloc_and_map(v));
+                    }
 
                     // Try to inline common math intrinsics
-                    if try_emit_inline_intrinsic(&mut code, dst, *intrinsic, &args_regs) {
+                    if ret_regs.len() <= 1 && try_emit_inline_intrinsic(&mut code, dst, *intrinsic, &args_regs) {
                         // Successfully inlined
                     } else {
                         // Fall back to generic intrinsic call
                         emit::CallIntrinsic(
                             &mut code,
-                            dst,
+                            ret_regs.len() as u16,
                             intrinsic.as_u16(),
                             args_regs.len() as u16,
                         );
+                        for &r in &ret_regs {
+                            code.extend_from_slice(&r.to_le_bytes());
+                        }
                         for &r in &args_regs {
                             code.extend_from_slice(&r.to_le_bytes());
                         }
@@ -1066,6 +1091,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
             .map(|(_, d)| d.size as usize)
             .collect(),
         param_indices,
+        ret_indices: Vec::new(), // TODO: collect return indices if needed
         register_count: mapper.next_register as usize,
     }
 }

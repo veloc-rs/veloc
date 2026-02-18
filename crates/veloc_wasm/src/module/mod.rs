@@ -413,11 +413,10 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
         // 仅为本地定义的函数生成 Array-to-Wasm Trampoline
         if !is_import {
             let tramp_name = format!("{}_trampoline", func_name);
-            let tramp_ret: Vec<VelocType> = if wasm_sig.results.len() == 1 {
-                vec![VelocType::I64]
-            } else {
-                vec![]
-            };
+            // Trampoline 返回类型：多返回值时返回多个 I64
+            let tramp_ret: Vec<VelocType> = (0..wasm_sig.results.len())
+                .map(|_| VelocType::I64)
+                .collect();
             let tramp_sig_id = ir.make_signature(
                 vec![VelocType::Ptr, VelocType::Ptr],
                 tramp_ret,
@@ -434,57 +433,49 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
             let vmctx = params[0];
             let args_ptr = params[1];
 
-            let mut num_params = sig.params.len();
-            if sig.results.len() > 1 {
-                num_params += 1;
-            }
-
-            let mut call_args = Vec::with_capacity(num_params + 1);
+            let mut call_args = Vec::with_capacity(sig.params.len() + 1);
             call_args.push(vmctx);
-            for j in 0..num_params {
+            for j in 0..sig.params.len() {
                 let val_i64 = ins.load(
                     VelocType::I64,
                     args_ptr,
                     (j * 8) as u32,
                     MemFlags::default(),
                 );
-                if j < sig.params.len() {
-                    let w_ty = sig.params[j];
-                    let v_ty = valtype_to_veloc(w_ty);
-                    let val = match v_ty {
-                        VelocType::I32 => ins.wrap(val_i64, VelocType::I32),
-                        VelocType::F32 => {
-                            let b = ins.wrap(val_i64, VelocType::I32);
-                            ins.reinterpret(b, VelocType::F32)
-                        }
-                        VelocType::F64 => ins.reinterpret(val_i64, VelocType::F64),
-                        VelocType::Ptr => ins.int_to_ptr(val_i64),
-                        _ => val_i64,
-                    };
-                    call_args.push(val);
-                } else {
-                    call_args.push(ins.int_to_ptr(val_i64));
-                }
+                let w_ty = sig.params[j];
+                let v_ty = valtype_to_veloc(w_ty);
+                let val = match v_ty {
+                    VelocType::I32 => ins.wrap(val_i64, VelocType::I32),
+                    VelocType::F32 => {
+                        let b = ins.wrap(val_i64, VelocType::I32);
+                        ins.reinterpret(b, VelocType::F32)
+                    }
+                    VelocType::F64 => ins.reinterpret(val_i64, VelocType::F64),
+                    VelocType::Ptr => ins.int_to_ptr(val_i64),
+                    _ => val_i64,
+                };
+                call_args.push(val);
             }
 
             let call_inst = ins.call(func_id, &call_args);
-            let res_vals = ins.builder().func().dfg.inst_results(call_inst);
-            if let Some(&res_val) = res_vals.first() {
+            let res_vals: Vec<_> = ins.builder().func().dfg.inst_results(call_inst).to_vec();
+            let mut ret_vals = Vec::with_capacity(res_vals.len());
+            for &res_val in &res_vals {
                 let res_ty = ins.builder().value_type(res_val);
                 let res_i64 = match res_ty {
                     VelocType::I32 => ins.extend_u(res_val, VelocType::I64),
                     VelocType::F32 => {
-                        let b = ins.reinterpret(res_val, VelocType::I32);
-                        ins.extend_u(b, VelocType::I64)
+                        // F32 -> I32 (via reinterpret) -> I64 (via extend)
+                        let i32_val = ins.reinterpret(res_val, VelocType::I32);
+                        ins.extend_u(i32_val, VelocType::I64)
                     }
                     VelocType::F64 => ins.reinterpret(res_val, VelocType::I64),
                     VelocType::Ptr => ins.ptr_to_int(res_val, VelocType::I64),
                     _ => res_val,
                 };
-                ins.ret(&[res_i64]);
-            } else {
-                ins.ret(&[]);
+                ret_vals.push(res_i64);
             }
+            ins.ret(&ret_vals);
             builder.seal_all_blocks();
         }
     }
