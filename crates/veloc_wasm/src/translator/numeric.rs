@@ -125,30 +125,14 @@ impl<'a> WasmTranslator<'a> {
             Operator::I64TruncF64U => self.translate_trunc(false, VelocType::F64, VelocType::I64),
             Operator::I64TruncF32S => self.translate_trunc(true, VelocType::F32, VelocType::I64),
             Operator::I64TruncF32U => self.translate_trunc(false, VelocType::F32, VelocType::I64),
-            Operator::I32TruncSatF32S => {
-                self.translate_trunc_sat(true, VelocType::F32, VelocType::I32)
-            }
-            Operator::I32TruncSatF32U => {
-                self.translate_trunc_sat(false, VelocType::F32, VelocType::I32)
-            }
-            Operator::I32TruncSatF64S => {
-                self.translate_trunc_sat(true, VelocType::F64, VelocType::I32)
-            }
-            Operator::I32TruncSatF64U => {
-                self.translate_trunc_sat(false, VelocType::F64, VelocType::I32)
-            }
-            Operator::I64TruncSatF32S => {
-                self.translate_trunc_sat(true, VelocType::F32, VelocType::I64)
-            }
-            Operator::I64TruncSatF32U => {
-                self.translate_trunc_sat(false, VelocType::F32, VelocType::I64)
-            }
-            Operator::I64TruncSatF64S => {
-                self.translate_trunc_sat(true, VelocType::F64, VelocType::I64)
-            }
-            Operator::I64TruncSatF64U => {
-                self.translate_trunc_sat(false, VelocType::F64, VelocType::I64)
-            }
+            Operator::I32TruncSatF32S => self.trunc_sat(true, VelocType::I32),
+            Operator::I32TruncSatF32U => self.trunc_sat(false, VelocType::I32),
+            Operator::I32TruncSatF64S => self.trunc_sat(true, VelocType::I32),
+            Operator::I32TruncSatF64U => self.trunc_sat(false, VelocType::I32),
+            Operator::I64TruncSatF32S => self.trunc_sat(true, VelocType::I64),
+            Operator::I64TruncSatF32U => self.trunc_sat(false, VelocType::I64),
+            Operator::I64TruncSatF64S => self.trunc_sat(true, VelocType::I64),
+            Operator::I64TruncSatF64U => self.trunc_sat(false, VelocType::I64),
             Operator::I32ReinterpretF32 => {
                 let v = self.pop();
                 let res = self.builder.ins().reinterpret(v, VelocType::I32);
@@ -307,113 +291,15 @@ impl<'a> WasmTranslator<'a> {
         self.stack.push(res);
     }
 
-    pub(super) fn translate_trunc_sat(
-        &mut self,
-        is_signed: bool,
-        src_ty: VelocType,
-        dst_ty: VelocType,
-    ) {
+    /// Helper for saturating float-to-int truncation
+    #[inline(always)]
+    fn trunc_sat(&mut self, is_signed: bool, dst_ty: VelocType) {
         let val = self.pop();
-        let is_nan = self.builder.ins().fne(val, val);
-
-        let (is_over, is_under, max_i, min_i) = match (dst_ty, src_ty, is_signed) {
-            (VelocType::I32, VelocType::F32, true) => {
-                let upper = self.builder.ins().f32const(2147483648.0);
-                let lower = self.builder.ins().f32const(-2147483648.0);
-                (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().flt(val, lower),
-                    2147483647i64,
-                    -2147483648i64,
-                )
-            }
-            (VelocType::I32, VelocType::F32, false) => {
-                let upper = self.builder.ins().f32const(4294967296.0);
-                let lower = self.builder.ins().f32const(-1.0);
-                (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
-                    4294967295i64,
-                    0i64,
-                )
-            }
-            (VelocType::I32, VelocType::F64, true) => {
-                let upper = self.builder.ins().f64const(2147483648.0);
-                let lower = self.builder.ins().f64const(-2147483649.0);
-                (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
-                    2147483647i64,
-                    -2147483648i64,
-                )
-            }
-            (VelocType::I32, VelocType::F64, false) => {
-                let upper = self.builder.ins().f64const(4294967296.0);
-                let lower = self.builder.ins().f64const(-1.0);
-                (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
-                    4294967295i64,
-                    0i64,
-                )
-            }
-            (VelocType::I64, VelocType::F32, true) => {
-                let upper = self.builder.ins().f32const(9223372036854775808.0);
-                let lower = self.builder.ins().f32const(-9223372036854775808.0);
-                (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().flt(val, lower),
-                    9223372036854775807i64,
-                    -9223372036854775808i64,
-                )
-            }
-            (VelocType::I64, VelocType::F32, false) => {
-                let upper = self.builder.ins().f32const(18446744073709551616.0);
-                let lower = self.builder.ins().f32const(-1.0);
-                (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
-                    -1i64,
-                    0i64,
-                )
-            }
-            (VelocType::I64, VelocType::F64, true) => {
-                let upper = self.builder.ins().f64const(9223372036854775808.0);
-                let lower = self.builder.ins().f64const(-9223372036854775808.0);
-                (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().flt(val, lower),
-                    9223372036854775807i64,
-                    -9223372036854775808i64,
-                )
-            }
-            (VelocType::I64, VelocType::F64, false) => {
-                let upper = self.builder.ins().f64const(18446744073709551616.0);
-                let lower = self.builder.ins().f64const(-1.0);
-                (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
-                    -1i64,
-                    0i64,
-                )
-            }
-            _ => unreachable!(),
-        };
-
-        let tr = if is_signed {
-            self.builder.ins().float_to_int_s(val, dst_ty)
+        let res = if is_signed {
+            self.builder.ins().float_to_int_sat_s(val, dst_ty)
         } else {
-            self.builder.ins().float_to_int_u(val, dst_ty)
+            self.builder.ins().float_to_int_sat_u(val, dst_ty)
         };
-
-        let max_const = self.builder.ins().iconst(dst_ty, max_i);
-        let min_const = self.builder.ins().iconst(dst_ty, min_i);
-        let zero = self.builder.ins().iconst(dst_ty, 0);
-
-        let res = self.builder.ins().select(is_over, max_const, tr);
-        let res = self.builder.ins().select(is_under, min_const, res);
-        let res = self.builder.ins().select(is_nan, zero, res);
-
         self.stack.push(res);
     }
 

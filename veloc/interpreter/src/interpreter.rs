@@ -595,6 +595,71 @@ impl Interpreter {
                     Opcode::I64TruncF32U => conv_op!(I64TruncF32U, unwarp_f32, i64, u64, i64),
                     Opcode::I64TruncF64S => conv_op!(I64TruncF64S, unwarp_f64, i64, i64),
                     Opcode::I64TruncF64U => conv_op!(I64TruncF64U, unwarp_f64, i64, u64, i64),
+                    // Saturating conversions
+                    Opcode::I32TruncSatF32S => {
+                        let (d, s) = decode_into!(I32TruncSatF32S, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_f32();
+                        let res = if val.is_nan() { 0i32 } else { val as i32 };
+                        *reg!(d) = InterpreterValue::i32(res);
+                    }
+                    Opcode::I32TruncSatF32U => {
+                        let (d, s) = decode_into!(I32TruncSatF32U, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_f32();
+                        let res = if val.is_nan() || val < 0.0 {
+                            0u32
+                        } else {
+                            val as u32
+                        };
+                        *reg!(d) = InterpreterValue::i32(res as i32);
+                    }
+                    Opcode::I32TruncSatF64S => {
+                        let (d, s) = decode_into!(I32TruncSatF64S, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_f64();
+                        let res = if val.is_nan() { 0i32 } else { val as i32 };
+                        *reg!(d) = InterpreterValue::i32(res);
+                    }
+                    Opcode::I32TruncSatF64U => {
+                        let (d, s) = decode_into!(I32TruncSatF64U, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_f64();
+                        let res = if val.is_nan() || val < 0.0 {
+                            0u32
+                        } else {
+                            val as u32
+                        };
+                        *reg!(d) = InterpreterValue::i32(res as i32);
+                    }
+                    Opcode::I64TruncSatF32S => {
+                        let (d, s) = decode_into!(I64TruncSatF32S, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_f32();
+                        let res = if val.is_nan() { 0i64 } else { val as i64 };
+                        *reg!(d) = InterpreterValue::i64(res);
+                    }
+                    Opcode::I64TruncSatF32U => {
+                        let (d, s) = decode_into!(I64TruncSatF32U, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_f32();
+                        let res = if val.is_nan() || val < 0.0 {
+                            0u64
+                        } else {
+                            val as u64
+                        };
+                        *reg!(d) = InterpreterValue::i64(res as i64);
+                    }
+                    Opcode::I64TruncSatF64S => {
+                        let (d, s) = decode_into!(I64TruncSatF64S, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_f64();
+                        let res = if val.is_nan() { 0i64 } else { val as i64 };
+                        *reg!(d) = InterpreterValue::i64(res);
+                    }
+                    Opcode::I64TruncSatF64U => {
+                        let (d, s) = decode_into!(I64TruncSatF64U, pc, code_ptr);
+                        let val = reg_val!(s).unwarp_f64();
+                        let res = if val.is_nan() || val < 0.0 {
+                            0u64
+                        } else {
+                            val as u64
+                        };
+                        *reg!(d) = InterpreterValue::i64(res as i64);
+                    }
                     Opcode::F32ConvertI32S => conv_op!(F32ConvertI32S, unwarp_i32, f32, f32),
                     Opcode::F32ConvertI32U => conv_op!(F32ConvertI32U, unwarp_i32, f32, u32, f32),
                     Opcode::F32ConvertI64S => conv_op!(F32ConvertI64S, unwarp_i64, f32, i64, f32),

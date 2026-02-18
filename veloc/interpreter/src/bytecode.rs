@@ -223,6 +223,15 @@ define_opcodes! {
     I64TruncF32U(dst: u16, arg: u16);
     I64TruncF64S(dst: u16, arg: u16);
     I64TruncF64U(dst: u16, arg: u16);
+    // Saturating truncations
+    I32TruncSatF32S(dst: u16, arg: u16);
+    I32TruncSatF32U(dst: u16, arg: u16);
+    I32TruncSatF64S(dst: u16, arg: u16);
+    I32TruncSatF64U(dst: u16, arg: u16);
+    I64TruncSatF32S(dst: u16, arg: u16);
+    I64TruncSatF32U(dst: u16, arg: u16);
+    I64TruncSatF64S(dst: u16, arg: u16);
+    I64TruncSatF64U(dst: u16, arg: u16);
     F32ConvertI32S(dst: u16, arg: u16);
     F32ConvertI32U(dst: u16, arg: u16);
     F32ConvertI64S(dst: u16, arg: u16);
@@ -856,6 +865,42 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                                     emit::I64TruncF64U(&mut code, dst, arg_reg)
                                 }
                                 _ => panic!("Unsupported TruncU: {:?} -> {:?}", from_ty, to_ty),
+                            }
+                        }
+                        IrOpcode::FloatToIntSatS => {
+                            let to_ty = func.dfg.values[res_vals[0]].ty;
+                            match (to_ty, from_ty) {
+                                (Type::I32, Type::F32) => {
+                                    emit::I32TruncSatF32S(&mut code, dst, arg_reg)
+                                }
+                                (Type::I32, Type::F64) => {
+                                    emit::I32TruncSatF64S(&mut code, dst, arg_reg)
+                                }
+                                (Type::I64, Type::F32) => {
+                                    emit::I64TruncSatF32S(&mut code, dst, arg_reg)
+                                }
+                                (Type::I64, Type::F64) => {
+                                    emit::I64TruncSatF64S(&mut code, dst, arg_reg)
+                                }
+                                _ => panic!("Unsupported TruncSatS: {:?} -> {:?}", from_ty, to_ty),
+                            }
+                        }
+                        IrOpcode::FloatToIntSatU => {
+                            let to_ty = func.dfg.values[res_vals[0]].ty;
+                            match (to_ty, from_ty) {
+                                (Type::I32, Type::F32) => {
+                                    emit::I32TruncSatF32U(&mut code, dst, arg_reg)
+                                }
+                                (Type::I32, Type::F64) => {
+                                    emit::I32TruncSatF64U(&mut code, dst, arg_reg)
+                                }
+                                (Type::I64, Type::F32) => {
+                                    emit::I64TruncSatF32U(&mut code, dst, arg_reg)
+                                }
+                                (Type::I64, Type::F64) => {
+                                    emit::I64TruncSatF64U(&mut code, dst, arg_reg)
+                                }
+                                _ => panic!("Unsupported TruncSatU: {:?} -> {:?}", from_ty, to_ty),
                             }
                         }
                         IrOpcode::IntToFloatS => {
