@@ -41,10 +41,13 @@ pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{Global, Linkage, Module, ModuleData};
 pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 pub use types::{
-    Block, BlockCall, FuncId, JumpTable, SigId, Signature, StackSlot, Type, Value, ValueDef,
-    ValueList, Variable,
+    Block, BlockCall, FuncId, JumpTable, ScalarType, SigId, Signature, StackSlot, Type, Value,
+    ValueDef, ValueList, Variable, VectorKind,
 };
 
 // Internal-only re-exports for the backend and passes
 pub use dfg::DataFlowGraph;
-pub use inst::{Inst, InstructionData};
+pub use inst::{
+    ConstantPoolData, ConstantPoolId, Inst, InstructionData, PtrIndexImm, PtrIndexImmId,
+    VectorExtData, VectorExtId, VectorMemExtData, VectorMemExtId,
+};

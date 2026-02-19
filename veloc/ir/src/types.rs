@@ -67,7 +67,7 @@ impl ScalarType {
 /// 类型表示（位压缩）
 ///
 /// 位域布局 (16 bits):
-/// ```
+/// ```text
 /// [0..4]   Scalar Type ID (4 bits)
 /// [4..8]   Lane Count Log2 (4 bits): 0=scalar, 1=2lanes, 2=4lanes, ...
 /// [8]      Scalable Flag (1 bit): 0=Fixed, 1=Scalable
@@ -95,10 +95,8 @@ impl Type {
     }
 
     /// 创建向量类型
-    pub fn new_vector(element: ScalarType, lanes: u16, scalable: bool) -> Self {
-        assert!(lanes.is_power_of_two(), "Lane count must be power of 2");
-        assert!(lanes >= 1 && lanes <= 32768, "Lane count out of range");
-
+    pub const fn new_vector(element: ScalarType, lanes: u16, scalable: bool) -> Self {
+        debug_assert!(lanes.is_power_of_two(), "Lane count must be power of 2");
         let elem_bits = element as u16;
         let log2_lanes = lanes.trailing_zeros() as u16;
         let scalable_bit = if scalable { 1 << SCALABLE_SHIFT } else { 0 };
@@ -107,8 +105,8 @@ impl Type {
     }
 
     /// 创建谓词/掩码类型
-    pub fn new_predicate(lanes: u16, scalable: bool) -> Self {
-        assert!(lanes.is_power_of_two(), "Lane count must be power of 2");
+    pub const fn new_predicate(lanes: u16, scalable: bool) -> Self {
+        debug_assert!(lanes.is_power_of_two(), "Lane count must be power of 2");
         let log2_lanes = lanes.trailing_zeros() as u16;
         let scalable_bit = if scalable { 1 << SCALABLE_SHIFT } else { 0 };
 
@@ -132,6 +130,13 @@ impl Type {
     pub const PTR: Self = Self::new_scalar(ScalarType::Ptr);
     pub const VOID: Self = Self::new_scalar(ScalarType::Void);
     pub const EVL: Self = Self::new_scalar(ScalarType::EVL);
+
+    pub const I32X4: Self = Self::new_vector(ScalarType::I32, 4, false);
+    pub const I64X2: Self = Self::new_vector(ScalarType::I64, 2, false);
+    pub const F32X4: Self = Self::new_vector(ScalarType::F32, 4, false);
+    pub const F64X2: Self = Self::new_vector(ScalarType::F64, 2, false);
+    pub const I8X16: Self = Self::new_vector(ScalarType::I8, 16, false);
+    pub const I16X8: Self = Self::new_vector(ScalarType::I16, 8, false);
 
     // === 访问器 ===
 
@@ -466,5 +471,38 @@ mod tests {
             format!("{}", Type::new_vector(ScalarType::F64, 2, true)),
             "f64<scalable 2>"
         );
+    }
+
+    #[test]
+    fn test_evl_type() {
+        assert_eq!(Type::EVL.scalar_type(), ScalarType::EVL);
+        assert!(Type::EVL.is_scalar());
+        assert!(!Type::EVL.is_vector());
+        assert!(!Type::EVL.is_predicate());
+    }
+
+    #[test]
+    fn test_predicate_type() {
+        let mask_fixed = Type::new_predicate(8, false);
+        assert!(mask_fixed.is_predicate());
+        assert!(!mask_fixed.is_vector());
+        assert!(!mask_fixed.is_scalable());
+        assert_eq!(mask_fixed.lane_count(), 8);
+
+        let mask_scalable = Type::new_predicate(4, true);
+        assert!(mask_scalable.is_predicate());
+        assert!(mask_scalable.is_scalable());
+        assert_eq!(mask_scalable.lane_count(), 4);
+    }
+
+    #[test]
+    fn test_vector_kind() {
+        let fixed = VectorKind::Fixed(8);
+        assert_eq!(fixed.min_lanes(), 8);
+        assert!(!fixed.is_scalable());
+
+        let scalable = VectorKind::Scalable { min_lanes: 4 };
+        assert_eq!(scalable.min_lanes(), 4);
+        assert!(scalable.is_scalable());
     }
 }

@@ -57,11 +57,12 @@ impl fmt::Display for FloatCC {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Opcode {
     Iconst,
     Fconst,
     Bconst,
+    Vconst,
     // Integer Arithmetic
     IAdd,
     ISub,
@@ -150,6 +151,62 @@ pub enum Opcode {
     Select,
     Unreachable,
     Nop,
+
+    // ======================================
+    // Vector Operations
+    // ======================================
+
+    // --- 1. 纯向量操作 (Vector Only) ---
+    /// 标量 -> 向量广播 (Scalar to Vector broadcast)
+    /// e.g., splat 5 -> [5, 5, 5, 5]
+    Splat,
+
+    /// 向量重排/混洗 (Vector shuffle)
+    /// 两个输入向量 + 常量掩码 -> 重排后的向量
+    Shuffle,
+
+    /// 插入标量到向量的指定通道
+    /// args: [vector, scalar, lane_index]
+    InsertElement,
+
+    /// 从向量提取指定通道的标量
+    /// args: [vector, lane_index]
+    ExtractElement,
+
+    // --- 2. 归约操作 (Horizontal/Reduction) ---
+    /// 向量求和 -> 标量 (无序/浮点可能无序)
+    ReduceSum,
+    /// 向量求和 -> 标量 (有序/确定顺序，主要用于浮点)
+    ReduceAdd,
+    /// 向量最小值 -> 标量
+    ReduceMin,
+    /// 向量最大值 -> 标量
+    ReduceMax,
+    /// 向量按位与 -> 标量
+    ReduceAnd,
+    /// 向量按位或 -> 标量
+    ReduceOr,
+    /// 向量按位异或 -> 标量
+    ReduceXor,
+
+    // --- 3. 向量内存操作 ---
+    /// 固定步长加载 (Strided Load)
+    /// ptr + stride * i
+    LoadStride,
+    /// 固定步长存储 (Strided Store)
+    StoreStride,
+    /// 离散/聚集加载 (Gather/Indexed Load)
+    /// base_ptr + indices[i]
+    Gather,
+    /// 离散/分散存储 (Scatter/Indexed Store)
+    Scatter,
+
+    // --- 4. 控制流与配置 ---
+    /// 设置向量长度 (Set Vector Length)
+    /// 类似 RISC-V V 的 vsetvli 指令
+    /// 输入: 请求的向量长度 (AVL)
+    /// 输出: 实际向量长度 (VL)
+    SetVL,
 }
 
 impl fmt::Display for Opcode {
@@ -158,6 +215,7 @@ impl fmt::Display for Opcode {
             Opcode::Iconst => "iconst",
             Opcode::Fconst => "fconst",
             Opcode::Bconst => "bconst",
+            Opcode::Vconst => "vconst",
             Opcode::IAdd => "iadd",
             Opcode::ISub => "isub",
             Opcode::IMul => "imul",
@@ -230,6 +288,23 @@ impl fmt::Display for Opcode {
             Opcode::Select => "select",
             Opcode::Unreachable => "unreachable",
             Opcode::Nop => "nop",
+            // Vector operations
+            Opcode::Splat => "splat",
+            Opcode::Shuffle => "shuffle",
+            Opcode::InsertElement => "insertelement",
+            Opcode::ExtractElement => "extractelement",
+            Opcode::ReduceSum => "reduce_sum",
+            Opcode::ReduceAdd => "reduce_add",
+            Opcode::ReduceMin => "reduce_min",
+            Opcode::ReduceMax => "reduce_max",
+            Opcode::ReduceAnd => "reduce_and",
+            Opcode::ReduceOr => "reduce_or",
+            Opcode::ReduceXor => "reduce_xor",
+            Opcode::LoadStride => "load_stride",
+            Opcode::StoreStride => "store_stride",
+            Opcode::Gather => "gather",
+            Opcode::Scatter => "scatter",
+            Opcode::SetVL => "setvl",
         };
         write!(f, "{}", s)
     }

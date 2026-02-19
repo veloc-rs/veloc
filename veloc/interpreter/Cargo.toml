@@ -1,7 +1,8 @@
 [package]
 name = "veloc_interpreter"
 version = "0.1.0"
-edition = "2024"
+edition = { workspace = true }
+rust-version = { workspace = true }
 
 [dependencies]
 veloc_ir = { workspace = true }
@@ -13,5 +14,3 @@ libm = "0.2"
 [features]
 default = ["std"]
 std = ["veloc_ir/std"]
-
-

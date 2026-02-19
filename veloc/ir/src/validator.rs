@@ -439,7 +439,8 @@ impl Function {
             }
             InstructionData::Iconst { .. }
             | InstructionData::Fconst { .. }
-            | InstructionData::Bconst { .. } => {}
+            | InstructionData::Bconst { .. }
+            | InstructionData::Vconst { .. } => {}
             InstructionData::Call { func_id, args } => {
                 let callee = &module.functions[*func_id];
                 let sig = &module.signatures[callee.signature];
@@ -711,6 +712,183 @@ impl Function {
             }
             InstructionData::Unreachable => {}
             InstructionData::Nop => {}
+            // Vector operations - basic validation
+            InstructionData::Ternary { opcode, args } => {
+                let arg0_ty = val_ty(args[0]);
+                let arg1_ty = val_ty(args[1]);
+                let arg2_ty = val_ty(args[2]);
+
+                // For most ternary ops, first two args should have same type
+                if matches!(opcode, Opcode::InsertElement) {
+                    // InsertElement: vector, scalar, index
+                    if !arg2_ty.is_integer() {
+                        return Err(ValidationError::OperandTypeMismatch {
+                            inst,
+                            lhs: arg0_ty,
+                            rhs: arg1_ty,
+                        }
+                        .into());
+                    }
+                }
+            }
+            InstructionData::VectorOpWithExt { args, ext, .. } => {
+                // Validate that mask is a predicate type
+                let ext_data = &dfg.vector_ext_pool[*ext];
+                let mask_ty = val_ty(ext_data.mask);
+                if !mask_ty.is_predicate() {
+                    return Err(ValidationError::TypeMismatch {
+                        opcode: Opcode::IAdd,                    // placeholder
+                        expected: Type::new_predicate(4, false), // placeholder
+                        got: mask_ty,
+                    }
+                    .into());
+                }
+                // Validate EVL if present
+                if let Some(evl) = ext_data.evl {
+                    let evl_ty = val_ty(evl);
+                    if evl_ty != Type::EVL {
+                        return Err(ValidationError::TypeMismatch {
+                            opcode: Opcode::SetVL,
+                            expected: Type::EVL,
+                            got: evl_ty,
+                        }
+                        .into());
+                    }
+                }
+                let _ = dfg.get_value_list(*args); // validate args exist
+            }
+            // Strided 操作
+            InstructionData::VectorLoadStrided {
+                ptr: _,
+                stride: _,
+                ext,
+            } => {
+                let ext_data = &dfg.vector_mem_ext_pool[*ext];
+                // 从 instruction results 获取结果类型
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .first()
+                    .map(|&v| val_ty(v))
+                    .unwrap_or(Type::VOID);
+                // Validate result type is a vector
+                if !result_ty.is_vector() {
+                    return Err(ValidationError::TypeMismatch {
+                        opcode: Opcode::LoadStride,
+                        expected: Type::new_vector(crate::ScalarType::I32, 4, false),
+                        got: result_ty,
+                    }
+                    .into());
+                }
+                // Validate mask if present
+                if let Some(mask) = ext_data.mask {
+                    let mask_ty = val_ty(mask);
+                    if !mask_ty.is_predicate() {
+                        return Err(ValidationError::TypeMismatch {
+                            opcode: Opcode::LoadStride,
+                            expected: Type::new_predicate(4, false),
+                            got: mask_ty,
+                        }
+                        .into());
+                    }
+                }
+            }
+            InstructionData::VectorStoreStrided { args, ext } => {
+                let ext_data = &dfg.vector_mem_ext_pool[*ext];
+                let vals = dfg.get_value_list(*args);
+                let value = vals[2];
+                // Validate value type是向量
+                let value_ty = val_ty(value);
+                if !value_ty.is_vector() {
+                    return Err(ValidationError::TypeMismatch {
+                        opcode: Opcode::StoreStride,
+                        expected: Type::new_vector(crate::ScalarType::I32, 4, false),
+                        got: value_ty,
+                    }
+                    .into());
+                }
+                // Validate mask if present
+                if let Some(mask) = ext_data.mask {
+                    let mask_ty = val_ty(mask);
+                    if !mask_ty.is_predicate() {
+                        return Err(ValidationError::TypeMismatch {
+                            opcode: Opcode::StoreStride,
+                            expected: Type::new_predicate(4, false),
+                            got: mask_ty,
+                        }
+                        .into());
+                    }
+                }
+            }
+            // Gather/Scatter 操作
+            InstructionData::VectorGather {
+                ptr: _,
+                index: _,
+                ext,
+            } => {
+                let ext_data = &dfg.vector_mem_ext_pool[*ext];
+                let result_ty = dfg
+                    .inst_results(inst)
+                    .first()
+                    .map(|&v| val_ty(v))
+                    .unwrap_or(Type::VOID);
+                if !result_ty.is_vector() {
+                    return Err(ValidationError::TypeMismatch {
+                        opcode: Opcode::Gather,
+                        expected: Type::new_vector(crate::ScalarType::I32, 4, false),
+                        got: result_ty,
+                    }
+                    .into());
+                }
+                if let Some(mask) = ext_data.mask {
+                    let mask_ty = val_ty(mask);
+                    if !mask_ty.is_predicate() {
+                        return Err(ValidationError::TypeMismatch {
+                            opcode: Opcode::Gather,
+                            expected: Type::new_predicate(4, false),
+                            got: mask_ty,
+                        }
+                        .into());
+                    }
+                }
+            }
+            InstructionData::VectorScatter { args, ext } => {
+                let ext_data = &dfg.vector_mem_ext_pool[*ext];
+                let vals = dfg.get_value_list(*args);
+                let value = vals[2];
+                let value_ty = val_ty(value);
+                if !value_ty.is_vector() {
+                    return Err(ValidationError::TypeMismatch {
+                        opcode: Opcode::Scatter,
+                        expected: Type::new_vector(crate::ScalarType::I32, 4, false),
+                        got: value_ty,
+                    }
+                    .into());
+                }
+                if let Some(mask) = ext_data.mask {
+                    let mask_ty = val_ty(mask);
+                    if !mask_ty.is_predicate() {
+                        return Err(ValidationError::TypeMismatch {
+                            opcode: Opcode::Scatter,
+                            expected: Type::new_predicate(4, false),
+                            got: mask_ty,
+                        }
+                        .into());
+                    }
+                }
+            }
+            InstructionData::Shuffle { args, .. } => {
+                let arg0_ty = val_ty(args[0]);
+                let arg1_ty = val_ty(args[1]);
+                // Both inputs should be vectors of same type
+                if !arg0_ty.is_vector() || !arg1_ty.is_vector() {
+                    return Err(ValidationError::OperandTypeMismatch {
+                        inst,
+                        lhs: arg0_ty,
+                        rhs: arg1_ty,
+                    }
+                    .into());
+                }
+            }
         }
 
         Ok(())

@@ -794,6 +794,7 @@ impl TargetBackend for X86_64Backend {
 
         match idata {
             InstructionData::Iconst { value } => {
+                let val = *value;
                 if let Some(ty) = result_ty {
                     if ty.is_integer() {
                         if ty == veloc_ir::Type::I64 {
@@ -801,13 +802,13 @@ impl TargetBackend for X86_64Backend {
                             emitter
                                 .inst(X86_64Inst::MovR64Imm64)
                                 .reg(Reg::RAX)
-                                .imm(*value as u64)
+                                .imm(val)
                                 .emit();
                         } else {
                             emitter
                                 .inst(X86_64Inst::MovR32Imm32)
                                 .reg(Reg::RAX)
-                                .imm(*value as u64)
+                                .imm(val)
                                 .emit();
                         }
 
@@ -838,6 +839,9 @@ impl TargetBackend for X86_64Backend {
                         self.emit_store_val(emitter, func, v, Reg::RAX);
                     }
                 }
+            }
+            InstructionData::Vconst { .. } => {
+                todo!("x86_64 vector constant codegen")
             }
             InstructionData::Bconst { value } => {
                 emitter
@@ -1384,6 +1388,28 @@ impl TargetBackend for X86_64Backend {
             }
             InstructionData::CallIntrinsic { .. } => {
                 todo!("Implement codegen for intrinsic calls")
+            }
+            // Vector operations - not yet implemented in backend
+            InstructionData::Ternary { .. } => {
+                todo!("Implement codegen for ternary vector operations")
+            }
+            InstructionData::VectorOpWithExt { .. } => {
+                todo!("Implement codegen for masked vector operations")
+            }
+            InstructionData::VectorLoadStrided { .. } => {
+                todo!("Implement codegen for vector strided load")
+            }
+            InstructionData::VectorStoreStrided { .. } => {
+                todo!("Implement codegen for vector strided store")
+            }
+            InstructionData::VectorGather { .. } => {
+                todo!("Implement codegen for vector gather")
+            }
+            InstructionData::VectorScatter { .. } => {
+                todo!("Implement codegen for vector scatter")
+            }
+            InstructionData::Shuffle { .. } => {
+                todo!("Implement codegen for vector shuffle")
             }
             InstructionData::Nop => {}
         }

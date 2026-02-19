@@ -1,4 +1,7 @@
-use super::inst::{Inst, InstructionData, PtrIndexImm, PtrIndexImmId};
+use super::inst::{
+    ConstantPoolData, ConstantPoolId, Inst, InstructionData, PtrIndexImm, PtrIndexImmId,
+    VectorExtData, VectorExtId, VectorMemExtData, VectorMemExtId,
+};
 use crate::constant::Constant;
 use crate::types::{
     Block, BlockCall, BlockCallData, JumpTable, JumpTableData, Type, Value, ValueData, ValueDef,
@@ -20,6 +23,15 @@ pub struct DataFlowGraph {
     pub jump_tables: PrimaryMap<JumpTable, JumpTableData>,
     pub ptr_imm_pool: PrimaryMap<PtrIndexImmId, PtrIndexImm>,
     ptr_imm_map: HashMap<PtrIndexImm, PtrIndexImmId>,
+    /// 向量操作扩展信息池 (mask, evl)
+    pub vector_ext_pool: PrimaryMap<VectorExtId, VectorExtData>,
+    vector_ext_map: HashMap<VectorExtData, VectorExtId>,
+    /// 向量内存操作扩展配置池
+    pub vector_mem_ext_pool: PrimaryMap<VectorMemExtId, VectorMemExtData>,
+    vector_mem_ext_map: HashMap<VectorMemExtData, VectorMemExtId>,
+    /// 常量数据池
+    pub constant_pool: PrimaryMap<ConstantPoolId, ConstantPoolData>,
+    constant_pool_map: HashMap<ConstantPoolData, ConstantPoolId>,
 }
 
 impl DataFlowGraph {
@@ -34,7 +46,49 @@ impl DataFlowGraph {
             jump_tables: PrimaryMap::new(),
             ptr_imm_pool: PrimaryMap::new(),
             ptr_imm_map: HashMap::new(),
+            vector_ext_pool: PrimaryMap::new(),
+            vector_ext_map: HashMap::new(),
+            vector_mem_ext_pool: PrimaryMap::new(),
+            vector_mem_ext_map: HashMap::new(),
+            constant_pool: PrimaryMap::new(),
+            constant_pool_map: HashMap::new(),
         }
+    }
+
+    // ======================================
+    // 向量操作辅助方法
+    // ======================================
+
+    /// 创建向量操作扩展信息
+    pub fn make_vector_ext(&mut self, mask: Value, evl: Option<Value>) -> VectorExtId {
+        let data = VectorExtData { mask, evl };
+        if let Some(&id) = self.vector_ext_map.get(&data) {
+            return id;
+        }
+        let id = self.vector_ext_pool.push(data.clone());
+        self.vector_ext_map.insert(data, id);
+        id
+    }
+
+    /// 创建向量内存操作扩展配置
+    pub fn make_vector_mem_ext(&mut self, data: VectorMemExtData) -> VectorMemExtId {
+        if let Some(&id) = self.vector_mem_ext_map.get(&data) {
+            return id;
+        }
+        let id = self.vector_mem_ext_pool.push(data.clone());
+        self.vector_mem_ext_map.insert(data, id);
+        id
+    }
+
+    /// 向常量池添加数据
+    pub fn make_constant_pool_data(&mut self, data: ConstantPoolData) -> ConstantPoolId {
+        if let Some(&id) = self.constant_pool_map.get(&data) {
+            return id;
+        }
+
+        let id = self.constant_pool.push(data.clone());
+        self.constant_pool_map.insert(data, id);
+        id
     }
 
     /// 为指令添加多个结果值（支持多返回值）
@@ -86,6 +140,11 @@ impl DataFlowGraph {
         list.as_slice(&self.value_list_pool)
     }
 
+    /// 获取 value_list_pool 的引用 (用于外部访问)
+    pub fn value_list_pool(&self) -> &ValueListPool {
+        &self.value_list_pool
+    }
+
     pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
         self.values.push(ValueData {
             ty,
@@ -121,14 +180,15 @@ impl DataFlowGraph {
             let ty = self.value_type(val);
             match &self.instructions[inst] {
                 InstructionData::Iconst { value } => {
+                    let val = *value as i64;
                     if ty == Type::I8 {
-                        Some(Constant::I8(*value as i8))
+                        Some(Constant::I8(val as i8))
                     } else if ty == Type::I16 {
-                        Some(Constant::I16(*value as i16))
+                        Some(Constant::I16(val as i16))
                     } else if ty == Type::I32 {
-                        Some(Constant::I32(*value as i32))
+                        Some(Constant::I32(val as i32))
                     } else if ty == Type::I64 {
-                        Some(Constant::I64(*value))
+                        Some(Constant::I64(val))
                     } else {
                         None
                     }

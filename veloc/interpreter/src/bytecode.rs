@@ -66,6 +66,21 @@ macro_rules! define_opcodes {
                         res
                     }
                 };
+                ($name, $pc_ptr:expr) => {
+                    {
+                        #[allow(unused_assignments)]
+                        let res = (
+                            $(
+                                unsafe {
+                                    let v = ($pc_ptr as *const $ty).read_unaligned();
+                                    $pc_ptr = $pc_ptr.add(core::mem::size_of::<$ty>());
+                                    $ty::from_le(v)
+                                }
+                            ),*
+                        );
+                        res
+                    }
+                };
             )*
         }
     }
@@ -75,6 +90,7 @@ define_opcodes! {
     Iconst(dst: u16, value: u64);
     Fconst(dst: u16, value: u64);
     Bconst(dst: u16, value: u8);
+    Vconst(dst: u16, pool_id: u32);
 
     // Specialized I32 operations
     I32Add(dst: u16, lhs: u16, rhs: u16);
@@ -278,6 +294,7 @@ pub struct CompiledFunction {
     pub param_indices: Vec<u16>,
     pub ret_indices: Vec<u16>, // Return value register indices (support multi-value)
     pub register_count: usize,
+    pub constant_pool: Vec<Vec<u8>>,
 }
 
 struct ValueMapper {
@@ -446,10 +463,13 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
 
             match idata {
                 InstructionData::Iconst { value } => {
-                    emit::Iconst(&mut code, dst, *value as u64);
+                    emit::Iconst(&mut code, dst, *value);
                 }
                 InstructionData::Fconst { value } => {
                     emit::Fconst(&mut code, dst, *value);
+                }
+                InstructionData::Vconst { pool_id } => {
+                    emit::Vconst(&mut code, dst, pool_id.as_u32());
                 }
                 InstructionData::Bconst { value } => {
                     emit::Bconst(&mut code, dst, if *value { 1 } else { 0 });
@@ -1278,6 +1298,28 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 InstructionData::Unreachable => {
                     emit::Unreachable(&mut code);
                 }
+                // Vector operations - not yet implemented in interpreter
+                InstructionData::Ternary { .. } => {
+                    todo!("Implement interpreter for ternary vector operations")
+                }
+                InstructionData::VectorOpWithExt { .. } => {
+                    todo!("Implement interpreter for masked vector operations")
+                }
+                InstructionData::VectorLoadStrided { .. } => {
+                    todo!("Implement interpreter for vector strided load")
+                }
+                InstructionData::VectorStoreStrided { .. } => {
+                    todo!("Implement interpreter for vector strided store")
+                }
+                InstructionData::VectorGather { .. } => {
+                    todo!("Implement interpreter for vector gather")
+                }
+                InstructionData::VectorScatter { .. } => {
+                    todo!("Implement interpreter for vector scatter")
+                }
+                InstructionData::Shuffle { .. } => {
+                    todo!("Implement interpreter for vector shuffle")
+                }
                 InstructionData::Nop => {}
             }
 
@@ -1312,6 +1354,14 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
         param_indices,
         ret_indices: Vec::new(), // TODO: collect return indices if needed
         register_count: mapper.next_register as usize,
+        constant_pool: func
+            .dfg
+            .constant_pool
+            .values()
+            .map(|d| match d {
+                veloc_ir::ConstantPoolData::Bytes(b) => b.clone(),
+            })
+            .collect(),
     }
 }
 

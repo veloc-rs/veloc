@@ -1,18 +1,23 @@
 [package]
 name = "veloc"
 version = "0.1.0"
-edition = "2024"
+edition = { workspace = true }
+
 
 [workspace]
 members = [
-    "crates/*",
-    "crates/veloc_wasm/tests/spec_test",
-    "veloc/ir",
-    "veloc/interpreter",
-    "veloc/backend",
-    "veloc/analyzer",
-    "veloc/optimizer",
+	"crates/*",
+	"crates/veloc_wasm/tests/spec_test",
+	"veloc/ir",
+	"veloc/interpreter",
+	"veloc/backend",
+	"veloc/analyzer",
+	"veloc/optimizer",
 ]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.93.0"
 
 [workspace.dependencies]
 cranelift-entity = { version = "0.128.3", default-features = false }

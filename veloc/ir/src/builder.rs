@@ -1,5 +1,5 @@
 use super::function::{Function, StackSlotData};
-use super::inst::{Inst, InstructionData};
+use super::inst::{ConstantPoolData, Inst, InstructionData};
 use super::opcode::{FloatCC, IntCC, MemFlags, Opcode};
 use super::types::{
     Block, BlockCall, FuncId, JumpTable, Signature, StackSlot, Type, Value, ValueList, Variable,
@@ -146,8 +146,9 @@ impl<'a> FunctionBuilder<'a> {
             | InstructionData::StackLoad { .. }
             | InstructionData::PtrToInt { .. }
             | InstructionData::Iconst { .. }
-            | InstructionData::Fconst { .. } => panic!(
-                "Instructions like Load, StackLoad, PtrToInt, Iconst, Fconst require explicit type annotation via push_inst_with_type"
+            | InstructionData::Fconst { .. }
+            | InstructionData::Vconst { .. } => panic!(
+                "Instructions like Load, StackLoad, PtrToInt, Iconst, Fconst, Vconst require explicit type annotation via push_inst_with_type"
             ),
 
             // Instructions with fixed result type
@@ -193,6 +194,39 @@ impl<'a> FunctionBuilder<'a> {
                 .iter()
                 .cloned()
                 .collect(),
+
+            // Vector operations that require explicit type
+            InstructionData::Ternary { opcode, args, .. } => {
+                // For most ternary ops, result type is same as first operand
+                // ExtractElement is an exception - it returns scalar element type
+                if *opcode == Opcode::ExtractElement {
+                    panic!(
+                        "ExtractElement requires explicit type annotation via push_inst_with_type"
+                    )
+                }
+                smallvec![self.value_type(args[0])]
+            }
+
+            InstructionData::VectorOpWithExt { args, .. } => {
+                // Result type same as first operand
+                smallvec![self.value_type(args.as_slice(&self.func().dfg.value_list_pool())[0])]
+            }
+
+            // Strided/Gather Load 必须通过 push_inst_with_type 构造
+            InstructionData::VectorLoadStrided { .. } | InstructionData::VectorGather { .. } => {
+                panic!(
+                    "Vector load instructions require explicit type annotation via push_inst_with_type"
+                )
+            }
+
+            InstructionData::VectorStoreStrided { .. } | InstructionData::VectorScatter { .. } => {
+                smallvec![]
+            }
+
+            InstructionData::Shuffle { args, .. } => {
+                // Result type same as input vectors
+                smallvec![self.value_type(args[0])]
+            }
 
             InstructionData::Nop => smallvec![],
         }
@@ -657,7 +691,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
         if ty.is_integer() {
-            self.push_with_type(InstructionData::Iconst { value: val }, ty)
+            self.push_with_type(InstructionData::Iconst { value: val as u64 }, ty)
                 .unwrap()
         } else {
             panic!("iconst only supports integer types")
@@ -687,6 +721,61 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn bconst(&mut self, val: bool) -> Value {
         self.push(InstructionData::Bconst { value: val }).unwrap()
+    }
+
+    pub fn vconst(&mut self, ty: Type, data: Vec<u8>) -> Value {
+        let pool_id = self
+            .builder
+            .func_mut()
+            .dfg
+            .make_constant_pool_data(ConstantPoolData::Bytes(data));
+        self.push_with_type(InstructionData::Vconst { pool_id }, ty)
+            .unwrap()
+    }
+
+    pub fn i8x16const(&mut self, values: [i8; 16]) -> Value {
+        let data = values.iter().map(|&v| v as u8).collect();
+        self.vconst(Type::I8X16, data)
+    }
+
+    pub fn i16x8const(&mut self, values: [i16; 8]) -> Value {
+        let mut data = Vec::with_capacity(16);
+        for &v in &values {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        self.vconst(Type::I16X8, data)
+    }
+
+    pub fn i32x4const(&mut self, values: [i32; 4]) -> Value {
+        let mut data = Vec::with_capacity(16);
+        for &v in &values {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        self.vconst(Type::I32X4, data)
+    }
+
+    pub fn i64x2const(&mut self, values: [i64; 2]) -> Value {
+        let mut data = Vec::with_capacity(16);
+        for &v in &values {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        self.vconst(Type::I64X2, data)
+    }
+
+    pub fn f32x4const(&mut self, values: [f32; 4]) -> Value {
+        let mut data = Vec::with_capacity(16);
+        for &v in &values {
+            data.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+        self.vconst(Type::F32X4, data)
+    }
+
+    pub fn f64x2const(&mut self, values: [f64; 2]) -> Value {
+        let mut data = Vec::with_capacity(16);
+        for &v in &values {
+            data.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+        self.vconst(Type::F64X2, data)
     }
 
     pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
@@ -1255,5 +1344,325 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             args,
             sig_id,
         })
+    }
+
+    // ======================================
+    // 向量操作构建方法
+    // ======================================
+
+    /// 标量 -> 向量广播 (Splat)
+    /// 将标量值广播到向量的所有通道
+    pub fn splat(&mut self, scalar: Value, result_ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::Splat,
+                arg: scalar,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 向量重排/混洗 (Shuffle)
+    /// 根据掩码从两个输入向量中选择元素
+    pub fn shuffle(
+        &mut self,
+        v1: Value,
+        v2: Value,
+        mask_id: crate::inst::ConstantPoolId,
+        result_ty: Type,
+    ) -> Value {
+        self.push_with_type(
+            InstructionData::Shuffle {
+                args: [v1, v2],
+                mask: mask_id,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 插入标量到向量的指定通道
+    pub fn insert_element(
+        &mut self,
+        vector: Value,
+        scalar: Value,
+        lane_index: u32,
+        result_ty: Type,
+    ) -> Value {
+        let lane_val = self.i32const(lane_index as i32);
+        self.push_with_type(
+            InstructionData::Ternary {
+                opcode: Opcode::InsertElement,
+                args: [vector, scalar, lane_val],
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 从向量提取指定通道的标量
+    pub fn extract_element(&mut self, vector: Value, lane_index: u32, result_ty: Type) -> Value {
+        let lane_val = self.i32const(lane_index as i32);
+        self.push_with_type(
+            InstructionData::Binary {
+                opcode: Opcode::ExtractElement,
+                args: [vector, lane_val],
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 向量归约操作 - 求和 (无序)
+    pub fn reduce_sum(&mut self, vector: Value, result_ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ReduceSum,
+                arg: vector,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 向量归约操作 - 求和 (有序/确定顺序)
+    pub fn reduce_add(&mut self, vector: Value, result_ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ReduceAdd,
+                arg: vector,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 向量归约操作 - 最小值
+    pub fn reduce_min(&mut self, vector: Value, result_ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ReduceMin,
+                arg: vector,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 向量归约操作 - 最大值
+    pub fn reduce_max(&mut self, vector: Value, result_ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ReduceMax,
+                arg: vector,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 向量归约操作 - 按位与
+    pub fn reduce_and(&mut self, vector: Value, result_ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ReduceAnd,
+                arg: vector,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 向量归约操作 - 按位或
+    pub fn reduce_or(&mut self, vector: Value, result_ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ReduceOr,
+                arg: vector,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 向量归约操作 - 按位异或
+    pub fn reduce_xor(&mut self, vector: Value, result_ty: Type) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::ReduceXor,
+                arg: vector,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 带扩展信息的向量操作 (用于 RISC-V V / AVX-512 带 Mask/EVL)
+    ///
+    /// # Arguments
+    /// * `opcode` - 操作码 (如 IAdd, FMul 等)
+    /// * `args` - 输入参数
+    /// * `mask` - 谓词/掩码 (Predicate 类型)
+    /// * `evl` - 显式向量长度 (EVL 类型), None 表示使用默认 VL
+    /// * `result_ty` - 结果类型
+    pub fn vector_op_ext(
+        &mut self,
+        opcode: Opcode,
+        args: &[Value],
+        mask: Value,
+        evl: Option<Value>,
+        result_ty: Type,
+    ) -> Value {
+        let args_list = self.builder.make_value_list(args);
+        let ext_id = self.builder.func_mut().dfg.make_vector_ext(mask, evl);
+
+        self.push_with_type(
+            InstructionData::VectorOpWithExt {
+                opcode,
+                args: args_list,
+                ext: ext_id,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 固定步长向量加载 (Strided Load)
+    pub fn load_stride(
+        &mut self,
+        ptr: Value,
+        stride: Value,
+        offset: i32,
+        mask: Option<Value>,
+        evl: Option<Value>,
+        flags: MemFlags,
+        result_ty: Type,
+    ) -> Value {
+        let ext = crate::inst::VectorMemExtData {
+            offset,
+            flags,
+            scale: 1, // Strided 不需要 scale
+            mask,
+            evl,
+        };
+        let ext_id = self.builder.func_mut().dfg.make_vector_mem_ext(ext);
+
+        self.push_with_type(
+            InstructionData::VectorLoadStrided {
+                ptr,
+                stride,
+                ext: ext_id,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 固定步长向量存储 (Strided Store)
+    pub fn store_stride(
+        &mut self,
+        ptr: Value,
+        stride: Value,
+        value: Value,
+        offset: i32,
+        mask: Option<Value>,
+        evl: Option<Value>,
+        flags: MemFlags,
+    ) {
+        let ext = crate::inst::VectorMemExtData {
+            offset,
+            flags,
+            scale: 1,
+            mask,
+            evl,
+        };
+        let ext_id = self.builder.func_mut().dfg.make_vector_mem_ext(ext);
+        let args = self
+            .builder
+            .func_mut()
+            .dfg
+            .make_value_list(&[ptr, stride, value]);
+
+        self.push(InstructionData::VectorStoreStrided { args, ext: ext_id });
+    }
+
+    /// 离散向量加载 (Gather)
+    /// base_ptr + index[i] * scale
+    pub fn gather(
+        &mut self,
+        base_ptr: Value,
+        indices: Value,
+        offset: i32,
+        mask: Option<Value>,
+        evl: Option<Value>,
+        flags: MemFlags,
+        result_ty: Type,
+    ) -> Value {
+        let ext = crate::inst::VectorMemExtData {
+            offset,
+            flags,
+            scale: 1, // 默认 scale = 1
+            mask,
+            evl,
+        };
+        let ext_id = self.builder.func_mut().dfg.make_vector_mem_ext(ext);
+
+        self.push_with_type(
+            InstructionData::VectorGather {
+                ptr: base_ptr,
+                index: indices,
+                ext: ext_id,
+            },
+            result_ty,
+        )
+        .unwrap()
+    }
+
+    /// 离散向量存储 (Scatter)
+    pub fn scatter(
+        &mut self,
+        base_ptr: Value,
+        indices: Value,
+        value: Value,
+        offset: i32,
+        mask: Option<Value>,
+        evl: Option<Value>,
+        flags: MemFlags,
+    ) {
+        let ext = crate::inst::VectorMemExtData {
+            offset,
+            flags,
+            scale: 1,
+            mask,
+            evl,
+        };
+        let ext_id = self.builder.func_mut().dfg.make_vector_mem_ext(ext);
+        let args = self
+            .builder
+            .func_mut()
+            .dfg
+            .make_value_list(&[base_ptr, indices, value]);
+
+        self.push(InstructionData::VectorScatter { args, ext: ext_id });
+    }
+
+    /// 设置向量长度 (Set Vector Length)
+    /// 类似 RISC-V V 的 vsetvli 指令
+    ///
+    /// # Arguments
+    /// * `avl` - 申请的向量长度 (Application Vector Length)
+    ///
+    /// # Returns
+    /// * 实际的向量长度 (VL)
+    pub fn setvl(&mut self, avl: Value) -> Value {
+        self.push_with_type(
+            InstructionData::Unary {
+                opcode: Opcode::SetVL,
+                arg: avl,
+            },
+            Type::EVL,
+        )
+        .unwrap()
     }
 }

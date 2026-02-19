@@ -204,16 +204,18 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                     write!(f, "stack_addr {} + {}", slot, offset)?;
                 }
                 InstructionData::Iconst { value } => {
-                    write!(f, "iconst.{:?} {}", ty.unwrap(), value)?;
+                    let val = *value as i64;
+                    write!(f, "iconst.{:?} {}", ty.unwrap(), val)?;
                 }
                 InstructionData::Fconst { value } => {
                     let ty = ty.unwrap();
+                    let val = *value;
                     if ty == Type::F32 {
-                        let float = f32::from_bits(*value as u32);
-                        write!(f, "fconst.{:?} {:?} (0x{:08x})", ty, float, *value as u32)?;
+                        let float = f32::from_bits(val as u32);
+                        write!(f, "fconst.{:?} {:?} (0x{:08x})", ty, float, val as u32)?;
                     } else {
-                        let float = f64::from_bits(*value);
-                        write!(f, "fconst.{:?} {:?} (0x{:016x})", ty, float, value)?;
+                        let float = f64::from_bits(val);
+                        write!(f, "fconst.{:?} {:?} (0x{:016x})", ty, float, val)?;
                     }
                 }
                 InstructionData::IntToPtr { arg } => {
@@ -238,6 +240,9 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 }
                 InstructionData::Bconst { value } => {
                     write!(f, "bconst {}", value)?;
+                }
+                InstructionData::Vconst { pool_id } => {
+                    write!(f, "vconst.{:?} {}", ty.unwrap(), pool_id)?;
                 }
                 InstructionData::Call { func_id, args } => {
                     let name = module
@@ -435,6 +440,117 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                 }
                 InstructionData::Nop => {
                     write!(f, "nop")?;
+                }
+                // Vector operations
+                InstructionData::Ternary { opcode, args } => {
+                    write!(
+                        f,
+                        "{}.{:?} {}, {}, {}",
+                        opcode,
+                        ty.unwrap(),
+                        v(args[0]),
+                        v(args[1]),
+                        v(args[2])
+                    )?;
+                }
+                InstructionData::VectorOpWithExt { opcode, args, ext } => {
+                    let ext_data = &dfg.vector_ext_pool[*ext];
+                    write!(f, "{}.{:?} ", opcode, ty.unwrap())?;
+                    let args_slice = dfg.get_value_list(*args);
+                    for (i, &arg) in args_slice.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", v(arg))?;
+                    }
+                    write!(f, ", mask={}", v(ext_data.mask))?;
+                    if let Some(evl) = ext_data.evl {
+                        write!(f, ", evl={}", v(evl))?;
+                    }
+                }
+                // Strided 操作
+                InstructionData::VectorLoadStrided { ptr, stride, ext } => {
+                    let ext_data = &dfg.vector_mem_ext_pool[*ext];
+                    let result_ty = ty.unwrap_or(Type::VOID);
+                    write!(f, "load_stride.{:?} ", result_ty)?;
+                    if ext_data.flags.is_trusted() {
+                        write!(f, "trusted ")?;
+                    }
+                    write!(f, "{}, stride={}", v(*ptr), v(*stride))?;
+                    if let Some(mask) = ext_data.mask {
+                        write!(f, ", mask={}", v(mask))?;
+                    }
+                    if let Some(evl) = ext_data.evl {
+                        write!(f, ", evl={}", v(evl))?;
+                    }
+                }
+                InstructionData::VectorStoreStrided { args, ext } => {
+                    let ext_data = &dfg.vector_mem_ext_pool[*ext];
+                    let args = dfg.get_value_list(*args);
+                    let ptr = args[0];
+                    let stride = args[1];
+                    let value = args[2];
+                    write!(f, "store_stride ")?;
+                    if ext_data.flags.is_trusted() {
+                        write!(f, "trusted ")?;
+                    }
+                    write!(f, "{}, {}, stride={}", v(value), v(ptr), v(stride))?;
+                    if let Some(mask) = ext_data.mask {
+                        write!(f, ", mask={}", v(mask))?;
+                    }
+                    if let Some(evl) = ext_data.evl {
+                        write!(f, ", evl={}", v(evl))?;
+                    }
+                }
+                // Gather/Scatter 操作
+                InstructionData::VectorGather { ptr, index, ext } => {
+                    let ext_data = &dfg.vector_mem_ext_pool[*ext];
+                    let result_ty = ty.unwrap_or(Type::VOID);
+                    write!(f, "gather.{:?} ", result_ty)?;
+                    if ext_data.flags.is_trusted() {
+                        write!(f, "trusted ")?;
+                    }
+                    write!(f, "{}, index={}", v(*ptr), v(*index))?;
+                    if ext_data.scale != 1 {
+                        write!(f, "* {}", ext_data.scale)?;
+                    }
+                    if let Some(mask) = ext_data.mask {
+                        write!(f, ", mask={}", v(mask))?;
+                    }
+                    if let Some(evl) = ext_data.evl {
+                        write!(f, ", evl={}", v(evl))?;
+                    }
+                }
+                InstructionData::VectorScatter { args, ext } => {
+                    let ext_data = &dfg.vector_mem_ext_pool[*ext];
+                    let vals = dfg.get_value_list(*args);
+                    let ptr = vals[0];
+                    let index = vals[1];
+                    let value = vals[2];
+                    write!(f, "scatter ")?;
+                    if ext_data.flags.is_trusted() {
+                        write!(f, "trusted ")?;
+                    }
+                    write!(f, "{}, {}, index={}", v(value), v(ptr), v(index))?;
+                    if ext_data.scale != 1 {
+                        write!(f, "* {}", ext_data.scale)?;
+                    }
+                    if let Some(mask) = ext_data.mask {
+                        write!(f, ", mask={}", v(mask))?;
+                    }
+                    if let Some(evl) = ext_data.evl {
+                        write!(f, ", evl={}", v(evl))?;
+                    }
+                }
+                InstructionData::Shuffle { args, mask } => {
+                    write!(
+                        f,
+                        "shuffle.{:?} {}, {}, mask={:?}",
+                        ty.unwrap(),
+                        v(args[0]),
+                        v(args[1]),
+                        mask
+                    )?;
                 }
             }
             writeln!(f)?;

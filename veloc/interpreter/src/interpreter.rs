@@ -16,6 +16,7 @@ pub struct Interpreter {
     pub stack_memory: Vec<u8>,
     pub frames: Vec<StackFrame>,
     args_buffer: Vec<InterpreterValue>,
+    dst_regs_buffer: Vec<u16>,
 }
 
 pub struct StackFrame {
@@ -24,7 +25,8 @@ pub struct StackFrame {
     pub pc: usize,
     pub base: usize,
     pub stack_base: usize,
-    pub dst_regs: Vec<u16>, // Where to put the results after returning (support multi-value)
+    pub dst_regs_start: usize,
+    pub dst_regs_count: usize,
 }
 
 impl Interpreter {
@@ -34,6 +36,7 @@ impl Interpreter {
             stack_memory: Vec::with_capacity(1024 * 1024),
             frames: Vec::with_capacity(128),
             args_buffer: Vec::with_capacity(32),
+            dst_regs_buffer: Vec::with_capacity(128),
         }
     }
 
@@ -70,7 +73,8 @@ impl Interpreter {
             pc: 0,
             base,
             stack_base,
-            dst_regs: Vec::new(),
+            dst_regs_start: 0,
+            dst_regs_count: 0,
         });
 
         self.execute(program, mem)
@@ -86,16 +90,16 @@ impl Interpreter {
         let mut mid = frame.mid;
 
         'main_loop: loop {
-            let code_ptr = func.code.as_ptr();
-            let code_len = func.code.len();
+            let mut pc_ptr = unsafe { func.code.as_ptr().add(pc) };
+            let code_end = unsafe { func.code.as_ptr().add(func.code.len()) };
             let mut values_ptr = self.value_stack.as_mut_ptr();
 
             macro_rules! read_u16 {
                 () => {{
                     let v = unsafe {
-                        let ptr = code_ptr.add(pc) as *const u16;
-                        pc += 2;
-                        u16::from_le(ptr.read_unaligned())
+                        let v = (pc_ptr as *const u16).read_unaligned();
+                        pc_ptr = pc_ptr.add(2);
+                        u16::from_le(v)
                     };
                     v
                 }};
@@ -113,19 +117,19 @@ impl Interpreter {
 
             macro_rules! bin_op {
                 ($op:ident, $u:ident, $w:ident, $method:ident) => {{
-                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let (d, l, r) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u();
                     let rv = reg_val!(r).$u();
                     *reg!(d) = InterpreterValue::$w(lv.$method(rv as _));
                 }};
                 ($op:ident, $u:ident, $w:ident, $builtin:tt) => {{
-                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let (d, l, r) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u();
                     let rv = reg_val!(r).$u();
                     *reg!(d) = InterpreterValue::$w(lv $builtin rv);
                 }};
                 ($op:ident, $u:ident, $w:ident, $builtin:tt, $as_ty:ty) => {{
-                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let (d, l, r) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u() as $as_ty;
                     let rv = reg_val!(r).$u() as $as_ty;
                     *reg!(d) = InterpreterValue::$w((lv $builtin rv) as _);
@@ -134,12 +138,12 @@ impl Interpreter {
 
             macro_rules! imm_op {
                 ($op:ident, $u:ident, $w:ident, $method:ident, $ity:ty) => {{
-                    let (d, l, i) = decode_into!($op, pc, code_ptr);
+                    let (d, l, i) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u();
                     *reg!(d) = InterpreterValue::$w(lv.$method(i as $ity as _));
                 }};
                 ($op:ident, $u:ident, $w:ident, $builtin:tt, $ity:ty) => {{
-                    let (d, l, i) = decode_into!($op, pc, code_ptr);
+                    let (d, l, i) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u();
                     *reg!(d) = InterpreterValue::$w(lv $builtin (i as $ity));
                 }};
@@ -147,54 +151,54 @@ impl Interpreter {
 
             macro_rules! cmp_op {
                 ($op:ident, $u:ident, $builtin:tt) => {{
-                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let (d, l, r) = decode_into!($op, pc_ptr);
                     *reg!(d) = InterpreterValue::bool(reg_val!(l).$u() $builtin reg_val!(r).$u());
                 }};
                 ($op:ident, $u:ident, $as_ty:ty, $builtin:tt) => {{
-                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let (d, l, r) = decode_into!($op, pc_ptr);
                     *reg!(d) = InterpreterValue::bool((reg_val!(l).$u() as $as_ty) $builtin (reg_val!(r).$u() as $as_ty));
                 }};
             }
 
             macro_rules! unary_op {
                 ($op:ident, $u:ident, $w:ident, $method:ident) => {{
-                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    let (d, s) = decode_into!($op, pc_ptr);
                     *reg!(d) = InterpreterValue::$w(reg_val!(s).$u().$method() as _);
                 }};
                 ($op:ident, $u:ident, $w:ident, $builtin:tt) => {{
-                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    let (d, s) = decode_into!($op, pc_ptr);
                     *reg!(d) = InterpreterValue::$w($builtin reg_val!(s).$u());
                 }};
             }
 
             macro_rules! cmp_zero_op {
                 ($op:ident, $u:ident) => {{
-                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    let (d, s) = decode_into!($op, pc_ptr);
                     *reg!(d) = InterpreterValue::bool(reg_val!(s).$u() == 0);
                 }};
             }
 
             macro_rules! conv_op {
                 ($op:ident, $u:ident, $w:ident, $ty:ty) => {{
-                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    let (d, s) = decode_into!($op, pc_ptr);
                     *reg!(d) = InterpreterValue::$w(reg_val!(s).$u() as $ty);
                 }};
                 ($op:ident, $u:ident, $w:ident, $ity:ty, $ty:ty) => {{
-                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    let (d, s) = decode_into!($op, pc_ptr);
                     *reg!(d) = InterpreterValue::$w(reg_val!(s).$u() as $ity as $ty);
                 }};
             }
 
             macro_rules! move_op {
                 ($op:ident) => {{
-                    let (d, s) = decode_into!($op, pc, code_ptr);
+                    let (d, s) = decode_into!($op, pc_ptr);
                     *reg!(d) = reg_val!(s);
                 }};
             }
 
             macro_rules! load_op {
                 ($op:ident, $w:ident, $ptr_ty:ty, $size:expr) => {{
-                    let (d, p, o) = decode_into!($op, pc, code_ptr);
+                    let (d, p, o) = decode_into!($op, pc_ptr);
                     let addr = reg_val!(p).unwarp_i64() as usize + o as usize;
                     let ptr = mem.translate_addr(addr, $size).expect("Segment fault");
                     *reg!(d) =
@@ -206,7 +210,7 @@ impl Interpreter {
 
             macro_rules! store_op {
                 ($op:ident, $u:ident, $ptr_ty:ty, $size:expr) => {{
-                    let (v, p, o) = decode_into!($op, pc, code_ptr);
+                    let (v, p, o) = decode_into!($op, pc_ptr);
                     let addr = reg_val!(p).unwarp_i64() as usize + o as usize;
                     let ptr = mem.translate_addr(addr, $size).expect("Segment fault");
                     #[allow(unused_unsafe)]
@@ -218,13 +222,13 @@ impl Interpreter {
 
             macro_rules! shift_op {
                 ($op:ident, $u:ident, $w:ident, $method:ident) => {{
-                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let (d, l, r) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u();
                     let rv = reg_val!(r).$u() as u32;
                     *reg!(d) = InterpreterValue::$w(lv.$method(rv));
                 }};
                 ($op:ident, $u:ident, $w:ident, $method:ident, $uty:ty) => {{
-                    let (d, l, r) = decode_into!($op, pc, code_ptr);
+                    let (d, l, r) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u() as $uty;
                     let rv = reg_val!(r).$u() as u32;
                     *reg!(d) = InterpreterValue::$w(lv.$method(rv) as _);
@@ -233,12 +237,12 @@ impl Interpreter {
 
             macro_rules! shift_imm_op {
                 ($op:ident, $u:ident, $w:ident, $method:ident) => {{
-                    let (d, l, i) = decode_into!($op, pc, code_ptr);
+                    let (d, l, i) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u();
                     *reg!(d) = InterpreterValue::$w(lv.$method(i as u32));
                 }};
                 ($op:ident, $u:ident, $w:ident, $method:ident, $uty:ty) => {{
-                    let (d, l, i) = decode_into!($op, pc, code_ptr);
+                    let (d, l, i) = decode_into!($op, pc_ptr);
                     let lv = reg_val!(l).$u() as $uty;
                     *reg!(d) = InterpreterValue::$w(lv.$method(i as u32) as _);
                 }};
@@ -402,7 +406,7 @@ impl Interpreter {
             }
 
             macro_rules! prepare_call {
-                ($target_mid:expr, $target_fid:expr, $dst_regs:expr, $args:expr) => {{
+                ($target_mid:expr, $target_fid:expr, $dst_regs_start:expr, $dst_regs_count:expr, $args:expr) => {{
                     if program.compiled_modules[$target_mid.0][$target_fid.0 as usize].is_none() {
                         panic!(
                             "Calling uncompiled function: mid={:?}, fid={:?}",
@@ -411,13 +415,15 @@ impl Interpreter {
                     }
 
                     let next_func = program.get_compiled_func($target_mid, $target_fid);
+                    let saved_pc = unsafe { pc_ptr.offset_from(func.code.as_ptr()) as usize };
                     self.frames.push(StackFrame {
                         mid,
                         func: func.clone(),
-                        pc,
+                        pc: saved_pc,
                         base,
                         stack_base,
-                        dst_regs: $dst_regs,
+                        dst_regs_start: $dst_regs_start,
+                        dst_regs_count: $dst_regs_count,
                     });
 
                     mid = $target_mid;
@@ -444,24 +450,28 @@ impl Interpreter {
                 }};
             }
 
-            while pc < code_len {
-                let opcode_byte = unsafe { *code_ptr.add(pc) };
-                pc += 1;
+            while pc_ptr < code_end {
+                let opcode_byte = unsafe { *pc_ptr };
+                pc_ptr = unsafe { pc_ptr.add(1) };
                 let opcode: Opcode = unsafe { core::mem::transmute(opcode_byte) };
 
                 match opcode {
                     // --- Constants ---
                     Opcode::Iconst => {
-                        let (d, v) = decode_into!(Iconst, pc, code_ptr);
+                        let (d, v) = decode_into!(Iconst, pc_ptr);
                         *reg!(d) = InterpreterValue::i64(v as i64);
                     }
                     Opcode::Fconst => {
-                        let (d, v) = decode_into!(Fconst, pc, code_ptr);
+                        let (d, v) = decode_into!(Fconst, pc_ptr);
                         *reg!(d) = InterpreterValue(v);
                     }
                     Opcode::Bconst => {
-                        let (d, v) = decode_into!(Bconst, pc, code_ptr);
+                        let (d, v) = decode_into!(Bconst, pc_ptr);
                         *reg!(d) = InterpreterValue::bool(v != 0);
+                    }
+                    Opcode::Vconst => {
+                        let (_d, _p) = decode_into!(Vconst, pc_ptr);
+                        todo!("Implement interpreter for vector constants")
                     }
 
                     // --- I32 Operations ---
@@ -597,13 +607,13 @@ impl Interpreter {
                     Opcode::I64TruncF64U => conv_op!(I64TruncF64U, unwarp_f64, i64, u64, i64),
                     // Saturating conversions
                     Opcode::I32TruncSatF32S => {
-                        let (d, s) = decode_into!(I32TruncSatF32S, pc, code_ptr);
+                        let (d, s) = decode_into!(I32TruncSatF32S, pc_ptr);
                         let val = reg_val!(s).unwarp_f32();
                         let res = if val.is_nan() { 0i32 } else { val as i32 };
                         *reg!(d) = InterpreterValue::i32(res);
                     }
                     Opcode::I32TruncSatF32U => {
-                        let (d, s) = decode_into!(I32TruncSatF32U, pc, code_ptr);
+                        let (d, s) = decode_into!(I32TruncSatF32U, pc_ptr);
                         let val = reg_val!(s).unwarp_f32();
                         let res = if val.is_nan() || val < 0.0 {
                             0u32
@@ -613,13 +623,13 @@ impl Interpreter {
                         *reg!(d) = InterpreterValue::i32(res as i32);
                     }
                     Opcode::I32TruncSatF64S => {
-                        let (d, s) = decode_into!(I32TruncSatF64S, pc, code_ptr);
+                        let (d, s) = decode_into!(I32TruncSatF64S, pc_ptr);
                         let val = reg_val!(s).unwarp_f64();
                         let res = if val.is_nan() { 0i32 } else { val as i32 };
                         *reg!(d) = InterpreterValue::i32(res);
                     }
                     Opcode::I32TruncSatF64U => {
-                        let (d, s) = decode_into!(I32TruncSatF64U, pc, code_ptr);
+                        let (d, s) = decode_into!(I32TruncSatF64U, pc_ptr);
                         let val = reg_val!(s).unwarp_f64();
                         let res = if val.is_nan() || val < 0.0 {
                             0u32
@@ -629,13 +639,13 @@ impl Interpreter {
                         *reg!(d) = InterpreterValue::i32(res as i32);
                     }
                     Opcode::I64TruncSatF32S => {
-                        let (d, s) = decode_into!(I64TruncSatF32S, pc, code_ptr);
+                        let (d, s) = decode_into!(I64TruncSatF32S, pc_ptr);
                         let val = reg_val!(s).unwarp_f32();
                         let res = if val.is_nan() { 0i64 } else { val as i64 };
                         *reg!(d) = InterpreterValue::i64(res);
                     }
                     Opcode::I64TruncSatF32U => {
-                        let (d, s) = decode_into!(I64TruncSatF32U, pc, code_ptr);
+                        let (d, s) = decode_into!(I64TruncSatF32U, pc_ptr);
                         let val = reg_val!(s).unwarp_f32();
                         let res = if val.is_nan() || val < 0.0 {
                             0u64
@@ -645,13 +655,13 @@ impl Interpreter {
                         *reg!(d) = InterpreterValue::i64(res as i64);
                     }
                     Opcode::I64TruncSatF64S => {
-                        let (d, s) = decode_into!(I64TruncSatF64S, pc, code_ptr);
+                        let (d, s) = decode_into!(I64TruncSatF64S, pc_ptr);
                         let val = reg_val!(s).unwarp_f64();
                         let res = if val.is_nan() { 0i64 } else { val as i64 };
                         *reg!(d) = InterpreterValue::i64(res);
                     }
                     Opcode::I64TruncSatF64U => {
-                        let (d, s) = decode_into!(I64TruncSatF64U, pc, code_ptr);
+                        let (d, s) = decode_into!(I64TruncSatF64U, pc_ptr);
                         let val = reg_val!(s).unwarp_f64();
                         let res = if val.is_nan() || val < 0.0 {
                             0u64
@@ -673,7 +683,7 @@ impl Interpreter {
                     Opcode::Wrap => conv_op!(Wrap, unwarp_i64, i32, i32),
                     Opcode::Bitcast => move_op!(Bitcast),
                     Opcode::ExtendS => {
-                        let (d, s, from_ty) = decode_into!(ExtendS, pc, code_ptr);
+                        let (d, s, from_ty) = decode_into!(ExtendS, pc_ptr);
                         let val = reg_val!(s).unwarp_i64();
                         let res = match from_ty {
                             EXTEND_TYPE_I8 => val as i8 as i64,
@@ -684,7 +694,7 @@ impl Interpreter {
                         *reg!(d) = InterpreterValue::i64(res);
                     }
                     Opcode::ExtendU => {
-                        let (d, s, from_ty) = decode_into!(ExtendU, pc, code_ptr);
+                        let (d, s, from_ty) = decode_into!(ExtendU, pc_ptr);
                         let val = reg_val!(s).unwarp_i64();
                         let res = match from_ty {
                             EXTEND_TYPE_I8 => (val as u8) as u64,
@@ -711,13 +721,13 @@ impl Interpreter {
 
                     // --- Stack Operations ---
                     Opcode::StackAddr => {
-                        let (d, o) = decode_into!(StackAddr, pc, code_ptr);
+                        let (d, o) = decode_into!(StackAddr, pc_ptr);
                         let addr = stack_base + o as usize;
                         let ptr = unsafe { self.stack_memory.as_ptr().add(addr) };
                         *reg!(d) = InterpreterValue::i64(ptr as i64);
                     }
                     Opcode::StackLoad => {
-                        let (d, o, ty) = decode_into!(StackLoad, pc, code_ptr);
+                        let (d, o, ty) = decode_into!(StackLoad, pc_ptr);
                         let addr = stack_base + o as usize;
                         let ptr = unsafe { self.stack_memory.as_ptr().add(addr) };
                         *reg!(d) = match ty {
@@ -746,7 +756,7 @@ impl Interpreter {
                         };
                     }
                     Opcode::StackStore => {
-                        let (v, o, ty) = decode_into!(StackStore, pc, code_ptr);
+                        let (v, o, ty) = decode_into!(StackStore, pc_ptr);
                         let addr = stack_base + o as usize;
                         let ptr = unsafe { self.stack_memory.as_mut_ptr().add(addr) };
                         let val = reg_val!(v);
@@ -775,17 +785,17 @@ impl Interpreter {
 
                     // --- Control Flow & Pointers ---
                     Opcode::Jump => {
-                        let target = decode_into!(Jump, pc, code_ptr);
-                        pc = target as usize;
+                        let target = decode_into!(Jump, pc_ptr);
+                        pc_ptr = unsafe { func.code.as_ptr().add(target as usize) };
                     }
                     Opcode::BrIf => {
-                        let (cond, target) = decode_into!(BrIf, pc, code_ptr);
+                        let (cond, target) = decode_into!(BrIf, pc_ptr);
                         if reg_val!(cond).unwarp_bool() {
-                            pc = target as usize;
+                            pc_ptr = unsafe { func.code.as_ptr().add(target as usize) };
                         }
                     }
                     Opcode::BrTable => {
-                        let (idx_reg, num_targets) = decode_into!(BrTable, pc, code_ptr);
+                        let (idx_reg, num_targets) = decode_into!(BrTable, pc_ptr);
                         let idx = reg_val!(idx_reg).unwarp_i32();
 
                         let target_idx = if idx >= 0 && (idx as u32) < (num_targets - 1) {
@@ -794,61 +804,84 @@ impl Interpreter {
                             0
                         };
 
-                        let target_pc_pos = pc + target_idx * 4;
                         let target_pc = unsafe {
-                            let ptr = code_ptr.add(target_pc_pos) as *const u32;
+                            let ptr = (pc_ptr as *const u32).add(target_idx);
                             u32::from_le(ptr.read_unaligned())
                         };
-                        pc = target_pc as usize;
+                        pc_ptr = unsafe { func.code.as_ptr().add(target_pc as usize) };
                     }
                     Opcode::Return => {
                         let num_vals: u16 = read_u16!();
-                        let mut return_vals = Vec::with_capacity(num_vals as usize);
-                        for _ in 0..num_vals {
-                            let reg = read_u16!();
-                            return_vals.push(reg_val!(reg));
-                        }
 
-                        self.value_stack.truncate(base);
-                        self.stack_memory.truncate(stack_base);
+                        // 1. Pop the current frame context
+                        let current_frame_base = base;
+                        let current_frame_stack_base = stack_base;
 
-                        // Pop the previous frame first to get caller's context
+                        // Pop the previous frame to get caller's context
                         let prev_frame = match self.frames.pop() {
                             Some(f) => f,
-                            None => return return_vals,
+                            None => {
+                                // Top-level completion: collect values into the final result
+                                let mut return_vals = Vec::with_capacity(num_vals as usize);
+                                for _ in 0..num_vals {
+                                    let reg = read_u16!();
+                                    return_vals.push(reg_val!(reg));
+                                }
+                                self.value_stack.truncate(current_frame_base);
+                                self.stack_memory.truncate(current_frame_stack_base);
+                                return return_vals;
+                            }
                         };
 
-                        // Restore caller's context
-                        let dst_regs = prev_frame.dst_regs;
+                        // 2. Prepare to copy return values before clearing the stack
+                        self.args_buffer.clear();
+                        for _ in 0..num_vals {
+                            let reg = read_u16!();
+                            self.args_buffer.push(reg_val!(reg));
+                        }
+
+                        // 3. Clear current frame resources
+                        self.value_stack.truncate(current_frame_base);
+                        self.stack_memory.truncate(current_frame_stack_base);
+
+                        // 4. Restore caller's context
+                        let dst_regs_start = prev_frame.dst_regs_start;
+                        let dst_regs_count = prev_frame.dst_regs_count;
                         pc = prev_frame.pc;
                         base = prev_frame.base;
                         stack_base = prev_frame.stack_base;
                         func = prev_frame.func.clone();
                         mid = prev_frame.mid;
 
-                        // Refresh the values pointer after stack operations
+                        // Refresh the values pointer after truncation
                         values_ptr = self.value_stack.as_mut_ptr();
 
-                        // Write return values to caller's destination registers
-                        for (i, &dst_reg) in dst_regs.iter().enumerate() {
-                            if i < return_vals.len() {
-                                *reg!(dst_reg) = return_vals[i];
+                        // 5. Write return values to caller's destination registers
+                        for i in 0..dst_regs_count {
+                            if i < self.args_buffer.len() {
+                                let dst_reg = self.dst_regs_buffer[dst_regs_start + i];
+                                *reg!(dst_reg) = self.args_buffer[i];
                             }
                         }
+                        // Truncate the dst_regs_buffer to the start of the current call's destinations
+                        self.dst_regs_buffer.truncate(dst_regs_start);
+
                         continue 'main_loop;
                     }
                     Opcode::Call => {
                         let num_rets: u16 = read_u16!();
                         let f_id: u32 = unsafe {
-                            let v = (code_ptr.add(pc) as *const u32).read_unaligned();
-                            pc += 4;
+                            let v = (pc_ptr as *const u32).read_unaligned();
+                            pc_ptr = pc_ptr.add(4);
                             u32::from_le(v)
                         };
                         let num_args: u16 = read_u16!();
-                        let mut dst_regs = Vec::with_capacity(num_rets as usize);
+
+                        let dst_regs_start = self.dst_regs_buffer.len();
                         for _ in 0..num_rets {
-                            dst_regs.push(read_u16!());
+                            self.dst_regs_buffer.push(read_u16!());
                         }
+
                         self.args_buffer.clear();
                         for _ in 0..num_args {
                             let arg_reg = read_u16!();
@@ -864,11 +897,13 @@ impl Interpreter {
                                         let host_func = &program.host_functions_list[*h_id];
                                         let res = host_func.call(&mut self.args_buffer);
                                         values_ptr = self.value_stack.as_mut_ptr();
-                                        if let Some(&dst) = dst_regs.first() {
+                                        if num_rets > 0 {
+                                            let dst = self.dst_regs_buffer[dst_regs_start];
                                             if dst != 0 {
                                                 *reg!(dst) = res;
                                             }
                                         }
+                                        self.dst_regs_buffer.truncate(dst_regs_start);
                                         continue;
                                     }
                                 }
@@ -876,16 +911,24 @@ impl Interpreter {
                                 (mid, target_fid)
                             };
 
-                        prepare_call!(call_mid, call_fid, dst_regs, self.args_buffer);
+                        prepare_call!(
+                            call_mid,
+                            call_fid,
+                            dst_regs_start,
+                            num_rets as usize,
+                            self.args_buffer
+                        );
                     }
                     Opcode::CallIndirect => {
                         let num_rets: u16 = read_u16!();
                         let ptr_reg: u16 = read_u16!();
                         let num_args: u16 = read_u16!();
-                        let mut dst_regs = Vec::with_capacity(num_rets as usize);
+
+                        let dst_regs_start = self.dst_regs_buffer.len();
                         for _ in 0..num_rets {
-                            dst_regs.push(read_u16!());
+                            self.dst_regs_buffer.push(read_u16!());
                         }
+
                         self.args_buffer.clear();
                         for _ in 0..num_args {
                             let arg_reg = read_u16!();
@@ -901,20 +944,28 @@ impl Interpreter {
                             let host_func = &program.host_functions_list[host_id];
                             let res = host_func.call(&mut self.args_buffer);
                             values_ptr = self.value_stack.as_mut_ptr();
-                            if let Some(&dst) = dst_regs.first() {
+                            if num_rets > 0 {
+                                let dst = self.dst_regs_buffer[dst_regs_start];
                                 if dst != 0 {
                                     *reg!(dst) = res;
                                 }
                             }
+                            self.dst_regs_buffer.truncate(dst_regs_start);
                             continue;
                         } else {
                             panic!("Invalid function pointer: {:x}", ptr_val);
                         };
 
-                        prepare_call!(call_mid, call_fid, dst_regs, self.args_buffer);
+                        prepare_call!(
+                            call_mid,
+                            call_fid,
+                            dst_regs_start,
+                            num_rets as usize,
+                            self.args_buffer
+                        );
                     }
                     Opcode::PtrIndex => {
-                        let (d, p, i, s, o) = decode_into!(PtrIndex, pc, code_ptr);
+                        let (d, p, i, s, o) = decode_into!(PtrIndex, pc_ptr);
                         let ptr = reg_val!(p).unwarp_i64();
                         let idx = reg_val!(i).unwarp_i64();
                         let res = ptr
@@ -923,7 +974,7 @@ impl Interpreter {
                         *reg!(d) = InterpreterValue::i64(res);
                     }
                     Opcode::Select => {
-                        let (dst, cond, t, e) = decode_into!(Select, pc, code_ptr);
+                        let (dst, cond, t, e) = decode_into!(Select, pc_ptr);
                         if reg_val!(cond).unwarp_bool() {
                             *reg!(dst) = reg_val!(t);
                         } else {
@@ -935,10 +986,12 @@ impl Interpreter {
                         let num_rets: u16 = read_u16!();
                         let intrinsic_id: u16 = read_u16!();
                         let num_args: u16 = read_u16!();
-                        let mut dst_regs = Vec::with_capacity(num_rets as usize);
+
+                        let dst_regs_start = self.dst_regs_buffer.len();
                         for _ in 0..num_rets {
-                            dst_regs.push(read_u16!());
+                            self.dst_regs_buffer.push(read_u16!());
                         }
+
                         self.args_buffer.clear();
                         for _ in 0..num_args {
                             let arg_reg = read_u16!();
@@ -947,11 +1000,13 @@ impl Interpreter {
 
                         let result = execute_intrinsic(intrinsic_id, &self.args_buffer);
                         values_ptr = self.value_stack.as_mut_ptr();
-                        if let Some(&dst) = dst_regs.first() {
+                        if num_rets > 0 {
+                            let dst = self.dst_regs_buffer[dst_regs_start];
                             if dst != 0 {
                                 *reg!(dst) = result;
                             }
                         }
+                        self.dst_regs_buffer.truncate(dst_regs_start);
                     }
                     Opcode::Unreachable => panic!("Unreachable code executed"),
                 }

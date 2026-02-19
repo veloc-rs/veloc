@@ -46,7 +46,7 @@ impl CodeGenContext {
 
         let builder = self.module_builder.as_mut().unwrap();
         let sig_id =
-            builder.make_signature(sig.params.to_vec(), sig.ret.to_vec(), CallConv::SystemV);
+            builder.make_signature(sig.params.to_vec(), sig.returns.to_vec(), CallConv::SystemV);
         let func_id = builder.declare_function(name, sig_id, Linkage::Export);
 
         let mut func_builder = builder.builder(func_id);
