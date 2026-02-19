@@ -165,12 +165,6 @@ pub enum InstructionData {
     Return {
         values: ValueList,
     },
-    /// 条件选择
-    Select {
-        condition: Value,
-        then_val: Value,
-        else_val: Value,
-    },
     /// 整数比较
     IntCompare {
         kind: IntCC,
@@ -338,16 +332,6 @@ impl InstructionData {
                     f(v);
                 }
             }
-            InstructionData::Select {
-                condition,
-                then_val,
-                else_val,
-                ..
-            } => {
-                f(*condition);
-                f(*then_val);
-                f(*else_val);
-            }
             InstructionData::IntCompare { args, .. } => {
                 f(args[0]);
                 f(args[1]);
@@ -460,7 +444,6 @@ impl InstructionData {
             InstructionData::Br { .. } => Opcode::Br,
             InstructionData::BrTable { .. } => Opcode::BrTable,
             InstructionData::Return { .. } => Opcode::Return,
-            InstructionData::Select { .. } => Opcode::Select,
             InstructionData::IntCompare { .. } => Opcode::Icmp,
             InstructionData::FloatCompare { .. } => Opcode::Fcmp,
             InstructionData::Unreachable => Opcode::Unreachable,

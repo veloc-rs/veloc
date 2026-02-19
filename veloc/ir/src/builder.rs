@@ -163,8 +163,14 @@ impl<'a> FunctionBuilder<'a> {
                 smallvec![Type::BOOL]
             }
 
-            // Select: result type same as then_val/else_val
-            InstructionData::Select { then_val, .. } => smallvec![self.value_type(*then_val)],
+            // Ternary ops: Select result type same as then_val (args[1]), others same as first operand
+            InstructionData::Ternary { opcode, args, .. } => {
+                if *opcode == Opcode::Select {
+                    smallvec![self.value_type(args[1])]  // then_val
+                } else {
+                    smallvec![self.value_type(args[0])]
+                }
+            }
 
             // Instructions that never produce a value
             InstructionData::Store { .. }
@@ -196,17 +202,6 @@ impl<'a> FunctionBuilder<'a> {
                 .collect(),
 
             // Vector operations that require explicit type
-            InstructionData::Ternary { opcode, args, .. } => {
-                // For most ternary ops, result type is same as first operand
-                // ExtractElement is an exception - it returns scalar element type
-                if *opcode == Opcode::ExtractElement {
-                    panic!(
-                        "ExtractElement requires explicit type annotation via push_inst_with_type"
-                    )
-                }
-                smallvec![self.value_type(args[0])]
-            }
-
             InstructionData::VectorOpWithExt { args, .. } => {
                 // Result type same as first operand
                 smallvec![self.value_type(args.as_slice(&self.func().dfg.value_list_pool())[0])]
@@ -1327,10 +1322,9 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             self.builder.value_type(else_val),
             "Select types must match"
         );
-        self.push(InstructionData::Select {
-            condition,
-            then_val,
-            else_val,
+        self.push(InstructionData::Ternary {
+            opcode: Opcode::Select,
+            args: [condition, then_val, else_val],
         })
         .unwrap()
     }

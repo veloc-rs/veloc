@@ -1278,45 +1278,45 @@ impl TargetBackend for X86_64Backend {
                     }
                 }
             }
-            InstructionData::Select {
-                condition,
-                then_val,
-                else_val,
-                ..
-            } => {
-                let ty = func.dfg.values[*then_val].ty.clone();
-                let is_64 = self.is_64(&ty);
-                self.emit_load_val(emitter, func, *condition, Reg::RAX);
-                emitter.emit_inst(X86_64Inst::TestRaxRax);
+            // Vector operations - not yet implemented in backend
+            InstructionData::Ternary { opcode, args } => {
+                if *opcode == Opcode::Select {
+                    let condition = args[0];
+                    let then_val = args[1];
+                    let else_val = args[2];
+                    let ty = func.dfg.values[then_val].ty.clone();
+                    let is_64 = self.is_64(&ty);
+                    self.emit_load_val(emitter, func, condition, Reg::RAX);
+                    emitter.emit_inst(X86_64Inst::TestRaxRax);
 
-                let offset_else = self.val_offset(func, *else_val);
-                let offset_then = self.val_offset(func, *then_val);
+                    let offset_else = self.val_offset(func, else_val);
+                    let offset_then = self.val_offset(func, then_val);
 
-                if is_64 {
-                    emitter
-                        .inst(X86_64Inst::MovRRbpOff)
-                        .reg(Reg::RAX)
-                        .imm(offset_else as u64)
-                        .emit();
-                    emitter
-                        .inst(X86_64Inst::MovRRbpOff)
-                        .reg(Reg::RBX)
-                        .imm(offset_then as u64)
-                        .emit();
-                    emitter.emit_inst(X86_64Inst::CmovnzRaxRbx64);
-                } else {
-                    emitter
-                        .inst(X86_64Inst::MovR32RbpOff)
-                        .reg(Reg::RAX)
-                        .imm(offset_else as u64)
-                        .emit();
-                    emitter
-                        .inst(X86_64Inst::MovR32RbpOff)
-                        .reg(Reg::RBX)
-                        .imm(offset_then as u64)
-                        .emit();
-                    emitter.emit_inst(X86_64Inst::CmovnzRaxRbx);
-                }
+                    if is_64 {
+                        emitter
+                            .inst(X86_64Inst::MovRRbpOff)
+                            .reg(Reg::RAX)
+                            .imm(offset_else as u64)
+                            .emit();
+                        emitter
+                            .inst(X86_64Inst::MovRRbpOff)
+                            .reg(Reg::RBX)
+                            .imm(offset_then as u64)
+                            .emit();
+                        emitter.emit_inst(X86_64Inst::CmovnzRaxRbx64);
+                    } else {
+                        emitter
+                            .inst(X86_64Inst::MovR32RbpOff)
+                            .reg(Reg::RAX)
+                            .imm(offset_else as u64)
+                            .emit();
+                        emitter
+                            .inst(X86_64Inst::MovR32RbpOff)
+                            .reg(Reg::RBX)
+                            .imm(offset_then as u64)
+                            .emit();
+                        emitter.emit_inst(X86_64Inst::CmovnzRaxRbx);
+                    }
 
                 if let Some(&v) = res_vals.first() {
                     let offset_res = self.val_offset(func, v);
@@ -1334,6 +1334,9 @@ impl TargetBackend for X86_64Backend {
                             .emit();
                     }
                 }
+            } else {
+                todo!("Implement codegen for ternary vector operations")
+            }
             }
             InstructionData::FloatCompare { kind, args } => {
                 let lhs_ty = func.dfg.values[args[0]].ty.clone();
@@ -1388,10 +1391,6 @@ impl TargetBackend for X86_64Backend {
             }
             InstructionData::CallIntrinsic { .. } => {
                 todo!("Implement codegen for intrinsic calls")
-            }
-            // Vector operations - not yet implemented in backend
-            InstructionData::Ternary { .. } => {
-                todo!("Implement codegen for ternary vector operations")
             }
             InstructionData::VectorOpWithExt { .. } => {
                 todo!("Implement codegen for masked vector operations")

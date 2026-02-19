@@ -453,12 +453,12 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
             let current_ir_inst_idx = liveness.inst_pcs[inst];
             let idata = &func.dfg.instructions[inst];
             let res_vals = func.dfg.inst_results(inst);
-            
+
             // Allocate registers for all results
             for &res in res_vals {
                 mapper.alloc_and_map(res);
             }
-            
+
             let dst = res_vals.first().map(|&v| mapper.map[v]).unwrap_or(0);
 
             match idata {
@@ -822,7 +822,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     }
                 }
                 InstructionData::Jump { dest } => {
-                    emit_moves(func, *dest, &mut mapper, &mut code, current_ir_inst_idx);
+                    emit_moves(func, *dest, &mut mapper, &mut code);
                     let pos = code.len() + 1; // After Opcode::Jump
                     emit::Jump(&mut code, 0);
                     jump_fixups.push((pos, func.dfg.block_calls[*dest].block));
@@ -837,13 +837,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     emit::BrIf(&mut code, cond_reg, 0);
 
                     // Else branch (fallthrough or jump)
-                    emit_moves(
-                        func,
-                        *else_dest,
-                        &mut mapper,
-                        &mut code,
-                        current_ir_inst_idx,
-                    );
+                    emit_moves(func, *else_dest, &mut mapper, &mut code);
                     let else_pos = code.len() + 1;
                     emit::Jump(&mut code, 0);
                     jump_fixups.push((else_pos, func.dfg.block_calls[*else_dest].block));
@@ -852,13 +846,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     let then_pc = code.len() as u32;
                     code[then_patch_pos..then_patch_pos + 4]
                         .copy_from_slice(&then_pc.to_le_bytes());
-                    emit_moves(
-                        func,
-                        *then_dest,
-                        &mut mapper,
-                        &mut code,
-                        current_ir_inst_idx,
-                    );
+                    emit_moves(func, *then_dest, &mut mapper, &mut code);
                     let then_pos = code.len() + 1;
                     emit::Jump(&mut code, 0);
                     jump_fixups.push((then_pos, func.dfg.block_calls[*then_dest].block));
@@ -879,13 +867,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     let mut targets_pcs = Vec::new();
                     for target_call in table_data.iter() {
                         targets_pcs.push(code.len() as u32);
-                        emit_moves(
-                            func,
-                            *target_call,
-                            &mut mapper,
-                            &mut code,
-                            current_ir_inst_idx,
-                        );
+                        emit_moves(func, *target_call, &mut mapper, &mut code);
                         let jump_pos = code.len() + 1;
                         emit::Jump(&mut code, 0);
                         jump_fixups.push((jump_pos, func.dfg.block_calls[*target_call].block));
@@ -917,17 +899,6 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                             kind, operand_ty
                         );
                     }
-                }
-                InstructionData::Select {
-                    condition,
-                    then_val,
-                    else_val,
-                    ..
-                } => {
-                    let cond_reg = mapper.get_mapped(*condition);
-                    let then_reg = mapper.get_mapped(*then_val);
-                    let else_reg = mapper.get_mapped(*else_val);
-                    emit::Select(&mut code, dst, cond_reg, then_reg, else_reg);
                 }
                 InstructionData::Return { values } => {
                     let ret_vals: Vec<_> =
@@ -1299,8 +1270,15 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                     emit::Unreachable(&mut code);
                 }
                 // Vector operations - not yet implemented in interpreter
-                InstructionData::Ternary { .. } => {
-                    todo!("Implement interpreter for ternary vector operations")
+                InstructionData::Ternary { opcode, args } => {
+                    if *opcode == IrOpcode::Select {
+                        let cond_reg = mapper.get_mapped(args[0]);
+                        let then_reg = mapper.get_mapped(args[1]);
+                        let else_reg = mapper.get_mapped(args[2]);
+                        emit::Select(&mut code, dst, cond_reg, then_reg, else_reg);
+                    } else {
+                        todo!("Implement interpreter for ternary vector operations")
+                    }
                 }
                 InstructionData::VectorOpWithExt { .. } => {
                     todo!("Implement interpreter for masked vector operations")
@@ -1370,14 +1348,13 @@ fn emit_moves(
     call: veloc_ir::types::BlockCall,
     mapper: &mut ValueMapper,
     code: &mut Vec<u8>,
-    _current_pc: u32,
 ) {
     let target_block = func.dfg.block_calls[call].block;
     let args = func.dfg.get_value_list(func.dfg.block_calls[call].args);
     let params = &func.layout.blocks[target_block].params;
 
-    // 1. Collect all move requests
-    let mut moves: Vec<(u16, u16)> = Vec::new();
+    // 1. Collect all move requests with pre-allocated capacity
+    let mut moves: Vec<(u16, u16)> = Vec::with_capacity(params.len());
     for (&p, &a) in params.iter().zip(args.iter()) {
         let d = mapper.alloc_and_map(p);
         let s = mapper.get_mapped(a);
@@ -1388,8 +1365,6 @@ fn emit_moves(
 
     // 2. Resolve parallel moves
     while !moves.is_empty() {
-        let mut progress = false;
-
         // Try to find a move whose destination is not used as a source by any other move
         let mut best_i = None;
         for i in 0..moves.len() {
@@ -1406,23 +1381,28 @@ fn emit_moves(
         }
 
         if let Some(i) = best_i {
-            let (dst, src) = moves.remove(i);
+            // Use swap_remove for O(1) removal instead of O(n)
+            let (dst, src) = moves.swap_remove(i);
             emit::RegMove(code, dst, src);
-            progress = true;
+            continue;
         }
 
-        if !progress {
-            // 3. Cycle detected. We need to break it by using a temporary register.
-            // Pick the first move (d, s) and save s to a temp register.
-            let (d, s) = moves.remove(0);
-            let temp = mapper.next_register;
+        // 3. Cycle detected. We need to break it by using a temporary register.
+        // Pick the first move (d, s) and save s to a temp register.
+        // Use swap_remove for O(1) removal
+        let (d, s) = moves.swap_remove(0);
+        
+        // Prefer reusing a free register over allocating a new one
+        let temp = mapper.free_registers.pop().unwrap_or_else(|| {
+            let r = mapper.next_register;
             mapper.next_register += 1;
+            r
+        });
 
-            emit::RegMove(code, temp, s);
+        emit::RegMove(code, temp, s);
 
-            // Replace (d, s) with (d, temp). Since temp is fresh, (d, temp)
-            // will eventually be considered safe to move into d.
-            moves.push((d, temp));
-        }
+        // Replace (d, s) with (d, temp). Since temp is fresh, (d, temp)
+        // will eventually be considered safe to move into d.
+        moves.push((d, temp));
     }
 }

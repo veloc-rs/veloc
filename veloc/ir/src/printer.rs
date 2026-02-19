@@ -360,20 +360,6 @@ fn write_function_template(f: &mut dyn Write, func: &Function, module: Option<&M
                         write!(f, ")")?;
                     }
                 }
-                InstructionData::Select {
-                    condition,
-                    then_val,
-                    else_val,
-                } => {
-                    write!(
-                        f,
-                        "select.{:?} {}, {}, {}",
-                        ty.unwrap(),
-                        v(*condition),
-                        v(*then_val),
-                        v(*else_val)
-                    )?;
-                }
                 InstructionData::IntCompare { kind, args } => {
                     write!(
                         f,

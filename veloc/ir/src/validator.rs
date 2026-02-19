@@ -652,33 +652,6 @@ impl Function {
                     }
                 }
             }
-            InstructionData::Select {
-                condition,
-                then_val,
-                else_val,
-            } => {
-                let cond_ty = val_ty(*condition);
-                if cond_ty != Type::BOOL {
-                    return Err(ValidationError::ConditionNotBool(inst, cond_ty).into());
-                }
-                let t_ty = val_ty(*then_val);
-                let f_ty = val_ty(*else_val);
-                // Get the result type from the instruction first result
-                let result_ty = dfg
-                    .inst_results(inst)
-                    .first()
-                    .map(|&v| val_ty(v))
-                    .unwrap_or(Type::VOID);
-                if t_ty != f_ty || t_ty != result_ty {
-                    return Err(ValidationError::SelectMismatch {
-                        inst,
-                        expected: result_ty,
-                        then_val: t_ty,
-                        else_val: f_ty,
-                    }
-                    .into());
-                }
-            }
             InstructionData::IntCompare { args, .. }
             | InstructionData::FloatCompare { args, .. } => {
                 let lhs_ty = val_ty(args[0]);
@@ -718,8 +691,27 @@ impl Function {
                 let arg1_ty = val_ty(args[1]);
                 let arg2_ty = val_ty(args[2]);
 
-                // For most ternary ops, first two args should have same type
-                if matches!(opcode, Opcode::InsertElement) {
+                if *opcode == Opcode::Select {
+                    // Select: condition(bool), then_val, else_val
+                    if arg0_ty != Type::BOOL {
+                        return Err(ValidationError::ConditionNotBool(inst, arg0_ty).into());
+                    }
+                    // Get the result type from the instruction first result
+                    let result_ty = dfg
+                        .inst_results(inst)
+                        .first()
+                        .map(|&v| val_ty(v))
+                        .unwrap_or(Type::VOID);
+                    if arg1_ty != arg2_ty || arg1_ty != result_ty {
+                        return Err(ValidationError::SelectMismatch {
+                            inst,
+                            expected: result_ty,
+                            then_val: arg1_ty,
+                            else_val: arg2_ty,
+                        }
+                        .into());
+                    }
+                } else if matches!(opcode, Opcode::InsertElement) {
                     // InsertElement: vector, scalar, index
                     if !arg2_ty.is_integer() {
                         return Err(ValidationError::OperandTypeMismatch {
