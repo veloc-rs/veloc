@@ -1,7 +1,6 @@
 #[cfg(feature = "std")]
 extern crate std;
 
-#[macro_use]
 extern crate alloc;
 
 pub mod builder;

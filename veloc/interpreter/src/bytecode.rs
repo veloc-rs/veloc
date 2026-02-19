@@ -340,12 +340,9 @@ impl ValueMapper {
     }
 
     fn free_if_last_use(&mut self, val: Value, pc: u32) {
-        let interval = self.intervals[val];
-        // Check if interval was initialized (start != 0 or we can check via a sentinel value)
-        // Since SecondaryMap returns default (start=0, end=0) for unset values,
-        // we need to check if this is a real interval or default
-        if interval.start != 0 || interval.end != 0 {
-            if interval.end <= pc {
+        let interval = &self.intervals[val];
+        if !interval.ranges.is_empty() {
+            if interval.end() <= pc {
                 let reg = self.map[val];
                 if reg != 0 {
                     self.map[val] = 0;
@@ -371,7 +368,9 @@ fn try_emit_inline_intrinsic(
 }
 
 pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -> CompiledFunction {
-    let intervals = analyze_liveness(func).intervals;
+    let liveness = analyze_liveness(func);
+    let entry = func.entry_block.expect("Function must have entry block");
+    let rpo = func.layout.compute_rpo(entry);
 
     let mut slot_to_offset: SecondaryMap<StackSlot, u32> = SecondaryMap::new();
     let mut current_offset = 0u32;
@@ -380,7 +379,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
         current_offset += data.size;
     }
 
-    let mut mapper = ValueMapper::new(intervals);
+    let mut mapper = ValueMapper::new(liveness.intervals);
     let mut code = Vec::new();
     let mut param_indices = Vec::new();
     let mut block_to_pc: SecondaryMap<Block, u32> = SecondaryMap::new();
@@ -441,25 +440,26 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
         }
     }
 
-    let mut current_ir_inst_idx = 0;
-    for &block in &func.layout.block_order {
+    for &block in &rpo {
         block_to_pc[block] = code.len() as u32;
         let block_data = &func.layout.blocks[block];
 
-        // Ensure all parameters of this block are mapped
         // Ensure all parameters of this block are mapped
         for &param in &block_data.params {
             mapper.alloc_and_map(param);
         }
 
         for &inst in &block_data.insts {
+            let current_ir_inst_idx = liveness.inst_pcs[inst];
             let idata = &func.dfg.instructions[inst];
             let res_vals = func.dfg.inst_results(inst);
-            // TODO: 完整支持多返回值的寄存器分配
-            let dst = res_vals
-                .first()
-                .map(|&v| mapper.alloc_and_map(v))
-                .unwrap_or(0);
+            
+            // Allocate registers for all results
+            for &res in res_vals {
+                mapper.alloc_and_map(res);
+            }
+            
+            let dst = res_vals.first().map(|&v| mapper.map[v]).unwrap_or(0);
 
             match idata {
                 InstructionData::Iconst { value } => {
@@ -1327,10 +1327,10 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
             idata.visit_operands(&func.dfg, |v| {
                 mapper.free_if_last_use(v, current_ir_inst_idx)
             });
-            if let Some(&rv) = res_vals.first() {
-                mapper.free_if_last_use(rv, current_ir_inst_idx);
+            for &rv in res_vals {
+                // Results are defined at pc + 1
+                mapper.free_if_last_use(rv, current_ir_inst_idx + 1);
             }
-            current_ir_inst_idx += 1;
         }
     }
 

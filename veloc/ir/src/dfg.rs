@@ -222,30 +222,6 @@ impl DataFlowGraph {
         &self.jump_tables[table].targets
     }
 
-    pub fn analyze_successors(&self, inst: Inst) -> Vec<Block> {
-        match &self.instructions[inst] {
-            InstructionData::Jump { dest } => vec![self.block_call_block(*dest)],
-            InstructionData::Br {
-                then_dest,
-                else_dest,
-                ..
-            } => {
-                vec![
-                    self.block_call_block(*then_dest),
-                    self.block_call_block(*else_dest),
-                ]
-            }
-            InstructionData::BrTable { table, .. } => {
-                let mut succs = Vec::new();
-                for &target_call in self.jump_table_targets(*table) {
-                    succs.push(self.block_call_block(target_call));
-                }
-                succs
-            }
-            _ => vec![],
-        }
-    }
-
     pub fn remove_inst(&mut self, inst: Inst) {
         self.instructions[inst] = InstructionData::Nop;
         self.inst_results[inst] = ValueList::default();
