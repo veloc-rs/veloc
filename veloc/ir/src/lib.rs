@@ -40,10 +40,7 @@ pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{Global, Linkage, Module, ModuleData};
 pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 // Re-export text format module
-pub use text::{
-    fmt, parse_function, parse_module, fmt_type, parse_type_ir, 
-    format as text_format, IRFormat, ParseError,
-};
+pub use text::{FuncParser, ModuleParser, ParseError, format as text_format};
 pub use types::{
     Block, BlockCall, FuncId, JumpTable, ScalarType, SigId, Signature, StackSlot, Type, Value,
     ValueDef, ValueList, Variable, VectorKind,

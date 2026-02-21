@@ -1,38 +1,58 @@
 //! IR 文本解析器
 //!
-//! 将 IR 文本格式解析回 IR 数据结构。
+//! 使用 chumsky 实现的高性能、高可读性解析器。
 //! 这是 printer.rs 的逆操作。
 
 use crate::{
+    CallConv, Result,
     function::{Function, StackSlotData},
-    inst::InstructionData,
+    inst::{ConstantPoolId, InstructionData, VectorExtData, VectorMemExtData},
     module::{Linkage, Module},
     opcode::{FloatCC, IntCC, MemFlags, Opcode},
     types::{
-        Block, BlockCall, BlockCallData, FuncId, ScalarType, SigId,
-        Signature, StackSlot, Type, Value, ValueData, ValueDef,
+        Block, BlockCallData, FuncId, SigId, Signature, StackSlot, Type, Value, ValueData, ValueDef,
     },
-    CallConv, Result,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use chumsky::prelude::*;
 use hashbrown::HashMap;
+
+pub use super::format;
+use super::format::*;
 
 /// 解析错误
 #[derive(Debug, Clone)]
 pub struct ParseError(pub String);
 
-/// 从文本解析 IR Module
-pub fn parse_module(input: &str) -> Result<Module> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Err(ParseError("Empty input".to_string()).into());
+impl core::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
     }
-    
-    // 检查是否是函数定义
-    if input.starts_with("local") || input.starts_with("export") || input.starts_with("import") {
-        let func = parse_function(input)?;
-        // 创建一个包含单个函数的模块
+}
+
+/// 模块解析步骤数据
+pub struct ModuleParser {}
+
+impl Default for ModuleParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ModuleParser {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub fn parse(&mut self, input: &str) -> Result<Module> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err(ParseError("Empty input".to_string()).into());
+        }
+
+        let mut func_parser = FuncParser::new();
+        let func = func_parser.parse(input)?;
         let mut module_data = crate::module::ModuleData::default();
         let sig = Signature::new(vec![], vec![], CallConv::SystemV);
         let sig_id = module_data.intern_signature(sig);
@@ -41,986 +61,965 @@ pub fn parse_module(input: &str) -> Result<Module> {
         module_data.functions[FuncId(0)].layout = func.layout;
         module_data.functions[FuncId(0)].stack_slots = func.stack_slots;
         module_data.functions[FuncId(0)].entry_block = func.entry_block;
-        return Ok(Module::new(module_data));
+        Ok(Module::new(module_data))
     }
-    
-    // TODO: 解析完整的模块格式
-    Err(ParseError("Module parsing not fully implemented".to_string()).into())
 }
 
-/// 从文本解析单个函数
-pub fn parse_function(input: &str) -> Result<Function> {
-    let lines_vec: Vec<&str> = input.lines().collect();
-    let mut lines = alloc::collections::VecDeque::from(lines_vec);
-    
-    // 解析函数签名行
-    let sig_line = lines.pop_front().ok_or_else(|| ParseError("Empty input".to_string()))?;
-    let (name, linkage, params, returns) = parse_signature(sig_line)?;
-    
-    let _sig = Signature::new(params, returns, CallConv::SystemV);
-    let sig_id = SigId(0);
-    let mut func = Function::new(name, sig_id, linkage);
-    
-    // 解析函数体
-    let mut ctx = ParseContext::new();
-    
-    while let Some(line) = lines.pop_front() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        
-        // 解析栈槽定义
-        if line.starts_with("ss") {
-            parse_stack_slot(line, &mut func)?;
-            continue;
-        }
-        
-        // 解析基本块
-        if line.contains(':') && !line.contains('=') {
-            let mut block_lines = alloc::collections::VecDeque::new();
-            block_lines.push_back(line);
-            
-            // 收集块的所有行
-            while let Some(next_line) = lines.pop_front() {
-                let trimmed = next_line.trim();
-                if trimmed.is_empty() {
-                    continue;
+/// 解析上下文：管理值和基本块的映射
+pub struct ParseContext {
+    pub value_map: HashMap<String, Value>,
+    pub block_map: HashMap<String, Block>,
+    pub next_value_idx: u32,
+}
+
+/// 函数解析器
+pub struct FuncParser {
+    pub ctx: ParseContext,
+}
+
+impl Default for FuncParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn identifier<'a>() -> impl Parser<'a, &'a str, String, extra::Err<Simple<'a, char>>> + Clone {
+    any()
+        .filter(|c: &char| c.is_ascii_alphabetic() || *c == '_')
+        .then(
+            any()
+                .filter(|c: &char| c.is_ascii_alphanumeric() || matches!(*c, '_' | '.' | '-'))
+                .repeated()
+                .collect::<Vec<char>>(),
+        )
+        .map(|(c, mut rest)| {
+            rest.insert(0, c);
+            rest.into_iter().collect::<String>()
+        })
+}
+
+fn type_parser<'a>() -> impl Parser<'a, &'a str, Type, extra::Err<Simple<'a, char>>> + Clone {
+    let simple = choice((
+        just("i8"),
+        just("i16"),
+        just("i32"),
+        just("i64"),
+        just("f32"),
+        just("f64"),
+        just("bool"),
+        just("ptr"),
+        just("void"),
+    ));
+
+    let vector = just('<')
+        .ignore_then(
+            any()
+                .filter(|c: &char| *c != '>')
+                .repeated()
+                .collect::<String>(),
+        )
+        .then_ignore(just('>'))
+        .map(|s| format!("<{}>", s));
+
+    simple
+        .map(|s| s.to_string())
+        .or(vector)
+        .try_map(|s, span| parse_type(&s).ok_or_else(|| Simple::new(None, span)))
+}
+
+fn value_name_parser<'a>() -> impl Parser<'a, &'a str, String, extra::Err<Simple<'a, char>>> + Clone
+{
+    identifier()
+}
+
+fn block_id_parser<'a>() -> impl Parser<'a, &'a str, u32, extra::Err<Simple<'a, char>>> + Clone {
+    just("block").ignore_then(text::int(10).from_str().unwrapped())
+}
+
+fn block_call_parser<'a>()
+-> impl Parser<'a, &'a str, (u32, Vec<String>), extra::Err<Simple<'a, char>>> + Clone {
+    block_id_parser().then(
+        value_name_parser()
+            .padded()
+            .separated_by(just(','))
+            .allow_trailing()
+            .collect::<Vec<String>>()
+            .delimited_by(just('('), just(')')),
+    )
+}
+
+fn stack_slot_id_parser<'a>() -> impl Parser<'a, &'a str, u32, extra::Err<Simple<'a, char>>> + Clone
+{
+    just("ss").ignore_then(text::int(10).from_str().unwrapped())
+}
+
+fn opcode_parts_parser<'a>()
+-> impl Parser<'a, &'a str, (String, Option<Type>, MemFlags), extra::Err<Simple<'a, char>>> + Clone
+{
+    identifier()
+        .then(
+            just('.')
+                .ignore_then(identifier())
+                .repeated()
+                .collect::<Vec<String>>()
+                .map(|parts| {
+                    let mut ty = None;
+                    let mut flags = MemFlags::new();
+                    for part in parts {
+                        if let Some(t) = parse_type(&part) {
+                            ty = Some(t);
+                        } else if part == "trusted" {
+                            flags = flags.union(MemFlags::TRUSTED);
+                        } else if part.starts_with("align") {
+                            if let Ok(align) = part["align".len()..].parse::<u32>() {
+                                flags = flags.with_alignment(align);
+                            }
+                        }
+                    }
+                    (ty, flags)
+                }),
+        )
+        .map(|(opcode, (ty, flags))| (opcode, ty, flags))
+}
+
+fn result_names_parser<'a>()
+-> impl Parser<'a, &'a str, Vec<String>, extra::Err<Simple<'a, char>>> + Clone {
+    let single = identifier().map(|s| vec![s]);
+    let multiple = identifier()
+        .padded()
+        .separated_by(just(','))
+        .at_least(1)
+        .collect::<Vec<String>>()
+        .delimited_by(just('('), just(')'));
+    multiple.or(single).then_ignore(just('=').padded())
+}
+
+#[derive(Default)]
+struct ParsedVMemExt {
+    stride: Option<String>,
+    index: Option<String>,
+    scale: u32,
+    mask: Option<String>,
+    evl: Option<String>,
+}
+
+fn vector_ext_parser<'a>()
+-> impl Parser<'a, &'a str, ParsedVMemExt, extra::Err<Simple<'a, char>>> + Clone {
+    let stride = just("stride=")
+        .ignore_then(value_name_parser())
+        .map(|v| (format::STRIDE, (v, 1)));
+    let index = just("index=")
+        .ignore_then(value_name_parser())
+        .then(
+            just("*")
+                .padded()
+                .ignore_then(text::int(10).from_str::<u32>().unwrapped())
+                .or_not()
+                .map(|v| v.unwrap_or(1)),
+        )
+        .map(|(v, s)| (format::INDEX, (v, s)));
+    let mask = just("mask=")
+        .ignore_then(value_name_parser())
+        .map(|v| (format::MASK, (v, 1)));
+    let evl = just("evl=")
+        .ignore_then(value_name_parser())
+        .map(|v| (format::EVL, (v, 1)));
+
+    choice((stride, index, mask, evl))
+        .padded()
+        .separated_by(just(','))
+        .allow_trailing()
+        .collect::<Vec<(&str, (String, u32))>>()
+        .map(|fields| {
+            let mut ext = ParsedVMemExt {
+                scale: 1,
+                ..Default::default()
+            };
+            for (key, (v, s)) in fields {
+                match key {
+                    format::STRIDE => ext.stride = Some(v),
+                    format::INDEX => {
+                        ext.index = Some(v);
+                        ext.scale = s;
+                    }
+                    format::MASK => ext.mask = Some(v),
+                    format::EVL => ext.evl = Some(v),
+                    _ => unreachable!(),
                 }
-                // 检查是否是新块的开始
-                if trimmed.ends_with(':') && !trimmed.contains('=') && !trimmed.starts_with("ss") {
-                    // 这是下一个块的开始，把它放回去
-                    lines.push_front(next_line);
-                    break;
-                }
-                // 检查是否是下一个函数
-                if trimmed.starts_with("local") || trimmed.starts_with("export") || 
-                   trimmed.starts_with("import") || trimmed.starts_with("global") {
-                    lines.push_front(next_line);
-                    break;
-                }
-                block_lines.push_back(trimmed);
             }
-            
-            parse_block_lines(block_lines, &mut func, &mut ctx)?;
-            continue;
-        }
-    }
-    
-    Ok(func)
+            ext
+        })
 }
 
-/// 解析上下文
-struct ParseContext {
-    value_map: HashMap<String, Value>,
-    block_map: HashMap<String, Block>,
-    next_value_idx: u32,
-}
+// ==================== FuncParser Implementation ====================
 
-impl ParseContext {
-    fn new() -> Self {
+impl FuncParser {
+    pub fn new() -> Self {
         Self {
-            value_map: HashMap::new(),
-            block_map: HashMap::new(),
-            next_value_idx: 0,
+            ctx: ParseContext {
+                value_map: HashMap::new(),
+                block_map: HashMap::new(),
+                next_value_idx: 0,
+            },
         }
     }
-    
-    fn get_or_create_value(&mut self, name: &str, func: &mut Function, ty: Type, def: ValueDef) -> Value {
-        if let Some(v) = self.value_map.get(name) {
-            *v
-        } else {
-            let idx = if let Some(idx_str) = name.strip_prefix('v') {
-                idx_str.parse::<u32>().unwrap_or(self.next_value_idx)
-            } else {
-                self.next_value_idx
-            };
-            
-            let v = Value(idx);
-            self.value_map.insert(name.to_string(), v);
-            
-            if idx >= self.next_value_idx {
-                self.next_value_idx = idx + 1;
-            }
-            
-            // 确保值存在
-            while func.dfg.values.len() <= idx as usize {
-                func.dfg.values.push(ValueData { ty: Type::VOID, def: ValueDef::Param(Block(0)) });
-            }
-            func.dfg.values[v] = ValueData { ty, def };
-            
-            v
-        }
-    }
-}
 
-fn parse_signature(line: &str) -> Result<(String, Linkage, Vec<Type>, Vec<Type>)> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 4 {
-        return Err(ParseError(format!("Invalid signature line: {}", line)).into());
-    }
-    
-    // 解析 linkage
-    let linkage = match parts[0] {
-        "local" => Linkage::Local,
-        "export" => Linkage::Export,
-        "import" => Linkage::Import,
-        _ => return Err(ParseError(format!("Invalid linkage: {}", parts[0])).into()),
-    };
-    
-    // 检查 "function" 关键字
-    if parts[1] != "function" {
-        return Err(ParseError(format!("Expected 'function', got: {}", parts[1])).into());
-    }
-    
-    // 解析函数名和参数
-    let name_and_params = parts[2];
-    let Some((name, params_str)) = name_and_params.split_once('(') else {
-        return Err(ParseError(format!("Invalid function name/params: {}", name_and_params)).into());
-    };
-    
-    let params_str = params_str.trim_end_matches(')');
-    let params = if params_str.is_empty() {
-        Vec::new()
-    } else {
-        parse_type_list(params_str)?
-    };
-    
-    // 解析返回类型 (格式: "-> ret_type")
-    let returns = if parts.len() >= 4 && parts[3] == "->" {
-        if parts.len() >= 5 {
-            if parts[4] == "void" {
-                Vec::new()
-            } else {
-                parse_type_list(parts[4])?
+    pub fn parse(&mut self, input: &str) -> Result<Function> {
+        let mut lines = input.lines();
+        let sig_line = lines
+            .next()
+            .ok_or_else(|| ParseError("Empty input".to_string()))?;
+        let (name, linkage, _params, _returns) = self.parse_signature(sig_line)?;
+
+        let mut func = Function::new(name, SigId(0), linkage);
+        let mut current_block: Option<Block> = None;
+
+        for (line_idx, line) in lines.enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
             }
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-    
-    Ok((name.to_string(), linkage, params, returns))
-}
 
-fn parse_type_list(s: &str) -> Result<Vec<Type>> {
-    let mut types = Vec::new();
-    for ty_str in s.split(',') {
-        let ty_str = ty_str.trim();
-        types.push(parse_type(ty_str)?);
-    }
-    Ok(types)
-}
+            if line.ends_with(':') && !line.contains('=') && !line.starts_with("ss") {
+                let (block_idx, params_info) = self.parse_block_header(line)?;
+                let block = Block(block_idx);
+                current_block = Some(block);
+                self.ctx
+                    .block_map
+                    .insert(format!("block{}", block_idx), block);
 
-fn parse_type(s: &str) -> Result<Type> {
-    match s {
-        "i8" => Ok(Type::I8),
-        "i16" => Ok(Type::I16),
-        "i32" => Ok(Type::I32),
-        "i64" => Ok(Type::I64),
-        "f32" => Ok(Type::F32),
-        "f64" => Ok(Type::F64),
-        "bool" => Ok(Type::BOOL),
-        "ptr" => Ok(Type::PTR),
-        "void" => Ok(Type::VOID),
-        _ => {
-            // 尝试解析向量类型, 如 "i32<4>"
-            if let Some(lt_pos) = s.find('<') {
-                let base = &s[..lt_pos];
-                let rest = &s[lt_pos + 1..s.len() - 1]; // 去掉 >
-                
-                if let Some(scalar) = parse_scalar_type(base) {
-                    let (is_scalable, lanes_str) = if rest.starts_with("scalable ") {
-                        (true, &rest[9..])
-                    } else {
-                        (false, rest)
-                    };
-                    
-                    let lanes: u16 = lanes_str.parse()
-                        .map_err(|_| ParseError(format!("Invalid lane count: {}", lanes_str)))?;
-                    
-                    return Ok(Type::new_vector(scalar, lanes, is_scalable));
+                if func.entry_block.is_none() {
+                    func.entry_block = Some(block);
                 }
+                while func.layout.blocks.len() <= block_idx as usize {
+                    func.layout.create_block();
+                }
+                if !func.layout.block_order.contains(&block) {
+                    func.layout.block_order.push(block);
+                }
+
+                for (p_name, p_ty) in params_info {
+                    let val = get_or_create_value(
+                        &p_name,
+                        &mut func,
+                        &mut self.ctx,
+                        p_ty,
+                        ValueDef::Param(block),
+                    );
+                    func.layout.blocks[block].params.push(val);
+                }
+                continue;
             }
-            Err(ParseError(format!("Unknown type: {}", s)).into())
-        }
-    }
-}
 
-fn parse_scalar_type(s: &str) -> Option<ScalarType> {
-    match s {
-        "i8" => Some(ScalarType::I8),
-        "i16" => Some(ScalarType::I16),
-        "i32" => Some(ScalarType::I32),
-        "i64" => Some(ScalarType::I64),
-        "f32" => Some(ScalarType::F32),
-        "f64" => Some(ScalarType::F64),
-        _ => None,
-    }
-}
-
-fn parse_stack_slot(line: &str, func: &mut Function) -> Result<()> {
-    // 格式: ssN: size M
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 3 {
-        return Err(ParseError(format!("Invalid stack slot: {}", line)).into());
-    }
-    
-    let slot_name = parts[0].trim_end_matches(':');
-    let idx_str = slot_name.strip_prefix("ss")
-        .ok_or_else(|| ParseError(format!("Invalid stack slot name: {}", slot_name)))?;
-    let idx: u32 = idx_str.parse()
-        .map_err(|_| ParseError(format!("Invalid stack slot index: {}", idx_str)))?;
-    
-    let size: u32 = parts[2].parse()
-        .map_err(|_| ParseError(format!("Invalid stack slot size: {}", parts[2])))?;
-    
-    while func.stack_slots.len() <= idx as usize {
-        func.stack_slots.push(StackSlotData { size: 0 });
-    }
-    func.stack_slots[StackSlot(idx)] = StackSlotData { size };
-    
-    Ok(())
-}
-
-fn parse_block_lines(
-    lines: alloc::collections::VecDeque<&str>,
-    func: &mut Function,
-    ctx: &mut ParseContext,
-) -> Result<()> {
-    let mut iter = lines.into_iter();
-    let header = iter.next().ok_or_else(|| ParseError("Empty block".to_string()))?;
-    
-    // 解析块头
-    let colon_pos = header.find(':').unwrap();
-    let header_part = &header[..colon_pos];
-    
-    let (block_name, params_str) = if let Some(lparen) = header_part.find('(') {
-        (&header_part[..lparen], &header_part[lparen..])
-    } else {
-        (header_part, "()")
-    };
-    
-    let block_idx: u32 = block_name.strip_prefix("block")
-        .ok_or_else(|| ParseError(format!("Invalid block name: {}", block_name)))?
-        .parse()
-        .map_err(|_| ParseError(format!("Invalid block index: {}", block_name)))?;
-    
-    let block = Block(block_idx);
-    ctx.block_map.insert(block_name.to_string(), block);
-    
-    // 确保块存在
-    while func.layout.blocks.len() <= block_idx as usize {
-        func.layout.create_block();
-    }
-    
-    if func.entry_block.is_none() {
-        func.entry_block = Some(block);
-    }
-    
-    if !func.layout.block_order.contains(&block) {
-        func.layout.block_order.push(block);
-    }
-    
-    // 解析参数
-    let params_str = params_str.trim_start_matches('(').trim_end_matches(')');
-    if !params_str.is_empty() {
-        for param_def in params_str.split(',') {
-            let param_def = param_def.trim();
-            let parts: Vec<&str> = param_def.split(':').collect();
-            if parts.len() != 2 {
-                return Err(ParseError(format!("Invalid param definition: {}", param_def)).into());
+            if line.starts_with("ss") {
+                self.parse_stack_slot(line, &mut func)?;
+                continue;
             }
-            
-            let param_name = parts[0].trim();
-            let ty = parse_type(parts[1].trim())?;
-            
-            let val = ctx.get_or_create_value(param_name, func, ty, ValueDef::Param(block));
-            func.layout.blocks[block].params.push(val);
-        }
-    }
-    
-    // 解析块中的指令
-    for line in iter {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        parse_instruction(line, func, ctx, block)?;
-    }
-    
-    Ok(())
-}
 
-fn parse_instruction(
-    line: &str,
-    func: &mut Function,
-    ctx: &mut ParseContext,
-    block: Block,
-) -> Result<()> {
-    // 解析结果值 (如果有)
-    let (result_names, rest) = if let Some(eq_pos) = line.find('=') {
-        let result_part = line[..eq_pos].trim();
-        let rest = line[eq_pos + 1..].trim();
-        
-        let names = if result_part.starts_with('(') {
-            // 多返回值: (v0, v1)
-            result_part[1..result_part.len() - 1]
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect()
-        } else {
-            alloc::vec![result_part.to_string()]
-        };
-        
-        (names, rest)
-    } else {
-        (Vec::new(), line)
-    };
-    
-    // 解析指令
-    let inst_data = parse_inst_data(rest, func, ctx)?;
-    
-    let inst = func.dfg.instructions.push(inst_data.clone());
-    func.layout.append_inst(block, inst);
-    
-    // 创建结果值
-    if !result_names.is_empty() {
-        let result_types = infer_result_types(&func.dfg, &inst_data);
-        
-        let values: Vec<Value> = result_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                let ty = result_types.get(i).copied().unwrap_or(Type::VOID);
-                ctx.get_or_create_value(name, func, ty, ValueDef::Inst(inst))
-            })
-            .collect();
-        
-        let list = func.dfg.make_value_list(&values);
-        func.dfg.inst_results[inst] = list;
+            if let Some(block) = current_block {
+                self.parse_instruction(line, &mut func, block, line_idx + 2)?;
+            } else {
+                return Err(ParseError(format!(
+                    "Instruction outside of block at line {}: {}",
+                    line_idx + 2,
+                    line
+                ))
+                .into());
+            }
+        }
+        Ok(func)
     }
-    
-    Ok(())
-}
 
-fn parse_inst_data(
-    s: &str,
-    func: &mut Function,
-    ctx: &mut ParseContext,
-) -> Result<InstructionData> {
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.is_empty() {
-        return Err(ParseError("Empty instruction".to_string()).into());
+    fn parse_signature(&self, line: &str) -> Result<(String, Linkage, Vec<Type>, Vec<Type>)> {
+        let parser = choice((just("local"), just("export"), just("import")))
+            .map(|s| parse_linkage(s).unwrap())
+            .padded()
+            .then_ignore(just("function").padded())
+            .then(identifier())
+            .then_ignore(just('('))
+            .then(
+                type_parser()
+                    .padded()
+                    .separated_by(just(','))
+                    .allow_trailing()
+                    .collect::<Vec<Type>>(),
+            )
+            .then_ignore(just(')'))
+            .then(
+                just("->")
+                    .padded()
+                    .ignored()
+                    .ignore_then(choice((
+                        just("void").map(|_| Vec::new()),
+                        type_parser()
+                            .padded()
+                            .separated_by(just(','))
+                            .at_least(1)
+                            .collect::<Vec<Type>>(),
+                    )))
+                    .or_not()
+                    .map(|v| v.unwrap_or_default()),
+            );
+
+        parser
+            .parse(line.trim())
+            .into_result()
+            .map(|(((linkage, name), params), returns)| (name, linkage, params, returns))
+            .map_err(|errs| ParseError(format!("Invalid signature: {:?}", errs)).into())
     }
-    
-    let opcode_full = parts[0];
-    let args = &parts[1..];
-    
-    // 解析 opcode 和类型
-    let (opcode_str, _ty_str) = if let Some(dot_pos) = opcode_full.find('.') {
-        (&opcode_full[..dot_pos], Some(&opcode_full[dot_pos + 1..]))
-    } else {
-        (opcode_full, None)
-    };
-    
-    match opcode_str {
-        "iconst" => {
-            let value: i64 = args[0].parse()
-                .map_err(|_| ParseError(format!("Invalid iconst value: {}", args[0])))?;
-            Ok(InstructionData::Iconst { value: value as u64 })
+
+    fn parse_block_header(&self, line: &str) -> Result<(u32, Vec<(String, Type)>)> {
+        let parser = block_id_parser()
+            .then(
+                just('(')
+                    .ignore_then(
+                        identifier()
+                            .then_ignore(just(':').padded())
+                            .then(type_parser())
+                            .padded()
+                            .separated_by(just(','))
+                            .allow_trailing()
+                            .collect::<Vec<(String, Type)>>(),
+                    )
+                    .then_ignore(just(')'))
+                    .or_not()
+                    .map(|v| v.unwrap_or_default()),
+            )
+            .then_ignore(just(':'));
+
+        parser
+            .parse(line.trim())
+            .into_result()
+            .map_err(|errs| ParseError(format!("Invalid block header: {:?}", errs)).into())
+    }
+
+    fn parse_stack_slot(&self, line: &str, func: &mut Function) -> Result<()> {
+        let parser = stack_slot_id_parser()
+            .then_ignore(just(':').padded())
+            .then_ignore(just("size").padded())
+            .then(text::int(10).from_str().unwrapped());
+
+        let (idx, size) = parser
+            .parse(line.trim())
+            .into_result()
+            .map_err(|errs| ParseError(format!("Invalid stack slot: {:?}", errs)))?;
+
+        while func.stack_slots.len() <= idx as usize {
+            func.stack_slots.push(StackSlotData { size: 0 });
         }
-        "fconst" => {
-            let value: f64 = args[0].parse()
-                .map_err(|_| ParseError(format!("Invalid fconst value: {}", args[0])))?;
-            Ok(InstructionData::Fconst { value: value.to_bits() })
-        }
-        "bconst" => {
-            let value = args[0] == "true";
-            Ok(InstructionData::Bconst { value })
-        }
-        "iadd" | "isub" | "imul" => {
-            let lhs = parse_value_ref(args[0], func, ctx)?;
-            let rhs = parse_value_ref(args[1].trim_end_matches(','), func, ctx)?;
-            let opcode = match opcode_str {
-                "iadd" => Opcode::IAdd,
-                "isub" => Opcode::ISub,
-                "imul" => Opcode::IMul,
-                _ => unreachable!(),
+        func.stack_slots[StackSlot(idx)] = StackSlotData { size };
+        Ok(())
+    }
+
+    fn parse_instruction(
+        &mut self,
+        line: &str,
+        func: &mut Function,
+        block: Block,
+        _line_no: usize,
+    ) -> Result<()> {
+        let parser = result_names_parser()
+            .or_not()
+            .then(opcode_parts_parser())
+            .then(any().repeated().collect::<String>());
+
+        let ((result_names, (opcode_str, ty_hint, flags)), rest) = parser
+            .parse(line.trim())
+            .into_result()
+            .map_err(|errs| ParseError(format!("Invalid instruction structure: {:?}", errs)))?;
+
+        let result_names = result_names.unwrap_or_default();
+        let opcode = parse_opcode(&opcode_str)
+            .ok_or_else(|| ParseError(format!("Unknown opcode: {}", opcode_str)))?;
+
+        let rtypes = {
+            let mut inst_parser = InstDataParser {
+                func,
+                ctx: &mut self.ctx,
             };
-            Ok(InstructionData::Binary { opcode, args: [lhs, rhs] })
-        }
-        "icmp" => {
-            let cond = parse_intcc(args[0].trim_end_matches(','))?;
-            let lhs = parse_value_ref(args[1].trim_end_matches(','), func, ctx)?;
-            let rhs = parse_value_ref(args[2], func, ctx)?;
-            Ok(InstructionData::IntCompare { kind: cond, args: [lhs, rhs] })
-        }
-        "load" => {
-            let ptr = parse_value_ref(args[0], func, ctx)?;
-            // 简化处理，假设偏移量为0
-            Ok(InstructionData::Load { ptr, offset: 0, flags: MemFlags::new() })
-        }
-        "store" => {
-            let value = parse_value_ref(args[0].trim_end_matches(','), func, ctx)?;
-            let ptr = parse_value_ref(args[1], func, ctx)?;
-            Ok(InstructionData::Store { ptr, value, offset: 0, flags: MemFlags::new() })
-        }
-        "jump" => {
-            parse_jump(args, func, ctx)
-        }
-        "br" => {
-            parse_br(args, func, ctx)
-        }
-        "return" => {
-            let values: Result<Vec<Value>> = args.iter()
-                .map(|&arg| parse_value_ref(arg.trim_end_matches(','), func, ctx))
+            let idata = inst_parser.parse_operands(opcode, ty_hint, flags, &rest)?;
+            if let Some(ty) = ty_hint {
+                (idata, alloc::vec![ty])
+            } else {
+                let rtypes = inst_parser.infer_result_types(&idata);
+                (idata, rtypes)
+            }
+        };
+        let (idata, rtypes) = rtypes;
+
+        let inst = func.dfg.instructions.push(idata);
+        func.layout.append_inst(block, inst);
+
+        if !result_names.is_empty() {
+            let values: Vec<Value> = result_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    let ty = rtypes.get(i).copied().unwrap_or(Type::VOID);
+                    get_or_create_value(name, func, &mut self.ctx, ty, ValueDef::Inst(inst))
+                })
                 .collect();
-            let values = values?;
+
             let list = func.dfg.make_value_list(&values);
-            Ok(InstructionData::Return { values: list })
+            func.dfg.inst_results[inst] = list;
         }
-        "call" => {
-            // 简化处理
-            let _func_name = args[0];
-            let func_id = FuncId(0);
-            let call_args: Result<Vec<Value>> = args[1..].iter()
-                .map(|&arg| parse_value_ref(arg.trim_end_matches(',').trim_end_matches(')'), func, ctx))
-                .collect();
-            let call_args = call_args?;
-            let list = func.dfg.make_value_list(&call_args);
-            Ok(InstructionData::Call { func_id, args: list })
-        }
-        _ => Err(ParseError(format!("Unknown opcode: {}", opcode_str)).into()),
+
+        Ok(())
     }
 }
 
-fn parse_value_ref(s: &str, _func: &mut Function, _ctx: &mut ParseContext) -> Result<Value> {
-    // 移除可能的逗号
-    let s = s.trim_end_matches(',');
-    
-    if let Some(idx_str) = s.strip_prefix('v') {
-        let idx: u32 = idx_str.parse()
-            .map_err(|_| ParseError(format!("Invalid value reference: {}", s)))?;
-        Ok(Value(idx))
-    } else {
-        Err(ParseError(format!("Invalid value reference: {}", s)).into())
+struct InstDataParser<'a> {
+    func: &'a mut Function,
+    ctx: &'a mut ParseContext,
+}
+
+/// Helper to parse value ID from string representation (e.g., "v123" -> 123 or "tmp.v123" -> 123)
+fn parse_value_idx(name: &str) -> Option<u32> {
+    // If it's something like "v123", strip 'v'
+    if let Some(s) = name.strip_prefix('v') {
+        let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            return digits.parse().ok();
+        }
     }
+    // Handle "name.v123" - search for ".v" and then take digits
+    if let Some(idx) = name.rfind(".v") {
+        let s = &name[idx + 2..];
+        let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            return digits.parse().ok();
+        }
+    }
+    None
+}
+
+impl<'a> InstDataParser<'a> {
+    fn parse_operands(
+        &mut self,
+        opcode: Opcode,
+        _ty_hint: Option<Type>,
+        flags: MemFlags,
+        rest: &str,
+    ) -> Result<InstructionData> {
+        let rest = rest.trim();
+        let inst_format = format::opcode_to_format(opcode);
+
+        match inst_format {
+            InstFormat::Iconst => {
+                let val: i64 = text::int::<_, extra::Err<Simple<char>>>(10)
+                    .from_str::<i64>()
+                    .unwrapped()
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|_| ParseError(format!("Expected i64 constant, found: {}", rest)))?;
+                Ok(InstructionData::Iconst { value: val as u64 })
+            }
+            InstFormat::Fconst => {
+                let val: u64 = rest.parse().unwrap_or(0);
+                Ok(InstructionData::Fconst { value: val })
+            }
+            InstFormat::Bconst => {
+                let b = rest.starts_with("true");
+                Ok(InstructionData::Bconst { value: b })
+            }
+            InstFormat::Unary => {
+                let v = self.parse_v(rest)?;
+                Ok(InstructionData::Unary { opcode, arg: v })
+            }
+            InstFormat::Binary => {
+                let (v0, v1) = value_name_parser()
+                    .padded()
+                    .then_ignore(just(',').padded())
+                    .then(value_name_parser().padded())
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid binary args: {:?}", e)))?;
+                Ok(InstructionData::Binary {
+                    opcode,
+                    args: [self.get_v_by_name(&v0), self.get_v_by_name(&v1)],
+                })
+            }
+            InstFormat::Ternary => {
+                let ((v0, v1), v2) = value_name_parser()
+                    .padded()
+                    .then_ignore(just(',').padded())
+                    .then(value_name_parser().padded())
+                    .then_ignore(just(',').padded())
+                    .then(value_name_parser().padded())
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid ternary args: {:?}", e)))?;
+                Ok(InstructionData::Ternary {
+                    opcode,
+                    args: [
+                        self.get_v_by_name(&v0),
+                        self.get_v_by_name(&v1),
+                        self.get_v_by_name(&v2),
+                    ],
+                })
+            }
+            InstFormat::IntCompare => {
+                let (kind, (v0, v1)) = identifier()
+                    .padded()
+                    .then(
+                        value_name_parser()
+                            .padded()
+                            .then_ignore(just(',').padded())
+                            .then(value_name_parser().padded()),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid int_compare: {:?}", e)))?;
+                let kind = parse_intcc(&kind)?;
+                Ok(InstructionData::IntCompare {
+                    kind,
+                    args: [self.get_v_by_name(&v0), self.get_v_by_name(&v1)],
+                })
+            }
+            InstFormat::FloatCompare => {
+                let (kind, (v0, v1)) = identifier()
+                    .padded()
+                    .then(
+                        value_name_parser()
+                            .padded()
+                            .then_ignore(just(',').padded())
+                            .then(value_name_parser().padded()),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid float_compare: {:?}", e)))?;
+                let kind = parse_floatcc(&kind)?;
+                Ok(InstructionData::FloatCompare {
+                    kind,
+                    args: [self.get_v_by_name(&v0), self.get_v_by_name(&v1)],
+                })
+            }
+            InstFormat::Load => {
+                let (v, offset) = value_name_parser()
+                    .then(
+                        just('+')
+                            .padded()
+                            .ignore_then(text::int(10).from_str::<u32>().unwrapped())
+                            .or_not()
+                            .map(|v| v.unwrap_or(0)),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid load args: {:?}", e)))?;
+                Ok(InstructionData::Load {
+                    ptr: self.get_v_by_name(&v),
+                    offset,
+                    flags,
+                })
+            }
+            InstFormat::Store => {
+                let (val_id, (ptr_id, offset)) = value_name_parser()
+                    .padded()
+                    .then_ignore(just(',').padded())
+                    .then(
+                        value_name_parser().then(
+                            just('+')
+                                .padded()
+                                .ignore_then(text::int(10).from_str::<u32>().unwrapped())
+                                .or_not()
+                                .map(|v| v.unwrap_or(0)),
+                        ),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid store args: {:?}", e)))?;
+                Ok(InstructionData::Store {
+                    ptr: self.get_v_by_name(&ptr_id),
+                    value: self.get_v_by_name(&val_id),
+                    offset,
+                    flags,
+                })
+            }
+            InstFormat::StackLoad => {
+                let (slot, offset) = stack_slot_id_parser()
+                    .then(
+                        just('+')
+                            .padded()
+                            .ignore_then(text::int(10).from_str::<u32>().unwrapped())
+                            .or_not()
+                            .map(|v| v.unwrap_or(0)),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid stack_load args: {:?}", e)))?;
+                Ok(InstructionData::StackLoad {
+                    slot: StackSlot(slot),
+                    offset,
+                })
+            }
+            InstFormat::StackStore => {
+                let (val_id, (slot, offset)) = value_name_parser()
+                    .padded()
+                    .then_ignore(just(',').padded())
+                    .then(
+                        stack_slot_id_parser().then(
+                            just('+')
+                                .padded()
+                                .ignore_then(text::int(10).from_str::<u32>().unwrapped())
+                                .or_not()
+                                .map(|v| v.unwrap_or(0)),
+                        ),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid stack_store args: {:?}", e)))?;
+                Ok(InstructionData::StackStore {
+                    slot: StackSlot(slot),
+                    value: self.get_v_by_name(&val_id),
+                    offset,
+                })
+            }
+            InstFormat::StackAddr => {
+                let (slot, offset) = stack_slot_id_parser()
+                    .then(
+                        just('+')
+                            .padded()
+                            .ignore_then(text::int(10).from_str::<u32>().unwrapped())
+                            .or_not()
+                            .map(|v| v.unwrap_or(0)),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid stack_addr args: {:?}", e)))?;
+                Ok(InstructionData::StackAddr {
+                    slot: StackSlot(slot),
+                    offset,
+                })
+            }
+            InstFormat::Jump => {
+                let (block_idx, args) = block_call_parser()
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid jump args: {:?}", e)))?;
+                let dest = self.create_block_call(block_idx, args)?;
+                Ok(InstructionData::Jump { dest })
+            }
+            InstFormat::Br => {
+                let ((cond_id, (then_block, then_args)), (else_block, else_args)) =
+                    value_name_parser()
+                        .padded()
+                        .then_ignore(just(',').padded())
+                        .then(block_call_parser().padded())
+                        .then_ignore(just(',').padded())
+                        .then(block_call_parser().padded())
+                        .parse(rest)
+                        .into_result()
+                        .map_err(|e| ParseError(format!("Invalid br args: {:?}", e)))?;
+
+                let then_dest = self.create_block_call(then_block, then_args)?;
+                let else_dest = self.create_block_call(else_block, else_args)?;
+
+                Ok(InstructionData::Br {
+                    condition: self.get_v_by_name(&cond_id),
+                    then_dest,
+                    else_dest,
+                })
+            }
+            InstFormat::Return => {
+                let args = value_name_parser()
+                    .padded()
+                    .separated_by(just(','))
+                    .collect::<Vec<String>>()
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid return args: {:?}", e)))?;
+                Ok(InstructionData::Return {
+                    values: self.make_value_list_from_names(&args),
+                })
+            }
+            InstFormat::Call => {
+                let (_func_name, args) = identifier()
+                    .padded()
+                    .then(
+                        value_name_parser()
+                            .padded()
+                            .separated_by(just(','))
+                            .allow_trailing()
+                            .collect::<Vec<String>>(),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid call args: {:?}", e)))?;
+                // TODO: 真正的函数 ID 查找
+                let func_id = FuncId(0);
+                Ok(InstructionData::Call {
+                    func_id,
+                    args: self.make_value_list_from_names(&args),
+                })
+            }
+            InstFormat::Shuffle => {
+                let ((v0, v1), mask) = value_name_parser()
+                    .padded()
+                    .then_ignore(just(',').padded())
+                    .then(value_name_parser().padded())
+                    .then(
+                        just(',')
+                            .padded()
+                            .ignore_then(just("mask="))
+                            .ignore_then(text::int(10).from_str::<u32>().unwrapped())
+                            .or_not()
+                            .map(|v| v.unwrap_or(0)),
+                    )
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid shuffle args: {:?}", e)))?;
+                Ok(InstructionData::Shuffle {
+                    args: [self.get_v_by_name(&v0), self.get_v_by_name(&v1)],
+                    mask: ConstantPoolId(mask),
+                })
+            }
+            InstFormat::VectorOpWithExt => {
+                let (args, ext_info) = value_name_parser()
+                    .padded()
+                    .repeated()
+                    .collect::<Vec<String>>()
+                    .then(vector_ext_parser())
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid vector_op args: {:?}", e)))?;
+
+                let mask = ext_info.mask.as_ref().map(|id| self.get_v_by_name(id));
+                let evl = ext_info.evl.as_ref().map(|id| self.get_v_by_name(id));
+                let mask_val = mask.ok_or_else(|| ParseError("Missing mask".to_string()))?;
+
+                let ext = self.func.dfg.vector_ext_pool.push(VectorExtData {
+                    mask: mask_val,
+                    evl,
+                });
+
+                Ok(InstructionData::VectorOpWithExt {
+                    opcode,
+                    args: self.make_value_list_from_names(&args),
+                    ext,
+                })
+            }
+            InstFormat::VectorLoadStrided => {
+                let (ptr_id, ext_info) = value_name_parser()
+                    .padded()
+                    .then(vector_ext_parser())
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid vload_strided: {:?}", e)))?;
+
+                let ext = self.build_vector_mem_ext(&ext_info, flags, 1);
+                Ok(InstructionData::VectorLoadStrided {
+                    ptr: self.get_v_by_name(&ptr_id),
+                    stride: self.get_v_by_name(
+                        ext_info
+                            .stride
+                            .as_ref()
+                            .ok_or_else(|| ParseError("Missing stride".to_string()))?,
+                    ),
+                    ext,
+                })
+            }
+            InstFormat::VectorStoreStrided => {
+                let ((val_id, ptr_id), ext_info) = value_name_parser()
+                    .padded()
+                    .then_ignore(just(',').padded())
+                    .then(value_name_parser().padded())
+                    .then(vector_ext_parser())
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid vstore_strided: {:?}", e)))?;
+
+                let ext = self.build_vector_mem_ext(&ext_info, flags, 1);
+                let ptr = self.get_v_by_name(&ptr_id);
+                let stride = self.get_v_by_name(
+                    ext_info
+                        .stride
+                        .as_ref()
+                        .ok_or_else(|| ParseError("Missing stride".to_string()))?,
+                );
+                let val = self.get_v_by_name(&val_id);
+                Ok(InstructionData::VectorStoreStrided {
+                    args: self.func.dfg.make_value_list(&[ptr, stride, val]),
+                    ext,
+                })
+            }
+            InstFormat::VectorGather => {
+                let (ptr_id, ext_info) = value_name_parser()
+                    .padded()
+                    .then(vector_ext_parser())
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid vgather: {:?}", e)))?;
+
+                let ext = self.build_vector_mem_ext(&ext_info, flags, ext_info.scale as u8);
+                Ok(InstructionData::VectorGather {
+                    ptr: self.get_v_by_name(&ptr_id),
+                    index: self.get_v_by_name(
+                        ext_info
+                            .index
+                            .as_ref()
+                            .ok_or_else(|| ParseError("Missing index".to_string()))?,
+                    ),
+                    ext,
+                })
+            }
+            InstFormat::VectorScatter => {
+                let ((val_id, ptr_id), ext_info) = value_name_parser()
+                    .padded()
+                    .then_ignore(just(',').padded())
+                    .then(value_name_parser().padded())
+                    .then(vector_ext_parser())
+                    .parse(rest)
+                    .into_result()
+                    .map_err(|e| ParseError(format!("Invalid vscatter: {:?}", e)))?;
+
+                let ext = self.build_vector_mem_ext(&ext_info, flags, ext_info.scale as u8);
+                let ptr = self.get_v_by_name(&ptr_id);
+                let index = self.get_v_by_name(
+                    ext_info
+                        .index
+                        .as_ref()
+                        .ok_or_else(|| ParseError("Missing index".to_string()))?,
+                );
+                let val = self.get_v_by_name(&val_id);
+                Ok(InstructionData::VectorScatter {
+                    args: self.func.dfg.make_value_list(&[ptr, index, val]),
+                    ext,
+                })
+            }
+            _ => Err(ParseError(format!("Unsupported format: {:?}", inst_format)).into()),
+        }
+    }
+
+    /// Parse a value name and get/create the corresponding Value.
+    /// Uses provided type and definition for newly created values.
+    fn parse_v(&mut self, s: &str) -> Result<Value> {
+        let name = identifier()
+            .parse(s.trim())
+            .into_result()
+            .map_err(|e| ParseError(format!("Invalid value ID: {:?}", e)))?;
+        Ok(get_or_create_value(
+            &name,
+            self.func,
+            self.ctx,
+            Type::VOID,
+            // Placeholder: actual definition will be set when the value is defined by an instruction
+            ValueDef::Param(Block(0)),
+        ))
+    }
+
+    /// Get/create a Value by its name (e.g., "v123", "tmp.v123").
+    fn get_v_by_name(&mut self, name: &str) -> Value {
+        get_or_create_value(
+            name,
+            self.func,
+            self.ctx,
+            Type::VOID,
+            // Placeholder: actual definition will be set when the value is defined by an instruction
+            ValueDef::Param(Block(0)),
+        )
+    }
+
+    /// Create a ValueList from a slice of value names.
+    fn make_value_list_from_names(&mut self, names: &[String]) -> crate::types::ValueList {
+        let values: Vec<Value> = names.iter().map(|n| self.get_v_by_name(n)).collect();
+        self.func.dfg.make_value_list(&values)
+    }
+
+    /// Create a BlockCall from block ID and argument names.
+    fn create_block_call(
+        &mut self,
+        block_id: u32,
+        arg_names: Vec<String>,
+    ) -> Result<crate::types::BlockCall> {
+        let block = self.get_block_by_id(block_id)?;
+        let args = self.make_value_list_from_names(&arg_names);
+        Ok(self
+            .func
+            .dfg
+            .block_calls
+            .push(BlockCallData { block, args }))
+    }
+
+    /// Build VectorMemExtData and push to pool.
+    fn build_vector_mem_ext(
+        &mut self,
+        ext_info: &ParsedVMemExt,
+        flags: MemFlags,
+        scale: u8,
+    ) -> crate::inst::VectorMemExtId {
+        let mask = ext_info.mask.as_ref().map(|id| self.get_v_by_name(id));
+        let evl = ext_info.evl.as_ref().map(|id| self.get_v_by_name(id));
+        self.func.dfg.vector_mem_ext_pool.push(VectorMemExtData {
+            offset: 0,
+            flags,
+            scale,
+            mask,
+            evl,
+        })
+    }
+
+    fn get_block_by_id(&self, id: u32) -> Result<Block> {
+        let name = format!("block{}", id);
+        self.ctx
+            .block_map
+            .get(&name)
+            .copied()
+            .ok_or_else(|| ParseError(format!("Unknown block: {}", name)).into())
+    }
+
+    fn infer_result_types(&self, data: &InstructionData) -> Vec<Type> {
+        use crate::inst::InstructionData as ID;
+        match data {
+            ID::Unary { arg, .. } => alloc::vec![self.func.dfg.value_type(*arg)],
+            ID::Binary { opcode, args, .. } => match opcode {
+                Opcode::IAddWithOverflow | Opcode::ISubWithOverflow | Opcode::IMulWithOverflow => {
+                    alloc::vec![self.func.dfg.value_type(args[0]), Type::BOOL]
+                }
+                _ => alloc::vec![self.func.dfg.value_type(args[0])],
+            },
+            ID::IntCompare { .. } | ID::FloatCompare { .. } => alloc::vec![Type::BOOL],
+            _ => alloc::vec![Type::VOID],
+        }
+    }
+}
+
+/// Get an existing Value by name, or create a new one with the given type and definition.
+fn get_or_create_value(
+    name: &str,
+    func: &mut Function,
+    ctx: &mut ParseContext,
+    ty: Type,
+    def: ValueDef,
+) -> Value {
+    if let Some(&v) = ctx.value_map.get(name) {
+        return v;
+    }
+
+    // Parse value index from name (e.g., "v123" -> 123), or use next available index
+    let idx = parse_value_idx(name).unwrap_or(ctx.next_value_idx);
+    let v = Value(idx);
+
+    ctx.value_map.insert(name.to_string(), v);
+    if idx >= ctx.next_value_idx {
+        ctx.next_value_idx = idx + 1;
+    }
+
+    // Ensure values vector has enough capacity
+    while func.dfg.values.len() <= idx as usize {
+        func.dfg.values.push(ValueData {
+            ty: Type::VOID,
+            // Placeholder: will be overwritten below for the actual value
+            def: ValueDef::Param(Block(0)),
+        });
+    }
+    func.dfg.values[v] = ValueData { ty, def };
+    v
 }
 
 fn parse_intcc(s: &str) -> Result<IntCC> {
-    format::parse_intcc_str(s)
-        .ok_or_else(|| ParseError(format!("Invalid intcc: {}", s)).into())
+    format::parse_intcc(s).ok_or_else(|| ParseError(format!("Invalid intcc: {}", s)).into())
 }
 
-fn parse_jump(
-    args: &[&str],
-    func: &mut Function,
-    ctx: &mut ParseContext,
-) -> Result<InstructionData> {
-    // 格式: jump blockN(args...)
-    let target_str = args[0];
-    let (block_name, args_str) = if let Some(lparen) = target_str.find('(') {
-        (&target_str[..lparen], &target_str[lparen..])
-    } else {
-        (target_str, "()")
-    };
-    
-    let block = *ctx.block_map.get(block_name).unwrap_or(&Block(0));
-    
-    let args_str = args_str.trim_start_matches('(').trim_end_matches(')');
-    let args_list = if args_str.is_empty() {
-        func.dfg.make_value_list(&[])
-    } else {
-        let values: Result<Vec<Value>> = args_str.split(',')
-            .map(|s| parse_value_ref(s.trim(), func, ctx))
-            .collect();
-        func.dfg.make_value_list(&values?)
-    };
-    
-    let dest = func.dfg.block_calls.push(BlockCallData { block, args: args_list });
-    Ok(InstructionData::Jump { dest })
-}
-
-fn parse_br(
-    args: &[&str],
-    func: &mut Function,
-    ctx: &mut ParseContext,
-) -> Result<InstructionData> {
-    // 格式: br cond, then_block(args...), else_block(args...)
-    let cond = parse_value_ref(args[0].trim_end_matches(','), func, ctx)?;
-    
-    let then_str = args[1].trim_end_matches(',');
-    let else_str = args[2];
-    
-    let then_dest = parse_block_call(then_str, func, ctx)?;
-    let else_dest = parse_block_call(else_str, func, ctx)?;
-    
-    Ok(InstructionData::Br { condition: cond, then_dest, else_dest })
-}
-
-fn parse_block_call(s: &str, func: &mut Function, ctx: &mut ParseContext) -> Result<BlockCall> {
-    let (block_name, args_str) = if let Some(lparen) = s.find('(') {
-        (&s[..lparen], &s[lparen..])
-    } else {
-        (s, "()")
-    };
-    
-    let block = *ctx.block_map.get(block_name).unwrap_or(&Block(0));
-    
-    let args_str = args_str.trim_start_matches('(').trim_end_matches(')');
-    let args_list = if args_str.is_empty() {
-        func.dfg.make_value_list(&[])
-    } else {
-        let values: Result<Vec<Value>> = args_str.split(',')
-            .map(|s| parse_value_ref(s.trim(), func, ctx))
-            .collect();
-        func.dfg.make_value_list(&values?)
-    };
-    
-    Ok(func.dfg.block_calls.push(BlockCallData { block, args: args_list }))
-}
-
-fn infer_result_types(dfg: &crate::DataFlowGraph, data: &InstructionData) -> Vec<Type> {
-    use crate::inst::InstructionData as ID;
-    match data {
-        ID::Unary { arg, .. } => alloc::vec![dfg.value_type(*arg)],
-        ID::Binary { opcode, args, .. } => {
-            match opcode {
-                Opcode::IAddWithOverflow | Opcode::ISubWithOverflow | Opcode::IMulWithOverflow => {
-                    alloc::vec![dfg.value_type(args[0]), Type::BOOL]
-                }
-                _ => alloc::vec![dfg.value_type(args[0])],
-            }
-        }
-        ID::IntCompare { .. } | ID::FloatCompare { .. } => {
-            alloc::vec![Type::BOOL]
-        }
-        _ => alloc::vec![Type::VOID],
-    }
-}
-
-// =============================================================================
-// IR Format Documentation and Utilities
-// =============================================================================
-
-/// IR 格式化 Trait
-/// 
-/// 实现此 trait 的类型可以被格式化为 IR 文本或从 IR 文本解析。
-/// 这确保了 Printer 和 Parser 使用一致的格式。
-pub trait IRFormat: Sized {
-    /// 将值格式化为 IR 文本
-    fn fmt_ir(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result;
-    
-    /// 从 IR 文本解析值
-    fn parse_ir(s: &str) -> Result<Self>;
-}
-
-/// IR 格式化辅助函数
-pub fn fmt_type(ty: Type) -> alloc::string::String {
-    format::type_to_string(ty)
-}
-
-/// IR 解析辅助函数
-pub fn parse_type_ir(s: &str) -> Result<Type> {
-    format::parse_type_str(s).ok_or_else(|| ParseError(format!("Invalid type: {}", s)).into())
-}
-
-/// IR 文本格式规范
-///
-/// # 函数格式
-/// ```text
-/// [local|export|import] function name(param1, param2, ...) -> ret_type
-/// ss0: size N          // 栈槽定义 (可选)
-/// block0(v0: i32, v1: i32):  // 基本块定义
-///     v2 = iadd.i32 v0, v1   // 指令
-///     return v2
-/// ```
-///
-/// # 类型格式
-/// - 标量: i8, i16, i32, i64, f32, f64, bool, ptr
-/// - 向量: i32<4>, f64<scalable 2>
-/// - 谓词: mask<4>, mask<scalable 8>
-pub mod format {
-    use super::*;
-    
-    // ==================== 类型格式 ====================
-    
-    /// 获取类型的文本表示
-    pub fn type_to_string(ty: Type) -> String {
-        ty.to_string()
-    }
-    
-    /// 解析类型字符串
-    pub fn parse_type_str(s: &str) -> Option<Type> {
-        parse_type(s).ok()
-    }
-    
-    // ==================== 条件码格式 ====================
-    
-    /// 获取 IntCC 的文本表示
-    pub fn intcc_to_string(cc: IntCC) -> &'static str {
-        match cc {
-            IntCC::Eq => "eq",
-            IntCC::Ne => "ne",
-            IntCC::LtS => "lts",
-            IntCC::LtU => "ltu",
-            IntCC::GtS => "gts",
-            IntCC::GtU => "gtu",
-            IntCC::LeS => "les",
-            IntCC::LeU => "leu",
-            IntCC::GeS => "ges",
-            IntCC::GeU => "geu",
-        }
-    }
-    
-    /// 从字符串解析 IntCC
-    pub fn parse_intcc_str(s: &str) -> Option<IntCC> {
-        match s {
-            "eq" => Some(IntCC::Eq),
-            "ne" => Some(IntCC::Ne),
-            "lts" => Some(IntCC::LtS),
-            "ltu" => Some(IntCC::LtU),
-            "gts" => Some(IntCC::GtS),
-            "gtu" => Some(IntCC::GtU),
-            "les" => Some(IntCC::LeS),
-            "leu" => Some(IntCC::LeU),
-            "ges" => Some(IntCC::GeS),
-            "geu" => Some(IntCC::GeU),
-            _ => None,
-        }
-    }
-    
-    /// 获取 FloatCC 的文本表示
-    pub fn floatcc_to_string(cc: FloatCC) -> &'static str {
-        match cc {
-            FloatCC::Eq => "eq",
-            FloatCC::Ne => "ne",
-            FloatCC::Lt => "lt",
-            FloatCC::Gt => "gt",
-            FloatCC::Le => "le",
-            FloatCC::Ge => "ge",
-        }
-    }
-    
-    /// 从字符串解析 FloatCC
-    pub fn parse_floatcc_str(s: &str) -> Option<FloatCC> {
-        match s {
-            "eq" => Some(FloatCC::Eq),
-            "ne" => Some(FloatCC::Ne),
-            "lt" => Some(FloatCC::Lt),
-            "gt" => Some(FloatCC::Gt),
-            "le" => Some(FloatCC::Le),
-            "ge" => Some(FloatCC::Ge),
-            _ => None,
-        }
-    }
-    
-    // ==================== Opcode 格式 ====================
-    
-    /// 将 Opcode 转换为字符串表示
-    /// 
-    /// 注意：这与 printer.rs 中的格式保持一致
-    pub fn opcode_to_string(op: Opcode) -> &'static str {
-        match op {
-            Opcode::Iconst => "iconst",
-            Opcode::Fconst => "fconst",
-            Opcode::Bconst => "bconst",
-            Opcode::Vconst => "vconst",
-            Opcode::IAdd => "iadd",
-            Opcode::ISub => "isub",
-            Opcode::IMul => "imul",
-            Opcode::INeg => "ineg",
-            Opcode::IAddSat => "iadd-sat",
-            Opcode::ISubSat => "isub-sat",
-            Opcode::IAddWithOverflow => "iadd-with-overflow",
-            Opcode::ISubWithOverflow => "isub-with-overflow",
-            Opcode::IMulWithOverflow => "imul-with-overflow",
-            Opcode::IDivS => "idiv-s",
-            Opcode::IDivU => "idiv-u",
-            Opcode::IRemS => "irem-s",
-            Opcode::IRemU => "irem-u",
-            Opcode::FAdd => "fadd",
-            Opcode::FSub => "fsub",
-            Opcode::FMul => "fmul",
-            Opcode::FNeg => "fneg",
-            Opcode::FDiv => "fdiv",
-            Opcode::FMin => "fmin",
-            Opcode::FMax => "fmax",
-            Opcode::FCopysign => "fcopysign",
-            Opcode::FAbs => "fabs",
-            Opcode::FSqrt => "fsqrt",
-            Opcode::FCeil => "fceil",
-            Opcode::FFloor => "ffloor",
-            Opcode::FTrunc => "ftrunc",
-            Opcode::FNearest => "fnearest",
-            Opcode::IAnd => "iand",
-            Opcode::IOr => "ior",
-            Opcode::IXor => "ixor",
-            Opcode::IShl => "ishl",
-            Opcode::IShrS => "ishr-s",
-            Opcode::IShrU => "ishr-u",
-            Opcode::IRotl => "irotl",
-            Opcode::IRotr => "irotr",
-            Opcode::IClz => "iclz",
-            Opcode::ICtz => "ictz",
-            Opcode::IPopcnt => "ipopcnt",
-            Opcode::IEqz => "ieqz",
-            Opcode::Icmp => "icmp",
-            Opcode::Fcmp => "fcmp",
-            Opcode::ExtendS => "extends",
-            Opcode::ExtendU => "extendu",
-            Opcode::Wrap => "wrap",
-            Opcode::FloatToIntSatS => "float-to-int-sat-s",
-            Opcode::FloatToIntSatU => "float-to-int-sat-u",
-            Opcode::FloatToIntS => "float-to-int-s",
-            Opcode::FloatToIntU => "float-to-int-u",
-            Opcode::IntToFloatS => "int-to-float-s",
-            Opcode::IntToFloatU => "int-to-float-u",
-            Opcode::FloatPromote => "float-promote",
-            Opcode::FloatDemote => "float-demote",
-            Opcode::Reinterpret => "reinterpret",
-            Opcode::IntToPtr => "inttoptr",
-            Opcode::PtrToInt => "ptrtoint",
-            Opcode::Load => "load",
-            Opcode::Store => "store",
-            Opcode::StackLoad => "stack-load",
-            Opcode::StackStore => "stack-store",
-            Opcode::StackAddr => "stack-addr",
-            Opcode::PtrOffset => "ptr-offset",
-            Opcode::PtrIndex => "ptr-index",
-            Opcode::Call => "call",
-            Opcode::CallIndirect => "call-indirect",
-            Opcode::CallIntrinsic => "call-intrinsic",
-            Opcode::Jump => "jump",
-            Opcode::Br => "br",
-            Opcode::BrTable => "br-table",
-            Opcode::Return => "return",
-            Opcode::Select => "select",
-            Opcode::Unreachable => "unreachable",
-            Opcode::Nop => "nop",
-            Opcode::Splat => "splat",
-            Opcode::Shuffle => "shuffle",
-            Opcode::InsertElement => "insertelement",
-            Opcode::ExtractElement => "extractelement",
-            Opcode::ReduceSum => "reduce-sum",
-            Opcode::ReduceAdd => "reduce-add",
-            Opcode::ReduceMin => "reduce-min",
-            Opcode::ReduceMax => "reduce-max",
-            Opcode::ReduceAnd => "reduce-and",
-            Opcode::ReduceOr => "reduce-or",
-            Opcode::ReduceXor => "reduce-xor",
-            Opcode::LoadStride => "load-stride",
-            Opcode::StoreStride => "store-stride",
-            Opcode::Gather => "gather",
-            Opcode::Scatter => "scatter",
-            Opcode::SetVL => "setvl",
-        }
-    }
-    
-    /// 从字符串解析 Opcode
-    pub fn parse_opcode_str(s: &str) -> Option<Opcode> {
-        match s {
-            "iconst" => Some(Opcode::Iconst),
-            "fconst" => Some(Opcode::Fconst),
-            "bconst" => Some(Opcode::Bconst),
-            "vconst" => Some(Opcode::Vconst),
-            "iadd" => Some(Opcode::IAdd),
-            "isub" => Some(Opcode::ISub),
-            "imul" => Some(Opcode::IMul),
-            "ineg" => Some(Opcode::INeg),
-            "iadd-sat" => Some(Opcode::IAddSat),
-            "isub-sat" => Some(Opcode::ISubSat),
-            "iadd-with-overflow" => Some(Opcode::IAddWithOverflow),
-            "isub-with-overflow" => Some(Opcode::ISubWithOverflow),
-            "imul-with-overflow" => Some(Opcode::IMulWithOverflow),
-            "idiv-s" => Some(Opcode::IDivS),
-            "idiv-u" => Some(Opcode::IDivU),
-            "irem-s" => Some(Opcode::IRemS),
-            "irem-u" => Some(Opcode::IRemU),
-            "fadd" => Some(Opcode::FAdd),
-            "fsub" => Some(Opcode::FSub),
-            "fmul" => Some(Opcode::FMul),
-            "fneg" => Some(Opcode::FNeg),
-            "fdiv" => Some(Opcode::FDiv),
-            "fmin" => Some(Opcode::FMin),
-            "fmax" => Some(Opcode::FMax),
-            "fcopysign" => Some(Opcode::FCopysign),
-            "fabs" => Some(Opcode::FAbs),
-            "fsqrt" => Some(Opcode::FSqrt),
-            "fceil" => Some(Opcode::FCeil),
-            "ffloor" => Some(Opcode::FFloor),
-            "ftrunc" => Some(Opcode::FTrunc),
-            "fnearest" => Some(Opcode::FNearest),
-            "iand" => Some(Opcode::IAnd),
-            "ior" => Some(Opcode::IOr),
-            "ixor" => Some(Opcode::IXor),
-            "ishl" => Some(Opcode::IShl),
-            "ishr-s" => Some(Opcode::IShrS),
-            "ishr-u" => Some(Opcode::IShrU),
-            "irotl" => Some(Opcode::IRotl),
-            "irotr" => Some(Opcode::IRotr),
-            "iclz" => Some(Opcode::IClz),
-            "ictz" => Some(Opcode::ICtz),
-            "ipopcnt" => Some(Opcode::IPopcnt),
-            "ieqz" => Some(Opcode::IEqz),
-            "icmp" => Some(Opcode::Icmp),
-            "fcmp" => Some(Opcode::Fcmp),
-            "extends" => Some(Opcode::ExtendS),
-            "extendu" => Some(Opcode::ExtendU),
-            "wrap" => Some(Opcode::Wrap),
-            "float-to-int-sat-s" => Some(Opcode::FloatToIntSatS),
-            "float-to-int-sat-u" => Some(Opcode::FloatToIntSatU),
-            "float-to-int-s" => Some(Opcode::FloatToIntS),
-            "float-to-int-u" => Some(Opcode::FloatToIntU),
-            "int-to-float-s" => Some(Opcode::IntToFloatS),
-            "int-to-float-u" => Some(Opcode::IntToFloatU),
-            "float-promote" => Some(Opcode::FloatPromote),
-            "float-demote" => Some(Opcode::FloatDemote),
-            "reinterpret" => Some(Opcode::Reinterpret),
-            "inttoptr" => Some(Opcode::IntToPtr),
-            "ptrtoint" => Some(Opcode::PtrToInt),
-            "load" => Some(Opcode::Load),
-            "store" => Some(Opcode::Store),
-            "stack-load" => Some(Opcode::StackLoad),
-            "stack-store" => Some(Opcode::StackStore),
-            "stack-addr" => Some(Opcode::StackAddr),
-            "ptr-offset" => Some(Opcode::PtrOffset),
-            "ptr-index" => Some(Opcode::PtrIndex),
-            "call" => Some(Opcode::Call),
-            "call-indirect" => Some(Opcode::CallIndirect),
-            "call-intrinsic" => Some(Opcode::CallIntrinsic),
-            "jump" => Some(Opcode::Jump),
-            "br" => Some(Opcode::Br),
-            "br-table" => Some(Opcode::BrTable),
-            "return" => Some(Opcode::Return),
-            "select" => Some(Opcode::Select),
-            "unreachable" => Some(Opcode::Unreachable),
-            "nop" => Some(Opcode::Nop),
-            "splat" => Some(Opcode::Splat),
-            "shuffle" => Some(Opcode::Shuffle),
-            "insertelement" => Some(Opcode::InsertElement),
-            "extractelement" => Some(Opcode::ExtractElement),
-            "reduce-sum" => Some(Opcode::ReduceSum),
-            "reduce-add" => Some(Opcode::ReduceAdd),
-            "reduce-min" => Some(Opcode::ReduceMin),
-            "reduce-max" => Some(Opcode::ReduceMax),
-            "reduce-and" => Some(Opcode::ReduceAnd),
-            "reduce-or" => Some(Opcode::ReduceOr),
-            "reduce-xor" => Some(Opcode::ReduceXor),
-            "load-stride" => Some(Opcode::LoadStride),
-            "store-stride" => Some(Opcode::StoreStride),
-            "gather" => Some(Opcode::Gather),
-            "scatter" => Some(Opcode::Scatter),
-            "setvl" => Some(Opcode::SetVL),
-            _ => None,
-        }
-    }
-    
-    // ==================== Linkage 格式 ====================
-    
-    /// 将 Linkage 转换为字符串
-    pub fn linkage_to_string(linkage: Linkage) -> &'static str {
-        match linkage {
-            Linkage::Local => "local",
-            Linkage::Export => "export",
-            Linkage::Import => "import",
-        }
-    }
-    
-    /// 从字符串解析 Linkage
-    pub fn parse_linkage_str(s: &str) -> Option<Linkage> {
-        match s {
-            "local" => Some(Linkage::Local),
-            "export" => Some(Linkage::Export),
-            "import" => Some(Linkage::Import),
-            _ => None,
-        }
-    }
-    
-    // ==================== 指令格式常量 ====================
-    
-    /// 指令格式模板常量
-    pub mod templates {
-        /// 二元运算指令格式: "opcode.type lhs, rhs"
-        pub const BINARY: &str = "{opcode}.{type} {lhs}, {rhs}";
-        
-        /// 一元运算指令格式: "opcode.type arg"
-        pub const UNARY: &str = "{opcode}.{type} {arg}";
-        
-        /// 常量指令格式: "iconst.type value"
-        pub const CONST: &str = "{opcode}.{type} {value}";
-        
-        /// 加载指令格式: "load.type ptr + offset"
-        pub const LOAD: &str = "load.{type} {ptr} + {offset}";
-        
-        /// 存储指令格式: "store value, ptr + offset"
-        pub const STORE: &str = "store {value}, {ptr} + {offset}";
-        
-        /// 跳转指令格式: "jump block(args...)"
-        pub const JUMP: &str = "jump {block}({args})";
-        
-        /// 条件分支指令格式: "br cond, then_block(args...), else_block(args...)"
-        pub const BR: &str = "br {cond}, {then_block}({then_args}), {else_block}({else_args})";
-        
-        /// 返回指令格式: "return values..."
-        pub const RETURN: &str = "return {values}";
-        
-        /// 调用指令格式: "call func(args...)"
-        pub const CALL: &str = "call {func}({args})";
-        
-        /// 整数比较指令格式: "icmp.type cond, lhs, rhs"
-        pub const ICMP: &str = "icmp.{type} {cond}, {lhs}, {rhs}";
-        
-        /// 浮点比较指令格式: "fcmp.type cond, lhs, rhs"
-        pub const FCMP: &str = "fcmp.{type} {cond}, {lhs}, {rhs}";
-    }
-    
-    // ==================== 格式验证 ====================
-    
-    /// 验证标识符是否为有效的值名 (vN)
-    pub fn is_valid_value_name(s: &str) -> bool {
-        s.starts_with('v') && s[1..].parse::<u32>().is_ok()
-    }
-    
-    /// 验证标识符是否为有效的块名 (blockN)
-    pub fn is_valid_block_name(s: &str) -> bool {
-        s.starts_with("block") && s[5..].parse::<u32>().is_ok()
-    }
-    
-    /// 验证标识符是否为有效的栈槽名 (ssN)
-    pub fn is_valid_stackslot_name(s: &str) -> bool {
-        s.starts_with("ss") && s[2..].parse::<u32>().is_ok()
-    }
-    
-    /// 提取值名中的索引
-    pub fn extract_value_index(s: &str) -> Option<u32> {
-        s.strip_prefix('v')?.parse().ok()
-    }
-    
-    /// 提取块名中的索引
-    pub fn extract_block_index(s: &str) -> Option<u32> {
-        s.strip_prefix("block")?.parse().ok()
-    }
-    
-    /// 提取栈槽名中的索引
-    pub fn extract_stackslot_index(s: &str) -> Option<u32> {
-        s.strip_prefix("ss")?.parse().ok()
-    }
-    
-    /// 构造值名
-    pub fn make_value_name(index: u32) -> alloc::string::String {
-        alloc::format!("v{}", index)
-    }
-    
-    /// 构造块名
-    pub fn make_block_name(index: u32) -> alloc::string::String {
-        alloc::format!("block{}", index)
-    }
-    
-    /// 构造栈槽名
-    pub fn make_stackslot_name(index: u32) -> alloc::string::String {
-        alloc::format!("ss{}", index)
-    }
+fn parse_floatcc(s: &str) -> Result<FloatCC> {
+    format::parse_floatcc(s).ok_or_else(|| ParseError(format!("Invalid floatcc: {}", s)).into())
 }

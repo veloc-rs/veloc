@@ -1,5 +1,4 @@
 use bitflags::bitflags;
-use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntCC {
@@ -31,37 +30,7 @@ impl IntCC {
     }
 }
 
-impl fmt::Display for IntCC {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            IntCC::Eq => "eq",
-            IntCC::Ne => "ne",
-            IntCC::LtS => "lts",
-            IntCC::LtU => "ltu",
-            IntCC::GtS => "gts",
-            IntCC::GtU => "gtu",
-            IntCC::LeS => "les",
-            IntCC::LeU => "leu",
-            IntCC::GeS => "ges",
-            IntCC::GeU => "geu",
-        };
-        write!(f, "{}", s)
-    }
-}
-
-impl fmt::Display for FloatCC {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            FloatCC::Eq => "eq",
-            FloatCC::Ne => "ne",
-            FloatCC::Lt => "lt",
-            FloatCC::Gt => "gt",
-            FloatCC::Le => "le",
-            FloatCC::Ge => "ge",
-        };
-        write!(f, "{}", s)
-    }
-}
+impl FloatCC {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Opcode {
@@ -215,106 +184,7 @@ pub enum Opcode {
     SetVL,
 }
 
-impl fmt::Display for Opcode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Opcode::Iconst => "iconst",
-            Opcode::Fconst => "fconst",
-            Opcode::Bconst => "bconst",
-            Opcode::Vconst => "vconst",
-            Opcode::IAdd => "iadd",
-            Opcode::ISub => "isub",
-            Opcode::IMul => "imul",
-            Opcode::INeg => "ineg",
-            Opcode::IAddSat => "iadd_sat",
-            Opcode::ISubSat => "isub_sat",
-            Opcode::IAddWithOverflow => "iadd_with_overflow",
-            Opcode::ISubWithOverflow => "isub_with_overflow",
-            Opcode::IMulWithOverflow => "imul_with_overflow",
-            Opcode::IDivS => "idiv_s",
-            Opcode::IDivU => "idiv_u",
-            Opcode::IRemS => "irem_s",
-            Opcode::IRemU => "irem_u",
-            Opcode::FAdd => "fadd",
-            Opcode::FSub => "fsub",
-            Opcode::FMul => "fmul",
-            Opcode::FNeg => "fneg",
-            Opcode::FDiv => "fdiv",
-            Opcode::FMin => "fmin",
-            Opcode::FMax => "fmax",
-            Opcode::FCopysign => "fcopysign",
-            Opcode::FAbs => "fabs",
-            Opcode::FSqrt => "fsqrt",
-            Opcode::FCeil => "fceil",
-            Opcode::FFloor => "ffloor",
-            Opcode::FTrunc => "ftrunc",
-            Opcode::FNearest => "fnearest",
-            Opcode::IAnd => "iand",
-            Opcode::IOr => "ior",
-            Opcode::IXor => "ixor",
-            Opcode::IShl => "ishl",
-            Opcode::IShrS => "ishr_s",
-            Opcode::IShrU => "ishr_u",
-            Opcode::IRotl => "irotl",
-            Opcode::IRotr => "irotr",
-            Opcode::IClz => "iclz",
-            Opcode::ICtz => "ictz",
-            Opcode::IPopcnt => "ipopcnt",
-            Opcode::IEqz => "ieqz",
-            Opcode::Icmp => "icmp",
-            Opcode::Fcmp => "fcmp",
-            Opcode::ExtendS => "extends",
-            Opcode::ExtendU => "extendu",
-            Opcode::Wrap => "wrap",
-            Opcode::FloatToIntSatS => "float_to_int_sat_s",
-            Opcode::FloatToIntSatU => "float_to_int_sat_u",
-            Opcode::FloatToIntS => "float_to_int_s",
-            Opcode::FloatToIntU => "float_to_int_u",
-            Opcode::IntToFloatS => "int_to_float_s",
-            Opcode::IntToFloatU => "int_to_float_u",
-            Opcode::FloatPromote => "float_promote",
-            Opcode::FloatDemote => "float_demote",
-            Opcode::Reinterpret => "reinterpret",
-            Opcode::IntToPtr => "inttoptr",
-            Opcode::PtrToInt => "ptrtoint",
-            Opcode::Load => "load",
-            Opcode::Store => "store",
-            Opcode::StackLoad => "stack_load",
-            Opcode::StackStore => "stack_store",
-            Opcode::StackAddr => "stack_addr",
-            Opcode::PtrOffset => "ptr_offset",
-            Opcode::PtrIndex => "ptr_index",
-            Opcode::Call => "call",
-            Opcode::CallIndirect => "call_indirect",
-            Opcode::CallIntrinsic => "call_intrinsic",
-            Opcode::Jump => "jump",
-            Opcode::Br => "br",
-            Opcode::BrTable => "br_table",
-            Opcode::Return => "return",
-            Opcode::Select => "select",
-            Opcode::Unreachable => "unreachable",
-            Opcode::Nop => "nop",
-            // Vector operations
-            Opcode::Splat => "splat",
-            Opcode::Shuffle => "shuffle",
-            Opcode::InsertElement => "insertelement",
-            Opcode::ExtractElement => "extractelement",
-            Opcode::ReduceSum => "reduce_sum",
-            Opcode::ReduceAdd => "reduce_add",
-            Opcode::ReduceMin => "reduce_min",
-            Opcode::ReduceMax => "reduce_max",
-            Opcode::ReduceAnd => "reduce_and",
-            Opcode::ReduceOr => "reduce_or",
-            Opcode::ReduceXor => "reduce_xor",
-            Opcode::LoadStride => "load_stride",
-            Opcode::StoreStride => "store_stride",
-            Opcode::Gather => "gather",
-            Opcode::Scatter => "scatter",
-            Opcode::SetVL => "setvl",
-        };
-        write!(f, "{}", s)
-    }
-}
+impl Opcode {}
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
