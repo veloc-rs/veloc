@@ -379,18 +379,7 @@ impl DataFlowGraph {
             Constant::Bool(_) => Type::BOOL,
         };
 
-        let inst_data = match constant {
-            Constant::I8(v) => InstructionData::Iconst { value: v as u64 },
-            Constant::I16(v) => InstructionData::Iconst { value: v as u64 },
-            Constant::I32(v) => InstructionData::Iconst { value: v as u64 },
-            Constant::I64(v) => InstructionData::Iconst { value: v as u64 },
-            Constant::F32(v) => InstructionData::Fconst {
-                value: v.to_bits() as u64,
-            },
-            Constant::F64(v) => InstructionData::Fconst { value: v.to_bits() },
-            Constant::Bool(v) => InstructionData::Bconst { value: v },
-        };
-
+        let inst_data = InstructionData::from(constant);
         let inst = self.instructions.push(inst_data);
 
         let val_data = ValueData {
