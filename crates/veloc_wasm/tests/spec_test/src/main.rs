@@ -27,6 +27,22 @@ struct Args {
     #[arg(long)]
     dump_ir: bool,
 
+    /// Optimization level (0, 1)
+    #[arg(short, long, default_value = "0")]
+    opt_level: u8,
+
+    /// Output chrome trace JSON to file
+    #[arg(long)]
+    trace_file: Option<PathBuf>,
+
+    /// Print optimization pass statistics
+    #[arg(long)]
+    print_stats: bool,
+
+    /// Enable debug tags for optimization passes
+    #[arg(long, value_delimiter = ',')]
+    opt_debug: Vec<String>,
+
     /// Show detailed test output
     #[arg(short, long)]
     verbose: bool,
@@ -45,9 +61,22 @@ pub struct SpecRunner {
 }
 
 impl SpecRunner {
-    pub fn new(strategy: Strategy, name: &str, dump_ir: bool) -> Self {
+    pub fn new(
+        strategy: Strategy,
+        name: &str,
+        dump_ir: bool,
+        opt_level: u8,
+        trace_file: Option<PathBuf>,
+        print_stats: bool,
+        opt_debug: Vec<String>,
+    ) -> Self {
         let mut config = Config::default();
         config.strategy = strategy;
+        config.dump_ir = dump_ir;
+        config.opt_level = opt_level;
+        config.trace_file = trace_file;
+        config.print_stats = print_stats;
+        config.opt_debug = opt_debug;
         let engine = Arc::new(Engine::with_config(config));
         let mut store = Store::new();
         let mut registered = HashMap::new();
@@ -282,7 +311,16 @@ fn wast_arg_to_val(arg: &WastArg) -> Val {
     }
 }
 
-pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bool) -> Result<()> {
+pub fn run_wast_file(
+    path: &Path,
+    strategy: Strategy,
+    dump_ir: bool,
+    opt_level: u8,
+    verbose: bool,
+    trace_file: Option<PathBuf>,
+    print_stats: bool,
+    opt_debug: Vec<String>,
+) -> Result<()> {
     let mode_name = match strategy {
         Strategy::Interpreter => "interp",
         Strategy::Jit => "jit",
@@ -297,7 +335,15 @@ pub fn run_wast_file(path: &Path, strategy: Strategy, dump_ir: bool, verbose: bo
     let buf = ParseBuffer::new(&contents)?;
     let wast = parser::parse::<Wast>(&buf)
         .map_err(|e| anyhow::anyhow!("failed to parse {:?}: {}", path, e))?;
-    let mut runner = SpecRunner::new(strategy, mode_name, dump_ir);
+    let mut runner = SpecRunner::new(
+        strategy,
+        mode_name,
+        dump_ir,
+        opt_level,
+        trace_file,
+        print_stats,
+        opt_debug,
+    );
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         for directive in wast.directives {
@@ -549,7 +595,16 @@ fn main() -> Result<()> {
     let path = args.path.unwrap_or(default_tests_dir);
 
     if path.is_file() {
-        run_wast_file(&path, strategy, args.dump_ir, args.verbose)?;
+        run_wast_file(
+            &path,
+            strategy,
+            args.dump_ir,
+            args.opt_level,
+            args.verbose,
+            args.trace_file,
+            args.print_stats,
+            args.opt_debug,
+        )?;
     } else if path.is_dir() {
         let mut paths: Vec<_> = fs::read_dir(&path)?
             .filter_map(|e| e.ok())
@@ -595,7 +650,16 @@ fn main() -> Result<()> {
         let mut passed = 0;
         let mut failed = 0;
         for p in &paths {
-            if let Err(e) = run_wast_file(p, strategy, args.dump_ir, args.verbose) {
+            if let Err(e) = run_wast_file(
+                p,
+                strategy,
+                args.dump_ir,
+                args.opt_level,
+                args.verbose,
+                args.trace_file.clone(),
+                args.print_stats,
+                args.opt_debug.clone(),
+            ) {
                 eprintln!("FAIL: {:?}\nError: {}", p.file_name().unwrap(), e);
                 failed += 1;
             } else {

@@ -1391,7 +1391,7 @@ fn emit_moves(
         // Pick the first move (d, s) and save s to a temp register.
         // Use swap_remove for O(1) removal
         let (d, s) = moves.swap_remove(0);
-        
+
         // Prefer reusing a free register over allocating a new one
         let temp = mapper.free_registers.pop().unwrap_or_else(|| {
             let r = mapper.next_register;

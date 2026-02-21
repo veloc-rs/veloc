@@ -30,6 +30,38 @@ impl UseDefAnalysis {
         &self.users[val]
     }
 
+    /// 将 func 中所有使用 old_val 的地方替换为 new_val，并同步更新分析侧表。
+    pub fn replace_all_uses_with(&mut self, func: &mut Function, old_val: Value, new_val: Value) {
+        if old_val == new_val {
+            return;
+        }
+
+        // 1. 将旧值的用户列表整个“拿”出来（避免后续反复 search/remove 的开销）
+        let users = core::mem::take(&mut self.users[old_val]);
+        if users.is_empty() {
+            return;
+        }
+
+        // 2. 找出唯一的指令 ID，确保每个指令只去 DFG 里扫描并替换一次
+        let mut unique_insts = users.clone();
+        unique_insts.sort_unstable();
+        unique_insts.dedup();
+
+        for inst in unique_insts {
+            // 在 DFG 中一次性替换该指令内的所有 old_val
+            func.dfg.replace_value_in_inst(inst, old_val, new_val);
+        }
+
+        // 3. 批量将用户记录转移到新值的列表中
+        if self.users[new_val].is_empty() {
+            self.users[new_val] = users;
+        } else {
+            self.users[new_val].extend(users);
+        }
+
+        func.bump_revision();
+    }
+
     /// 增量添加用户。
     pub fn add_user(&mut self, val: Value, user: Inst) {
         self.users[val].push(user);

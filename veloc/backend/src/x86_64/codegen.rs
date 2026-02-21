@@ -1318,25 +1318,25 @@ impl TargetBackend for X86_64Backend {
                         emitter.emit_inst(X86_64Inst::CmovnzRaxRbx);
                     }
 
-                if let Some(&v) = res_vals.first() {
-                    let offset_res = self.val_offset(func, v);
-                    if is_64 {
-                        emitter
-                            .inst(X86_64Inst::MovRbpOffR)
-                            .reg(Reg::RAX)
-                            .imm(offset_res as u64)
-                            .emit();
-                    } else {
-                        emitter
-                            .inst(X86_64Inst::MovRbpOffR32)
-                            .reg(Reg::RAX)
-                            .imm(offset_res as u64)
-                            .emit();
+                    if let Some(&v) = res_vals.first() {
+                        let offset_res = self.val_offset(func, v);
+                        if is_64 {
+                            emitter
+                                .inst(X86_64Inst::MovRbpOffR)
+                                .reg(Reg::RAX)
+                                .imm(offset_res as u64)
+                                .emit();
+                        } else {
+                            emitter
+                                .inst(X86_64Inst::MovRbpOffR32)
+                                .reg(Reg::RAX)
+                                .imm(offset_res as u64)
+                                .emit();
+                        }
                     }
+                } else {
+                    todo!("Implement codegen for ternary vector operations")
                 }
-            } else {
-                todo!("Implement codegen for ternary vector operations")
-            }
             }
             InstructionData::FloatCompare { kind, args } => {
                 let lhs_ty = func.dfg.values[args[0]].ty.clone();

@@ -13,7 +13,8 @@ use crate::Result;
 use crate::engine::{Engine, Strategy};
 use crate::translator::WasmTranslator;
 use crate::vm::VMOffsets;
-use veloc::ir::{CallConv, FuncId, Linkage, MemFlags, Type as VelocType};
+use veloc_ir::{CallConv, FuncId, Linkage, MemFlags, Type as VelocType};
+use veloc_optimizer::{OptConfig, PassManager};
 use wasmparser::{Parser, Payload, Validator};
 
 pub use self::runtime::*;
@@ -261,11 +262,52 @@ impl Module {
             )));
         }
 
-        let ir = ir.build();
+        let mut ir_data = ir.build_data();
+
+        // 5. Run optimizations
+        if engine.config().opt_level > 0 {
+            let tags: Vec<&str> = engine
+                .config()
+                .opt_debug
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            let config = OptConfig::with_debug_tags(engine.config().print_stats, &tags)?;
+
+            let mut pm = if engine.config().opt_level == 1 {
+                let mut pm = PassManager::new(config);
+                pm.add_function_pass(veloc_optimizer::DcePass);
+                pm.add_function_pass(veloc_optimizer::ConstantFoldingPass);
+                pm
+            } else {
+                PassManager::new(config)
+            };
+
+            pm.run_on_module(&mut ir_data);
+
+            // 如果配置了 trace_file，则直接输出
+            if let Some(ref path) = engine.config().trace_file {
+                let json = pm.stats.dump_chrome_trace();
+                if let Err(e) = std::fs::write(path, json) {
+                    eprintln!("Failed to write trace to {:?}: {}", path, e);
+                } else {
+                    println!("Chrome trace written to {:?}", path);
+                }
+            }
+        }
+
+        let ir = veloc_ir::Module::new(ir_data);
 
         if engine.config().dump_ir {
             println!("Generated IR for module:");
             println!("{}", ir);
+        }
+
+        if let Some(ref path) = engine.config().output_ir {
+            std::fs::write(path, ir.to_string()).map_err(|e| {
+                crate::error::Error::Compile(format!("Failed to write IR to file: {}", e))
+            })?;
+            println!("IR written to: {}", path.display());
         }
 
         let artifact = if strategy == Strategy::Jit {

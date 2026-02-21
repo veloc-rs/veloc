@@ -32,6 +32,29 @@ impl AnalysisManager {
         &self.use_def.as_ref().unwrap().1
     }
 
+    /// 获取函数的 Use-Def 分析结果（可变引用）。
+    /// 调用者如果通过此引用在 DFG 中替换了值，应调用 `update_use_def_revision` 同步版本号，
+    /// 以避免 AnalysisManager 认为数据过期而触发不必要的重算。
+    pub fn use_def_mut(&mut self, func: &Function) -> &mut UseDefAnalysis {
+        let rev = func.revision();
+        if self
+            .use_def
+            .as_ref()
+            .map(|(r, _)| *r != rev)
+            .unwrap_or(true)
+        {
+            self.use_def = Some((rev, UseDefAnalysis::new(func)));
+        }
+        &mut self.use_def.as_mut().unwrap().1
+    }
+
+    /// 手动更新缓存的 Use-Def 分析版本号。
+    pub fn update_use_def_revision(&mut self, func: &Function) {
+        if let Some((r, _)) = &mut self.use_def {
+            *r = func.revision();
+        }
+    }
+
     /// 获取函数的活跃变量分析结果。
     pub fn liveness(&mut self, func: &Function) -> &Liveness {
         let rev = func.revision();

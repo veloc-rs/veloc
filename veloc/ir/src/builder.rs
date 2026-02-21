@@ -6,7 +6,6 @@ use super::types::{
 };
 use crate::types::{BlockCallData, JumpTableData};
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 use smallvec::{SmallVec, smallvec};
@@ -53,9 +52,11 @@ impl ModuleBuilder {
     }
 
     pub fn build(self) -> Module {
-        Module {
-            inner: Arc::new(self.data),
-        }
+        Module::new(self.data)
+    }
+
+    pub fn build_data(self) -> ModuleData {
+        self.data
     }
 }
 
@@ -166,7 +167,7 @@ impl<'a> FunctionBuilder<'a> {
             // Ternary ops: Select result type same as then_val (args[1]), others same as first operand
             InstructionData::Ternary { opcode, args, .. } => {
                 if *opcode == Opcode::Select {
-                    smallvec![self.value_type(args[1])]  // then_val
+                    smallvec![self.value_type(args[1])] // then_val
                 } else {
                     smallvec![self.value_type(args[0])]
                 }

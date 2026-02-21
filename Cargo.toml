@@ -35,6 +35,7 @@ veloc_analyzer = { path = "veloc/analyzer" }
 veloc_wasm = { path = "crates/veloc_wasm" }
 veloc_c = { path = "crates/veloc-c" }
 log = "0.4"
+env_logger = "0.11"
 hashbrown = { version = "0.14" }
 bitvec = "1.0"
 elf_loader = { path = "../elf_loader" }

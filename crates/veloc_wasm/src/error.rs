@@ -31,6 +31,8 @@ pub enum Error {
     Memory(String),
     /// Unsupported WebAssembly feature.
     Unsupported(String),
+    /// Optimization error.
+    Optimize(veloc_optimizer::Error),
     /// Generic error message.
     Message(String),
 }
@@ -50,6 +52,12 @@ impl From<elf_loader::Error> for Error {
 impl From<String> for Error {
     fn from(s: String) -> Self {
         Error::Message(s)
+    }
+}
+
+impl From<veloc_optimizer::Error> for Error {
+    fn from(e: veloc_optimizer::Error) -> Self {
+        Error::Optimize(e)
     }
 }
 
@@ -76,6 +84,7 @@ impl fmt::Display for Error {
             ),
             Error::Memory(s) => write!(f, "Memory error: {}", s),
             Error::Unsupported(s) => write!(f, "Unsupported feature: {}", s),
+            Error::Optimize(e) => write!(f, "Optimization error: {}", e),
             Error::Message(s) => write!(f, "{}", s),
         }
     }
@@ -86,6 +95,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Wasm(e) => Some(e),
+            Error::Optimize(e) => Some(e),
             _ => None,
         }
     }

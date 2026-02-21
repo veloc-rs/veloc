@@ -58,13 +58,18 @@ impl LiveInterval {
         while i < self.ranges.len() && j < other.ranges.len() {
             let r1 = &self.ranges[i];
             let r2 = &other.ranges[j];
-            if r1.start < r2.end && r2.start < r1.end { return true; }
-            if r1.end < r2.end { i += 1; } else { j += 1; }
+            if r1.start < r2.end && r2.start < r1.end {
+                return true;
+            }
+            if r1.end < r2.end {
+                i += 1;
+            } else {
+                j += 1;
+            }
         }
         false
     }
 }
-
 
 pub struct Liveness {
     pub intervals: SecondaryMap<Value, LiveInterval>,
@@ -125,7 +130,10 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
     let mut live_in = bitvec![u64, Lsb0; 0; num_blocks];
     let mut worklist = Vec::with_capacity(num_blocks);
 
-    let values_to_process: Vec<Value> = func.dfg.values.keys()
+    let values_to_process: Vec<Value> = func
+        .dfg
+        .values
+        .keys()
         .filter(|&v| def_block[v].is_some())
         .collect();
 
@@ -181,5 +189,3 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
         inst_pcs,
     }
 }
-
-

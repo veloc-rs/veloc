@@ -25,6 +25,12 @@ pub enum FloatCC {
     Ge,
 }
 
+impl IntCC {
+    pub fn is_unsigned(self) -> bool {
+        matches!(self, IntCC::LtU | IntCC::GtU | IntCC::LeU | IntCC::GeU)
+    }
+}
+
 impl fmt::Display for IntCC {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {

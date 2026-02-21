@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 veloc = { workspace = true }
+veloc_ir = { workspace = true }
+veloc_optimizer = { workspace = true }
+veloc_analyzer = { workspace = true }
 cranelift-entity = { workspace = true }
 libc = { workspace = true }
 mmap-rs = { workspace = true }
@@ -18,6 +21,8 @@ wiggle = { workspace = true }
 futures = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
 
 [features]
 default = ["std"]

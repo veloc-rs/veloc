@@ -278,151 +278,189 @@ impl InstructionData {
                 f(*ptr);
                 f(*value);
             }
-            InstructionData::StackLoad { .. } => {}
-            InstructionData::StackStore { value, .. } => f(*value),
-            InstructionData::StackAddr { .. } => {}
-            InstructionData::Iconst { .. } => {}
-            InstructionData::Fconst { .. } => {}
-            InstructionData::Bconst { .. } => {}
-            InstructionData::Vconst { .. } => {}
-            InstructionData::Call { args, .. } => {
-                for &arg in dfg.get_value_list(*args) {
-                    f(arg);
-                }
+            InstructionData::StackLoad { .. }
+            | InstructionData::StackAddr { .. }
+            | InstructionData::Iconst { .. }
+            | InstructionData::Fconst { .. }
+            | InstructionData::Bconst { .. }
+            | InstructionData::Vconst { .. }
+            | InstructionData::Unreachable
+            | InstructionData::Nop => {}
+
+            InstructionData::StackStore { value: arg, .. }
+            | InstructionData::IntToPtr { arg }
+            | InstructionData::PtrToInt { arg }
+            | InstructionData::PtrOffset { ptr: arg, .. } => f(*arg),
+
+            InstructionData::IntCompare { args, .. }
+            | InstructionData::FloatCompare { args, .. }
+            | InstructionData::Shuffle { args, .. } => {
+                f(args[0]);
+                f(args[1]);
             }
+
+            InstructionData::Ternary { args, .. } => {
+                f(args[0]);
+                f(args[1]);
+                f(args[2]);
+            }
+
+            InstructionData::Call { args, .. }
+            | InstructionData::Return { values: args }
+            | InstructionData::CallIntrinsic { args, .. } => {
+                dfg.visit_value_list(*args, f);
+            }
+
             InstructionData::CallIndirect { ptr, args, .. } => {
                 f(*ptr);
-                for &arg in dfg.get_value_list(*args) {
-                    f(arg);
-                }
+                dfg.visit_value_list(*args, f);
             }
-            InstructionData::Jump { dest } => {
-                let call_data = &dfg.block_calls[*dest];
-                for &arg in dfg.get_value_list(call_data.args) {
-                    f(arg);
-                }
-            }
+
+            InstructionData::Jump { dest } => dfg.visit_block_call(*dest, f),
+
             InstructionData::Br {
                 condition,
                 then_dest,
                 else_dest,
             } => {
                 f(*condition);
-                let then_data = &dfg.block_calls[*then_dest];
-                for &arg in dfg.get_value_list(then_data.args) {
-                    f(arg);
-                }
-                let else_data = &dfg.block_calls[*else_dest];
-                for &arg in dfg.get_value_list(else_data.args) {
-                    f(arg);
-                }
+                dfg.visit_block_call(*then_dest, &mut f);
+                dfg.visit_block_call(*else_dest, &mut f);
             }
+
             InstructionData::BrTable { index, table } => {
                 f(*index);
-                let table_data = &dfg.jump_tables[*table];
-                for &dest in table_data.targets.iter() {
-                    let call_data = &dfg.block_calls[dest];
-                    for &arg in dfg.get_value_list(call_data.args) {
-                        f(arg);
-                    }
-                }
+                dfg.visit_jump_table(*table, f);
             }
-            InstructionData::Return { values } => {
-                for &v in dfg.get_value_list(*values) {
-                    f(v);
-                }
-            }
-            InstructionData::IntCompare { args, .. } => {
-                f(args[0]);
-                f(args[1]);
-            }
-            InstructionData::FloatCompare { args, .. } => {
-                f(args[0]);
-                f(args[1]);
-            }
-            InstructionData::Unreachable => {}
-            InstructionData::IntToPtr { arg } => f(*arg),
-            InstructionData::PtrToInt { arg, .. } => f(*arg),
-            InstructionData::PtrOffset { ptr, .. } => f(*ptr),
+
             InstructionData::PtrIndex { ptr, index, .. } => {
                 f(*ptr);
                 f(*index);
             }
-            InstructionData::CallIntrinsic { args, .. } => {
-                for &arg in dfg.get_value_list(*args) {
-                    f(arg);
-                }
-            }
-            // Vector operations
-            InstructionData::Ternary { args, .. } => {
-                f(args[0]);
-                f(args[1]);
-                f(args[2]);
-            }
+
             InstructionData::VectorOpWithExt { args, ext, .. } => {
-                for &arg in dfg.get_value_list(*args) {
-                    f(arg);
-                }
-                // 还需要访问 mask 和 evl
-                let ext_data = &dfg.vector_ext_pool[*ext];
-                f(ext_data.mask);
-                if let Some(evl_val) = ext_data.evl {
-                    f(evl_val);
-                }
+                dfg.visit_value_list(*args, &mut f);
+                dfg.visit_vector_ext(*ext, f);
             }
-            // Strided 操作
+
             InstructionData::VectorLoadStrided { ptr, stride, ext } => {
                 f(*ptr);
                 f(*stride);
-                let ext_data = &dfg.vector_mem_ext_pool[*ext];
-                if let Some(mask) = ext_data.mask {
-                    f(mask);
-                }
-                if let Some(evl) = ext_data.evl {
-                    f(evl);
-                }
+                dfg.visit_vector_mem_ext(*ext, f);
             }
-            InstructionData::VectorStoreStrided { args, ext } => {
-                for &arg in dfg.get_value_list(*args) {
-                    f(arg);
-                }
-                let ext_data = &dfg.vector_mem_ext_pool[*ext];
-                if let Some(mask) = ext_data.mask {
-                    f(mask);
-                }
-                if let Some(evl) = ext_data.evl {
-                    f(evl);
-                }
+
+            InstructionData::VectorStoreStrided { args, ext }
+            | InstructionData::VectorScatter { args, ext } => {
+                dfg.visit_value_list(*args, &mut f);
+                dfg.visit_vector_mem_ext(*ext, f);
             }
-            // Gather/Scatter 操作
+
             InstructionData::VectorGather { ptr, index, ext } => {
                 f(*ptr);
                 f(*index);
-                let ext_data = &dfg.vector_mem_ext_pool[*ext];
-                if let Some(mask) = ext_data.mask {
-                    f(mask);
-                }
-                if let Some(evl) = ext_data.evl {
-                    f(evl);
-                }
+                dfg.visit_vector_mem_ext(*ext, f);
             }
-            InstructionData::VectorScatter { args, ext } => {
-                for &arg in dfg.get_value_list(*args) {
-                    f(arg);
-                }
-                let ext_data = &dfg.vector_mem_ext_pool[*ext];
-                if let Some(mask) = ext_data.mask {
-                    f(mask);
-                }
-                if let Some(evl) = ext_data.evl {
-                    f(evl);
-                }
+        }
+    }
+
+    pub fn replace_value(&mut self, dfg: &mut DataFlowGraph, old_val: Value, new_val: Value) {
+        let v = |val: &mut Value| {
+            if *val == old_val {
+                *val = new_val;
             }
-            InstructionData::Shuffle { args, .. } => {
-                f(args[0]);
-                f(args[1]);
+        };
+
+        match self {
+            InstructionData::Unary { arg, .. }
+            | InstructionData::IntToPtr { arg }
+            | InstructionData::PtrToInt { arg }
+            | InstructionData::PtrOffset { ptr: arg, .. }
+            | InstructionData::StackStore { value: arg, .. } => v(arg),
+
+            InstructionData::Binary { args, .. }
+            | InstructionData::IntCompare { args, .. }
+            | InstructionData::FloatCompare { args, .. }
+            | InstructionData::Shuffle { args, .. } => {
+                v(&mut args[0]);
+                v(&mut args[1]);
             }
-            InstructionData::Nop => {}
+
+            InstructionData::Ternary { args, .. } => {
+                v(&mut args[0]);
+                v(&mut args[1]);
+                v(&mut args[2]);
+            }
+
+            InstructionData::Load { ptr, .. } => v(ptr),
+            InstructionData::Store { ptr, value, .. } => {
+                v(ptr);
+                v(value);
+            }
+
+            InstructionData::Call { args, .. }
+            | InstructionData::Return { values: args }
+            | InstructionData::CallIntrinsic { args, .. } => {
+                dfg.replace_value_list(args, old_val, new_val);
+            }
+
+            InstructionData::CallIndirect { ptr, args, .. } => {
+                v(ptr);
+                dfg.replace_value_list(args, old_val, new_val);
+            }
+
+            InstructionData::Jump { dest } => dfg.replace_block_call(*dest, old_val, new_val),
+
+            InstructionData::Br {
+                condition,
+                then_dest,
+                else_dest,
+            } => {
+                v(condition);
+                dfg.replace_block_call(*then_dest, old_val, new_val);
+                dfg.replace_block_call(*else_dest, old_val, new_val);
+            }
+
+            InstructionData::BrTable { index, table } => {
+                v(index);
+                dfg.replace_jump_table(*table, old_val, new_val);
+            }
+
+            InstructionData::PtrIndex { ptr, index, .. } => {
+                v(ptr);
+                v(index);
+            }
+
+            InstructionData::VectorOpWithExt { args, ext, .. } => {
+                dfg.replace_value_list(args, old_val, new_val);
+                dfg.replace_vector_ext(ext, old_val, new_val);
+            }
+
+            InstructionData::VectorLoadStrided { ptr, stride, ext } => {
+                v(ptr);
+                v(stride);
+                dfg.replace_vector_mem_ext(ext, old_val, new_val);
+            }
+
+            InstructionData::VectorStoreStrided { args, ext }
+            | InstructionData::VectorScatter { args, ext } => {
+                dfg.replace_value_list(args, old_val, new_val);
+                dfg.replace_vector_mem_ext(ext, old_val, new_val);
+            }
+
+            InstructionData::VectorGather { ptr, index, ext } => {
+                v(ptr);
+                v(index);
+                dfg.replace_vector_mem_ext(ext, old_val, new_val);
+            }
+
+            InstructionData::StackLoad { .. }
+            | InstructionData::StackAddr { .. }
+            | InstructionData::Iconst { .. }
+            | InstructionData::Fconst { .. }
+            | InstructionData::Bconst { .. }
+            | InstructionData::Vconst { .. }
+            | InstructionData::Unreachable
+            | InstructionData::Nop => {}
         }
     }
 

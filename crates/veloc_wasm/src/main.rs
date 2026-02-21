@@ -8,7 +8,7 @@ use veloc_wasm::{
 };
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about = "Veloc WebAssembly runtime", long_about = None)]
 struct Args {
     /// Path to the Wasm or WAT file
     #[arg(value_name = "FILE")]
@@ -18,31 +18,52 @@ struct Args {
     #[arg(short, long, default_value = "_start")]
     invoke: String,
 
-    /// Execution strategy (auto, jit, interpreter)
-    #[arg(short, long, default_value = "interpreter")]
-    strategy: String,
+    /// Execution strategy
+    #[arg(short, long, value_enum, default_value = "interpreter")]
+    strategy: Strategy,
 
     /// Dump generated IR to stdout
-    #[arg(long)]
+    #[arg(long, group = "ir-output")]
     dump_ir: bool,
 
-    /// Enabled variable names in IR output (improves readability)
+    /// Output generated IR to a file (does not run the module)
+    #[arg(short = 'o', long, value_name = "FILE", group = "ir-output")]
+    output_ir: Option<PathBuf>,
+
+    /// Optimization level (0, 1)
+    #[arg(short, long, default_value = "1")]
+    opt_level: u8,
+
+    /// Output chrome trace JSON to file
     #[arg(long)]
-    ir_names: bool,
+    trace_file: Option<PathBuf>,
+
+    /// Print optimization pass statistics
+    #[arg(long)]
+    print_stats: bool,
+
+    /// Enable debug tags for optimization passes (e.g., --opt-debug=dce)
+    #[arg(long, value_delimiter = ',')]
+    opt_debug: Vec<String>,
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
     let args = Args::parse();
+    // Check if we only need to output IR
+    let output_only = args.output_ir.is_some() || args.dump_ir;
 
     // 1. 初始化引擎
-    let mut config = Config::default();
-    config.strategy = match args.strategy.to_lowercase().as_str() {
-        "jit" => Strategy::Jit,
-        "interpreter" => Strategy::Interpreter,
-        _ => Strategy::Auto,
+    let config = Config {
+        strategy: args.strategy,
+        dump_ir: args.dump_ir,
+        ir_names: output_only,
+        opt_level: args.opt_level,
+        output_ir: args.output_ir,
+        trace_file: args.trace_file,
+        print_stats: args.print_stats,
+        opt_debug: args.opt_debug,
     };
-    config.dump_ir = args.dump_ir;
-    config.ir_names = args.ir_names;
     let engine = Arc::new(Engine::with_config(config));
 
     // 2. 读取并解析 Wasm 字节码
@@ -58,6 +79,11 @@ fn main() -> Result<()> {
     let module =
         Module::new(&engine, &wasm_bin).map_err(|e| anyhow!("Failed to create Module: {:?}", e))?;
 
+    // If only outputting IR, we're done
+    if output_only {
+        return Ok(());
+    }
+
     // 4. 初始化状态存储
     let mut store = Store::new();
 
@@ -65,7 +91,6 @@ fn main() -> Result<()> {
     let mut linker = veloc_wasm::linker::Linker::new();
 
     // 6. 如果启用了 WASI
-
     let wasi_ctx = veloc_wasm::wasi::default_wasi_ctx();
     store.set_wasi(wasi_ctx);
     linker

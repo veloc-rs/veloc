@@ -81,6 +81,12 @@ pub struct Module {
 }
 
 impl Module {
+    pub fn new(data: ModuleData) -> Self {
+        Self {
+            inner: Arc::new(data),
+        }
+    }
+
     pub fn find_function_by_name(&self, name: &str) -> Option<FuncId> {
         self.inner.get_func_id(name)
     }
