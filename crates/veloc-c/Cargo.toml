@@ -11,6 +11,6 @@ log = { workspace = true }
 hashbrown = { workspace = true }
 anyhow = { workspace = true }
 thiserror = "2.0"
-veloc_ir = { workspace = true }
+veloc-ir = { workspace = true }
 
 [dev-dependencies]

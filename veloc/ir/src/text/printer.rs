@@ -1,8 +1,9 @@
-use super::Linkage;
-use super::function::Function;
-use super::module::Module;
-use crate::inst::InstructionData;
-use crate::{DataFlowGraph, Inst, Type, Value};
+use crate::{
+    DataFlowGraph, Inst, Linkage, Type, Value,
+    function::Function,
+    inst::InstructionData,
+    module::Module,
+};
 use core::fmt::{Display, Formatter, Result, Write};
 
 /// 格式化值引用，优先使用命名，否则使用 vN 格式
@@ -532,7 +533,7 @@ fn fmt_block_header(f: &mut dyn Write, func: &Function, block: crate::Block) -> 
 }
 
 /// 写入模块的完整 IR 表示
-pub(crate) fn write_module(f: &mut dyn Write, module: &Module) -> Result {
+pub fn write_module(f: &mut dyn Write, module: &Module) -> Result {
     for global in module.globals.iter() {
         writeln!(
             f,
@@ -551,7 +552,7 @@ pub(crate) fn write_module(f: &mut dyn Write, module: &Module) -> Result {
 }
 
 /// 写入函数的完整 IR 表示
-pub(crate) fn write_function(
+pub fn write_function(
     f: &mut dyn Write,
     func: &Function,
     module: Option<&Module>,

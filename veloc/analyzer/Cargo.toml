@@ -1,10 +1,10 @@
 [package]
-name = "veloc_analyzer"
+name = "veloc-analyzer"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-veloc_ir = { workspace = true }
+veloc-ir = { workspace = true }
 hashbrown = { workspace = true }
 bitvec = { workspace = true }
 cranelift-entity = { workspace = true }

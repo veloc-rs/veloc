@@ -1,10 +1,10 @@
 [package]
-name = "veloc_backend"
+name = "veloc-codegen"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-veloc_ir = { path = "../ir" }
+veloc-ir = { path = "../ir" }
 cranelift-entity = { workspace = true }
 object = { version = "0.36", features = ["write"] }
 hashbrown = { workspace = true }
@@ -12,6 +12,6 @@ hashbrown = { workspace = true }
 
 [features]
 default = ["std"]
-std = ["veloc_ir/std"]
+std = ["veloc-ir/std"]
 
 

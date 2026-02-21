@@ -3,7 +3,7 @@ use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
 use veloc_ir::function::Function;
 use veloc_ir::inst::{Inst, InstructionData};
-use veloc_ir::printer::InstPrinter;
+use veloc_ir::text::printer::InstPrinter;
 use veloc_ir::types::ValueDef;
 
 const DCE: &str = "dce";

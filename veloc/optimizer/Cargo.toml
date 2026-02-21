@@ -1,15 +1,15 @@
 [package]
-name = "veloc_optimizer"
+name = "veloc-optimizer"
 version = "0.1.0"
 edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
-veloc_ir = { workspace = true }
-veloc_analyzer = { workspace = true }
+veloc-ir = { workspace = true }
+veloc-analyzer = { workspace = true }
 hashbrown = { workspace = true }
 log = { workspace = true }
 
 [features]
 default = ["std"]
-std = ["veloc_ir/std"]
+std = ["veloc-ir/std"]

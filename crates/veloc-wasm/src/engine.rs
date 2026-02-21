@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use veloc::backend::Backend;
+use veloc::codegen::Backend;
 
 /// 编译策略
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]

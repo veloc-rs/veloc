@@ -1436,9 +1436,19 @@ version = "0.1.0"
 dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
- "veloc_backend",
- "veloc_interpreter",
- "veloc_ir",
+ "veloc-codegen",
+ "veloc-interpreter",
+ "veloc-ir",
+]
+
+[[package]]
+name = "veloc-analyzer"
+version = "0.1.0"
+dependencies = [
+ "bitvec",
+ "cranelift-entity 0.128.3",
+ "hashbrown 0.14.5",
+ "veloc-ir",
 ]
 
 [[package]]
@@ -1449,55 +1459,32 @@ dependencies = [
  "hashbrown 0.14.5",
  "log",
  "thiserror 2.0.18",
- "veloc_ir",
+ "veloc-ir",
 ]
 
 [[package]]
-name = "veloc-spec"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "hashbrown 0.14.5",
- "veloc",
- "veloc_wasm",
- "wasmparser 0.244.0",
- "wast 229.0.0",
-]
-
-[[package]]
-name = "veloc_analyzer"
-version = "0.1.0"
-dependencies = [
- "bitvec",
- "cranelift-entity 0.128.3",
- "hashbrown 0.14.5",
- "veloc_ir",
-]
-
-[[package]]
-name = "veloc_backend"
+name = "veloc-codegen"
 version = "0.1.0"
 dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "object 0.36.7",
- "veloc_ir",
+ "veloc-ir",
 ]
 
 [[package]]
-name = "veloc_interpreter"
+name = "veloc-interpreter"
 version = "0.1.0"
 dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "libm",
- "veloc_analyzer",
- "veloc_ir",
+ "veloc-analyzer",
+ "veloc-ir",
 ]
 
 [[package]]
-name = "veloc_ir"
+name = "veloc-ir"
 version = "0.1.0"
 dependencies = [
  "bitflags",
@@ -1508,17 +1495,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "veloc_optimizer"
+name = "veloc-optimizer"
 version = "0.1.0"
 dependencies = [
  "hashbrown 0.14.5",
  "log",
- "veloc_analyzer",
- "veloc_ir",
+ "veloc-analyzer",
+ "veloc-ir",
 ]
 
 [[package]]
-name = "veloc_wasm"
+name = "veloc-spec"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hashbrown 0.14.5",
+ "veloc",
+ "veloc-wasm",
+ "wasmparser 0.244.0",
+ "wast 229.0.0",
+]
+
+[[package]]
+name = "veloc-wasm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1532,9 +1532,9 @@ dependencies = [
  "log",
  "mmap-rs",
  "veloc",
- "veloc_analyzer",
- "veloc_ir",
- "veloc_optimizer",
+ "veloc-analyzer",
+ "veloc-ir",
+ "veloc-optimizer",
  "wasi-cap-std-sync",
  "wasi-common",
  "wasmparser 0.244.0",

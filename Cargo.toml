@@ -7,10 +7,10 @@ edition = { workspace = true }
 [workspace]
 members = [
 	"crates/*",
-	"crates/veloc_wasm/tests/spec_test",
+	"crates/veloc-wasm/tests/spec_test",
 	"veloc/ir",
 	"veloc/interpreter",
-	"veloc/backend",
+	"veloc/codegen",
 	"veloc/analyzer",
 	"veloc/optimizer",
 ]
@@ -27,13 +27,13 @@ wasmparser = "0.244.0"
 wat = "1.244.0"
 wast = "229.0.0"
 veloc = { path = "." }
-veloc_ir = { path = "veloc/ir" }
-veloc_optimizer = { path = "veloc/optimizer" }
-veloc_interpreter = { path = "veloc/interpreter" }
-veloc_backend = { path = "veloc/backend" }
-veloc_analyzer = { path = "veloc/analyzer" }
-veloc_wasm = { path = "crates/veloc_wasm" }
-veloc_c = { path = "crates/veloc-c" }
+veloc-ir = { path = "veloc/ir" }
+veloc-optimizer = { path = "veloc/optimizer" }
+veloc-interpreter = { path = "veloc/interpreter" }
+veloc-codegen = { path = "veloc/codegen" }
+veloc-analyzer = { path = "veloc/analyzer" }
+veloc-wasm = { path = "crates/veloc-wasm" }
+veloc-c = { path = "crates/veloc-c" }
 log = "0.4"
 env_logger = "0.11"
 hashbrown = { version = "0.14" }
@@ -47,9 +47,9 @@ wasi_common = { package = "wasi-common", version = "17.0.3" }
 wasi_cap_std_sync = { package = "wasi-cap-std-sync", version = "17.0.3" }
 
 [dependencies]
-veloc_ir = { workspace = true }
-veloc_interpreter = { workspace = true }
-veloc_backend = { workspace = true }
+veloc-ir = { workspace = true }
+veloc-interpreter = { workspace = true }
+veloc-codegen = { workspace = true }
 cranelift-entity = { workspace = true }
 hashbrown = { workspace = true }
 

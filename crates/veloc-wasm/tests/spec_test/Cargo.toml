@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 veloc = { workspace = true }
-veloc_wasm = { workspace = true }
+veloc-wasm = { workspace = true }
 clap = { workspace = true }
 wast = { workspace = true }
 wasmparser = { workspace = true }

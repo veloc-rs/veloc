@@ -1,13 +1,13 @@
 [package]
-name = "veloc_wasm"
+name = "veloc-wasm"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 veloc = { workspace = true }
-veloc_ir = { workspace = true }
-veloc_optimizer = { workspace = true }
-veloc_analyzer = { workspace = true }
+veloc-ir = { workspace = true }
+veloc-optimizer = { workspace = true }
+veloc-analyzer = { workspace = true }
 cranelift-entity = { workspace = true }
 libc = { workspace = true }
 mmap-rs = { workspace = true }
