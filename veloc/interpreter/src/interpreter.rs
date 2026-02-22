@@ -798,10 +798,10 @@ impl Interpreter {
                         let (idx_reg, num_targets) = decode_into!(BrTable, pc_ptr);
                         let idx = reg_val!(idx_reg).unwarp_i32();
 
-                        let target_idx = if idx >= 0 && (idx as u32) < (num_targets - 1) {
-                            (idx as usize) + 1
+                        let target_idx = if idx >= 0 && (idx as u32) < num_targets {
+                            idx as usize
                         } else {
-                            0
+                            (num_targets - 1) as usize
                         };
 
                         let target_pc = unsafe {

@@ -42,8 +42,18 @@ impl<'a> WasmTranslator<'a> {
         Ok(())
     }
 
+    /// 获取 global 的指针值
+    /// 对于导入的 global：返回之前加载的指针变量值
+    /// 对于本地的 global：返回 vmctx + 偏移量计算出的指针
     pub(super) fn get_global_ptr(&mut self, index: u32) -> Value {
-        let var = self.global_ptr_vars[index as usize];
-        self.builder.use_var(var)
+        match self.global_ptr_vars[index as usize] {
+            Some(var) => self.builder.use_var(var),
+            None => {
+                // 本地 global：计算 vmctx + offset
+                let vmctx = self.vmctx.expect("vmctx not set");
+                let (_, offset) = self.offsets.global_access_info(index);
+                self.builder.ins().ptr_offset(vmctx, offset as i32)
+            }
+        }
     }
 }

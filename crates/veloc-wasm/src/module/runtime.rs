@@ -162,9 +162,11 @@ pub unsafe extern "C" fn wasm_init_table(
     val: *mut crate::vm::VMFuncRef,
 ) {
     let instance = unsafe { VMInstance::from_vmctx(vmctx) };
+    let meta = instance.module.metadata();
     let offsets = &instance.module.inner.offsets;
-    let tables = unsafe { (*vmctx).tables_mut(offsets, instance.module.metadata().tables.len()) };
-    let table = unsafe { &mut *tables[table_idx as usize] };
+    let table = unsafe {
+        &mut *(*vmctx).get_table_mut(offsets, table_idx, meta.num_imported_tables as u32)
+    };
     for i in 0..table.current_elements {
         unsafe {
             *table.base.add(i) = val;

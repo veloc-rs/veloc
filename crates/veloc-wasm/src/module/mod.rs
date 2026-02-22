@@ -207,9 +207,12 @@ impl Module {
         // 1. Declare runtime functions and offsets
         let runtime = RuntimeFunctions::declare(&mut ir);
         let offsets = VMOffsets::new(
-            metadata.memories.len() as u32,
-            metadata.tables.len() as u32,
-            metadata.globals.len() as u32,
+            metadata.num_imported_memories as u32,
+            metadata.num_imported_tables as u32,
+            metadata.num_imported_globals as u32,
+            (metadata.memories.len() - metadata.num_imported_memories) as u32,
+            (metadata.tables.len() - metadata.num_imported_tables) as u32,
+            (metadata.globals.len() - metadata.num_imported_globals) as u32,
             metadata.functions.len() as u32,
             metadata.signatures.len() as u32,
         );
@@ -402,16 +405,24 @@ fn generate_init_expr(
                 stack.push(ins.ptr_offset(vmctx, offset as i32))
             }
             GlobalInit::GlobalGet(idx) => {
-                let offset = offsets.global_offset(*idx);
-                let align = if offset % 16 == 0 { 16 } else { 8 };
-                let src_ptr = ins.load(
-                    VelocType::PTR,
-                    vmctx,
-                    offset,
-                    MemFlags::new().with_alignment(align),
-                );
+                let (is_imported, offset) = offsets.global_access_info(*idx);
                 let ty = valtype_to_veloc(metadata.globals[*idx as usize].ty);
-                stack.push(ins.load(ty, src_ptr, 0, MemFlags::new().with_alignment(8)))
+
+                if is_imported {
+                    // 导入的全局变量：先加载指针，再通过指针加载值
+                    let align = if offset % 16 == 0 { 16 } else { 8 };
+                    let src_ptr = ins.load(
+                        VelocType::PTR,
+                        vmctx,
+                        offset,
+                        MemFlags::new().with_alignment(align),
+                    );
+                    stack.push(ins.load(ty, src_ptr, 0, MemFlags::new().with_alignment(8)))
+                } else {
+                    // 本地全局变量：直接从 VMContext 加载
+                    let align = if offset % 16 == 0 { 16 } else { 8 };
+                    stack.push(ins.load(ty, vmctx, offset, MemFlags::new().with_alignment(align)))
+                }
             }
             GlobalInit::I32Add | GlobalInit::I64Add => {
                 let rhs = stack.pop().unwrap();
@@ -538,19 +549,14 @@ fn generate_veloc_init(
     let mut ins = builder.ins();
     let vmctx = ins.builder().func_params()[0];
 
-    // 1. Initialize globals
+    // 1. Initialize local globals (直接内联存储，不需要通过指针)
     for i in metadata.num_imported_globals..metadata.globals.len() {
         let global = &metadata.globals[i];
-        let offset = offsets.global_offset(i as u32);
+        let local_idx = (i - metadata.num_imported_globals) as u32;
+        let offset = offsets.local_global_offset(local_idx);
         let align = if offset % 16 == 0 { 16 } else { 8 };
-        let dst_ptr = ins.load(
-            VelocType::PTR,
-            vmctx,
-            offset,
-            MemFlags::new().with_alignment(align),
-        );
         let val = generate_init_expr(&mut ins, &global.init, vmctx, offsets, metadata);
-        ins.store(val, dst_ptr, 0, MemFlags::new().with_alignment(8));
+        ins.store(val, vmctx, offset, MemFlags::new().with_alignment(align));
     }
 
     // 1b. Initialize tables with their default initializers

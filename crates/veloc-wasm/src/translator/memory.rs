@@ -172,26 +172,46 @@ impl<'a> WasmTranslator<'a> {
 
     pub(super) fn reload_memory(&mut self, index: u32) {
         let vmctx = self.vmctx.expect("vmctx not set");
-        let offset = self.offsets.memory_offset(index);
-        let alignment = if offset % 16 == 0 { 16 } else { 8 };
-        let def_ptr = self.builder.ins().load(
-            VelocType::PTR,
-            vmctx,
-            offset,
-            MemFlags::new().with_alignment(alignment),
-        );
-        let base = self.builder.ins().load(
-            VelocType::PTR,
-            def_ptr,
-            VMMemory::base_offset(),
-            MemFlags::new().with_alignment(8),
-        );
-        let length = self.builder.ins().load(
-            VelocType::I64,
-            def_ptr,
-            VMMemory::current_length_offset(),
-            MemFlags::new().with_alignment(8),
-        );
+        let (is_imported, offset) = self.offsets.memory_access_info(index);
+
+        let (base, length) = if is_imported {
+            // 导入的 memory：先加载指针，再通过指针访问
+            let alignment = if offset % 16 == 0 { 16 } else { 8 };
+            let def_ptr = self.builder.ins().load(
+                VelocType::PTR,
+                vmctx,
+                offset,
+                MemFlags::new().with_alignment(alignment),
+            );
+            let base = self.builder.ins().load(
+                VelocType::PTR,
+                def_ptr,
+                VMMemory::base_offset(),
+                MemFlags::new().with_alignment(8),
+            );
+            let length = self.builder.ins().load(
+                VelocType::I64,
+                def_ptr,
+                VMMemory::current_length_offset(),
+                MemFlags::new().with_alignment(8),
+            );
+            (base, length)
+        } else {
+            // 本地 memory：直接通过 VMContext 偏移访问
+            let base = self.builder.ins().load(
+                VelocType::PTR,
+                vmctx,
+                offset + VMMemory::base_offset(),
+                MemFlags::new().with_alignment(8),
+            );
+            let length = self.builder.ins().load(
+                VelocType::I64,
+                vmctx,
+                offset + VMMemory::current_length_offset(),
+                MemFlags::new().with_alignment(8),
+            );
+            (base, length)
+        };
 
         if self.use_names {
             self.builder

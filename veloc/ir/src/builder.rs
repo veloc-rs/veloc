@@ -1288,8 +1288,8 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         );
         let block = self.block();
         let mut target_calls = Vec::with_capacity(targets.len() + 1);
-        target_calls.push(default_call);
         target_calls.extend_from_slice(targets);
+        target_calls.push(default_call);
 
         for &call in &target_calls {
             let target_block = self.builder.func().dfg.block_call_block(call);

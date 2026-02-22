@@ -321,8 +321,8 @@ impl VMContext {
         unsafe { (self as *const Self as *mut u8).add(offsets.jmp_buf as usize) }
     }
 
-    /// 获取 memories 指针的切片
-    pub unsafe fn memories_mut(
+    /// 获取 imported memories 指针的切片（用于实例化时填充）
+    pub unsafe fn imported_memories_mut(
         &mut self,
         offsets: &VMOffsets,
         count: usize,
@@ -331,24 +331,30 @@ impl VMContext {
             return &mut [];
         }
         let ptr = unsafe {
-            (self as *mut Self as *mut u8).add(offsets.memories as usize) as *mut *mut VMMemory
+            (self as *mut Self as *mut u8).add(offsets.imported_memories as usize)
+                as *mut *mut VMMemory
         };
         unsafe { core::slice::from_raw_parts_mut(ptr, count) }
     }
 
-    /// 获取 tables 指针的切片
-    pub unsafe fn tables_mut(&mut self, offsets: &VMOffsets, count: usize) -> &mut [*mut VMTable] {
+    /// 获取 imported tables 指针的切片（用于实例化时填充）
+    pub unsafe fn imported_tables_mut(
+        &mut self,
+        offsets: &VMOffsets,
+        count: usize,
+    ) -> &mut [*mut VMTable] {
         if count == 0 {
             return &mut [];
         }
         let ptr = unsafe {
-            (self as *mut Self as *mut u8).add(offsets.tables as usize) as *mut *mut VMTable
+            (self as *mut Self as *mut u8).add(offsets.imported_tables as usize)
+                as *mut *mut VMTable
         };
         unsafe { core::slice::from_raw_parts_mut(ptr, count) }
     }
 
-    /// 获取 globals 指针的切片
-    pub unsafe fn globals_mut(
+    /// 获取 imported globals 指针的切片（用于实例化时填充）
+    pub unsafe fn imported_globals_mut(
         &mut self,
         offsets: &VMOffsets,
         count: usize,
@@ -357,7 +363,49 @@ impl VMContext {
             return &mut [];
         }
         let ptr = unsafe {
-            (self as *mut Self as *mut u8).add(offsets.globals as usize) as *mut *mut VMGlobal
+            (self as *mut Self as *mut u8).add(offsets.imported_globals as usize)
+                as *mut *mut VMGlobal
+        };
+        unsafe { core::slice::from_raw_parts_mut(ptr, count) }
+    }
+
+    /// 获取本地定义的 memories 的切片（直接内联存储）
+    pub unsafe fn local_memories_mut(
+        &mut self,
+        offsets: &VMOffsets,
+        count: usize,
+    ) -> &mut [VMMemory] {
+        if count == 0 {
+            return &mut [];
+        }
+        let ptr = unsafe {
+            (self as *mut Self as *mut u8).add(offsets.local_memories as usize) as *mut VMMemory
+        };
+        unsafe { core::slice::from_raw_parts_mut(ptr, count) }
+    }
+
+    /// 获取本地定义的 tables 的切片（直接内联存储）
+    pub unsafe fn local_tables_mut(&mut self, offsets: &VMOffsets, count: usize) -> &mut [VMTable] {
+        if count == 0 {
+            return &mut [];
+        }
+        let ptr = unsafe {
+            (self as *mut Self as *mut u8).add(offsets.local_tables as usize) as *mut VMTable
+        };
+        unsafe { core::slice::from_raw_parts_mut(ptr, count) }
+    }
+
+    /// 获取本地定义的 globals 的切片（直接内联存储）
+    pub unsafe fn local_globals_mut(
+        &mut self,
+        offsets: &VMOffsets,
+        count: usize,
+    ) -> &mut [VMGlobal] {
+        if count == 0 {
+            return &mut [];
+        }
+        let ptr = unsafe {
+            (self as *mut Self as *mut u8).add(offsets.local_globals as usize) as *mut VMGlobal
         };
         unsafe { core::slice::from_raw_parts_mut(ptr, count) }
     }
@@ -383,24 +431,159 @@ impl VMContext {
         };
         unsafe { core::slice::from_raw_parts_mut(ptr, count) }
     }
+
+    /// 通过索引获取 memory（区分导入和本地）
+    pub unsafe fn get_memory(
+        &self,
+        offsets: &VMOffsets,
+        index: u32,
+        num_imported: u32,
+    ) -> *const VMMemory {
+        let base = self as *const Self as *const u8;
+        if index < num_imported {
+            // 导入的：通过指针访问
+            let ptr_array =
+                unsafe { base.add(offsets.imported_memories as usize) } as *const *const VMMemory;
+            unsafe { *ptr_array.add(index as usize) }
+        } else {
+            // 本地的：直接内联访问
+            let local_idx = index - num_imported;
+            let local_base =
+                unsafe { base.add(offsets.local_memories as usize) } as *const VMMemory;
+            unsafe { local_base.add(local_idx as usize) }
+        }
+    }
+
+    /// 通过索引获取 memory 的可变指针（区分导入和本地）
+    pub unsafe fn get_memory_mut(
+        &mut self,
+        offsets: &VMOffsets,
+        index: u32,
+        num_imported: u32,
+    ) -> *mut VMMemory {
+        let base = self as *mut Self as *mut u8;
+        if index < num_imported {
+            // 导入的：通过指针访问
+            let ptr_array =
+                unsafe { base.add(offsets.imported_memories as usize) } as *mut *mut VMMemory;
+            unsafe { *ptr_array.add(index as usize) }
+        } else {
+            // 本地的：直接内联访问
+            let local_idx = index - num_imported;
+            let local_base = unsafe { base.add(offsets.local_memories as usize) } as *mut VMMemory;
+            unsafe { local_base.add(local_idx as usize) }
+        }
+    }
+
+    /// 通过索引获取 table（区分导入和本地）
+    pub unsafe fn get_table(
+        &self,
+        offsets: &VMOffsets,
+        index: u32,
+        num_imported: u32,
+    ) -> *const VMTable {
+        let base = self as *const Self as *const u8;
+        if index < num_imported {
+            let ptr_array =
+                unsafe { base.add(offsets.imported_tables as usize) } as *const *const VMTable;
+            unsafe { *ptr_array.add(index as usize) }
+        } else {
+            let local_idx = index - num_imported;
+            let local_base = unsafe { base.add(offsets.local_tables as usize) } as *const VMTable;
+            unsafe { local_base.add(local_idx as usize) }
+        }
+    }
+
+    /// 通过索引获取 table 的可变指针（区分导入和本地）
+    pub unsafe fn get_table_mut(
+        &mut self,
+        offsets: &VMOffsets,
+        index: u32,
+        num_imported: u32,
+    ) -> *mut VMTable {
+        let base = self as *mut Self as *mut u8;
+        if index < num_imported {
+            let ptr_array =
+                unsafe { base.add(offsets.imported_tables as usize) } as *mut *mut VMTable;
+            unsafe { *ptr_array.add(index as usize) }
+        } else {
+            let local_idx = index - num_imported;
+            let local_base = unsafe { base.add(offsets.local_tables as usize) } as *mut VMTable;
+            unsafe { local_base.add(local_idx as usize) }
+        }
+    }
+
+    /// 通过索引获取 global（区分导入和本地）
+    pub unsafe fn get_global(
+        &self,
+        offsets: &VMOffsets,
+        index: u32,
+        num_imported: u32,
+    ) -> *const VMGlobal {
+        let base = self as *const Self as *const u8;
+        if index < num_imported {
+            let ptr_array =
+                unsafe { base.add(offsets.imported_globals as usize) } as *const *const VMGlobal;
+            unsafe { *ptr_array.add(index as usize) }
+        } else {
+            let local_idx = index - num_imported;
+            let local_base = unsafe { base.add(offsets.local_globals as usize) } as *const VMGlobal;
+            unsafe { local_base.add(local_idx as usize) }
+        }
+    }
+
+    /// 通过索引获取 global 的可变指针（区分导入和本地）
+    pub unsafe fn get_global_mut(
+        &mut self,
+        offsets: &VMOffsets,
+        index: u32,
+        num_imported: u32,
+    ) -> *mut VMGlobal {
+        let base = self as *mut Self as *mut u8;
+        if index < num_imported {
+            let ptr_array =
+                unsafe { base.add(offsets.imported_globals as usize) } as *mut *mut VMGlobal;
+            unsafe { *ptr_array.add(index as usize) }
+        } else {
+            let local_idx = index - num_imported;
+            let local_base = unsafe { base.add(offsets.local_globals as usize) } as *mut VMGlobal;
+            unsafe { local_base.add(local_idx as usize) }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct VMOffsets {
-    pub memories: u32,
-    pub tables: u32,
-    pub globals: u32,
+    // 导入的定义：存储指针
+    pub imported_memories: u32,
+    pub imported_tables: u32,
+    pub imported_globals: u32,
+    // 本地定义：直接内联存储
+    pub local_memories: u32,
+    pub local_tables: u32,
+    pub local_globals: u32,
+    // 函数和签名哈希始终内联
     pub functions: u32,
     pub signature_hashes: u32,
     pub jmp_buf: u32,
     pub total_size: u32,
+    // 统计信息
+    pub num_imported_memories: u32,
+    pub num_imported_tables: u32,
+    pub num_imported_globals: u32,
+    pub num_local_memories: u32,
+    pub num_local_tables: u32,
+    pub num_local_globals: u32,
 }
 
 impl VMOffsets {
     pub fn new(
-        num_memories: u32,
-        num_tables: u32,
-        num_globals: u32,
+        num_imported_memories: u32,
+        num_imported_tables: u32,
+        num_imported_globals: u32,
+        num_local_memories: u32,
+        num_local_tables: u32,
+        num_local_globals: u32,
         num_functions: u32,
         num_signatures: u32,
     ) -> Self {
@@ -408,60 +591,83 @@ impl VMOffsets {
             (offset + alignment - 1) & !(alignment - 1)
         }
 
-        // VMContext 结构体
         let mut offset = 0;
 
-        // 1. Memories (Hot，紧跟在 Header 后面, 指向 VMMemory 的指针)
+        // 1. Imported Memories (存储指向外部 VMMemory 的指针)
         offset = align(offset, 16);
-        let memories = offset;
-        offset += num_memories * Self::memory_elem_size();
+        let imported_memories = offset;
+        offset += num_imported_memories * Self::imported_memory_elem_size();
 
-        // 2. Tables (指向 VMTable 的指针)
+        // 2. Imported Tables (存储指向外部 VMTable 的指针)
         offset = align(offset, 16);
-        let tables = offset;
-        offset += num_tables * Self::table_elem_size();
+        let imported_tables = offset;
+        offset += num_imported_tables * Self::imported_table_elem_size();
 
-        // 3. Globals (指向 VMGlobalDefinition 的指针)
+        // 3. Imported Globals (存储指向外部 VMGlobal 的指针)
         offset = align(offset, 16);
-        let globals = offset;
-        offset += num_globals * Self::global_elem_size();
+        let imported_globals = offset;
+        offset += num_imported_globals * Self::imported_global_elem_size();
 
-        // 4. Functions (Storing VMFuncRef structs directly)
+        // 4. Local Memories (直接内联存储 VMMemory 结构体)
+        offset = align(offset, 16);
+        let local_memories = offset;
+        offset += num_local_memories * VMMemory::size();
+
+        // 5. Local Tables (直接内联存储 VMTable 结构体)
+        offset = align(offset, 16);
+        let local_tables = offset;
+        offset += num_local_tables * VMTable::size();
+
+        // 6. Local Globals (直接内联存储 VMGlobal 结构体)
+        offset = align(offset, 16);
+        let local_globals = offset;
+        offset += num_local_globals * core::mem::size_of::<VMGlobal>() as u32;
+
+        // 7. Functions (直接内联存储 VMFuncRef 结构体)
         offset = align(offset, core::mem::align_of::<VMFuncRef>() as u32);
         let functions = offset;
         offset += num_functions * VMFuncRef::size();
 
-        // 5. Signature Hashes
+        // 8. Signature Hashes
         offset = align(offset, 16);
         let signature_hashes = offset;
         offset += num_signatures * core::mem::size_of::<u32>() as u32;
 
-        // 6. jmp_buf (放在最后，对齐到 16 字节)
+        // 9. jmp_buf (放在最后，对齐到 16 字节)
         offset = align(offset, 16);
         let jmp_buf = offset;
         // libc::jmp_buf 在通常系统上是 200 字节左右，我们预留更大并对齐
         offset += 256;
 
         Self {
-            memories,
-            tables,
-            globals,
+            imported_memories,
+            imported_tables,
+            imported_globals,
+            local_memories,
+            local_tables,
+            local_globals,
             functions,
             signature_hashes,
             jmp_buf,
             total_size: offset,
+            num_imported_memories,
+            num_imported_tables,
+            num_imported_globals,
+            num_local_memories,
+            num_local_tables,
+            num_local_globals,
         }
     }
 
-    fn memory_elem_size() -> u32 {
+    fn imported_memory_elem_size() -> u32 {
         core::mem::size_of::<*mut VMMemory>() as u32
     }
 
-    fn table_elem_size() -> u32 {
+    fn imported_table_elem_size() -> u32 {
         core::mem::size_of::<*mut VMTable>() as u32
     }
 
-    fn global_elem_size() -> u32 {
+    fn imported_global_elem_size() -> u32 {
         core::mem::size_of::<*mut VMGlobal>() as u32
     }
 
@@ -469,16 +675,71 @@ impl VMOffsets {
         self.jmp_buf
     }
 
-    pub fn memory_offset(&self, index: u32) -> u32 {
-        self.memories + index * Self::memory_elem_size()
+    /// 获取导入 memory 的偏移（存储的是指针）
+    pub fn imported_memory_offset(&self, index: u32) -> u32 {
+        self.imported_memories + index * Self::imported_memory_elem_size()
     }
 
-    pub fn table_offset(&self, index: u32) -> u32 {
-        self.tables + index * Self::table_elem_size()
+    /// 获取导入 table 的偏移（存储的是指针）
+    pub fn imported_table_offset(&self, index: u32) -> u32 {
+        self.imported_tables + index * Self::imported_table_elem_size()
     }
 
-    pub fn global_offset(&self, index: u32) -> u32 {
-        self.globals + index * Self::global_elem_size()
+    /// 获取导入 global 的偏移（存储的是指针）
+    pub fn imported_global_offset(&self, index: u32) -> u32 {
+        self.imported_globals + index * Self::imported_global_elem_size()
+    }
+
+    /// 获取本地 memory 的偏移（直接存储 VMMemory）
+    pub fn local_memory_offset(&self, index: u32) -> u32 {
+        self.local_memories + index * VMMemory::size()
+    }
+
+    /// 获取本地 table 的偏移（直接存储 VMTable）
+    pub fn local_table_offset(&self, index: u32) -> u32 {
+        self.local_tables + index * VMTable::size()
+    }
+
+    /// 获取本地 global 的偏移（直接存储 VMGlobal）
+    pub fn local_global_offset(&self, index: u32) -> u32 {
+        self.local_globals + index * core::mem::size_of::<VMGlobal>() as u32
+    }
+
+    /// 获取任意 memory 的访问偏移（供 JIT 使用）
+    /// 返回 (is_imported, offset) 元组
+    pub fn memory_access_info(&self, index: u32) -> (bool, u32) {
+        if index < self.num_imported_memories {
+            (true, self.imported_memory_offset(index))
+        } else {
+            (
+                false,
+                self.local_memory_offset(index - self.num_imported_memories),
+            )
+        }
+    }
+
+    /// 获取任意 table 的访问信息
+    pub fn table_access_info(&self, index: u32) -> (bool, u32) {
+        if index < self.num_imported_tables {
+            (true, self.imported_table_offset(index))
+        } else {
+            (
+                false,
+                self.local_table_offset(index - self.num_imported_tables),
+            )
+        }
+    }
+
+    /// 获取任意 global 的访问信息
+    pub fn global_access_info(&self, index: u32) -> (bool, u32) {
+        if index < self.num_imported_globals {
+            (true, self.imported_global_offset(index))
+        } else {
+            (
+                false,
+                self.local_global_offset(index - self.num_imported_globals),
+            )
+        }
     }
 
     pub fn function_offset(&self, index: u32) -> u32 {

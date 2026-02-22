@@ -29,7 +29,9 @@ pub struct WasmTranslator<'a> {
     // Optimized: Use Vec instead of HashMap for dense indices
     memory_vars: Vec<(Variable, Variable)>,
     table_vars: Vec<(Variable, Variable)>,
-    global_ptr_vars: Vec<Variable>,
+    /// 对于导入的 global: Some(Variable) 存储指针变量
+    /// 对于本地的 global: None，直接从 vmctx 访问
+    global_ptr_vars: Vec<Option<Variable>>,
 }
 
 struct ControlFrame {
@@ -165,22 +167,29 @@ impl<'a> WasmTranslator<'a> {
             self.reload_table(i);
         }
         for i in 0..self.metadata.globals.len() as u32 {
-            let var = self.new_var(VelocType::PTR);
-            self.global_ptr_vars.push(var);
             let vmctx = self.vmctx.expect("vmctx not set");
-            let offset = self.offsets.global_offset(i);
-            let alignment = if offset % 16 == 0 { 16 } else { 8 };
-            let ptr = self.builder.ins().load(
-                VelocType::PTR,
-                vmctx,
-                offset,
-                MemFlags::new().with_alignment(alignment),
-            );
-            if self.use_names {
-                self.builder
-                    .set_value_name(ptr, &format!("global{}_ptr", i));
+            let (is_imported, offset) = self.offsets.global_access_info(i);
+
+            if is_imported {
+                // 导入的 global：存储指针，后续通过指针访问
+                let var = self.new_var(VelocType::PTR);
+                self.global_ptr_vars.push(Some(var));
+                let alignment = if offset % 16 == 0 { 16 } else { 8 };
+                let ptr = self.builder.ins().load(
+                    VelocType::PTR,
+                    vmctx,
+                    offset,
+                    MemFlags::new().with_alignment(alignment),
+                );
+                if self.use_names {
+                    self.builder
+                        .set_value_name(ptr, &format!("global{}_ptr", i));
+                }
+                self.builder.def_var(var, ptr);
+            } else {
+                // 本地 global：直接存储偏移量，不需要指针
+                self.global_ptr_vars.push(None);
             }
-            self.builder.def_var(var, ptr);
         }
 
         while !reader.eof() {
