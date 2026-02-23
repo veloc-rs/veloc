@@ -75,31 +75,31 @@ impl<'a> WasmTranslator<'a> {
             Operator::F32Store { memarg } => self.translate_store(VelocType::F32, memarg),
             Operator::F64Store { memarg } => self.translate_store(VelocType::F64, memarg),
             Operator::I32Store8 { memarg } => {
-                let val = self.pop();
+                let val = self.pop_i32();
                 let truncated = self.builder.ins().wrap(val, VelocType::I8);
                 self.stack.push(truncated);
                 self.translate_store(VelocType::I8, memarg);
             }
             Operator::I32Store16 { memarg } => {
-                let val = self.pop();
+                let val = self.pop_i32();
                 let truncated = self.builder.ins().wrap(val, VelocType::I16);
                 self.stack.push(truncated);
                 self.translate_store(VelocType::I16, memarg);
             }
             Operator::I64Store8 { memarg } => {
-                let val = self.pop();
+                let val = self.pop_i64();
                 let truncated = self.builder.ins().wrap(val, VelocType::I8);
                 self.stack.push(truncated);
                 self.translate_store(VelocType::I8, memarg);
             }
             Operator::I64Store16 { memarg } => {
-                let val = self.pop();
+                let val = self.pop_i64();
                 let truncated = self.builder.ins().wrap(val, VelocType::I16);
                 self.stack.push(truncated);
                 self.translate_store(VelocType::I16, memarg);
             }
             Operator::I64Store32 { memarg } => {
-                let val = self.pop();
+                let val = self.pop_i64();
                 let truncated = self.builder.ins().wrap(val, VelocType::I32);
                 self.stack.push(truncated);
                 self.translate_store(VelocType::I32, memarg);
@@ -226,7 +226,7 @@ impl<'a> WasmTranslator<'a> {
     }
 
     fn translate_load(&mut self, ty: VelocType, memarg: MemArg) {
-        let addr = self.pop();
+        let addr = self.pop_i32();
         let mem_idx = memarg.memory;
         self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes() as u32);
         let mem_base = self.get_memory_base(mem_idx);
@@ -241,8 +241,8 @@ impl<'a> WasmTranslator<'a> {
     }
 
     fn translate_store(&mut self, ty: VelocType, memarg: MemArg) {
-        let val = self.pop();
-        let addr = self.pop();
+        let val = self.pop_typed(ty);
+        let addr = self.pop_i32();
         let mem_idx = memarg.memory;
         self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes() as u32);
         let mem_base = self.get_memory_base(mem_idx);

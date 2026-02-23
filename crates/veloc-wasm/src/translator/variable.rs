@@ -11,13 +11,15 @@ impl<'a> WasmTranslator<'a> {
                 self.stack.push(val);
             }
             Operator::LocalSet { local_index } => {
-                let val = self.pop();
-                let (var, _) = self.locals[local_index as usize];
+                let (var, ty) = self.locals[local_index as usize];
+                let val = self.pop_typed(ty);
                 self.builder.def_var(var, val);
             }
             Operator::LocalTee { local_index } => {
                 let val = *self.stack.last().expect("stack empty");
-                let (var, _) = self.locals[local_index as usize];
+                let (var, ty) = self.locals[local_index as usize];
+                let val = self.ensure_type(val, ty);
+                *self.stack.last_mut().unwrap() = val; // 更新堆栈上的值为转换后的值
                 self.builder.def_var(var, val);
             }
             Operator::GlobalGet { global_index } => {
@@ -31,7 +33,9 @@ impl<'a> WasmTranslator<'a> {
                 self.stack.push(val);
             }
             Operator::GlobalSet { global_index } => {
-                let val = self.pop();
+                let ty = self.metadata.globals[global_index as usize].ty;
+                let veloc_ty = self.val_type_to_veloc(ty);
+                let val = self.pop_typed(veloc_ty);
                 let global_val_ptr = self.get_global_ptr(global_index);
                 self.builder
                     .ins()

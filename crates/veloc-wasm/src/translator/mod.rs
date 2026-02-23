@@ -42,6 +42,8 @@ struct ControlFrame {
     stack_size: usize,
     num_params: usize,
     num_results: usize,
+    params_types: Vec<VelocType>,
+    results_types: Vec<VelocType>,
     reachable_at_start: bool,
 }
 
@@ -99,6 +101,8 @@ impl<'a> WasmTranslator<'a> {
             stack_size: 0,
             num_params: 0,
             num_results: self.results.len(),
+            params_types: Vec::new(),
+            results_types: self.results.clone(),
             reachable_at_start: true,
         });
 
@@ -134,16 +138,7 @@ impl<'a> WasmTranslator<'a> {
             for _ in 0..count {
                 let var = self.new_var(ty);
                 self.locals.push((var, ty));
-                let zero = if ty.is_float() {
-                    self.builder.ins().fconst(ty, 0)
-                } else if ty == VelocType::BOOL {
-                    self.builder.ins().bconst(false)
-                } else if ty == VelocType::PTR {
-                    let null_i64 = self.builder.ins().iconst(VelocType::I64, 0);
-                    self.builder.ins().int_to_ptr(null_i64)
-                } else {
-                    self.builder.ins().iconst(ty, 0)
-                };
+                let zero = self.zero_const(ty);
                 self.builder.def_var(var, zero);
                 if self.use_names {
                     self.builder
@@ -247,27 +242,14 @@ impl<'a> WasmTranslator<'a> {
             Operator::RefIsNull => {
                 let v = self.pop();
                 let v_ty = self.builder.value_type(v);
-                let zero = if v_ty == VelocType::PTR {
-                    let z = self.builder.ins().iconst(VelocType::I64, 0);
-                    self.builder.ins().int_to_ptr(z)
-                } else {
-                    self.builder.ins().iconst(v_ty, 0)
-                };
+                let zero = self.zero_const(v_ty);
                 let res = self.builder.ins().icmp(veloc::ir::IntCC::Eq, v, zero);
-                let true_val = self.builder.ins().iconst(VelocType::I32, 1);
-                let false_val = self.builder.ins().iconst(VelocType::I32, 0);
-                let res_i32 = self.builder.ins().select(res, true_val, false_val);
-                self.stack.push(res_i32);
+                self.stack.push(res);
             }
             Operator::RefAsNonNull => {
                 let v = self.pop();
                 let v_ty = self.builder.value_type(v);
-                let zero = if v_ty == VelocType::PTR {
-                    let z = self.builder.ins().iconst(VelocType::I64, 0);
-                    self.builder.ins().int_to_ptr(z)
-                } else {
-                    self.builder.ins().iconst(v_ty, 0)
-                };
+                let zero = self.zero_const(v_ty);
                 let is_null = self.builder.ins().icmp(veloc::ir::IntCC::Eq, v, zero);
                 self.trap_if(is_null, crate::vm::TrapCode::NullReference);
                 self.stack.push(v);
@@ -276,15 +258,11 @@ impl<'a> WasmTranslator<'a> {
                 self.stack.pop();
             }
             Operator::Select | Operator::TypedSelect { .. } => {
-                let cond_i32 = self.pop();
-                let cond_ty = self.builder.value_type(cond_i32);
-                let zero = self.builder.ins().iconst(cond_ty, 0);
-                let cond = self
-                    .builder
-                    .ins()
-                    .icmp(veloc::ir::IntCC::Ne, cond_i32, zero);
+                let cond = self.pop_cond();
                 let val2 = self.pop();
                 let val1 = self.pop();
+                let ty1 = self.builder.value_type(val1);
+                let val2 = self.ensure_type(val2, ty1);
                 let res = self.builder.ins().select(cond, val1, val2);
                 self.stack.push(res);
             }
@@ -356,13 +334,91 @@ impl<'a> WasmTranslator<'a> {
         self.stack.pop().expect("stack underflow")
     }
 
-    fn pop_i32(&mut self) -> Value {
+    fn pop_typed(&mut self, ty: VelocType) -> Value {
         let v = self.pop();
-        let ty = self.builder.value_type(v);
-        if ty == VelocType::I32 {
-            v
+        self.ensure_type(v, ty)
+    }
+
+    fn ensure_type(&mut self, v: Value, ty: VelocType) -> Value {
+        let v_ty = self.builder.value_type(v);
+        if v_ty == ty {
+            return v;
+        }
+
+        match ty {
+            VelocType::I32 => {
+                if v_ty == VelocType::BOOL {
+                    let one = self.builder.ins().iconst(VelocType::I32, 1);
+                    let zero = self.builder.ins().iconst(VelocType::I32, 0);
+                    self.builder.ins().select(v, one, zero)
+                } else if v_ty == VelocType::I64 || v_ty == VelocType::PTR {
+                    self.builder.ins().wrap(v, VelocType::I32)
+                } else {
+                    v // Fallback
+                }
+            }
+            VelocType::I64 => {
+                if v_ty == VelocType::BOOL {
+                    let one = self.builder.ins().iconst(VelocType::I64, 1);
+                    let zero = self.builder.ins().iconst(VelocType::I64, 0);
+                    self.builder.ins().select(v, one, zero)
+                } else if v_ty == VelocType::I32 {
+                    self.builder.ins().extend_u(v, VelocType::I64)
+                } else if v_ty == VelocType::PTR {
+                    self.builder.ins().ptr_to_int(v, VelocType::I64)
+                } else {
+                    v
+                }
+            }
+            VelocType::BOOL => {
+                self.as_cond(v)
+            }
+            VelocType::PTR => {
+                if v_ty == VelocType::I64 {
+                    self.builder.ins().int_to_ptr(v)
+                } else {
+                    v
+                }
+            }
+            _ => v,
+        }
+    }
+
+    fn pop_i32(&mut self) -> Value {
+        self.pop_typed(VelocType::I32)
+    }
+
+    fn pop_i64(&mut self) -> Value {
+        self.pop_typed(VelocType::I64)
+    }
+
+    fn pop_cond(&mut self) -> Value {
+        let val = self.pop();
+        self.as_cond(val)
+    }
+
+    fn as_cond(&mut self, val: Value) -> Value {
+        let ty = self.builder.value_type(val);
+        if ty == VelocType::BOOL {
+            val
         } else {
-            self.builder.ins().wrap(v, VelocType::I32)
+            let zero = self.zero_const(ty);
+            self.builder.ins().icmp(veloc::ir::IntCC::Ne, val, zero)
+        }
+    }
+
+    fn zero_const(&mut self, ty: VelocType) -> Value {
+        if ty == VelocType::BOOL {
+            self.builder.ins().bconst(false)
+        } else if ty == VelocType::PTR {
+            let z = self.builder.ins().iconst(VelocType::I64, 0);
+            self.builder.ins().int_to_ptr(z)
+        } else if ty == VelocType::F32 {
+            self.builder.ins().f32const(0.0)
+        } else if ty == VelocType::F64 {
+            self.builder.ins().f64const(0.0)
+        } else {
+            self.builder.ins().iconst(ty, 0)
         }
     }
 

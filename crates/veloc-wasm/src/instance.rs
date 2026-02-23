@@ -148,7 +148,9 @@ impl VMInstance {
             let args = vec![InterpreterValue::i64(vmctx_ptr as i64)];
 
             if let Some(id) = self.interp_module_id {
-                interpreter.run_function(program, &WasmVirtualMemory, id, init_func_id, &args);
+                interpreter
+                    .run_function(program, &WasmVirtualMemory, id, init_func_id, &args)
+                    .unwrap();
             }
             self.interpreter = Some(interpreter);
         } else {

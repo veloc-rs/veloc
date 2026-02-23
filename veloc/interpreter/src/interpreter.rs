@@ -102,7 +102,6 @@ impl Interpreter {
         let mut mid = frame.mid;
 
         'main_loop: loop {
-            let code_len = func.code.len();
             let mut values_ptr = self.value_stack.as_mut_ptr();
 
             // === Core Register Access Helpers ===
@@ -268,9 +267,9 @@ impl Interpreter {
                 }};
             }
 
-            while pc < code_len {
+            loop {
                 unsafe {
-                    let inst = &func.code[pc];
+                    let inst = func.code.get_unchecked(pc);
                     pc += 1;
                     let opcode: Opcode = core::mem::transmute(inst.opcode);
 
@@ -1515,7 +1514,6 @@ impl Interpreter {
                     }
                 }
             }
-            return Err(RunError::Unreachable);
         }
     }
 }

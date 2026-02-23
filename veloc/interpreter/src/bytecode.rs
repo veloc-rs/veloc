@@ -25,13 +25,10 @@ pub const INSTRUCTION_SIZE: usize = 16;
 
 /// Represents a fixed-size bytecode instruction (16 bytes)
 /// Layout: opcode(1) + pad(1) + dst(2) + src1(2) + src2(2) + imm64(8) = 16 bytes
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Instruction {
     /// Opcode (1 byte)
     pub opcode: u8,
-    /// Padding/reserved (1 byte) - can be used for small type tags
-    pub _padding: u8,
     /// Destination register (2 bytes)
     pub dst: u16,
     /// First source register (2 bytes)
@@ -48,7 +45,6 @@ impl Instruction {
     pub const fn new(opcode: u8, dst: u16, src1: u16, src2: u16, imm32: u32, aux: u32) -> Self {
         Self {
             opcode,
-            _padding: 0,
             dst,
             src1,
             src2,
@@ -61,7 +57,6 @@ impl Instruction {
     pub const fn with_imm64(opcode: u8, dst: u16, src1: u16, imm64: u64) -> Self {
         Self {
             opcode,
-            _padding: 0,
             dst,
             src1,
             src2: 0,
@@ -124,7 +119,6 @@ macro_rules! define_opcodes {
                     #[allow(unused_mut, unused_assignments)]
                     let mut inst = Instruction {
                         opcode: Opcode::$name as u8,
-                        _padding: 0,
                         dst: 0,
                         src1: 0,
                         src2: 0,

@@ -22,6 +22,8 @@ impl<'a> WasmTranslator<'a> {
                     stack_size: self.stack.len().saturating_sub(params_ty.len()),
                     num_params: params_ty.len(),
                     num_results: results_ty.len(),
+                    params_types: params_ty,
+                    results_types: results_ty,
                     reachable_at_start,
                 });
             }
@@ -37,13 +39,14 @@ impl<'a> WasmTranslator<'a> {
                 }
                 let mut args = Vec::new();
                 if !self.terminated {
-                    for _ in 0..params_ty.len() {
-                        args.push(self.pop());
+                    for &ty in params_ty.iter().rev() {
+                        args.push(self.pop_typed(ty));
                     }
                     args.reverse();
                 } else {
                     for &ty in &params_ty {
-                        args.push(self.builder.ins().iconst(ty, 0));
+                        let zero = self.zero_const(ty);
+                        args.push(zero);
                     }
                 }
                 self.builder.ins().jump(header_block, &args);
@@ -64,19 +67,18 @@ impl<'a> WasmTranslator<'a> {
                     stack_size: self.stack.len() - params_ty.len(),
                     num_params: params_ty.len(),
                     num_results: results_ty.len(),
+                    params_types: params_ty,
+                    results_types: results_ty,
                     reachable_at_start,
                 });
             }
             Operator::If { blockty } => {
-                let cond_i32 = if !self.terminated {
-                    self.pop()
+                let cond = if !self.terminated {
+                    self.pop_cond()
                 } else {
-                    self.builder.ins().i32const(0)
+                    self.builder.ins().bconst(false)
                 };
                 let (params_ty, results_ty) = self.block_params_results(blockty);
-                let cond_ty = self.builder.value_type(cond_i32);
-                let zero = self.builder.ins().iconst(cond_ty, 0);
-                let cond = self.builder.ins().icmp(IntCC::Ne, cond_i32, zero);
                 let then_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
                 let end_block = self.builder.create_block();
@@ -90,13 +92,14 @@ impl<'a> WasmTranslator<'a> {
                 let mut args = Vec::new();
                 let reachable_at_start = !self.terminated;
                 if !self.terminated {
-                    for _ in 0..params_ty.len() {
-                        args.push(self.pop());
+                    for &ty in params_ty.iter().rev() {
+                        args.push(self.pop_typed(ty));
                     }
                     args.reverse();
                 } else {
                     for &ty in &params_ty {
-                        args.push(self.builder.ins().iconst(ty, 0));
+                        let zero = self.zero_const(ty);
+                        args.push(zero);
                     }
                 }
                 self.builder
@@ -120,6 +123,8 @@ impl<'a> WasmTranslator<'a> {
                     stack_size: self.stack.len() - params_ty.len(),
                     num_params: params_ty.len(),
                     num_results: results_ty.len(),
+                    params_types: params_ty,
+                    results_types: results_ty,
                     reachable_at_start,
                 });
             }
@@ -129,7 +134,7 @@ impl<'a> WasmTranslator<'a> {
                     stack_size,
                     else_label,
                     num_params,
-                    num_results,
+                    results_types,
                     reachable_at_start,
                 ) = {
                     let frame = self.control_stack.last_mut().expect("no frame for else");
@@ -141,14 +146,14 @@ impl<'a> WasmTranslator<'a> {
                             .take()
                             .expect("else already handled or not an If"),
                         frame.num_params,
-                        frame.num_results,
+                        frame.results_types.clone(),
                         frame.reachable_at_start,
                     )
                 };
                 if !self.terminated {
                     let mut args = Vec::new();
-                    for _ in 0..num_results {
-                        args.push(self.pop());
+                    for &ty in results_types.iter().rev() {
+                        args.push(self.pop_typed(ty));
                     }
                     args.reverse();
                     self.builder.ins().jump(end_label, &args);
@@ -172,8 +177,8 @@ impl<'a> WasmTranslator<'a> {
                 if let Some(else_label) = frame.else_label {
                     if !self.terminated {
                         let mut args = Vec::new();
-                        for _ in 0..frame.num_results {
-                            args.push(self.pop());
+                        for &ty in frame.results_types.iter().rev() {
+                            args.push(self.pop_typed(ty));
                         }
                         args.reverse();
                         self.builder.ins().jump(end_target, &args);
@@ -186,11 +191,17 @@ impl<'a> WasmTranslator<'a> {
                     for i in 0..frame.num_params {
                         args.push(self.builder.block_params(else_label)[i]);
                     }
+                    // If we reached Else, it means the Params are passed to the Else block.
+                    // But if Else is empty or we are at End, we need to pass the Params to End if nothing else happens?
+                    // No, if we are at End of an If without Else, the Else branch should have been handled.
+                    // But here else_label is still Some, meaning we haven't seen Operator::Else.
+                    // So this is `if ... then ... end` (no else).
+                    // In this case, the params are passed to the else_block, and then we just jump to end.
                     self.builder.ins().jump(end_target, &args);
                 } else if !self.terminated {
                     let mut args = Vec::new();
-                    for _ in 0..frame.num_results {
-                        args.push(self.pop());
+                    for &ty in frame.results_types.iter().rev() {
+                        args.push(self.pop_typed(ty));
                     }
                     args.reverse();
                     self.builder.ins().jump(end_target, &args);
@@ -220,39 +231,36 @@ impl<'a> WasmTranslator<'a> {
             Operator::Br { relative_depth } => {
                 let frame_idx = self.control_stack.len() - 1 - relative_depth as usize;
                 let frame = &self.control_stack[frame_idx];
-                let (target, params_len) = if frame.is_loop {
-                    (frame.label, frame.num_params)
+                let (target, target_tys) = if frame.is_loop {
+                    (frame.label, frame.params_types.clone())
                 } else {
-                    (frame.end_label.unwrap(), frame.num_results)
+                    (frame.end_label.unwrap(), frame.results_types.clone())
                 };
                 let mut args = Vec::new();
-                for _ in 0..params_len {
-                    args.push(self.pop());
+                for &ty in target_tys.iter().rev() {
+                    args.push(self.pop_typed(ty));
                 }
                 args.reverse();
                 self.builder.ins().jump(target, &args);
                 self.terminated = true;
             }
             Operator::BrIf { relative_depth } => {
-                let cond_i32 = self.pop();
-                // BrIf condition must be i32 in WebAssembly
-                let zero = self.builder.ins().i32const(0);
-                let cond = self.builder.ins().icmp(IntCC::Ne, cond_i32, zero);
+                let cond = self.pop_cond();
                 let frame_idx = self.control_stack.len() - 1 - relative_depth as usize;
                 let frame = &self.control_stack[frame_idx];
-                let (target, params_len) = if frame.is_loop {
-                    (frame.label, frame.num_params)
+                let (target, target_tys) = if frame.is_loop {
+                    (frame.label, frame.params_types.clone())
                 } else {
-                    (frame.end_label.unwrap(), frame.num_results)
+                    (frame.end_label.unwrap(), frame.results_types.clone())
                 };
                 let next_block = self.builder.create_block();
                 let mut args = Vec::new();
-                if params_len > 0 {
-                    let mut tmp_stack = Vec::new();
-                    for _ in 0..params_len {
-                        tmp_stack.push(self.pop());
+                if !target_tys.is_empty() {
+                    let mut tmp_values = Vec::new();
+                    for &ty in target_tys.iter().rev() {
+                        tmp_values.push(self.pop_typed(ty));
                     }
-                    for &val in tmp_stack.iter().rev() {
+                    for &val in tmp_values.iter().rev() {
                         args.push(val);
                         self.stack.push(val);
                     }
@@ -265,8 +273,9 @@ impl<'a> WasmTranslator<'a> {
                 let ty_idx = self.metadata.functions[function_index as usize].type_index;
                 let sig = &self.metadata.signatures[ty_idx as usize];
                 let mut args = Vec::new();
-                for _ in sig.params.iter() {
-                    args.push(self.pop());
+                for &ty in sig.params.iter().rev() {
+                    let veloc_ty = self.val_type_to_veloc(ty);
+                    args.push(self.pop_typed(veloc_ty));
                 }
                 args.reverse();
                 let results = &sig.results;
@@ -309,10 +318,11 @@ impl<'a> WasmTranslator<'a> {
                 ..
             } => {
                 let sig = &self.metadata.signatures[type_index as usize];
-                let index = self.pop();
+                let index = self.pop_i32();
                 let mut args = Vec::new();
-                for _ in sig.params.iter() {
-                    args.push(self.pop());
+                for &ty in sig.params.iter().rev() {
+                    let veloc_ty = self.val_type_to_veloc(ty);
+                    args.push(self.pop_typed(veloc_ty));
                 }
                 args.reverse();
                 let table_base = self.get_table_base(table_index);
@@ -426,52 +436,36 @@ impl<'a> WasmTranslator<'a> {
                 }
             }
             Operator::BrTable { targets } => {
-                let index = self.pop();
-                let (default_target, default_params_len) = {
+                let index = self.pop_i32();
+                let (default_target, target_tys) = {
                     let default_depth = targets.default();
                     let frame_idx = self.control_stack.len() - 1 - default_depth as usize;
                     let frame = &self.control_stack[frame_idx];
                     if frame.is_loop {
-                        (frame.label, frame.num_params)
+                        (frame.label, frame.params_types.clone())
                     } else {
-                        (frame.end_label.unwrap(), frame.num_results)
+                        (frame.end_label.unwrap(), frame.results_types.clone())
                     }
                 };
-                let mut default_args = Vec::new();
-                if default_params_len > 0 {
-                    let mut tmp = Vec::new();
-                    for _ in 0..default_params_len {
-                        tmp.push(self.pop());
-                    }
-                    for &v in tmp.iter().rev() {
-                        default_args.push(v);
-                        self.stack.push(v);
-                    }
+                
+                let mut args = Vec::new();
+                for &ty in target_tys.iter().rev() {
+                    args.push(self.pop_typed(ty));
                 }
-                let default_call = self.builder.make_block_call(default_target, &default_args);
+                args.reverse();
+
+                let default_call = self.builder.make_block_call(default_target, &args);
                 let mut table = Vec::new();
                 for t in targets.targets() {
                     let depth = t?;
-                    let (target, params_len) = {
-                        let frame_idx = self.control_stack.len() - 1 - depth as usize;
-                        let frame = &self.control_stack[frame_idx];
-                        if frame.is_loop {
-                            (frame.label, frame.num_params)
-                        } else {
-                            (frame.end_label.unwrap(), frame.num_results)
-                        }
+                    let frame_idx = self.control_stack.len() - 1 - depth as usize;
+                    let frame = &self.control_stack[frame_idx];
+                    let target = if frame.is_loop {
+                        frame.label
+                    } else {
+                        frame.end_label.unwrap()
                     };
-                    let mut args = Vec::new();
-                    if params_len > 0 {
-                        let mut tmp = Vec::new();
-                        for _ in 0..params_len {
-                            tmp.push(self.pop());
-                        }
-                        for &v in tmp.iter().rev() {
-                            args.push(v);
-                            self.stack.push(v);
-                        }
-                    }
+                    // WASM ensures all targets have same arity and types
                     table.push(self.builder.make_block_call(target, &args));
                 }
                 self.builder.ins().br_table(index, default_call, &table);
@@ -480,8 +474,9 @@ impl<'a> WasmTranslator<'a> {
             Operator::Return => {
                 if !self.terminated {
                     let mut vals = Vec::with_capacity(self.results.len());
-                    for _ in 0..self.results.len() {
-                        vals.push(self.pop());
+                    let result_types = self.results.clone();
+                    for &ty in result_types.iter().rev() {
+                        vals.push(self.pop_typed(ty));
                     }
                     vals.reverse();
                     self.builder.ins().ret(&vals);
