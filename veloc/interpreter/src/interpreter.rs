@@ -1,6 +1,6 @@
 use crate::bytecode::{CompiledFunction, Opcode};
 use crate::error::Result;
-use crate::host::Program;
+use crate::runtime::{ImportTarget, Program};
 use crate::value::InterpreterValue;
 use ::alloc::vec::Vec;
 use cranelift_entity::EntityRef;
@@ -11,21 +11,21 @@ pub trait VirtualMemory {
 }
 
 pub struct Interpreter {
-    pub value_stack: Vec<InterpreterValue>,
-    pub stack_memory: Vec<u8>,
-    pub frames: Vec<StackFrame>,
+    value_stack: Vec<InterpreterValue>,
+    stack_memory: Vec<u8>,
+    frames: Vec<StackFrame>,
     args_buffer: Vec<InterpreterValue>,
     dst_regs_buffer: Vec<u16>,
 }
 
-pub struct StackFrame {
-    pub mid: ModuleId,
-    pub func: ::alloc::sync::Arc<CompiledFunction>,
-    pub pc: usize,
-    pub base: usize,
-    pub stack_base: usize,
-    pub dst_regs_start: usize,
-    pub dst_regs_count: usize,
+struct StackFrame {
+    mid: ModuleId,
+    func: ::alloc::sync::Arc<CompiledFunction>,
+    pc: usize,
+    base: usize,
+    stack_base: usize,
+    dst_regs_start: usize,
+    dst_regs_count: usize,
 }
 
 impl Interpreter {
@@ -146,7 +146,7 @@ impl Interpreter {
             // === Call Preparation Macro ===
             macro_rules! prepare_call {
                 ($target_mid:expr, $target_fid:expr, $dst_regs_start:expr, $dst_regs_count:expr, $args:expr) => {{
-                    if program.modules[$target_mid].compiled[$target_fid.index()].is_none() {
+                    if program.modules[$target_mid].compiled[$target_fid].is_none() {
                         panic!(
                             "Calling uncompiled function: mid={:?}, fid={:?}",
                             $target_mid, $target_fid
@@ -1239,11 +1239,11 @@ impl Interpreter {
                                 read_call_data!(func.data_section, inst.aux() as usize);
                             let f_id = veloc_ir::FuncId::from_u32(inst.imm32());
 
-                            match program.modules[mid].links[f_id.index()] {
-                                crate::host::ImportTarget::Module(m, f) => {
+                            match program.modules[mid].links[f_id] {
+                                ImportTarget::Module(m, f) => {
                                     prepare_call!(m, f, dst_start, rets as usize, self.args_buffer);
                                 }
-                                crate::host::ImportTarget::Host(h_id) => {
+                                ImportTarget::Host(h_id) => {
                                     let args = self.args_buffer.len();
                                     program.host_functions_list[h_id]
                                         .call(&mut self.args_buffer, args);
@@ -1256,7 +1256,7 @@ impl Interpreter {
                                     }
                                     self.dst_regs_buffer.truncate(dst_start);
                                 }
-                                crate::host::ImportTarget::None => {
+                                ImportTarget::None => {
                                     prepare_call!(
                                         mid,
                                         f_id,
@@ -1273,10 +1273,10 @@ impl Interpreter {
                             let ptr = get!(inst.src1).0 as usize;
 
                             match program.decode_ptr(ptr) {
-                                Some(crate::host::ImportTarget::Module(m, f)) => {
+                                Some(ImportTarget::Module(m, f)) => {
                                     prepare_call!(m, f, dst_start, rets as usize, self.args_buffer);
                                 }
-                                Some(crate::host::ImportTarget::Host(h_id)) => {
+                                Some(ImportTarget::Host(h_id)) => {
                                     let args = self.args_buffer.len();
                                     program.host_functions_list[h_id]
                                         .call(&mut self.args_buffer, args);

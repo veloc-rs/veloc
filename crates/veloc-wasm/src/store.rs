@@ -127,6 +127,11 @@ impl Store {
         &mut self.instances[id]
     }
 
+    /// Get a reference to the interpreter program (for debugging)
+    pub fn program(&self) -> &veloc::interpreter::Program {
+        &self.program
+    }
+
     /// 获取全局变量的当前值
     pub fn global_get(&self, id: Global) -> crate::Val {
         let definition = &self.globals[id];

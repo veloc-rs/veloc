@@ -30,8 +30,12 @@ struct Args {
     #[arg(short = 'o', long, value_name = "FILE", group = "ir-output")]
     output_ir: Option<PathBuf>,
 
+    /// Dump interpreter bytecode to stdout
+    #[arg(long)]
+    dump_bytecode: bool,
+
     /// Optimization level (0, 1)
-    #[arg(short, long, default_value = "1")]
+    #[arg(short = 'O', long, default_value = "1")]
     opt_level: u8,
 
     /// Output chrome trace JSON to file
@@ -47,11 +51,36 @@ struct Args {
     opt_debug: Vec<String>,
 }
 
+/// Print all compiled bytecode for interpreter
+fn print_interpreter_bytecode(store: &veloc_wasm::Store) {
+    use cranelift_entity::EntityRef;
+    use veloc_wasm::veloc::ir::ModuleId;
+
+    // Access the program through store
+    let program = store.program();
+
+    let mut current_module: Option<ModuleId> = None;
+    for (module_id, func_id, func) in program.all_compiled_functions() {
+        if current_module != Some(module_id) {
+            println!("\nmodule {:?}:", module_id);
+            current_module = Some(module_id);
+        }
+        println!(
+            "; function @{} in module{}",
+            func_id.index(),
+            module_id.index()
+        );
+        // FuncPrinter is available through the Display impl on CompiledFunction
+        println!("{}", func);
+    }
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     let args = Args::parse();
     // Check if we only need to output IR
     let output_only = args.output_ir.is_some() || args.dump_ir;
+    let dump_bytecode = args.dump_bytecode;
 
     // 1. 初始化引擎
     let config = Config {
@@ -100,6 +129,14 @@ fn main() -> Result<()> {
     let instance_id = linker
         .instantiate(&mut store, module)
         .map_err(|e| anyhow!("Failed to instantiate module: {:?}", e))?;
+
+    // Print interpreter bytecode if requested
+    if dump_bytecode && args.strategy == Strategy::Interpreter {
+        println!("=== Interpreter Bytecode ===");
+        print_interpreter_bytecode(&store);
+        println!("=== End of Bytecode ===");
+        return Ok(());
+    }
 
     // 7. 调用导出函数
     let func = instance_id

@@ -637,7 +637,7 @@ impl VMInstance {
                     ];
                     for name in runtime_names {
                         if let Some(fid) = ir.get_func_id(name) {
-                            if let Some(&host_id) = store.program.host_functions.get(name) {
+                            if let Some(host_id) = store.program.get_host_function(name) {
                                 store.program.link_host(mid, fid, host_id);
                             }
                         }
