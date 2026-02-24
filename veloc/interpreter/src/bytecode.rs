@@ -1,27 +1,10 @@
-use crate::host::ModuleId;
 use ::alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use veloc_analyzer::{LiveInterval, analyze_liveness};
 use veloc_ir::{
-    Block, FuncId, Function, InstructionData, Intrinsic, Opcode as IrOpcode, StackSlot, Type, Value,
+    Block, FuncId, Function, InstructionData, Intrinsic, ModuleId, Opcode as IrOpcode, ScalarType,
+    StackSlot, Type, Value,
 };
-
-pub const STACK_TYPE_I8: u8 = 1;
-pub const STACK_TYPE_I16: u8 = 2;
-pub const STACK_TYPE_I32: u8 = 3;
-pub const STACK_TYPE_I64: u8 = 4;
-pub const STACK_TYPE_F32: u8 = 5;
-pub const STACK_TYPE_F64: u8 = 6;
-
-pub const EXTEND_TYPE_I8: u8 = 0;
-pub const EXTEND_TYPE_I16: u8 = 1;
-pub const EXTEND_TYPE_I32: u8 = 2;
-
-pub const RETURN_VOID: u8 = 0;
-pub const RETURN_HAS_VALUE: u8 = 1;
-
-/// Fixed instruction size in bytes - all instructions are exactly this size
-pub const INSTRUCTION_SIZE: usize = 16;
 
 /// Represents a fixed-size bytecode instruction (16 bytes)
 /// Layout: opcode(1) + pad(1) + dst(2) + src1(2) + src2(2) + imm64(8) = 16 bytes
@@ -86,6 +69,59 @@ impl Instruction {
     #[inline(always)]
     pub const fn unpack_counts(&self) -> (u16, u16) {
         ((self.aux() >> 16) as u16, self.aux() as u16)
+    }
+
+    /// Get conversion types (from_type, to_type)
+    #[inline(always)]
+    pub fn conv_types(&self) -> (ScalarType, ScalarType) {
+        unsafe {
+            (
+                core::mem::transmute::<u8, ScalarType>((self.src2 & 0xFF) as u8),
+                core::mem::transmute::<u8, ScalarType>((self.src2 >> 8) as u8),
+            )
+        }
+    }
+
+    /// Get stack type for stack operations
+    #[inline(always)]
+    pub fn stack_type(&self) -> ScalarType {
+        unsafe { core::mem::transmute::<u8, ScalarType>(self.src2 as u8) }
+    }
+
+    /// Get jump target based on condition
+    #[inline(always)]
+    pub const fn br_target(&self, cond: bool) -> u32 {
+        if cond { self.imm32() } else { self.aux() }
+    }
+
+    /// Get number of targets in BrTable
+    #[inline(always)]
+    pub const fn br_table_num_targets(&self) -> u32 {
+        self.aux()
+    }
+
+    /// Get base index in jump_targets for BrTable
+    #[inline(always)]
+    pub const fn br_table_base_idx(&self) -> u32 {
+        self.imm32()
+    }
+
+    /// Get scale for PtrIndex
+    #[inline(always)]
+    pub const fn ptr_index_scale(&self) -> i64 {
+        self.imm32() as i64
+    }
+
+    /// Get offset for PtrIndex
+    #[inline(always)]
+    pub const fn ptr_index_offset(&self) -> i64 {
+        self.aux() as i64
+    }
+
+    /// Get false register for Select
+    #[inline(always)]
+    pub const fn select_false_reg(&self) -> u16 {
+        (self.imm32() & 0xFFFF) as u16
     }
 
     /// Decode an instruction from a raw pointer
@@ -557,23 +593,7 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
         br_offset
     };
 
-    let get_stack_type = |ty: &Type| -> u16 {
-        if *ty == Type::I32 {
-            STACK_TYPE_I32 as u16
-        } else if *ty == Type::I64 || *ty == Type::PTR {
-            STACK_TYPE_I64 as u16
-        } else if *ty == Type::F32 {
-            STACK_TYPE_F32 as u16
-        } else if *ty == Type::F64 {
-            STACK_TYPE_F64 as u16
-        } else if *ty == Type::I8 {
-            STACK_TYPE_I8 as u16
-        } else if *ty == Type::I16 {
-            STACK_TYPE_I16 as u16
-        } else {
-            panic!("Unsupported type: {:?}", ty);
-        }
-    };
+    let val_ty = |v: Value| func.dfg.value_type(v).scalar_type();
 
     macro_rules! binary_op {
         ($imm_op:ident, $reg_op:ident, $imm_ty:ty, $lhs:expr, $rhs:expr, $args:expr, $code:expr, $dst:expr) => {
@@ -935,64 +955,57 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 }
                 InstructionData::StackLoad { slot, offset } => {
                     let base_offset = slot_to_offset[*slot];
-                    let ty = res_vals
-                        .first()
-                        .map(|&v| func.dfg.value_type(v))
-                        .unwrap_or(Type::VOID);
-                    let ty_val = get_stack_type(&ty);
+                    let ty_val = val_ty(res_vals[0]) as u16;
                     emit::StackLoad(&mut code, dst, ty_val, base_offset + *offset);
                 }
                 InstructionData::StackStore { slot, value, .. } => {
                     let base_offset = slot_to_offset[*slot];
                     let val_reg = mapper.get_mapped(*value);
-                    let ty = func.dfg.values[*value].ty.clone();
-                    let ty_val = get_stack_type(&ty);
+                    let ty_val = val_ty(*value) as u16;
                     emit::StackStore(&mut code, val_reg, ty_val, base_offset);
                 }
                 InstructionData::Load { ptr, offset, .. } => {
                     let ptr_reg = mapper.get_mapped(*ptr);
-                    let ty = res_vals
-                        .first()
-                        .map(|&v| func.dfg.value_type(v))
-                        .unwrap_or(Type::VOID);
-                    let ty_val = get_stack_type(&ty);
-
-                    match ty_val as u8 {
-                        STACK_TYPE_I32 => emit::I32Load(&mut code, dst, ptr_reg, *offset as u32),
-                        STACK_TYPE_I64 => emit::I64Load(&mut code, dst, ptr_reg, *offset as u32),
-                        STACK_TYPE_F32 => emit::F32Load(&mut code, dst, ptr_reg, *offset as u32),
-                        STACK_TYPE_F64 => emit::F64Load(&mut code, dst, ptr_reg, *offset as u32),
-                        STACK_TYPE_I8 => emit::I8Load(&mut code, dst, ptr_reg, *offset as u32),
-                        STACK_TYPE_I16 => emit::I16Load(&mut code, dst, ptr_reg, *offset as u32),
-                        _ => panic!("Unsupported load type {:?}", ty),
+                    match val_ty(res_vals[0]) {
+                        ScalarType::I32 => emit::I32Load(&mut code, dst, ptr_reg, *offset as u32),
+                        ScalarType::I64 | ScalarType::Ptr => {
+                            emit::I64Load(&mut code, dst, ptr_reg, *offset as u32)
+                        }
+                        ScalarType::F32 => emit::F32Load(&mut code, dst, ptr_reg, *offset as u32),
+                        ScalarType::F64 => emit::F64Load(&mut code, dst, ptr_reg, *offset as u32),
+                        ScalarType::I8 => emit::I8Load(&mut code, dst, ptr_reg, *offset as u32),
+                        ScalarType::I16 => emit::I16Load(&mut code, dst, ptr_reg, *offset as u32),
+                        ty => panic!("Unsupported load type {:?}", ty),
                     }
                 }
                 InstructionData::Store {
-                    ptr, value, offset, ..
+                    ptr: m_ptr,
+                    value,
+                    offset,
+                    ..
                 } => {
-                    let ptr_reg = mapper.get_mapped(*ptr);
+                    let ptr_reg = mapper.get_mapped(*m_ptr);
                     let val_reg = mapper.get_mapped(*value);
-                    let ty = func.dfg.values[*value].ty.clone();
-                    let ty_val = get_stack_type(&ty);
-
-                    match ty_val as u8 {
-                        STACK_TYPE_I32 => {
+                    match val_ty(*value) {
+                        ScalarType::I32 => {
                             emit::I32Store(&mut code, val_reg, ptr_reg, *offset as u32)
                         }
-                        STACK_TYPE_I64 => {
+                        ScalarType::I64 | ScalarType::Ptr => {
                             emit::I64Store(&mut code, val_reg, ptr_reg, *offset as u32)
                         }
-                        STACK_TYPE_F32 => {
+                        ScalarType::F32 => {
                             emit::F32Store(&mut code, val_reg, ptr_reg, *offset as u32)
                         }
-                        STACK_TYPE_F64 => {
+                        ScalarType::F64 => {
                             emit::F64Store(&mut code, val_reg, ptr_reg, *offset as u32)
                         }
-                        STACK_TYPE_I8 => emit::I8Store(&mut code, val_reg, ptr_reg, *offset as u32),
-                        STACK_TYPE_I16 => {
+                        ScalarType::I8 => {
+                            emit::I8Store(&mut code, val_reg, ptr_reg, *offset as u32)
+                        }
+                        ScalarType::I16 => {
                             emit::I16Store(&mut code, val_reg, ptr_reg, *offset as u32)
                         }
-                        _ => panic!("Unsupported store type {:?}", ty),
+                        ty => panic!("Unsupported store type {:?}", ty),
                     }
                 }
                 InstructionData::Jump { dest } => {
@@ -1081,251 +1094,176 @@ pub fn compile_function(module_id: ModuleId, func_id: FuncId, func: &Function) -
                 }
                 InstructionData::Unary { opcode, arg, .. } => {
                     let arg_reg = mapper.get_mapped(*arg);
-                    let from_ty = func.dfg.values[*arg].ty.clone();
+                    let from_ty = val_ty(*arg);
+                    let to_ty = val_ty(res_vals[0]);
                     match opcode {
                         IrOpcode::ExtendS => {
-                            let ty_val = if from_ty == Type::I8 {
-                                EXTEND_TYPE_I8
-                            } else if from_ty == Type::I16 {
-                                EXTEND_TYPE_I16
-                            } else if from_ty == Type::I32 {
-                                EXTEND_TYPE_I32
-                            } else {
-                                panic!("Unsupported extend from type {:?}", from_ty);
-                            };
-                            emit::ExtendS(&mut code, dst, arg_reg, ty_val as u16);
+                            let f = from_ty as u16;
+                            let t = to_ty as u16;
+                            emit::ExtendS(&mut code, dst, arg_reg, (t << 8) | f);
                         }
                         IrOpcode::ExtendU => {
-                            let ty_val = if from_ty == Type::I8 {
-                                EXTEND_TYPE_I8
-                            } else if from_ty == Type::I16 {
-                                EXTEND_TYPE_I16
-                            } else if from_ty == Type::I32 {
-                                EXTEND_TYPE_I32
-                            } else {
-                                panic!("Unsupported extend from type {:?}", from_ty);
-                            };
-                            emit::ExtendU(&mut code, dst, arg_reg, ty_val as u16);
+                            let f = from_ty as u16;
+                            let t = to_ty as u16;
+                            emit::ExtendU(&mut code, dst, arg_reg, (t << 8) | f);
                         }
                         IrOpcode::Wrap => {
                             emit::Wrap(&mut code, dst, arg_reg);
                         }
-                        IrOpcode::FloatToIntS => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
-                            if to_ty == Type::I32 && from_ty == Type::F32 {
-                                emit::I32TruncF32S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I32 && from_ty == Type::F64 {
-                                emit::I32TruncF64S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I64 && from_ty == Type::F32 {
-                                emit::I64TruncF32S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I64 && from_ty == Type::F64 {
-                                emit::I64TruncF64S(&mut code, dst, arg_reg);
-                            } else {
-                                panic!(
-                                    "Unsupported TruncS: {:?} -> {:?}",
-                                    from_ty.clone(),
-                                    to_ty.clone()
-                                );
+                        IrOpcode::FloatToIntS => match (from_ty, to_ty) {
+                            (ScalarType::F32, ScalarType::I32) => {
+                                emit::I32TruncF32S(&mut code, dst, arg_reg)
                             }
-                        }
-                        IrOpcode::FloatToIntU => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
-                            if to_ty == Type::I32 && from_ty == Type::F32 {
-                                emit::I32TruncF32U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I32 && from_ty == Type::F64 {
-                                emit::I32TruncF64U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I64 && from_ty == Type::F32 {
-                                emit::I64TruncF32U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I64 && from_ty == Type::F64 {
-                                emit::I64TruncF64U(&mut code, dst, arg_reg);
-                            } else {
-                                panic!(
-                                    "Unsupported TruncU: {:?} -> {:?}",
-                                    from_ty.clone(),
-                                    to_ty.clone()
-                                );
+                            (ScalarType::F64, ScalarType::I32) => {
+                                emit::I32TruncF64S(&mut code, dst, arg_reg)
                             }
-                        }
-                        IrOpcode::FloatToIntSatS => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
-                            if to_ty == Type::I32 && from_ty == Type::F32 {
-                                emit::I32TruncSatF32S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I32 && from_ty == Type::F64 {
-                                emit::I32TruncSatF64S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I64 && from_ty == Type::F32 {
-                                emit::I64TruncSatF32S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I64 && from_ty == Type::F64 {
-                                emit::I64TruncSatF64S(&mut code, dst, arg_reg);
-                            } else {
-                                panic!(
-                                    "Unsupported TruncSatS: {:?} -> {:?}",
-                                    from_ty.clone(),
-                                    to_ty.clone()
-                                );
+                            (ScalarType::F32, ScalarType::I64) => {
+                                emit::I64TruncF32S(&mut code, dst, arg_reg)
                             }
-                        }
-                        IrOpcode::FloatToIntSatU => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
-                            if to_ty == Type::I32 && from_ty == Type::F32 {
-                                emit::I32TruncSatF32U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I32 && from_ty == Type::F64 {
-                                emit::I32TruncSatF64U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I64 && from_ty == Type::F32 {
-                                emit::I64TruncSatF32U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::I64 && from_ty == Type::F64 {
-                                emit::I64TruncSatF64U(&mut code, dst, arg_reg);
-                            } else {
-                                panic!(
-                                    "Unsupported TruncSatU: {:?} -> {:?}",
-                                    from_ty.clone(),
-                                    to_ty.clone()
-                                );
+                            (ScalarType::F64, ScalarType::I64) => {
+                                emit::I64TruncF64S(&mut code, dst, arg_reg)
                             }
-                        }
-                        IrOpcode::IntToFloatS => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
-                            if to_ty == Type::F32 && from_ty == Type::I32 {
-                                emit::F32ConvertI32S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::F32 && from_ty == Type::I64 {
-                                emit::F32ConvertI64S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::F64 && from_ty == Type::I32 {
-                                emit::F64ConvertI32S(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::F64 && from_ty == Type::I64 {
-                                emit::F64ConvertI64S(&mut code, dst, arg_reg);
-                            } else {
-                                panic!(
-                                    "Unsupported ConvertS: {:?} -> {:?}",
-                                    from_ty.clone(),
-                                    to_ty.clone()
-                                );
+                            _ => panic!("Unsupported TruncS: {:?} -> {:?}", from_ty, to_ty),
+                        },
+                        IrOpcode::FloatToIntU => match (from_ty, to_ty) {
+                            (ScalarType::F32, ScalarType::I32) => {
+                                emit::I32TruncF32U(&mut code, dst, arg_reg)
                             }
-                        }
-                        IrOpcode::IntToFloatU => {
-                            let to_ty = func.dfg.values[res_vals[0]].ty.clone();
-                            if to_ty == Type::F32 && from_ty == Type::I32 {
-                                emit::F32ConvertI32U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::F32 && from_ty == Type::I64 {
-                                emit::F32ConvertI64U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::F64 && from_ty == Type::I32 {
-                                emit::F64ConvertI32U(&mut code, dst, arg_reg);
-                            } else if to_ty == Type::F64 && from_ty == Type::I64 {
-                                emit::F64ConvertI64U(&mut code, dst, arg_reg);
-                            } else {
-                                panic!(
-                                    "Unsupported ConvertU: {:?} -> {:?}",
-                                    from_ty.clone(),
-                                    to_ty.clone()
-                                );
+                            (ScalarType::F64, ScalarType::I32) => {
+                                emit::I32TruncF64U(&mut code, dst, arg_reg)
                             }
-                        }
+                            (ScalarType::F32, ScalarType::I64) => {
+                                emit::I64TruncF32U(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::F64, ScalarType::I64) => {
+                                emit::I64TruncF64U(&mut code, dst, arg_reg)
+                            }
+                            _ => panic!("Unsupported TruncU: {:?} -> {:?}", from_ty, to_ty),
+                        },
+                        IrOpcode::FloatToIntSatS => match (from_ty, to_ty) {
+                            (ScalarType::F32, ScalarType::I32) => {
+                                emit::I32TruncSatF32S(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::F64, ScalarType::I32) => {
+                                emit::I32TruncSatF64S(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::F32, ScalarType::I64) => {
+                                emit::I64TruncSatF32S(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::F64, ScalarType::I64) => {
+                                emit::I64TruncSatF64S(&mut code, dst, arg_reg)
+                            }
+                            _ => panic!("Unsupported TruncSatS: {:?} -> {:?}", from_ty, to_ty),
+                        },
+                        IrOpcode::FloatToIntSatU => match (from_ty, to_ty) {
+                            (ScalarType::F32, ScalarType::I32) => {
+                                emit::I32TruncSatF32U(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::F64, ScalarType::I32) => {
+                                emit::I32TruncSatF64U(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::F32, ScalarType::I64) => {
+                                emit::I64TruncSatF32U(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::F64, ScalarType::I64) => {
+                                emit::I64TruncSatF64U(&mut code, dst, arg_reg)
+                            }
+                            _ => panic!("Unsupported TruncSatU: {:?} -> {:?}", from_ty, to_ty),
+                        },
+                        IrOpcode::IntToFloatS => match (from_ty, to_ty) {
+                            (ScalarType::I32, ScalarType::F32) => {
+                                emit::F32ConvertI32S(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::I64, ScalarType::F32) => {
+                                emit::F32ConvertI64S(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::I32, ScalarType::F64) => {
+                                emit::F64ConvertI32S(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::I64, ScalarType::F64) => {
+                                emit::F64ConvertI64S(&mut code, dst, arg_reg)
+                            }
+                            _ => panic!("Unsupported ConvertS: {:?} -> {:?}", from_ty, to_ty),
+                        },
+                        IrOpcode::IntToFloatU => match (from_ty, to_ty) {
+                            (ScalarType::I32, ScalarType::F32) => {
+                                emit::F32ConvertI32U(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::I64, ScalarType::F32) => {
+                                emit::F32ConvertI64U(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::I32, ScalarType::F64) => {
+                                emit::F64ConvertI32U(&mut code, dst, arg_reg)
+                            }
+                            (ScalarType::I64, ScalarType::F64) => {
+                                emit::F64ConvertI64U(&mut code, dst, arg_reg)
+                            }
+                            _ => panic!("Unsupported ConvertU: {:?} -> {:?}", from_ty, to_ty),
+                        },
                         IrOpcode::FloatDemote => emit::F32DemoteF64(&mut code, dst, arg_reg),
                         IrOpcode::FloatPromote => emit::F64PromoteF32(&mut code, dst, arg_reg),
                         IrOpcode::Reinterpret => {
                             emit::RegMove(&mut code, dst, arg_reg);
                         }
-                        IrOpcode::FAbs => {
-                            if from_ty == Type::F32 {
-                                emit::F32Abs(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::F64 {
-                                emit::F64Abs(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Abs for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::FNeg => {
-                            if from_ty == Type::F32 {
-                                emit::F32Neg(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::F64 {
-                                emit::F64Neg(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Fneg for type {:?}", from_ty);
-                            }
-                        }
+                        IrOpcode::FAbs => match from_ty {
+                            ScalarType::F32 => emit::F32Abs(&mut code, dst, arg_reg),
+                            ScalarType::F64 => emit::F64Abs(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Abs for type {:?}", from_ty),
+                        },
+                        IrOpcode::FNeg => match from_ty {
+                            ScalarType::F32 => emit::F32Neg(&mut code, dst, arg_reg),
+                            ScalarType::F64 => emit::F64Neg(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Fneg for type {:?}", from_ty),
+                        },
                         IrOpcode::INeg => {
                             // ... implement if needed
                             todo!("Ineg not implemented");
                         }
-                        IrOpcode::FSqrt => {
-                            if from_ty == Type::F32 {
-                                emit::F32Sqrt(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::F64 {
-                                emit::F64Sqrt(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Sqrt for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::FCeil => {
-                            if from_ty == Type::F32 {
-                                emit::F32Ceil(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::F64 {
-                                emit::F64Ceil(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Ceil for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::FFloor => {
-                            if from_ty == Type::F32 {
-                                emit::F32Floor(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::F64 {
-                                emit::F64Floor(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Floor for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::FTrunc => {
-                            if from_ty == Type::F32 {
-                                emit::F32Trunc(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::F64 {
-                                emit::F64Trunc(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Trunc for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::FNearest => {
-                            if from_ty == Type::F32 {
-                                emit::F32Nearest(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::F64 {
-                                emit::F64Nearest(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Nearest for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::IClz => {
-                            if from_ty == Type::I32 {
-                                emit::I32Clz(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::I64 {
-                                emit::I64Clz(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Clz for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::ICtz => {
-                            if from_ty == Type::I32 {
-                                emit::I32Ctz(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::I64 {
-                                emit::I64Ctz(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Ctz for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::IPopcnt => {
-                            if from_ty == Type::I32 {
-                                emit::I32Popcnt(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::I64 {
-                                emit::I64Popcnt(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Popcnt for type {:?}", from_ty);
-                            }
-                        }
-                        IrOpcode::IEqz => {
-                            if from_ty == Type::I32 {
-                                emit::I32Eqz(&mut code, dst, arg_reg);
-                            } else if from_ty == Type::I64 {
-                                emit::I64Eqz(&mut code, dst, arg_reg);
-                            } else {
-                                panic!("Unsupported Eqz for type {:?}", from_ty);
-                            }
-                        }
+                        IrOpcode::FSqrt => match from_ty {
+                            ScalarType::F32 => emit::F32Sqrt(&mut code, dst, arg_reg),
+                            ScalarType::F64 => emit::F64Sqrt(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Sqrt for type {:?}", from_ty),
+                        },
+                        IrOpcode::FCeil => match from_ty {
+                            ScalarType::F32 => emit::F32Ceil(&mut code, dst, arg_reg),
+                            ScalarType::F64 => emit::F64Ceil(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Ceil for type {:?}", from_ty),
+                        },
+                        IrOpcode::FFloor => match from_ty {
+                            ScalarType::F32 => emit::F32Floor(&mut code, dst, arg_reg),
+                            ScalarType::F64 => emit::F64Floor(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Floor for type {:?}", from_ty),
+                        },
+                        IrOpcode::FTrunc => match from_ty {
+                            ScalarType::F32 => emit::F32Trunc(&mut code, dst, arg_reg),
+                            ScalarType::F64 => emit::F64Trunc(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Trunc for type {:?}", from_ty),
+                        },
+                        IrOpcode::FNearest => match from_ty {
+                            ScalarType::F32 => emit::F32Nearest(&mut code, dst, arg_reg),
+                            ScalarType::F64 => emit::F64Nearest(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Nearest for type {:?}", from_ty),
+                        },
+                        IrOpcode::IClz => match from_ty {
+                            ScalarType::I32 => emit::I32Clz(&mut code, dst, arg_reg),
+                            ScalarType::I64 => emit::I64Clz(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Clz for type {:?}", from_ty),
+                        },
+                        IrOpcode::ICtz => match from_ty {
+                            ScalarType::I32 => emit::I32Ctz(&mut code, dst, arg_reg),
+                            ScalarType::I64 => emit::I64Ctz(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Ctz for type {:?}", from_ty),
+                        },
+                        IrOpcode::IPopcnt => match from_ty {
+                            ScalarType::I32 => emit::I32Popcnt(&mut code, dst, arg_reg),
+                            ScalarType::I64 => emit::I64Popcnt(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Popcnt for type {:?}", from_ty),
+                        },
+                        IrOpcode::IEqz => match from_ty {
+                            ScalarType::I32 => emit::I32Eqz(&mut code, dst, arg_reg),
+                            ScalarType::I64 => emit::I64Eqz(&mut code, dst, arg_reg),
+                            _ => panic!("Unsupported Eqz for type {:?}", from_ty),
+                        },
                         _ => {
                             todo!("Unsupported unary op {:?}", opcode);
                         }

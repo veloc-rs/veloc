@@ -33,7 +33,7 @@ impl WasmTy for i32 {
         ValType::I32
     }
     fn from_val(val: InterpreterValue) -> Self {
-        val.unwarp_i32()
+        val.unwrap_i32()
     }
     fn to_val(self) -> InterpreterValue {
         InterpreterValue::i32(self)
@@ -45,7 +45,7 @@ impl WasmTy for i64 {
         ValType::I64
     }
     fn from_val(val: InterpreterValue) -> Self {
-        val.unwarp_i64()
+        val.unwrap_i64()
     }
     fn to_val(self) -> InterpreterValue {
         InterpreterValue::i64(self)
@@ -57,7 +57,7 @@ impl WasmTy for f32 {
         ValType::F32
     }
     fn from_val(val: InterpreterValue) -> Self {
-        val.unwarp_f32()
+        val.unwrap_f32()
     }
     fn to_val(self) -> InterpreterValue {
         InterpreterValue::f32(self)
@@ -69,7 +69,7 @@ impl WasmTy for f64 {
         ValType::F64
     }
     fn from_val(val: InterpreterValue) -> Self {
-        val.unwarp_f64()
+        val.unwrap_f64()
     }
     fn to_val(self) -> InterpreterValue {
         InterpreterValue::f64(self)

@@ -447,7 +447,7 @@ impl<'a> WasmTranslator<'a> {
                         (frame.end_label.unwrap(), frame.results_types.clone())
                     }
                 };
-                
+
                 let mut args = Vec::new();
                 for &ty in target_tys.iter().rev() {
                     args.push(self.pop_typed(ty));

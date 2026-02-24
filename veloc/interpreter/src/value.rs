@@ -37,27 +37,27 @@ impl InterpreterValue {
     }
 
     #[inline(always)]
-    pub fn unwarp_i32(self) -> i32 {
+    pub fn unwrap_i32(self) -> i32 {
         self.0 as i32
     }
 
     #[inline(always)]
-    pub fn unwarp_i64(self) -> i64 {
+    pub fn unwrap_i64(self) -> i64 {
         self.0 as i64
     }
 
     #[inline(always)]
-    pub fn unwarp_f32(self) -> f32 {
+    pub fn unwrap_f32(self) -> f32 {
         f32::from_bits(self.0 as u32)
     }
 
     #[inline(always)]
-    pub fn unwarp_f64(self) -> f64 {
+    pub fn unwrap_f64(self) -> f64 {
         f64::from_bits(self.0)
     }
 
     #[inline(always)]
-    pub fn unwarp_bool(self) -> bool {
+    pub fn unwrap_bool(self) -> bool {
         self.0 != 0
     }
 
@@ -102,11 +102,11 @@ macro_rules! impl_host_func_types {
 }
 
 impl_host_func_types! {
-    i32, i32, unwarp_i32;
-    i64, i64, unwarp_i64;
-    f32, f32, unwarp_f32;
-    f64, f64, unwarp_f64;
-    bool, bool, unwarp_bool
+    i32, i32, unwrap_i32;
+    i64, i64, unwrap_i64;
+    f32, f32, unwrap_f32;
+    f64, f64, unwrap_f64;
+    bool, bool, unwrap_bool
 }
 
 impl HostFuncArg for InterpreterValue {

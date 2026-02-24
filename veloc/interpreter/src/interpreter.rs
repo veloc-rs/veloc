@@ -1,22 +1,10 @@
-use crate::bytecode::{
-    CompiledFunction, EXTEND_TYPE_I8, EXTEND_TYPE_I16, EXTEND_TYPE_I32, Opcode, STACK_TYPE_F32,
-    STACK_TYPE_F64, STACK_TYPE_I8, STACK_TYPE_I16, STACK_TYPE_I32, STACK_TYPE_I64,
-};
-use crate::host::{ModuleId, Program};
+use crate::bytecode::{CompiledFunction, Opcode};
+use crate::error::Result;
+use crate::host::Program;
 use crate::value::InterpreterValue;
 use ::alloc::vec::Vec;
-use veloc_ir::Intrinsic;
-
-/// 解释器执行错误（与 WASM 无关的通用错误类型）
-#[derive(Debug, Clone)]
-pub enum RunError {
-    /// 内存访问越界
-    OutOfBounds,
-    /// 执行了 unreachable 指令
-    Unreachable,
-}
-
-pub type Result<T> = core::result::Result<T, RunError>;
+use cranelift_entity::EntityRef;
+use veloc_ir::{Intrinsic, ModuleId, ScalarType};
 
 pub trait VirtualMemory {
     fn translate_addr(&self, logical_addr: usize, size: usize) -> Option<*mut u8>;
@@ -51,14 +39,17 @@ impl Interpreter {
         }
     }
 
-    pub fn run_function(
+    pub fn run_function<M>(
         &mut self,
         program: &Program,
-        mem: &dyn VirtualMemory,
+        mem: &M,
         mid: ModuleId,
         fid: veloc_ir::FuncId,
         args: &[InterpreterValue],
-    ) -> Result<Vec<InterpreterValue>> {
+    ) -> Result<Vec<InterpreterValue>>
+    where
+        M: VirtualMemory,
+    {
         let func = program.get_compiled_func(mid, fid);
         let base = self.value_stack.len();
         self.value_stack
@@ -88,12 +79,10 @@ impl Interpreter {
         self.execute(program, mem)
     }
 
-    #[inline(always)]
-    fn execute(
-        &mut self,
-        program: &Program,
-        mem: &dyn VirtualMemory,
-    ) -> Result<Vec<InterpreterValue>> {
+    fn execute<M>(&mut self, program: &Program, mem: &M) -> Result<Vec<InterpreterValue>>
+    where
+        M: VirtualMemory,
+    {
         let frame = self.frames.pop().unwrap();
         let mut pc = frame.pc;
         let mut base = frame.base;
@@ -121,49 +110,13 @@ impl Interpreter {
                 };
             }
 
-            // Binary operation helper - takes a closure
-            macro_rules! bin {
-                ($d:expr, $l:expr, $r:expr, $op:expr) => {
-                    set!($d, $op(get!($l), get!($r)))
-                };
-            }
-            macro_rules! bin_imm {
-                ($d:expr, $l:expr, $i:expr, $op:expr) => {
-                    set!($d, $op(get!($l), $i))
-                };
-            }
-
-            // Unary: dst = op(src)
-            macro_rules! unary {
-                ($d:expr, $s:expr, $op:expr) => {
-                    set!($d, $op(get!($s)))
-                };
-            }
-            // Compare: dst = src1 op src2 (boolean result)
-            macro_rules! cmp {
-                ($d:expr, $l:expr, $r:expr, $op:expr) => {
-                    set!($d, InterpreterValue::bool($op(get!($l), get!($r))))
-                };
-            }
-            // Compare with zero
-            macro_rules! cmpz {
-                ($d:expr, $s:expr, $ty:ident) => {
-                    set!($d, InterpreterValue::bool(get!($s).$ty() == 0))
-                };
-            }
-            // Convert: dst = convert(src)
-            macro_rules! conv {
-                ($d:expr, $s:expr, $op:expr) => {
-                    set!($d, $op(get!($s)))
-                };
-            }
             // Memory load/store
             macro_rules! load {
                 ($d:expr, $p:expr, $off:expr, $rd:ty, $wrap:expr) => {{
                     let addr = (get!($p).0 as usize).wrapping_add($off as usize);
                     match mem.translate_addr(addr, core::mem::size_of::<$rd>()) {
                         Some(ptr) => set!($d, $wrap((ptr as *const $rd).read_unaligned())),
-                        None => return Err(RunError::OutOfBounds),
+                        None => return Err(crate::error::Error::OutOfBounds),
                     }
                 }};
             }
@@ -172,39 +125,20 @@ impl Interpreter {
                     let addr = (get!($p).0 as usize).wrapping_add($off as usize);
                     match mem.translate_addr(addr, core::mem::size_of::<$wr>()) {
                         Some(ptr) => (ptr as *mut $wr).write_unaligned(get!($v).$ty() as _),
-                        None => return Err(RunError::OutOfBounds),
+                        None => return Err(crate::error::Error::OutOfBounds),
                     }
                 }};
-            }
-            // Shift operations
-            macro_rules! shift {
-                ($d:expr, $l:expr, $r:expr, $op:expr) => {
-                    set!($d, $op(get!($l), get!($r)))
-                };
-            }
-            macro_rules! shift_imm {
-                ($d:expr, $l:expr, $i:expr, $op:expr) => {
-                    set!($d, $op(get!($l), $i))
-                };
-            }
-            // Move
-            macro_rules! mov {
-                ($d:expr, $s:expr) => {
-                    set!($d, get!($s))
-                };
             }
 
             // Execute register moves from data section
             macro_rules! execute_moves {
                 ($target:expr) => {{
                     let num_moves = $target.num_moves as usize;
-                    if num_moves > 0 {
-                        let moves_offset = $target.moves_offset as usize;
-                        for i in 0..num_moves {
-                            let dst = func.data_section.u16_data[moves_offset + i * 2];
-                            let src = func.data_section.u16_data[moves_offset + i * 2 + 1];
-                            set!(dst, get!(src));
-                        }
+                    let moves_offset = $target.moves_offset as usize;
+                    for i in 0..num_moves {
+                        let dst = func.data_section.u16_data[moves_offset + i * 2];
+                        let src = func.data_section.u16_data[moves_offset + i * 2 + 1];
+                        set!(dst, get!(src));
                     }
                 }};
             }
@@ -212,7 +146,7 @@ impl Interpreter {
             // === Call Preparation Macro ===
             macro_rules! prepare_call {
                 ($target_mid:expr, $target_fid:expr, $dst_regs_start:expr, $dst_regs_count:expr, $args:expr) => {{
-                    if program.compiled_modules[$target_mid.0][$target_fid.0 as usize].is_none() {
+                    if program.modules[$target_mid].compiled[$target_fid.index()].is_none() {
                         panic!(
                             "Calling uncompiled function: mid={:?}, fid={:?}",
                             $target_mid, $target_fid
@@ -283,817 +217,755 @@ impl Interpreter {
                         }
 
                         // === I32 Arithmetic ===
-                        Opcode::I32Add => bin!(
+                        Opcode::I32Add => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_add(b)));
+                        }
+                        Opcode::I32AddImm => {
+                            let a = get!(inst.src1).unwrap_i32();
+                            set!(
+                                inst.dst,
+                                InterpreterValue::i32(a.wrapping_add(inst.imm32() as i32))
+                            );
+                        }
+                        Opcode::I32Sub => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_sub(b)));
+                        }
+                        Opcode::I32SubImm => {
+                            let a = get!(inst.src1).unwrap_i32();
+                            set!(
+                                inst.dst,
+                                InterpreterValue::i32(a.wrapping_sub(inst.imm32() as i32))
+                            );
+                        }
+                        Opcode::I32Mul => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_mul(b)));
+                        }
+                        Opcode::I32DivS => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_div(b)));
+                        }
+                        Opcode::I32DivU => {
+                            let (a, b) = (
+                                get!(inst.src1).unwrap_i32() as u32,
+                                get!(inst.src2).unwrap_i32() as u32,
+                            );
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_div(b) as i32));
+                        }
+                        Opcode::I32RemS => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_rem(b)));
+                        }
+                        Opcode::I32RemU => {
+                            let (a, b) = (
+                                get!(inst.src1).unwrap_i32() as u32,
+                                get!(inst.src2).unwrap_i32() as u32,
+                            );
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_rem(b) as i32));
+                        }
+                        Opcode::I32And => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a & b));
+                        }
+                        Opcode::I32AndImm => {
+                            let a = get!(inst.src1).unwrap_i32();
+                            set!(inst.dst, InterpreterValue::i32(a & inst.imm32() as i32));
+                        }
+                        Opcode::I32Or => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a | b));
+                        }
+                        Opcode::I32OrImm => {
+                            let a = get!(inst.src1).unwrap_i32();
+                            set!(inst.dst, InterpreterValue::i32(a | inst.imm32() as i32));
+                        }
+                        Opcode::I32Xor => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a ^ b));
+                        }
+                        Opcode::I32XorImm => {
+                            let a = get!(inst.src1).unwrap_i32();
+                            set!(inst.dst, InterpreterValue::i32(a ^ inst.imm32() as i32));
+                        }
+                        Opcode::I32Shl => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_shl(b as u32)));
+                        }
+                        Opcode::I32ShlImm => {
+                            let a = get!(inst.src1).unwrap_i32();
+                            set!(
+                                inst.dst,
+                                InterpreterValue::i32(a.wrapping_shl(inst.imm32() as u32))
+                            );
+                        }
+                        Opcode::I32ShrS => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_shr(b as u32)));
+                        }
+                        Opcode::I32ShrSImm => {
+                            let a = get!(inst.src1).unwrap_i32();
+                            set!(
+                                inst.dst,
+                                InterpreterValue::i32(a.wrapping_shr(inst.imm32() as u32))
+                            );
+                        }
+                        Opcode::I32ShrU => {
+                            let (a, b) = (
+                                get!(inst.src1).unwrap_i32() as u32,
+                                get!(inst.src2).unwrap_i32() as u32,
+                            );
+                            set!(inst.dst, InterpreterValue::i32(a.wrapping_shr(b) as i32));
+                        }
+                        Opcode::I32ShrUImm => {
+                            let a = get!(inst.src1).unwrap_i32() as u32;
+                            set!(
+                                inst.dst,
+                                InterpreterValue::i32(a.wrapping_shr(inst.imm32() as u32) as i32)
+                            );
+                        }
+                        Opcode::I32RotL => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.rotate_left(b as u32)));
+                        }
+                        Opcode::I32RotR => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i32(), get!(inst.src2).unwrap_i32());
+                            set!(inst.dst, InterpreterValue::i32(a.rotate_right(b as u32)));
+                        }
+                        Opcode::I32Clz => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_add(b.unwarp_i32())
+                            InterpreterValue::i32(
+                                get!(inst.src1).unwrap_i32().leading_zeros() as i32
                             )
                         ),
-                        Opcode::I32AddImm => bin_imm!(
+                        Opcode::I32Ctz => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm32() as i32,
-                            |a: InterpreterValue, b: i32| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_add(b)
+                            InterpreterValue::i32(
+                                get!(inst.src1).unwrap_i32().trailing_zeros() as i32
                             )
                         ),
-                        Opcode::I32Sub => bin!(
+                        Opcode::I32Popcnt => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_sub(b.unwarp_i32())
+                            InterpreterValue::i32(get!(inst.src1).unwrap_i32().count_ones() as i32)
+                        ),
+                        Opcode::I32Eqz => set!(
+                            inst.dst,
+                            InterpreterValue::bool(get!(inst.src1).unwrap_i32() == 0)
+                        ),
+                        Opcode::I32Eq => set!(
+                            inst.dst,
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i32() == get!(inst.src2).unwrap_i32()
                             )
                         ),
-                        Opcode::I32SubImm => bin_imm!(
+                        Opcode::I32Ne => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm32() as i32,
-                            |a: InterpreterValue, b: i32| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_sub(b)
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i32() != get!(inst.src2).unwrap_i32()
                             )
                         ),
-                        Opcode::I32Mul => bin!(
+                        Opcode::I32LtS => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_mul(b.unwarp_i32())
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i32() < get!(inst.src2).unwrap_i32()
                             )
                         ),
-                        Opcode::I32DivS => bin!(
+                        Opcode::I32LtU => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_div(b.unwarp_i32())
+                            InterpreterValue::bool(
+                                (get!(inst.src1).unwrap_i32() as u32)
+                                    < (get!(inst.src2).unwrap_i32() as u32)
                             )
                         ),
-                        Opcode::I32DivU => bin!(
+                        Opcode::I32LeS => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                (a.unwarp_i32() as u32).wrapping_div(b.unwarp_i32() as u32) as i32
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i32() <= get!(inst.src2).unwrap_i32()
                             )
                         ),
-                        Opcode::I32RemS => bin!(
+                        Opcode::I32LeU => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_rem(b.unwarp_i32())
+                            InterpreterValue::bool(
+                                (get!(inst.src1).unwrap_i32() as u32)
+                                    <= (get!(inst.src2).unwrap_i32() as u32)
                             )
                         ),
-                        Opcode::I32RemU => bin!(
+                        Opcode::I32GtS => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                (a.unwarp_i32() as u32).wrapping_rem(b.unwarp_i32() as u32) as i32
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i32() > get!(inst.src2).unwrap_i32()
                             )
                         ),
-                        Opcode::I32And => bin!(
+                        Opcode::I32GtU => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32() & b.unwarp_i32()
+                            InterpreterValue::bool(
+                                (get!(inst.src1).unwrap_i32() as u32)
+                                    > (get!(inst.src2).unwrap_i32() as u32)
                             )
                         ),
-                        Opcode::I32AndImm => bin_imm!(
+                        Opcode::I32GeS => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm32() as i32,
-                            |a: InterpreterValue, b: i32| InterpreterValue::i32(a.unwarp_i32() & b)
-                        ),
-                        Opcode::I32Or => bin!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32() | b.unwarp_i32()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i32() >= get!(inst.src2).unwrap_i32()
                             )
                         ),
-                        Opcode::I32OrImm => bin_imm!(
+                        Opcode::I32GeU => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm32() as i32,
-                            |a: InterpreterValue, b: i32| InterpreterValue::i32(a.unwarp_i32() | b)
-                        ),
-                        Opcode::I32Xor => bin!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32() ^ b.unwarp_i32()
+                            InterpreterValue::bool(
+                                (get!(inst.src1).unwrap_i32() as u32)
+                                    >= (get!(inst.src2).unwrap_i32() as u32)
                             )
-                        ),
-                        Opcode::I32XorImm => bin_imm!(
-                            inst.dst,
-                            inst.src1,
-                            inst.imm32() as i32,
-                            |a: InterpreterValue, b: i32| InterpreterValue::i32(a.unwarp_i32() ^ b)
-                        ),
-                        Opcode::I32Shl => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_shl(b.unwarp_i32() as u32)
-                            )
-                        ),
-                        Opcode::I32ShlImm => shift_imm!(
-                            inst.dst,
-                            inst.src1,
-                            inst.imm32() as u32,
-                            |a: InterpreterValue, b: u32| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_shl(b)
-                            )
-                        ),
-                        Opcode::I32ShrS => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_shr(b.unwarp_i32() as u32)
-                            )
-                        ),
-                        Opcode::I32ShrSImm => shift_imm!(
-                            inst.dst,
-                            inst.src1,
-                            inst.imm32() as u32,
-                            |a: InterpreterValue, b: u32| InterpreterValue::i32(
-                                a.unwarp_i32().wrapping_shr(b)
-                            )
-                        ),
-                        Opcode::I32ShrU => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                (a.unwarp_i32() as u32).wrapping_shr(b.unwarp_i32() as u32) as i32
-                            )
-                        ),
-                        Opcode::I32ShrUImm => shift_imm!(
-                            inst.dst,
-                            inst.src1,
-                            inst.imm32() as u32,
-                            |a: InterpreterValue, b: u32| InterpreterValue::i32(
-                                (a.unwarp_i32() as u32).wrapping_shr(b) as i32
-                            )
-                        ),
-                        Opcode::I32RotL => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().rotate_left(b.unwarp_i32() as u32)
-                            )
-                        ),
-                        Opcode::I32RotR => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i32(
-                                a.unwarp_i32().rotate_right(b.unwarp_i32() as u32)
-                            )
-                        ),
-                        Opcode::I32Clz => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::i32(a.unwarp_i32().leading_zeros() as i32)
-                        }),
-                        Opcode::I32Ctz => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::i32(a.unwarp_i32().trailing_zeros() as i32)
-                        }),
-                        Opcode::I32Popcnt => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::i32(a.unwarp_i32().count_ones() as i32)
-                        }),
-                        Opcode::I32Eqz => cmpz!(inst.dst, inst.src1, unwarp_i32),
-                        Opcode::I32Eq => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i32()
-                                == b.unwarp_i32()
-                        ),
-                        Opcode::I32Ne => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i32()
-                                != b.unwarp_i32()
-                        ),
-                        Opcode::I32LtS => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i32()
-                                < b.unwarp_i32()
-                        ),
-                        Opcode::I32LtU => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| (a.unwarp_i32() as u32)
-                                < (b.unwarp_i32() as u32)
-                        ),
-                        Opcode::I32LeS => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i32()
-                                <= b.unwarp_i32()
-                        ),
-                        Opcode::I32LeU => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| (a.unwarp_i32() as u32)
-                                <= (b.unwarp_i32() as u32)
-                        ),
-                        Opcode::I32GtS => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i32()
-                                > b.unwarp_i32()
-                        ),
-                        Opcode::I32GtU => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| (a.unwarp_i32() as u32)
-                                > (b.unwarp_i32() as u32)
-                        ),
-                        Opcode::I32GeS => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i32()
-                                >= b.unwarp_i32()
-                        ),
-                        Opcode::I32GeU => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| (a.unwarp_i32() as u32)
-                                >= (b.unwarp_i32() as u32)
                         ),
 
                         // === I64 Operations ===
-                        Opcode::I64Add => bin!(
+                        Opcode::I64Add => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_add(b)));
+                        }
+                        Opcode::I64AddImm => {
+                            let a = get!(inst.src1).unwrap_i64();
+                            set!(
+                                inst.dst,
+                                InterpreterValue::i64(a.wrapping_add(inst.imm64 as i64))
+                            );
+                        }
+                        Opcode::I64Sub => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_sub(b)));
+                        }
+                        Opcode::I64SubImm => {
+                            let a = get!(inst.src1).unwrap_i64();
+                            set!(
+                                inst.dst,
+                                InterpreterValue::i64(a.wrapping_sub(inst.imm64 as i64))
+                            );
+                        }
+                        Opcode::I64Mul => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_mul(b)));
+                        }
+                        Opcode::I64DivS => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_div(b)));
+                        }
+                        Opcode::I64DivU => {
+                            let (a, b) = (
+                                get!(inst.src1).unwrap_i64() as u64,
+                                get!(inst.src2).unwrap_i64() as u64,
+                            );
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_div(b) as i64));
+                        }
+                        Opcode::I64RemS => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_rem(b)));
+                        }
+
+                        Opcode::I64RemU => {
+                            let (a, b) = (
+                                get!(inst.src1).unwrap_i64() as u64,
+                                get!(inst.src2).unwrap_i64() as u64,
+                            );
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_rem(b) as i64));
+                        }
+                        Opcode::I64And => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a & b));
+                        }
+                        Opcode::I64AndImm => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_add(b.unwarp_i64())
+                            InterpreterValue::i64(get!(inst.src1).unwrap_i64() & inst.imm64 as i64)
+                        ),
+                        Opcode::I64Or => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a | b));
+                        }
+                        Opcode::I64OrImm => set!(
+                            inst.dst,
+                            InterpreterValue::i64(get!(inst.src1).unwrap_i64() | inst.imm64 as i64)
+                        ),
+                        Opcode::I64Xor => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a ^ b));
+                        }
+                        Opcode::I64XorImm => set!(
+                            inst.dst,
+                            InterpreterValue::i64(get!(inst.src1).unwrap_i64() ^ inst.imm64 as i64)
+                        ),
+                        Opcode::I64Shl => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_shl(b as u32)));
+                        }
+                        Opcode::I64ShlImm => set!(
+                            inst.dst,
+                            InterpreterValue::i64(
+                                get!(inst.src1).unwrap_i64().wrapping_shl(inst.imm64 as u32)
                             )
                         ),
-                        Opcode::I64AddImm => bin_imm!(
+                        Opcode::I64ShrS => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_shr(b as u32)));
+                        }
+                        Opcode::I64ShrSImm => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm64 as i64,
-                            |a: InterpreterValue, b: i64| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_add(b)
+                            InterpreterValue::i64(
+                                get!(inst.src1).unwrap_i64().wrapping_shr(inst.imm64 as u32)
                             )
                         ),
-                        Opcode::I64Sub => bin!(
+                        Opcode::I64ShrU => {
+                            let (a, b) = (
+                                get!(inst.src1).unwrap_i64() as u64,
+                                get!(inst.src2).unwrap_i64() as u32,
+                            );
+                            set!(inst.dst, InterpreterValue::i64(a.wrapping_shr(b) as i64));
+                        }
+                        Opcode::I64ShrUImm => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_sub(b.unwarp_i64())
+                            InterpreterValue::i64(
+                                (get!(inst.src1).unwrap_i64() as u64)
+                                    .wrapping_shr(inst.imm64 as u32)
+                                    as i64
                             )
                         ),
-                        Opcode::I64SubImm => bin_imm!(
+                        Opcode::I64RotL => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.rotate_left(b as u32)));
+                        }
+                        Opcode::I64RotR => {
+                            let (a, b) =
+                                (get!(inst.src1).unwrap_i64(), get!(inst.src2).unwrap_i64());
+                            set!(inst.dst, InterpreterValue::i64(a.rotate_right(b as u32)));
+                        }
+                        Opcode::I64Clz => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm64 as i64,
-                            |a: InterpreterValue, b: i64| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_sub(b)
+                            InterpreterValue::i64(
+                                get!(inst.src1).unwrap_i64().leading_zeros() as i64
                             )
                         ),
-                        Opcode::I64Mul => bin!(
+                        Opcode::I64Ctz => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_mul(b.unwarp_i64())
+                            InterpreterValue::i64(
+                                get!(inst.src1).unwrap_i64().trailing_zeros() as i64
                             )
                         ),
-                        Opcode::I64DivS => bin!(
+                        Opcode::I64Popcnt => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_div(b.unwarp_i64())
+                            InterpreterValue::i64(get!(inst.src1).unwrap_i64().count_ones() as i64)
+                        ),
+                        Opcode::I64Eqz => set!(
+                            inst.dst,
+                            InterpreterValue::bool(get!(inst.src1).unwrap_i64() == 0)
+                        ),
+                        Opcode::I64Eq => set!(
+                            inst.dst,
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i64() == get!(inst.src2).unwrap_i64()
                             )
                         ),
-                        Opcode::I64DivU => bin!(
+                        Opcode::I64Ne => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                (a.unwarp_i64() as u64).wrapping_div(b.unwarp_i64() as u64) as i64
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i64() != get!(inst.src2).unwrap_i64()
                             )
                         ),
-                        Opcode::I64RemS => bin!(
+                        Opcode::I64LtS => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_rem(b.unwarp_i64())
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i64() < get!(inst.src2).unwrap_i64()
                             )
                         ),
-                        Opcode::I64RemU => bin!(
+                        Opcode::I64LtU => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                (a.unwarp_i64() as u64).wrapping_rem(b.unwarp_i64() as u64) as i64
+                            InterpreterValue::bool(
+                                (get!(inst.src1).unwrap_i64() as u64)
+                                    < (get!(inst.src2).unwrap_i64() as u64)
                             )
                         ),
-                        Opcode::I64And => bin!(
+                        Opcode::I64LeS => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64() & b.unwarp_i64()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i64() <= get!(inst.src2).unwrap_i64()
                             )
                         ),
-                        Opcode::I64AndImm => bin_imm!(
+                        Opcode::I64LeU => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm64 as i64,
-                            |a: InterpreterValue, b: i64| InterpreterValue::i64(a.unwarp_i64() & b)
-                        ),
-                        Opcode::I64Or => bin!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64() | b.unwarp_i64()
+                            InterpreterValue::bool(
+                                (get!(inst.src1).unwrap_i64() as u64)
+                                    <= (get!(inst.src2).unwrap_i64() as u64)
                             )
                         ),
-                        Opcode::I64OrImm => bin_imm!(
+                        Opcode::I64GtS => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm64 as i64,
-                            |a: InterpreterValue, b: i64| InterpreterValue::i64(a.unwarp_i64() | b)
-                        ),
-                        Opcode::I64Xor => bin!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64() ^ b.unwarp_i64()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i64() > get!(inst.src2).unwrap_i64()
                             )
                         ),
-                        Opcode::I64XorImm => bin_imm!(
+                        Opcode::I64GtU => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm64 as i64,
-                            |a: InterpreterValue, b: i64| InterpreterValue::i64(a.unwarp_i64() ^ b)
-                        ),
-                        Opcode::I64Shl => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_shl(b.unwarp_i64() as u32)
+                            InterpreterValue::bool(
+                                (get!(inst.src1).unwrap_i64() as u64)
+                                    > (get!(inst.src2).unwrap_i64() as u64)
                             )
                         ),
-                        Opcode::I64ShlImm => shift_imm!(
+                        Opcode::I64GeS => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.imm64 as u32,
-                            |a: InterpreterValue, b: u32| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_shl(b)
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_i64() >= get!(inst.src2).unwrap_i64()
                             )
                         ),
-                        Opcode::I64ShrS => shift!(
+                        Opcode::I64GeU => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_shr(b.unwarp_i64() as u32)
+                            InterpreterValue::bool(
+                                (get!(inst.src1).unwrap_i64() as u64)
+                                    >= (get!(inst.src2).unwrap_i64() as u64)
                             )
-                        ),
-                        Opcode::I64ShrSImm => shift_imm!(
-                            inst.dst,
-                            inst.src1,
-                            inst.imm64 as u32,
-                            |a: InterpreterValue, b: u32| InterpreterValue::i64(
-                                a.unwarp_i64().wrapping_shr(b)
-                            )
-                        ),
-                        Opcode::I64ShrU => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                (a.unwarp_i64() as u64).wrapping_shr(b.unwarp_i64() as u32) as i64
-                            )
-                        ),
-                        Opcode::I64ShrUImm => shift_imm!(
-                            inst.dst,
-                            inst.src1,
-                            inst.imm64 as u32,
-                            |a: InterpreterValue, b: u32| InterpreterValue::i64(
-                                (a.unwarp_i64() as u64).wrapping_shr(b) as i64
-                            )
-                        ),
-                        Opcode::I64RotL => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().rotate_left(b.unwarp_i64() as u32)
-                            )
-                        ),
-                        Opcode::I64RotR => shift!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::i64(
-                                a.unwarp_i64().rotate_right(b.unwarp_i64() as u32)
-                            )
-                        ),
-                        Opcode::I64Clz => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::i64(a.unwarp_i64().leading_zeros() as i64)
-                        }),
-                        Opcode::I64Ctz => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::i64(a.unwarp_i64().trailing_zeros() as i64)
-                        }),
-                        Opcode::I64Popcnt => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::i64(a.unwarp_i64().count_ones() as i64)
-                        }),
-                        Opcode::I64Eqz => cmpz!(inst.dst, inst.src1, unwarp_i64),
-                        Opcode::I64Eq => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i64()
-                                == b.unwarp_i64()
-                        ),
-                        Opcode::I64Ne => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i64()
-                                != b.unwarp_i64()
-                        ),
-                        Opcode::I64LtS => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i64()
-                                < b.unwarp_i64()
-                        ),
-                        Opcode::I64LtU => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| (a.unwarp_i64() as u64)
-                                < (b.unwarp_i64() as u64)
-                        ),
-                        Opcode::I64LeS => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i64()
-                                <= b.unwarp_i64()
-                        ),
-                        Opcode::I64LeU => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| (a.unwarp_i64() as u64)
-                                <= (b.unwarp_i64() as u64)
-                        ),
-                        Opcode::I64GtS => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i64()
-                                > b.unwarp_i64()
-                        ),
-                        Opcode::I64GtU => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| (a.unwarp_i64() as u64)
-                                > (b.unwarp_i64() as u64)
-                        ),
-                        Opcode::I64GeS => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_i64()
-                                >= b.unwarp_i64()
-                        ),
-                        Opcode::I64GeU => cmp!(
-                            inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| (a.unwarp_i64() as u64)
-                                >= (b.unwarp_i64() as u64)
                         ),
 
                         // === F32 Operations ===
-                        Opcode::F32Add => bin!(
+                        Opcode::F32Add => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f32(
-                                a.unwarp_f32() + b.unwarp_f32()
+                            InterpreterValue::f32(
+                                get!(inst.src1).unwrap_f32() + get!(inst.src2).unwrap_f32()
                             )
                         ),
-                        Opcode::F32Sub => bin!(
+                        Opcode::F32Sub => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f32(
-                                a.unwarp_f32() - b.unwarp_f32()
+                            InterpreterValue::f32(
+                                get!(inst.src1).unwrap_f32() - get!(inst.src2).unwrap_f32()
                             )
                         ),
-                        Opcode::F32Mul => bin!(
+                        Opcode::F32Mul => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f32(
-                                a.unwarp_f32() * b.unwarp_f32()
+                            InterpreterValue::f32(
+                                get!(inst.src1).unwrap_f32() * get!(inst.src2).unwrap_f32()
                             )
                         ),
-                        Opcode::F32Div => bin!(
+                        Opcode::F32Div => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f32(
-                                a.unwarp_f32() / b.unwarp_f32()
+                            InterpreterValue::f32(
+                                get!(inst.src1).unwrap_f32() / get!(inst.src2).unwrap_f32()
                             )
                         ),
-                        Opcode::F32Abs => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f32(a.unwarp_f32().abs())
-                        }),
-                        Opcode::F32Neg => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f32(-a.unwarp_f32())
-                        }),
-                        Opcode::F32Sqrt => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f32(a.unwarp_f32().sqrt())
-                        }),
-                        Opcode::F32Ceil => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f32(a.unwarp_f32().ceil())
-                        }),
-                        Opcode::F32Floor => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f32(a.unwarp_f32().floor())
-                        }),
-                        Opcode::F32Trunc => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f32(a.unwarp_f32().trunc())
-                        }),
-                        Opcode::F32Nearest => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f32(a.unwarp_f32().round_ties_even())
-                        }),
-                        Opcode::F32Min => bin!(
+                        Opcode::F32Abs => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f32(
-                                a.unwarp_f32().min(b.unwarp_f32())
+                            InterpreterValue::f32(get!(inst.src1).unwrap_f32().abs())
+                        ),
+                        Opcode::F32Neg => set!(
+                            inst.dst,
+                            InterpreterValue::f32(-get!(inst.src1).unwrap_f32())
+                        ),
+                        Opcode::F32Sqrt => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_f32().sqrt())
+                        ),
+                        Opcode::F32Ceil => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_f32().ceil())
+                        ),
+                        Opcode::F32Floor => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_f32().floor())
+                        ),
+                        Opcode::F32Trunc => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_f32().trunc())
+                        ),
+                        Opcode::F32Nearest => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_f32().round_ties_even())
+                        ),
+                        Opcode::F32Min => set!(
+                            inst.dst,
+                            InterpreterValue::f32(
+                                get!(inst.src1)
+                                    .unwrap_f32()
+                                    .min(get!(inst.src2).unwrap_f32())
                             )
                         ),
-                        Opcode::F32Max => bin!(
+                        Opcode::F32Max => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f32(
-                                a.unwarp_f32().max(b.unwarp_f32())
+                            InterpreterValue::f32(
+                                get!(inst.src1)
+                                    .unwrap_f32()
+                                    .max(get!(inst.src2).unwrap_f32())
                             )
                         ),
-                        Opcode::F32CopySign => bin!(
+                        Opcode::F32CopySign => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f32(
-                                a.unwarp_f32().copysign(b.unwarp_f32())
+                            InterpreterValue::f32(
+                                get!(inst.src1)
+                                    .unwrap_f32()
+                                    .copysign(get!(inst.src2).unwrap_f32())
                             )
                         ),
-                        Opcode::F32Eq => cmp!(
+                        Opcode::F32Eq => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f32()
-                                == b.unwarp_f32()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f32() == get!(inst.src2).unwrap_f32()
+                            )
                         ),
-                        Opcode::F32Ne => cmp!(
+                        Opcode::F32Ne => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f32()
-                                != b.unwarp_f32()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f32() != get!(inst.src2).unwrap_f32()
+                            )
                         ),
-                        Opcode::F32Lt => cmp!(
+                        Opcode::F32Lt => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f32()
-                                < b.unwarp_f32()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f32() < get!(inst.src2).unwrap_f32()
+                            )
                         ),
-                        Opcode::F32Le => cmp!(
+                        Opcode::F32Le => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f32()
-                                <= b.unwarp_f32()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f32() <= get!(inst.src2).unwrap_f32()
+                            )
                         ),
-                        Opcode::F32Gt => cmp!(
+                        Opcode::F32Gt => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f32()
-                                > b.unwarp_f32()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f32() > get!(inst.src2).unwrap_f32()
+                            )
                         ),
-                        Opcode::F32Ge => cmp!(
+                        Opcode::F32Ge => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f32()
-                                >= b.unwarp_f32()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f32() >= get!(inst.src2).unwrap_f32()
+                            )
                         ),
 
                         // === F64 Operations ===
-                        Opcode::F64Add => bin!(
+                        Opcode::F64Add => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f64(
-                                a.unwarp_f64() + b.unwarp_f64()
+                            InterpreterValue::f64(
+                                get!(inst.src1).unwrap_f64() + get!(inst.src2).unwrap_f64()
                             )
                         ),
-                        Opcode::F64Sub => bin!(
+                        Opcode::F64Sub => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f64(
-                                a.unwarp_f64() - b.unwarp_f64()
+                            InterpreterValue::f64(
+                                get!(inst.src1).unwrap_f64() - get!(inst.src2).unwrap_f64()
                             )
                         ),
-                        Opcode::F64Mul => bin!(
+                        Opcode::F64Mul => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f64(
-                                a.unwarp_f64() * b.unwarp_f64()
+                            InterpreterValue::f64(
+                                get!(inst.src1).unwrap_f64() * get!(inst.src2).unwrap_f64()
                             )
                         ),
-                        Opcode::F64Div => bin!(
+                        Opcode::F64Div => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f64(
-                                a.unwarp_f64() / b.unwarp_f64()
+                            InterpreterValue::f64(
+                                get!(inst.src1).unwrap_f64() / get!(inst.src2).unwrap_f64()
                             )
                         ),
-                        Opcode::F64Abs => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f64(a.unwarp_f64().abs())
-                        }),
-                        Opcode::F64Neg => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f64(-a.unwarp_f64())
-                        }),
-                        Opcode::F64Sqrt => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f64(a.unwarp_f64().sqrt())
-                        }),
-                        Opcode::F64Ceil => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f64(a.unwarp_f64().ceil())
-                        }),
-                        Opcode::F64Floor => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f64(a.unwarp_f64().floor())
-                        }),
-                        Opcode::F64Trunc => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f64(a.unwarp_f64().trunc())
-                        }),
-                        Opcode::F64Nearest => unary!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::f64(a.unwarp_f64().round_ties_even())
-                        }),
-                        Opcode::F64Min => bin!(
+                        Opcode::F64Abs => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f64(
-                                a.unwarp_f64().min(b.unwarp_f64())
+                            InterpreterValue::f64(get!(inst.src1).unwrap_f64().abs())
+                        ),
+                        Opcode::F64Neg => set!(
+                            inst.dst,
+                            InterpreterValue::f64(-get!(inst.src1).unwrap_f64())
+                        ),
+                        Opcode::F64Sqrt => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_f64().sqrt())
+                        ),
+                        Opcode::F64Ceil => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_f64().ceil())
+                        ),
+                        Opcode::F64Floor => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_f64().floor())
+                        ),
+                        Opcode::F64Trunc => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_f64().trunc())
+                        ),
+                        Opcode::F64Nearest => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_f64().round_ties_even())
+                        ),
+                        Opcode::F64Min => set!(
+                            inst.dst,
+                            InterpreterValue::f64(
+                                get!(inst.src1)
+                                    .unwrap_f64()
+                                    .min(get!(inst.src2).unwrap_f64())
                             )
                         ),
-                        Opcode::F64Max => bin!(
+                        Opcode::F64Max => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f64(
-                                a.unwarp_f64().max(b.unwarp_f64())
+                            InterpreterValue::f64(
+                                get!(inst.src1)
+                                    .unwrap_f64()
+                                    .max(get!(inst.src2).unwrap_f64())
                             )
                         ),
-                        Opcode::F64CopySign => bin!(
+                        Opcode::F64CopySign => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| InterpreterValue::f64(
-                                a.unwarp_f64().copysign(b.unwarp_f64())
+                            InterpreterValue::f64(
+                                get!(inst.src1)
+                                    .unwrap_f64()
+                                    .copysign(get!(inst.src2).unwrap_f64())
                             )
                         ),
-                        Opcode::F64Eq => cmp!(
+                        Opcode::F64Eq => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f64()
-                                == b.unwarp_f64()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f64() == get!(inst.src2).unwrap_f64()
+                            )
                         ),
-                        Opcode::F64Ne => cmp!(
+                        Opcode::F64Ne => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f64()
-                                != b.unwarp_f64()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f64() != get!(inst.src2).unwrap_f64()
+                            )
                         ),
-                        Opcode::F64Lt => cmp!(
+                        Opcode::F64Lt => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f64()
-                                < b.unwarp_f64()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f64() < get!(inst.src2).unwrap_f64()
+                            )
                         ),
-                        Opcode::F64Le => cmp!(
+                        Opcode::F64Le => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f64()
-                                <= b.unwarp_f64()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f64() <= get!(inst.src2).unwrap_f64()
+                            )
                         ),
-                        Opcode::F64Gt => cmp!(
+                        Opcode::F64Gt => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f64()
-                                > b.unwarp_f64()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f64() > get!(inst.src2).unwrap_f64()
+                            )
                         ),
-                        Opcode::F64Ge => cmp!(
+                        Opcode::F64Ge => set!(
                             inst.dst,
-                            inst.src1,
-                            inst.src2,
-                            |a: InterpreterValue, b: InterpreterValue| a.unwarp_f64()
-                                >= b.unwarp_f64()
+                            InterpreterValue::bool(
+                                get!(inst.src1).unwrap_f64() >= get!(inst.src2).unwrap_f64()
+                            )
                         ),
 
                         // === Conversions ===
-                        Opcode::I32TruncF32S => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::i32(a.unwarp_f32() as i32)
-                            })
+                        Opcode::ExtendS => {
+                            let val = get!(inst.src1).unwrap_i64();
+                            let (from_ty, to_ty) = inst.conv_types();
+                            let res = match from_ty {
+                                ScalarType::I8 => val as i8 as i64,
+                                ScalarType::I16 => val as i16 as i64,
+                                ScalarType::I32 => val as i32 as i64,
+                                _ => panic!("Unsupported ExtendS from_ty: {:?}", from_ty),
+                            };
+                            set!(
+                                inst.dst,
+                                if to_ty == ScalarType::I32 {
+                                    InterpreterValue::i32(res as i32)
+                                } else {
+                                    InterpreterValue::i64(res)
+                                }
+                            );
                         }
-                        Opcode::I32TruncF32U => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::i32(a.unwarp_f32() as u32 as i32)
-                            })
+                        Opcode::ExtendU => {
+                            let val = get!(inst.src1).unwrap_i64();
+                            let (from_ty, to_ty) = inst.conv_types();
+                            let res = match from_ty {
+                                ScalarType::I8 => (val as u8) as u64 as i64,
+                                ScalarType::I16 => (val as u16) as u64 as i64,
+                                ScalarType::I32 => (val as u32) as u64 as i64,
+                                _ => panic!("Unsupported ExtendU from_ty: {:?}", from_ty),
+                            };
+                            set!(
+                                inst.dst,
+                                if to_ty == ScalarType::I32 {
+                                    InterpreterValue::i32(res as i32)
+                                } else {
+                                    InterpreterValue::i64(res)
+                                }
+                            );
                         }
-                        Opcode::I32TruncF64S => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::i32(a.unwarp_f64() as i32)
-                            })
-                        }
-                        Opcode::I32TruncF64U => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::i32(a.unwarp_f64() as u32 as i32)
-                            })
-                        }
-                        Opcode::I64TruncF32S => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::i64(a.unwarp_f32() as i64)
-                            })
-                        }
-                        Opcode::I64TruncF32U => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::i64(a.unwarp_f32() as u64 as i64)
-                            })
-                        }
-                        Opcode::I64TruncF64S => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::i64(a.unwarp_f64() as i64)
-                            })
-                        }
-                        Opcode::I64TruncF64U => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::i64(a.unwarp_f64() as u64 as i64)
-                            })
-                        }
+                        Opcode::Wrap => set!(
+                            inst.dst,
+                            InterpreterValue::i32(get!(inst.src1).unwrap_i64() as i32)
+                        ),
+
+                        Opcode::I32TruncF32S => set!(
+                            inst.dst,
+                            InterpreterValue::i32(get!(inst.src1).unwrap_f32() as i32)
+                        ),
+                        Opcode::I32TruncF32U => set!(
+                            inst.dst,
+                            InterpreterValue::i32(get!(inst.src1).unwrap_f32() as u32 as i32)
+                        ),
+                        Opcode::I32TruncF64S => set!(
+                            inst.dst,
+                            InterpreterValue::i32(get!(inst.src1).unwrap_f64() as i32)
+                        ),
+                        Opcode::I32TruncF64U => set!(
+                            inst.dst,
+                            InterpreterValue::i32(get!(inst.src1).unwrap_f64() as u32 as i32)
+                        ),
+                        Opcode::I64TruncF32S => set!(
+                            inst.dst,
+                            InterpreterValue::i64(get!(inst.src1).unwrap_f32() as i64)
+                        ),
+                        Opcode::I64TruncF32U => set!(
+                            inst.dst,
+                            InterpreterValue::i64(get!(inst.src1).unwrap_f32() as u64 as i64)
+                        ),
+                        Opcode::I64TruncF64S => set!(
+                            inst.dst,
+                            InterpreterValue::i64(get!(inst.src1).unwrap_f64() as i64)
+                        ),
+                        Opcode::I64TruncF64U => set!(
+                            inst.dst,
+                            InterpreterValue::i64(get!(inst.src1).unwrap_f64() as u64 as i64)
+                        ),
+
+                        Opcode::F32DemoteF64 => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_f64() as f32)
+                        ),
+                        Opcode::F64PromoteF32 => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_f32() as f64)
+                        ),
+                        Opcode::Bitcast => set!(inst.dst, get!(inst.src1)),
+
                         Opcode::I32TruncSatF32S => {
-                            let val = get!(inst.src1).unwarp_f32();
+                            let val = get!(inst.src1).unwrap_f32();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i32(if val.is_nan() { 0 } else { val as i32 })
                             );
                         }
                         Opcode::I32TruncSatF32U => {
-                            let val = get!(inst.src1).unwarp_f32();
+                            let val = get!(inst.src1).unwrap_f32();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i32(if val.is_nan() || val < 0.0 {
@@ -1104,14 +976,14 @@ impl Interpreter {
                             );
                         }
                         Opcode::I32TruncSatF64S => {
-                            let val = get!(inst.src1).unwarp_f64();
+                            let val = get!(inst.src1).unwrap_f64();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i32(if val.is_nan() { 0 } else { val as i32 })
                             );
                         }
                         Opcode::I32TruncSatF64U => {
-                            let val = get!(inst.src1).unwarp_f64();
+                            let val = get!(inst.src1).unwrap_f64();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i32(if val.is_nan() || val < 0.0 {
@@ -1122,14 +994,14 @@ impl Interpreter {
                             );
                         }
                         Opcode::I64TruncSatF32S => {
-                            let val = get!(inst.src1).unwarp_f32();
+                            let val = get!(inst.src1).unwrap_f32();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i64(if val.is_nan() { 0 } else { val as i64 })
                             );
                         }
                         Opcode::I64TruncSatF32U => {
-                            let val = get!(inst.src1).unwarp_f32();
+                            let val = get!(inst.src1).unwrap_f32();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i64(if val.is_nan() || val < 0.0 {
@@ -1140,14 +1012,14 @@ impl Interpreter {
                             );
                         }
                         Opcode::I64TruncSatF64S => {
-                            let val = get!(inst.src1).unwarp_f64();
+                            let val = get!(inst.src1).unwrap_f64();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i64(if val.is_nan() { 0 } else { val as i64 })
                             );
                         }
                         Opcode::I64TruncSatF64U => {
-                            let val = get!(inst.src1).unwarp_f64();
+                            let val = get!(inst.src1).unwrap_f64();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i64(if val.is_nan() || val < 0.0 {
@@ -1157,84 +1029,38 @@ impl Interpreter {
                                 } as i64)
                             );
                         }
-                        Opcode::F32ConvertI32S => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f32(a.unwarp_i32() as f32)
-                            })
-                        }
-                        Opcode::F32ConvertI32U => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f32(a.unwarp_i32() as u32 as f32)
-                            })
-                        }
-                        Opcode::F32ConvertI64S => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f32(a.unwarp_i64() as f32)
-                            })
-                        }
-                        Opcode::F32ConvertI64U => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f32(a.unwarp_i64() as u64 as f32)
-                            })
-                        }
-                        Opcode::F64ConvertI32S => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f64(a.unwarp_i32() as f64)
-                            })
-                        }
-                        Opcode::F64ConvertI32U => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f64(a.unwarp_i32() as u32 as f64)
-                            })
-                        }
-                        Opcode::F64ConvertI64S => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f64(a.unwarp_i64() as f64)
-                            })
-                        }
-                        Opcode::F64ConvertI64U => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f64(a.unwarp_i64() as u64 as f64)
-                            })
-                        }
-                        Opcode::F32DemoteF64 => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f32(a.unwarp_f64() as f32)
-                            })
-                        }
-                        Opcode::F64PromoteF32 => {
-                            conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                                InterpreterValue::f64(a.unwarp_f32() as f64)
-                            })
-                        }
-                        Opcode::Wrap => conv!(inst.dst, inst.src1, |a: InterpreterValue| {
-                            InterpreterValue::i32(a.unwarp_i64() as i32)
-                        }),
-                        Opcode::Bitcast => mov!(inst.dst, inst.src1),
-                        Opcode::ExtendS => {
-                            let val = get!(inst.src1).unwarp_i64();
-                            set!(
-                                inst.dst,
-                                InterpreterValue::i64(match inst.src2 as u8 {
-                                    EXTEND_TYPE_I8 => val as i8 as i64,
-                                    EXTEND_TYPE_I16 => val as i16 as i64,
-                                    EXTEND_TYPE_I32 => val as i32 as i64,
-                                    _ => unreachable!(),
-                                })
-                            );
-                        }
-                        Opcode::ExtendU => {
-                            let val = get!(inst.src1).unwarp_i64();
-                            set!(
-                                inst.dst,
-                                InterpreterValue::i64(match inst.src2 as u8 {
-                                    EXTEND_TYPE_I8 => (val as u8) as u64,
-                                    EXTEND_TYPE_I16 => (val as u16) as u64,
-                                    EXTEND_TYPE_I32 => (val as u32) as u64,
-                                    _ => unreachable!(),
-                                } as i64)
-                            );
-                        }
+                        Opcode::F32ConvertI32S => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_i32() as f32)
+                        ),
+                        Opcode::F32ConvertI32U => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_i32() as u32 as f32)
+                        ),
+                        Opcode::F32ConvertI64S => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_i64() as f32)
+                        ),
+                        Opcode::F32ConvertI64U => set!(
+                            inst.dst,
+                            InterpreterValue::f32(get!(inst.src1).unwrap_i64() as u64 as f32)
+                        ),
+                        Opcode::F64ConvertI32S => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_i32() as f64)
+                        ),
+                        Opcode::F64ConvertI32U => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_i32() as u32 as f64)
+                        ),
+                        Opcode::F64ConvertI64S => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_i64() as f64)
+                        ),
+                        Opcode::F64ConvertI64U => set!(
+                            inst.dst,
+                            InterpreterValue::f64(get!(inst.src1).unwrap_i64() as u64 as f64)
+                        ),
 
                         // === Memory Access ===
                         Opcode::I32Load => load!(inst.dst, inst.src1, inst.imm32(), i32, |v| {
@@ -1256,22 +1082,22 @@ impl Interpreter {
                             InterpreterValue::f64(v)
                         }),
                         Opcode::I32Store => {
-                            store!(inst.src1, inst.src2, inst.imm32(), unwarp_i32, i32)
+                            store!(inst.src1, inst.src2, inst.imm32(), unwrap_i32, i32)
                         }
                         Opcode::I64Store => {
-                            store!(inst.src1, inst.src2, inst.imm32(), unwarp_i64, i64)
+                            store!(inst.src1, inst.src2, inst.imm32(), unwrap_i64, i64)
                         }
                         Opcode::I8Store => {
-                            store!(inst.src1, inst.src2, inst.imm32(), unwarp_i64, u8)
+                            store!(inst.src1, inst.src2, inst.imm32(), unwrap_i64, u8)
                         }
                         Opcode::I16Store => {
-                            store!(inst.src1, inst.src2, inst.imm32(), unwarp_i64, u16)
+                            store!(inst.src1, inst.src2, inst.imm32(), unwrap_i64, u16)
                         }
                         Opcode::F32Store => {
-                            store!(inst.src1, inst.src2, inst.imm32(), unwarp_f32, f32)
+                            store!(inst.src1, inst.src2, inst.imm32(), unwrap_f32, f32)
                         }
                         Opcode::F64Store => {
-                            store!(inst.src1, inst.src2, inst.imm32(), unwarp_f64, f64)
+                            store!(inst.src1, inst.src2, inst.imm32(), unwrap_f64, f64)
                         }
 
                         // === Stack Operations ===
@@ -1285,28 +1111,25 @@ impl Interpreter {
                         Opcode::StackLoad => {
                             let addr = stack_base + inst.imm32() as usize;
                             let ptr = self.stack_memory.as_ptr().add(addr);
+                            let ty = inst.stack_type();
                             set!(
                                 inst.dst,
-                                match inst.src2 as u8 {
-                                    STACK_TYPE_I8 => InterpreterValue::i32(
-                                        (ptr as *const i8).read_unaligned() as i32,
+                                match ty {
+                                    ScalarType::I8 => InterpreterValue::i32(
+                                        (ptr as *const i8).read_unaligned() as i32
                                     ),
-                                    STACK_TYPE_I16 => InterpreterValue::i32(
-                                        (ptr as *const i16).read_unaligned() as i32,
+                                    ScalarType::I16 => InterpreterValue::i32(
+                                        (ptr as *const i16).read_unaligned() as i32
                                     ),
-                                    STACK_TYPE_I32 => {
-                                        InterpreterValue::i32((ptr as *const i32).read_unaligned())
-                                    }
-                                    STACK_TYPE_I64 => {
-                                        InterpreterValue::i64((ptr as *const i64).read_unaligned())
-                                    }
-                                    STACK_TYPE_F32 => {
-                                        InterpreterValue::f32((ptr as *const f32).read_unaligned())
-                                    }
-                                    STACK_TYPE_F64 => {
-                                        InterpreterValue::f64((ptr as *const f64).read_unaligned())
-                                    }
-                                    _ => panic!("Unknown type {} in StackLoad", inst.src2),
+                                    ScalarType::I32 =>
+                                        InterpreterValue::i32((ptr as *const i32).read_unaligned()),
+                                    ScalarType::I64 | ScalarType::Ptr =>
+                                        InterpreterValue::i64((ptr as *const i64).read_unaligned()),
+                                    ScalarType::F32 =>
+                                        InterpreterValue::f32((ptr as *const f32).read_unaligned()),
+                                    ScalarType::F64 =>
+                                        InterpreterValue::f64((ptr as *const f64).read_unaligned()),
+                                    _ => panic!("Unknown type {:?} in StackLoad", ty),
                                 }
                             );
                         }
@@ -1314,26 +1137,27 @@ impl Interpreter {
                             let addr = stack_base + inst.imm32() as usize;
                             let ptr = self.stack_memory.as_mut_ptr().add(addr);
                             let val = get!(inst.src1);
-                            match inst.src2 as u8 {
-                                STACK_TYPE_I8 => {
-                                    (ptr as *mut i8).write_unaligned(val.unwarp_i32() as i8)
+                            let ty = inst.stack_type();
+                            match ty {
+                                ScalarType::I8 => {
+                                    (ptr as *mut i8).write_unaligned(val.unwrap_i32() as i8)
                                 }
-                                STACK_TYPE_I16 => {
-                                    (ptr as *mut i16).write_unaligned(val.unwarp_i32() as i16)
+                                ScalarType::I16 => {
+                                    (ptr as *mut i16).write_unaligned(val.unwrap_i32() as i16)
                                 }
-                                STACK_TYPE_I32 => {
-                                    (ptr as *mut i32).write_unaligned(val.unwarp_i32())
+                                ScalarType::I32 => {
+                                    (ptr as *mut i32).write_unaligned(val.unwrap_i32())
                                 }
-                                STACK_TYPE_I64 => {
-                                    (ptr as *mut i64).write_unaligned(val.unwarp_i64())
+                                ScalarType::I64 | ScalarType::Ptr => {
+                                    (ptr as *mut i64).write_unaligned(val.unwrap_i64())
                                 }
-                                STACK_TYPE_F32 => {
-                                    (ptr as *mut f32).write_unaligned(val.unwarp_f32())
+                                ScalarType::F32 => {
+                                    (ptr as *mut f32).write_unaligned(val.unwrap_f32())
                                 }
-                                STACK_TYPE_F64 => {
-                                    (ptr as *mut f64).write_unaligned(val.unwarp_f64())
+                                ScalarType::F64 => {
+                                    (ptr as *mut f64).write_unaligned(val.unwrap_f64())
                                 }
-                                _ => panic!("Unknown type {} in StackStore", inst.src2),
+                                _ => panic!("Unknown type {:?} in StackStore", ty),
                             }
                         }
 
@@ -1345,23 +1169,23 @@ impl Interpreter {
                             pc = target.pc as usize;
                         }
                         Opcode::Br => {
-                            let cond = get!(inst.dst).unwarp_bool();
-                            let target_idx = if cond { inst.imm32() } else { inst.aux() };
+                            let cond = get!(inst.dst).unwrap_bool();
+                            let target_idx = inst.br_target(cond);
                             let target = &func.data_section.jump_targets[target_idx as usize];
                             execute_moves!(target);
                             pc = target.pc as usize;
                         }
                         Opcode::BrTable => {
-                            let idx = get!(inst.dst).unwarp_i32();
-                            let num = inst.aux() as usize;
+                            let idx = get!(inst.dst).unwrap_i32();
+                            let num = inst.br_table_num_targets() as usize;
                             let target_idx = if idx >= 0 && (idx as usize) < num {
                                 idx as usize
                             } else {
                                 num - 1
                             };
 
-                            let target =
-                                &func.data_section.jump_targets[inst.imm32() as usize + target_idx];
+                            let target = &func.data_section.jump_targets
+                                [inst.br_table_base_idx() as usize + target_idx];
                             execute_moves!(target);
                             pc = target.pc as usize;
                         }
@@ -1415,29 +1239,24 @@ impl Interpreter {
                                 read_call_data!(func.data_section, inst.aux() as usize);
                             let f_id = veloc_ir::FuncId::from_u32(inst.imm32());
 
-                            match program.import_links.get(&(mid, f_id)) {
-                                Some(crate::host::ImportTarget::Module(m, f)) => {
-                                    prepare_call!(
-                                        *m,
-                                        *f,
-                                        dst_start,
-                                        rets as usize,
-                                        self.args_buffer
-                                    );
+                            match program.modules[mid].links[f_id.index()] {
+                                crate::host::ImportTarget::Module(m, f) => {
+                                    prepare_call!(m, f, dst_start, rets as usize, self.args_buffer);
                                 }
-                                Some(crate::host::ImportTarget::Host(h_id)) => {
-                                    let res = program.host_functions_list[*h_id]
-                                        .call(&mut self.args_buffer);
+                                crate::host::ImportTarget::Host(h_id) => {
+                                    let args = self.args_buffer.len();
+                                    program.host_functions_list[h_id]
+                                        .call(&mut self.args_buffer, args);
                                     values_ptr = self.value_stack.as_mut_ptr();
-                                    if rets > 0 {
-                                        let dst = self.dst_regs_buffer[dst_start];
+                                    for i in 0..rets as usize {
+                                        let dst = self.dst_regs_buffer[dst_start + i];
                                         if dst != 0 {
-                                            *reg!(dst) = res;
+                                            *reg!(dst) = self.args_buffer[i];
                                         }
                                     }
                                     self.dst_regs_buffer.truncate(dst_start);
                                 }
-                                None => {
+                                crate::host::ImportTarget::None => {
                                     prepare_call!(
                                         mid,
                                         f_id,
@@ -1453,28 +1272,31 @@ impl Interpreter {
                                 read_call_data!(func.data_section, inst.imm32() as usize);
                             let ptr = get!(inst.src1).0 as usize;
 
-                            if let Some((m, f)) = program.decode_interpreter_ptr(ptr) {
-                                prepare_call!(m, f, dst_start, rets as usize, self.args_buffer);
-                            } else if let Some(h) = program.decode_host_ptr(ptr) {
-                                let res =
-                                    program.host_functions_list[h].call(&mut self.args_buffer);
-                                values_ptr = self.value_stack.as_mut_ptr();
-                                if rets > 0 {
-                                    let dst = self.dst_regs_buffer[dst_start];
-                                    if dst != 0 {
-                                        *reg!(dst) = res;
-                                    }
+                            match program.decode_ptr(ptr) {
+                                Some(crate::host::ImportTarget::Module(m, f)) => {
+                                    prepare_call!(m, f, dst_start, rets as usize, self.args_buffer);
                                 }
-                                self.dst_regs_buffer.truncate(dst_start);
-                            } else {
-                                panic!("Invalid function pointer: {:x}", ptr);
+                                Some(crate::host::ImportTarget::Host(h_id)) => {
+                                    let args = self.args_buffer.len();
+                                    program.host_functions_list[h_id]
+                                        .call(&mut self.args_buffer, args);
+                                    values_ptr = self.value_stack.as_mut_ptr();
+                                    for i in 0..rets as usize {
+                                        let dst = self.dst_regs_buffer[dst_start + i];
+                                        if dst != 0 {
+                                            *reg!(dst) = self.args_buffer[i];
+                                        }
+                                    }
+                                    self.dst_regs_buffer.truncate(dst_start);
+                                }
+                                _ => panic!("Invalid function pointer: {:x}", ptr),
                             }
                         }
                         Opcode::PtrIndex => {
-                            let ptr = get!(inst.src1).unwarp_i64();
-                            let idx = get!(inst.src2).unwarp_i64();
-                            let s = inst.imm32() as i64;
-                            let o = inst.aux() as i64;
+                            let ptr = get!(inst.src1).unwrap_i64();
+                            let idx = get!(inst.src2).unwrap_i64();
+                            let s = inst.ptr_index_scale();
+                            let o = inst.ptr_index_offset();
                             set!(
                                 inst.dst,
                                 InterpreterValue::i64(
@@ -1483,17 +1305,17 @@ impl Interpreter {
                             );
                         }
                         Opcode::Select => {
-                            let e = (inst.imm32() & 0xFFFF) as u16;
+                            let e = inst.select_false_reg();
                             set!(
                                 inst.dst,
-                                if get!(inst.src1).unwarp_bool() {
+                                if get!(inst.src1).unwrap_bool() {
                                     get!(inst.src2)
                                 } else {
                                     get!(e)
                                 }
                             );
                         }
-                        Opcode::RegMove => mov!(inst.dst, inst.src1),
+                        Opcode::RegMove => set!(inst.dst, get!(inst.src1)),
                         Opcode::GlobalAddr => {
                             todo!("GlobalAddr in interpreter");
                         }
@@ -1510,7 +1332,7 @@ impl Interpreter {
                             }
                             self.dst_regs_buffer.truncate(dst_start);
                         }
-                        Opcode::Unreachable => return Err(RunError::Unreachable),
+                        Opcode::Unreachable => return Err(crate::error::Error::Unreachable),
                     }
                 }
             }
@@ -1520,8 +1342,8 @@ impl Interpreter {
 
 fn execute_intrinsic(id: u16, args: &[InterpreterValue]) -> InterpreterValue {
     use veloc_ir::intrinsic_ids::*;
-    let f = |i: usize| args[i].unwarp_f32();
-    let d = |i: usize| args[i].unwarp_f64();
+    let f = |i: usize| args[i].unwrap_f32();
+    let d = |i: usize| args[i].unwrap_f64();
 
     match Intrinsic::from_u16(id) {
         SIN_F32 => InterpreterValue::f32(libm::sinf(f(0))),

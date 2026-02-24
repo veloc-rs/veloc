@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use hashbrown::HashMap;
 use std::mem;
-use veloc::interpreter::{Interpreter, InterpreterValue, Program, VirtualMemory};
+use veloc::interpreter::{ImportTarget, Interpreter, InterpreterValue, Program, VirtualMemory};
 use veloc::ir::FuncId;
 use wasmparser::{ExternalKind, ValType};
 
@@ -637,13 +637,7 @@ impl VMInstance {
                     ];
                     for name in runtime_names {
                         if let Some(fid) = ir.get_func_id(name) {
-                            if let Some(host_func) = store.program.host_functions.get(name) {
-                                let host_id = store
-                                    .program
-                                    .host_functions_list
-                                    .iter()
-                                    .position(|f| alloc::sync::Arc::ptr_eq(&f.0, &host_func.0))
-                                    .expect("Host function not found in list");
+                            if let Some(&host_id) = store.program.host_functions.get(name) {
                                 store.program.link_host(mid, fid, host_id);
                             }
                         }
@@ -763,12 +757,16 @@ impl VMInstance {
                 if let Some(mid) = interp_module_id {
                     let fid = meta.functions[i].func_id;
                     let ptr_val = func_ref.native_call as usize;
-                    if let Some((target_mid, target_fid)) =
-                        store.program.decode_interpreter_ptr(ptr_val)
-                    {
-                        store.program.link_import(mid, fid, target_mid, target_fid);
-                    } else if let Some(host_id) = store.program.decode_host_ptr(ptr_val) {
-                        store.program.link_host(mid, fid, host_id);
+                    if let Some(target) = store.program.decode_ptr(ptr_val) {
+                        match target {
+                            ImportTarget::Module(target_mid, target_fid) => {
+                                store.program.link_import(mid, fid, target_mid, target_fid);
+                            }
+                            ImportTarget::Host(host_id) => {
+                                store.program.link_host(mid, fid, host_id);
+                            }
+                            ImportTarget::None => {}
+                        }
                     }
                 }
             }
@@ -996,13 +994,12 @@ impl Instance {
                 // For interpreter mode, the func_ref.native_call is a tagged pointer
                 // that encodes (ModuleId, FuncId). We should decode it to get the
                 // actual FuncId in the target module.
-                let (_, actual_func_id) = store
-                    .program
-                    .decode_interpreter_ptr(func_ref.native_call as usize)
-                    .unwrap_or((
-                        veloc::interpreter::ModuleId(0),
-                        meta.functions[func_idx].func_id,
-                    ));
+                let target = store.program.decode_ptr(func_ref.native_call as usize);
+                let actual_func_id = if let Some(ImportTarget::Module(_, fid)) = target {
+                    fid
+                } else {
+                    meta.functions[func_idx].func_id
+                };
 
                 TypedFuncKind::Interpreter {
                     target_func_id: actual_func_id,

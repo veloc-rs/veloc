@@ -42,8 +42,8 @@ pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 // Re-export text format module
 pub use text::{FuncParser, ModuleParser, ParseError, format as text_format};
 pub use types::{
-    Block, BlockCall, FuncId, JumpTable, ScalarType, SigId, Signature, StackSlot, Type, Value,
-    ValueDef, ValueList, Variable, VectorKind,
+    Block, BlockCall, FuncId, JumpTable, ModuleId, ScalarType, SigId, Signature, StackSlot, Type,
+    Value, ValueDef, ValueList, Variable, VectorKind,
 };
 
 // Internal-only re-exports for the backend and passes

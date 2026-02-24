@@ -378,6 +378,11 @@ pub struct JumpTableData {
 pub struct StackSlot(pub u32);
 entity_impl!(StackSlot, "ss");
 
+/// A reference to a module identifier.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModuleId(pub u32);
+entity_impl!(ModuleId, "module");
+
 /// A reference to a function identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FuncId(pub u32);

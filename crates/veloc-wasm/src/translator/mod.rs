@@ -370,9 +370,7 @@ impl<'a> WasmTranslator<'a> {
                     v
                 }
             }
-            VelocType::BOOL => {
-                self.as_cond(v)
-            }
+            VelocType::BOOL => self.as_cond(v),
             VelocType::PTR => {
                 if v_ty == VelocType::I64 {
                     self.builder.ins().int_to_ptr(v)
