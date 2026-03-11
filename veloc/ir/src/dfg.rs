@@ -113,6 +113,11 @@ impl DataFlowGraph {
         self.inst_results[inst].as_slice(&self.value_list_pool)
     }
 
+    /// 获取指令的第一个结果值（如果存在）
+    pub fn first_result(&self, inst: Inst) -> Option<Value> {
+        self.inst_results(inst).first().copied()
+    }
+
     pub fn make_ptr_imm(&mut self, offset: i32, scale: u32) -> PtrIndexImmId {
         let key = PtrIndexImm { offset, scale };
 

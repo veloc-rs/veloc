@@ -10,6 +10,31 @@ use crate::bytecode::{
 };
 use core::fmt::{Display, Formatter, Result, Write};
 use cranelift_entity::EntityRef;
+use veloc_ir::ScalarType;
+
+/// Format a scalar type (encoded as u8) to human-readable name
+fn scalar_ty_name(ty: u8) -> &'static str {
+    match ty {
+        0 => "i8",
+        1 => "i16",
+        2 => "i32",
+        3 => "i64",
+        4 => "f32",
+        5 => "f64",
+        8 => "bool",
+        9 => "ptr",
+        10 => "void",
+        11 => "evl",
+        _ => "?",
+    }
+}
+
+/// Format Extend type (encoded as (to_ty << 8) | from_ty)
+fn fmt_extend_ty(f: &mut dyn Write, ty: u16) -> Result {
+    let from_ty = (ty & 0xFF) as u8;
+    let to_ty = (ty >> 8) as u8;
+    write!(f, "{}->{}", scalar_ty_name(from_ty), scalar_ty_name(to_ty))
+}
 
 /// Safely convert u8 to Opcode
 fn opcode_from_u8(opcode: u8) -> Option<Opcode> {
@@ -257,7 +282,6 @@ impl<'a> InstPrinter<'a> {
             | Opcode::I64Popcnt
             | Opcode::I32Eqz
             | Opcode::I64Eqz
-            | Opcode::Wrap
             | Opcode::I32TruncF32S
             | Opcode::I32TruncF32U
             | Opcode::I32TruncF64S
@@ -297,7 +321,18 @@ impl<'a> InstPrinter<'a> {
                 fmt_reg(f, inst.dst)?;
                 write!(f, ", ")?;
                 fmt_reg(f, inst.src1)?;
-                write!(f, ", ty={}", inst.src2)
+                write!(f, ", ty=")?;
+                fmt_extend_ty(f, inst.src2)
+            }
+
+            // Wrap operation
+            Opcode::Wrap => {
+                write!(f, " ")?;
+                fmt_reg(f, inst.dst)?;
+                write!(f, ", ")?;
+                fmt_reg(f, inst.src1)?;
+                write!(f, ", ty=")?;
+                fmt_extend_ty(f, inst.src2)
             }
 
             // Memory operations
@@ -343,13 +378,15 @@ impl<'a> InstPrinter<'a> {
             Opcode::StackLoad => {
                 write!(f, " ")?;
                 fmt_reg(f, inst.dst)?;
-                write!(f, ", ty={}, offset={}", inst.src2, inst.imm32())
+                write!(f, ", ty={}", scalar_ty_name(inst.src2 as u8))?;
+                write!(f, ", offset={}", inst.imm32())
             }
 
             Opcode::StackStore => {
                 write!(f, " ")?;
                 fmt_reg(f, inst.src1)?;
-                write!(f, ", ty={}, offset={}", inst.src2, inst.imm32())
+                write!(f, ", ty={}", scalar_ty_name(inst.src2 as u8))?;
+                write!(f, ", offset={}", inst.imm32())
             }
 
             // Pointer indexing
@@ -537,16 +574,26 @@ impl<'a> FuncPrinter<'a> {
 
         // Print params
         if !self.func.param_indices.is_empty() {
-            write!(f, "  params: ")?;
-            fmt_reg_list(f, &self.func.data_section, 0, self.func.param_indices.len())?;
-            writeln!(f)?;
+            write!(f, "  params: [")?;
+            for (i, &reg) in self.func.param_indices.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                fmt_reg(f, reg)?;
+            }
+            writeln!(f, "]")?;
         }
 
         // Print returns
         if !self.func.ret_indices.is_empty() {
-            write!(f, "  returns: ")?;
-            fmt_reg_list(f, &self.func.data_section, 0, self.func.ret_indices.len())?;
-            writeln!(f)?;
+            write!(f, "  returns: [")?;
+            for (i, &reg) in self.func.ret_indices.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                fmt_reg(f, reg)?;
+            }
+            writeln!(f, "]")?;
         }
 
         writeln!(f)?;

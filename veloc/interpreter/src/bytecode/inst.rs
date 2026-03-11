@@ -79,7 +79,7 @@ impl Instruction {
     /// Get offset for PtrIndex
     #[inline(always)]
     pub const fn ptr_index_offset(&self) -> i64 {
-        self.aux() as i64
+        self.aux() as i32 as i64
     }
 
     /// Get false register for Select
@@ -293,7 +293,7 @@ define_opcodes! {
     // === Conversions ===
     ExtendS { dst: u16, src: u16 => src1, ty: u16 => src2 };
     ExtendU { dst: u16, src: u16 => src1, ty: u16 => src2 };
-    Wrap { dst: u16, src: u16 => src1 };
+    Wrap { dst: u16, src: u16 => src1, ty: u16 => src2 };
 
     I32TruncF32S { dst: u16, src: u16 => src1 };
     I32TruncF32U { dst: u16, src: u16 => src1 };

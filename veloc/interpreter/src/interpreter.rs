@@ -79,16 +79,56 @@ impl Interpreter {
         self.execute(program, mem)
     }
 
+    #[inline(always)]
+    fn do_call(
+        &mut self,
+        program: &Program,
+        target_mid: ModuleId,
+        target_fid: veloc_ir::FuncId,
+        dst_regs_start: usize,
+        dst_regs_count: usize,
+        frame: &mut StackFrame,
+    ) {
+        if program.modules[target_mid].compiled[target_fid].is_none() {
+            panic!(
+                "Calling uncompiled function: mid={:?}, fid={:?}",
+                target_mid, target_fid
+            );
+        }
+        let next_func = program.get_compiled_func(target_mid, target_fid);
+        self.frames.push(StackFrame {
+            mid: frame.mid,
+            func: frame.func.clone(),
+            pc: frame.pc,
+            base: frame.base,
+            stack_base: frame.stack_base,
+            dst_regs_start,
+            dst_regs_count,
+        });
+        frame.mid = target_mid;
+        frame.func = next_func;
+        frame.pc = 0;
+        frame.base = self.value_stack.len();
+        self.value_stack.resize(
+            frame.base + frame.func.register_count,
+            InterpreterValue::none(),
+        );
+        frame.stack_base = self.stack_memory.len();
+        let total_size: usize = frame.func.stack_slots_sizes.iter().sum();
+        self.stack_memory.resize(frame.stack_base + total_size, 0);
+        for (i, &new_idx) in frame.func.param_indices.iter().enumerate() {
+            if i < self.args_buffer.len() {
+                let val = self.args_buffer[i];
+                self.value_stack[frame.base + new_idx as usize] = val;
+            }
+        }
+    }
+
     fn execute<M>(&mut self, program: &Program, mem: &M) -> Result<Vec<InterpreterValue>>
     where
         M: VirtualMemory,
     {
-        let frame = self.frames.pop().unwrap();
-        let mut pc = frame.pc;
-        let mut base = frame.base;
-        let mut stack_base = frame.stack_base;
-        let mut func = frame.func.clone();
-        let mut mid = frame.mid;
+        let mut frame = self.frames.pop().unwrap();
 
         'main_loop: loop {
             let mut values_ptr = self.value_stack.as_mut_ptr();
@@ -96,12 +136,12 @@ impl Interpreter {
             // === Core Register Access Helpers ===
             macro_rules! reg {
                 ($r:expr) => {
-                    &mut *values_ptr.add(base + $r as usize)
+                    &mut *values_ptr.add(frame.base + $r as usize)
                 };
             }
             macro_rules! get {
                 ($r:expr) => {
-                    *values_ptr.add(base + $r as usize)
+                    *values_ptr.add(frame.base + $r as usize)
                 };
             }
             macro_rules! set {
@@ -130,81 +170,35 @@ impl Interpreter {
                 }};
             }
 
-            // Execute register moves from data section
-            macro_rules! execute_moves {
-                ($target:expr) => {{
-                    let num_moves = $target.num_moves as usize;
-                    let moves_offset = $target.moves_offset as usize;
-                    for i in 0..num_moves {
-                        let dst = func.data_section.u16_data[moves_offset + i * 2];
-                        let src = func.data_section.u16_data[moves_offset + i * 2 + 1];
-                        set!(dst, get!(src));
-                    }
-                }};
-            }
-
-            // === Call Preparation Macro ===
-            macro_rules! prepare_call {
-                ($target_mid:expr, $target_fid:expr, $dst_regs_start:expr, $dst_regs_count:expr, $args:expr) => {{
-                    if program.modules[$target_mid].compiled[$target_fid].is_none() {
-                        panic!(
-                            "Calling uncompiled function: mid={:?}, fid={:?}",
-                            $target_mid, $target_fid
-                        );
-                    }
-                    let next_func = program.get_compiled_func($target_mid, $target_fid);
-                    let saved_pc = pc;
-                    self.frames.push(StackFrame {
-                        mid,
-                        func: func.clone(),
-                        pc: saved_pc,
-                        base,
-                        stack_base,
-                        dst_regs_start: $dst_regs_start,
-                        dst_regs_count: $dst_regs_count,
-                    });
-                    mid = $target_mid;
-                    func = next_func;
-                    pc = 0;
-                    base = self.value_stack.len();
-                    self.value_stack
-                        .resize(base + func.register_count, InterpreterValue::none());
-                    stack_base = self.stack_memory.len();
-                    let total_size: usize = func.stack_slots_sizes.iter().sum();
-                    self.stack_memory.resize(stack_base + total_size, 0);
-                    for (i, &new_idx) in func.param_indices.iter().enumerate() {
-                        if i < $args.len() {
-                            self.value_stack[base + new_idx as usize] = $args[i];
-                        }
-                    }
-                    continue 'main_loop;
-                }};
-            }
-
-            // === Read call data from data section ===
-            // Layout: [ret_count: u16, arg_count: u16, ret_regs..., arg_regs...]
-            macro_rules! read_call_data {
-                ($data_sec:expr, $off:expr) => {{
-                    let rets = $data_sec.u16_data[$off];
-                    let args = $data_sec.u16_data[$off + 1];
-                    let dst_start = self.dst_regs_buffer.len();
-                    for i in 0..rets {
-                        self.dst_regs_buffer
-                            .push($data_sec.u16_data[$off + 2 + i as usize]);
-                    }
-                    self.args_buffer.clear();
-                    for i in 0..args {
-                        let reg = $data_sec.u16_data[$off + 2 + rets as usize + i as usize];
-                        self.args_buffer.push(get!(reg));
-                    }
-                    (rets, args, dst_start)
-                }};
-            }
-
             loop {
                 unsafe {
-                    let inst = func.code.get_unchecked(pc);
-                    pc += 1;
+                    let mut execute_moves = |target: &crate::bytecode::JumpTarget| {
+                        let num_moves = target.num_moves as usize;
+                        for i in 0..num_moves {
+                            let (dst, src) = frame.func.data_section.jump_move_pair(target, i);
+                            set!(dst, get!(src));
+                        }
+                    };
+
+                    let mut read_call_data =
+                        |data_sec: &crate::bytecode::DataSection, off: usize| {
+                            let rets = data_sec.call_ret_count(off);
+                            let args = data_sec.call_arg_count(off);
+                            let dst_start = self.dst_regs_buffer.len();
+                            for i in 0..rets {
+                                self.dst_regs_buffer
+                                    .push(data_sec.call_ret_reg(off, i as usize));
+                            }
+                            self.args_buffer.clear();
+                            for i in 0..args {
+                                let reg = data_sec.call_arg_reg(off, i as usize);
+                                self.args_buffer.push(get!(reg));
+                            }
+                            (rets, dst_start)
+                        };
+
+                    let inst = frame.func.code.get_unchecked(frame.pc);
+                    frame.pc += 1;
                     let opcode: Opcode = core::mem::transmute(inst.opcode);
 
                     match opcode {
@@ -645,18 +639,18 @@ impl Interpreter {
                         ),
 
                         // === F32 Operations ===
-                        Opcode::F32Add => set!(
-                            inst.dst,
-                            InterpreterValue::f32(
-                                get!(inst.src1).unwrap_f32() + get!(inst.src2).unwrap_f32()
-                            )
-                        ),
-                        Opcode::F32Sub => set!(
-                            inst.dst,
-                            InterpreterValue::f32(
-                                get!(inst.src1).unwrap_f32() - get!(inst.src2).unwrap_f32()
-                            )
-                        ),
+                        Opcode::F32Add => {
+                            let lhs = get!(inst.src1).unwrap_f32();
+                            let rhs = get!(inst.src2).unwrap_f32();
+                            let res = lhs + rhs;
+                            set!(inst.dst, InterpreterValue::f32(res));
+                        }
+                        Opcode::F32Sub => {
+                            let lhs = get!(inst.src1).unwrap_f32();
+                            let rhs = get!(inst.src2).unwrap_f32();
+                            let res = lhs - rhs;
+                            set!(inst.dst, InterpreterValue::f32(res));
+                        }
                         Opcode::F32Mul => set!(
                             inst.dst,
                             InterpreterValue::f32(
@@ -909,10 +903,28 @@ impl Interpreter {
                                 }
                             );
                         }
-                        Opcode::Wrap => set!(
-                            inst.dst,
-                            InterpreterValue::i32(get!(inst.src1).unwrap_i64() as i32)
-                        ),
+                        Opcode::Wrap => {
+                            let val = get!(inst.src1).unwrap_i64();
+                            let (from_ty, to_ty) = inst.conv_types();
+                            // Wrap performs truncation to the target type
+                            let res = match to_ty {
+                                ScalarType::I8 => (val as i64) as i8 as i64,
+                                ScalarType::I16 => (val as i64) as i16 as i64,
+                                ScalarType::I32 => (val as i64) as i32 as i64,
+                                _ => val, // No truncation for I64 or other types
+                            };
+                            set!(
+                                inst.dst,
+                                if to_ty == ScalarType::I32 {
+                                    InterpreterValue::i32(res as i32)
+                                } else if to_ty == ScalarType::I64 {
+                                    InterpreterValue::i64(res)
+                                } else {
+                                    // For I8/I16, we store as i64 but the value is already truncated
+                                    InterpreterValue::i64(res)
+                                }
+                            );
+                        }
 
                         Opcode::I32TruncF32S => set!(
                             inst.dst,
@@ -1105,11 +1117,11 @@ impl Interpreter {
                             let ptr = self
                                 .stack_memory
                                 .as_ptr()
-                                .add(stack_base + inst.imm32() as usize);
+                                .add(frame.stack_base + inst.imm32() as usize);
                             set!(inst.dst, InterpreterValue::i64(ptr as i64));
                         }
                         Opcode::StackLoad => {
-                            let addr = stack_base + inst.imm32() as usize;
+                            let addr = frame.stack_base + inst.imm32() as usize;
                             let ptr = self.stack_memory.as_ptr().add(addr);
                             let ty = inst.stack_type();
                             set!(
@@ -1134,7 +1146,7 @@ impl Interpreter {
                             );
                         }
                         Opcode::StackStore => {
-                            let addr = stack_base + inst.imm32() as usize;
+                            let addr = frame.stack_base + inst.imm32() as usize;
                             let ptr = self.stack_memory.as_mut_ptr().add(addr);
                             let val = get!(inst.src1);
                             let ty = inst.stack_type();
@@ -1162,18 +1174,19 @@ impl Interpreter {
                         }
 
                         // === Control Flow ===
-                        Opcode::Jump => pc = inst.imm32() as usize,
+                        Opcode::Jump => frame.pc = inst.imm32() as usize,
                         Opcode::JumpWithMoves => {
-                            let target = &func.data_section.jump_targets[inst.imm32() as usize];
-                            execute_moves!(target);
-                            pc = target.pc as usize;
+                            let target =
+                                &frame.func.data_section.jump_targets[inst.imm32() as usize];
+                            execute_moves(target);
+                            frame.pc = target.pc as usize;
                         }
                         Opcode::Br => {
                             let cond = get!(inst.dst).unwrap_bool();
                             let target_idx = inst.br_target(cond);
-                            let target = &func.data_section.jump_targets[target_idx as usize];
-                            execute_moves!(target);
-                            pc = target.pc as usize;
+                            let target = &frame.func.data_section.jump_targets[target_idx as usize];
+                            execute_moves(target);
+                            frame.pc = target.pc as usize;
                         }
                         Opcode::BrTable => {
                             let idx = get!(inst.dst).unwrap_i32();
@@ -1184,21 +1197,25 @@ impl Interpreter {
                                 num - 1
                             };
 
-                            let target = &func.data_section.jump_targets
+                            let target = &frame.func.data_section.jump_targets
                                 [inst.br_table_base_idx() as usize + target_idx];
-                            execute_moves!(target);
-                            pc = target.pc as usize;
+                            execute_moves(target);
+                            frame.pc = target.pc as usize;
                         }
                         Opcode::Return => {
                             let data_off = inst.imm32() as usize;
                             let num_vals = inst.aux() as usize;
-                            let cur_base = base;
-                            let cur_stack = stack_base;
+                            let cur_base = frame.base;
+                            let cur_stack = frame.stack_base;
+                            debug_assert_eq!(
+                                frame.func.data_section.return_count(data_off) as usize,
+                                num_vals
+                            );
 
                             if self.frames.is_empty() {
                                 let mut res = Vec::with_capacity(num_vals);
                                 for i in 0..num_vals {
-                                    res.push(get!(func.data_section.u16_data[data_off + 1 + i]));
+                                    res.push(get!(frame.func.data_section.return_reg(data_off, i)));
                                 }
                                 self.value_stack.truncate(cur_base);
                                 self.stack_memory.truncate(cur_stack);
@@ -1208,7 +1225,7 @@ impl Interpreter {
                             self.args_buffer.clear();
                             for i in 0..num_vals {
                                 self.args_buffer
-                                    .push(get!(func.data_section.u16_data[data_off + 1 + i]));
+                                    .push(get!(frame.func.data_section.return_reg(data_off, i)));
                             }
                             self.value_stack.truncate(cur_base);
                             self.stack_memory.truncate(cur_stack);
@@ -1216,32 +1233,39 @@ impl Interpreter {
                             let prev = self.frames.pop().unwrap();
                             let dst_start = prev.dst_regs_start;
                             let dst_count = prev.dst_regs_count;
-                            pc = prev.pc;
-                            base = prev.base;
-                            stack_base = prev.stack_base;
-                            func = prev.func.clone();
-                            mid = prev.mid;
+                            frame.pc = prev.pc;
+                            frame.base = prev.base;
+                            frame.stack_base = prev.stack_base;
+                            frame.func = prev.func;
+                            frame.mid = prev.mid;
                             values_ptr = self.value_stack.as_mut_ptr();
 
+                            debug_assert_eq!(dst_count, self.args_buffer.len());
                             for i in 0..dst_count {
-                                if i < self.args_buffer.len() {
-                                    let dst_reg = self.dst_regs_buffer[dst_start + i];
-                                    if dst_reg != 0 {
-                                        *reg!(dst_reg) = self.args_buffer[i];
-                                    }
+                                let dst_reg = self.dst_regs_buffer[dst_start + i];
+                                if dst_reg != 0 {
+                                    *reg!(dst_reg) = self.args_buffer[i];
                                 }
                             }
                             self.dst_regs_buffer.truncate(dst_start);
                             continue 'main_loop;
                         }
                         Opcode::Call => {
-                            let (rets, _args, dst_start) =
-                                read_call_data!(func.data_section, inst.aux() as usize);
+                            let (rets, dst_start) =
+                                read_call_data(&frame.func.data_section, inst.aux() as usize);
                             let f_id = veloc_ir::FuncId::from_u32(inst.imm32());
 
-                            match program.modules[mid].links[f_id] {
+                            match program.modules[frame.mid].links[f_id] {
                                 ImportTarget::Module(m, f) => {
-                                    prepare_call!(m, f, dst_start, rets as usize, self.args_buffer);
+                                    self.do_call(
+                                        program,
+                                        m,
+                                        f,
+                                        dst_start,
+                                        rets as usize,
+                                        &mut frame,
+                                    );
+                                    continue 'main_loop;
                                 }
                                 ImportTarget::Host(h_id) => {
                                     let args = self.args_buffer.len();
@@ -1257,24 +1281,34 @@ impl Interpreter {
                                     self.dst_regs_buffer.truncate(dst_start);
                                 }
                                 ImportTarget::None => {
-                                    prepare_call!(
-                                        mid,
+                                    self.do_call(
+                                        program,
+                                        frame.mid,
                                         f_id,
                                         dst_start,
                                         rets as usize,
-                                        self.args_buffer
-                                    )
+                                        &mut frame,
+                                    );
+                                    continue 'main_loop;
                                 }
                             }
                         }
                         Opcode::CallIndirect => {
-                            let (rets, _args, dst_start) =
-                                read_call_data!(func.data_section, inst.imm32() as usize);
+                            let (rets, dst_start) =
+                                read_call_data(&frame.func.data_section, inst.imm32() as usize);
                             let ptr = get!(inst.src1).0 as usize;
 
                             match program.decode_ptr(ptr) {
                                 Some(ImportTarget::Module(m, f)) => {
-                                    prepare_call!(m, f, dst_start, rets as usize, self.args_buffer);
+                                    self.do_call(
+                                        program,
+                                        m,
+                                        f,
+                                        dst_start,
+                                        rets as usize,
+                                        &mut frame,
+                                    );
+                                    continue 'main_loop;
                                 }
                                 Some(ImportTarget::Host(h_id)) => {
                                     let args = self.args_buffer.len();
@@ -1320,8 +1354,8 @@ impl Interpreter {
                             todo!("GlobalAddr in interpreter");
                         }
                         Opcode::CallIntrinsic => {
-                            let (rets, _args, dst_start) =
-                                read_call_data!(func.data_section, inst.imm32() as usize);
+                            let (rets, dst_start) =
+                                read_call_data(&frame.func.data_section, inst.imm32() as usize);
                             let res = execute_intrinsic(inst.src1, &self.args_buffer);
                             values_ptr = self.value_stack.as_mut_ptr();
                             if rets > 0 {

@@ -10,6 +10,7 @@ veloc-analyzer = { workspace = true }
 hashbrown = { workspace = true }
 cranelift-entity = { workspace = true }
 libm = "0.2"
+smallvec = { workspace = true }
 
 [features]
 default = ["std"]

@@ -22,6 +22,13 @@ impl Constant {
         }
     }
 
+    pub fn as_f32(&self) -> Option<f32> {
+        match self {
+            Constant::F32(v) => Some(*v),
+            _ => None,
+        }
+    }
+
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Constant::F32(v) => Some(*v as f64),

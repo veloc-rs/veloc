@@ -1532,6 +1532,7 @@ dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "libm",
+ "smallvec",
  "veloc-analyzer",
  "veloc-ir",
 ]

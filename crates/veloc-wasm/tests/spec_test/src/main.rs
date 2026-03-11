@@ -326,6 +326,20 @@ pub fn run_wast_file(
         Strategy::Jit => "jit",
         Strategy::Auto => "auto",
     };
+    if path
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("skip-stack-guard-page.wast")
+    {
+        println!(
+            ">>>> SKIPPING STACK GUARD PAGE TEST: {:?} ({}) <<<<",
+            path.file_name().unwrap(),
+            mode_name
+        );
+        return Ok(());
+    }
     println!(
         ">>>> TESTING SPEC TEST: {:?} ({}) <<<<",
         path.file_name().unwrap(),

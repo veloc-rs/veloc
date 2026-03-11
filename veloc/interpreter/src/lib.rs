@@ -1,3 +1,5 @@
+#![allow(dead_code, unused)]
+
 extern crate alloc;
 
 #[cfg(feature = "std")]
