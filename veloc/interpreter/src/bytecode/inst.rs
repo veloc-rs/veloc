@@ -4,8 +4,8 @@ use veloc_ir::ScalarType;
 /// Layout: opcode(1) + pad(1) + dst(2) + src1(2) + src2(2) + imm64(8) = 16 bytes
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Instruction {
-    /// Opcode (1 byte)
-    pub opcode: u8,
+    /// Opcode
+    pub opcode: Opcode,
     /// Destination register (2 bytes)
     pub dst: u16,
     /// First source register (2 bytes)
@@ -112,7 +112,7 @@ macro_rules! define_opcodes {
                 ) {
                     #[allow(unused_mut, unused_assignments)]
                     let mut inst = Instruction {
-                        opcode: Opcode::$name as u8,
+                        opcode: Opcode::$name,
                         dst: 0,
                         src1: 0,
                         src2: 0,

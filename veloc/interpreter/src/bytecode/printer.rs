@@ -36,18 +36,6 @@ fn fmt_extend_ty(f: &mut dyn Write, ty: u16) -> Result {
     write!(f, "{}->{}", scalar_ty_name(from_ty), scalar_ty_name(to_ty))
 }
 
-/// Safely convert u8 to Opcode
-fn opcode_from_u8(opcode: u8) -> Option<Opcode> {
-    // Opcode is #[repr(u8)] so we can safely transmute if the value is valid
-    // The number of opcodes is limited, so we check bounds
-    let max_opcode = Opcode::Unreachable as u8;
-    if opcode <= max_opcode {
-        Some(unsafe { core::mem::transmute::<u8, Opcode>(opcode) })
-    } else {
-        None
-    }
-}
-
 /// Formats a register reference
 fn fmt_reg(f: &mut dyn Write, reg: u16) -> Result {
     if reg == 0 {
@@ -106,17 +94,10 @@ impl<'a> InstPrinter<'a> {
 
     /// Format a single instruction
     pub fn fmt_inst(&self, f: &mut dyn Write, pc: usize, inst: &Instruction) -> Result {
-        let opcode = inst.opcode;
-        let op = if let Some(op) = opcode_from_u8(opcode) {
-            op
-        } else {
-            return write!(f, "  {:4}  unknown opcode 0x{:02x}", pc, opcode);
-        };
-
         // Write PC and opcode name
-        write!(f, "  {:4}  {:20}", pc, format!("{:?}", op).to_lowercase())?;
+        write!(f, "  {:4}  {:20}", pc, format!("{:?}", inst.opcode).to_lowercase())?;
 
-        match op {
+        match inst.opcode {
             // Constants
             Opcode::Iconst | Opcode::Fconst => {
                 write!(f, " ")?;

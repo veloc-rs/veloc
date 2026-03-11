@@ -199,9 +199,8 @@ impl Interpreter {
 
                     let inst = frame.func.code.get_unchecked(frame.pc);
                     frame.pc += 1;
-                    let opcode: Opcode = core::mem::transmute(inst.opcode);
 
-                    match opcode {
+                    match inst.opcode {
                         // === Constants ===
                         Opcode::Iconst => set!(inst.dst, InterpreterValue::i64(inst.imm64 as i64)),
                         Opcode::Fconst => set!(inst.dst, InterpreterValue(inst.imm64)),
