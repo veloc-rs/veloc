@@ -402,7 +402,9 @@ checksum = "55dd888a213fc57e957abf2aa305ee3e8a28dbe05687a251f33b637cd46b0070"
 
 [[package]]
 name = "elf_loader"
-version = "0.14.0"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26cc957ebfceff7e3d6e6dd7f39fc8a837d7f85b0c7ca6766f2983ab9fe2e62a"
 dependencies = [
  "bitflags",
  "cc",

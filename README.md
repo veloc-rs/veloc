@@ -93,7 +93,7 @@ cargo build --release
 cargo test
 
 # 运行 WebAssembly Spec 测试
-cargo run -p veloc-spec -- crates/veloc_wasm/tests/testsuite/
+cargo run -p veloc-spec -- crates/veloc-wasm/tests/testsuite/
 ```
 
 ### 使用示例
