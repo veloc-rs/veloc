@@ -1,4 +1,4 @@
-use crate::bytecode::{CompiledFunction, DecodedInstruction, Instruction};
+use crate::bytecode::{CompiledFunction, DecodedInstruction, Instruction, Reg};
 use crate::error::Result;
 use crate::runtime::{ImportTarget, Program};
 use crate::value::InterpreterValue;
@@ -15,7 +15,7 @@ pub struct Interpreter {
     stack_memory: Vec<u8>,
     frames: Vec<StackFrame>,
     args_buffer: Vec<InterpreterValue>,
-    dst_regs_buffer: Vec<u16>,
+    dst_regs_buffer: Vec<Reg>,
 }
 
 struct StackFrame {
@@ -62,7 +62,7 @@ impl Interpreter {
         // Initialize parameters
         for (i, &new_idx) in func.param_indices.iter().enumerate() {
             if i < args.len() {
-                self.value_stack[base + new_idx as usize] = args[i];
+                self.value_stack[base + new_idx.0 as usize] = args[i];
             }
         }
 
@@ -119,7 +119,7 @@ impl Interpreter {
         for (i, &new_idx) in frame.func.param_indices.iter().enumerate() {
             if i < self.args_buffer.len() {
                 let val = self.args_buffer[i];
-                self.value_stack[frame.base + new_idx as usize] = val;
+                self.value_stack[frame.base + new_idx.0 as usize] = val;
             }
         }
     }
@@ -136,12 +136,12 @@ impl Interpreter {
             // === Core Register Access Helpers ===
             macro_rules! reg {
                 ($r:expr) => {
-                    &mut *values_ptr.add(frame.base + $r as usize)
+                    &mut *values_ptr.add(frame.base + ($r).index() as usize)
                 };
             }
             macro_rules! get {
                 ($r:expr) => {
-                    *values_ptr.add(frame.base + $r as usize)
+                    *values_ptr.add(frame.base + ($r).index() as usize)
                 };
             }
             macro_rules! set {
@@ -1305,7 +1305,7 @@ impl Interpreter {
                             debug_assert_eq!(dst_count, self.args_buffer.len());
                             for i in 0..dst_count {
                                 let dst_reg = self.dst_regs_buffer[dst_start + i];
-                                if dst_reg != 0 {
+                                if dst_reg != Reg::NULL {
                                     *reg!(dst_reg) = self.args_buffer[i];
                                 }
                             }
@@ -1339,7 +1339,7 @@ impl Interpreter {
                                     values_ptr = self.value_stack.as_mut_ptr();
                                     for i in 0..rets as usize {
                                         let dst = self.dst_regs_buffer[dst_start + i];
-                                        if dst != 0 {
+                                        if dst != Reg::NULL {
                                             *reg!(dst) = self.args_buffer[i];
                                         }
                                     }
@@ -1386,7 +1386,7 @@ impl Interpreter {
                                     values_ptr = self.value_stack.as_mut_ptr();
                                     for i in 0..rets as usize {
                                         let dst = self.dst_regs_buffer[dst_start + i];
-                                        if dst != 0 {
+                                        if dst != Reg::NULL {
                                             *reg!(dst) = self.args_buffer[i];
                                         }
                                     }
@@ -1443,7 +1443,7 @@ impl Interpreter {
                             values_ptr = self.value_stack.as_mut_ptr();
                             if rets > 0 {
                                 let dst = self.dst_regs_buffer[dst_start];
-                                if dst != 0 {
+                                if dst != Reg::NULL {
                                     *reg!(dst) = res;
                                 }
                             }

@@ -6,7 +6,7 @@
 use crate::bytecode::{
     CompiledFunction,
     compile::{DataSection, JumpTarget},
-    inst::{DecodedInstruction, Instruction},
+    inst::{DecodedInstruction, Instruction, Reg},
 };
 use core::fmt::{Display, Formatter, Result, Write};
 use cranelift_entity::EntityRef;
@@ -36,15 +36,6 @@ fn fmt_extend_ty(f: &mut dyn Write, ty: u16) -> Result {
     write!(f, "{}->{}", scalar_ty_name(from_ty), scalar_ty_name(to_ty))
 }
 
-/// Formats a register reference
-fn fmt_reg(f: &mut dyn Write, reg: u16) -> Result {
-    if reg == 0 {
-        write!(f, "_")
-    } else {
-        write!(f, "r{}", reg)
-    }
-}
-
 /// Formats a register list from data section
 fn fmt_reg_list(
     f: &mut dyn Write,
@@ -58,7 +49,7 @@ fn fmt_reg_list(
             write!(f, ", ")?;
         }
         let reg = data_section.u16_data[offset + i];
-        fmt_reg(f, reg)?;
+        write!(f, "{}", Reg(reg))?;
     }
     write!(f, "]")
 }
@@ -110,24 +101,16 @@ impl<'a> InstPrinter<'a> {
         match inst {
             // Constants
             DecodedInstruction::Iconst { dst, imm64 } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", 0x{:016x}", imm64)
+                write!(f, " {}, 0x{:016x}", dst, imm64)
             }
             DecodedInstruction::Fconst { dst, imm64 } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", 0x{:016x}", imm64)
+                write!(f, " {}, 0x{:016x}", dst, imm64)
             }
             DecodedInstruction::Bconst { dst, val } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", {}", if val != 0 { "true" } else { "false" })
+                write!(f, " {}, {}", dst, if val != 0 { "true" } else { "false" })
             }
             DecodedInstruction::Vconst { dst, pool_id } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", pool[{}]", pool_id)
+                write!(f, " {}, pool[{}]", dst, pool_id)
             }
 
             // Binary operations (3 registers)
@@ -207,12 +190,7 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::F64Le { dst, src1, src2 }
             | DecodedInstruction::F64Gt { dst, src1, src2 }
             | DecodedInstruction::F64Ge { dst, src1, src2 } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src1)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src2)
+                write!(f, " {}, {}, {}", dst, src1, src2)
             }
 
             // Immediate binary operations
@@ -224,11 +202,7 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::I32ShlImm { dst, src1, imm }
             | DecodedInstruction::I32ShrSImm { dst, src1, imm }
             | DecodedInstruction::I32ShrUImm { dst, src1, imm } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src1)?;
-                write!(f, ", {}", imm as i32)
+                write!(f, " {}, {}, {}", dst, src1, imm as i32)
             }
 
             DecodedInstruction::I64AddImm { dst, src1, imm64 }
@@ -239,11 +213,7 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::I64ShlImm { dst, src1, imm64 }
             | DecodedInstruction::I64ShrSImm { dst, src1, imm64 }
             | DecodedInstruction::I64ShrUImm { dst, src1, imm64 } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src1)?;
-                write!(f, ", 0x{:016x}", imm64)
+                write!(f, " {}, {}, 0x{:016x}", dst, src1, imm64)
             }
 
             // Unary operations - Float
@@ -261,10 +231,7 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::F64Floor { dst, src1 }
             | DecodedInstruction::F64Trunc { dst, src1 }
             | DecodedInstruction::F64Nearest { dst, src1 } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src1)
+                write!(f, " {}, {}", dst, src1)
             }
             // Unary operations - Bitwise
             DecodedInstruction::I32Clz { dst, src }
@@ -273,18 +240,12 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::I64Clz { dst, src }
             | DecodedInstruction::I64Ctz { dst, src }
             | DecodedInstruction::I64Popcnt { dst, src } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src)
+                write!(f, " {}, {}", dst, src)
             }
             // Unary operations - Eqz
             DecodedInstruction::I32Eqz { dst, src_val }
             | DecodedInstruction::I64Eqz { dst, src_val } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src_val)
+                write!(f, " {}, {}", dst, src_val)
             }
             // Unary operations - Trunc
             DecodedInstruction::I32TruncF32S { dst, src }
@@ -303,10 +264,7 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::I64TruncSatF32U { dst, src }
             | DecodedInstruction::I64TruncSatF64S { dst, src }
             | DecodedInstruction::I64TruncSatF64U { dst, src } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src)
+                write!(f, " {}, {}", dst, src)
             }
             // Unary operations - Convert
             DecodedInstruction::F32ConvertI32S { dst, src }
@@ -320,30 +278,19 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::F32DemoteF64 { dst, src }
             | DecodedInstruction::F64PromoteF32 { dst, src }
             | DecodedInstruction::Bitcast { dst, src } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src)
+                write!(f, " {}, {}", dst, src)
             }
 
             // Extend operations
             DecodedInstruction::ExtendS { dst, src, ty }
             | DecodedInstruction::ExtendU { dst, src, ty } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src)?;
-                write!(f, ", ty=")?;
+                write!(f, " {}, {}, ", dst, src)?;
                 fmt_extend_ty(f, ty)
             }
 
             // Wrap operation
             DecodedInstruction::Wrap { dst, src, ty } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src)?;
-                write!(f, ", ty=")?;
+                write!(f, " {}, {}, ", dst, src)?;
                 fmt_extend_ty(f, ty)
             }
 
@@ -354,14 +301,11 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::F64Load { dst, ptr, offset }
             | DecodedInstruction::I8Load { dst, ptr, offset }
             | DecodedInstruction::I16Load { dst, ptr, offset } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", [")?;
-                fmt_reg(f, ptr)?;
                 if offset != 0 {
-                    write!(f, " + {}", offset)?;
+                    write!(f, " {}, [{} + {}]", dst, ptr, offset)
+                } else {
+                    write!(f, " {}, [{}]", dst, ptr)
                 }
-                write!(f, "]")
             }
 
             DecodedInstruction::I32Store { val, ptr, offset }
@@ -370,35 +314,36 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::F64Store { val, ptr, offset }
             | DecodedInstruction::I8Store { val, ptr, offset }
             | DecodedInstruction::I16Store { val, ptr, offset } => {
-                write!(f, " ")?;
-                fmt_reg(f, val)?;
-                write!(f, ", [")?;
-                fmt_reg(f, ptr)?;
                 if offset != 0 {
-                    write!(f, " + {}", offset)?;
+                    write!(f, " {}, [{} + {}]", val, ptr, offset)
+                } else {
+                    write!(f, " {}, [{}]", val, ptr)
                 }
-                write!(f, "]")
             }
 
             // Stack operations
             DecodedInstruction::StackAddr { dst, offset } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", offset={}", offset)
+                write!(f, " {}, offset={}", dst, offset)
             }
 
             DecodedInstruction::StackLoad { dst, ty, offset } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ty={}", scalar_ty_name(ty as u8))?;
-                write!(f, ", offset={}", offset)
+                write!(
+                    f,
+                    " {}, ty={}, offset={}",
+                    dst,
+                    scalar_ty_name(ty as u8),
+                    offset
+                )
             }
 
             DecodedInstruction::StackStore { val, ty, offset } => {
-                write!(f, " ")?;
-                fmt_reg(f, val)?;
-                write!(f, ", ty={}", scalar_ty_name(ty as u8))?;
-                write!(f, ", offset={}", offset)
+                write!(
+                    f,
+                    " {}, ty={}, offset={}",
+                    val,
+                    scalar_ty_name(ty as u8),
+                    offset
+                )
             }
 
             // Pointer indexing
@@ -409,13 +354,11 @@ impl<'a> InstPrinter<'a> {
                 scale,
                 offset,
             } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", [")?;
-                fmt_reg(f, ptr)?;
-                write!(f, " + ")?;
-                fmt_reg(f, index)?;
-                write!(f, " * {} + {}]", scale as i32, offset as i32)
+                write!(
+                    f,
+                    " {}, [{} + {} * {} + {}]",
+                    dst, ptr, index, scale as i32, offset as i32
+                )
             }
 
             // Control flow
@@ -437,9 +380,7 @@ impl<'a> InstPrinter<'a> {
                 then_idx,
                 else_idx,
             } => {
-                write!(f, " ")?;
-                fmt_reg(f, cond)?;
-                write!(f, " then={} else={}", then_idx, else_idx)
+                write!(f, " {} then={} else={}", cond, then_idx, else_idx)
             }
 
             DecodedInstruction::BrTable {
@@ -447,8 +388,7 @@ impl<'a> InstPrinter<'a> {
                 data_offset,
                 num_targets,
             } => {
-                write!(f, " ")?;
-                fmt_reg(f, idx_reg)?;
+                write!(f, " {}", idx_reg)?;
                 let idx = data_offset as usize;
                 let num = num_targets as usize;
                 for i in 0..num {
@@ -473,14 +413,7 @@ impl<'a> InstPrinter<'a> {
                 then_reg,
                 else_reg,
             } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, cond)?;
-                write!(f, ", ")?;
-                fmt_reg(f, then_reg)?;
-                write!(f, ", ")?;
-                fmt_reg(f, else_reg as u16)
+                write!(f, " {}, {}, {}, r{}", dst, cond, then_reg, else_reg)
             }
 
             DecodedInstruction::Return {
@@ -523,7 +456,7 @@ impl<'a> InstPrinter<'a> {
                 let num_rets = (counts >> 16) as usize;
                 let num_args = (counts & 0xFFFF) as usize;
                 write!(f, " ptr=")?;
-                fmt_reg(f, ptr)?;
+                write!(f, "{}", ptr)?;
                 write!(f, " rets=")?;
                 fmt_reg_list(f, self.data_section, data_offset as usize, num_rets)?;
                 write!(f, " args=")?;
@@ -555,16 +488,11 @@ impl<'a> InstPrinter<'a> {
             }
 
             DecodedInstruction::GlobalAddr { dst, global_idx } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", global[{}]", global_idx)
+                write!(f, " {}, global[{}]", dst, global_idx)
             }
 
             DecodedInstruction::RegMove { dst, src } => {
-                write!(f, " ")?;
-                fmt_reg(f, dst)?;
-                write!(f, ", ")?;
-                fmt_reg(f, src)
+                write!(f, " {}, {}", dst, src)
             }
 
             DecodedInstruction::Unreachable {} => Ok(()),
@@ -629,7 +557,7 @@ impl<'a> FuncPrinter<'a> {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                fmt_reg(f, reg)?;
+                write!(f, "{}", reg)?;
             }
             writeln!(f, "]")?;
         }
@@ -641,12 +569,10 @@ impl<'a> FuncPrinter<'a> {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                fmt_reg(f, reg)?;
+                write!(f, "{}", reg)?;
             }
             writeln!(f, "]")?;
         }
-
-        writeln!(f)?;
 
         // Print instructions
         let inst_printer = InstPrinter::new(&self.func.data_section);

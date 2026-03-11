@@ -1,4 +1,4 @@
-use crate::bytecode::inst::{Instruction, emit};
+use crate::bytecode::inst::{Instruction, Reg, emit};
 use cranelift_entity::SecondaryMap;
 use smallvec::{SmallVec, smallvec};
 use veloc_analyzer::{LiveInterval, UseDefAnalysis, analyze_liveness};
@@ -81,21 +81,27 @@ impl DataSection {
 
     /// Add return registers for Return instruction
     /// Returns the offset (in u16 words) where data starts
-    pub fn add_return_regs(&mut self, regs: &[u16]) -> u32 {
+    pub fn add_return_regs(&mut self, regs: &[Reg]) -> u32 {
         let offset = self.u16_data.len();
         self.u16_data.push(regs.len() as u16);
-        self.u16_data.extend_from_slice(regs);
+        for r in regs {
+            self.u16_data.push(r.0);
+        }
         offset as u32
     }
 
     /// Add call data (ret_regs + arg_regs) for Call/CallIndirect/CallIntrinsic
     /// Returns the offset (in u16 words) where data starts
-    pub fn add_call_data(&mut self, ret_regs: &[u16], arg_regs: &[u16]) -> u32 {
+    pub fn add_call_data(&mut self, ret_regs: &[Reg], arg_regs: &[Reg]) -> u32 {
         let offset = self.u16_data.len();
         self.u16_data.push(ret_regs.len() as u16);
         self.u16_data.push(arg_regs.len() as u16);
-        self.u16_data.extend_from_slice(ret_regs);
-        self.u16_data.extend_from_slice(arg_regs);
+        for r in ret_regs {
+            self.u16_data.push(r.0);
+        }
+        for r in arg_regs {
+            self.u16_data.push(r.0);
+        }
         offset as u32
     }
 
@@ -111,8 +117,8 @@ impl DataSection {
         self.u16_data[offset]
     }
 
-    pub fn return_reg(&self, offset: usize, index: usize) -> u16 {
-        self.u16_data[offset + 1 + index]
+    pub fn return_reg(&self, offset: usize, index: usize) -> Reg {
+        Reg(self.u16_data[offset + 1 + index])
     }
 
     pub fn call_ret_count(&self, offset: usize) -> u16 {
@@ -123,18 +129,18 @@ impl DataSection {
         self.u16_data[offset + 1]
     }
 
-    pub fn call_ret_reg(&self, offset: usize, index: usize) -> u16 {
-        self.u16_data[offset + 2 + index]
+    pub fn call_ret_reg(&self, offset: usize, index: usize) -> Reg {
+        Reg(self.u16_data[offset + 2 + index])
     }
 
-    pub fn call_arg_reg(&self, offset: usize, index: usize) -> u16 {
+    pub fn call_arg_reg(&self, offset: usize, index: usize) -> Reg {
         let ret_count = self.call_ret_count(offset) as usize;
-        self.u16_data[offset + 2 + ret_count + index]
+        Reg(self.u16_data[offset + 2 + ret_count + index])
     }
 
-    pub fn jump_move_pair(&self, target: &JumpTarget, index: usize) -> (u16, u16) {
+    pub fn jump_move_pair(&self, target: &JumpTarget, index: usize) -> (Reg, Reg) {
         let base = target.moves_offset as usize + index * 2;
-        (self.u16_data[base], self.u16_data[base + 1])
+        (Reg(self.u16_data[base]), Reg(self.u16_data[base + 1]))
     }
 }
 
@@ -145,20 +151,80 @@ pub struct CompiledFunction {
     /// Data section: u16_data for register lists, jump_targets for jump targets
     pub(crate) data_section: DataSection,
     pub(crate) stack_slots_sizes: Vec<usize>,
-    pub(crate) param_indices: Vec<u16>,
-    pub(crate) ret_indices: Vec<u16>, // Return value register indices (support multi-value)
+    pub(crate) param_indices: Vec<Reg>,
+    pub(crate) ret_indices: Vec<Reg>, // Return value register indices (support multi-value)
     pub(crate) register_count: usize,
     pub(crate) constant_pool: Vec<Vec<u8>>,
 }
 
 struct ValueMapper<'a> {
     dfg: &'a DataFlowGraph,
-    map: SecondaryMap<Value, u16>,
-    free_registers: Vec<u16>,
+    map: SecondaryMap<Value, Reg>,
+    free_registers: Vec<Reg>,
     next_register: u16,
     intervals: &'a SecondaryMap<Value, LiveInterval>,
     block_params: &'a std::collections::HashSet<Value>,
     fused_values: &'a std::collections::HashSet<Value>,
+}
+
+impl<'a> ValueMapper<'a> {
+    fn use_val(&self, val: Value) -> Reg {
+        let reg = self.map[val];
+        if reg != Reg::NULL {
+            return reg;
+        }
+
+        if self.fused_values.contains(&val) {
+            panic!("Value {:?} is fused as constant and has no register", val);
+        }
+        panic!("Value {:?} used before defined or mapping missing", val);
+    }
+
+    fn free_if_last_use(&mut self, val: Value, current_pc: u32) {
+        // Block params must keep stable registers across all incoming edges.
+        if self.block_params.contains(&val) {
+            return;
+        }
+
+        if let Some(range) = self.intervals.get(val) {
+            if current_pc >= range.end().saturating_sub(1) {
+                let reg = self.map[val];
+                if reg != Reg::NULL {
+                    self.map[val] = Reg::NULL;
+                    self.free_registers.push(reg);
+                }
+            }
+        }
+    }
+
+    fn alloc_val(&mut self, val: Value) -> Reg {
+        // Assert that we are not re-allocating a register for the same value
+        debug_assert_eq!(
+            self.map[val],
+            Reg::NULL,
+            "Value {:?} already has a register assigned",
+            val
+        );
+
+        let reg = self.free_registers.pop().unwrap_or_else(|| {
+            let r = Reg(self.next_register);
+            self.next_register += 1;
+            r
+        });
+
+        self.map[val] = reg;
+        reg
+    }
+
+    fn use_block_param(&mut self, param: Value) -> Reg {
+        if self.map[param] != Reg::NULL {
+            return self.map[param];
+        }
+
+        // All block parameters should have been pre-allocated in apply_rpo,
+        // but for forward jumps we might not have reached that block yet.
+        self.alloc_val(param)
+    }
 }
 
 impl<'a> ValueMapper<'a> {
@@ -178,63 +244,6 @@ impl<'a> ValueMapper<'a> {
             fused_values,
         }
     }
-
-    fn use_val(&self, val: Value) -> u16 {
-        let reg = self.map[val];
-        if reg != 0 {
-            return reg;
-        }
-
-        if self.fused_values.contains(&val) {
-            panic!("Value {:?} is fused as constant and has no register", val);
-        }
-        panic!("Value {:?} used before defined or mapping missing", val);
-    }
-
-    fn free_if_last_use(&mut self, val: Value, current_pc: u32) {
-        // Block params must keep stable registers across all incoming edges.
-        if self.block_params.contains(&val) {
-            return;
-        }
-
-        if let Some(range) = self.intervals.get(val) {
-            if current_pc >= range.end().saturating_sub(1) {
-                let reg = self.map[val];
-                if reg != 0 {
-                    self.map[val] = 0;
-                    self.free_registers.push(reg);
-                }
-            }
-        }
-    }
-
-    fn alloc_val(&mut self, val: Value) -> u16 {
-        // Assert that we are not re-allocating a register for the same value
-        debug_assert_eq!(
-            self.map[val], 0,
-            "Value {:?} already has a register assigned",
-            val
-        );
-
-        let reg = self.free_registers.pop().unwrap_or_else(|| {
-            let r = self.next_register;
-            self.next_register += 1;
-            r
-        });
-
-        self.map[val] = reg;
-        reg
-    }
-
-    fn use_block_param(&mut self, param: Value) -> u16 {
-        if self.map[param] != 0 {
-            return self.map[param];
-        }
-
-        // All block parameters should have been pre-allocated in apply_rpo,
-        // but for forward jumps we might not have reached that block yet.
-        self.alloc_val(param)
-    }
 }
 
 /// Try to emit inline bytecode for intrinsics that map directly to opcodes.
@@ -243,7 +252,7 @@ fn try_emit_inline_intrinsic(
     _code: &mut Vec<Instruction>,
     _dst: u16,
     _intrinsic: Intrinsic,
-    _args: &[u16],
+    _args: &[Reg],
 ) -> bool {
     // Currently no intrinsics are inlineable as bytecode.
     // Math intrinsics (sin, cos, pow, etc.) need runtime libm calls.
@@ -344,7 +353,7 @@ struct Compiler<'a> {
     block_to_pc: SecondaryMap<Block, u32>,
     jump_fixups: Vec<(usize, Block)>,
     data_fixups: Vec<(usize, Block)>,
-    param_indices: Vec<u16>,
+    param_indices: Vec<Reg>,
 }
 
 impl<'a> Compiler<'a> {
@@ -383,8 +392,8 @@ impl<'a> Compiler<'a> {
         } else {
             let offset = self.data_section.u16_data.len() as u32;
             for (dst, src) in &moves {
-                self.data_section.u16_data.push(*dst);
-                self.data_section.u16_data.push(*src);
+                self.data_section.u16_data.push(dst.0);
+                self.data_section.u16_data.push(src.0);
             }
             offset
         };
@@ -404,8 +413,8 @@ impl<'a> Compiler<'a> {
         let ty = self.func.dfg.value_type(res);
         let pc = self.liveness.inst_pcs[inst];
 
-        let mut bin = |imm_f: &dyn Fn(&mut Vec<Instruction>, u16, u16, i64),
-                       reg_f: &dyn Fn(&mut Vec<Instruction>, u16, u16, u16),
+        let mut bin = |imm_f: &dyn Fn(&mut Vec<Instruction>, Reg, Reg, i64),
+                       reg_f: &dyn Fn(&mut Vec<Instruction>, Reg, Reg, Reg),
                        commutative: bool| {
             let lhs_fused = self.mapper.fused_values.contains(&args[0]);
             let rhs_fused = self.mapper.fused_values.contains(&args[1]);
@@ -769,7 +778,7 @@ impl<'a> Compiler<'a> {
 
     fn emit_return(&mut self, values: veloc_ir::ValueList, pc: u32) {
         let ret_vals = self.func.dfg.get_value_list(values);
-        let ret_regs: SmallVec<[u16; 2]> =
+        let ret_regs: SmallVec<[Reg; 2]> =
             ret_vals.iter().map(|&v| self.mapper.use_val(v)).collect();
         let num_vals = ret_regs.len() as u32;
         let data_offset = self.data_section.add_return_regs(&ret_regs);
@@ -777,7 +786,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_call(&mut self, inst: Inst, pc: u32, func_id: FuncId, args: veloc_ir::ValueList) {
-        let args_regs: SmallVec<[u16; 4]> = self
+        let args_regs: SmallVec<[Reg; 4]> = self
             .func
             .dfg
             .get_value_list(args)
@@ -786,7 +795,7 @@ impl<'a> Compiler<'a> {
             .collect();
 
         let res_vals = self.func.dfg.inst_results(inst);
-        let mut ret_regs: SmallVec<[u16; 2]> = SmallVec::with_capacity(res_vals.len());
+        let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
             ret_regs.push(self.mapper.alloc_val(v));
         }
@@ -797,7 +806,7 @@ impl<'a> Compiler<'a> {
 
     fn emit_call_indirect(&mut self, inst: Inst, ptr: Value, args: ValueList, pc: u32) {
         let ptr_reg = self.mapper.use_val(ptr);
-        let args_regs: SmallVec<[u16; 4]> = self
+        let args_regs: SmallVec<[Reg; 4]> = self
             .func
             .dfg
             .get_value_list(args)
@@ -806,7 +815,7 @@ impl<'a> Compiler<'a> {
             .collect();
 
         let res_vals = self.func.dfg.inst_results(inst);
-        let mut ret_regs: SmallVec<[u16; 2]> = SmallVec::with_capacity(res_vals.len());
+        let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
             ret_regs.push(self.mapper.alloc_val(v));
         }
@@ -816,7 +825,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_call_intrinsic(&mut self, inst: Inst, intrinsic: Intrinsic, args: ValueList, pc: u32) {
-        let args_regs: SmallVec<[u16; 4]> = self
+        let args_regs: SmallVec<[Reg; 4]> = self
             .func
             .dfg
             .get_value_list(args)
@@ -824,13 +833,13 @@ impl<'a> Compiler<'a> {
             .map(|&v| self.mapper.use_val(v))
             .collect();
         let res_vals = self.func.dfg.inst_results(inst);
-        let mut ret_regs: SmallVec<[u16; 2]> = SmallVec::with_capacity(res_vals.len());
+        let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
             ret_regs.push(self.mapper.alloc_val(v));
         }
 
         if ret_regs.len() == 1
-            && try_emit_inline_intrinsic(&mut self.code, ret_regs[0], intrinsic, &args_regs)
+            && try_emit_inline_intrinsic(&mut self.code, ret_regs[0].0, intrinsic, &args_regs)
         {
             // Inlined
         } else {
@@ -1151,7 +1160,7 @@ impl<'a> Compiler<'a> {
 
             if block != entry_block {
                 for &param in &block_data.params {
-                    if self.mapper.map[param] == 0 {
+                    if self.mapper.map[param] == Reg::NULL {
                         self.mapper.alloc_val(param);
                     }
                 }
@@ -1285,7 +1294,7 @@ impl<'a> Compiler<'a> {
                 let else_reg = self.mapper.use_val(args[2]);
                 let res = self.func.dfg.first_result(inst).unwrap();
                 let dst = self.mapper.alloc_val(res);
-                emit::Select(&mut self.code, dst, cond_reg, then_reg, else_reg as u32);
+                emit::Select(&mut self.code, dst, cond_reg, then_reg, else_reg);
             }
             InstructionData::Nop => {}
             _ => todo!("Unsupported instruction: {:?}", idata),
@@ -1303,8 +1312,8 @@ fn calculate_moves(
     func: &Function,
     call: veloc_ir::types::BlockCall,
     mapper: &mut ValueMapper,
-) -> Vec<(u16, u16)> {
-    fn find_non_conflicting_move_index(pending: &[(u16, u16)]) -> Option<usize> {
+) -> Vec<(Reg, Reg)> {
+    fn find_non_conflicting_move_index(pending: &[(Reg, Reg)]) -> Option<usize> {
         // Find a move whose destination is not used as a source by any other move.
         for (i, &(dst, _)) in pending.iter().enumerate() {
             let dst_used_as_source = pending
@@ -1318,11 +1327,11 @@ fn calculate_moves(
         None
     }
 
-    fn alloc_temp_reg(mapper: &mut ValueMapper) -> u16 {
+    fn alloc_temp_reg(mapper: &mut ValueMapper) -> Reg {
         mapper.free_registers.pop().unwrap_or_else(|| {
-            let reg = mapper.next_register;
+            let r = Reg(mapper.next_register);
             mapper.next_register += 1;
-            reg
+            r
         })
     }
 
@@ -1331,7 +1340,7 @@ fn calculate_moves(
     let params = &func.layout.blocks[target_block].params;
 
     // 1. Collect all move requests with pre-allocated capacity
-    let mut pending: Vec<(u16, u16)> = Vec::with_capacity(params.len());
+    let mut pending: Vec<(Reg, Reg)> = Vec::with_capacity(params.len());
     for (&p, &a) in params.iter().zip(args.iter()) {
         let src = mapper.use_val(a);
         let dst = mapper.use_block_param(p);
@@ -1341,7 +1350,7 @@ fn calculate_moves(
     }
 
     // 2. Resolve parallel moves into an ordered sequence
-    let mut result: Vec<(u16, u16)> = Vec::with_capacity(pending.len() + 1); // +1 for potential temp move
+    let mut result: Vec<(Reg, Reg)> = Vec::with_capacity(pending.len() + 1); // +1 for potential temp move
 
     while !pending.is_empty() {
         if let Some(i) = find_non_conflicting_move_index(&pending) {
