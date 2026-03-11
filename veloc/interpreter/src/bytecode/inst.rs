@@ -34,59 +34,6 @@ impl Instruction {
     pub const fn pack_counts(num_rets: u16, num_args: u16) -> u32 {
         ((num_rets as u32) << 16) | (num_args as u32)
     }
-
-    /// Get conversion types (from_type, to_type)
-    #[inline(always)]
-    pub fn conv_types(&self) -> (ScalarType, ScalarType) {
-        unsafe {
-            (
-                core::mem::transmute::<u8, ScalarType>((self.src2 & 0xFF) as u8),
-                core::mem::transmute::<u8, ScalarType>((self.src2 >> 8) as u8),
-            )
-        }
-    }
-
-    /// Get stack type for stack operations
-    #[inline(always)]
-    pub fn stack_type(&self) -> ScalarType {
-        unsafe { core::mem::transmute::<u8, ScalarType>(self.src2 as u8) }
-    }
-
-    /// Get jump target based on condition
-    #[inline(always)]
-    pub const fn br_target(&self, cond: bool) -> u32 {
-        if cond { self.imm32() } else { self.aux() }
-    }
-
-    /// Get number of targets in BrTable
-    #[inline(always)]
-    pub const fn br_table_num_targets(&self) -> u32 {
-        self.aux()
-    }
-
-    /// Get base index in jump_targets for BrTable
-    #[inline(always)]
-    pub const fn br_table_base_idx(&self) -> u32 {
-        self.imm32()
-    }
-
-    /// Get scale for PtrIndex
-    #[inline(always)]
-    pub const fn ptr_index_scale(&self) -> i64 {
-        self.imm32() as i64
-    }
-
-    /// Get offset for PtrIndex
-    #[inline(always)]
-    pub const fn ptr_index_offset(&self) -> i64 {
-        self.aux() as i32 as i64
-    }
-
-    /// Get false register for Select
-    #[inline(always)]
-    pub const fn select_false_reg(&self) -> u16 {
-        (self.imm32() & 0xFFFF) as u16
-    }
 }
 
 macro_rules! define_opcodes {

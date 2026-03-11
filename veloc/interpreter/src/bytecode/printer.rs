@@ -6,7 +6,7 @@
 use crate::bytecode::{
     CompiledFunction,
     compile::{DataSection, JumpTarget},
-    inst::{Instruction, Opcode},
+    inst::{DecodedInstruction, Instruction},
 };
 use core::fmt::{Display, Formatter, Result, Write};
 use cranelift_entity::EntityRef;
@@ -94,330 +94,363 @@ impl<'a> InstPrinter<'a> {
 
     /// Format a single instruction
     pub fn fmt_inst(&self, f: &mut dyn Write, pc: usize, inst: &Instruction) -> Result {
+        let inst = inst.decode();
         // Write PC and opcode name
         write!(
             f,
             "  {:4}  {:20}",
             pc,
-            format!("{:?}", inst.opcode).to_lowercase()
+            format!("{:?}", inst)
+                .to_lowercase()
+                .split('(')
+                .next()
+                .unwrap_or("")
         )?;
 
-        match inst.opcode {
+        match inst {
             // Constants
-            Opcode::Iconst | Opcode::Fconst => {
+            DecodedInstruction::Iconst { dst, imm64 } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
-                write!(f, ", 0x{:016x}", inst.imm64)
+                fmt_reg(f, dst)?;
+                write!(f, ", 0x{:016x}", imm64)
             }
-            Opcode::Bconst => {
+            DecodedInstruction::Fconst { dst, imm64 } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
-                write!(f, ", {}", if inst.src2 != 0 { "true" } else { "false" })
+                fmt_reg(f, dst)?;
+                write!(f, ", 0x{:016x}", imm64)
             }
-            Opcode::Vconst => {
+            DecodedInstruction::Bconst { dst, val } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
-                write!(f, ", pool[{}]", inst.imm32())
+                fmt_reg(f, dst)?;
+                write!(f, ", {}", if val != 0 { "true" } else { "false" })
+            }
+            DecodedInstruction::Vconst { dst, pool_id } => {
+                write!(f, " ")?;
+                fmt_reg(f, dst)?;
+                write!(f, ", pool[{}]", pool_id)
             }
 
             // Binary operations (3 registers)
-            Opcode::I32Add
-            | Opcode::I32Sub
-            | Opcode::I32Mul
-            | Opcode::I32DivS
-            | Opcode::I32DivU
-            | Opcode::I32RemS
-            | Opcode::I32RemU
-            | Opcode::I32And
-            | Opcode::I32Or
-            | Opcode::I32Xor
-            | Opcode::I32Shl
-            | Opcode::I32ShrS
-            | Opcode::I32ShrU
-            | Opcode::I32RotL
-            | Opcode::I32RotR
-            | Opcode::I64Add
-            | Opcode::I64Sub
-            | Opcode::I64Mul
-            | Opcode::I64DivS
-            | Opcode::I64DivU
-            | Opcode::I64RemS
-            | Opcode::I64RemU
-            | Opcode::I64And
-            | Opcode::I64Or
-            | Opcode::I64Xor
-            | Opcode::I64Shl
-            | Opcode::I64ShrS
-            | Opcode::I64ShrU
-            | Opcode::I64RotL
-            | Opcode::I64RotR
-            | Opcode::F32Add
-            | Opcode::F32Sub
-            | Opcode::F32Mul
-            | Opcode::F32Div
-            | Opcode::F32Min
-            | Opcode::F32Max
-            | Opcode::F32CopySign
-            | Opcode::F64Add
-            | Opcode::F64Sub
-            | Opcode::F64Mul
-            | Opcode::F64Div
-            | Opcode::F64Min
-            | Opcode::F64Max
-            | Opcode::F64CopySign => {
+            DecodedInstruction::I32Add { dst, src1, src2 }
+            | DecodedInstruction::I32Sub { dst, src1, src2 }
+            | DecodedInstruction::I32Mul { dst, src1, src2 }
+            | DecodedInstruction::I32DivS { dst, src1, src2 }
+            | DecodedInstruction::I32DivU { dst, src1, src2 }
+            | DecodedInstruction::I32RemS { dst, src1, src2 }
+            | DecodedInstruction::I32RemU { dst, src1, src2 }
+            | DecodedInstruction::I32And { dst, src1, src2 }
+            | DecodedInstruction::I32Or { dst, src1, src2 }
+            | DecodedInstruction::I32Xor { dst, src1, src2 }
+            | DecodedInstruction::I32Shl { dst, src1, src2 }
+            | DecodedInstruction::I32ShrS { dst, src1, src2 }
+            | DecodedInstruction::I32ShrU { dst, src1, src2 }
+            | DecodedInstruction::I32RotL { dst, src1, src2 }
+            | DecodedInstruction::I32RotR { dst, src1, src2 }
+            | DecodedInstruction::I64Add { dst, src1, src2 }
+            | DecodedInstruction::I64Sub { dst, src1, src2 }
+            | DecodedInstruction::I64Mul { dst, src1, src2 }
+            | DecodedInstruction::I64DivS { dst, src1, src2 }
+            | DecodedInstruction::I64DivU { dst, src1, src2 }
+            | DecodedInstruction::I64RemS { dst, src1, src2 }
+            | DecodedInstruction::I64RemU { dst, src1, src2 }
+            | DecodedInstruction::I64And { dst, src1, src2 }
+            | DecodedInstruction::I64Or { dst, src1, src2 }
+            | DecodedInstruction::I64Xor { dst, src1, src2 }
+            | DecodedInstruction::I64Shl { dst, src1, src2 }
+            | DecodedInstruction::I64ShrS { dst, src1, src2 }
+            | DecodedInstruction::I64ShrU { dst, src1, src2 }
+            | DecodedInstruction::I64RotL { dst, src1, src2 }
+            | DecodedInstruction::I64RotR { dst, src1, src2 }
+            | DecodedInstruction::F32Add { dst, src1, src2 }
+            | DecodedInstruction::F32Sub { dst, src1, src2 }
+            | DecodedInstruction::F32Mul { dst, src1, src2 }
+            | DecodedInstruction::F32Div { dst, src1, src2 }
+            | DecodedInstruction::F32Min { dst, src1, src2 }
+            | DecodedInstruction::F32Max { dst, src1, src2 }
+            | DecodedInstruction::F32CopySign { dst, src1, src2 }
+            | DecodedInstruction::F64Add { dst, src1, src2 }
+            | DecodedInstruction::F64Sub { dst, src1, src2 }
+            | DecodedInstruction::F64Mul { dst, src1, src2 }
+            | DecodedInstruction::F64Div { dst, src1, src2 }
+            | DecodedInstruction::F64Min { dst, src1, src2 }
+            | DecodedInstruction::F64Max { dst, src1, src2 }
+            | DecodedInstruction::F64CopySign { dst, src1, src2 }
+            | DecodedInstruction::I32Eq { dst, src1, src2 }
+            | DecodedInstruction::I32Ne { dst, src1, src2 }
+            | DecodedInstruction::I32LtS { dst, src1, src2 }
+            | DecodedInstruction::I32LtU { dst, src1, src2 }
+            | DecodedInstruction::I32LeS { dst, src1, src2 }
+            | DecodedInstruction::I32LeU { dst, src1, src2 }
+            | DecodedInstruction::I32GtS { dst, src1, src2 }
+            | DecodedInstruction::I32GtU { dst, src1, src2 }
+            | DecodedInstruction::I32GeS { dst, src1, src2 }
+            | DecodedInstruction::I32GeU { dst, src1, src2 }
+            | DecodedInstruction::I64Eq { dst, src1, src2 }
+            | DecodedInstruction::I64Ne { dst, src1, src2 }
+            | DecodedInstruction::I64LtS { dst, src1, src2 }
+            | DecodedInstruction::I64LtU { dst, src1, src2 }
+            | DecodedInstruction::I64LeS { dst, src1, src2 }
+            | DecodedInstruction::I64LeU { dst, src1, src2 }
+            | DecodedInstruction::I64GtS { dst, src1, src2 }
+            | DecodedInstruction::I64GtU { dst, src1, src2 }
+            | DecodedInstruction::I64GeS { dst, src1, src2 }
+            | DecodedInstruction::I64GeU { dst, src1, src2 }
+            | DecodedInstruction::F32Eq { dst, src1, src2 }
+            | DecodedInstruction::F32Ne { dst, src1, src2 }
+            | DecodedInstruction::F32Lt { dst, src1, src2 }
+            | DecodedInstruction::F32Le { dst, src1, src2 }
+            | DecodedInstruction::F32Gt { dst, src1, src2 }
+            | DecodedInstruction::F32Ge { dst, src1, src2 }
+            | DecodedInstruction::F64Eq { dst, src1, src2 }
+            | DecodedInstruction::F64Ne { dst, src1, src2 }
+            | DecodedInstruction::F64Lt { dst, src1, src2 }
+            | DecodedInstruction::F64Le { dst, src1, src2 }
+            | DecodedInstruction::F64Gt { dst, src1, src2 }
+            | DecodedInstruction::F64Ge { dst, src1, src2 } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)?;
+                fmt_reg(f, src1)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src2)
+                fmt_reg(f, src2)
             }
 
             // Immediate binary operations
-            Opcode::I32AddImm
-            | Opcode::I32SubImm
-            | Opcode::I32AndImm
-            | Opcode::I32OrImm
-            | Opcode::I32XorImm
-            | Opcode::I32ShlImm
-            | Opcode::I32ShrSImm
-            | Opcode::I32ShrUImm => {
+            DecodedInstruction::I32AddImm { dst, src1, imm }
+            | DecodedInstruction::I32SubImm { dst, src1, imm }
+            | DecodedInstruction::I32AndImm { dst, src1, imm }
+            | DecodedInstruction::I32OrImm { dst, src1, imm }
+            | DecodedInstruction::I32XorImm { dst, src1, imm }
+            | DecodedInstruction::I32ShlImm { dst, src1, imm }
+            | DecodedInstruction::I32ShrSImm { dst, src1, imm }
+            | DecodedInstruction::I32ShrUImm { dst, src1, imm } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)?;
-                write!(f, ", {}", inst.imm32() as i32)
+                fmt_reg(f, src1)?;
+                write!(f, ", {}", imm as i32)
             }
 
-            Opcode::I64AddImm
-            | Opcode::I64SubImm
-            | Opcode::I64AndImm
-            | Opcode::I64OrImm
-            | Opcode::I64XorImm
-            | Opcode::I64ShlImm
-            | Opcode::I64ShrSImm
-            | Opcode::I64ShrUImm => {
+            DecodedInstruction::I64AddImm { dst, src1, imm64 }
+            | DecodedInstruction::I64SubImm { dst, src1, imm64 }
+            | DecodedInstruction::I64AndImm { dst, src1, imm64 }
+            | DecodedInstruction::I64OrImm { dst, src1, imm64 }
+            | DecodedInstruction::I64XorImm { dst, src1, imm64 }
+            | DecodedInstruction::I64ShlImm { dst, src1, imm64 }
+            | DecodedInstruction::I64ShrSImm { dst, src1, imm64 }
+            | DecodedInstruction::I64ShrUImm { dst, src1, imm64 } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)?;
-                write!(f, ", 0x{:016x}", inst.imm64)
+                fmt_reg(f, src1)?;
+                write!(f, ", 0x{:016x}", imm64)
             }
 
-            // Comparisons
-            Opcode::I32Eq
-            | Opcode::I32Ne
-            | Opcode::I32LtS
-            | Opcode::I32LtU
-            | Opcode::I32LeS
-            | Opcode::I32LeU
-            | Opcode::I32GtS
-            | Opcode::I32GtU
-            | Opcode::I32GeS
-            | Opcode::I32GeU
-            | Opcode::I64Eq
-            | Opcode::I64Ne
-            | Opcode::I64LtS
-            | Opcode::I64LtU
-            | Opcode::I64LeS
-            | Opcode::I64LeU
-            | Opcode::I64GtS
-            | Opcode::I64GtU
-            | Opcode::I64GeS
-            | Opcode::I64GeU
-            | Opcode::F32Eq
-            | Opcode::F32Ne
-            | Opcode::F32Lt
-            | Opcode::F32Le
-            | Opcode::F32Gt
-            | Opcode::F32Ge
-            | Opcode::F64Eq
-            | Opcode::F64Ne
-            | Opcode::F64Lt
-            | Opcode::F64Le
-            | Opcode::F64Gt
-            | Opcode::F64Ge => {
+            // Unary operations - Float
+            DecodedInstruction::F32Neg { dst, src1 }
+            | DecodedInstruction::F32Abs { dst, src1 }
+            | DecodedInstruction::F32Sqrt { dst, src1 }
+            | DecodedInstruction::F32Ceil { dst, src1 }
+            | DecodedInstruction::F32Floor { dst, src1 }
+            | DecodedInstruction::F32Trunc { dst, src1 }
+            | DecodedInstruction::F32Nearest { dst, src1 }
+            | DecodedInstruction::F64Neg { dst, src1 }
+            | DecodedInstruction::F64Abs { dst, src1 }
+            | DecodedInstruction::F64Sqrt { dst, src1 }
+            | DecodedInstruction::F64Ceil { dst, src1 }
+            | DecodedInstruction::F64Floor { dst, src1 }
+            | DecodedInstruction::F64Trunc { dst, src1 }
+            | DecodedInstruction::F64Nearest { dst, src1 } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)?;
-                write!(f, ", ")?;
-                fmt_reg(f, inst.src2)
+                fmt_reg(f, src1)
             }
-
-            // Unary operations
-            Opcode::F32Neg
-            | Opcode::F32Abs
-            | Opcode::F32Sqrt
-            | Opcode::F32Ceil
-            | Opcode::F32Floor
-            | Opcode::F32Trunc
-            | Opcode::F32Nearest
-            | Opcode::F64Neg
-            | Opcode::F64Abs
-            | Opcode::F64Sqrt
-            | Opcode::F64Ceil
-            | Opcode::F64Floor
-            | Opcode::F64Trunc
-            | Opcode::F64Nearest
-            | Opcode::I32Clz
-            | Opcode::I32Ctz
-            | Opcode::I32Popcnt
-            | Opcode::I64Clz
-            | Opcode::I64Ctz
-            | Opcode::I64Popcnt
-            | Opcode::I32Eqz
-            | Opcode::I64Eqz
-            | Opcode::I32TruncF32S
-            | Opcode::I32TruncF32U
-            | Opcode::I32TruncF64S
-            | Opcode::I32TruncF64U
-            | Opcode::I64TruncF32S
-            | Opcode::I64TruncF32U
-            | Opcode::I64TruncF64S
-            | Opcode::I64TruncF64U
-            | Opcode::I32TruncSatF32S
-            | Opcode::I32TruncSatF32U
-            | Opcode::I32TruncSatF64S
-            | Opcode::I32TruncSatF64U
-            | Opcode::I64TruncSatF32S
-            | Opcode::I64TruncSatF32U
-            | Opcode::I64TruncSatF64S
-            | Opcode::I64TruncSatF64U
-            | Opcode::F32ConvertI32S
-            | Opcode::F32ConvertI32U
-            | Opcode::F32ConvertI64S
-            | Opcode::F32ConvertI64U
-            | Opcode::F64ConvertI32S
-            | Opcode::F64ConvertI32U
-            | Opcode::F64ConvertI64S
-            | Opcode::F64ConvertI64U
-            | Opcode::F32DemoteF64
-            | Opcode::F64PromoteF32
-            | Opcode::Bitcast => {
+            // Unary operations - Bitwise
+            DecodedInstruction::I32Clz { dst, src }
+            | DecodedInstruction::I32Ctz { dst, src }
+            | DecodedInstruction::I32Popcnt { dst, src }
+            | DecodedInstruction::I64Clz { dst, src }
+            | DecodedInstruction::I64Ctz { dst, src }
+            | DecodedInstruction::I64Popcnt { dst, src } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)
+                fmt_reg(f, src)
+            }
+            // Unary operations - Eqz
+            DecodedInstruction::I32Eqz { dst, src_val }
+            | DecodedInstruction::I64Eqz { dst, src_val } => {
+                write!(f, " ")?;
+                fmt_reg(f, dst)?;
+                write!(f, ", ")?;
+                fmt_reg(f, src_val)
+            }
+            // Unary operations - Trunc
+            DecodedInstruction::I32TruncF32S { dst, src }
+            | DecodedInstruction::I32TruncF32U { dst, src }
+            | DecodedInstruction::I32TruncF64S { dst, src }
+            | DecodedInstruction::I32TruncF64U { dst, src }
+            | DecodedInstruction::I64TruncF32S { dst, src }
+            | DecodedInstruction::I64TruncF32U { dst, src }
+            | DecodedInstruction::I64TruncF64S { dst, src }
+            | DecodedInstruction::I64TruncF64U { dst, src }
+            | DecodedInstruction::I32TruncSatF32S { dst, src }
+            | DecodedInstruction::I32TruncSatF32U { dst, src }
+            | DecodedInstruction::I32TruncSatF64S { dst, src }
+            | DecodedInstruction::I32TruncSatF64U { dst, src }
+            | DecodedInstruction::I64TruncSatF32S { dst, src }
+            | DecodedInstruction::I64TruncSatF32U { dst, src }
+            | DecodedInstruction::I64TruncSatF64S { dst, src }
+            | DecodedInstruction::I64TruncSatF64U { dst, src } => {
+                write!(f, " ")?;
+                fmt_reg(f, dst)?;
+                write!(f, ", ")?;
+                fmt_reg(f, src)
+            }
+            // Unary operations - Convert
+            DecodedInstruction::F32ConvertI32S { dst, src }
+            | DecodedInstruction::F32ConvertI32U { dst, src }
+            | DecodedInstruction::F32ConvertI64S { dst, src }
+            | DecodedInstruction::F32ConvertI64U { dst, src }
+            | DecodedInstruction::F64ConvertI32S { dst, src }
+            | DecodedInstruction::F64ConvertI32U { dst, src }
+            | DecodedInstruction::F64ConvertI64S { dst, src }
+            | DecodedInstruction::F64ConvertI64U { dst, src }
+            | DecodedInstruction::F32DemoteF64 { dst, src }
+            | DecodedInstruction::F64PromoteF32 { dst, src }
+            | DecodedInstruction::Bitcast { dst, src } => {
+                write!(f, " ")?;
+                fmt_reg(f, dst)?;
+                write!(f, ", ")?;
+                fmt_reg(f, src)
             }
 
             // Extend operations
-            Opcode::ExtendS | Opcode::ExtendU => {
+            DecodedInstruction::ExtendS { dst, src, ty }
+            | DecodedInstruction::ExtendU { dst, src, ty } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)?;
+                fmt_reg(f, src)?;
                 write!(f, ", ty=")?;
-                fmt_extend_ty(f, inst.src2)
+                fmt_extend_ty(f, ty)
             }
 
             // Wrap operation
-            Opcode::Wrap => {
+            DecodedInstruction::Wrap { dst, src, ty } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)?;
+                fmt_reg(f, src)?;
                 write!(f, ", ty=")?;
-                fmt_extend_ty(f, inst.src2)
+                fmt_extend_ty(f, ty)
             }
 
             // Memory operations
-            Opcode::I32Load
-            | Opcode::I64Load
-            | Opcode::F32Load
-            | Opcode::F64Load
-            | Opcode::I8Load
-            | Opcode::I16Load => {
+            DecodedInstruction::I32Load { dst, ptr, offset }
+            | DecodedInstruction::I64Load { dst, ptr, offset }
+            | DecodedInstruction::F32Load { dst, ptr, offset }
+            | DecodedInstruction::F64Load { dst, ptr, offset }
+            | DecodedInstruction::I8Load { dst, ptr, offset }
+            | DecodedInstruction::I16Load { dst, ptr, offset } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", [")?;
-                fmt_reg(f, inst.src1)?;
-                if inst.imm32() != 0 {
-                    write!(f, " + {}", inst.imm32())?;
+                fmt_reg(f, ptr)?;
+                if offset != 0 {
+                    write!(f, " + {}", offset)?;
                 }
                 write!(f, "]")
             }
 
-            Opcode::I32Store
-            | Opcode::I64Store
-            | Opcode::F32Store
-            | Opcode::F64Store
-            | Opcode::I8Store
-            | Opcode::I16Store => {
+            DecodedInstruction::I32Store { val, ptr, offset }
+            | DecodedInstruction::I64Store { val, ptr, offset }
+            | DecodedInstruction::F32Store { val, ptr, offset }
+            | DecodedInstruction::F64Store { val, ptr, offset }
+            | DecodedInstruction::I8Store { val, ptr, offset }
+            | DecodedInstruction::I16Store { val, ptr, offset } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.src1)?;
+                fmt_reg(f, val)?;
                 write!(f, ", [")?;
-                fmt_reg(f, inst.src2)?;
-                if inst.imm32() != 0 {
-                    write!(f, " + {}", inst.imm32())?;
+                fmt_reg(f, ptr)?;
+                if offset != 0 {
+                    write!(f, " + {}", offset)?;
                 }
                 write!(f, "]")
             }
 
             // Stack operations
-            Opcode::StackAddr => {
+            DecodedInstruction::StackAddr { dst, offset } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
-                write!(f, ", offset={}", inst.imm32())
+                fmt_reg(f, dst)?;
+                write!(f, ", offset={}", offset)
             }
 
-            Opcode::StackLoad => {
+            DecodedInstruction::StackLoad { dst, ty, offset } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
-                write!(f, ", ty={}", scalar_ty_name(inst.src2 as u8))?;
-                write!(f, ", offset={}", inst.imm32())
+                fmt_reg(f, dst)?;
+                write!(f, ", ty={}", scalar_ty_name(ty as u8))?;
+                write!(f, ", offset={}", offset)
             }
 
-            Opcode::StackStore => {
+            DecodedInstruction::StackStore { val, ty, offset } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.src1)?;
-                write!(f, ", ty={}", scalar_ty_name(inst.src2 as u8))?;
-                write!(f, ", offset={}", inst.imm32())
+                fmt_reg(f, val)?;
+                write!(f, ", ty={}", scalar_ty_name(ty as u8))?;
+                write!(f, ", offset={}", offset)
             }
 
             // Pointer indexing
-            Opcode::PtrIndex => {
+            DecodedInstruction::PtrIndex {
+                dst,
+                ptr,
+                index,
+                scale,
+                offset,
+            } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", [")?;
-                fmt_reg(f, inst.src1)?;
+                fmt_reg(f, ptr)?;
                 write!(f, " + ")?;
-                fmt_reg(f, inst.src2)?;
-                write!(
-                    f,
-                    " * {} + {}]",
-                    inst.ptr_index_scale(),
-                    inst.ptr_index_offset()
-                )
+                fmt_reg(f, index)?;
+                write!(f, " * {} + {}]", scale as i32, offset as i32)
             }
 
             // Control flow
-            Opcode::Jump => {
-                write!(f, " pc={}", inst.imm32())
+            DecodedInstruction::Jump { pc: target_pc } => {
+                write!(f, " pc={}", target_pc)
             }
 
-            Opcode::JumpWithMoves => {
-                let idx = inst.imm32() as usize;
-                if idx < self.data_section.jump_targets.len() {
-                    let target = &self.data_section.jump_targets[idx];
+            DecodedInstruction::JumpWithMoves { data_offset } => {
+                if (data_offset as usize) < self.data_section.jump_targets.len() {
+                    let target = &self.data_section.jump_targets[data_offset as usize];
                     write!(f, " pc={}", target.pc)?;
                     fmt_moves(f, self.data_section, target)?;
                 }
                 Ok(())
             }
 
-            Opcode::Br => {
+            DecodedInstruction::Br {
+                cond,
+                then_idx,
+                else_idx,
+            } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
-                write!(f, " then={} else={}", inst.imm32(), inst.aux())
+                fmt_reg(f, cond)?;
+                write!(f, " then={} else={}", then_idx, else_idx)
             }
 
-            Opcode::BrTable => {
+            DecodedInstruction::BrTable {
+                idx_reg,
+                data_offset,
+                num_targets,
+            } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
-                let idx = inst.imm32() as usize;
-                let num = inst.aux() as usize;
-                // Print all targets
+                fmt_reg(f, idx_reg)?;
+                let idx = data_offset as usize;
+                let num = num_targets as usize;
                 for i in 0..num {
                     if idx + i < self.data_section.jump_targets.len() {
                         let target = &self.data_section.jump_targets[idx + i];
@@ -434,76 +467,107 @@ impl<'a> InstPrinter<'a> {
                 Ok(())
             }
 
-            Opcode::Select => {
+            DecodedInstruction::Select {
+                dst,
+                cond,
+                then_reg,
+                else_reg,
+            } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)?;
+                fmt_reg(f, cond)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src2)?;
+                fmt_reg(f, then_reg)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.select_false_reg())
+                fmt_reg(f, else_reg as u16)
             }
 
-            Opcode::Return => {
-                let offset = inst.imm32() as usize;
-                let num = inst.aux() as usize;
+            DecodedInstruction::Return {
+                data_offset,
+                num_vals,
+            } => {
                 write!(f, " regs=")?;
-                fmt_reg_list(f, self.data_section, offset + 1, num)
+                fmt_reg_list(
+                    f,
+                    self.data_section,
+                    data_offset as usize + 1,
+                    num_vals as usize,
+                )
             }
 
             // Call operations
-            Opcode::Call => {
-                let func_id = inst.imm32();
-                let data_offset = inst.aux() as usize;
-                let num_rets = self.data_section.u16_data[data_offset] as usize;
-                let num_args = self.data_section.u16_data[data_offset + 1] as usize;
+            DecodedInstruction::Call {
+                func_id,
+                data_offset,
+            } => {
+                let num_rets = self.data_section.u16_data[data_offset as usize] as usize;
+                let num_args = self.data_section.u16_data[data_offset as usize + 1] as usize;
                 write!(f, " func={}", func_id)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset + 2, num_rets)?;
+                fmt_reg_list(f, self.data_section, data_offset as usize + 2, num_rets)?;
                 write!(f, " args=")?;
-                fmt_reg_list(f, self.data_section, data_offset + 2 + num_rets, num_args)
+                fmt_reg_list(
+                    f,
+                    self.data_section,
+                    data_offset as usize + 2 + num_rets,
+                    num_args,
+                )
             }
 
-            Opcode::CallIndirect => {
-                let data_offset = inst.imm32() as usize;
-                let counts = inst.aux();
+            DecodedInstruction::CallIndirect {
+                ptr,
+                data_offset,
+                counts,
+            } => {
                 let num_rets = (counts >> 16) as usize;
                 let num_args = (counts & 0xFFFF) as usize;
                 write!(f, " ptr=")?;
-                fmt_reg(f, inst.src1)?;
+                fmt_reg(f, ptr)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset, num_rets)?;
+                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets)?;
                 write!(f, " args=")?;
-                fmt_reg_list(f, self.data_section, data_offset + num_rets, num_args)
+                fmt_reg_list(
+                    f,
+                    self.data_section,
+                    data_offset as usize + num_rets,
+                    num_args,
+                )
             }
 
-            Opcode::CallIntrinsic => {
-                let data_offset = inst.imm32() as usize;
-                let counts = inst.aux();
+            DecodedInstruction::CallIntrinsic {
+                intrinsic,
+                data_offset,
+                counts,
+            } => {
                 let num_rets = (counts >> 16) as usize;
                 let num_args = (counts & 0xFFFF) as usize;
-                write!(f, " intrinsic={}", inst.src1)?;
+                write!(f, " intrinsic={}", intrinsic)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset, num_rets)?;
+                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets)?;
                 write!(f, " args=")?;
-                fmt_reg_list(f, self.data_section, data_offset + num_rets, num_args)
+                fmt_reg_list(
+                    f,
+                    self.data_section,
+                    data_offset as usize + num_rets,
+                    num_args,
+                )
             }
 
-            Opcode::GlobalAddr => {
+            DecodedInstruction::GlobalAddr { dst, global_idx } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
-                write!(f, ", global[{}]", inst.imm32())
+                fmt_reg(f, dst)?;
+                write!(f, ", global[{}]", global_idx)
             }
 
-            Opcode::RegMove => {
+            DecodedInstruction::RegMove { dst, src } => {
                 write!(f, " ")?;
-                fmt_reg(f, inst.dst)?;
+                fmt_reg(f, dst)?;
                 write!(f, ", ")?;
-                fmt_reg(f, inst.src1)
+                fmt_reg(f, src)
             }
 
-            Opcode::Unreachable => Ok(()),
+            DecodedInstruction::Unreachable {} => Ok(()),
         }
     }
 }
