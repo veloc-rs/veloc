@@ -101,6 +101,37 @@ macro_rules! define_opcodes {
             $($name),*
         }
 
+        /// Decoded view of a bytecode instruction with logical field names.
+        ///
+        /// Obtained via [`Instruction::decode`]. Each variant mirrors the argument
+        /// list of the corresponding `define_opcodes!` entry, so you get names like
+        /// `ptr`, `offset`, `val` instead of raw `src1`, `imm32()`, etc.
+        #[derive(Debug, Clone, Copy)]
+        #[allow(dead_code)]
+        pub(crate) enum DecodedInstruction {
+            $(
+                $name { $($arg: $ty),* }
+            ),*
+        }
+
+        impl Instruction {
+            /// Decode this instruction into a [`DecodedInstruction`] with logical
+            /// field names. Always inlined — zero run-time overhead.
+            #[inline(always)]
+            pub(crate) fn decode(self) -> DecodedInstruction {
+                let inst = self;
+                match inst.opcode {
+                    $(
+                        Opcode::$name => DecodedInstruction::$name {
+                            $(
+                                $arg: define_opcodes!(@decode_field inst, $arg, $ty, $($field)?)
+                            ),*
+                        }
+                    ),*
+                }
+            }
+        }
+
         pub mod emit {
             use super::*;
             $(
@@ -129,7 +160,19 @@ macro_rules! define_opcodes {
         }
     };
 
-    // Helper to assign fields
+    // --- Decode helpers: reverse-map raw fields back to logical arg names ---
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, dst)   => { $inst.dst as $ty };
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, src1)  => { $inst.src1 as $ty };
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, src2)  => { $inst.src2 as $ty };
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, imm32) => { $inst.imm32() as $ty };
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, aux)   => { $inst.aux() as $ty };
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, imm64) => { $inst.imm64 as $ty };
+    // No explicit mapping: the arg name itself is the raw field name.
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, ) => {
+        define_opcodes!(@decode_field $inst, $arg, $ty, $arg)
+    };
+
+    // --- Assign helpers (emit side) ---
     (@assign $inst:ident, $val:ident, dst) => { $inst.dst = $val; };
     (@assign $inst:ident, $val:ident, src1) => { $inst.src1 = $val; };
     (@assign $inst:ident, $val:ident, src2) => { $inst.src2 = $val; };

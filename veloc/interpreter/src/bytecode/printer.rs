@@ -95,7 +95,12 @@ impl<'a> InstPrinter<'a> {
     /// Format a single instruction
     pub fn fmt_inst(&self, f: &mut dyn Write, pc: usize, inst: &Instruction) -> Result {
         // Write PC and opcode name
-        write!(f, "  {:4}  {:20}", pc, format!("{:?}", inst.opcode).to_lowercase())?;
+        write!(
+            f,
+            "  {:4}  {:20}",
+            pc,
+            format!("{:?}", inst.opcode).to_lowercase()
+        )?;
 
         match inst.opcode {
             // Constants
