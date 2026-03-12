@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 use cranelift_entity::{EntityList, ListPool, entity_impl};
+use std::fmt::Display;
 
 /// Value 列表的内存池
 pub type ValueListPool = ListPool<Value>;
@@ -31,6 +32,24 @@ pub enum ScalarType {
     Void = 10, // 无返回值
     EVL = 11,  // 显式向量长度 (Explicit Vector Length)
                // 预留: 12-15
+}
+
+impl Display for ScalarType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            ScalarType::I8 => "i8",
+            ScalarType::I16 => "i16",
+            ScalarType::I32 => "i32",
+            ScalarType::I64 => "i64",
+            ScalarType::F32 => "f32",
+            ScalarType::F64 => "f64",
+            ScalarType::Bool => "bool",
+            ScalarType::Ptr => "ptr",
+            ScalarType::Void => "void",
+            ScalarType::EVL => "evl",
+        };
+        write!(f, "{}", name)
+    }
 }
 
 impl ScalarType {
@@ -273,28 +292,13 @@ impl fmt::Display for Type {
             let elem = self.scalar_type();
             let lanes = self.lane_count();
             if self.is_scalable() {
-                write!(f, "{}<scalable {}>", elem_name(&elem), lanes)
+                write!(f, "{}<scalable {}>", elem, lanes)
             } else {
-                write!(f, "{}<{}>", elem_name(&elem), lanes)
+                write!(f, "{}<{}>", elem, lanes)
             }
         } else {
-            write!(f, "{}", elem_name(&self.scalar_type()))
+            write!(f, "{}", &self.scalar_type())
         }
-    }
-}
-
-fn elem_name(scalar: &ScalarType) -> &'static str {
-    match scalar {
-        ScalarType::I8 => "i8",
-        ScalarType::I16 => "i16",
-        ScalarType::I32 => "i32",
-        ScalarType::I64 => "i64",
-        ScalarType::F32 => "f32",
-        ScalarType::F64 => "f64",
-        ScalarType::Bool => "bool",
-        ScalarType::Ptr => "ptr",
-        ScalarType::Void => "void",
-        ScalarType::EVL => "evl",
     }
 }
 
