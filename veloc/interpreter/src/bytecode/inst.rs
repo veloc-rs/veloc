@@ -1,5 +1,29 @@
 use veloc_ir::ScalarType;
 
+/// Packed type pair for Extend/Convert operations: (to_ty, from_ty)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TypePair {
+    pub from: ScalarType,
+    pub to: ScalarType,
+}
+
+impl TypePair {
+    /// Pack two types into u16: (to_ty << 8) | from_ty
+    #[inline(always)]
+    pub const fn pack(from: ScalarType, to: ScalarType) -> u16 {
+        ((to as u16) << 8) | (from as u16)
+    }
+
+    /// Unpack u16 into TypePair
+    #[inline(always)]
+    pub const fn unpack(raw: u16) -> Self {
+        Self {
+            from: unsafe { core::mem::transmute((raw & 0xFF) as u8) },
+            to: unsafe { core::mem::transmute((raw >> 8) as u8) },
+        }
+    }
+}
+
 /// Register index wrapper for type-safe printing
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
@@ -21,12 +45,14 @@ impl core::fmt::Display for Reg {
 }
 
 impl From<Reg> for u16 {
+    #[inline(always)]
     fn from(reg: Reg) -> u16 {
         reg.0
     }
 }
 
 impl Default for Reg {
+    #[inline(always)]
     fn default() -> Self {
         Reg::NULL
     }
@@ -98,6 +124,11 @@ pub(crate) trait FromRawReg: Sized {
     fn from_raw_reg(v: u16) -> Self;
 }
 
+/// Convert a logical field value into a raw `u16` for storage in a register slot.
+pub(crate) trait IntoRawReg {
+    fn into_raw_reg(self) -> u16;
+}
+
 impl FromRawReg for Reg {
     #[inline(always)]
     fn from_raw_reg(v: u16) -> Self {
@@ -109,6 +140,62 @@ impl FromRawReg for u16 {
     #[inline(always)]
     fn from_raw_reg(v: u16) -> Self {
         v
+    }
+}
+
+impl FromRawReg for bool {
+    #[inline(always)]
+    fn from_raw_reg(v: u16) -> Self {
+        v != 0
+    }
+}
+
+impl IntoRawReg for Reg {
+    #[inline(always)]
+    fn into_raw_reg(self) -> u16 {
+        self.0
+    }
+}
+
+impl IntoRawReg for u16 {
+    #[inline(always)]
+    fn into_raw_reg(self) -> u16 {
+        self
+    }
+}
+
+impl IntoRawReg for bool {
+    #[inline(always)]
+    fn into_raw_reg(self) -> u16 {
+        self as u16
+    }
+}
+
+impl FromRawReg for TypePair {
+    #[inline(always)]
+    fn from_raw_reg(v: u16) -> Self {
+        TypePair::unpack(v)
+    }
+}
+
+impl IntoRawReg for TypePair {
+    #[inline(always)]
+    fn into_raw_reg(self) -> u16 {
+        TypePair::pack(self.from, self.to)
+    }
+}
+
+impl FromRawReg for ScalarType {
+    #[inline(always)]
+    fn from_raw_reg(v: u16) -> Self {
+        unsafe { core::mem::transmute(v as u8) }
+    }
+}
+
+impl IntoRawReg for ScalarType {
+    #[inline(always)]
+    fn into_raw_reg(self) -> u16 {
+        self as u16
     }
 }
 
@@ -124,20 +211,20 @@ pub(crate) struct Instruction {
     pub src1: u16,
     /// Second source register (2 bytes)
     pub src2: u16,
-    /// 64-bit immediate/offset/aux data
+    /// 64-bit immediate data (lo32/hi32)
     pub imm64: u64,
 }
 
 impl Instruction {
     /// Get low 32 bits of immediate
     #[inline(always)]
-    pub const fn imm32(&self) -> u32 {
+    pub const fn imm_lo32(&self) -> u32 {
         self.imm64 as u32
     }
 
-    /// Get high 32 bits of immediate (aux)
+    /// Get high 32 bits of immediate
     #[inline(always)]
-    pub const fn aux(&self) -> u32 {
+    pub const fn imm_hi32(&self) -> u32 {
         (self.imm64 >> 32) as u32
     }
 
@@ -164,7 +251,7 @@ macro_rules! define_opcodes {
         ///
         /// Obtained via [`Instruction::decode`]. Each variant mirrors the argument
         /// list of the corresponding `define_opcodes!` entry, so you get names like
-        /// `ptr`, `offset`, `val` instead of raw `src1`, `imm32()`, etc.
+        /// `ptr`, `offset`, `val` instead of raw `src1`, `imm_lo32()`, etc.
         #[derive(Debug, Clone, Copy)]
         #[allow(dead_code)]
         pub(crate) enum DecodedInstruction {
@@ -226,8 +313,8 @@ macro_rules! define_opcodes {
     (@decode_field $inst:ident, $arg:ident, $ty:ty, src1)  => { <$ty as FromRawReg>::from_raw_reg($inst.src1) };
     (@decode_field $inst:ident, $arg:ident, $ty:ty, src2)  => { <$ty as FromRawReg>::from_raw_reg($inst.src2) };
     // Other fields use direct cast with trait dispatch
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, imm32) => { <$ty as FromRawImm>::from_raw_u32($inst.imm32()) };
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, aux)   => { <$ty as FromRawImm>::from_raw_u32($inst.aux()) };
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, lo32) => { <$ty as FromRawImm>::from_raw_u32($inst.imm_lo32()) };
+    (@decode_field $inst:ident, $arg:ident, $ty:ty, hi32) => { <$ty as FromRawImm>::from_raw_u32($inst.imm_hi32()) };
     (@decode_field $inst:ident, $arg:ident, $ty:ty, imm64) => { $inst.imm64 as $ty };
     // No explicit mapping: the arg name itself is the raw field name.
     (@decode_field $inst:ident, $arg:ident, $ty:ty, ) => {
@@ -235,34 +322,34 @@ macro_rules! define_opcodes {
     };
 
     // --- Assign helpers (emit side) ---
-    // Register fields (dst/src1/src2): use Into<u16> to handle both Reg and u16
-    // Reg implements Into<u16> via the From impl, u16 has it built-in
-    (@assign $inst:ident, $val:ident, $ty:ty, dst) => { $inst.dst = $val.into(); };
-    (@assign $inst:ident, $val:ident, $ty:ty, src1) => { $inst.src1 = $val.into(); };
-    (@assign $inst:ident, $val:ident, $ty:ty, src2) => { $inst.src2 = $val.into(); };
+    // Register fields (dst/src1/src2): use IntoRawReg for type-safe conversion
+    (@assign $inst:ident, $val:ident, $ty:ty, dst) => { $inst.dst = $val.into_raw_reg(); };
+    (@assign $inst:ident, $val:ident, $ty:ty, src1) => { $inst.src1 = $val.into_raw_reg(); };
+    (@assign $inst:ident, $val:ident, $ty:ty, src2) => { $inst.src2 = $val.into_raw_reg(); };
     // Immediate slots: use IntoRawImm for type-safe conversion
-    (@assign $inst:ident, $val:ident, $ty:ty, imm32) => { $inst.imm64 = ($inst.imm64 & 0xFFFFFFFF00000000) | ($val.into_raw_imm() as u64); };
-    (@assign $inst:ident, $val:ident, $ty:ty, aux)   => { $inst.imm64 = ($inst.imm64 & 0x00000000FFFFFFFF) | (($val.into_raw_imm() as u64) << 32); };
+    (@assign $inst:ident, $val:ident, $ty:ty, lo32) => { $inst.imm64 = ($inst.imm64 & 0xFFFFFFFF00000000) | ($val.into_raw_imm() as u64); };
+    (@assign $inst:ident, $val:ident, $ty:ty, hi32) => { $inst.imm64 = ($inst.imm64 & 0x00000000FFFFFFFF) | (($val.into_raw_imm() as u64) << 32); };
     (@assign $inst:ident, $val:ident, $ty:ty, imm64) => { $inst.imm64 = $val; };
     // If no field mapped, assume it's one of the standard ones by name (treat as register)
+    // Note: this rule uses .into() because types like Reg implement Into<u16>
     (@assign $inst:ident, $val:ident, $ty:ty, ) => {
         $inst.$val = $val.into();
     };
 }
 
 // Field mapping conventions:
-// - dst: destination register (for 2-result ops, aux may hold 2nd dst)
+// - dst: destination register (for 2-result ops, hi32 may hold 2nd dst)
 // - src1: first source register
 // - src2: second source register
-// - imm32: 32-bit immediate, offset, or low 32-bits of 64-bit immediate
-// - aux: high 32-bits of 64-bit immediate, data section offset, or packed counts
+// - lo32: low 32-bits of 64-bit immediate, also used for 32-bit immediates/offsets
+// - hi32: high 32-bits of 64-bit immediate, also used for data section offsets or packed counts
 
 define_opcodes! {
     // === Constants ===
     Iconst { dst: Reg, imm64: u64 };
     Fconst { dst: Reg, imm64: u64 };
-    Bconst { dst: Reg, val: u16 => src2 };
-    Vconst { dst: Reg, pool_id: u32 => imm32 };
+    Bconst { dst: Reg, val: bool => src2 };
+    Vconst { dst: Reg, pool_id: u32 => lo32 };
 
     // === I32 Arithmetic ===
     I32Add { dst: Reg, src1: Reg, src2: Reg };
@@ -281,14 +368,14 @@ define_opcodes! {
     I32RotL { dst: Reg, src1: Reg, src2: Reg };
     I32RotR { dst: Reg, src1: Reg, src2: Reg };
 
-    I32AddImm { dst: Reg, src1: Reg, imm: u32 => imm32 };
-    I32SubImm { dst: Reg, src1: Reg, imm: u32 => imm32 };
-    I32AndImm { dst: Reg, src1: Reg, imm: u32 => imm32 };
-    I32OrImm { dst: Reg, src1: Reg, imm: u32 => imm32 };
-    I32XorImm { dst: Reg, src1: Reg, imm: u32 => imm32 };
-    I32ShlImm { dst: Reg, src1: Reg, imm: u32 => imm32 };
-    I32ShrSImm { dst: Reg, src1: Reg, imm: u32 => imm32 };
-    I32ShrUImm { dst: Reg, src1: Reg, imm: u32 => imm32 };
+    I32AddImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
+    I32SubImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
+    I32AndImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
+    I32OrImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
+    I32XorImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
+    I32ShlImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
+    I32ShrSImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
+    I32ShrUImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
 
     // === I64 Arithmetic ===
     I64Add { dst: Reg, src1: Reg, src2: Reg };
@@ -384,24 +471,24 @@ define_opcodes! {
     F64Ge { dst: Reg, src1: Reg, src2: Reg };
 
     // === Memory ===
-    I32Load { dst: Reg, ptr: Reg => src1, offset: u32 => imm32 };
-    I64Load { dst: Reg, ptr: Reg => src1, offset: u32 => imm32 };
-    F32Load { dst: Reg, ptr: Reg => src1, offset: u32 => imm32 };
-    F64Load { dst: Reg, ptr: Reg => src1, offset: u32 => imm32 };
-    I8Load { dst: Reg, ptr: Reg => src1, offset: u32 => imm32 };
-    I16Load { dst: Reg, ptr: Reg => src1, offset: u32 => imm32 };
+    I32Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
+    I64Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
+    F32Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
+    F64Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
+    I8Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
+    I16Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
 
-    I32Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => imm32 };
-    I64Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => imm32 };
-    F32Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => imm32 };
-    F64Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => imm32 };
-    I8Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => imm32 };
-    I16Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => imm32 };
+    I32Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
+    I64Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
+    F32Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
+    F64Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
+    I8Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
+    I16Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
 
     // === Conversions ===
-    ExtendS { dst: Reg, src: Reg => src1, ty: u16 => src2 };
-    ExtendU { dst: Reg, src: Reg => src1, ty: u16 => src2 };
-    Wrap { dst: Reg, src: Reg => src1, ty: u16 => src2 };
+    ExtendS { dst: Reg, src: Reg => src1, ty: TypePair => src2 };
+    ExtendU { dst: Reg, src: Reg => src1, ty: TypePair => src2 };
+    Wrap { dst: Reg, src: Reg => src1, ty: TypePair => src2 };
 
     I32TruncF32S { dst: Reg, src: Reg => src1 };
     I32TruncF32U { dst: Reg, src: Reg => src1 };
@@ -443,26 +530,30 @@ define_opcodes! {
     I64Eqz { dst: Reg, src_val: Reg => src1 };
 
     // === Stack ===
-    StackAddr { dst: Reg, offset: u32 => imm32 };
-    StackLoad { dst: Reg, ty: u16 => src2, offset: u32 => imm32 };
-    StackStore { val: Reg => src1, ty: u16 => src2, offset: u32 => imm32 };
+    StackAddr { dst: Reg, offset: u32 => lo32 };
+    StackLoad { dst: Reg, ty: ScalarType => src2, offset: u32 => lo32 };
+    StackStore { val: Reg => src1, ty: ScalarType => src2, offset: u32 => lo32 };
 
-    PtrIndex { dst: Reg, ptr: Reg => src1, index: Reg => src2, scale: u32 => imm32, offset: u32 => aux };
+    PtrIndex { dst: Reg, ptr: Reg => src1, index: Reg => src2, scale: u32 => lo32, offset: u32 => hi32 };
 
     // === Control Flow ===
-    Jump { pc: u32 => imm32 };
-    JumpWithMoves { data_offset: u32 => imm32 };
-    Br { cond: Reg => dst, then_idx: u32 => imm32, else_idx: u32 => aux };
-    BrTable { idx_reg: Reg => dst, data_offset: u32 => imm32, num_targets: u32 => aux };
+    Jump { pc: u32 => lo32 };
+    JumpWithMoves { data_offset: u32 => lo32 };
+    Br { cond: Reg => dst, then_idx: u32 => lo32, else_idx: u32 => hi32 };
+    BrTable { idx_reg: Reg => dst, data_offset: u32 => lo32, num_targets: u32 => hi32 };
 
-    Select { dst: Reg, cond: Reg => src1, then_reg: Reg => src2, else_reg: Reg => imm32 };
-    Return { data_offset: u32 => imm32, num_vals: u32 => aux };
+    Select { dst: Reg, cond: Reg => src1, then_reg: Reg => src2, else_reg: Reg => lo32 };
+    Return { data_offset: u32 => lo32, num_vals: u32 => hi32 };
 
-    Call { func_id: u32 => imm32, data_offset: u32 => aux };
-    CallIndirect { ptr: Reg => src1, data_offset: u32 => imm32, counts: u32 => aux };
-    CallIntrinsic { intrinsic: u16 => src1, data_offset: u32 => imm32, counts: u32 => aux };
+    Call { func_id: u32 => lo32, data_offset: u32 => hi32, num_rets: u16 => src2, num_args: u16 => src1 };
+    CallIndirect { ptr: Reg => dst, data_offset: u32 => lo32, num_rets: u16 => src2, num_args: u16 => src1 };
+    CallIntrinsic { intrinsic: u16 => src2, data_offset: u32 => lo32, num_rets: u16 => dst, num_args: u16 => src1 };
 
-    GlobalAddr { dst: Reg, global_idx: u32 => imm32 };
+    // Note: Call/CallIndirect/CallIntrinsic layout:
+    // - data_offset: offset in regs where ret_regs + arg_regs are stored
+    // - num_rets/num_args: encoded in src1/src2/dst slots to avoid memory access
+
+    GlobalAddr { dst: Reg, global_idx: u32 => lo32 };
 
     RegMove { dst: Reg, src: Reg => src1 };
     Unreachable {};

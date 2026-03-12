@@ -1,4 +1,4 @@
-use crate::bytecode::inst::{Instruction, Reg, emit};
+use crate::bytecode::inst::{Instruction, Reg, TypePair, emit};
 use cranelift_entity::SecondaryMap;
 use smallvec::{SmallVec, smallvec};
 use veloc_analyzer::{LiveInterval, UseDefAnalysis, analyze_liveness};
@@ -57,7 +57,7 @@ pub struct JumpTarget {
     pub pc: u32,
     /// Number of register moves
     pub num_moves: u16,
-    /// Offset into u16_data where moves are stored (as pairs of dst, src)
+    /// Offset into regs where moves are stored (as pairs of dst, src)
     pub moves_offset: u32,
 }
 
@@ -65,8 +65,8 @@ pub struct JumpTarget {
 /// For Jump targets, they are stored in a separate Vec<JumpTarget>
 #[derive(Debug, Clone, Default)]
 pub struct DataSection {
-    /// Register lists and counts stored as u16 words
-    pub u16_data: Vec<u16>,
+    /// Register lists stored as Reg (counts are encoded in instructions)
+    pub regs: Vec<Reg>,
     /// Jump targets with direct PC and moves
     pub jump_targets: Vec<JumpTarget>,
 }
@@ -74,34 +74,27 @@ pub struct DataSection {
 impl DataSection {
     pub fn new() -> Self {
         Self {
-            u16_data: Vec::new(),
+            regs: Vec::new(),
             jump_targets: Vec::new(),
         }
     }
 
     /// Add return registers for Return instruction
     /// Returns the offset (in u16 words) where data starts
+    /// Note: count is encoded in instruction, regs only stores registers
     pub fn add_return_regs(&mut self, regs: &[Reg]) -> u32 {
-        let offset = self.u16_data.len();
-        self.u16_data.push(regs.len() as u16);
-        for r in regs {
-            self.u16_data.push(r.0);
-        }
+        let offset = self.regs.len();
+        self.regs.extend_from_slice(regs);
         offset as u32
     }
 
     /// Add call data (ret_regs + arg_regs) for Call/CallIndirect/CallIntrinsic
     /// Returns the offset (in u16 words) where data starts
+    /// Note: counts are encoded in instruction, regs only stores registers
     pub fn add_call_data(&mut self, ret_regs: &[Reg], arg_regs: &[Reg]) -> u32 {
-        let offset = self.u16_data.len();
-        self.u16_data.push(ret_regs.len() as u16);
-        self.u16_data.push(arg_regs.len() as u16);
-        for r in ret_regs {
-            self.u16_data.push(r.0);
-        }
-        for r in arg_regs {
-            self.u16_data.push(r.0);
-        }
+        let offset = self.regs.len();
+        self.regs.extend_from_slice(ret_regs);
+        self.regs.extend_from_slice(arg_regs);
         offset as u32
     }
 
@@ -113,34 +106,28 @@ impl DataSection {
         offset as u32
     }
 
-    pub fn return_count(&self, offset: usize) -> u16 {
-        self.u16_data[offset]
-    }
-
+	#[inline(always)]
+    /// Get return register (count is encoded in instruction)
     pub fn return_reg(&self, offset: usize, index: usize) -> Reg {
-        Reg(self.u16_data[offset + 1 + index])
+        self.regs[offset + index]
     }
 
-    pub fn call_ret_count(&self, offset: usize) -> u16 {
-        self.u16_data[offset]
-    }
-
-    pub fn call_arg_count(&self, offset: usize) -> u16 {
-        self.u16_data[offset + 1]
-    }
-
+	#[inline(always)]
+    /// Get return register for call data (counts are encoded in instruction)
     pub fn call_ret_reg(&self, offset: usize, index: usize) -> Reg {
-        Reg(self.u16_data[offset + 2 + index])
+        self.regs[offset + index]
     }
 
-    pub fn call_arg_reg(&self, offset: usize, index: usize) -> Reg {
-        let ret_count = self.call_ret_count(offset) as usize;
-        Reg(self.u16_data[offset + 2 + ret_count + index])
+	#[inline(always)]
+    /// Get argument register for call data (counts are encoded in instruction)
+    pub fn call_arg_reg(&self, offset: usize, ret_count: usize, index: usize) -> Reg {
+        self.regs[offset + ret_count + index]
     }
 
+    #[inline(always)]
     pub fn jump_move_pair(&self, target: &JumpTarget, index: usize) -> (Reg, Reg) {
         let base = target.moves_offset as usize + index * 2;
-        (Reg(self.u16_data[base]), Reg(self.u16_data[base + 1]))
+        (self.regs[base], self.regs[base + 1])
     }
 }
 
@@ -148,7 +135,7 @@ pub struct CompiledFunction {
     pub(crate) module_id: ModuleId,
     pub(crate) func_id: FuncId,
     pub(crate) code: Vec<Instruction>,
-    /// Data section: u16_data for register lists, jump_targets for jump targets
+    /// Data section: regs for register lists, jump_targets for jump targets
     pub(crate) data_section: DataSection,
     pub(crate) stack_slots_sizes: Vec<usize>,
     pub(crate) param_indices: Vec<Reg>,
@@ -390,10 +377,10 @@ impl<'a> Compiler<'a> {
         let moves_offset = if num_moves == 0 {
             0
         } else {
-            let offset = self.data_section.u16_data.len() as u32;
+            let offset = self.data_section.regs.len() as u32;
             for (dst, src) in &moves {
-                self.data_section.u16_data.push(dst.0);
-                self.data_section.u16_data.push(src.0);
+                self.data_section.regs.push(*dst);
+                self.data_section.regs.push(*src);
             }
             offset
         };
@@ -801,7 +788,13 @@ impl<'a> Compiler<'a> {
         }
 
         let data_offset = self.data_section.add_call_data(&ret_regs, &args_regs);
-        emit::Call(&mut self.code, func_id.as_u32(), data_offset);
+        emit::Call(
+            &mut self.code,
+            func_id.as_u32(),
+            data_offset,
+            ret_regs.len() as u16,
+            args_regs.len() as u16,
+        );
     }
 
     fn emit_call_indirect(&mut self, inst: Inst, ptr: Value, args: ValueList, pc: u32) {
@@ -820,8 +813,13 @@ impl<'a> Compiler<'a> {
             ret_regs.push(self.mapper.alloc_val(v));
         }
         let data_offset = self.data_section.add_call_data(&ret_regs, &args_regs);
-        let packed = Instruction::pack_counts(ret_regs.len() as u16, args_regs.len() as u16);
-        emit::CallIndirect(&mut self.code, ptr_reg, data_offset, packed);
+        emit::CallIndirect(
+            &mut self.code,
+            ptr_reg,
+            data_offset,
+            ret_regs.len() as u16,
+            args_regs.len() as u16,
+        );
     }
 
     fn emit_call_intrinsic(&mut self, inst: Inst, intrinsic: Intrinsic, args: ValueList, pc: u32) {
@@ -844,8 +842,13 @@ impl<'a> Compiler<'a> {
             // Inlined
         } else {
             let data_offset = self.data_section.add_call_data(&ret_regs, &args_regs);
-            let packed = Instruction::pack_counts(ret_regs.len() as u16, args_regs.len() as u16);
-            emit::CallIntrinsic(&mut self.code, intrinsic.as_u16(), data_offset, packed);
+            emit::CallIntrinsic(
+                &mut self.code,
+                intrinsic.as_u16(),
+                data_offset,
+                ret_regs.len() as u16,
+                args_regs.len() as u16,
+            );
         }
     }
 
@@ -919,7 +922,7 @@ impl<'a> Compiler<'a> {
                     &mut self.code,
                     dst,
                     arg_reg,
-                    ((to_ty as u16) << 8) | (from_ty as u16),
+                    TypePair { from: from_ty, to: to_ty },
                 );
             }
             IrOpcode::ExtendU => {
@@ -927,7 +930,7 @@ impl<'a> Compiler<'a> {
                     &mut self.code,
                     dst,
                     arg_reg,
-                    ((to_ty as u16) << 8) | (from_ty as u16),
+                    TypePair { from: from_ty, to: to_ty },
                 );
             }
             IrOpcode::Wrap => {
@@ -935,7 +938,7 @@ impl<'a> Compiler<'a> {
                     &mut self.code,
                     dst,
                     arg_reg,
-                    ((to_ty as u16) << 8) | (from_ty as u16),
+                    TypePair { from: from_ty, to: to_ty },
                 );
             }
             IrOpcode::FloatToIntS => convert_op!(
@@ -1204,7 +1207,7 @@ impl<'a> Compiler<'a> {
                 let res = self.func.dfg.first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
                     let dst = self.mapper.alloc_val(res);
-                    emit::Bconst(&mut self.code, dst, if *value { 1 } else { 0 });
+                    emit::Bconst(&mut self.code, dst, *value);
                 }
             }
             InstructionData::Binary { opcode, args } => self.emit_binary(inst, *opcode, args),
@@ -1220,8 +1223,8 @@ impl<'a> Compiler<'a> {
                 let res = self.func.dfg.first_result(inst).unwrap();
                 let dst = self.mapper.alloc_val(res);
                 let base_offset = self.slot_to_offset[*slot];
-                let ty_val = self.val_ty(res) as u16;
-                emit::StackLoad(&mut self.code, dst, ty_val, base_offset + *offset);
+                let ty = self.val_ty(res);
+                emit::StackLoad(&mut self.code, dst, ty, base_offset + *offset);
             }
             InstructionData::StackStore {
                 slot,
@@ -1231,8 +1234,8 @@ impl<'a> Compiler<'a> {
             } => {
                 let base_offset = self.slot_to_offset[*slot];
                 let val_reg = self.mapper.use_val(*value);
-                let ty_val = self.val_ty(*value) as u16;
-                emit::StackStore(&mut self.code, val_reg, ty_val, base_offset + *offset);
+                let ty = self.val_ty(*value);
+                emit::StackStore(&mut self.code, val_reg, ty, base_offset + *offset);
             }
             InstructionData::Load { ptr, offset, .. } => self.emit_load(inst, *ptr, *offset as u32),
             InstructionData::Store {

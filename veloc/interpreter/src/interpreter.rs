@@ -61,9 +61,7 @@ impl Interpreter {
 
         // Initialize parameters
         for (i, &new_idx) in func.param_indices.iter().enumerate() {
-            if i < args.len() {
-                self.value_stack[base + new_idx.0 as usize] = args[i];
-            }
+            self.value_stack[base + new_idx.0 as usize] = args[i];
         }
 
         self.frames.push(StackFrame {
@@ -117,10 +115,8 @@ impl Interpreter {
         let total_size: usize = frame.func.stack_slots_sizes.iter().sum();
         self.stack_memory.resize(frame.stack_base + total_size, 0);
         for (i, &new_idx) in frame.func.param_indices.iter().enumerate() {
-            if i < self.args_buffer.len() {
-                let val = self.args_buffer[i];
-                self.value_stack[frame.base + new_idx.0 as usize] = val;
-            }
+            let val = self.args_buffer[i];
+            self.value_stack[frame.base + new_idx.0 as usize] = val;
         }
     }
 
@@ -181,9 +177,7 @@ impl Interpreter {
                     };
 
                     let mut read_call_data =
-                        |data_sec: &crate::bytecode::DataSection, off: usize| {
-                            let rets = data_sec.call_ret_count(off);
-                            let args = data_sec.call_arg_count(off);
+                        |data_sec: &crate::bytecode::DataSection, off: usize, rets: u16, args: u16| {
                             let dst_start = self.dst_regs_buffer.len();
                             for i in 0..rets {
                                 self.dst_regs_buffer
@@ -191,7 +185,7 @@ impl Interpreter {
                             }
                             self.args_buffer.clear();
                             for i in 0..args {
-                                let reg = data_sec.call_arg_reg(off, i as usize);
+                                let reg = data_sec.call_arg_reg(off, rets as usize, i as usize);
                                 self.args_buffer.push(get!(reg));
                             }
                             (rets, dst_start)
@@ -210,7 +204,7 @@ impl Interpreter {
                             set!(dst, InterpreterValue(imm64))
                         }
                         DecodedInstruction::Bconst { dst, val } => {
-                            set!(dst, InterpreterValue::bool(val != 0))
+                            set!(dst, InterpreterValue::bool(val))
                         }
                         DecodedInstruction::Vconst { .. } => {
                             todo!("Vector constants")
@@ -915,17 +909,15 @@ impl Interpreter {
                         // === Conversions ===
                         DecodedInstruction::ExtendS { dst, src, ty } => {
                             let val = get!(src).unwrap_i64();
-                            let from_ty = (ty & 0xFF) as u8;
-                            let to_ty = (ty >> 8) as u8;
-                            let res = match from_ty {
-                                0 => val as i8 as i64,
-                                1 => val as i16 as i64,
-                                2 => val as i32 as i64,
-                                _ => panic!("Unsupported ExtendS from_ty: {}", from_ty),
+                            let res = match ty.from {
+                                ScalarType::I8 => val as i8 as i64,
+                                ScalarType::I16 => val as i16 as i64,
+                                ScalarType::I32 => val as i32 as i64,
+                                _ => panic!("Unsupported ExtendS from_ty: {:?}", ty.from),
                             };
                             set!(
                                 dst,
-                                if to_ty == 2 {
+                                if ty.to == ScalarType::I32 {
                                     InterpreterValue::i32(res as i32)
                                 } else {
                                     InterpreterValue::i64(res)
@@ -934,17 +926,15 @@ impl Interpreter {
                         }
                         DecodedInstruction::ExtendU { dst, src, ty } => {
                             let val = get!(src).unwrap_i64();
-                            let from_ty = (ty & 0xFF) as u8;
-                            let to_ty = (ty >> 8) as u8;
-                            let res = match from_ty {
-                                0 => (val as u8) as u64 as i64,
-                                1 => (val as u16) as u64 as i64,
-                                2 => (val as u32) as u64 as i64,
-                                _ => panic!("Unsupported ExtendU from_ty: {}", from_ty),
+                            let res = match ty.from {
+                                ScalarType::I8 => (val as u8) as u64 as i64,
+                                ScalarType::I16 => (val as u16) as u64 as i64,
+                                ScalarType::I32 => (val as u32) as u64 as i64,
+                                _ => panic!("Unsupported ExtendU from_ty: {:?}", ty.from),
                             };
                             set!(
                                 dst,
-                                if to_ty == 2 {
+                                if ty.to == ScalarType::I32 {
                                     InterpreterValue::i32(res as i32)
                                 } else {
                                     InterpreterValue::i64(res)
@@ -953,16 +943,15 @@ impl Interpreter {
                         }
                         DecodedInstruction::Wrap { dst, src, ty } => {
                             let val = get!(src).unwrap_i64();
-                            let to_ty = (ty & 0xFF) as u8;
-                            let res = match to_ty {
-                                0 => val as i8 as i64,
-                                1 => val as i16 as i64,
-                                2 => val as i32 as i64,
+                            let res = match ty.to {
+                                ScalarType::I8 => val as i8 as i64,
+                                ScalarType::I16 => val as i16 as i64,
+                                ScalarType::I32 => val as i32 as i64,
                                 _ => val,
                             };
                             set!(
                                 dst,
-                                if to_ty == 2 {
+                                if ty.to == ScalarType::I32 {
                                     InterpreterValue::i32(res as i32)
                                 } else {
                                     InterpreterValue::i64(res)
@@ -1173,11 +1162,9 @@ impl Interpreter {
                         DecodedInstruction::StackLoad { dst, ty, offset } => {
                             let addr = frame.stack_base + offset as usize;
                             let ptr = self.stack_memory.as_ptr().add(addr);
-                            let scalar_ty =
-                                unsafe { core::mem::transmute::<u8, ScalarType>(ty as u8) };
                             set!(
                                 dst,
-                                match scalar_ty {
+                                match ty {
                                     ScalarType::I8 => InterpreterValue::i32(
                                         (ptr as *const i8).read_unaligned() as i32
                                     ),
@@ -1192,7 +1179,7 @@ impl Interpreter {
                                         InterpreterValue::f32((ptr as *const f32).read_unaligned()),
                                     ScalarType::F64 =>
                                         InterpreterValue::f64((ptr as *const f64).read_unaligned()),
-                                    _ => panic!("Unknown type {:?} in StackLoad", scalar_ty),
+                                    _ => panic!("Unknown type {:?} in StackLoad", ty),
                                 }
                             );
                         }
@@ -1200,9 +1187,7 @@ impl Interpreter {
                             let addr = frame.stack_base + offset as usize;
                             let ptr = self.stack_memory.as_mut_ptr().add(addr);
                             let v = get!(val);
-                            let scalar_ty =
-                                unsafe { core::mem::transmute::<u8, ScalarType>(ty as u8) };
-                            match scalar_ty {
+                            match ty {
                                 ScalarType::I8 => {
                                     (ptr as *mut i8).write_unaligned(v.unwrap_i32() as i8)
                                 }
@@ -1221,7 +1206,7 @@ impl Interpreter {
                                 ScalarType::F64 => {
                                     (ptr as *mut f64).write_unaligned(v.unwrap_f64())
                                 }
-                                _ => panic!("Unknown type {:?} in StackStore", scalar_ty),
+                                _ => panic!("Unknown type {:?} in StackStore", ty),
                             }
                         }
 
@@ -1269,10 +1254,6 @@ impl Interpreter {
                             let nvals = num_vals as usize;
                             let cur_base = frame.base;
                             let cur_stack = frame.stack_base;
-                            debug_assert_eq!(
-                                frame.func.data_section.return_count(data_off) as usize,
-                                nvals
-                            );
 
                             if self.frames.is_empty() {
                                 let mut res = Vec::with_capacity(nvals);
@@ -1315,9 +1296,11 @@ impl Interpreter {
                         DecodedInstruction::Call {
                             func_id,
                             data_offset,
+                            num_rets,
+                            num_args,
                         } => {
                             let (rets, dst_start) =
-                                read_call_data(&frame.func.data_section, data_offset as usize);
+                                read_call_data(&frame.func.data_section, data_offset as usize, num_rets, num_args);
                             let f_id = veloc_ir::FuncId::from_u32(func_id);
 
                             match program.modules[frame.mid].links[f_id] {
@@ -1361,10 +1344,11 @@ impl Interpreter {
                         DecodedInstruction::CallIndirect {
                             ptr,
                             data_offset,
-                            counts: _,
+                            num_rets,
+                            num_args,
                         } => {
                             let (rets, dst_start) =
-                                read_call_data(&frame.func.data_section, data_offset as usize);
+                                read_call_data(&frame.func.data_section, data_offset as usize, num_rets, num_args);
                             let p = get!(ptr).0 as usize;
 
                             match program.decode_ptr(p) {
@@ -1435,10 +1419,11 @@ impl Interpreter {
                         DecodedInstruction::CallIntrinsic {
                             intrinsic,
                             data_offset,
-                            counts: _,
+                            num_rets,
+                            num_args,
                         } => {
                             let (rets, dst_start) =
-                                read_call_data(&frame.func.data_section, data_offset as usize);
+                                read_call_data(&frame.func.data_section, data_offset as usize, num_rets, num_args);
                             let res = execute_intrinsic(intrinsic, &self.args_buffer);
                             values_ptr = self.value_stack.as_mut_ptr();
                             if rets > 0 {

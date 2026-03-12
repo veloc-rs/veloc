@@ -6,7 +6,7 @@
 use crate::bytecode::{
     CompiledFunction,
     compile::{DataSection, JumpTarget},
-    inst::{DecodedInstruction, Instruction, Reg},
+    inst::{DecodedInstruction, Instruction, Reg, TypePair},
 };
 use core::fmt::{Display, Formatter, Result, Write};
 use cranelift_entity::EntityRef;
@@ -29,13 +29,6 @@ fn scalar_ty_name(ty: u8) -> &'static str {
     }
 }
 
-/// Format Extend type (encoded as (to_ty << 8) | from_ty)
-fn fmt_extend_ty(f: &mut dyn Write, ty: u16) -> Result {
-    let from_ty = (ty & 0xFF) as u8;
-    let to_ty = (ty >> 8) as u8;
-    write!(f, "{}->{}", scalar_ty_name(from_ty), scalar_ty_name(to_ty))
-}
-
 /// Formats a register list from data section
 fn fmt_reg_list(
     f: &mut dyn Write,
@@ -48,8 +41,8 @@ fn fmt_reg_list(
         if i > 0 {
             write!(f, ", ")?;
         }
-        let reg = data_section.u16_data[offset + i];
-        write!(f, "{}", Reg(reg))?;
+        let reg = data_section.regs[offset + i];
+        write!(f, "{}", reg)?;
     }
     write!(f, "]")
 }
@@ -65,8 +58,8 @@ fn fmt_moves(f: &mut dyn Write, data_section: &DataSection, target: &JumpTarget)
         if i > 0 {
             write!(f, ", ")?;
         }
-        let dst = data_section.u16_data[offset + i * 2];
-        let src = data_section.u16_data[offset + i * 2 + 1];
+        let dst = data_section.regs[offset + i * 2];
+        let src = data_section.regs[offset + i * 2 + 1];
         write!(f, "r{}<-r{}", dst, src)?;
     }
     write!(f, "]")
@@ -107,7 +100,7 @@ impl<'a> InstPrinter<'a> {
                 write!(f, " {}, 0x{:016x}", dst, imm64)
             }
             DecodedInstruction::Bconst { dst, val } => {
-                write!(f, " {}, {}", dst, if val != 0 { "true" } else { "false" })
+                write!(f, " {}, {}", dst, val)
             }
             DecodedInstruction::Vconst { dst, pool_id } => {
                 write!(f, " {}, pool[{}]", dst, pool_id)
@@ -284,14 +277,12 @@ impl<'a> InstPrinter<'a> {
             // Extend operations
             DecodedInstruction::ExtendS { dst, src, ty }
             | DecodedInstruction::ExtendU { dst, src, ty } => {
-                write!(f, " {}, {}, ", dst, src)?;
-                fmt_extend_ty(f, ty)
+                write!(f, " {}, {}, {}->{}", dst, src, scalar_ty_name(ty.from as u8), scalar_ty_name(ty.to as u8))
             }
 
             // Wrap operation
             DecodedInstruction::Wrap { dst, src, ty } => {
-                write!(f, " {}, {}, ", dst, src)?;
-                fmt_extend_ty(f, ty)
+                write!(f, " {}, {}, {}->{}", dst, src, scalar_ty_name(ty.from as u8), scalar_ty_name(ty.to as u8))
             }
 
             // Memory operations
@@ -424,7 +415,7 @@ impl<'a> InstPrinter<'a> {
                 fmt_reg_list(
                     f,
                     self.data_section,
-                    data_offset as usize + 1,
+                    data_offset as usize,
                     num_vals as usize,
                 )
             }
@@ -433,57 +424,55 @@ impl<'a> InstPrinter<'a> {
             DecodedInstruction::Call {
                 func_id,
                 data_offset,
+                num_rets,
+                num_args,
             } => {
-                let num_rets = self.data_section.u16_data[data_offset as usize] as usize;
-                let num_args = self.data_section.u16_data[data_offset as usize + 1] as usize;
                 write!(f, " func={}", func_id)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset as usize + 2, num_rets)?;
+                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets as usize)?;
                 write!(f, " args=")?;
                 fmt_reg_list(
                     f,
                     self.data_section,
-                    data_offset as usize + 2 + num_rets,
-                    num_args,
+                    data_offset as usize + num_rets as usize,
+                    num_args as usize,
                 )
             }
 
             DecodedInstruction::CallIndirect {
                 ptr,
                 data_offset,
-                counts,
+                num_rets,
+                num_args,
             } => {
-                let num_rets = (counts >> 16) as usize;
-                let num_args = (counts & 0xFFFF) as usize;
                 write!(f, " ptr=")?;
                 write!(f, "{}", ptr)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets)?;
+                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets as usize)?;
                 write!(f, " args=")?;
                 fmt_reg_list(
                     f,
                     self.data_section,
-                    data_offset as usize + num_rets,
-                    num_args,
+                    data_offset as usize + num_rets as usize,
+                    num_args as usize,
                 )
             }
 
             DecodedInstruction::CallIntrinsic {
                 intrinsic,
                 data_offset,
-                counts,
+                num_rets,
+                num_args,
             } => {
-                let num_rets = (counts >> 16) as usize;
-                let num_args = (counts & 0xFFFF) as usize;
                 write!(f, " intrinsic={}", intrinsic)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets)?;
+                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets as usize)?;
                 write!(f, " args=")?;
                 fmt_reg_list(
                     f,
                     self.data_section,
-                    data_offset as usize + num_rets,
-                    num_args,
+                    data_offset as usize + num_rets as usize,
+                    num_args as usize,
                 )
             }
 
@@ -523,11 +512,11 @@ impl<'a> FuncPrinter<'a> {
         )?;
 
         // Print data section summary
-        if !self.func.data_section.u16_data.is_empty() {
+        if !self.func.data_section.regs.is_empty() {
             writeln!(
                 f,
-                "  data_section: {} u16 words",
-                self.func.data_section.u16_data.len()
+                "  data_section: {} registers",
+                self.func.data_section.regs.len()
             )?;
         }
         if !self.func.data_section.jump_targets.is_empty() {
