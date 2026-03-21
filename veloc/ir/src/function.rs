@@ -1,3 +1,5 @@
+use crate::Value;
+
 use super::dfg::DataFlowGraph;
 use super::layout::Layout;
 use super::module::Linkage;
@@ -47,5 +49,18 @@ impl Function {
 
     pub fn bump_revision(&mut self) {
         self.revision += 1;
+    }
+
+    /// 获取函数的参数列表（入口块的定义参数）
+    pub fn params(&self) -> &[Value] {
+        if let Some(entry) = self.entry_block {
+            &self.layout.blocks[entry].params
+        } else {
+            &[]
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }

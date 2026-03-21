@@ -277,12 +277,26 @@ impl<'a> InstPrinter<'a> {
             // Extend operations
             DecodedInstruction::ExtendS { dst, src, ty }
             | DecodedInstruction::ExtendU { dst, src, ty } => {
-                write!(f, " {}, {}, {}->{}", dst, src, scalar_ty_name(ty.from as u8), scalar_ty_name(ty.to as u8))
+                write!(
+                    f,
+                    " {}, {}, {}->{}",
+                    dst,
+                    src,
+                    scalar_ty_name(ty.from as u8),
+                    scalar_ty_name(ty.to as u8)
+                )
             }
 
             // Wrap operation
             DecodedInstruction::Wrap { dst, src, ty } => {
-                write!(f, " {}, {}, {}->{}", dst, src, scalar_ty_name(ty.from as u8), scalar_ty_name(ty.to as u8))
+                write!(
+                    f,
+                    " {}, {}, {}->{}",
+                    dst,
+                    src,
+                    scalar_ty_name(ty.from as u8),
+                    scalar_ty_name(ty.to as u8)
+                )
             }
 
             // Memory operations
@@ -429,7 +443,12 @@ impl<'a> InstPrinter<'a> {
             } => {
                 write!(f, " func={}", func_id)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets as usize)?;
+                fmt_reg_list(
+                    f,
+                    self.data_section,
+                    data_offset as usize,
+                    num_rets as usize,
+                )?;
                 write!(f, " args=")?;
                 fmt_reg_list(
                     f,
@@ -448,7 +467,12 @@ impl<'a> InstPrinter<'a> {
                 write!(f, " ptr=")?;
                 write!(f, "{}", ptr)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets as usize)?;
+                fmt_reg_list(
+                    f,
+                    self.data_section,
+                    data_offset as usize,
+                    num_rets as usize,
+                )?;
                 write!(f, " args=")?;
                 fmt_reg_list(
                     f,
@@ -466,7 +490,12 @@ impl<'a> InstPrinter<'a> {
             } => {
                 write!(f, " intrinsic={}", intrinsic)?;
                 write!(f, " rets=")?;
-                fmt_reg_list(f, self.data_section, data_offset as usize, num_rets as usize)?;
+                fmt_reg_list(
+                    f,
+                    self.data_section,
+                    data_offset as usize,
+                    num_rets as usize,
+                )?;
                 write!(f, " args=")?;
                 fmt_reg_list(
                     f,

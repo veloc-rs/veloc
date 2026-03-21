@@ -1,0 +1,864 @@
+;; =============================================================================
+;; x86_64  (Instruction Selection)
+;; =============================================================================
+
+;; -----------------------------------------------------------------------------
+;; 1. External Declarations
+;; -----------------------------------------------------------------------------
+
+(type vreg (primitive Reg))
+
+(decl is_i8 (vreg))
+(decl is_i16 (vreg))
+(decl is_i32 (vreg))
+(decl is_i64 (vreg))
+(decl is_f32 (vreg))
+(decl is_f64 (vreg))
+(decl is_ptr (vreg))
+(decl is_fpr (vreg))
+(decl has_bmi2 ())
+(decl has_avx2 ())
+
+;; -----------------------------------------------------------------------------
+;; 2.  (Extractors)
+;; -----------------------------------------------------------------------------
+
+(def-extractor (GPR8 $reg)
+    (and (is_i8 $reg) (not (is_fpr $reg))))
+
+(def-extractor (GPR16 $reg)
+    (and (is_i16 $reg) (not (is_fpr $reg))))
+
+(def-extractor (GPR32 $reg)
+    (and (is_i32 $reg) (not (is_fpr $reg))))
+
+(def-extractor (GPR64 $reg)
+    (and (is_i64 $reg) (not (is_fpr $reg))))
+
+(def-extractor (GPTR $reg)
+    (and (is_ptr $reg) (not (is_fpr $reg))))
+
+(def-extractor (FPR32 $reg)
+    (and (is_f32 $reg) (is_fpr $reg)))
+
+(def-extractor (FPR64 $reg)
+    (and (is_f64 $reg) (is_fpr $reg)))
+
+(def-extractor (G_CONSTANT $imm)
+    (and (is_i32 $unused) (not (is_fpr $unused))))
+
+;; -----------------------------------------------------------------------------
+;; 3.  (Lowering Rules)
+;; -----------------------------------------------------------------------------
+
+;; 常量
+(select-rule
+    (match (schema Constant G_CONSTANT (dst (GPR32 $unused)) (imm $imm) @n))
+    (emit (X86Mov32Imm $imm))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Constant G_CONSTANT (dst (GPR64 $unused)) (imm $imm) @n))
+    (emit (X86Mov64Imm64 $imm))
+    (covers (@n))
+    (cost 1))
+
+;; 简单拷贝/位宽等价转换
+(select-rule
+    (match (schema UnaryReg G_COPY (dst (GPR32 $dst)) (src (GPR32 $src)) @n))
+    (emit (X86Mov32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_COPY (dst (GPR64 $dst)) (src (GPR64 $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_COPY (dst (GPTR $dst)) (src (GPTR $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_COPY (dst (GPR64 $dst)) (src (GPTR $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_COPY (dst (GPTR $dst)) (src (GPR64 $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_COPY (dst (FPR32 $dst)) (src (FPR32 $src)) @n))
+    (emit (X86Movss $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_COPY (dst (FPR64 $dst)) (src (FPR64 $src)) @n))
+    (emit (X86Movsd $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_INTTOPTR (dst (GPTR $dst)) (src (GPR64 $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_PTRTOINT (dst (GPR64 $dst)) (src (GPTR $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (GPR32 $dst)) (src (GPR32 $src)) @n))
+    (emit (X86Mov32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (GPR64 $dst)) (src (GPR64 $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (GPTR $dst)) (src (GPTR $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (GPR64 $dst)) (src (GPTR $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (GPTR $dst)) (src (GPR64 $src)) @n))
+    (emit (X86Mov64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (FPR32 $dst)) (src (FPR32 $src)) @n))
+    (emit (X86Movss $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (FPR64 $dst)) (src (FPR64 $src)) @n))
+    (emit (X86Movsd $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (FPR32 $dst)) (src (GPR32 $src)) @n))
+    (emit (X86MovdToXmm $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (GPR32 $dst)) (src (FPR32 $src)) @n))
+    (emit (X86MovdFromXmm $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (FPR64 $dst)) (src (GPR64 $src)) @n))
+    (emit (X86MovqToXmm $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_BITCAST (dst (GPR64 $dst)) (src (FPR64 $src)) @n))
+    (emit (X86MovqFromXmm $src))
+    (covers (@n))
+    (cost 1))
+
+;; 指针运算
+(select-rule
+    (match (schema BinaryReg G_PTR_ADD (dst $dst) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Add64 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_PTR_ADD (dst (GPR64 $dst)) (lhs (GPTR $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Add64 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_PTR_ADD (dst (GPTR $dst)) (lhs (GPTR $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Add64 $y))
+    (covers (@n))
+    (cost 1))
+
+;; 类型转换
+(select-rule
+    (match (schema UnaryReg G_TRUNC (dst $dst) (src $src) @n))
+    (emit (X86Mov32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_ZEXT (dst (GPR64 $dst)) (src (GPR32 $src)) @n))
+    (emit (X86Mov32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_ZEXT (dst (GPR32 $dst)) (src (GPR8 $src)) @n))
+    (emit (X86Movzx8to32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_ZEXT (dst (GPR32 $dst)) (src (GPR16 $src)) @n))
+    (emit (X86Movzx16to32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_ZEXT (dst (GPR64 $dst)) (src (GPR8 $src)) @n))
+    (emit (X86Movzx8to32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_ZEXT (dst (GPR64 $dst)) (src (GPR16 $src)) @n))
+    (emit (X86Movzx16to32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_SEXT (dst (GPR32 $dst)) (src (GPR8 $src)) @n))
+    (emit (X86Movsx8to32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_SEXT (dst (GPR32 $dst)) (src (GPR16 $src)) @n))
+    (emit (X86Movsx16to32 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_SEXT (dst (GPR64 $dst)) (src (GPR8 $src)) @n))
+    (emit (X86Movsx8to64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_SEXT (dst (GPR64 $dst)) (src (GPR16 $src)) @n))
+    (emit (X86Movsx16to64 $src))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema UnaryReg G_SEXT (dst (GPR64 $dst)) (src (GPR32 $src)) @n))
+    (emit (X86Movsxd32to64 $src))
+    (covers (@n))
+    (cost 1))
+
+;; 算术运算
+(select-rule
+    (match (schema BinaryReg G_ADD (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86Add32 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_SUB (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86Sub32 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_ADD (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Add64 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_SUB (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Sub64 $y))
+    (covers (@n))
+    (cost 1))
+
+;; 内存操作
+(select-rule
+    (match (schema Load G_LOAD (dst (GPR64 $dst)) (base (GPTR $base)) @n))
+    (emit (X86Load64 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Load G_LOAD (dst (GPR64 $dst)) (base (GPR64 $base)) @n))
+    (emit (X86Load64 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPR64 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load64 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPR64 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load64 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Load G_LOAD (dst (GPTR $dst)) (base (GPTR $base)) @n))
+    (emit (X86Load64 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Load G_LOAD (dst (GPTR $dst)) (base (GPR64 $base)) @n))
+    (emit (X86Load64 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPTR $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load64 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPTR $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load64 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Load G_LOAD (dst (GPR32 $dst)) (base (GPTR $base)) @n))
+    (emit (X86Load32 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Load G_LOAD (dst (GPR32 $dst)) (base (GPR64 $base)) @n))
+    (emit (X86Load32 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPR32 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPR32 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load32 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Load G_LOAD (dst (FPR32 $dst)) (base (GPTR $base)) @n))
+    (emit (X86LoadF32 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Load G_LOAD (dst (FPR32 $dst)) (base (GPR64 $base)) @n))
+    (emit (X86LoadF32 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (FPR32 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86LoadF32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (FPR32 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86LoadF32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Load G_LOAD (dst (FPR64 $dst)) (base (GPTR $base)) @n))
+    (emit (X86LoadF64 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Load G_LOAD (dst (FPR64 $dst)) (base (GPR64 $base)) @n))
+    (emit (X86LoadF64 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (FPR64 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86LoadF64 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (FPR64 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86LoadF64 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Load G_LOAD (dst (GPR16 $dst)) (base (GPTR $base)) @n))
+    (emit (X86Load16U32 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Load G_LOAD (dst (GPR16 $dst)) (base (GPR64 $base)) @n))
+    (emit (X86Load16U32 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPR16 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load16U32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPR16 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load16U32 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Load G_LOAD (dst (GPR8 $dst)) (base (GPTR $base)) @n))
+    (emit (X86Load8U32 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Load G_LOAD (dst (GPR8 $dst)) (base (GPR64 $base)) @n))
+    (emit (X86Load8U32 $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPR8 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load8U32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema LoadOffset G_OFFSET_LOAD (dst (GPR8 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load8U32 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Store G_STORE (src (GPR64 $src)) (base (GPTR $base)) @n))
+    (emit (X86Store64 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Store G_STORE (src (GPR64 $src)) (base (GPR64 $base)) @n))
+    (emit (X86Store64 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPR64 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPR64 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Store G_STORE (src (GPTR $src)) (base (GPTR $base)) @n))
+    (emit (X86Store64 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Store G_STORE (src (GPTR $src)) (base (GPR64 $base)) @n))
+    (emit (X86Store64 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPTR $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPTR $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Store G_STORE (src (GPR32 $src)) (base (GPTR $base)) @n))
+    (emit (X86Store32 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Store G_STORE (src (GPR32 $src)) (base (GPR64 $base)) @n))
+    (emit (X86Store32 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPR32 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store32 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPR32 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store32 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Store G_STORE (src (FPR32 $src)) (base (GPTR $base)) @n))
+    (emit (X86StoreF32 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Store G_STORE (src (FPR32 $src)) (base (GPR64 $base)) @n))
+    (emit (X86StoreF32 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (FPR32 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86StoreF32 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (FPR32 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86StoreF32 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Store G_STORE (src (FPR64 $src)) (base (GPTR $base)) @n))
+    (emit (X86StoreF64 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Store G_STORE (src (FPR64 $src)) (base (GPR64 $base)) @n))
+    (emit (X86StoreF64 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (FPR64 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86StoreF64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (FPR64 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86StoreF64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Store G_STORE (src (GPR16 $src)) (base (GPTR $base)) @n))
+    (emit (X86Store16 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Store G_STORE (src (GPR16 $src)) (base (GPR64 $base)) @n))
+    (emit (X86Store16 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPR16 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store16 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPR16 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store16 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema Store G_STORE (src (GPR8 $src)) (base (GPTR $base)) @n))
+    (emit (X86Store8 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Store G_STORE (src (GPR8 $src)) (base (GPR64 $base)) @n))
+    (emit (X86Store8 $src $base 0))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPR8 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store8 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StoreOffset G_OFFSET_STORE (src (GPR8 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store8 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+;; Indexed 内存操作
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR64 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load64 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR64 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load64 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPTR $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load64 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPTR $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load64 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR32 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR32 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load32 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (FPR32 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86LoadF32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (FPR32 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86LoadF32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (FPR64 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86LoadF64 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (FPR64 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86LoadF64 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR16 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load16U32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR16 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load16U32 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR8 $dst)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Load8U32 $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR8 $dst)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Load8U32 $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPR64 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPR64 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPTR $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPTR $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPR32 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store32 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPR32 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store32 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (FPR32 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86StoreF32 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (FPR32 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86StoreF32 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (FPR64 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86StoreF64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (FPR64 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86StoreF64 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPR16 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store16 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPR16 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store16 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPR8 $src)) (base (GPTR $base)) (offset $off) @n))
+    (emit (X86Store8 $src $base $off))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema IndexedStore G_INDEXED_STORE (src (GPR8 $src)) (base (GPR64 $base)) (offset $off) @n))
+    (emit (X86Store8 $src $base $off))
+    (covers (@n))
+    (cost 1))
+
+;; 
+(select-rule
+    (match (schema BinaryReg G_MUL (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86IMul32 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_AND (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86And32 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_OR (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86Or32  $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_XOR (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86Xor32 $y))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_MUL (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86IMul64 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_AND (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86And64 $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_OR (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Or64  $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_XOR (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Xor64 $y))
+    (covers (@n))
+    (cost 1))
+
+;; 
+(select-rule
+    (match (schema BinaryReg G_SHL (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86Shl32Cl $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_LSHR (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86Shr32Cl $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_ASHR (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (emit (X86Sar32Cl $y))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_SHL (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Shl64Cl $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_LSHR (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Shr64Cl $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_ASHR (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (emit (X86Sar64Cl $y))
+    (covers (@n))
+    (cost 1))
+
+;; 
+(select-rule
+    (match (schema ICmp G_ICMP (dst $dst) (lhs (GPR32 $x)) (rhs (GPR32 $y)) (cc $cc) @n))
+    (emit (X86Cmp32 $x $y))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema ICmp G_ICMP (dst $dst) (lhs (GPR64 $x)) (rhs (GPR64 $y)) (cc $cc) @n))
+    (emit (X86Cmp64 $x $y))
+    (covers (@n))
+    (cost 1))
+
+;; 
+(select-rule
+    (match (schema Branch G_BR (target $block) @n))
+    (emit (X86Jmp $block))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BranchCond G_BRCOND (cond $cond) (then_blk $then) (else_blk $else) @n))
+    (emit (X86Jcc $cond $then))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Return G_RET @n))
+    (emit (X86Ret))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Unreachable G_UNREACHABLE @n))
+    (emit (X86Ud2))
+    (covers (@n))
+    (cost 1))
+
+;; Division and Remainder (Lowering logic)
+;; 指令融合路径：有符号/无符号的 div 与 rem 使用同一条底层除法序列。
+(select-rule
+    (match (schema BinaryReg G_SDIV (dst $dst) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
+    (emit (seq (X86Cqo) (X86IDiv64 $rhs)))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_SDIV (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
+    (emit (seq (X86Cdq) (X86IDiv32 $rhs)))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_SREM (dst $dst) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
+    (emit (seq (X86Cqo) (X86IDiv64 $rhs)))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_SREM (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
+    (emit (seq (X86Cdq) (X86IDiv32 $rhs)))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_UDIV (dst $dst) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
+    (emit (seq (X86Xor64 (reg RDX) (reg RDX)) (X86Div64 $rhs)))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_UDIV (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
+    (emit (seq (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs)))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_UREM (dst $dst) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
+    (emit (seq (X86Xor64 (reg RDX) (reg RDX)) (X86Div64 $rhs)))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema BinaryReg G_UREM (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
+    (emit (seq (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs)))
+    (covers (@n))
+    (cost 1))

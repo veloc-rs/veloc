@@ -106,19 +106,19 @@ impl DataSection {
         offset as u32
     }
 
-	#[inline(always)]
+    #[inline(always)]
     /// Get return register (count is encoded in instruction)
     pub fn return_reg(&self, offset: usize, index: usize) -> Reg {
         self.regs[offset + index]
     }
 
-	#[inline(always)]
+    #[inline(always)]
     /// Get return register for call data (counts are encoded in instruction)
     pub fn call_ret_reg(&self, offset: usize, index: usize) -> Reg {
         self.regs[offset + index]
     }
 
-	#[inline(always)]
+    #[inline(always)]
     /// Get argument register for call data (counts are encoded in instruction)
     pub fn call_arg_reg(&self, offset: usize, ret_count: usize, index: usize) -> Reg {
         self.regs[offset + ret_count + index]
@@ -922,7 +922,10 @@ impl<'a> Compiler<'a> {
                     &mut self.code,
                     dst,
                     arg_reg,
-                    TypePair { from: from_ty, to: to_ty },
+                    TypePair {
+                        from: from_ty,
+                        to: to_ty,
+                    },
                 );
             }
             IrOpcode::ExtendU => {
@@ -930,7 +933,10 @@ impl<'a> Compiler<'a> {
                     &mut self.code,
                     dst,
                     arg_reg,
-                    TypePair { from: from_ty, to: to_ty },
+                    TypePair {
+                        from: from_ty,
+                        to: to_ty,
+                    },
                 );
             }
             IrOpcode::Wrap => {
@@ -938,7 +944,10 @@ impl<'a> Compiler<'a> {
                     &mut self.code,
                     dst,
                     arg_reg,
-                    TypePair { from: from_ty, to: to_ty },
+                    TypePair {
+                        from: from_ty,
+                        to: to_ty,
+                    },
                 );
             }
             IrOpcode::FloatToIntS => convert_op!(

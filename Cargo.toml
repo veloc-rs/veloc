@@ -13,6 +13,7 @@ members = [
 	"veloc/codegen",
 	"veloc/analyzer",
 	"veloc/optimizer",
+	"veloc/isle",
 ]
 
 [workspace.package]
@@ -28,7 +29,9 @@ veloc-interpreter = { path = "veloc/interpreter" }
 veloc-codegen = { path = "veloc/codegen" }
 veloc-analyzer = { path = "veloc/analyzer" }
 veloc-wasm = { path = "crates/veloc-wasm" }
-veloc-c = { path = "crates/veloc-c" }
+
+# --- ISLE ---
+veloc-isle = { path = "veloc/isle" }
 
 # --- WebAssembly ---
 wasmparser = "0.244.0"

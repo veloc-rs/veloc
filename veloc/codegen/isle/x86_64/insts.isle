@@ -1,0 +1,697 @@
+;; =============================================================================
+;; x86_64  (Definitions & Encodings)
+;; =============================================================================
+
+;; -----------------------------------------------------------------------------
+;; 1. 
+;; -----------------------------------------------------------------------------
+
+;; Register definitions have been moved to reg.isle
+
+;; -----------------------------------------------------------------------------
+;; 2.  (Encoding Macros)
+;; -----------------------------------------------------------------------------
+
+;;  ModRM : [ mod:2 | reg:3 | rm:3 ]
+(def-macro low3 ($value)
+    (bit-and $value 0x7))
+
+(def-macro bit3 ($value)
+    (bit-and (shr $value 3) 0x1))
+
+(def-macro modrm ($mod $reg $rm)
+    (bit-or (shl $mod 6)
+            (bit-or (shl (low3 $reg) 3) (low3 $rm))))
+
+;; - ModRM (mod = 0b11)
+(def-macro modrm-rr ($reg $rm)
+    (modrm 0b11 $reg $rm))
+
+;; SIB : [ scale:2 | index:3 | base:3 ]
+(def-macro sib ($scale $index $base)
+    (bit-or (shl $scale 6)
+            (bit-or (shl (low3 $index) 3) (low3 $base))))
+
+;; REX : [ 0100 | W:1 | R:1 | X:1 | B:1 ]
+(def-macro rex ($w $r $x $b)
+    (bit-or 0x40
+            (bit-or (shl $w 3)
+                    (bit-or (shl $r 2)
+                            (bit-or (shl $x 1) $b)))))
+
+(def-macro rex-w ($r $b)
+    (rex 1 (bit3 $r) 0 (bit3 $b)))
+
+(def-macro rex-rr ($r $b)
+    (rex 0 (bit3 $r) 0 (bit3 $b)))
+
+(def-macro needs-rex ($r $b)
+    (bit-or (bit3 $r) (bit3 $b)))
+
+;; -----------------------------------------------------------------------------
+;; 3.  (Instruction Templates)
+;; -----------------------------------------------------------------------------
+
+;; 32  (Reg-Reg)
+(def-template BinOp32rr ($opcode)
+    (operands (def (tied $dst $src1)) (use $src2))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex (hw-enc $src2) (hw-enc $dst))
+            (byte (rex-rr (hw-enc $src2) (hw-enc $dst))))
+        (byte $opcode)
+        (byte (modrm-rr (hw-enc $src2) (hw-enc $dst)))))
+
+;; 64  (Reg-Reg)
+(def-template BinOp64rr ($opcode)
+    (operands (def (tied $dst $src1)) (use $src2))
+    (clobbers EFLAGS)
+    (encode
+        (byte (rex-w (hw-enc $src2) (hw-enc $dst)))
+        (byte $opcode)
+        (byte (modrm-rr (hw-enc $src2) (hw-enc $dst)))))
+
+;; IMUL r32, r/m32 and IMUL r64, r/m64 use the two-byte 0F AF encoding,
+;; so they cannot reuse the plain BinOp templates above.
+(def-template IMul32rr ()
+    (operands (def (tied $dst $src1)) (use $src2))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $src2))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $src2))))
+        (byte 0x0F)
+        (byte 0xAF)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src2)))))
+
+(def-template IMul64rr ()
+    (operands (def (tied $dst $src1)) (use $src2))
+    (clobbers EFLAGS)
+    (encode
+        (byte (rex-w (hw-enc $dst) (hw-enc $src2)))
+        (byte 0x0F)
+        (byte 0xAF)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src2)))))
+
+;; Variable-count shifts use CL as the implicit count register.
+(def-template Shift32cl ($extension)
+    (operands (def (tied $dst $src1)) (use (fixed RCX $count)))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex 0 (hw-enc $dst))
+            (byte (rex-rr 0 (hw-enc $dst))))
+        (byte 0xD3)
+        (byte (modrm-rr $extension (hw-enc $dst)))))
+
+(def-template Shift64cl ($extension)
+    (operands (def (tied $dst $src1)) (use (fixed RCX $count)))
+    (clobbers EFLAGS)
+    (encode
+        (byte (rex-w 0 (hw-enc $dst)))
+        (byte 0xD3)
+        (byte (modrm-rr $extension (hw-enc $dst)))))
+
+;; 纯 use/use 比较，不伪装成两地址 def-use。
+(def-template Cmp32rr ()
+    (operands (use $lhs) (use $rhs))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex (hw-enc $rhs) (hw-enc $lhs))
+            (byte (rex-rr (hw-enc $rhs) (hw-enc $lhs))))
+        (byte 0x39)
+        (byte (modrm-rr (hw-enc $rhs) (hw-enc $lhs)))))
+
+(def-template Cmp32ri ()
+    (operands (use $src) (imm $imm))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex 0 (hw-enc $src))
+            (byte (rex-rr 0 (hw-enc $src))))
+        (byte 0x81)
+        (byte (modrm-rr 7 (hw-enc $src)))
+        (imm32 $imm)))
+
+(def-template Cmp64rr ()
+    (operands (use $lhs) (use $rhs))
+    (clobbers EFLAGS)
+    (encode
+        (byte (rex-w (hw-enc $rhs) (hw-enc $lhs)))
+        (byte 0x39)
+        (byte (modrm-rr (hw-enc $rhs) (hw-enc $lhs)))))
+
+(def-template Test32rr ()
+    (operands (use $lhs) (use $rhs))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex (hw-enc $rhs) (hw-enc $lhs))
+            (byte (rex-rr (hw-enc $rhs) (hw-enc $lhs))))
+        (byte 0x85)
+        (byte (modrm-rr (hw-enc $rhs) (hw-enc $lhs)))))
+
+(def-template Test64rr ()
+    (operands (use $lhs) (use $rhs))
+    (clobbers EFLAGS)
+    (encode
+        (byte (rex-w (hw-enc $rhs) (hw-enc $lhs)))
+        (byte 0x85)
+        (byte (modrm-rr (hw-enc $rhs) (hw-enc $lhs)))))
+
+(def-template Ucomissrr ()
+    (operands (use $lhs) (use $rhs))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex (hw-enc $rhs) (hw-enc $lhs))
+            (byte (rex-rr (hw-enc $rhs) (hw-enc $lhs))))
+        (byte 0x0F)
+        (byte 0x2E)
+        (byte (modrm-rr (hw-enc $rhs) (hw-enc $lhs)))))
+
+(def-template Ucomisdrr ()
+    (operands (use $lhs) (use $rhs))
+    (clobbers EFLAGS)
+    (encode
+        (byte 0x66)
+        (if (needs-rex (hw-enc $rhs) (hw-enc $lhs))
+            (byte (rex-rr (hw-enc $rhs) (hw-enc $lhs))))
+        (byte 0x0F)
+        (byte 0x2E)
+        (byte (modrm-rr (hw-enc $rhs) (hw-enc $lhs)))))
+
+(def-template Setcc8r ($cc)
+    (operands (def $dst))
+    (encode
+        (byte (rex-rr 0 (hw-enc $dst)))
+        (byte 0x0F)
+        (byte $cc)
+        (byte (modrm-rr 0 (hw-enc $dst)))))
+
+(def-template Movzx8to32rr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $src))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
+        (byte 0x0F)
+        (byte 0xB6)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template Movzx16to32rr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (byte 0x66)
+        (if (needs-rex (hw-enc $dst) (hw-enc $src))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
+        (byte 0x0F)
+        (byte 0xB7)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template Movsx8to32rr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $src))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
+        (byte 0x0F)
+        (byte 0xBE)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template Movsx16to32rr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (byte 0x66)
+        (if (needs-rex (hw-enc $dst) (hw-enc $src))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
+        (byte 0x0F)
+        (byte 0xBF)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template Movsx8to64rr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (byte (rex-w (hw-enc $dst) (hw-enc $src)))
+        (byte 0x0F)
+        (byte 0xBE)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template Movsx16to64rr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (byte 0x66)
+        (byte (rex-w (hw-enc $dst) (hw-enc $src)))
+        (byte 0x0F)
+        (byte 0xBF)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template Movsxd32to64rr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (byte (rex-w (hw-enc $dst) (hw-enc $src)))
+        (byte 0x63)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template XmmMovScalarrr ($prefix)
+    (operands (def (tied $dst $src1)) (use $src2))
+    (encode
+        (if (needs-rex (hw-enc $src2) (hw-enc $dst))
+            (byte (rex-rr (hw-enc $src2) (hw-enc $dst))))
+        (byte $prefix)
+        (byte 0x0F)
+        (byte 0x10)
+        (byte (modrm-rr (hw-enc $src2) (hw-enc $dst)))))
+
+(def-template MovdToXmmrr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $src))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
+        (byte 0x66)
+        (byte 0x0F)
+        (byte 0x6E)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template MovdFromXmmrr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (if (needs-rex (hw-enc $src) (hw-enc $dst))
+            (byte (rex-rr (hw-enc $src) (hw-enc $dst))))
+        (byte 0x66)
+        (byte 0x0F)
+        (byte 0x7E)
+        (byte (modrm-rr (hw-enc $src) (hw-enc $dst)))))
+
+(def-template MovqToXmmrr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (byte (rex-w (hw-enc $dst) (hw-enc $src)))
+        (byte 0x66)
+        (byte 0x0F)
+        (byte 0x6E)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+
+(def-template MovqFromXmmrr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (byte (rex-w (hw-enc $src) (hw-enc $dst)))
+        (byte 0x66)
+        (byte 0x0F)
+        (byte 0x7E)
+        (byte (modrm-rr (hw-enc $src) (hw-enc $dst)))))
+
+;; 64  (Reg-Imm)
+;; /extension  ModRM  reg 
+(def-template BinOp64ri ($opcode $extension)
+    (operands (def (tied $dst $src)) (imm $imm))
+    (clobbers EFLAGS)
+    (encode
+        (byte (rex-w 0 (hw-enc $dst)))
+        (byte $opcode)
+        (byte (modrm-rr $extension (hw-enc $dst)))
+        (imm32 $imm)))
+
+;; 32 位二地址 + imm32
+(def-template BinOp32ri ($opcode $extension)
+    (operands (def (tied $dst $src)) (imm $imm))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex 0 (hw-enc $dst))
+            (byte (rex-rr 0 (hw-enc $dst))))
+        (byte $opcode)
+        (byte (modrm-rr $extension (hw-enc $dst)))
+        (imm32 $imm)))
+
+;; 32/64 位二地址 + imm8（主要用于移位）
+(def-template Shift32ri ($extension)
+    (operands (def (tied $dst $src)) (imm $imm))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex 0 (hw-enc $dst))
+            (byte (rex-rr 0 (hw-enc $dst))))
+        (byte 0xC1)
+        (byte (modrm-rr $extension (hw-enc $dst)))
+        (byte $imm)))
+
+(def-template Shift64ri ($extension)
+    (operands (def (tied $dst $src)) (imm $imm))
+    (clobbers EFLAGS)
+    (encode
+        (byte (rex-w 0 (hw-enc $dst)))
+        (byte 0xC1)
+        (byte (modrm-rr $extension (hw-enc $dst)))
+        (byte $imm)))
+
+;; 基址 + disp32 内存寻址。统一使用 SIB + disp32，避免处理 [rbp]/[r13]/[rsp]/[r12] 特例。
+(def-template Load8U32m ()
+    (operands (def $dst) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $base))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $base))))
+        (byte 0x0F)
+        (byte 0xB6)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template Load16U32m ()
+    (operands (def $dst) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $base))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $base))))
+        (byte 0x0F)
+        (byte 0xB7)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template Load32m ()
+    (operands (def $dst) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $base))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $base))))
+        (byte 0x8B)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template Load64m ()
+    (operands (def $dst) (use $base) (imm $off))
+    (encode
+        (byte (rex-w (hw-enc $dst) (hw-enc $base)))
+        (byte 0x8B)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template LoadF32m ()
+    (operands (def $dst) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $base))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $base))))
+        (byte 0xF3)
+        (byte 0x0F)
+        (byte 0x10)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template LoadF64m ()
+    (operands (def $dst) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $dst) (hw-enc $base))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $base))))
+        (byte 0xF2)
+        (byte 0x0F)
+        (byte 0x10)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template Store8m ()
+    (operands (use $src) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $src) (hw-enc $base))
+            (byte (rex-rr (hw-enc $src) (hw-enc $base))))
+        (byte 0x88)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template Store16m ()
+    (operands (use $src) (use $base) (imm $off))
+    (encode
+        (byte 0x66)
+        (if (needs-rex (hw-enc $src) (hw-enc $base))
+            (byte (rex-rr (hw-enc $src) (hw-enc $base))))
+        (byte 0x89)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template Store32m ()
+    (operands (use $src) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $src) (hw-enc $base))
+            (byte (rex-rr (hw-enc $src) (hw-enc $base))))
+        (byte 0x89)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template Store64m ()
+    (operands (use $src) (use $base) (imm $off))
+    (encode
+        (byte (rex-w (hw-enc $src) (hw-enc $base)))
+        (byte 0x89)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template StoreF32m ()
+    (operands (use $src) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $src) (hw-enc $base))
+            (byte (rex-rr (hw-enc $src) (hw-enc $base))))
+        (byte 0xF3)
+        (byte 0x0F)
+        (byte 0x11)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+(def-template StoreF64m ()
+    (operands (use $src) (use $base) (imm $off))
+    (encode
+        (if (needs-rex (hw-enc $src) (hw-enc $base))
+            (byte (rex-rr (hw-enc $src) (hw-enc $base))))
+        (byte 0xF2)
+        (byte 0x0F)
+        (byte 0x11)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (hw-enc $base)))
+        (imm32 $off)))
+
+;; -----------------------------------------------------------------------------
+;; 4.  (Instruction Definitions)
+;; -----------------------------------------------------------------------------
+
+;; 32 
+(def-inst X86Add32 (template BinOp32rr 0x01))
+(def-inst X86Sub32 (template BinOp32rr 0x29))
+(def-inst X86And32 (template BinOp32rr 0x21))
+(def-inst X86Or32  (template BinOp32rr 0x09))
+(def-inst X86Xor32 (template BinOp32rr 0x31))
+(def-inst X86Cmp32 (template Cmp32rr))
+(def-inst X86Cmp32ri (template Cmp32ri))
+(def-inst X86Test32 (template Test32rr))
+(def-inst X86Ucomiss (template Ucomissrr))
+
+;; 64 
+(def-inst X86Add64 (template BinOp64rr 0x01))
+(def-inst X86Sub64 (template BinOp64rr 0x29))
+(def-inst X86Add64ri (template BinOp64ri 0x81 0)) ;; 0x81 /0
+(def-inst X86Sub64ri (template BinOp64ri 0x81 5)) ;; 0x81 /5
+(def-inst X86And64 (template BinOp64rr 0x21))
+(def-inst X86And32ri (template BinOp32ri 0x81 4)) ;; 0x81 /4
+(def-inst X86And64ri (template BinOp64ri 0x81 4)) ;; 0x81 /4
+(def-inst X86Or64  (template BinOp64rr 0x09))
+(def-inst X86Xor64 (template BinOp64rr 0x31))
+(def-inst X86Cmp64 (template Cmp64rr))
+(def-inst X86Test64 (template Test64rr))
+(def-inst X86Ucomisd (template Ucomisdrr))
+
+;; 
+(def-inst X86IMul32 (template IMul32rr))
+(def-inst X86IMul64 (template IMul64rr))
+
+;; 
+(def-inst X86Shl32Cl (template Shift32cl 4))
+(def-inst X86Shl64Cl (template Shift64cl 4))
+(def-inst X86Shr32Cl (template Shift32cl 5))
+(def-inst X86Shr64Cl (template Shift64cl 5))
+(def-inst X86Sar32Cl (template Shift32cl 7))
+(def-inst X86Sar64Cl (template Shift64cl 7))
+(def-inst X86Shl32ri (template Shift32ri 4))
+(def-inst X86Shl64ri (template Shift64ri 4))
+(def-inst X86Sar32ri (template Shift32ri 7))
+(def-inst X86Sar64ri (template Shift64ri 7))
+
+;; 
+(def-inst X86Mov32 (template BinOp32rr 0x89))
+(def-inst X86Mov64 (template BinOp64rr 0x89))
+(def-inst X86Movss (template XmmMovScalarrr 0xF3))
+(def-inst X86Movsd (template XmmMovScalarrr 0xF2))
+(def-inst X86MovdToXmm (template MovdToXmmrr))
+(def-inst X86MovdFromXmm (template MovdFromXmmrr))
+(def-inst X86MovqToXmm (template MovqToXmmrr))
+(def-inst X86MovqFromXmm (template MovqFromXmmrr))
+(def-inst X86Movzx8to32 (template Movzx8to32rr))
+(def-inst X86Movzx16to32 (template Movzx16to32rr))
+(def-inst X86Movsx8to32 (template Movsx8to32rr))
+(def-inst X86Movsx16to32 (template Movsx16to32rr))
+(def-inst X86Movsx8to64 (template Movsx8to64rr))
+(def-inst X86Movsx16to64 (template Movsx16to64rr))
+(def-inst X86Movsxd32to64 (template Movsxd32to64rr))
+(def-inst X86Mov32Imm
+    (operands (def $dst) (imm $imm))
+    (encode
+        (if (needs-rex 0 (hw-enc $dst))
+            (byte (rex-rr 0 (hw-enc $dst))))
+        (byte (bit-or 0xB8 (low3 (hw-enc $dst))))
+        (imm32 $imm)))
+(def-inst X86Mov64Imm32
+    (operands (def $dst) (imm $imm))
+    (encode
+        (byte (rex-w 0 (hw-enc $dst)))
+        (byte 0xC7)
+        (byte (modrm-rr 0 (hw-enc $dst)))
+        (imm32 $imm)))
+(def-inst X86Mov64Imm64
+    (operands (def $dst) (imm $imm))
+    (encode
+        (byte (rex-w 0 (hw-enc $dst)))
+        (byte (bit-or 0xB8 (low3 (hw-enc $dst))))
+        (imm64 $imm)))
+
+;; 
+(def-inst X86Load8U32 (template Load8U32m))
+(def-inst X86Load16U32 (template Load16U32m))
+(def-inst X86Load32 (template Load32m))
+(def-inst X86Load64 (template Load64m))
+(def-inst X86LoadF32 (template LoadF32m))
+(def-inst X86LoadF64 (template LoadF64m))
+(def-inst X86Store8 (template Store8m))
+(def-inst X86Store16 (template Store16m))
+(def-inst X86Store32 (template Store32m))
+(def-inst X86Store64 (template Store64m))
+(def-inst X86StoreF32 (template StoreF32m))
+(def-inst X86StoreF64 (template StoreF64m))
+(def-inst X86Sete  (template Setcc8r 0x94))
+(def-inst X86Setne (template Setcc8r 0x95))
+(def-inst X86Setb  (template Setcc8r 0x92))
+(def-inst X86Seta  (template Setcc8r 0x97))
+(def-inst X86Setbe (template Setcc8r 0x96))
+(def-inst X86Setae (template Setcc8r 0x93))
+(def-inst X86Setl  (template Setcc8r 0x9C))
+(def-inst X86Setg  (template Setcc8r 0x9F))
+(def-inst X86Setle (template Setcc8r 0x9E))
+(def-inst X86Setge (template Setcc8r 0x9D))
+(def-inst X86Setp  (template Setcc8r 0x9A))
+(def-inst X86Setnp (template Setcc8r 0x9B))
+
+;; 
+(def-inst X86Load32Stack (template BinOp32rr 0x8B))
+(def-inst X86Load64Stack (template BinOp64rr 0x8B))
+(def-inst X86Store32Stack (template BinOp32rr 0x89))
+(def-inst X86Store64Stack (template BinOp64rr 0x89))
+
+;; 
+(def-inst X86Call
+    (operands (global $target))
+    (encode
+        (byte 0xE8)
+        (rel32 $target)))
+(def-inst X86CallReg
+    (operands (use $target))
+    (encode
+        (byte (rex-w 0 (hw-enc $target)))
+        (byte 0xFF)
+        (byte (modrm-rr 2 (hw-enc $target)))))
+(def-inst X86Ret
+    (encode (byte 0xC3)))
+(def-inst X86Ud2
+    (encode
+        (byte 0x0F)
+        (byte 0x0B)))
+(def-inst X86Jmp
+    (operands (block $target))
+    (encode
+        (byte 0xE9)
+        (rel32 $target)))
+
+(def-inst X86Jcc
+    (operands (use $cond) (block $target))
+    (clobbers EFLAGS)
+    (encode
+        (if (needs-rex (hw-enc $cond) (hw-enc $cond))
+            (byte (rex-rr (hw-enc $cond) (hw-enc $cond))))
+        (byte 0x85)
+        (byte (modrm-rr (hw-enc $cond) (hw-enc $cond)))
+        (byte 0x0F)
+        (byte 0x85)
+        (rel32 $target)))
+(def-inst X86Je
+    (operands (block $target))
+    (clobbers EFLAGS)
+    (encode
+        (byte 0x0F)
+        (byte 0x84)
+        (rel32 $target)))
+
+;; -----------------------------------------------------------------------------
+;; 5.  (Prologue/Epilogue Support)
+;; -----------------------------------------------------------------------------
+
+(def-inst X86PushRbp
+    (operands (use $rbp))
+    (encode (byte 0x55)))
+
+(def-inst X86PopRbp
+    (operands (def $rbp))
+    (encode (byte 0x5D)))
+
+(def-inst X86MovRbpRsp
+    (operands (def $rbp) (use $rsp))
+    (encode (byte 0x48) (byte 0x89) (byte 0xE5)))
+
+;;  IDiv 
+(def-inst X86IDiv32
+    (operands (use $src))
+    (implicit-uses EAX EDX)
+    (implicit-defs EAX EDX)
+    (clobbers EFLAGS)
+    (encode
+        (byte 0xf7)
+        (byte (modrm-rr 7 (hw-enc $src)))))
+
+(def-inst X86IDiv64
+    (operands (use $src))
+    (implicit-uses RAX RDX)
+    (implicit-defs RAX RDX)
+    (clobbers EFLAGS)
+    (encode
+        (byte 0x48)
+        (byte 0xf7)
+        (byte (modrm-rr 7 (hw-enc $src)))))
+
+(def-inst X86Div32
+    (operands (use $src))
+    (implicit-uses EAX EDX)
+    (implicit-defs EAX EDX)
+    (clobbers EFLAGS)
+    (encode
+        (byte 0xf7)
+        (byte (modrm-rr 6 (hw-enc $src)))))
+
+(def-inst X86Div64
+    (operands (use $src))
+    (implicit-uses RAX RDX)
+    (implicit-defs RAX RDX)
+    (clobbers EFLAGS)
+    (encode
+        (byte 0x48)
+        (byte 0xf7)
+        (byte (modrm-rr 6 (hw-enc $src)))))
+
+;; CQO: Convert Quadword to Octoword (RAX -> RDX:RAX)
+;; 符号扩展 RAX 到 RDX:RAX
+(def-inst X86Cqo
+    (operands)
+    (implicit-uses RAX)
+    (implicit-defs RDX)
+    (encode (byte 0x48) (byte 0x99))
+)
+
+;; CDQ: Convert Doubleword to Quadword (EAX -> EDX:EAX)
+;; 符号扩展 EAX 到 EDX:EAX
+(def-inst X86Cdq
+    (operands)
+    (implicit-uses EAX)
+    (implicit-defs EDX)
+    (encode (byte 0x99))
+)

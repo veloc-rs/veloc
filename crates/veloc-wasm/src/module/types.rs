@@ -38,8 +38,12 @@ impl WasmSignature {
         let mut params = Vec::with_capacity(self.params.len() + 1);
         params.push(VelocType::PTR); // vmctx
         params.extend(self.params.iter().map(|&t| valtype_to_veloc(t)));
-        // 返回值：支持多返回值，直接通过 IR 多返回返回
-        let ret: Vec<VelocType> = self.results.iter().map(|&t| valtype_to_veloc(t)).collect();
+        let ret: Vec<VelocType> = if self.results.len() > 1 {
+            params.push(VelocType::PTR); // hidden multi-result buffer
+            Vec::new()
+        } else {
+            self.results.iter().map(|&t| valtype_to_veloc(t)).collect()
+        };
         ir.make_signature(params, ret, CallConv::SystemV)
     }
 }
