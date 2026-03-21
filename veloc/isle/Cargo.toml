@@ -1,0 +1,12 @@
+[package]
+name = "veloc-isle"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+logos = "0.16.1"
+miette = { version = "7.6.0", features = ["fancy"] }
+thiserror = "2.0"
+
+[features]
+default = []

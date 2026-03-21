@@ -1,0 +1,18 @@
+;; =============================================================================
+;; x86_64  (CPU Target Models)
+;; =============================================================================
+
+(def-cpu "generic"
+    (features)
+    (limitations)
+)
+
+(def-cpu "haswell"
+    (features SSE41 AVX AVX2 BMI1 BMI2)
+    (limitations)
+)
+
+(def-cpu "skylake"
+    (features SSE41 AVX AVX2 BMI1 BMI2)
+    (limitations SLOW_LEA)
+)

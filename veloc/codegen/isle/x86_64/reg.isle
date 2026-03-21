@@ -1,0 +1,64 @@
+;; =============================================================================
+;; x86_64 Physical Registers Definition
+;; =============================================================================
+
+;; -----------------------------------------------------------------------------
+;; 1. Base 64-bit Registers
+;; -----------------------------------------------------------------------------
+
+(def-reg RAX (size 64) (hw-enc 0))
+(def-reg RCX (size 64) (hw-enc 1))
+(def-reg RDX (size 64) (hw-enc 2))
+(def-reg RBX (size 64) (hw-enc 3))
+(def-reg RSP (size 64) (hw-enc 4) (reserved) (role stack-pointer))
+(def-reg RBP (size 64) (hw-enc 5) (reserved) (role frame-pointer))
+(def-reg RSI (size 64) (hw-enc 6))
+(def-reg RDI (size 64) (hw-enc 7))
+(def-reg R8  (size 64) (hw-enc 8))
+(def-reg R9  (size 64) (hw-enc 9))
+(def-reg R10 (size 64) (hw-enc 10))
+(def-reg R11 (size 64) (hw-enc 11))
+(def-reg R12 (size 64) (hw-enc 12))
+(def-reg R13 (size 64) (hw-enc 13))
+(def-reg R14 (size 64) (hw-enc 14))
+(def-reg R15 (size 64) (hw-enc 15))
+
+;; 128-bit SIMD / floating-point registers
+(def-reg XMM0  (size 128) (hw-enc 16))
+(def-reg XMM1  (size 128) (hw-enc 17))
+(def-reg XMM2  (size 128) (hw-enc 18))
+(def-reg XMM3  (size 128) (hw-enc 19))
+(def-reg XMM4  (size 128) (hw-enc 20))
+(def-reg XMM5  (size 128) (hw-enc 21))
+(def-reg XMM6  (size 128) (hw-enc 22))
+(def-reg XMM7  (size 128) (hw-enc 23))
+(def-reg XMM8  (size 128) (hw-enc 24))
+(def-reg XMM9  (size 128) (hw-enc 25))
+(def-reg XMM10 (size 128) (hw-enc 26))
+(def-reg XMM11 (size 128) (hw-enc 27))
+(def-reg XMM12 (size 128) (hw-enc 28))
+(def-reg XMM13 (size 128) (hw-enc 29))
+(def-reg XMM14 (size 128) (hw-enc 30))
+(def-reg XMM15 (size 128) (hw-enc 31))
+
+;; -----------------------------------------------------------------------------
+;; 2. Sub-registers (Aliases)
+;; -----------------------------------------------------------------------------
+
+;; 32-bit sub-registers
+(def-reg EAX (size 32) (alias RAX 0-31) (hw-enc 0))
+(def-reg ECX (size 32) (alias RCX 0-31) (hw-enc 1))
+(def-reg EDX (size 32) (alias RDX 0-31) (hw-enc 2))
+(def-reg EBX (size 32) (alias RBX 0-31) (hw-enc 3))
+(def-reg ESP (size 32) (alias RSP 0-31) (hw-enc 4))
+(def-reg EBP (size 32) (alias RBP 0-31) (hw-enc 5))
+(def-reg ESI (size 32) (alias RSI 0-31) (hw-enc 6))
+(def-reg EDI (size 32) (alias RDI 0-31) (hw-enc 7))
+
+;; -----------------------------------------------------------------------------
+;; 3. Register Classes
+;; -----------------------------------------------------------------------------
+
+(def-regclass GPR64 (RAX RCX RDX RBX RSP RBP RSI RDI R8 R9 R10 R11 R12 R13 R14 R15))
+(def-regclass GPR32 (EAX ECX EDX EBX ESP EBP ESI EDI))
+(def-regclass FPR128 (XMM0 XMM1 XMM2 XMM3 XMM4 XMM5 XMM6 XMM7 XMM8 XMM9 XMM10 XMM11 XMM12 XMM13 XMM14 XMM15))

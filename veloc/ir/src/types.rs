@@ -221,6 +221,11 @@ impl Type {
         self.scalar_type().is_integer()
     }
 
+    /// 是否是指针类型
+    pub fn is_ptr(&self) -> bool {
+        self.scalar_type() == ScalarType::Ptr
+    }
+
     /// 是否是浮点类型
     pub fn is_float(&self) -> bool {
         self.scalar_type().is_float()

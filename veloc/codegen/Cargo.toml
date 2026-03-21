@@ -2,16 +2,20 @@
 name = "veloc-codegen"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 veloc-ir = { path = "../ir" }
 cranelift-entity = { workspace = true }
 object = { version = "0.36", features = ["write"] }
 hashbrown = { workspace = true }
+smallvec.workspace = true
+egg = "0.9"
 
+[build-dependencies]
+# 构建时依赖
+veloc-isle = { path = "../isle" }
 
 [features]
 default = ["std"]
 std = ["veloc-ir/std"]
-
-

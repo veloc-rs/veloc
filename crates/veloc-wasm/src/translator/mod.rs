@@ -17,6 +17,7 @@ pub struct WasmTranslator<'a> {
     next_var_idx: u32,
     control_stack: Vec<ControlFrame>,
     vmctx: Option<Value>,
+    results_ptr: Option<Value>,
     results: Vec<VelocType>,
     terminated: bool,
     use_names: bool,
@@ -63,6 +64,7 @@ impl<'a> WasmTranslator<'a> {
             locals: Vec::new(),
             control_stack: Vec::new(),
             vmctx: None,
+            results_ptr: None,
             results,
             terminated: false,
             metadata,
@@ -126,6 +128,16 @@ impl<'a> WasmTranslator<'a> {
             self.builder.def_var(var, val);
             if self.use_names {
                 self.builder.set_value_name(val, &format!("param{}", i));
+            }
+        }
+
+        if self.results.len() > 1 {
+            let results_ptr = params_iter
+                .next()
+                .expect("Missing hidden multi-result buffer parameter");
+            self.results_ptr = Some(results_ptr);
+            if self.use_names {
+                self.builder.set_value_name(results_ptr, "results_ptr");
             }
         }
 
@@ -206,6 +218,58 @@ impl<'a> WasmTranslator<'a> {
         }
         self.builder.seal_all_blocks();
         Ok(())
+    }
+
+    pub(super) fn results_ptr(&self) -> Value {
+        self.results_ptr
+            .expect("multi-result function missing hidden results buffer pointer")
+    }
+
+    pub(super) fn encode_result_bits(&mut self, value: Value, ty: VelocType) -> Value {
+        let mut ins = self.builder.ins();
+        match ty {
+            VelocType::I32 => ins.extend_u(value, VelocType::I64),
+            VelocType::F32 => {
+                let bits = ins.reinterpret(value, VelocType::I32);
+                ins.extend_u(bits, VelocType::I64)
+            }
+            VelocType::F64 => ins.reinterpret(value, VelocType::I64),
+            VelocType::PTR => ins.ptr_to_int(value, VelocType::I64),
+            _ => value,
+        }
+    }
+
+    pub(super) fn decode_result_bits(&mut self, bits: Value, ty: VelocType) -> Value {
+        let mut ins = self.builder.ins();
+        match ty {
+            VelocType::I32 => ins.wrap(bits, VelocType::I32),
+            VelocType::F32 => {
+                let bits32 = ins.wrap(bits, VelocType::I32);
+                ins.reinterpret(bits32, VelocType::F32)
+            }
+            VelocType::F64 => ins.reinterpret(bits, VelocType::F64),
+            VelocType::PTR => ins.int_to_ptr(bits),
+            _ => bits,
+        }
+    }
+
+    pub(super) fn emit_function_return(&mut self, vals: &[Value]) {
+        if self.results.len() > 1 {
+            let results_ptr = self.results_ptr();
+            let result_types = self.results.clone();
+            for (i, (&val, &ty)) in vals.iter().zip(result_types.iter()).enumerate() {
+                let bits = self.encode_result_bits(val, ty);
+                self.builder.ins().store(
+                    bits,
+                    results_ptr,
+                    (i * 8) as u32,
+                    MemFlags::new().with_alignment(8),
+                );
+            }
+            self.builder.ins().ret(&[]);
+        } else {
+            self.builder.ins().ret(vals);
+        }
     }
 
     pub(super) fn translate_operator(&mut self, op: Operator) -> Result<(), BinaryReaderError> {

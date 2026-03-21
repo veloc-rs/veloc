@@ -58,14 +58,13 @@ impl RuntimeFunctions {
     pub fn declare(ir: &mut veloc::ir::ModuleBuilder) -> Self {
         let p = VelocType::PTR;
         let i = VelocType::I32;
-        let v = VelocType::VOID;
 
         let sig =
             |ir: &mut veloc::ir::ModuleBuilder, params: Vec<VelocType>, ret: Vec<VelocType>| {
                 ir.make_signature(params, ret, CallConv::SystemV)
             };
 
-        let trap_handler_sig = sig(ir, vec![p, i], vec![v]);
+        let trap_handler_sig = sig(ir, vec![p, i], vec![]);
         let trap_handler = ir.declare_function(
             "wasm_trap_handler".into(),
             trap_handler_sig,
@@ -80,29 +79,29 @@ impl RuntimeFunctions {
         let memory_grow =
             ir.declare_function("wasm_memory_grow".into(), memory_grow_sig, Linkage::Import);
 
-        let init_table_element_sig = sig(ir, vec![p, i, i], vec![v]);
+        let init_table_element_sig = sig(ir, vec![p, i, i], vec![]);
         let init_table_element = ir.declare_function(
             "wasm_init_table_element".into(),
             init_table_element_sig,
             Linkage::Import,
         );
 
-        let init_memory_data_sig = sig(ir, vec![p, i, i], vec![v]);
+        let init_memory_data_sig = sig(ir, vec![p, i, i], vec![]);
         let init_memory_data = ir.declare_function(
             "wasm_init_memory_data".into(),
             init_memory_data_sig,
             Linkage::Import,
         );
 
-        let init_table_sig = sig(ir, vec![p, i, p], vec![v]);
+        let init_table_sig = sig(ir, vec![p, i, p], vec![]);
         let init_table =
             ir.declare_function("wasm_init_table".into(), init_table_sig, Linkage::Import);
 
-        let table_init_sig = sig(ir, vec![p, i, i, i, i, i], vec![v]);
+        let table_init_sig = sig(ir, vec![p, i, i, i, i, i], vec![]);
         let table_init =
             ir.declare_function("wasm_table_init".into(), table_init_sig, Linkage::Import);
 
-        let table_copy_sig = sig(ir, vec![p, i, i, i, i, i], vec![v]);
+        let table_copy_sig = sig(ir, vec![p, i, i, i, i, i], vec![]);
         let table_copy =
             ir.declare_function("wasm_table_copy".into(), table_copy_sig, Linkage::Import);
 
@@ -114,27 +113,27 @@ impl RuntimeFunctions {
         let table_size =
             ir.declare_function("wasm_table_size".into(), table_size_sig, Linkage::Import);
 
-        let table_fill_sig = sig(ir, vec![p, i, i, p, i], vec![v]);
+        let table_fill_sig = sig(ir, vec![p, i, i, p, i], vec![]);
         let table_fill =
             ir.declare_function("wasm_table_fill".into(), table_fill_sig, Linkage::Import);
 
-        let elem_drop_sig = sig(ir, vec![p, i], vec![v]);
+        let elem_drop_sig = sig(ir, vec![p, i], vec![]);
         let elem_drop =
             ir.declare_function("wasm_elem_drop".into(), elem_drop_sig, Linkage::Import);
 
-        let memory_init_sig = sig(ir, vec![p, i, i, i, i, i], vec![v]);
+        let memory_init_sig = sig(ir, vec![p, i, i, i, i, i], vec![]);
         let memory_init =
             ir.declare_function("wasm_memory_init".into(), memory_init_sig, Linkage::Import);
 
-        let data_drop_sig = sig(ir, vec![p, i], vec![v]);
+        let data_drop_sig = sig(ir, vec![p, i], vec![]);
         let data_drop =
             ir.declare_function("wasm_data_drop".into(), data_drop_sig, Linkage::Import);
 
-        let memory_copy_sig = sig(ir, vec![p, i, i, i, i, i], vec![v]);
+        let memory_copy_sig = sig(ir, vec![p, i, i, i, i, i], vec![]);
         let memory_copy =
             ir.declare_function("wasm_memory_copy".into(), memory_copy_sig, Linkage::Import);
 
-        let memory_fill_sig = sig(ir, vec![p, i, i, i, i], vec![v]);
+        let memory_fill_sig = sig(ir, vec![p, i, i, i, i], vec![]);
         let memory_fill =
             ir.declare_function("wasm_memory_fill".into(), memory_fill_sig, Linkage::Import);
 
@@ -316,7 +315,7 @@ impl Module {
         let artifact = if strategy == Strategy::Jit {
             let object_data = engine
                 .backend()
-                .compile_module(&ir)
+                .compile_object(&ir)
                 .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {}", e)))?;
 
             // Load JIT object and relocate
@@ -466,15 +465,14 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
         // 仅为本地定义的函数生成 Array-to-Wasm Trampoline
         if !is_import {
             let tramp_name = format!("{}_trampoline", func_name);
-            // Trampoline 返回类型：多返回值时返回多个 I64
-            let tramp_ret: Vec<VelocType> = (0..wasm_sig.results.len())
-                .map(|_| VelocType::I64)
-                .collect();
-            let tramp_sig_id = ir.make_signature(
-                vec![VelocType::PTR, VelocType::PTR],
-                tramp_ret,
-                CallConv::SystemV,
-            );
+            // JIT 调用端统一按 `extern "C" fn(*const VMContext, *const i64) -> i64` 调用，
+            // 多返回值通过隐藏 results buffer 传递。
+            let mut tramp_params = vec![VelocType::PTR, VelocType::PTR];
+            if wasm_sig.results.len() > 1 {
+                tramp_params.push(VelocType::PTR);
+            }
+            let tramp_sig_id =
+                ir.make_signature(tramp_params, vec![VelocType::I64], CallConv::SystemV);
             let tramp_id = ir.declare_function(tramp_name, tramp_sig_id, Linkage::Export);
 
             let sig = &metadata.signatures[ty_idx as usize];
@@ -485,6 +483,11 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
             let params = ins.builder().func_params().to_vec();
             let vmctx = params[0];
             let args_ptr = params[1];
+            let results_ptr = if sig.results.len() > 1 {
+                Some(params[2])
+            } else {
+                None
+            };
 
             let mut call_args = Vec::with_capacity(sig.params.len() + 1);
             call_args.push(vmctx);
@@ -509,26 +512,28 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
                 };
                 call_args.push(val);
             }
+            if let Some(results_ptr) = results_ptr {
+                call_args.push(results_ptr);
+            }
 
             let call_inst = ins.call(func_id, &call_args);
             let res_vals: Vec<_> = ins.builder().func().dfg.inst_results(call_inst).to_vec();
-            let mut ret_vals = Vec::with_capacity(res_vals.len());
-            for &res_val in &res_vals {
+            let ret_bits = if let Some(&res_val) = res_vals.first() {
                 let res_ty = ins.builder().value_type(res_val);
-                let res_i64 = match res_ty {
+                match res_ty {
                     VelocType::I32 => ins.extend_u(res_val, VelocType::I64),
                     VelocType::F32 => {
-                        // F32 -> I32 (via reinterpret) -> I64 (via extend)
                         let i32_val = ins.reinterpret(res_val, VelocType::I32);
                         ins.extend_u(i32_val, VelocType::I64)
                     }
                     VelocType::F64 => ins.reinterpret(res_val, VelocType::I64),
                     VelocType::PTR => ins.ptr_to_int(res_val, VelocType::I64),
                     _ => res_val,
-                };
-                ret_vals.push(res_i64);
-            }
-            ins.ret(&ret_vals);
+                }
+            } else {
+                ins.iconst(VelocType::I64, 0)
+            };
+            ins.ret(&[ret_bits]);
             builder.seal_all_blocks();
         }
     }

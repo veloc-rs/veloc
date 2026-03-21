@@ -1,0 +1,15 @@
+;; =============================================================================
+;; x86_64 (Features & Extractors)
+;; =============================================================================
+
+;; 1. Instruction Set Features
+(def-feature SSE41 "Intel SSE4.1 Instructions")
+(def-feature AVX   "Intel Advanced Vector Extensions")
+(def-feature AVX2  "Intel Advanced Vector Extensions 2")
+(def-feature BMI1  "Bit Manipulation Instruction Set 1")
+(def-feature BMI2  "Bit Manipulation Instruction Set 2")
+(def-feature SLOW_LEA "Penalty for using complex LEA instructions")
+
+;; 2. Extractors Context
+(def-extractor (HAS_BMI2) (has_bmi2))
+(def-extractor (HAS_AVX2) (has_avx2))

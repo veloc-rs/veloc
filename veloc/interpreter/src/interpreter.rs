@@ -177,18 +177,21 @@ impl Interpreter {
                     };
 
                     let mut read_call_data =
-                        |data_sec: &crate::bytecode::DataSection, off: usize, rets: u16, args: u16| {
+                        |data_sec: &crate::bytecode::DataSection,
+                         off: usize,
+                         num_rets: u16,
+                         num_args: u16| {
                             let dst_start = self.dst_regs_buffer.len();
-                            for i in 0..rets {
+                            for i in 0..num_rets {
                                 self.dst_regs_buffer
                                     .push(data_sec.call_ret_reg(off, i as usize));
                             }
                             self.args_buffer.clear();
-                            for i in 0..args {
-                                let reg = data_sec.call_arg_reg(off, rets as usize, i as usize);
+                            for i in 0..num_args {
+                                let reg = data_sec.call_arg_reg(off, num_rets as usize, i as usize);
                                 self.args_buffer.push(get!(reg));
                             }
-                            (rets, dst_start)
+                            dst_start
                         };
 
                     let inst: Instruction = *frame.func.code.get_unchecked(frame.pc);
@@ -1299,8 +1302,12 @@ impl Interpreter {
                             num_rets,
                             num_args,
                         } => {
-                            let (rets, dst_start) =
-                                read_call_data(&frame.func.data_section, data_offset as usize, num_rets, num_args);
+                            let dst_start = read_call_data(
+                                &frame.func.data_section,
+                                data_offset as usize,
+                                num_rets,
+                                num_args,
+                            );
                             let f_id = veloc_ir::FuncId::from_u32(func_id);
 
                             match program.modules[frame.mid].links[f_id] {
@@ -1310,7 +1317,7 @@ impl Interpreter {
                                         m,
                                         f,
                                         dst_start,
-                                        rets as usize,
+                                        num_rets as usize,
                                         &mut frame,
                                     );
                                     continue 'main_loop;
@@ -1320,7 +1327,7 @@ impl Interpreter {
                                     program.host_functions_list[h_id]
                                         .call(&mut self.args_buffer, args);
                                     values_ptr = self.value_stack.as_mut_ptr();
-                                    for i in 0..rets as usize {
+                                    for i in 0..num_rets as usize {
                                         let dst = self.dst_regs_buffer[dst_start + i];
                                         if dst != Reg::NULL {
                                             *reg!(dst) = self.args_buffer[i];
@@ -1334,7 +1341,7 @@ impl Interpreter {
                                         frame.mid,
                                         f_id,
                                         dst_start,
-                                        rets as usize,
+                                        num_rets as usize,
                                         &mut frame,
                                     );
                                     continue 'main_loop;
@@ -1347,8 +1354,12 @@ impl Interpreter {
                             num_rets,
                             num_args,
                         } => {
-                            let (rets, dst_start) =
-                                read_call_data(&frame.func.data_section, data_offset as usize, num_rets, num_args);
+                            let dst_start = read_call_data(
+                                &frame.func.data_section,
+                                data_offset as usize,
+                                num_rets,
+                                num_args,
+                            );
                             let p = get!(ptr).0 as usize;
 
                             match program.decode_ptr(p) {
@@ -1358,7 +1369,7 @@ impl Interpreter {
                                         m,
                                         f,
                                         dst_start,
-                                        rets as usize,
+                                        num_rets as usize,
                                         &mut frame,
                                     );
                                     continue 'main_loop;
@@ -1368,7 +1379,7 @@ impl Interpreter {
                                     program.host_functions_list[h_id]
                                         .call(&mut self.args_buffer, args);
                                     values_ptr = self.value_stack.as_mut_ptr();
-                                    for i in 0..rets as usize {
+                                    for i in 0..num_rets as usize {
                                         let dst = self.dst_regs_buffer[dst_start + i];
                                         if dst != Reg::NULL {
                                             *reg!(dst) = self.args_buffer[i];
@@ -1422,11 +1433,15 @@ impl Interpreter {
                             num_rets,
                             num_args,
                         } => {
-                            let (rets, dst_start) =
-                                read_call_data(&frame.func.data_section, data_offset as usize, num_rets, num_args);
+                            let dst_start = read_call_data(
+                                &frame.func.data_section,
+                                data_offset as usize,
+                                num_rets,
+                                num_args,
+                            );
                             let res = execute_intrinsic(intrinsic, &self.args_buffer);
                             values_ptr = self.value_stack.as_mut_ptr();
-                            if rets > 0 {
+                            if num_rets > 0 {
                                 let dst = self.dst_regs_buffer[dst_start];
                                 if dst != Reg::NULL {
                                     *reg!(dst) = res;
