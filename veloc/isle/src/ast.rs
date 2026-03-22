@@ -16,6 +16,8 @@ pub enum Def {
     Type(TypeDef),
     /// 选择规则: (select-rule ...)
     SelectRule(SelectRuleDef),
+    /// 归一化/重写规则: (rewrite-rule ...)
+    RewriteRule(RewriteRuleDef),
     /// 组合规则: (combine-rule ...)
     CombineRule(CombineRuleDef),
     /// 目标后期 peephole 规则: (peephole-rule ...)
@@ -138,6 +140,13 @@ pub struct SelectRuleDef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RewriteRuleDef {
+    pub attrs: RuleAttrs,
+    pub patterns: Vec<Pattern>,
+    pub replace: Constructor,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CombineRuleDef {
     pub attrs: RuleAttrs,
     pub match_kind: MatchKind,
@@ -226,6 +235,8 @@ pub enum OperandConstraint {
     Block(String),
     /// 全局符号目标: (global $name)
     Global(String),
+    /// 栈槽目标: (stackslot $name)
+    StackSlot(String),
     /// 破坏性定义 (Tied): (def (tied $dst $src))
     TiedDef { dst: String, src: String },
 }
@@ -254,6 +265,14 @@ pub enum Expr {
     Variable(String),
     /// 寄存器硬件编码: (hw-enc $reg)
     HwEnc(String),
+    /// 栈槽基址寄存器的硬件编码: (slot-base-hw-enc $slot)
+    SlotBaseHwEnc(String),
+    /// 栈槽偏移: (slot-offset $slot)
+    SlotOffset(String),
+    /// 栈槽大小: (slot-size $slot)
+    SlotSize(String),
+    /// 栈槽对齐: (slot-align $slot)
+    SlotAlign(String),
     /// 位运算: (bit-or a b)
     BitOr(Box<Expr>, Box<Expr>),
     /// 位运算: (bit-and a b)

@@ -11,6 +11,7 @@ fn token_to_string(t: &Token) -> String {
         Token::DefTemplate => "def-template".to_string(),
         Token::DefPseudoInst => "def-pseudo-inst".to_string(),
         Token::DefInst => "def-inst".to_string(),
+        Token::RewriteRule => "rewrite-rule".to_string(),
         Token::Operands => "operands".to_string(),
         Token::ImplicitUses => "implicit-uses".to_string(),
         Token::ImplicitDefs => "implicit-defs".to_string(),
@@ -210,12 +211,13 @@ impl<'a> Parser<'a> {
             Token::DefAbi => self.parse_def_abi()?,
             Token::Decl => self.parse_def_decl()?,
             Token::SelectRule => self.parse_select_rule()?,
+            Token::RewriteRule => self.parse_rewrite_rule()?,
             Token::CombineRule => self.parse_combine_rule()?,
             Token::PeepholeRule => self.parse_peephole_rule()?,
             _ => {
                 return self.err_unexpected(
                     span,
-                    "def-macro, def-template, def-inst, def-pseudo-inst, type, def-reg, def-extractor, def-feature, def-cpu, def-abi, decl, select-rule, combine-rule, or peephole-rule",
+                    "def-macro, def-template, def-inst, def-pseudo-inst, type, def-reg, def-extractor, def-feature, def-cpu, def-abi, decl, select-rule, rewrite-rule, combine-rule, or peephole-rule",
                     &tok,
                 );
             }
@@ -298,7 +300,13 @@ impl<'a> Parser<'a> {
                     self.next()?;
                     roles.push(self.expect_ident()?);
                 }
-                _ => return self.err_unexpected(span, "size, alias, hw-enc, reserved, or role", &tok),
+                _ => {
+                    return self.err_unexpected(
+                        span,
+                        "size, alias, hw-enc, reserved, or role",
+                        &tok,
+                    )
+                }
             }
             self.expect(Token::RParen)?;
         }
@@ -595,6 +603,70 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    fn parse_rewrite_rule(&mut self) -> Result<Def, ParseError> {
+        self.expect(Token::RewriteRule)?;
+
+        let mut attrs = RuleAttrs::default();
+        let mut patterns = Vec::new();
+        let mut replace = None;
+        let rule_span = self.peek()?.map(|(_, span)| span).unwrap_or(0..0);
+
+        while self.peek()?.map_or(false, |(t, _)| t != Token::RParen) {
+            self.expect(Token::LParen)?;
+            let (tok, span) = self.peek()?.ok_or(ParseError::UnexpectedEof)?;
+            match tok {
+                Token::RootKw => {
+                    self.next()?;
+                    attrs.root = Some(self.expect_node_name()?);
+                }
+                Token::MatchKw => {
+                    self.next()?;
+                    patterns = self.parse_rule_patterns_until_rparen()?;
+                }
+                Token::WhenKw => {
+                    self.next()?;
+                    attrs.predicates = self.parse_predicate_list()?;
+                }
+                Token::ReplaceKw => {
+                    self.next()?;
+                    replace = Some(self.parse_constructor()?);
+                }
+                Token::CoversKw => {
+                    self.next()?;
+                    attrs.covers = self.parse_cover_list()?;
+                }
+                Token::CostKw => {
+                    self.next()?;
+                    attrs.cost = Some(self.expect_int()?);
+                }
+                Token::PriorityKw => {
+                    self.next()?;
+                    attrs.priority = Some(self.expect_int()?);
+                }
+                _ => return self.err_unexpected(span, "valid rewrite-rule field", &tok),
+            }
+            self.expect(Token::RParen)?;
+        }
+
+        if patterns.is_empty() {
+            return Err(ParseError::MissingField {
+                span: rule_span.into(),
+                field: "(match ...)".to_string(),
+            });
+        }
+
+        let replace = replace.ok_or(ParseError::MissingField {
+            span: rule_span.into(),
+            field: "(replace ...)".to_string(),
+        })?;
+
+        Ok(Def::RewriteRule(RewriteRuleDef {
+            attrs,
+            patterns,
+            replace,
+        }))
+    }
+
     fn parse_combine_rule(&mut self) -> Result<Def, ParseError> {
         self.expect(Token::CombineRule)?;
 
@@ -802,6 +874,22 @@ impl<'a> Parser<'a> {
             .is_some_and(|ch| ch.is_ascii_lowercase())
     }
 
+    fn parse_cond_code_ident(name: &str) -> Option<CondCode> {
+        match name {
+            "E" => Some(CondCode::E),
+            "NE" => Some(CondCode::NE),
+            "L" => Some(CondCode::L),
+            "LE" => Some(CondCode::LE),
+            "G" => Some(CondCode::G),
+            "GE" => Some(CondCode::GE),
+            "B" => Some(CondCode::B),
+            "BE" => Some(CondCode::BE),
+            "A" => Some(CondCode::A),
+            "AE" => Some(CondCode::AE),
+            _ => None,
+        }
+    }
+
     fn peek_named_pattern_field(&mut self) -> Result<Option<String>, ParseError> {
         Ok(match self.peek()? {
             Some((Token::Ident(name), _)) if Self::is_named_pattern_field(&name) => Some(name),
@@ -817,6 +905,18 @@ impl<'a> Parser<'a> {
             Some((Token::Dollar, _)) => {
                 let base = Pattern::Variable(self.expect_ident()?);
                 self.attach_optional_node_bind(base)
+            }
+            Some((Token::Ident(s), span)) => {
+                if let Some(cc) = Self::parse_cond_code_ident(&s) {
+                    let base = Pattern::CondCode(cc);
+                    self.attach_optional_node_bind(base)
+                } else {
+                    Err(ParseError::UnexpectedToken {
+                        span: span.into(),
+                        expected: "pattern (Variable, Int, CondCode, or LParen)".into(),
+                        found: format!("Ident({s:?})"),
+                    })
+                }
             }
             Some((Token::Int(i), _)) => {
                 let base = Pattern::IntConst(i);
@@ -862,6 +962,20 @@ impl<'a> Parser<'a> {
                         schema,
                         opcode,
                         args,
+                    }
+                } else if opcode == "stackslot" {
+                    let inner = self.parse_pattern()?;
+                    Pattern::StackSlot(Box::new(inner))
+                } else if self.peek()?.map_or(true, |(t, _)| t == Token::RParen) {
+                    if let Some(cc) = Self::parse_cond_code_ident(&opcode) {
+                        Pattern::CondCode(cc)
+                    } else {
+                        let args = Vec::new();
+                        Pattern::Opcode {
+                            opcode,
+                            ty: None,
+                            args,
+                        }
                     }
                 } else {
                     let mut args = Vec::new();
@@ -1260,10 +1374,17 @@ impl<'a> Parser<'a> {
                 }
                 OperandConstraint::Global(self.expect_ident()?)
             }
+            Token::Ident(name) if name == "stackslot" => {
+                self.next()?;
+                if let Some((Token::Dollar, _)) = self.peek()? {
+                    self.next()?;
+                }
+                OperandConstraint::StackSlot(self.expect_ident()?)
+            }
             _ => {
                 return self.err_unexpected(
                     span,
-                    "use, def, fixed, tied, imm, block, or global",
+                    "use, def, fixed, tied, imm, block, global, or stackslot",
                     &tok,
                 )
             }
@@ -1308,6 +1429,78 @@ impl<'a> Parser<'a> {
                                 span: span.into(),
                                 name: "hw-enc".to_string(),
                                 message: "expected a variable for hw-enc".to_string(),
+                            }),
+                        }
+                    }
+                    "slot-base-hw-enc" => {
+                        if args.len() != 1 {
+                            return Err(ParseError::ArgumentCountError {
+                                span: span.into(),
+                                name: "slot-base-hw-enc".to_string(),
+                                expected: 1,
+                                found: args.len(),
+                            });
+                        }
+                        match &args[0] {
+                            Expr::Variable(v) => Ok(Expr::SlotBaseHwEnc(v.clone())),
+                            _ => Err(ParseError::InvalidArgError {
+                                span: span.into(),
+                                name: "slot-base-hw-enc".to_string(),
+                                message: "expected a stackslot variable".to_string(),
+                            }),
+                        }
+                    }
+                    "slot-offset" => {
+                        if args.len() != 1 {
+                            return Err(ParseError::ArgumentCountError {
+                                span: span.into(),
+                                name: "slot-offset".to_string(),
+                                expected: 1,
+                                found: args.len(),
+                            });
+                        }
+                        match &args[0] {
+                            Expr::Variable(v) => Ok(Expr::SlotOffset(v.clone())),
+                            _ => Err(ParseError::InvalidArgError {
+                                span: span.into(),
+                                name: "slot-offset".to_string(),
+                                message: "expected a stackslot variable".to_string(),
+                            }),
+                        }
+                    }
+                    "slot-size" => {
+                        if args.len() != 1 {
+                            return Err(ParseError::ArgumentCountError {
+                                span: span.into(),
+                                name: "slot-size".to_string(),
+                                expected: 1,
+                                found: args.len(),
+                            });
+                        }
+                        match &args[0] {
+                            Expr::Variable(v) => Ok(Expr::SlotSize(v.clone())),
+                            _ => Err(ParseError::InvalidArgError {
+                                span: span.into(),
+                                name: "slot-size".to_string(),
+                                message: "expected a stackslot variable".to_string(),
+                            }),
+                        }
+                    }
+                    "slot-align" => {
+                        if args.len() != 1 {
+                            return Err(ParseError::ArgumentCountError {
+                                span: span.into(),
+                                name: "slot-align".to_string(),
+                                expected: 1,
+                                found: args.len(),
+                            });
+                        }
+                        match &args[0] {
+                            Expr::Variable(v) => Ok(Expr::SlotAlign(v.clone())),
+                            _ => Err(ParseError::InvalidArgError {
+                                span: span.into(),
+                                name: "slot-align".to_string(),
+                                message: "expected a stackslot variable".to_string(),
                             }),
                         }
                     }

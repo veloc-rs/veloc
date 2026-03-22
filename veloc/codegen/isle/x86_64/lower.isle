@@ -18,6 +18,9 @@
 (decl is_fpr (vreg))
 (decl has_bmi2 ())
 (decl has_avx2 ())
+(decl is_int32like (vreg))
+(decl is_64like (vreg))
+(decl is_bool (vreg))
 
 ;; -----------------------------------------------------------------------------
 ;; 2.  (Extractors)
@@ -46,6 +49,15 @@
 
 (def-extractor (G_CONSTANT $imm)
     (and (is_i32 $unused) (not (is_fpr $unused))))
+
+(def-extractor (GPR32Like $reg)
+    (and (is_int32like $reg) (not (is_fpr $reg))))
+
+(def-extractor (GPR64Like $reg)
+    (and (is_64like $reg) (not (is_fpr $reg))))
+
+(def-extractor (BOOL $reg)
+    (is_bool $reg))
 
 ;; -----------------------------------------------------------------------------
 ;; 3.  (Lowering Rules)
@@ -554,6 +566,79 @@
     (covers (@n))
     (cost 1))
 
+;; StackSlot-backed ABI materialization
+(select-rule
+    (match (schema StackLoad G_STACK_LOAD (dst (GPR64 $dst)) (slot $slot) @n))
+    (emit (X86Load64Stack $dst $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackLoad G_STACK_LOAD (dst (GPTR $dst)) (slot $slot) @n))
+    (emit (X86Load64Stack $dst $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackLoad G_STACK_LOAD (dst (GPR32 $dst)) (slot $slot) @n))
+    (emit (X86Load32Stack $dst $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackLoad G_STACK_LOAD (dst (GPR16 $dst)) (slot $slot) @n))
+    (emit (X86Load16U32Stack $dst $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackLoad G_STACK_LOAD (dst (GPR8 $dst)) (slot $slot) @n))
+    (emit (X86Load8U32Stack $dst $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackLoad G_STACK_LOAD (dst (FPR32 $dst)) (slot $slot) @n))
+    (emit (X86LoadF32Stack $dst $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackLoad G_STACK_LOAD (dst (FPR64 $dst)) (slot $slot) @n))
+    (emit (X86LoadF64Stack $dst $slot))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema StackStore G_STACK_STORE (src (GPR64 $src)) (slot $slot) @n))
+    (emit (X86Store64Stack $src $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackStore G_STACK_STORE (src (GPTR $src)) (slot $slot) @n))
+    (emit (X86Store64Stack $src $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackStore G_STACK_STORE (src (GPR32 $src)) (slot $slot) @n))
+    (emit (X86Store32Stack $src $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackStore G_STACK_STORE (src (GPR16 $src)) (slot $slot) @n))
+    (emit (X86Store16Stack $src $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackStore G_STACK_STORE (src (GPR8 $src)) (slot $slot) @n))
+    (emit (X86Store8Stack $src $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackStore G_STACK_STORE (src (FPR32 $src)) (slot $slot) @n))
+    (emit (X86StoreF32Stack $src $slot))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema StackStore G_STACK_STORE (src (FPR64 $src)) (slot $slot) @n))
+    (emit (X86StoreF64Stack $src $slot))
+    (covers (@n))
+    (cost 1))
+
 ;; Indexed 内存操作
 (select-rule
     (match (schema IndexedLoad G_INDEXED_LOAD (dst (GPR64 $dst)) (base (GPTR $base)) (offset $off) @n))
@@ -783,17 +868,67 @@
     (covers (@n))
     (cost 1))
 
-;; 
+;; 比较/条件化选择
+@for cmp,src_ty,cc,setcc
+  X86Cmp32, GPR32Like, E, X86Sete
+  X86Cmp32, GPR32Like, NE, X86Setne
+  X86Cmp32, GPR32Like, L, X86Setl
+  X86Cmp32, GPR32Like, LE, X86Setle
+  X86Cmp32, GPR32Like, G, X86Setg
+  X86Cmp32, GPR32Like, GE, X86Setge
+  X86Cmp32, GPR32Like, B, X86Setb
+  X86Cmp32, GPR32Like, BE, X86Setbe
+  X86Cmp32, GPR32Like, A, X86Seta
+  X86Cmp32, GPR32Like, AE, X86Setae
+  X86Cmp64, GPR64Like, E, X86Sete
+  X86Cmp64, GPR64Like, NE, X86Setne
+  X86Cmp64, GPR64Like, L, X86Setl
+  X86Cmp64, GPR64Like, LE, X86Setle
+  X86Cmp64, GPR64Like, G, X86Setg
+  X86Cmp64, GPR64Like, GE, X86Setge
+  X86Cmp64, GPR64Like, B, X86Setb
+  X86Cmp64, GPR64Like, BE, X86Setbe
+  X86Cmp64, GPR64Like, A, X86Seta
+  X86Cmp64, GPR64Like, AE, X86Setae
+@do
 (select-rule
-    (match (schema ICmp G_ICMP (dst $dst) (lhs (GPR32 $x)) (rhs (GPR32 $y)) (cc $cc) @n))
-    (emit (X86Cmp32 $x $y))
+    (match (schema ICmp G_ICMP (dst (BOOL $dst)) (lhs ({{src_ty}} $x)) (rhs ({{src_ty}} $y)) (cc {{cc}}) @n))
+    (emit (seq ({{cmp}} $x $y) ({{setcc}} $dst) (X86Movzx8to32 $dst $dst)))
     (covers (@n))
     (cost 1))
+@end
+
+@for test,src_ty
+  X86Test32, GPR32Like
+  X86Test64, GPR64Like
+@do
 (select-rule
-    (match (schema ICmp G_ICMP (dst $dst) (lhs (GPR64 $x)) (rhs (GPR64 $y)) (cc $cc) @n))
-    (emit (X86Cmp64 $x $y))
+    (match (schema UnaryReg G_IEQZ (dst (BOOL $dst)) (src ({{src_ty}} $src)) @n))
+    (emit (seq ({{test}} $src $src) (X86Sete $dst) (X86Movzx8to32 $dst $dst)))
     (covers (@n))
     (cost 1))
+@end
+
+@for test,movimm,movop,xorop,subop,andop,ty
+  X86Test32, X86Mov32Imm, X86Mov32, X86Xor32, X86Sub32, X86And32, BOOL
+  X86Test32, X86Mov32Imm, X86Mov32, X86Xor32, X86Sub32, X86And32, GPR32Like
+  X86Test64, X86Mov64Imm32, X86Mov64, X86Xor64, X86Sub64, X86And64, GPR64Like
+@do
+(select-rule
+    (match (schema Select G_SELECT (dst ({{ty}} $dst)) (cond (BOOL $cond)) (v1 ({{ty}} $v1)) (v2 ({{ty}} $v2)) @n))
+    (emit (seq
+        ({{test}} $cond $cond)
+        (X86Setne $cond)
+        (X86Movzx8to32 $cond $cond)
+        ({{movop}} $dst $v2)
+        ({{xorop}} $dst $v1)
+        ({{movimm}} $v1 0)
+        ({{subop}} $v1 $cond)
+        ({{andop}} $dst $v1)
+        ({{xorop}} $dst $v2)))
+    (covers (@n))
+    (cost 1))
+@end
 
 ;; 
 (select-rule

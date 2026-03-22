@@ -6,11 +6,11 @@ mod abi;
 mod callconv;
 mod types;
 
-use crate::Emitter;
 pub use crate::isel::LegalizerInfo;
 pub use crate::mir::ValueId;
 pub use crate::mir::{InstId, MachineFunction, MachineInst, Reg, VReg};
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
+use crate::Emitter;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use veloc_ir::Type;
@@ -49,6 +49,23 @@ pub trait LoweringContext {
     /// 谓词：检查是否为 i64
     fn is_i64(&self, val: VReg) -> bool {
         self.get_type(val).is_integer() && self.get_type(val).size_bytes() == 8
+    }
+
+    /// 谓词：检查是否为 32 位整数宽度的值
+    fn is_int32like(&self, val: VReg) -> bool {
+        let ty = self.get_type(val);
+        ty.is_integer() && ty.size_bytes() <= 4
+    }
+
+    /// 谓词：检查是否为 64 位整数或指针宽度的值
+    fn is_64like(&self, val: VReg) -> bool {
+        let ty = self.get_type(val);
+        (ty.is_integer() && ty.size_bytes() == 8) || ty.is_ptr()
+    }
+
+    /// 谓词：检查是否为 bool
+    fn is_bool(&self, val: VReg) -> bool {
+        self.get_type(val) == Type::BOOL
     }
 
     /// 谓词：检查是否为 f32
@@ -132,32 +149,12 @@ pub trait TargetEmitter: Send + Sync {
 
 pub use crate::isel::select::{SelectResult, SelectionContext};
 
-/// ABI 处理接口 (Call Lowering)
-///
-/// 负责函数传参和调用的 ABI 相关处理逻辑。
-pub trait CallLowering: Send + Sync {
-    /// 降低函数入口的参数 (Lower Formal Arguments)
-    /// 将 G_ARG 虚拟指令及其对应的 VReg 降低为物理寄存器拷贝或栈加载。
-    fn lower_formal_arguments(
-        &self,
-        mfunc: &mut MachineFunction,
-        sig: &veloc_ir::Signature,
-    ) -> Result<(), crate::error::Error>;
-
-    /// 降低函数调用 (Lower Call)
-    /// 将当前 G_CALL/G_CALLIND 降低为目标平台的调用序列。
-    fn lower_call(
-        &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, crate::pipeline::stages::Untyped>,
-    ) -> Result<(), crate::error::Error>;
-
-    /// 降低函数返回 (Lower Return)
-    /// 将当前 G_RET 降低为目标平台的返回序列。
-    fn lower_return(
-        &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, crate::pipeline::stages::Untyped>,
-        sig: &veloc_ir::Signature,
-    ) -> Result<(), crate::error::Error>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteResult {
+    Keep,
+    InPlace,
+    Replace,
+    Remove,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +185,29 @@ pub struct GenericInstMetadata {
     pub tied_operands: &'static [TiedOperandConstraint],
     pub commute_operand_pairs: &'static [(usize, usize)],
     pub fixed_uses: &'static [FixedUseConstraint],
+}
+
+/// pre-isel rewrite 规则表项。
+///
+/// 规则以一个紧凑的 typed IR 存储，运行时不需要再解析字符串。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreIselRewriteExpr {
+    Var(u32),
+    Imm(i64),
+    Op {
+        opcode: crate::mir::GenericOpcode,
+        args: &'static [PreIselRewriteExpr],
+    },
+}
+
+/// pre-isel rewrite 规则表项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreIselRewriteRuleData {
+    pub name: &'static str,
+    pub match_expr: PreIselRewriteExpr,
+    pub replace_expr: PreIselRewriteExpr,
+    pub cost: i64,
+    pub priority: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -249,9 +269,6 @@ impl TargetInstMetadata {
 }
 
 pub trait TargetLowering: Send + Sync {
-    /// 获取 ABI 降低实现
-    fn call_lowering(&self) -> &dyn CallLowering;
-
     /// 完成目标相关的栈帧布局。
     ///
     /// 在寄存器分配之后、插入序言/尾声之前调用，用于计算 callee-saved 保存区、
@@ -310,9 +327,7 @@ pub trait TargetLowering: Send + Sync {
         _dst: Reg,
         _src: Reg,
     ) -> Result<MachineInst, crate::error::Error> {
-        Err(crate::error::Error::Codegen(alloc::string::String::from(
-            "target does not support post-select register copy construction",
-        )))
+        panic!("target does not support post-select register copy construction",)
     }
 
     /// 获取合法化信息
@@ -325,7 +340,7 @@ pub trait TargetLowering: Send + Sync {
         Vec::new()
     }
 
-    /// 在通用 pre-isel 准备之后追加 target 自定义 function passes。
+    /// 在 generic combine 之后追加 target 自定义 function passes。
     fn pre_isel_passes(
         &self,
     ) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::PreIselPrepared>>> {

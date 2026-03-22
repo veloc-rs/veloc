@@ -1,4 +1,4 @@
-use crate::ast::{Constructor, DeclDef, Def, Pattern, SelectRuleDef};
+use crate::ast::{CondCode, Constructor, DeclDef, Def, Pattern, RuleAttrs, SelectRuleDef};
 use crate::{parser, EmitExpr, Expr, ExtractorDef, MacroDef, OperandConstraint, PatternArg};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
@@ -18,7 +18,8 @@ fn find_operand_info<'a>(
         | OperandConstraint::Def(name)
         | OperandConstraint::Imm(name)
         | OperandConstraint::Block(name)
-        | OperandConstraint::Global(name) => name == var_name,
+        | OperandConstraint::Global(name)
+        | OperandConstraint::StackSlot(name) => name == var_name,
         OperandConstraint::TiedDef { dst, src } => dst == var_name || src == var_name,
     })
 }
@@ -38,11 +39,13 @@ fn generate_variable(var_name: &str, operands: &[OperandConstraint]) -> String {
                 OperandConstraint::TiedDef { .. } => {
                     "MachineOperand::TiedDefUse(reg) => reg.to_reg().index() as u64"
                 }
-                OperandConstraint::Block(_) | OperandConstraint::Global(_) => {
+                OperandConstraint::Block(_)
+                | OperandConstraint::Global(_)
+                | OperandConstraint::StackSlot(_) => {
                     return format!("/* non-numeric operand {} */ 0", var_name);
                 }
             };
-            format!("(match &inst.operands[{}] {{ {}, _ => return Err(crate::error::Error::Emit(inst.opcode.clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})", index, arm, index, var_name)
+            format!("(match &inst.operands[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})", index, arm, index, var_name)
         }
         None => "0".to_string(),
     }
@@ -63,7 +66,9 @@ fn generate_hw_enc(var_name: &str, operands: &[OperandConstraint]) -> String {
                     "MachineOperand::TiedDefUse(reg) => reg.to_reg().index() as u8"
                 }
                 OperandConstraint::Imm(_) => "MachineOperand::Imm(val) => *val as u8", // 硬件编码中偶尔会用到立即数作为掩码/扩展
-                OperandConstraint::Block(_) | OperandConstraint::Global(_) => {
+                OperandConstraint::Block(_)
+                | OperandConstraint::Global(_)
+                | OperandConstraint::StackSlot(_) => {
                     return format!(
                         "/* hw-enc {} not available for non-reg operand */ 0",
                         var_name
@@ -71,11 +76,39 @@ fn generate_hw_enc(var_name: &str, operands: &[OperandConstraint]) -> String {
                 }
             };
             format!(
-                "(match &inst.operands[{}] {{ {}, _ => return Err(crate::error::Error::Emit(inst.opcode.clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }} as u64)",
+                "(match &inst.operands[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }} as u64)",
                 index, arm, index, var_name
             )
         }
         None => format!("/* hw-enc {} not found */ 0", var_name),
+    }
+}
+
+fn generate_stack_slot_expr(var_name: &str, operands: &[OperandConstraint], field: &str) -> String {
+    match find_operand_info(var_name, operands) {
+        Some((index, OperandConstraint::StackSlot(_))) => {
+            let access = match field {
+                "base_hw_enc" => "mfunc.stack_frame.slots[slot].base_reg.index() as u64",
+                "offset" => "mfunc.stack_frame.slots[slot].offset as i64",
+                "size" => "mfunc.stack_frame.slots[slot].size as i64",
+                "align" => "mfunc.stack_frame.slots[slot].align as i64",
+                other => panic!("unknown stack slot field {}", other),
+            };
+            format!(
+                r#"{{
+                    let slot = match &inst.operands[{index}] {{
+                        MachineOperand::StackSlot(slot) => *slot,
+                        _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{var_name}"))),
+                    }};
+                    {access}
+                }}"#
+            )
+        }
+        Some((index, _)) => format!(
+            "/* operand {} at index {} is not a stackslot */ 0",
+            var_name, index
+        ),
+        None => format!("/* stackslot {} not found */ 0", var_name),
     }
 }
 
@@ -89,6 +122,10 @@ fn generate_expr(
         Expr::Int(i) => i.to_string(),
         Expr::Variable(v) => generate_variable(v, operands),
         Expr::HwEnc(v) => generate_hw_enc(v, operands),
+        Expr::SlotBaseHwEnc(v) => generate_stack_slot_expr(v, operands, "base_hw_enc"),
+        Expr::SlotOffset(v) => generate_stack_slot_expr(v, operands, "offset"),
+        Expr::SlotSize(v) => generate_stack_slot_expr(v, operands, "size"),
+        Expr::SlotAlign(v) => generate_stack_slot_expr(v, operands, "align"),
         Expr::BitOr(a, b) => format!(
             "({} | {})",
             generate_expr(a, operands, macros),
@@ -172,7 +209,7 @@ fn generate_emit_expr(
                         MachineOperand::Block(target) => {{
                             emitter.add_block_rel32_fixup(disp_offset, next_offset, *target);
                         }}
-                        _ => return Err(crate::error::Error::Emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
+                        _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
                     }}
                 }}"#
             ),
@@ -185,16 +222,16 @@ fn generate_emit_expr(
                         MachineOperand::Global(target) => {{
                             emitter.add_global_rel32_fixup(disp_offset, next_offset, target.clone());
                         }}
-                        _ => return Err(crate::error::Error::Emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
+                        _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
                     }}
                 }}"#
             ),
             Some((index, _)) => format!(
-                r#"return Err(crate::error::Error::Emit(inst.opcode.clone(), alloc::format!("rel32 operand at index {} for {{}} must be a block or global target", "{}")));"#,
+                r#"return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("rel32 operand at index {} for {{}} must be a block or global target", "{}")));"#,
                 index, name
             ),
             None => format!(
-                r#"return Err(crate::error::Error::Emit(inst.opcode.clone(), alloc::format!("rel32 operand {{}} not found", "{}")));"#,
+                r#"return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("rel32 operand {{}} not found", "{}")));"#,
                 name
             ),
         },
@@ -439,6 +476,12 @@ fn collect_definitions(
 fn subst_expr(expr: &Expr, args_map: &HashMap<String, Expr>) -> Expr {
     match expr {
         Expr::Variable(v) => args_map.get(v).cloned().unwrap_or_else(|| expr.clone()),
+        Expr::HwEnc(_)
+        | Expr::SlotBaseHwEnc(_)
+        | Expr::SlotOffset(_)
+        | Expr::SlotSize(_)
+        | Expr::SlotAlign(_)
+        | Expr::Int(_) => expr.clone(),
         Expr::BitOr(a, b) => Expr::BitOr(
             Box::new(subst_expr(a, args_map)),
             Box::new(subst_expr(b, args_map)),
@@ -459,7 +502,6 @@ fn subst_expr(expr: &Expr, args_map: &HashMap<String, Expr>) -> Expr {
             let new_args = args.iter().map(|a| subst_expr(a, args_map)).collect();
             Expr::Call(name.clone(), new_args)
         }
-        _ => expr.clone(),
     }
 }
 
@@ -502,6 +544,7 @@ fn subst_operand(op: &OperandConstraint, args_map: &HashMap<String, Expr>) -> Op
         OperandConstraint::Imm(v) => OperandConstraint::Imm(subst_name(v)),
         OperandConstraint::Block(v) => OperandConstraint::Block(subst_name(v)),
         OperandConstraint::Global(v) => OperandConstraint::Global(subst_name(v)),
+        OperandConstraint::StackSlot(v) => OperandConstraint::StackSlot(subst_name(v)),
         OperandConstraint::TiedDef { dst, src } => OperandConstraint::TiedDef {
             dst: subst_name(dst),
             src: subst_name(src),
@@ -612,7 +655,8 @@ fn generate_header(
 use smallvec::SmallVec;
 use crate::target::arch::{{
     AbiDescriptor, AbiPreservedSet, AbiRegisterPool, AbiStackDescriptor, AbiValueClass,
-    CpuDescription, FixedUseConstraint, GenericInstMetadata, LoweringContext, RegInfo,
+    CpuDescription, FixedUseConstraint, GenericInstMetadata, LoweringContext,
+    PreIselRewriteRuleData, RegInfo,
     SelectResult, TargetArch, TargetInstMetadata, TargetTiedOperandMetadata, TiedOperandConstraint,
 }};
 pub use veloc_ir::Type;
@@ -1159,24 +1203,14 @@ fn generate_generic_inst_metadata(
             "pub const {const_name}: GenericInstMetadata = GenericInstMetadata {{"
         )
         .unwrap();
-        writeln!(
-            output,
-            "    tied_operands: {},",
-            format_slice(tied_entries)
-        )
-        .unwrap();
+        writeln!(output, "    tied_operands: {},", format_slice(tied_entries)).unwrap();
         writeln!(
             output,
             "    commute_operand_pairs: {},",
             format_slice(commute_entries)
         )
         .unwrap();
-        writeln!(
-            output,
-            "    fixed_uses: {},",
-            format_slice(fixed_entries)
-        )
-        .unwrap();
+        writeln!(output, "    fixed_uses: {},", format_slice(fixed_entries)).unwrap();
         writeln!(output, "}};").unwrap();
     }
 
@@ -1221,6 +1255,7 @@ impl TargetInst {{
         &self,
         emitter: &mut crate::Emitter,
         inst: &MachineInst,
+        mfunc: &crate::mir::MachineFunction,
     ) -> Result<(), crate::error::Error> {{
         match self {{"#
     )
@@ -1232,7 +1267,7 @@ impl TargetInst {{
             if inst_def.is_pseudo {
                 writeln!(
                     output,
-                    "                return Err(crate::error::Error::Emit(inst.opcode.clone(), alloc::format!(\"Pseudo instruction {} must be lowered before emission\")));",
+                    "                return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!(\"Pseudo instruction {} must be lowered before emission\")));",
                     name
                 )
                 .unwrap();
@@ -1459,8 +1494,12 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
                         continue;
                     };
                     let var_map = collect_var_bindings(grouped_pattern);
-                    let conditions =
-                        collect_schema_rule_conditions(grouped_args, extractors, schema_var);
+                let conditions = collect_schema_rule_conditions(
+                    grouped_args,
+                    extractors,
+                    schema_var,
+                    schema_name,
+                );
                     if conditions.is_empty() {
                         writeln!(output, "                {{").unwrap();
                     } else {
@@ -1511,9 +1550,325 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
 
     writeln!(
         output,
-        "    Err(crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"No matching ISLE rule found for instruction\")))"
+        "    Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"No matching ISLE rule found for instruction\")))"
     )
     .unwrap();
+    writeln!(output, "}}").unwrap();
+}
+
+fn rewrite_rule_view<'a>(def: &'a Def) -> Option<(&'a RuleAttrs, &'a [Pattern], &'a Constructor)> {
+    match def {
+        Def::RewriteRule(rule) => Some((&rule.attrs, &rule.patterns, &rule.replace)),
+        _ => None,
+    }
+}
+
+fn collect_rewrite_vars(pattern: &Pattern, slots: &mut HashMap<String, u32>, next_slot: &mut u32) {
+    match pattern.strip_node_binds() {
+        Pattern::Variable(name) => {
+            slots.entry(name.clone()).or_insert_with(|| {
+                let slot = *next_slot;
+                *next_slot += 1;
+                slot
+            });
+        }
+        Pattern::Opcode { args, .. } | Pattern::Schema { args, .. } => {
+            for arg in args {
+                match arg {
+                    PatternArg::Positional(p) => collect_rewrite_vars(p, slots, next_slot),
+                    PatternArg::Named { pattern, .. } => {
+                        collect_rewrite_vars(pattern, slots, next_slot)
+                    }
+                }
+            }
+        }
+        Pattern::And(parts) => {
+            for part in parts {
+                collect_rewrite_vars(part, slots, next_slot);
+            }
+        }
+        Pattern::StackSlot(inner) | Pattern::NodeBind { inner, .. } => {
+            collect_rewrite_vars(inner, slots, next_slot)
+        }
+        Pattern::IntConst(_) | Pattern::Block(_) | Pattern::CondCode(_) => {}
+    }
+}
+
+fn render_pre_isel_expr(pattern: &Pattern, slots: &HashMap<String, u32>) -> Option<String> {
+    match pattern.strip_node_binds() {
+        Pattern::Variable(name) => Some(format!(
+            "PreIselRewriteExpr::Var({})",
+            slots.get(name).copied().unwrap_or(0)
+        )),
+        Pattern::IntConst(i) => Some(format!("PreIselRewriteExpr::Imm({})", i)),
+        Pattern::Opcode { opcode, args, .. } | Pattern::Schema { opcode, args, .. } => {
+            let mut rendered = Vec::new();
+            for arg in args {
+                let arg = match arg {
+                    PatternArg::Positional(p) => p,
+                    PatternArg::Named { pattern, .. } => pattern.as_ref(),
+                };
+                rendered.push(render_pre_isel_expr(arg, slots)?);
+            }
+            if rendered.is_empty() {
+                Some(format!(
+                    "PreIselRewriteExpr::Op {{ opcode: crate::mir::GenericOpcode::{}, args: &[] }}",
+                    opcode
+                ))
+            } else {
+                Some(format!(
+                    "PreIselRewriteExpr::Op {{ opcode: crate::mir::GenericOpcode::{}, args: &[{}] }}",
+                    opcode,
+                    rendered.join(", ")
+                ))
+            }
+        }
+        Pattern::StackSlot(inner) | Pattern::NodeBind { inner, .. } => {
+            render_pre_isel_expr(inner, slots)
+        }
+        Pattern::And(_) | Pattern::Block(_) | Pattern::CondCode(_) => None,
+    }
+}
+
+fn render_pre_isel_constructor(
+    constructor: &Constructor,
+    slots: &HashMap<String, u32>,
+) -> Option<String> {
+    match constructor {
+        Constructor::Variable(name) => Some(format!(
+            "PreIselRewriteExpr::Var({})",
+            slots.get(name).copied().unwrap_or(0)
+        )),
+        Constructor::Imm(i) => Some(format!("PreIselRewriteExpr::Imm({})", i)),
+        Constructor::Reg(_) => None,
+        Constructor::Inst { opcode, args } => {
+            if opcode == "seq" {
+                return None;
+            }
+            let mut rendered = Vec::new();
+            for arg in args {
+                rendered.push(render_pre_isel_constructor(arg, slots)?);
+            }
+            if rendered.is_empty() {
+                Some(format!(
+                    "PreIselRewriteExpr::Op {{ opcode: crate::mir::GenericOpcode::{}, args: &[] }}",
+                    opcode
+                ))
+            } else {
+                Some(format!(
+                    "PreIselRewriteExpr::Op {{ opcode: crate::mir::GenericOpcode::{}, args: &[{}] }}",
+                    opcode,
+                    rendered.join(", ")
+                ))
+            }
+        }
+    }
+}
+
+fn generate_pre_isel_rewrite_tables(output: &mut String, module: &crate::ast::Module) {
+    let mut rules = Vec::new();
+    for def in &module.defs {
+        let Def::RewriteRule(rule) = def else {
+            continue;
+        };
+        let Some(pattern) = rule.patterns.first() else {
+            continue;
+        };
+        let mut slots = HashMap::new();
+        let mut next_slot = 0u32;
+        collect_rewrite_vars(pattern, &mut slots, &mut next_slot);
+        let Some(match_expr) = render_pre_isel_expr(pattern, &slots) else {
+            continue;
+        };
+        let Some(replace_expr) = render_pre_isel_constructor(&rule.replace, &slots) else {
+            continue;
+        };
+        let name = format!("rewrite_{}", rules.len());
+        rules.push((
+            name,
+            match_expr,
+            replace_expr,
+            rule.attrs.cost.unwrap_or(0),
+            rule.attrs.priority.unwrap_or(0),
+        ));
+    }
+
+    writeln!(
+        output,
+        "\npub static PRE_ISEL_REWRITE_RULES: &[PreIselRewriteRuleData] = &["
+    )
+    .unwrap();
+    for (name, match_expr, replace_expr, cost, priority) in rules {
+        writeln!(
+            output,
+            "    PreIselRewriteRuleData {{ name: \"{}\", match_expr: {}, replace_expr: {}, cost: {}, priority: {} }},",
+            name,
+            match_expr,
+            replace_expr,
+            cost,
+            priority
+        )
+        .unwrap();
+    }
+    writeln!(output, "];").unwrap();
+}
+
+fn generate_rewrite_instruction(
+    output: &mut String,
+    module: &crate::ast::Module,
+    extractors: &HashMap<String, ExtractorDef>,
+    final_inst_defs: &HashMap<String, FinalInstDef>,
+    arch: &str,
+) {
+    let reg_map = collect_reg_encs(module);
+    let needs_positional_helpers = module_has_positional_rules(module);
+
+    let mut decls = HashMap::new();
+    for def in &module.defs {
+        if let Def::Decl(decl) = def {
+            decls.insert(decl.name.clone(), decl.clone());
+        }
+    }
+
+    let extra_bound = if arch == "x86_64" {
+        " + crate::target::x86_64::lowering::X86LoweringContext"
+    } else {
+        ""
+    };
+
+    writeln!(
+        output,
+        r#"
+pub fn rewrite_instructions<C: LoweringContext{extra_bound}>(
+    ctx: &C,
+    inst: &MachineInst,
+    out: &mut alloc::vec::Vec<MachineInst>,
+) -> Result<RewriteResult, crate::error::Error> {{
+    use crate::mir::{{GenericOpcode, MachineOpcode, VReg}};
+    use crate::target::arch::RewriteResult;
+    use crate::target::{arch}::isle::TargetInst;
+
+    let decoded = inst.decode_generic().ok();
+"#,
+        extra_bound = extra_bound,
+    )
+    .unwrap();
+    if needs_positional_helpers {
+        writeln!(output, "    let v0 = vreg_by_index(inst, 0);").unwrap();
+        writeln!(output, "    let v1 = vreg_by_index(inst, 1);").unwrap();
+        writeln!(output, "    let v2 = vreg_by_index(inst, 2);").unwrap();
+    }
+    writeln!(output).unwrap();
+
+    for (name, exc) in extractors {
+        let cond = generate_pattern_condition(&exc.body, "v", &decls);
+        writeln!(
+            output,
+            "    let is_{} = |v_opt: Option<VReg>| v_opt.map_or(false, |v| {});",
+            name.to_lowercase(),
+            cond
+        )
+        .unwrap();
+    }
+    writeln!(output).unwrap();
+
+    writeln!(
+        output,
+        "    let MachineOpcode::Generic(opcode) = &inst.opcode else {{"
+    )
+    .unwrap();
+    writeln!(output, "        return Ok(RewriteResult::Keep);").unwrap();
+    writeln!(output, "    }};").unwrap();
+    writeln!(output).unwrap();
+    writeln!(output, "    match opcode {{").unwrap();
+
+    let mut opcode_rules: HashMap<String, Vec<&Def>> = HashMap::new();
+    for def in &module.defs {
+        if let Def::RewriteRule(rule) = def {
+            if let Some(pattern) = rule.patterns.first() {
+                if let Some(opcode) = pattern_opcode(pattern) {
+                    opcode_rules
+                        .entry(opcode.to_string())
+                        .or_default()
+                        .push(def);
+                }
+            }
+        }
+    }
+
+    let mut opcodes: Vec<_> = opcode_rules.keys().cloned().collect();
+    opcodes.sort();
+
+    for op in opcodes {
+        writeln!(output, "        GenericOpcode::{} => {{", op).unwrap();
+        let rules = &opcode_rules[&op];
+        for rule_def in rules {
+            let Some((attrs, patterns, replace)) = rewrite_rule_view(rule_def) else {
+                continue;
+            };
+            let Some(pattern) = patterns.first() else {
+                continue;
+            };
+            let Some(args) = pattern_args(pattern) else {
+                continue;
+            };
+            let _ = attrs;
+            let var_map = collect_var_bindings(pattern);
+            let schema_name = pattern_schema_name(pattern);
+            let conditions = if let Some(schema_name) = schema_name {
+                collect_schema_rule_conditions(args, extractors, "schema_inst", schema_name)
+            } else {
+                collect_positional_rule_conditions(args, extractors)
+            };
+
+            if let Some(schema_name) = schema_name {
+                writeln!(
+                    output,
+                    "            if let Some(crate::mir::DecodedGenericInst::{}(schema_inst)) = decoded.as_ref() {{",
+                    schema_name
+                )
+                .unwrap();
+                if !conditions.is_empty() {
+                    writeln!(output, "                if {} {{", conditions.join(" && ")).unwrap();
+                } else {
+                    writeln!(output, "                {{").unwrap();
+                }
+                emit_schema_value_bindings_for_constructor(output, replace, args, "schema_inst");
+                emit_rewrite_constructor_sequence(
+                    output,
+                    replace,
+                    &var_map,
+                    final_inst_defs,
+                    &reg_map,
+                    Some("schema_inst"),
+                    infer_schema_source_def_field(args),
+                );
+                writeln!(output, "                }}").unwrap();
+                writeln!(output, "            }}").unwrap();
+            } else {
+                if !conditions.is_empty() {
+                    writeln!(output, "            if {} {{", conditions.join(" && ")).unwrap();
+                } else {
+                    writeln!(output, "            {{").unwrap();
+                }
+                emit_rewrite_constructor_sequence(
+                    output,
+                    replace,
+                    &var_map,
+                    final_inst_defs,
+                    &reg_map,
+                    None,
+                    None,
+                );
+                writeln!(output, "            }}").unwrap();
+            }
+        }
+        writeln!(output, "        }}").unwrap();
+    }
+
+    writeln!(output, "        _ => {{}}").unwrap();
+    writeln!(output, "    }}").unwrap();
+    writeln!(output, "    Ok(RewriteResult::Keep)").unwrap();
     writeln!(output, "}}").unwrap();
 }
 
@@ -1553,10 +1908,11 @@ fn collect_schema_rule_conditions(
     args: &[PatternArg],
     extractors: &HashMap<String, ExtractorDef>,
     schema_var: &str,
+    schema_name: &str,
 ) -> Vec<String> {
     named_args(args)
         .filter_map(|(field, pattern)| {
-            collect_schema_field_conditions(field, pattern, extractors, schema_var)
+            collect_schema_field_conditions(field, pattern, extractors, schema_var, schema_name)
                 .map(|parts| parts.join(" && "))
         })
         .filter(|cond| !cond.is_empty())
@@ -1568,6 +1924,7 @@ fn collect_schema_field_conditions(
     pattern: &Pattern,
     extractors: &HashMap<String, ExtractorDef>,
     schema_var: &str,
+    schema_name: &str,
 ) -> Option<Vec<String>> {
     match strip_node_binds(pattern) {
         Pattern::Variable(_) => None,
@@ -1575,7 +1932,13 @@ fn collect_schema_field_conditions(
             let conds: Vec<String> = parts
                 .iter()
                 .filter_map(|part| {
-                    collect_schema_field_conditions(field, part, extractors, schema_var)
+                    collect_schema_field_conditions(
+                        field,
+                        part,
+                        extractors,
+                        schema_var,
+                        schema_name,
+                    )
                 })
                 .flatten()
                 .collect();
@@ -1592,11 +1955,43 @@ fn collect_schema_field_conditions(
             field
         )]),
         Pattern::IntConst(value) => Some(vec![format!("{}.{} == {}", schema_var, field, value)]),
-        Pattern::CondCode(_) => None,
+        Pattern::CondCode(cc) => render_cond_code_match(schema_name, *cc).map(|expr| {
+            if schema_name == "ICmp" {
+                vec![format!("{}.{} == Some({})", schema_var, field, expr)]
+            } else {
+                vec![format!("{}.{} == {}", schema_var, field, expr)]
+            }
+        }),
         Pattern::Block(_) => None,
         Pattern::StackSlot(_) | Pattern::Opcode { .. } => None,
         Pattern::Schema { .. } => None,
         Pattern::NodeBind { .. } => None,
+    }
+}
+
+fn render_cond_code_match(schema_name: &str, cc: CondCode) -> Option<&'static str> {
+    match schema_name {
+        "ICmp" => Some(match cc {
+            CondCode::E => "veloc_ir::IntCC::Eq",
+            CondCode::NE => "veloc_ir::IntCC::Ne",
+            CondCode::L => "veloc_ir::IntCC::LtS",
+            CondCode::LE => "veloc_ir::IntCC::LeS",
+            CondCode::G => "veloc_ir::IntCC::GtS",
+            CondCode::GE => "veloc_ir::IntCC::GeS",
+            CondCode::B => "veloc_ir::IntCC::LtU",
+            CondCode::BE => "veloc_ir::IntCC::LeU",
+            CondCode::A => "veloc_ir::IntCC::GtU",
+            CondCode::AE => "veloc_ir::IntCC::GeU",
+        }),
+        "FCmp" => Some(match cc {
+            CondCode::E => "veloc_ir::FloatCC::Eq",
+            CondCode::NE => "veloc_ir::FloatCC::Ne",
+            CondCode::L | CondCode::B => "veloc_ir::FloatCC::Lt",
+            CondCode::LE | CondCode::BE => "veloc_ir::FloatCC::Le",
+            CondCode::G | CondCode::A => "veloc_ir::FloatCC::Gt",
+            CondCode::GE | CondCode::AE => "veloc_ir::FloatCC::Ge",
+        }),
+        _ => None,
     }
 }
 
@@ -1644,6 +2039,37 @@ fn emit_schema_value_bindings_for_group(
                 if needed_vars.contains(&var) {
                     bindings.entry(var).or_insert_with(|| field.to_string());
                 }
+            }
+        }
+    }
+
+    for (var, field) in bindings {
+        let rust_var = rust_ident(&var);
+        writeln!(
+            output,
+            "                let {} = {}.{}.clone();",
+            rust_var, schema_var, field
+        )
+        .unwrap();
+    }
+}
+
+fn emit_schema_value_bindings_for_constructor(
+    output: &mut String,
+    constructor: &Constructor,
+    args: &[PatternArg],
+    schema_var: &str,
+) {
+    let mut needed_vars = BTreeSet::new();
+    collect_constructor_variables(constructor, &mut needed_vars);
+
+    let mut bindings = BTreeMap::new();
+    for (field, pattern) in named_args(args) {
+        let mut vars = Vec::new();
+        collect_pattern_variables(pattern, &mut vars);
+        for var in vars {
+            if needed_vars.contains(&var) {
+                bindings.entry(var).or_insert_with(|| field.to_string());
             }
         }
     }
@@ -1714,8 +2140,11 @@ fn schema_group_needs_binding(
         if infer_schema_source_def_field(args).is_some() {
             return true;
         }
-        if !collect_schema_rule_conditions(args, extractors, "schema_inst").is_empty() {
-            return true;
+        if let Some(schema_name) = pattern_schema_name(pattern) {
+            if !collect_schema_rule_conditions(args, extractors, "schema_inst", schema_name).is_empty()
+            {
+                return true;
+            }
         }
         for (_field, pattern) in named_args(args) {
             let mut vars = Vec::new();
@@ -1820,7 +2249,307 @@ fn emit_single_inst(
     let Constructor::Inst { opcode, args } = constructor else {
         writeln!(
             output,
-            "                return Err(crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Invalid constructor\")));"
+            "                return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Invalid constructor\")));"
+        )
+        .unwrap();
+        return;
+    };
+
+    if let Some(inst_def) = final_inst_defs.get(opcode) {
+        let implicit_uses: Vec<u32> = inst_def
+            .implicit_uses
+            .iter()
+            .filter_map(|r| reg_map.get(r).copied())
+            .collect();
+        let implicit_defs: Vec<u32> = inst_def
+            .implicit_defs
+            .iter()
+            .filter_map(|r| reg_map.get(r).copied())
+            .collect();
+        let ops_binding =
+            if inst_def.operands.is_empty() && implicit_uses.is_empty() && implicit_defs.is_empty()
+            {
+                ""
+            } else {
+                "mut "
+            };
+        writeln!(
+            output,
+            "                let {}ops_{} = SmallVec::<[MachineOperand; 4]>::new();",
+            ops_binding, index
+        )
+        .unwrap();
+        let use_direct_schema_def = preserve_operands
+            && schema_source_def_field.is_some()
+            && inst_def_def_operand_count(&inst_def.operands) == 1;
+        if preserve_operands
+            && inst_def_has_def_operands(&inst_def.operands)
+            && !use_direct_schema_def
+        {
+            writeln!(
+                output,
+                "                let source_defs_{index} = source_defs(inst);"
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "                let mut source_def_cursor_{index} = 0usize;"
+            )
+            .unwrap();
+        }
+
+        let mut explicit_arg_cursor = 0usize;
+        for (operand_index, operand) in inst_def.operands.iter().enumerate() {
+            let use_source_def = preserve_operands
+                && matches!(
+                    operand,
+                    OperandConstraint::Def(_) | OperandConstraint::TiedDef { .. }
+                )
+                && args.len() - explicit_arg_cursor
+                    == min_explicit_args_from(&inst_def.operands, operand_index);
+
+            if use_source_def {
+                if let Some(field) = schema_source_def_field.filter(|_| use_direct_schema_def) {
+                    emit_schema_source_def_operand(
+                        output,
+                        index,
+                        operand,
+                        schema_var.expect("schema source defs require a schema binding"),
+                        field,
+                    );
+                } else {
+                    emit_source_def_operand(output, index, operand);
+                }
+                continue;
+            }
+
+            let Some(arg) = args.get(explicit_arg_cursor) else {
+                panic!(
+                    "constructor {} is missing argument {} for target operand {}",
+                    opcode, explicit_arg_cursor, operand_index
+                );
+            };
+            emit_constructor_operand(output, index, arg, operand, var_map, reg_map);
+            explicit_arg_cursor += 1;
+        }
+
+        if explicit_arg_cursor != args.len() {
+            panic!(
+                "constructor {} has {} args but target schema consumed {}",
+                opcode,
+                args.len(),
+                explicit_arg_cursor
+            );
+        }
+
+        if !implicit_uses.is_empty() || !implicit_defs.is_empty() {
+            writeln!(output, "                // Implicit uses/defs").unwrap();
+            for r in &implicit_uses {
+                let r_val = *r;
+                writeln!(
+                    output,
+                    r#"                {{
+                    let reg = Reg::new_preg({r_val});
+                    if !ops_{index}.iter().any(|op| match op {{
+                        MachineOperand::Use(r) => *r == reg,
+                        MachineOperand::TiedDefUse(w) => w.to_reg() == reg,
+                        _ => false,
+                    }}) {{
+                        ops_{index}.push(MachineOperand::Use(reg));
+                    }}
+                }}"#
+                )
+                .unwrap();
+            }
+            for r in &implicit_defs {
+                let r_val = *r;
+                writeln!(
+                    output,
+                    r#"                {{
+                    let reg = Reg::new_preg({r_val});
+                    if !ops_{index}.iter().any(|op| match op {{
+                        MachineOperand::Def(w) => w.to_reg() == reg,
+                        MachineOperand::TiedDefUse(w) => w.to_reg() == reg,
+                        _ => false,
+                    }}) {{
+                        ops_{index}.push(MachineOperand::Def(crate::mir::Writable(reg)));
+                    }}
+                }}"#
+                )
+                .unwrap();
+            }
+        }
+
+        writeln!(
+            output,
+            "                let inst_{} = MachineInst::build_generic(",
+            index
+        )
+        .unwrap();
+        if final_inst_defs.contains_key(opcode) {
+            writeln!(
+                output,
+                "                    MachineOpcode::Target(TargetInst::{}.as_u32()),",
+                opcode
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                output,
+                "                    MachineOpcode::Generic(GenericOpcode::{}),",
+                opcode
+            )
+            .unwrap();
+        }
+        writeln!(output, "                    ops_{},", index).unwrap();
+        writeln!(output, "                );").unwrap();
+        if emit_to_out {
+            writeln!(output, "                out.push(inst_{});", index).unwrap();
+        }
+    } else {
+        writeln!(
+            output,
+            "                let mut ops_{} = SmallVec::<[MachineOperand; 4]>::new();",
+            index
+        )
+        .unwrap();
+        for arg in args {
+            match arg {
+                Constructor::Variable(name) => match var_map.get(name) {
+                    Some(BindingSource::OperandIndex(idx)) => {
+                        writeln!(
+                            output,
+                            "                ops_{}.push(operand_by_index(inst, {}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand mapping failed\")))?);",
+                            index, idx
+                        )
+                        .unwrap();
+                    }
+                    Some(BindingSource::SchemaValue) => {
+                        writeln!(
+                            output,
+                            "                return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema value requires a target instruction schema\")));"
+                        )
+                        .unwrap();
+                        return;
+                    }
+                    None => {
+                        writeln!(
+                            output,
+                            "                return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Unknown constructor variable\")));"
+                        )
+                        .unwrap();
+                        return;
+                    }
+                },
+                Constructor::Imm(i) => {
+                    writeln!(
+                        output,
+                        "                ops_{}.push(MachineOperand::Imm({}));",
+                        index, i
+                    )
+                    .unwrap();
+                }
+                Constructor::Reg(name) => {
+                    let enc = reg_map.get(name).copied().unwrap_or(0);
+                    writeln!(
+                        output,
+                        "                ops_{}.push(MachineOperand::Use(Reg::new_preg({})));",
+                        index, enc
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    writeln!(
+                        output,
+                        "                return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Unsupported constructor arg\")));"
+                    )
+                    .unwrap();
+                    return;
+                }
+            }
+        }
+
+        writeln!(
+            output,
+            "                let inst_{} = MachineInst::build_generic(",
+            index
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "                    MachineOpcode::Target(TargetInst::{}.as_u32()),",
+            opcode
+        )
+        .unwrap();
+        writeln!(output, "                    ops_{},", index).unwrap();
+        writeln!(output, "                );").unwrap();
+        if emit_to_out {
+            writeln!(output, "                out.push(inst_{});", index).unwrap();
+        }
+    }
+}
+
+fn emit_rewrite_constructor_sequence(
+    output: &mut String,
+    constructor: &Constructor,
+    var_map: &HashMap<String, BindingSource>,
+    final_inst_defs: &HashMap<String, FinalInstDef>,
+    reg_map: &HashMap<String, u32>,
+    schema_var: Option<&str>,
+    schema_source_def_field: Option<&str>,
+) {
+    match constructor {
+        Constructor::Inst { opcode, args } if opcode == "seq" => {
+            for (i, c) in args.iter().enumerate() {
+                emit_rewrite_single_inst(
+                    output,
+                    c,
+                    var_map,
+                    final_inst_defs,
+                    reg_map,
+                    schema_var,
+                    schema_source_def_field,
+                    i,
+                    false,
+                    true,
+                );
+            }
+            writeln!(output, "                return Ok(RewriteResult::Replace);").unwrap();
+        }
+        _ => {
+            emit_rewrite_single_inst(
+                output,
+                constructor,
+                var_map,
+                final_inst_defs,
+                reg_map,
+                schema_var,
+                schema_source_def_field,
+                0,
+                true,
+                true,
+            );
+            writeln!(output, "                return Ok(RewriteResult::InPlace);").unwrap();
+        }
+    }
+}
+
+fn emit_rewrite_single_inst(
+    output: &mut String,
+    constructor: &Constructor,
+    var_map: &HashMap<String, BindingSource>,
+    final_inst_defs: &HashMap<String, FinalInstDef>,
+    reg_map: &HashMap<String, u32>,
+    schema_var: Option<&str>,
+    schema_source_def_field: Option<&str>,
+    index: usize,
+    preserve_operands: bool,
+    emit_to_out: bool,
+) {
+    let Constructor::Inst { opcode, args } = constructor else {
+        writeln!(
+            output,
+            "                return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Invalid constructor\")));"
         )
         .unwrap();
         return;
@@ -1981,7 +2710,7 @@ fn emit_single_inst(
                     Some(BindingSource::OperandIndex(idx)) => {
                         writeln!(
                             output,
-                            "                ops_{}.push(operand_by_index(inst, {}).ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Operand mapping failed\")))?);",
+                            "                ops_{}.push(operand_by_index(inst, {}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand mapping failed\")))?);",
                             index, idx
                         )
                         .unwrap();
@@ -1989,7 +2718,7 @@ fn emit_single_inst(
                     Some(BindingSource::SchemaValue) => {
                         writeln!(
                             output,
-                            "                return Err(crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Schema value requires a target instruction schema\")));"
+                            "                return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema value requires a target instruction schema\")));"
                         )
                         .unwrap();
                         return;
@@ -1997,7 +2726,7 @@ fn emit_single_inst(
                     None => {
                         writeln!(
                             output,
-                            "                return Err(crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Unknown constructor variable\")));"
+                            "                return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Unknown constructor variable\")));"
                         )
                         .unwrap();
                         return;
@@ -2023,7 +2752,7 @@ fn emit_single_inst(
                 _ => {
                     writeln!(
                         output,
-                        "                return Err(crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Unsupported constructor arg\")));"
+                        "                return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Unsupported constructor arg\")));"
                     )
                     .unwrap();
                     return;
@@ -2095,7 +2824,7 @@ fn emit_source_def_operand(output: &mut String, index: usize, operand: &OperandC
         r#"                {{
                     let reg = *source_defs_{index}
                         .get(source_def_cursor_{index})
-                        .ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from("Source def mapping failed")))?;
+                        .ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from("Source def mapping failed")))?;
                     source_def_cursor_{index} += 1;
                     ops_{index}.push(MachineOperand::{op_ctor}(crate::mir::Writable(reg)));
                 }}"#
@@ -2117,7 +2846,7 @@ fn emit_schema_source_def_operand(
     };
     writeln!(
         output,
-        r#"                ops_{index}.push(MachineOperand::{op_ctor}(crate::mir::Writable(reg_value({schema_var}.{field}.clone()).ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from("Schema reg mapping failed")))?)));"#
+        r#"                ops_{index}.push(MachineOperand::{op_ctor}(crate::mir::Writable(reg_value({schema_var}.{field}.clone()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from("Schema reg mapping failed")))?)));"#
     )
     .unwrap();
 }
@@ -2176,6 +2905,9 @@ fn emit_constructor_operand(
                 OperandConstraint::TiedDef { .. } => format!(
                     "MachineOperand::TiedDefUse(crate::mir::Writable(Reg::new_preg({enc})))"
                 ),
+                OperandConstraint::StackSlot(_) => {
+                    panic!("physical register constructor cannot satisfy a stackslot operand")
+                }
                 _ => panic!("physical register constructor cannot satisfy this operand kind"),
             };
             writeln!(output, "                ops_{index}.push({push});").unwrap();
@@ -2190,17 +2922,18 @@ fn schema_value_operand_expr(name: &str, operand: &OperandConstraint) -> String 
     let rust_name = rust_ident(name);
     match operand {
         OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => format!(
-            "MachineOperand::Use(reg_value({rust_name}).ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?)"
+            "MachineOperand::Use(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?)"
         ),
         OperandConstraint::Def(_) => format!(
-            "MachineOperand::Def(crate::mir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
+            "MachineOperand::Def(crate::mir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
         ),
         OperandConstraint::TiedDef { .. } => format!(
-            "MachineOperand::TiedDefUse(crate::mir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
+            "MachineOperand::TiedDefUse(crate::mir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
         ),
         OperandConstraint::Imm(_) => format!("MachineOperand::Imm({rust_name}.into())"),
         OperandConstraint::Block(_) => format!("MachineOperand::Block({rust_name})"),
         OperandConstraint::Global(_) => format!("MachineOperand::Global({rust_name})"),
+        OperandConstraint::StackSlot(_) => format!("MachineOperand::StackSlot({rust_name})"),
     }
 }
 
@@ -2219,22 +2952,25 @@ fn rust_ident(name: &str) -> String {
 fn operand_index_expr(op_index: usize, operand: &OperandConstraint) -> String {
     match operand {
         OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => format!(
-            "MachineOperand::Use(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?)"
+            "MachineOperand::Use(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?)"
         ),
         OperandConstraint::Def(_) => format!(
-            "MachineOperand::Def(crate::mir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
+            "MachineOperand::Def(crate::mir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
         ),
         OperandConstraint::TiedDef { .. } => format!(
-            "MachineOperand::TiedDefUse(crate::mir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
+            "MachineOperand::TiedDefUse(crate::mir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
         ),
         OperandConstraint::Imm(_) => format!(
-            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Imm(v)) => MachineOperand::Imm(v), _ => return Err(crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Operand immediate mapping failed\"))), }}"
+            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Imm(v)) => MachineOperand::Imm(v), _ => return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand immediate mapping failed\"))), }}"
         ),
         OperandConstraint::Block(_) => format!(
-            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Block(v)) => MachineOperand::Block(v), _ => return Err(crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Operand block mapping failed\"))), }}"
+            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Block(v)) => MachineOperand::Block(v), _ => return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand block mapping failed\"))), }}"
         ),
         OperandConstraint::Global(_) => format!(
-            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Global(v)) => MachineOperand::Global(v), _ => return Err(crate::error::Error::Select(inst.opcode.clone(), alloc::string::String::from(\"Operand global mapping failed\"))), }}"
+            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Global(v)) => MachineOperand::Global(v), _ => return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand global mapping failed\"))), }}"
+        ),
+        OperandConstraint::StackSlot(_) => format!(
+            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::StackSlot(v)) => MachineOperand::StackSlot(v), _ => return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand stackslot mapping failed\"))), }}"
         ),
     }
 }
@@ -2249,7 +2985,9 @@ fn collect_reg_encs(module: &crate::ast::Module) -> HashMap<String, u32> {
     map
 }
 
-fn collect_canonical_regs<'a>(module: &'a crate::ast::Module) -> BTreeMap<u32, &'a crate::ast::RegDef> {
+fn collect_canonical_regs<'a>(
+    module: &'a crate::ast::Module,
+) -> BTreeMap<u32, &'a crate::ast::RegDef> {
     let mut regs = BTreeMap::new();
     for def in &module.defs {
         if let Def::Reg(reg) = def {
@@ -2271,7 +3009,9 @@ fn collect_reserved_reg_encs(module: &crate::ast::Module) -> BTreeSet<u32> {
     regs
 }
 
-fn collect_special_role_regs<'a>(module: &'a crate::ast::Module) -> BTreeMap<String, &'a crate::ast::RegDef> {
+fn collect_special_role_regs<'a>(
+    module: &'a crate::ast::Module,
+) -> BTreeMap<String, &'a crate::ast::RegDef> {
     let mut roles = BTreeMap::new();
     let canonical_regs = collect_canonical_regs(module);
     for reg in canonical_regs.values() {
@@ -2319,7 +3059,11 @@ fn generate_register_descriptors(output: &mut String, module: &crate::ast::Modul
     let reg_encs = collect_reg_encs(module);
     let reserved_encs = collect_reserved_reg_encs(module);
     let special_role_regs = collect_special_role_regs(module);
-    writeln!(output, "\n/// Canonical physical register descriptors generated from `def-reg`.").unwrap();
+    writeln!(
+        output,
+        "\n/// Canonical physical register descriptors generated from `def-reg`."
+    )
+    .unwrap();
     writeln!(output, "pub const PHYS_REG_INFOS: &[RegInfo] = &[").unwrap();
     for reg in canonical_regs.values() {
         let const_name = sanitize_ident(&format!("REG_{}", reg.name));
@@ -2335,17 +3079,30 @@ fn generate_register_descriptors(output: &mut String, module: &crate::ast::Modul
     }
     writeln!(output, "];").unwrap();
 
-    writeln!(output, "\n/// Reserved physical registers generated from `def-reg`.").unwrap();
+    writeln!(
+        output,
+        "\n/// Reserved physical registers generated from `def-reg`."
+    )
+    .unwrap();
     let reserved_regs = canonical_regs
         .values()
         .filter(|reg| reserved_encs.contains(&reg.hw_enc))
         .map(|reg| sanitize_ident(&format!("REG_{}", reg.name)))
         .collect::<Vec<_>>()
         .join(", ");
-    writeln!(output, "pub const RESERVED_REGS: &[Reg] = &[{}];", reserved_regs).unwrap();
+    writeln!(
+        output,
+        "pub const RESERVED_REGS: &[Reg] = &[{}];",
+        reserved_regs
+    )
+    .unwrap();
 
     if !special_role_regs.is_empty() {
-        writeln!(output, "\n/// Special-register roles generated from `def-reg`.").unwrap();
+        writeln!(
+            output,
+            "\n/// Special-register roles generated from `def-reg`."
+        )
+        .unwrap();
         for (role, reg) in special_role_regs {
             let const_name = sanitize_ident(&format!("SPECIAL_REG_{}", role)).to_ascii_uppercase();
             let reg_name = sanitize_ident(&format!("REG_{}", reg.name));
@@ -2357,7 +3114,11 @@ fn generate_register_descriptors(output: &mut String, module: &crate::ast::Modul
         return;
     }
 
-    writeln!(output, "\n/// Register-class member slices generated from `def-regclass`.").unwrap();
+    writeln!(
+        output,
+        "\n/// Register-class member slices generated from `def-regclass`."
+    )
+    .unwrap();
     for class in reg_classes {
         let const_name = sanitize_ident(&format!("REGCLASS_{}", class.name));
         let regs = class
@@ -2379,11 +3140,19 @@ fn generate_register_descriptors(output: &mut String, module: &crate::ast::Modul
             })
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(output, "pub const {}: &[Reg] = &[{}];", allocatable_name, allocatable).unwrap();
+        writeln!(
+            output,
+            "pub const {}: &[Reg] = &[{}];",
+            allocatable_name, allocatable
+        )
+        .unwrap();
     }
 }
 
-fn generate_abi_descriptors(output: &mut String, module: &crate::ast::Module) {
+fn generate_abi_descriptors(
+    output: &mut String,
+    module: &crate::ast::Module,
+) -> Result<(), String> {
     let reg_map = collect_reg_encs(module);
     let abis: Vec<_> = module
         .defs
@@ -2395,7 +3164,7 @@ fn generate_abi_descriptors(output: &mut String, module: &crate::ast::Module) {
         .collect();
 
     if abis.is_empty() {
-        return;
+        return Ok(());
     }
 
     writeln!(output, "\n/// ABI descriptors generated from `def-abi`.").unwrap();
@@ -2410,7 +3179,7 @@ fn generate_abi_descriptors(output: &mut String, module: &crate::ast::Module) {
         generate_abi_pool_array(output, &returns_name, &abi.returns, &reg_map);
         generate_abi_preserved_array(output, &preserved_name, &abi.preserved, &reg_map);
 
-        let arch = abi_arch_expr(&abi.arch);
+        let arch = abi_arch_expr(&abi.arch)?;
         let align = abi.stack.align.unwrap_or(16);
         let (incoming_base_reg, incoming_base_offset) = abi
             .stack
@@ -2464,6 +3233,7 @@ pub static {prefix}: AbiDescriptor = AbiDescriptor {{
         )
         .unwrap();
     }
+    Ok(())
 }
 
 fn generate_abi_pool_array(
@@ -2525,14 +3295,14 @@ fn abi_value_class_expr(class: &str) -> &'static str {
     }
 }
 
-fn abi_arch_expr(arch: &str) -> &'static str {
+fn abi_arch_expr(arch: &str) -> Result<&'static str, String> {
     match arch {
-        "X86_64" => "TargetArch::X86_64",
-        "AArch64" => "TargetArch::AArch64",
-        "Riscv64" => "TargetArch::Riscv64",
-        "Wasm32" => "TargetArch::Wasm32",
-        "Wasm64" => "TargetArch::Wasm64",
-        _ => "TargetArch::X86_64",
+        "X86_64" => Ok("TargetArch::X86_64"),
+        "AArch64" => Ok("TargetArch::AArch64"),
+        "Riscv64" => Ok("TargetArch::Riscv64"),
+        "Wasm32" => Ok("TargetArch::Wasm32"),
+        "Wasm64" => Ok("TargetArch::Wasm64"),
+        _ => Err(format!("unsupported ABI architecture `{}`", arch)),
     }
 }
 
@@ -2555,13 +3325,216 @@ fn sanitize_ident(name: &str) -> String {
         .collect()
 }
 
+fn preprocess_isle(input: &str) -> Result<String, String> {
+    let lines: Vec<String> = input.lines().map(|line| line.to_string()).collect();
+    let (expanded, idx) = expand_lines(&lines, 0, &HashMap::new())?;
+    debug_assert_eq!(idx, lines.len());
+    Ok(expanded)
+}
+
+fn expand_lines(
+    lines: &[String],
+    mut idx: usize,
+    vars: &HashMap<String, String>,
+) -> Result<(String, usize), String> {
+    let mut out = String::new();
+    while idx < lines.len() {
+        let line = &lines[idx];
+        let trimmed = line.trim_start();
+        if trimmed == "@end" {
+            return Ok((out, idx + 1));
+        }
+
+        if let Some(spec) = trimmed.strip_prefix("@for ") {
+            let (names, inline_values) = parse_for_header(spec)?;
+            if let Some(values) = inline_values {
+                let body_start = idx + 1;
+                let body_end = find_matching_end(lines, body_start)?;
+                let body = lines[body_start..body_end].join("\n");
+                for tuple in values {
+                    let mut scoped = vars.clone();
+                    for (name, value) in names.iter().zip(tuple.iter()) {
+                        scoped.insert(name.clone(), value.clone());
+                    }
+                    let substituted = substitute_vars(&body, &scoped);
+                    let (expanded, _) = expand_lines(
+                        &substituted
+                            .lines()
+                            .map(|line| line.to_string())
+                            .collect::<Vec<_>>(),
+                        0,
+                        &HashMap::new(),
+                    )?;
+                    out.push_str(&expanded);
+                    if !expanded.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+                idx = body_end + 1;
+            } else {
+                let body_start = idx + 1;
+                let do_idx = find_for_do(lines, body_start)?;
+                let body_end = find_matching_end(lines, do_idx + 1)?;
+                let cases = parse_for_cases(&lines[body_start..do_idx], names.len())?;
+                let body = lines[do_idx + 1..body_end].join("\n");
+                for tuple in cases {
+                    let mut scoped = vars.clone();
+                    for (name, value) in names.iter().zip(tuple.iter()) {
+                        scoped.insert(name.clone(), value.clone());
+                    }
+                    let substituted = substitute_vars(&body, &scoped);
+                    let (expanded, _) = expand_lines(
+                        &substituted
+                            .lines()
+                            .map(|line| line.to_string())
+                            .collect::<Vec<_>>(),
+                        0,
+                        &HashMap::new(),
+                    )?;
+                    out.push_str(&expanded);
+                    if !expanded.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+                idx = body_end + 1;
+            }
+            continue;
+        }
+
+        out.push_str(&substitute_vars(line, vars));
+        out.push('\n');
+        idx += 1;
+    }
+    Ok((out, idx))
+}
+
+fn find_matching_end(lines: &[String], mut idx: usize) -> Result<usize, String> {
+    let mut depth = 0usize;
+    while idx < lines.len() {
+        let trimmed = lines[idx].trim_start();
+        if trimmed.strip_prefix("@for ").is_some() {
+            depth += 1;
+        } else if trimmed == "@end" {
+            if depth == 0 {
+                return Ok(idx);
+            }
+            depth -= 1;
+        }
+        idx += 1;
+    }
+    Err("missing @end for @for block".to_string())
+}
+
+fn parse_for_names(spec: &str) -> Result<Vec<String>, String> {
+    let names: Vec<String> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect();
+    if names.is_empty() {
+        Err(format!("invalid @for header: missing loop variables in {spec}"))
+    } else {
+        Ok(names)
+    }
+}
+
+fn parse_for_header(spec: &str) -> Result<(Vec<String>, Option<Vec<Vec<String>>>), String> {
+    let Some((lhs, rhs)) = spec.split_once(" in") else {
+        return Ok((parse_for_names(spec)?, None));
+    };
+
+    let names = parse_for_names(lhs)?;
+
+    let rhs = rhs.trim();
+    if rhs.is_empty() {
+        return Ok((names, None));
+    }
+
+    let values = rhs
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|tuple| parse_for_tuple(tuple, names.len()))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if values.is_empty() {
+        return Err(format!("invalid @for header: no tuples found in {spec}"));
+    }
+
+    Ok((names, Some(values)))
+}
+
+fn parse_for_cases(lines: &[String], arity: usize) -> Result<Vec<Vec<String>>, String> {
+    let mut values = Vec::new();
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with(";;") {
+            continue;
+        }
+        values.push(parse_for_tuple(trimmed, arity)?);
+    }
+    if values.is_empty() {
+        return Err("invalid @for block: no cases found before @do".to_string());
+    }
+    Ok(values)
+}
+
+fn parse_for_tuple(tuple: &str, arity: usize) -> Result<Vec<String>, String> {
+    let vals: Vec<String> = tuple
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect();
+    if vals.len() != arity {
+        Err(format!(
+            "invalid @for tuple `{tuple}`: expected {} values, found {}",
+            arity,
+            vals.len()
+        ))
+    } else {
+        Ok(vals)
+    }
+}
+
+fn find_for_do(lines: &[String], mut idx: usize) -> Result<usize, String> {
+    let mut depth = 0usize;
+    while idx < lines.len() {
+        let trimmed = lines[idx].trim_start();
+        if trimmed.strip_prefix("@for ").is_some() {
+            depth += 1;
+        } else if trimmed == "@end" {
+            if depth == 0 {
+                return Err("missing @do for @for block".to_string());
+            }
+            depth -= 1;
+        } else if trimmed == "@do" && depth == 0 {
+            return Ok(idx);
+        }
+        idx += 1;
+    }
+    Err("missing @do for @for block".to_string())
+}
+
+fn substitute_vars(text: &str, vars: &HashMap<String, String>) -> String {
+    let mut out = text.to_string();
+    for (name, value) in vars {
+        let needle = format!("{{{{{}}}}}", name);
+        out = out.replace(&needle, value);
+    }
+    out
+}
+
 // =============================================================================
 // 主编译函数
 // =============================================================================
 
 pub fn compile(input: &str, arch: &str) -> Result<String, String> {
+    let input = preprocess_isle(input)?;
+
     // 解析输入
-    let module = parse_input(input)?;
+    let module = parse_input(&input)?;
 
     // 收集定义
     let (extractors, templates, macros) = collect_definitions(&module);
@@ -2581,12 +3554,13 @@ pub fn compile(input: &str, arch: &str) -> Result<String, String> {
     );
     generate_register_descriptors(&mut output, &module);
     generate_cpu_info(&mut output, &module);
-    generate_abi_descriptors(&mut output, &module);
+    generate_abi_descriptors(&mut output, &module)?;
     generate_enum(&mut output, &final_inst_defs);
     generate_enum_conversions(&mut output, &final_inst_defs);
     generate_target_inst_metadata(&mut output, &module, &final_inst_defs);
     generate_generic_inst_metadata(&mut output, &module, &final_inst_defs);
     generate_emit_method(&mut output, &final_inst_defs, &macros);
+    generate_pre_isel_rewrite_tables(&mut output, &module);
     generate_select_instruction(&mut output, &module, &extractors, &final_inst_defs, arch);
 
     Ok(output)

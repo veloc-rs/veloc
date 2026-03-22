@@ -94,6 +94,8 @@ pub enum Token {
     HwEnc,
     #[token("select-rule")]
     SelectRule,
+    #[token("rewrite-rule")]
+    RewriteRule,
     #[token("combine-rule")]
     CombineRule,
     #[token("peephole-rule")]

@@ -7,9 +7,9 @@ use crate::isel::IRTranslator;
 use crate::mir::{MachineFunction, MachineModule};
 use crate::object::ObjectFileBuilder;
 use crate::passes::{
-    AbiLoweringPass, BlockParamLoweringPass, FrameFinalizePass, InstructionSelectionPass,
-    LegalizePass, PostIselOptimizePass, PreIselPreparePass, PrologueEpiloguePass,
-    RegisterAllocationPass, RegisterBankSelectionPass,
+    AbiLoweringPass, BlockParamLoweringPass, FrameFinalizePass, GenericCombinePass,
+    InstructionSelectionPass, LegalizePass, OperandConstraintPass, PostIselOptimizePass,
+    PrologueEpiloguePass, RegisterAllocationPass, RegisterBankSelectionPass,
 };
 use crate::pipeline::stages::{
     AbiLowered, BankSelected, BlockParamsLowered, FrameFinalized, LegalizedMir, PostIselOptimized,
@@ -19,9 +19,8 @@ use crate::pipeline::{
     CompiledFunction, CompiledModule, FunctionAnalysisCtx, FunctionPassContext, ModuleAnalysisCtx,
     ModulePassContext, ModulePassPipeline, StagePassPipeline, StageTransformPass,
 };
-use crate::target::arch::TargetMachine;
+use crate::target::arch::{OperandConstraintStage, TargetMachine};
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::vec::Vec;
 use veloc_ir::{FuncId, Function, Module};
 
@@ -157,21 +156,18 @@ impl<'a> CodegenPipeline<'a> {
     ) -> Result<BTreeMap<veloc_ir::FuncId, Vec<u8>>> {
         let mut stats = CodegenStats::default();
         let mut module_analyses = ModuleAnalysisCtx::default();
-        let compiled = self.compile_module_artifact(module, &mut stats, &mut module_analyses)?;
+        let CompiledModule {
+            symbols, functions, ..
+        } = self.compile_module_artifact(module, &mut stats, &mut module_analyses)?;
         let mut results = BTreeMap::new();
 
-        for compiled_func in compiled.functions {
-            let emitted = compiled_func.emitted.ok_or_else(|| {
-                Error::Codegen(format!(
-                    "missing emitted code for compiled function `{}`",
-                    compiled_func.name
-                ))
-            })?;
+        for compiled_func in functions {
+            let emitted = compiled_func
+                .emitted
+                .ok_or_else(|| Error::missing_emitted_code(compiled_func.name.clone()))?;
             if let Some(reloc) = emitted.relocations.first() {
-                return Err(Error::Codegen(format!(
-                    "raw code emission cannot resolve external symbol relocation to `{}`",
-                    reloc.symbol
-                )));
+                let symbol = symbols.get(reloc.symbol).name.clone();
+                return Err(Error::unexpected_relocation(symbol));
             }
             results.insert(compiled_func.func_id, emitted.data);
         }
@@ -225,9 +221,9 @@ impl<'a> CodegenPipeline<'a> {
         stats: &mut CodegenStats,
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<CompiledFunction> {
-        let mfunc_id = mmodule.find_function_by_name(&func.name).ok_or_else(|| {
-            Error::Codegen(format!("Translated function not found: {}", func.name))
-        })?;
+        let mfunc_id = mmodule
+            .find_function_by_name(&func.name)
+            .ok_or_else(|| Error::translated_function_not_found(func.name.clone()))?;
         let mfunc = mmodule.functions[mfunc_id].clone().into_stage::<RawMir>();
         let sig = module.get_signature(func.signature);
         let mut function_analyses = FunctionAnalysisCtx::default();
@@ -279,13 +275,12 @@ impl<'a> CodegenPipeline<'a> {
         let mut ctx = ctx.into_stage::<LegalizedMir>();
         self.run_stage_pipeline("post-legalize", &post_legalize, &mut mfunc, &mut ctx)?;
 
-        let mfunc = self.apply_stage_transform(&AbiLoweringPass::new(lowering), mfunc, &mut ctx)?;
+        let mfunc = self.apply_stage_transform(&AbiLoweringPass::new(), mfunc, &mut ctx)?;
         let mut ctx = ctx.into_stage::<AbiLowered>();
         let mfunc = self.apply_stage_transform(&RegisterBankSelectionPass, mfunc, &mut ctx)?;
 
         let mut ctx = ctx.into_stage::<BankSelected>();
-        let mfunc =
-            self.apply_stage_transform(&PreIselPreparePass::new(lowering), mfunc, &mut ctx)?;
+        let mfunc = self.apply_stage_transform(&GenericCombinePass::new(), mfunc, &mut ctx)?;
 
         let mut pre_isel = StagePassPipeline::<PreIselPrepared>::new();
         for pass in lowering.pre_isel_passes() {
@@ -294,6 +289,11 @@ impl<'a> CodegenPipeline<'a> {
         let mut ctx = ctx.into_stage::<PreIselPrepared>();
         let mut mfunc = mfunc;
         self.run_stage_pipeline("pre-isel", &pre_isel, &mut mfunc, &mut ctx)?;
+        OperandConstraintPass::new(lowering, OperandConstraintStage::PreSelect).run(&mut mfunc)?;
+        ctx.function_analyses.apply(
+            crate::pipeline::ChangeSet::INST_SEMANTICS | crate::pipeline::ChangeSet::INST_OPERANDS,
+        );
+        self.maybe_dump_mfunc("pre-isel-constraints", &mfunc);
 
         let mfunc =
             self.apply_stage_transform(&InstructionSelectionPass::new(lowering), mfunc, &mut ctx)?;
@@ -428,4 +428,3 @@ impl<'a> CodegenPipeline<'a> {
         self.target
     }
 }
-

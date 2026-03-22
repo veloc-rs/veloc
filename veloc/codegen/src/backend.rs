@@ -24,9 +24,9 @@ impl Backend {
 
     /// 使用显式目标配置创建 backend。
     pub fn with_target_config(config: TargetConfig) -> Result<Self> {
-        let target = crate::create_target_machine(config).ok_or_else(|| {
-            Error::Codegen("failed to create target machine for requested configuration".into())
-        })?;
+        let arch = config.arch;
+        let target = crate::create_target_machine(config)
+            .ok_or_else(|| Error::target_machine_unavailable(arch))?;
         Ok(Self { target })
     }
 

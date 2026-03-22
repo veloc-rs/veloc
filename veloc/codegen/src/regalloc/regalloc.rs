@@ -197,7 +197,14 @@ impl<'a> RegisterAllocator<'a> {
         let ty = mfunc.vreg_data(vreg).ty;
         let size = self.target.desc().data_layout.type_size(&ty);
         let align = self.target.desc().data_layout.type_align(&ty);
-        let slot = mfunc.alloc_stack_slot(size, align);
+        let base_reg = self
+            .target
+            .desc()
+            .registers
+            .special_regs
+            .frame_pointer
+            .expect("register spilling requires a frame pointer");
+        let slot = mfunc.alloc_stack_slot(base_reg, size, align);
         self.spilled.insert(vreg, slot);
 
         let data = mfunc.vreg_data_mut(vreg);
@@ -209,8 +216,8 @@ impl<'a> RegisterAllocator<'a> {
         let num_blocks = mfunc.num_blocks();
         for block_idx in 0..num_blocks {
             mfunc
-                .rewrite_block_insts(block_idx, |mfunc, inst_id, output| {
-                    let mut inst = mfunc.dfg[inst_id].clone();
+                .rewrite_block(block_idx, |cursor| {
+                    let mut inst = cursor.current_inst_clone();
                     let mut before = Vec::new();
                     let mut after = Vec::new();
                     let mut scratch_bindings: Vec<(Reg, Reg)> = Vec::new();
@@ -223,7 +230,7 @@ impl<'a> RegisterAllocator<'a> {
                                 if let Some(&preg) = self.allocation.get(vreg) {
                                     *operand = MachineOperand::Use(preg);
                                 } else if let Some(&slot) = self.spilled.get(vreg) {
-                                    let ty = mfunc.vreg_data(*vreg).ty;
+                                    let ty = cursor.mfunc().vreg_data(*vreg).ty;
                                     let scratch = self.ensure_scratch_reg(
                                         *vreg,
                                         ty,
@@ -244,7 +251,7 @@ impl<'a> RegisterAllocator<'a> {
                                 if let Some(&preg) = self.allocation.get(&vreg) {
                                     *operand = MachineOperand::Def(Writable(preg));
                                 } else if let Some(&slot) = self.spilled.get(&vreg) {
-                                    let ty = mfunc.vreg_data(vreg).ty;
+                                    let ty = cursor.mfunc().vreg_data(vreg).ty;
                                     let scratch = self.ensure_scratch_reg(
                                         vreg,
                                         ty,
@@ -261,7 +268,7 @@ impl<'a> RegisterAllocator<'a> {
                                 if let Some(&preg) = self.allocation.get(&vreg) {
                                     *operand = MachineOperand::TiedDefUse(Writable(preg));
                                 } else if let Some(&slot) = self.spilled.get(&vreg) {
-                                    let ty = mfunc.vreg_data(vreg).ty;
+                                    let ty = cursor.mfunc().vreg_data(vreg).ty;
                                     let scratch = self.ensure_scratch_reg(
                                         vreg,
                                         ty,
@@ -283,16 +290,11 @@ impl<'a> RegisterAllocator<'a> {
                     }
 
                     for (slot, scratch, ty) in before {
-                        output.push(
-                            mfunc.alloc_inst(self.build_stack_load(mfunc, slot, scratch, ty)),
-                        );
+                        cursor.emit_before(self.build_stack_load(cursor.mfunc(), slot, scratch, ty));
                     }
-                    mfunc.replace_inst(inst_id, inst);
-                    output.push(inst_id);
+                    cursor.replace_current(inst);
                     for (slot, scratch, ty) in after {
-                        output.push(
-                            mfunc.alloc_inst(self.build_stack_store(mfunc, slot, scratch, ty)),
-                        );
+                        cursor.emit_before(self.build_stack_store(cursor.mfunc(), slot, scratch, ty));
                     }
 
                     Ok::<(), ()>(())
@@ -350,13 +352,13 @@ impl<'a> RegisterAllocator<'a> {
         ty: Type,
     ) -> MachineInst {
         let offset = mfunc.stack_frame.slots[slot].offset as i64;
-        let rbp = Reg::new_preg(5);
+        let base_reg = mfunc.stack_frame.slots[slot].base_reg;
         let opcode = self.stack_load_opcode(ty);
         MachineInst::build_generic(
             MachineOpcode::Target(opcode),
             smallvec::smallvec![
                 MachineOperand::Def(Writable(dst)),
-                MachineOperand::Use(rbp),
+                MachineOperand::Use(base_reg),
                 MachineOperand::Imm(offset),
             ],
         )
@@ -370,13 +372,13 @@ impl<'a> RegisterAllocator<'a> {
         ty: Type,
     ) -> MachineInst {
         let offset = mfunc.stack_frame.slots[slot].offset as i64;
-        let rbp = Reg::new_preg(5);
+        let base_reg = mfunc.stack_frame.slots[slot].base_reg;
         let opcode = self.stack_store_opcode(ty);
         MachineInst::build_generic(
             MachineOpcode::Target(opcode),
             smallvec::smallvec![
                 MachineOperand::Use(src),
-                MachineOperand::Use(rbp),
+                MachineOperand::Use(base_reg),
                 MachineOperand::Imm(offset),
             ],
         )

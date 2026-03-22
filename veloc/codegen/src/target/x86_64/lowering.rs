@@ -5,12 +5,12 @@
 
 pub use crate::isel::SelectResult;
 use crate::mir::{
-    CallCallee, CallInfo, GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst,
-    MachineOpcode, MachineOperand, Reg, VReg, Writable,
+    CallCallee, GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode,
+    MachineOperand, Reg, VReg, Writable,
 };
 use crate::regalloc::regbank_select::RegisterBank;
 use crate::target::arch::{
-    CallConv as TargetCallConv, CallLowering, CpuDescription, LegalizerInfo, LoweringContext,
+    CallConv as TargetCallConv, CpuDescription, LegalizerInfo, LoweringContext,
     OperandConstraintSet, OperandConstraintStage, SelectionContext, TargetArch, TargetLowering,
 };
 use crate::target::x86_64::isle::{TargetInst, generated};
@@ -26,217 +26,6 @@ pub trait X86LoweringContext: LoweringContext {
     fn has_avx2(&self) -> bool;
 }
 
-/// x86_64 Call Lowering
-pub struct X86_64CallLowering;
-
-impl CallLowering for X86_64CallLowering {
-    fn lower_formal_arguments(
-        &self,
-        mfunc: &mut MachineFunction,
-        sig: &veloc_ir::Signature,
-    ) -> Result<(), crate::error::Error> {
-        if mfunc.params.is_empty() {
-            return Ok(());
-        }
-
-        let plan = TargetCallConv::from(sig.call_conv).plan_signature(TargetArch::X86_64, sig)?;
-
-        // 遍历入口块，根据 ABI 降低 G_ARG
-        let inst_ids: Vec<_> = mfunc.blocks[0].insts.clone();
-
-        for inst_id in inst_ids {
-            if matches!(
-                mfunc.dfg[inst_id].opcode,
-                MachineOpcode::Generic(crate::mir::GenericOpcode::G_ARG)
-            ) {
-                let inst = mfunc.dfg[inst_id].clone();
-                let (def_reg, arg_index) = parse_formal_arg_inst(&inst)?;
-                let assignment = plan.args.get(arg_index).ok_or_else(|| {
-                    crate::Error::Codegen(alloc::format!(
-                        "missing ABI assignment for argument {} in {}",
-                        arg_index,
-                        mfunc.name
-                    ))
-                })?;
-
-                if let Some(preg) = assignment.single_reg() {
-                    let opcode = x86_mov_opcode_for_type(assignment.ty)?;
-                    mfunc.replace_inst(
-                        inst_id,
-                        MachineInst::build_tied_binary(
-                            MachineOpcode::Target(opcode.as_u32()),
-                            Writable(def_reg),
-                            preg,
-                        ),
-                    );
-                } else if let Some((_, base_reg, offset, _, _)) = assignment.single_stack_slot() {
-                    let rbp = base_reg.unwrap_or(Reg::new_preg(5)); // X86_64 RBP
-                    let opcode = x86_load_opcode_for_type(assignment.ty)?;
-                    mfunc.replace_inst(
-                        inst_id,
-                        MachineInst::build_generic(
-                            MachineOpcode::Target(opcode.as_u32()),
-                            smallvec![
-                                MachineOperand::Def(Writable(def_reg)),
-                                MachineOperand::Use(rbp),
-                                MachineOperand::Imm(offset as i64),
-                            ],
-                        ),
-                    );
-                } else {
-                    return Err(crate::Error::Codegen(alloc::format!(
-                        "complex ABI assignment for argument {} is not supported yet",
-                        arg_index
-                    )));
-                };
-            }
-        }
-
-        Ok(())
-    }
-
-    fn lower_call(
-        &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, crate::pipeline::stages::Untyped>,
-    ) -> Result<(), crate::error::Error> {
-        let inst_id = cursor.current_inst_id();
-        let mfunc = cursor.mfunc_mut().as_untyped_mut();
-        let call = mfunc.as_call(inst_id)?;
-        let sig = call.info.sig.clone();
-        let defs = call.shape.defs;
-        let args = call.shape.args;
-        let callee = call.shape.callee;
-
-        if defs.len() > 1 {
-            return Err(crate::Error::Codegen(alloc::string::String::from(
-                "multiple return values are not implemented yet",
-            )));
-        }
-        if args.len() != sig.params.len() {
-            return Err(crate::Error::Codegen(alloc::format!(
-                "call argument count mismatch: MIR has {}, signature expects {}",
-                args.len(),
-                sig.params.len()
-            )));
-        }
-        if defs.len() != sig.returns.len() {
-            return Err(crate::Error::Codegen(alloc::format!(
-                "call result count mismatch: MIR has {}, signature expects {}",
-                defs.len(),
-                sig.returns.len()
-            )));
-        }
-
-        let plan = TargetCallConv::from(sig.call_conv).plan_callsite(
-            TargetArch::X86_64,
-            &sig.params,
-            &sig.returns,
-        )?;
-
-        for (arg, assignment) in args.iter().copied().zip(plan.args.iter()) {
-            let Some(preg) = assignment.single_reg() else {
-                return Err(crate::Error::Codegen(alloc::format!(
-                    "complex ABI assignment for call argument {} is not supported yet",
-                    assignment.index
-                )));
-            };
-
-            let opcode = x86_mov_opcode_for_type(assignment.ty)?;
-            let move_inst = MachineInst::build_tied_binary(
-                MachineOpcode::Target(opcode.as_u32()),
-                Writable(preg),
-                arg,
-            );
-            cursor.emit_before(move_inst);
-        }
-
-        let lowered_call = match callee {
-            CallCallee::Direct(callee) => MachineInst::build_generic(
-                MachineOpcode::Target(TargetInst::X86Call.as_u32()),
-                smallvec![MachineOperand::Global(callee)],
-            ),
-            CallCallee::Indirect(callee_reg) => MachineInst::build_generic(
-                MachineOpcode::Target(TargetInst::X86CallReg.as_u32()),
-                smallvec![MachineOperand::Use(callee_reg)],
-            ),
-        };
-        cursor.replace_current(lowered_call);
-        cursor.set_current_extra(InstExtra::Call(CallInfo { sig: sig.clone() }));
-
-        if let Some((&result, assignment)) = defs.first().zip(plan.returns.first()) {
-            let Some(preg) = assignment.single_reg() else {
-                return Err(crate::Error::Codegen(alloc::format!(
-                    "complex ABI return assignment for call result {} is not supported yet",
-                    assignment.index
-                )));
-            };
-
-            let opcode = x86_mov_opcode_for_type(assignment.ty)?;
-            let move_inst = MachineInst::build_tied_binary(
-                MachineOpcode::Target(opcode.as_u32()),
-                Writable(result),
-                preg,
-            );
-            cursor.emit_before(move_inst);
-        }
-
-        Ok(())
-    }
-
-    fn lower_return(
-        &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, crate::pipeline::stages::Untyped>,
-        sig: &veloc_ir::Signature,
-    ) -> Result<(), crate::error::Error> {
-        let inst_id = cursor.current_inst_id();
-        let mfunc = cursor.mfunc_mut().as_untyped_mut();
-        let rets = mfunc.dfg[inst_id].as_ret()?.values;
-
-        if rets.len() > 1 {
-            return Err(crate::Error::Codegen(alloc::string::String::from(
-                "multiple return values are not implemented yet",
-            )));
-        }
-        if rets.len() != sig.returns.len() {
-            return Err(crate::Error::Codegen(alloc::format!(
-                "return value count mismatch: MIR has {}, signature expects {}",
-                rets.len(),
-                sig.returns.len()
-            )));
-        }
-
-        let plan = TargetCallConv::from(sig.call_conv).plan_callsite(
-            TargetArch::X86_64,
-            &[],
-            &sig.returns,
-        )?;
-        if let Some((&ret, assignment)) = rets.first().zip(plan.returns.first()) {
-            let Some(preg) = assignment.single_reg() else {
-                return Err(crate::Error::Codegen(alloc::format!(
-                    "complex ABI return assignment for return value {} is not supported yet",
-                    assignment.index
-                )));
-            };
-
-            let opcode = x86_mov_opcode_for_type(assignment.ty)?;
-            let move_inst = MachineInst::build_tied_binary(
-                MachineOpcode::Target(opcode.as_u32()),
-                Writable(preg),
-                ret,
-            );
-            cursor.emit_before(move_inst);
-        }
-
-        cursor.replace_current(
-            MachineInst::build_generic(
-                MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
-                smallvec::SmallVec::new(),
-            ),
-        );
-        Ok(())
-    }
-}
-
 fn x86_mov_opcode_for_type(ty: Type) -> Result<TargetInst, crate::error::Error> {
     if ty == Type::F32 {
         Ok(TargetInst::X86Movss)
@@ -247,27 +36,7 @@ fn x86_mov_opcode_for_type(ty: Type) -> Result<TargetInst, crate::error::Error> 
     } else if ty.size_bytes() <= 8 {
         Ok(TargetInst::X86Mov64)
     } else {
-        Err(crate::Error::Codegen(alloc::format!(
-            "unsupported type for x86_64 move: {:?}",
-            ty
-        )))
-    }
-}
-
-fn x86_load_opcode_for_type(ty: Type) -> Result<TargetInst, crate::error::Error> {
-    match ty {
-        Type::F32 => Ok(TargetInst::X86LoadF32),
-        Type::F64 => Ok(TargetInst::X86LoadF64),
-        _ => match ty.size_bytes() {
-            1 => Ok(TargetInst::X86Load8U32),
-            2 => Ok(TargetInst::X86Load16U32),
-            3 | 4 => Ok(TargetInst::X86Load32),
-            5..=8 => Ok(TargetInst::X86Load64),
-            _ => Err(crate::Error::Codegen(alloc::format!(
-                "unsupported type for x86_64 load: {:?}",
-                ty
-            ))),
-        },
+        panic!("unsupported type for x86_64 move: {:?}", ty);
     }
 }
 
@@ -282,11 +51,10 @@ fn x86_copy_type_for_regs(
     if src.is_vreg() {
         return Ok(mfunc.vreg_data(src).ty);
     }
-    Err(crate::Error::Codegen(alloc::format!(
+    panic!(
         "cannot infer x86 copy type from physical registers {:?} <- {:?}",
-        dst,
-        src
-    )))
+        dst, src
+    )
 }
 
 fn build_x86_copy_inst(
@@ -350,7 +118,6 @@ fn setcc_opcode_for_intcc(cc: IntCC) -> TargetInst {
 /// x86_64 Lowering
 pub struct X86_64Lowering {
     legalizer_info: LegalizerInfo,
-    call_lowering: X86_64CallLowering,
     /// 当前 target instance 选中的 CPU 描述。
     pub cpu: CpuDescription,
 }
@@ -360,7 +127,6 @@ impl X86_64Lowering {
         let legalizer_info = Self::create_legalizer_info();
         Self {
             legalizer_info,
-            call_lowering: X86_64CallLowering,
             cpu,
         }
     }
@@ -495,10 +261,10 @@ impl X86_64Lowering {
         let is_i32 = ty == Type::I32;
         let is_i64 = ty == Type::I64;
         if !is_i32 && !is_i64 {
-            return Err(crate::Error::Codegen(alloc::format!(
+            panic!(
                 "unsupported ctpop type during x86_64 legalization: {:?}",
                 ty
-            )));
+            );
         }
 
         let shift1 = self.emit_legalize_constant_reg(mfunc, output, ty, 1);
@@ -602,10 +368,7 @@ impl X86_64Lowering {
         } else if ty == Type::I64 {
             64
         } else {
-            return Err(crate::Error::Codegen(alloc::format!(
-                "unsupported cttz type during x86_64 legalization: {:?}",
-                ty
-            )));
+            panic!("unsupported cttz type during x86_64 legalization: {:?}", ty);
         };
 
         let zero = self.emit_legalize_constant_reg(mfunc, output, ty, 0);
@@ -647,10 +410,7 @@ impl X86_64Lowering {
         } else if ty == Type::I64 {
             64
         } else {
-            return Err(crate::Error::Codegen(alloc::format!(
-                "unsupported ctlz type during x86_64 legalization: {:?}",
-                ty
-            )));
+            panic!("unsupported ctlz type during x86_64 legalization: {:?}", ty);
         };
 
         let zero = self.emit_legalize_constant_reg(mfunc, output, ty, 0);
@@ -840,17 +600,15 @@ impl X86_64Lowering {
         ctx: &mut SelectionContext,
         inst: &MachineInst,
     ) -> Result<SelectResult, crate::error::Error> {
-        let icmp = inst.as_icmp()?;
-        let rhs = icmp.rhs.ok_or_else(|| {
-            crate::Error::Codegen(alloc::string::String::from(
-                "x86_64 icmp selection expects a rhs operand",
-            ))
-        })?;
-        let cc = icmp.cc.ok_or_else(|| {
-            crate::Error::Codegen(alloc::string::String::from(
-                "x86_64 icmp selection expects an integer condition code",
-            ))
-        })?;
+        let icmp = inst.as_icmp().unwrap_or_else(|err| {
+            panic!("invalid icmp instruction during x86_64 selection: {}", err);
+        });
+        let rhs = icmp.rhs.unwrap_or_else(|| {
+            panic!("x86_64 icmp selection expects a rhs operand");
+        });
+        let cc = icmp.cc.unwrap_or_else(|| {
+            panic!("x86_64 icmp selection expects an integer condition code");
+        });
         let lhs_ty = if icmp.lhs.is_vreg() {
             ctx.mfunc.vreg_data(icmp.lhs).ty
         } else {
@@ -912,7 +670,9 @@ impl X86_64Lowering {
         ctx: &mut SelectionContext,
         inst: &MachineInst,
     ) -> Result<SelectResult, crate::error::Error> {
-        let fcmp = inst.as_fcmp()?;
+        let fcmp = inst.as_fcmp().unwrap_or_else(|err| {
+            panic!("invalid fcmp instruction during x86_64 selection: {}", err);
+        });
         let compare_opcode = match if fcmp.lhs.is_vreg() {
             ctx.mfunc.vreg_data(fcmp.lhs).ty
         } else {
@@ -921,10 +681,7 @@ impl X86_64Lowering {
             Type::F32 => TargetInst::X86Ucomiss,
             Type::F64 => TargetInst::X86Ucomisd,
             other => {
-                return Err(crate::Error::Codegen(alloc::format!(
-                    "unsupported x86_64 fcmp type: {:?}",
-                    other
-                )));
+                panic!("unsupported x86_64 fcmp type: {:?}", other);
             }
         };
 
@@ -1017,13 +774,16 @@ impl X86_64Lowering {
         ctx: &mut SelectionContext,
         inst: &MachineInst,
     ) -> Result<SelectResult, crate::error::Error> {
-        let select = inst.as_select()?;
+        let select = inst.as_select().unwrap_or_else(|err| {
+            panic!(
+                "invalid select instruction during x86_64 selection: {}",
+                err
+            );
+        });
         let dst_ty = if select.dst.is_vreg() {
             ctx.mfunc.vreg_data(select.dst).ty
         } else {
-            return Err(crate::Error::Codegen(alloc::string::String::from(
-                "x86_64 select destination must be a virtual register before regalloc",
-            )));
+            panic!("x86_64 select destination must be a virtual register before regalloc",);
         };
         let cond_ty = if select.cond.is_vreg() {
             ctx.mfunc.vreg_data(select.cond).ty
@@ -1091,10 +851,7 @@ impl X86_64Lowering {
                 self.emit_select_i32(ctx, select.dst, cond_i32, select.v1, select.v2);
             }
             _ => {
-                return Err(crate::Error::Codegen(alloc::format!(
-                    "unsupported x86_64 select type: {:?}",
-                    dst_ty
-                )));
+                panic!("unsupported x86_64 select type: {:?}", dst_ty);
             }
         }
 
@@ -1107,16 +864,17 @@ impl X86_64Lowering {
         inst: &MachineInst,
         opcode: GenericOpcode,
     ) -> Result<SelectResult, crate::error::Error> {
-        let binary = inst.as_binary_reg()?;
+        let binary = inst.as_binary_reg().unwrap_or_else(|err| {
+            panic!(
+                "invalid tied integer binary instruction during x86_64 selection: {}",
+                err
+            );
+        });
         if binary.dst != binary.lhs {
-            return Err(crate::error::Error::Select(
-                inst.opcode.clone(),
-                alloc::format!(
-                    "expected tied lhs after operand-constraint preparation, got dst={:?}, lhs={:?}",
-                    binary.dst,
-                    binary.lhs
-                ),
-            ));
+            panic!(
+                "expected tied lhs after operand-constraint preparation, got dst={:?}, lhs={:?}",
+                binary.dst, binary.lhs
+            );
         }
 
         let dst_ty = if binary.dst.is_vreg() {
@@ -1140,14 +898,10 @@ impl X86_64Lowering {
             (GenericOpcode::G_XOR, Type::I64) => TargetInst::X86Xor64,
             (GenericOpcode::G_PTR_ADD, Type::I64 | Type::PTR) => TargetInst::X86Add64,
             _ => {
-                return Err(crate::error::Error::Select(
-                    inst.opcode.clone(),
-                    alloc::format!(
-                        "unsupported x86 integer binary selection for opcode {:?} with type {:?}",
-                        opcode,
-                        dst_ty
-                    ),
-                ));
+                panic!(
+                    "unsupported x86 integer binary selection for opcode {:?} with type {:?}",
+                    opcode, dst_ty
+                );
             }
         };
 
@@ -1165,16 +919,17 @@ impl X86_64Lowering {
         inst: &MachineInst,
         opcode: GenericOpcode,
     ) -> Result<SelectResult, crate::error::Error> {
-        let binary = inst.as_binary_reg()?;
+        let binary = inst.as_binary_reg().unwrap_or_else(|err| {
+            panic!(
+                "invalid tied shift instruction during x86_64 selection: {}",
+                err
+            );
+        });
         if binary.dst != binary.lhs {
-            return Err(crate::error::Error::Select(
-                inst.opcode.clone(),
-                alloc::format!(
-                    "expected tied lhs after operand-constraint preparation, got dst={:?}, lhs={:?}",
-                    binary.dst,
-                    binary.lhs
-                ),
-            ));
+            panic!(
+                "expected tied lhs after operand-constraint preparation, got dst={:?}, lhs={:?}",
+                binary.dst, binary.lhs
+            );
         }
 
         let dst_ty = if binary.dst.is_vreg() {
@@ -1191,14 +946,10 @@ impl X86_64Lowering {
             (GenericOpcode::G_LSHR, Type::I64) => TargetInst::X86Shr64Cl,
             (GenericOpcode::G_ASHR, Type::I64) => TargetInst::X86Sar64Cl,
             _ => {
-                return Err(crate::error::Error::Select(
-                    inst.opcode.clone(),
-                    alloc::format!(
-                        "unsupported x86 shift selection for opcode {:?} with type {:?}",
-                        opcode,
-                        dst_ty
-                    ),
-                ));
+                panic!(
+                    "unsupported x86 shift selection for opcode {:?} with type {:?}",
+                    opcode, dst_ty
+                );
             }
         };
 
@@ -1242,10 +993,6 @@ impl<'a, 'b> X86LoweringContext for X86SelectionContext<'a, 'b> {
 }
 
 impl TargetLowering for X86_64Lowering {
-    fn call_lowering(&self) -> &dyn CallLowering {
-        &self.call_lowering
-    }
-
     fn finalize_stack_frame(&self, mfunc: &mut MachineFunction, call_conv: TargetCallConv) {
         let preserved_regs = call_conv.preserved_regs(TargetArch::X86_64);
         let mut used_callee_saved = Vec::new();
@@ -1262,7 +1009,9 @@ impl TargetLowering for X86_64Lowering {
         mfunc.stack_frame.callee_saved_size = (used_callee_saved.len() as u32) * 8;
         mfunc.stack_frame.used_callee_saved = used_callee_saved;
 
-        let mut total = mfunc.stack_frame.local_size + mfunc.stack_frame.callee_saved_size;
+        let mut total = mfunc.stack_frame.local_size
+            + mfunc.stack_frame.callee_saved_size
+            + mfunc.stack_frame.arg_size;
         let align = 16;
         let misalign = total % align;
         if misalign != 0 {
@@ -1273,12 +1022,11 @@ impl TargetLowering for X86_64Lowering {
 
     fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction) {
         use crate::mir::MachineOpcode;
-        use crate::target::x86_64::isle::TargetInst;
+        use crate::target::x86_64::isle::{REG_RBP, REG_RSP, TargetInst};
 
         let stack_size = mfunc.stack_frame.total_size;
         let saved_regs = mfunc.stack_frame.used_callee_saved.clone();
         let local_size = mfunc.stack_frame.local_size as i32;
-        let rbp = crate::mir::Reg::new_preg(5);
 
         // 1. 在入口块插入序言指令
         if !mfunc.blocks.is_empty() {
@@ -1300,11 +1048,10 @@ impl TargetLowering for X86_64Lowering {
 
             if stack_size > 0 {
                 // sub rsp, stack_size
-                let rsp = crate::mir::Reg::new_preg(4);
                 let sub_inst = MachineInst::build_generic(
                     MachineOpcode::Target(TargetInst::X86Sub64ri.as_u32()),
                     smallvec::smallvec![
-                        crate::mir::MachineOperand::TiedDefUse(crate::mir::Writable(rsp)),
+                        crate::mir::MachineOperand::TiedDefUse(crate::mir::Writable(REG_RSP)),
                         crate::mir::MachineOperand::Imm(stack_size as i64),
                     ],
                 );
@@ -1317,7 +1064,7 @@ impl TargetLowering for X86_64Lowering {
                     MachineOpcode::Target(TargetInst::X86Store64.as_u32()),
                     smallvec::smallvec![
                         crate::mir::MachineOperand::Use(reg),
-                        crate::mir::MachineOperand::Use(rbp),
+                        crate::mir::MachineOperand::Use(REG_RBP),
                         crate::mir::MachineOperand::Imm(offset as i64),
                     ],
                 );
@@ -1325,11 +1072,14 @@ impl TargetLowering for X86_64Lowering {
             }
 
             mfunc
-                .rewrite_block_insts(0, |_mfunc, inst_id, output| {
+                .rewrite_block(0, |cursor| {
                     if !pending_prologue.is_empty() {
-                        output.extend(pending_prologue.drain(..));
+                        for inst_id in pending_prologue.drain(..) {
+                            cursor.emit_existing_before(inst_id);
+                        }
                     }
-                    output.push(inst_id);
+                    cursor.emit_existing_before(cursor.current_inst_id());
+                    cursor.remove_current();
                     Ok::<(), crate::error::Error>(())
                 })
                 .expect("x86_64 prologue rewriting should not fail");
@@ -1338,9 +1088,10 @@ impl TargetLowering for X86_64Lowering {
         // 2. 在每个返回指令前插入尾声指令
         for block_idx in 0..mfunc.blocks.len() {
             mfunc
-                .rewrite_block_insts(block_idx, |mfunc, inst_id, output| {
+                .rewrite_block(block_idx, |cursor| {
+                    let inst_id = cursor.current_inst_id();
                     let is_ret = matches!(
-                        mfunc.dfg[inst_id].opcode,
+                        cursor.current_inst().opcode,
                         MachineOpcode::Target(code) if code == TargetInst::X86Ret.as_u32()
                     );
 
@@ -1351,26 +1102,25 @@ impl TargetLowering for X86_64Lowering {
                                 MachineOpcode::Target(TargetInst::X86Load64.as_u32()),
                                 smallvec::smallvec![
                                     crate::mir::MachineOperand::Def(crate::mir::Writable(reg)),
-                                    crate::mir::MachineOperand::Use(rbp),
+                                    crate::mir::MachineOperand::Use(REG_RBP),
                                     crate::mir::MachineOperand::Imm(offset as i64),
                                 ],
                             );
-                            output.push(mfunc.alloc_inst(restore_inst));
+                            cursor.emit_before(restore_inst);
                         }
 
                         if stack_size > 0 {
                             // add rsp, stack_size
-                            let rsp = crate::mir::Reg::new_preg(4);
                             let add_inst = MachineInst::build_generic(
                                 MachineOpcode::Target(TargetInst::X86Add64ri.as_u32()),
                                 smallvec::smallvec![
                                     crate::mir::MachineOperand::TiedDefUse(crate::mir::Writable(
-                                        rsp
+                                        REG_RSP
                                     )),
                                     crate::mir::MachineOperand::Imm(stack_size as i64),
                                 ],
                             );
-                            output.push(mfunc.alloc_inst(add_inst));
+                            cursor.emit_before(add_inst);
                         }
 
                         // pop rbp
@@ -1378,10 +1128,11 @@ impl TargetLowering for X86_64Lowering {
                             MachineOpcode::Target(TargetInst::X86PopRbp.as_u32()),
                             smallvec::SmallVec::new(),
                         );
-                        output.push(mfunc.alloc_inst(pop_inst));
+                        cursor.emit_before(pop_inst);
                     }
 
-                    output.push(inst_id);
+                    cursor.emit_existing_before(inst_id);
+                    cursor.remove_current();
                     Ok::<(), crate::error::Error>(())
                 })
                 .expect("x86_64 prologue/epilogue rewriting should not fail");
@@ -1399,31 +1150,35 @@ impl TargetLowering for X86_64Lowering {
             match opcode {
                 GenericOpcode::G_CTPOP | GenericOpcode::G_CTLZ | GenericOpcode::G_CTTZ => {
                     let inst = mfunc.dfg[inst_id].clone();
-                    let Ok(unary) = inst.as_unary_reg() else {
-                        output.push(inst_id);
-                        return;
-                    };
+                    let unary = inst.as_unary_reg().unwrap_or_else(|err| {
+                        panic!(
+                            "invalid unary opcode {:?} during x86_64 legalization: {}",
+                            inst.opcode, err
+                        );
+                    });
                     let ty = if unary.dst.is_vreg() {
                         mfunc.vreg_data(unary.dst).ty
                     } else {
-                        output.push(inst_id);
-                        return;
+                        panic!(
+                            "x86_64 legalization expected virtual register destination for {:?}",
+                            inst.opcode
+                        );
                     };
-                    let result = match opcode {
+                    match opcode {
                         GenericOpcode::G_CTPOP => {
-                            self.legalize_ctpop_into(mfunc, output, unary.src, unary.dst, ty)
+                            let _ =
+                                self.legalize_ctpop_into(mfunc, output, unary.src, unary.dst, ty);
                         }
                         GenericOpcode::G_CTLZ => {
-                            self.legalize_ctlz_into(mfunc, output, unary.src, unary.dst, ty)
+                            let _ =
+                                self.legalize_ctlz_into(mfunc, output, unary.src, unary.dst, ty);
                         }
                         GenericOpcode::G_CTTZ => {
-                            self.legalize_cttz_into(mfunc, output, unary.src, unary.dst, ty)
+                            let _ =
+                                self.legalize_cttz_into(mfunc, output, unary.src, unary.dst, ty);
                         }
                         _ => unreachable!(),
                     };
-                    if result.is_err() {
-                        output.push(inst_id);
-                    }
                     return;
                 }
                 _ => {}
@@ -1435,12 +1190,10 @@ impl TargetLowering for X86_64Lowering {
             MachineOpcode::Generic(crate::mir::GenericOpcode::G_BRJT)
         ) {
             let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).cloned() else {
-                output.push(inst_id);
-                return;
+                panic!("missing br_table extra during x86_64 br_table legalization");
             };
             let Ok(brjt) = mfunc.dfg[inst_id].as_branch_table() else {
-                output.push(inst_id);
-                return;
+                panic!("invalid br_table instruction during x86_64 legalization");
             };
 
             if info.targets.is_empty() {
@@ -1494,23 +1247,62 @@ impl TargetLowering for X86_64Lowering {
             return Ok(SelectResult::Keep);
         }
 
-        if let MachineOpcode::Generic(opcode) = inst.opcode {
-            match opcode {
-                GenericOpcode::G_ICMP => return self.select_icmp(ctx, &inst),
-                GenericOpcode::G_IEQZ => return self.select_ieqz(ctx, &inst),
-                GenericOpcode::G_FCMP => return self.select_fcmp(ctx, &inst),
-                GenericOpcode::G_SELECT => return self.select_select(ctx, &inst),
-                GenericOpcode::G_ADD
-                | GenericOpcode::G_SUB
-                | GenericOpcode::G_MUL
-                | GenericOpcode::G_AND
-                | GenericOpcode::G_OR
-                | GenericOpcode::G_XOR
-                | GenericOpcode::G_PTR_ADD => {
-                    return self.select_tied_int_binary(ctx, &inst, opcode);
+        if let MachineOpcode::Generic(_opcode) = inst.opcode {
+            match _opcode {
+                GenericOpcode::G_CALL => {
+                    let call = ctx.mfunc.as_call(ctx.inst_id);
+                    return Ok(match call.shape.callee {
+                        CallCallee::Direct(callee) => {
+                            ctx.selected.push(MachineInst::build_generic(
+                                MachineOpcode::Target(TargetInst::X86Call.as_u32()),
+                                smallvec![MachineOperand::Global(callee)],
+                            ));
+                            SelectResult::Replace
+                        }
+                        CallCallee::Indirect(callee_reg) => {
+                            ctx.selected.push(MachineInst::build_generic(
+                                MachineOpcode::Target(TargetInst::X86CallReg.as_u32()),
+                                smallvec![MachineOperand::Use(callee_reg)],
+                            ));
+                            SelectResult::Replace
+                        }
+                    });
                 }
-                GenericOpcode::G_SHL | GenericOpcode::G_LSHR | GenericOpcode::G_ASHR => {
-                    return self.select_tied_shift(ctx, &inst, opcode);
+                GenericOpcode::G_CALLIND => {
+                    let call = ctx.mfunc.as_call(ctx.inst_id);
+                    return Ok(match call.shape.callee {
+                        CallCallee::Direct(callee) => {
+                            ctx.selected.push(MachineInst::build_generic(
+                                MachineOpcode::Target(TargetInst::X86Call.as_u32()),
+                                smallvec![MachineOperand::Global(callee)],
+                            ));
+                            SelectResult::Replace
+                        }
+                        CallCallee::Indirect(callee_reg) => {
+                            ctx.selected.push(MachineInst::build_generic(
+                                MachineOpcode::Target(TargetInst::X86CallReg.as_u32()),
+                                smallvec![MachineOperand::Use(callee_reg)],
+                            ));
+                            SelectResult::Replace
+                        }
+                    });
+                }
+                GenericOpcode::G_FCMP => return self.select_fcmp(ctx, &inst),
+                GenericOpcode::G_SELECT => {
+                    let select = inst.as_select().unwrap_or_else(|err| {
+                        panic!(
+                            "invalid select instruction during x86_64 selection: {}",
+                            err
+                        );
+                    });
+                    let dst_ty = if select.dst.is_vreg() {
+                        ctx.mfunc.vreg_data(select.dst).ty
+                    } else {
+                        panic!("x86_64 select destination must be a virtual register before regalloc",);
+                    };
+                    if dst_ty.is_float() {
+                        return self.select_select(ctx, &inst);
+                    }
                 }
                 _ => {}
             }
@@ -1522,7 +1314,7 @@ impl TargetLowering for X86_64Lowering {
             let x86_ctx = X86SelectionContext { base: ctx, cpu };
             let res = generated::select_instructions(&x86_ctx, &inst, &mut out);
             *ctx.selected = out;
-            res?
+            res.unwrap_or_else(|err| panic!("x86_64 generated selector failed: {}", err))
         };
 
         Ok(result)
@@ -1556,17 +1348,17 @@ impl TargetLowering for X86_64Lowering {
         dst: Reg,
         src: Reg,
     ) -> Result<MachineInst, crate::error::Error> {
-        build_x86_copy_inst(mfunc, dst, src)
+        Ok(build_x86_copy_inst(mfunc, dst, src).unwrap_or_else(|err| {
+            panic!(
+                "failed to build x86_64 reg copy for {:?} <- {:?}: {}",
+                dst, src, err
+            )
+        }))
     }
 
     fn legalizer_info(&self) -> &LegalizerInfo {
         &self.legalizer_info
     }
-}
-
-fn parse_formal_arg_inst(inst: &MachineInst) -> Result<(Reg, usize), crate::error::Error> {
-    let decoded = inst.as_arg()?;
-    Ok((decoded.dst, decoded.index))
 }
 
 impl crate::regalloc::regbank_select::TargetRegBankSelect for X86_64Lowering {

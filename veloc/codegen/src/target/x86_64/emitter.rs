@@ -30,28 +30,24 @@ impl TargetEmitter for X86_64CodeEmitter {
         &self,
         emitter: &mut crate::Emitter,
         inst: &MachineInst,
-        _mfunc: &MachineFunction,
+        mfunc: &MachineFunction,
     ) -> Result<(), crate::error::Error> {
         match &inst.opcode {
-            MachineOpcode::Invalid => Err(crate::error::Error::Emit(
-                inst.opcode.clone(),
-                alloc::string::String::from("Invalid opcode cannot be emitted"),
-            )),
-            MachineOpcode::Generic(_) => Err(crate::error::Error::Emit(
-                inst.opcode.clone(),
-                alloc::string::String::from(
-                    "Generic opcode should be translated to Target opcode before emission",
-                ),
-            )),
+            MachineOpcode::Invalid => {
+                panic!("invalid opcode cannot be emitted: {:?}", inst);
+            }
+            MachineOpcode::Generic(_) => {
+                panic!(
+                    "generic opcode should be translated to target opcode before emission: {:?}",
+                    inst
+                );
+            }
             MachineOpcode::Target(target_inst_code) => {
                 let target = crate::target::x86_64::isle::TargetInst::from_u32(*target_inst_code);
-                target.emit::<Self>(emitter, inst).map_err(|err| match err {
-                    crate::error::Error::Emit(opcode, message) => crate::error::Error::Emit(
-                        opcode,
-                        alloc::format!("{} | inst={:?}", message, inst),
-                    ),
-                    other => other,
-                })
+                target.emit::<Self>(emitter, inst, mfunc).unwrap_or_else(|err| {
+                    panic!("{err} | inst={:?}", inst);
+                });
+                Ok(())
             }
         }
     }

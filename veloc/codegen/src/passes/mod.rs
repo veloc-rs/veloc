@@ -10,7 +10,7 @@ pub mod regbank;
 pub use abi::AbiLoweringPass;
 pub use block_params::BlockParamLoweringPass;
 pub use frame::{FrameFinalizePass, PrologueEpiloguePass};
-pub use isel::{InstructionSelectionPass, PostIselOptimizePass, PreIselPreparePass};
+pub use isel::{GenericCombinePass, InstructionSelectionPass, PostIselOptimizePass};
 pub use legalize::LegalizePass;
 pub use operand_constraints::OperandConstraintPass;
 pub use regalloc::RegisterAllocationPass;

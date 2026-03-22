@@ -49,10 +49,10 @@ impl ObjectFileBuilder {
         for relocation in &emitted.relocations {
             let sym_name = &symbols.get(relocation.symbol).name;
             let target_symbol = self.ensure_text_symbol_name(sym_name);
-            self.object
-                .add_relocation(
-                    self.text_section,
-                    Relocation {
+                self.object
+                    .add_relocation(
+                        self.text_section,
+                        Relocation {
                         offset: base_offset + relocation.offset,
                         symbol: target_symbol,
                         addend: relocation.addend,
@@ -60,14 +60,15 @@ impl ObjectFileBuilder {
                             kind: RelocationKind::Relative,
                             encoding: RelocationEncoding::X86Branch,
                             size: 32,
+                            },
                         },
-                    },
-                )
+                    )
                 .map_err(|err| {
-                    Error::Codegen(format!(
-                        "failed to add relocation for `{}` -> `{}`: {err}",
-                        func.name, sym_name
-                    ))
+                    Error::object_file_relocation_error(
+                        func.name.clone(),
+                        sym_name.clone(),
+                        format!("{err}"),
+                    )
                 })?;
         }
 
@@ -81,7 +82,7 @@ impl ObjectFileBuilder {
     pub(crate) fn finish(self) -> Result<alloc::vec::Vec<u8>> {
         self.object
             .write()
-            .map_err(|err| Error::Codegen(format!("failed to write object file: {err}")))
+            .map_err(|err| Error::object_file_write_error(format!("{err}")))
     }
 
     fn ensure_function_symbol(&mut self, func: &Function) -> SymbolId {
@@ -138,10 +139,7 @@ fn object_format_for_target(arch: TargetArch) -> Result<(BinaryFormat, Architect
         TargetArch::AArch64 => Architecture::Aarch64,
         TargetArch::Riscv64 => Architecture::Riscv64,
         TargetArch::Wasm32 | TargetArch::Wasm64 => {
-            return Err(Error::Codegen(format!(
-                "object file output is not supported for target architecture `{}`",
-                arch.name()
-            )));
+            return Err(Error::unsupported_object_format(arch));
         }
     };
 
@@ -186,7 +184,9 @@ mod tests {
         let module = mb.build();
         let target = create_target_machine(TargetConfig::default()).unwrap();
 
-        let bytes = CodegenPipeline::new(&*target).compile_object(&module).unwrap();
+        let bytes = CodegenPipeline::new(&*target)
+            .compile_object(&module)
+            .unwrap();
         let object = object::File::parse(&*bytes).unwrap();
         let symbol = parse_symbol(&object, "main").unwrap();
 
@@ -217,7 +217,9 @@ mod tests {
         let module = mb.build();
         let target = create_target_machine(TargetConfig::default()).unwrap();
 
-        let bytes = CodegenPipeline::new(&*target).compile_object(&module).unwrap();
+        let bytes = CodegenPipeline::new(&*target)
+            .compile_object(&module)
+            .unwrap();
         let object = object::File::parse(&*bytes).unwrap();
 
         let main = parse_symbol(&object, "main").unwrap();
@@ -252,7 +254,9 @@ mod tests {
         let module = mb.build();
         let target = create_target_machine(TargetConfig::default()).unwrap();
 
-        let bytes = CodegenPipeline::new(&*target).compile_object(&module).unwrap();
+        let bytes = CodegenPipeline::new(&*target)
+            .compile_object(&module)
+            .unwrap();
         let object = object::File::parse(&*bytes).unwrap();
         let text = object.section_by_name(".text").unwrap();
         let relocations: Vec<(u64, object::Relocation)> = text.relocations().collect();

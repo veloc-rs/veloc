@@ -466,6 +466,136 @@
         (byte (sib 0 0b100 (hw-enc $base)))
         (imm32 $off)))
 
+;; StackSlot-backed memory operands.
+(def-template Load8U32Stackm ()
+    (operands (def $dst) (stackslot $slot))
+    (encode
+        (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $dst) (slot-base-hw-enc $slot))))
+        (byte 0x0F)
+        (byte 0xB6)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template Load16U32Stackm ()
+    (operands (def $dst) (stackslot $slot))
+    (encode
+        (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $dst) (slot-base-hw-enc $slot))))
+        (byte 0x0F)
+        (byte 0xB7)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template Load32Stackm ()
+    (operands (def $dst) (stackslot $slot))
+    (encode
+        (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $dst) (slot-base-hw-enc $slot))))
+        (byte 0x8B)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template Load64Stackm ()
+    (operands (def $dst) (stackslot $slot))
+    (encode
+        (byte (rex-w (hw-enc $dst) (slot-base-hw-enc $slot)))
+        (byte 0x8B)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template LoadF32Stackm ()
+    (operands (def $dst) (stackslot $slot))
+    (encode
+        (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $dst) (slot-base-hw-enc $slot))))
+        (byte 0xF3)
+        (byte 0x0F)
+        (byte 0x10)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template LoadF64Stackm ()
+    (operands (def $dst) (stackslot $slot))
+    (encode
+        (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $dst) (slot-base-hw-enc $slot))))
+        (byte 0xF2)
+        (byte 0x0F)
+        (byte 0x10)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template Store8Stackm ()
+    (operands (use $src) (stackslot $slot))
+    (encode
+        (if (needs-rex (hw-enc $src) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $src) (slot-base-hw-enc $slot))))
+        (byte 0x88)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template Store16Stackm ()
+    (operands (use $src) (stackslot $slot))
+    (encode
+        (byte 0x66)
+        (if (needs-rex (hw-enc $src) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $src) (slot-base-hw-enc $slot))))
+        (byte 0x89)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template Store32Stackm ()
+    (operands (use $src) (stackslot $slot))
+    (encode
+        (if (needs-rex (hw-enc $src) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $src) (slot-base-hw-enc $slot))))
+        (byte 0x89)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template Store64Stackm ()
+    (operands (use $src) (stackslot $slot))
+    (encode
+        (byte (rex-w (hw-enc $src) (slot-base-hw-enc $slot)))
+        (byte 0x89)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template StoreF32Stackm ()
+    (operands (use $src) (stackslot $slot))
+    (encode
+        (byte 0xF3)
+        (if (needs-rex (hw-enc $src) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $src) (slot-base-hw-enc $slot))))
+        (byte 0x0F)
+        (byte 0x11)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
+(def-template StoreF64Stackm ()
+    (operands (use $src) (stackslot $slot))
+    (encode
+        (byte 0xF2)
+        (if (needs-rex (hw-enc $src) (slot-base-hw-enc $slot))
+            (byte (rex-rr (hw-enc $src) (slot-base-hw-enc $slot))))
+        (byte 0x0F)
+        (byte 0x11)
+        (byte (modrm 0b10 (hw-enc $src) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))
+
 ;; -----------------------------------------------------------------------------
 ;; 4.  (Instruction Definitions)
 ;; -----------------------------------------------------------------------------
@@ -574,11 +704,19 @@
 (def-inst X86Setp  (template Setcc8r 0x9A))
 (def-inst X86Setnp (template Setcc8r 0x9B))
 
-;; 
-(def-inst X86Load32Stack (template BinOp32rr 0x8B))
-(def-inst X86Load64Stack (template BinOp64rr 0x8B))
-(def-inst X86Store32Stack (template BinOp32rr 0x89))
-(def-inst X86Store64Stack (template BinOp64rr 0x89))
+;;
+(def-inst X86Load8U32Stack (template Load8U32Stackm))
+(def-inst X86Load16U32Stack (template Load16U32Stackm))
+(def-inst X86Load32Stack (template Load32Stackm))
+(def-inst X86Load64Stack (template Load64Stackm))
+(def-inst X86LoadF32Stack (template LoadF32Stackm))
+(def-inst X86LoadF64Stack (template LoadF64Stackm))
+(def-inst X86Store8Stack (template Store8Stackm))
+(def-inst X86Store16Stack (template Store16Stackm))
+(def-inst X86Store32Stack (template Store32Stackm))
+(def-inst X86Store64Stack (template Store64Stackm))
+(def-inst X86StoreF32Stack (template StoreF32Stackm))
+(def-inst X86StoreF64Stack (template StoreF64Stackm))
 
 ;; 
 (def-inst X86Call

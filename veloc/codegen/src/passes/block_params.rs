@@ -1,11 +1,10 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::mir::{
     BrTableInfo, BrTableTarget, GenericOpcode, InstExtra, MachineFunction, MachineInst, Reg,
     Writable,
 };
 use crate::pipeline::stages::{BlockParamsLowered, RawMir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
-use alloc::format;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
@@ -48,7 +47,7 @@ impl BlockParamLoweringPass {
         let mut scratch = ParallelCopyScratch::new();
         let original_blocks = mfunc.num_blocks();
         for block_idx in 0..original_blocks {
-            mfunc.rewrite_block(block_idx, |cursor| {
+            mfunc.rewrite_block(block_idx, |cursor| -> Result<()> {
                 let inst = cursor.current_inst_clone();
                 match inst.generic_opcode() {
                     Some(GenericOpcode::G_BR) => Self::lower_branch(cursor, &mut scratch, &inst)?,
@@ -175,7 +174,8 @@ impl BlockParamLoweringPass {
             return Ok(());
         }
 
-        let copies = Self::build_edge_copies(cursor.mfunc_mut().as_untyped_mut(), scratch, target, args)?;
+        let copies =
+            Self::build_edge_copies(cursor.mfunc_mut().as_untyped_mut(), scratch, target, args)?;
         cursor.emit_before_many(copies.iter().cloned());
         cursor.clear_current_extra();
         Ok(())
@@ -202,21 +202,26 @@ impl BlockParamLoweringPass {
     ) -> Result<&'a [MachineInst]> {
         let params: SmallVec<[Reg; 4]> = mfunc
             .block_params(target)
-            .ok_or_else(|| Error::Codegen(format!("branch target {:?} not found in MIR", target)))?
+            .unwrap_or_else(|| panic!("branch target {:?} not found in MIR", target))
             .iter()
             .copied()
             .collect();
 
         if params.len() != args.len() {
-            return Err(Error::Codegen(format!(
+            panic!(
                 "branch target {:?} expects {} arguments, got {}",
                 target,
                 params.len(),
                 args.len()
-            )));
+            );
         }
 
-        Ok(Self::build_parallel_copies(scratch, mfunc, params.as_slice(), args))
+        Ok(Self::build_parallel_copies(
+            scratch,
+            mfunc,
+            params.as_slice(),
+            args,
+        ))
     }
 
     fn build_parallel_copies<'a>(
@@ -232,7 +237,9 @@ impl BlockParamLoweringPass {
         scratch.source_users.reserve(dsts.len());
         scratch.ready.reserve(dsts.len());
 
-        scratch.pending.extend(dsts.iter().copied().zip(srcs.iter().copied()).map(Some));
+        scratch
+            .pending
+            .extend(dsts.iter().copied().zip(srcs.iter().copied()).map(Some));
 
         for (index, copy) in scratch.pending.iter().enumerate() {
             let (dst, src) = copy.as_ref().copied().expect("pending copy must exist");
@@ -257,7 +264,9 @@ impl BlockParamLoweringPass {
 
                 remaining -= 1;
                 if dst != src {
-                    scratch.out.push(MachineInst::build_copy(Writable(dst), src));
+                    scratch
+                        .out
+                        .push(MachineInst::build_copy(Writable(dst), src));
                 }
 
                 let became_free = if let Some(count) = scratch.dest_counts.get_mut(&dst) {
@@ -300,7 +309,11 @@ impl BlockParamLoweringPass {
                     };
 
                     *src = temp;
-                    scratch.source_users.entry(temp).or_default().push(user_index);
+                    scratch
+                        .source_users
+                        .entry(temp)
+                        .or_default()
+                        .push(user_index);
                     scratch.ready.push(user_index);
                 }
             }

@@ -5,7 +5,7 @@
 //! 这是一个通用的指令选择驱动器，实际的架构特定选择逻辑
 //! 通过 TargetLowering trait 委托给具体的目标后端实现。
 
-use crate::mir::{InstId, MachineFunction, MachineInst};
+use crate::mir::{BlockRewriteCursor, InstId, MachineFunction, MachineInst};
 use crate::target::arch::TargetLowering;
 use alloc::vec::Vec;
 
@@ -57,7 +57,6 @@ pub enum SelectResult {
 pub struct SelectionContext<'a> {
     pub mfunc: &'a mut MachineFunction,
     pub inst_id: InstId,
-    pub output: &'a mut Vec<InstId>,
     pub selected: &'a mut Vec<MachineInst>,
 }
 
@@ -98,39 +97,38 @@ impl<'a> crate::target::arch::LoweringContext for SelectionContext<'a> {
     }
 }
 
-impl<'a> SelectionContext<'a> {
-    /// 应用指令选择结果
-    pub fn apply_result(&mut self, result: SelectResult) -> Result<(), crate::error::Error> {
-        match result {
-            SelectResult::Keep => {
-                debug_assert!(self.selected.is_empty());
-                self.output.push(self.inst_id);
-            }
-            SelectResult::InPlace => {
-                let inst = self.selected.pop().ok_or_else(|| {
-                    crate::error::Error::Select(
-                        self.mfunc.dfg[self.inst_id].opcode.clone(),
-                        alloc::string::String::from("InPlace expects one selected inst"),
-                    )
-                })?;
-                debug_assert!(self.selected.is_empty());
-                self.mfunc.replace_inst(self.inst_id, inst);
-                self.output.push(self.inst_id);
-            }
-            SelectResult::Replace => {
-                self.mfunc.invalidate_inst(self.inst_id);
-                for inst in self.selected.drain(..) {
-                    let new_id = self.mfunc.alloc_inst(inst);
-                    self.output.push(new_id);
-                }
-            }
-            SelectResult::Remove => {
-                debug_assert!(self.selected.is_empty());
-                self.mfunc.invalidate_inst(self.inst_id);
+fn apply_select_result<'a, S>(
+    cursor: &mut BlockRewriteCursor<'a, S>,
+    selected: &mut Vec<MachineInst>,
+    result: SelectResult,
+) -> Result<(), crate::error::Error> {
+    match result {
+        SelectResult::Keep => {
+            debug_assert!(selected.is_empty());
+            cursor.keep_current();
+        }
+        SelectResult::InPlace => {
+            let inst = selected.pop().ok_or_else(|| {
+                crate::error::Error::select(
+                    cursor.current_inst().opcode.clone(),
+                    alloc::string::String::from("InPlace expects one selected inst"),
+                )
+            })?;
+            debug_assert!(selected.is_empty());
+            cursor.replace_current(inst);
+        }
+        SelectResult::Replace => {
+            cursor.remove_current();
+            for inst in selected.drain(..) {
+                cursor.emit_before(inst);
             }
         }
-        Ok(())
+        SelectResult::Remove => {
+            debug_assert!(selected.is_empty());
+            cursor.remove_current();
+        }
     }
+    Ok(())
 }
 
 /// 指令选择器
@@ -155,35 +153,39 @@ impl<'a> InstructionSelector<'a> {
         // 复用的临时缓冲区，避免每条指令分配
         let mut selected: Vec<MachineInst> = Vec::with_capacity(4);
         for i in 0..num_blocks {
-            mfunc.rewrite_block_insts(i, |mfunc, inst_id, output| {
+            mfunc.rewrite_block(i, |cursor| {
+                let inst_id = cursor.current_inst_id();
                 // 如果指令在之前的融合中已被标记为无效，则跳过
-                if mfunc.dfg[inst_id].is_invalid() {
+                if cursor.current_inst().is_invalid() {
                     return Ok(());
                 }
 
                 // 进行指令选择。由具体的后端返回选择结果
                 selected.clear();
-                let mut ctx = SelectionContext {
-                    mfunc,
-                    inst_id,
-                    output,
-                    selected: &mut selected,
-                };
-                let result = match self.lowering.select_instruction(&mut ctx) {
-                    Ok(result) => result,
-                    Err(crate::error::Error::Select(op, reason)) => {
-                        return Err(crate::error::Error::Select(
-                            op,
-                            alloc::format!(
-                                "{reason}; inst_id={:?}, inst={}",
-                                inst_id,
-                                format_select_failure_inst(ctx.mfunc, inst_id)
-                            ),
-                        ));
+                let result = {
+                    let mut ctx = SelectionContext {
+                        mfunc: cursor.mfunc_mut(),
+                        inst_id,
+                        selected: &mut selected,
+                    };
+                    match self.lowering.select_instruction(&mut ctx) {
+                        Ok(result) => result,
+                        Err(crate::error::Error::Select(err)) => {
+                            return Err(crate::error::Error::select(
+                                err.opcode.clone(),
+                                alloc::format!(
+                                    "{}; inst_id={:?}, inst={}",
+                                    err.reason,
+                                    inst_id,
+                                    format_select_failure_inst(ctx.mfunc, inst_id)
+                                ),
+                            ));
+                        }
+                        Err(err) => return Err(err),
                     }
-                    Err(err) => return Err(err),
                 };
-                ctx.apply_result(result)
+
+                apply_select_result(cursor, &mut selected, result)
             })?;
         }
 

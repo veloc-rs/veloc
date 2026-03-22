@@ -20,7 +20,8 @@ pub mod target;
 pub use backend::Backend;
 pub use driver::{CodegenOptions, CodegenPipeline, CodegenStats};
 pub use target::arch::{
-    CallConv, SelectResult, TargetArch, TargetConfig, TargetEmitter, TargetLowering, TargetMachine,
+    CallConv, RewriteResult, SelectResult, TargetArch, TargetConfig, TargetEmitter,
+    TargetLowering, TargetMachine,
 };
 
 /// 根据目标配置创建对应的目标机器
@@ -127,14 +128,14 @@ impl Emitter {
                     target,
                 } => {
                     let Some(&target_offset) = self.block_offsets.get(&target) else {
-                        return Err(crate::error::Error::Codegen(format!(
+                        return Err(crate::error::Error::codegen(format!(
                             "missing block offset for {:?}",
                             target
                         )));
                     };
                     let rel = target_offset as i64 - next_offset as i64;
                     let disp = i32::try_from(rel).map_err(|_| {
-                        crate::error::Error::Codegen(format!(
+                        crate::error::Error::codegen(format!(
                             "relative branch displacement out of range: {}",
                             rel
                         ))

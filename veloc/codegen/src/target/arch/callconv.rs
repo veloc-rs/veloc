@@ -1,9 +1,9 @@
-use super::Reg;
 use super::abi::{
     AbiAssignment, AbiClassifierEntry, AbiDescriptor, AbiLocation, AbiPart, AbiStackBase,
     AbiValueClass, CallConvPlan,
 };
 use super::types::TargetArch;
+use super::Reg;
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -77,14 +77,11 @@ impl CallConv {
     /// 获取返回值寄存器
     pub fn return_reg(&self, arch: TargetArch) -> Reg {
         self.descriptor(arch)
-            .ok()
-            .and_then(|descriptor| {
-                descriptor
-                    .regs_for_class(AbiValueClass::Integer, true)
-                    .first()
-                    .copied()
-            })
-            .unwrap_or(Reg::new_preg(0))
+            .expect("unsupported architecture for return register lookup")
+            .regs_for_class(AbiValueClass::Integer, true)
+            .first()
+            .copied()
+            .expect("ABI descriptor must define at least one integer return register")
     }
 
     /// 获取该调用约定下需要由被调用者保留的寄存器集合。
@@ -109,7 +106,7 @@ impl CallConv {
             (CallConv::SystemV, TargetArch::X86_64) => Ok(x86_64_systemv_descriptor()),
             (CallConv::WindowsFastcall, TargetArch::X86_64) => Ok(x86_64_win64_descriptor()),
             (CallConv::AAPCS, TargetArch::AArch64) => Ok(aarch64_aapcs_descriptor()),
-            _ => Err(crate::error::Error::Codegen(format!(
+            _ => Err(crate::error::Error::codegen(format!(
                 "unsupported calling convention {:?} for architecture {:?}",
                 self, arch
             ))),
@@ -131,13 +128,13 @@ impl CallConv {
             .map(|(index, &ty)| {
                 let class = classify_with_descriptor(descriptor, ty)?;
                 let loc = context.allocate(class, false);
-                Ok(AbiAssignment {
+                Ok::<AbiAssignment, crate::error::Error>(AbiAssignment {
                     index,
                     ty,
                     parts: vec![AbiPart { ty, class, loc }],
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, crate::error::Error>>()?;
 
         context.reset_for_returns();
 
@@ -147,13 +144,13 @@ impl CallConv {
             .map(|(index, &ty)| {
                 let class = classify_with_descriptor(descriptor, ty)?;
                 let loc = context.allocate_return(class)?;
-                Ok(AbiAssignment {
+                Ok::<AbiAssignment, crate::error::Error>(AbiAssignment {
                     index,
                     ty,
                     parts: vec![AbiPart { ty, class, loc }],
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, crate::error::Error>>()?;
 
         Ok(CallConvPlan {
             call_conv: *self,
@@ -224,7 +221,7 @@ impl AbiAllocationContext {
         class: AbiValueClass,
     ) -> Result<AbiLocation, crate::error::Error> {
         if class == AbiValueClass::Memory {
-            return Err(crate::error::Error::Codegen(format!(
+            return Err(crate::error::Error::codegen(format!(
                 "ABI `{}` return type classified as memory is not supported yet",
                 self.descriptor.name
             )));
@@ -240,7 +237,7 @@ impl AbiAllocationContext {
         };
 
         let Some(&reg) = regs.get(*cursor) else {
-            return Err(crate::error::Error::Codegen(format!(
+            return Err(crate::error::Error::codegen(format!(
                 "ABI `{}` ran out of return registers for class {:?}",
                 self.descriptor.name, class
             )));
@@ -276,7 +273,7 @@ fn classify_with_descriptor(
         .iter()
         .find(|entry| entry.name == classifier_name)
     else {
-        return Err(crate::error::Error::Codegen(format!(
+        return Err(crate::error::Error::codegen(format!(
             "unknown ABI classifier `{}` for descriptor `{}`",
             classifier_name, descriptor.name
         )));
@@ -293,7 +290,7 @@ fn classify_scalar_abi_type(ty: Type) -> Result<AbiValueClass, crate::error::Err
     } else if ty.is_vector() || ty.is_predicate() {
         Ok(AbiValueClass::Vector)
     } else {
-        Err(crate::error::Error::Codegen(format!(
+        Err(crate::error::Error::codegen(format!(
             "unsupported ABI value type {:?}",
             ty
         )))
@@ -333,20 +330,12 @@ static ABI_CLASSIFIER_REGISTRY: &[AbiClassifierEntry] = &[
 
 #[inline]
 pub(crate) fn x86_64_rax() -> Reg {
-    x86_64_systemv_descriptor()
-        .regs_for_class(AbiValueClass::Integer, true)
-        .first()
-        .copied()
-        .unwrap_or(Reg::new_preg(0))
+    crate::target::x86_64::isle::REG_RAX
 }
 
 #[inline]
 pub(crate) fn x86_64_rdx() -> Reg {
-    x86_64_systemv_descriptor()
-        .regs_for_class(AbiValueClass::Integer, true)
-        .get(1)
-        .copied()
-        .unwrap_or(Reg::new_preg(2))
+    crate::target::x86_64::isle::REG_RDX
 }
 
 fn x86_64_systemv_arg_regs() -> &'static [Reg] {
@@ -402,7 +391,7 @@ fn aarch64_aapcs_descriptor() -> &'static AbiDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CallConv, Reg, TargetArch, x86_64_rax, x86_64_rdx};
+    use super::{x86_64_rax, x86_64_rdx, CallConv, Reg, TargetArch};
     use crate::target::arch::{AbiLocation, AbiStackBase};
     use alloc::vec;
     use veloc_ir::Type;

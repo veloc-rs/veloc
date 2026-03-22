@@ -179,10 +179,7 @@ impl<'a> IRTranslator<'a> {
                     Opcode::FMul => MachineOpcode::Generic(GenericOpcode::G_FMUL),
                     Opcode::FDiv => MachineOpcode::Generic(GenericOpcode::G_FDIV),
                     _ => {
-                        return Err(Error::Translate(format!(
-                            "Unsupported binary opcode: {:?}",
-                            opcode
-                        )));
+                        return Err(Error::unsupported_binary_opcode(*opcode));
                     }
                 };
 
@@ -213,10 +210,7 @@ impl<'a> IRTranslator<'a> {
                     Opcode::IntToFloatS => MachineOpcode::Generic(GenericOpcode::G_SITOFP),
                     Opcode::Reinterpret => MachineOpcode::Generic(GenericOpcode::G_BITCAST),
                     _ => {
-                        return Err(Error::Translate(format!(
-                            "Unsupported unary opcode: {:?}",
-                            opcode
-                        )));
+                        return Err(Error::unsupported_unary_opcode(*opcode));
                     }
                 };
 
@@ -274,7 +268,7 @@ impl<'a> IRTranslator<'a> {
                 } else if dst_ty == veloc_ir::Type::F64 {
                     (veloc_ir::Type::I64, *value as i64)
                 } else {
-                    return Err(Error::Translate(format!(
+                    return Err(Error::translate(format!(
                         "Unsupported float constant type: {:?}",
                         dst_ty
                     )));
@@ -435,12 +429,9 @@ impl<'a> IRTranslator<'a> {
 
                 match opcode {
                     Opcode::Select => {
-                        Ok(
-                            MachineInst::build_select(defs[0].as_writable().unwrap(), v0, v1, v2)
-                                .into(),
-                        )
+                        Ok(MachineInst::build_select(defs[0].as_writable().unwrap(), v0, v1, v2).into())
                     }
-                    _ => Err(Error::Translate(format!(
+                    _ => Err(Error::translate(format!(
                         "Unsupported ternary opcode: {:?}",
                         opcode
                     ))),
@@ -553,7 +544,7 @@ impl<'a> IRTranslator<'a> {
             }
             InstructionData::Unreachable => Ok(MachineInst::build_unreachable().into()),
 
-            _ => Err(Error::Translate(format!(
+            _ => Err(Error::translate(format!(
                 "InstructionData variant not implemented for translation: {:?}",
                 inst_data
             ))),

@@ -21,15 +21,17 @@ impl<'a> Legalizer<'a> {
         let num_blocks = mfunc.blocks.len();
         for i in 0..num_blocks {
             mfunc
-                .rewrite_block_insts(i, |mfunc, inst_id, output| {
+                .rewrite_block(i, |cursor| {
+                    let inst_id = cursor.current_inst_id();
                     // 如果指令已无效，跳过
-                    if mfunc.dfg[inst_id].is_invalid() {
+                    if cursor.current_inst().is_invalid() {
+                        cursor.remove_current();
                         return Ok::<(), ()>(());
                     }
 
                     let (types, opcode_opt) = {
-                        let inst = &mfunc.dfg[inst_id];
-                        let types = self.get_inst_types(inst, mfunc);
+                        let inst = cursor.current_inst();
+                        let types = self.get_inst_types(inst, cursor.mfunc());
                         let opcode = if let MachineOpcode::Generic(op) = &inst.opcode {
                             Some(*op)
                         } else {
@@ -43,27 +45,35 @@ impl<'a> Legalizer<'a> {
 
                         match action {
                             LegalizeAction::Legal => {
-                                output.push(inst_id);
+                                cursor.keep_current();
                             }
                             LegalizeAction::Lower => {
                                 // 调用架构特定的合法化逻辑
                                 // 后端负责将原指令或新生成的指令推入输出序列
-                                self.lowering.legalize_instruction(inst_id, mfunc, output);
+                                let mut output = Vec::new();
+                                self.lowering
+                                    .legalize_instruction(inst_id, cursor.mfunc_mut(), &mut output);
+                                cursor.remove_current();
+                                for new_id in output {
+                                    cursor.emit_existing_before(new_id);
+                                }
                             }
                             LegalizeAction::WidenScalar => {
-                                self.widen_scalar(mfunc, inst_id, &opcode, types);
-                                if !mfunc.dfg[inst_id].is_invalid() {
-                                    output.push(inst_id);
+                                self.widen_scalar(cursor.mfunc_mut(), inst_id, &opcode, types);
+                                if cursor.current_inst().is_invalid() {
+                                    cursor.remove_current();
+                                } else {
+                                    cursor.keep_current();
                                 }
                             }
                             _ => {
                                 // 其他 action 暂不处理，保留原指令
-                                output.push(inst_id);
+                                cursor.keep_current();
                             }
                         }
                     } else {
                         // 非通用指令直通
-                        output.push(inst_id);
+                        cursor.keep_current();
                     }
 
                     Ok(())

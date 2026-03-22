@@ -1,6 +1,8 @@
 //! 机器函数与基本块定义
 
-use super::{CallInfo, CallInst, InstExtra, InstExtraId, InstId, MachineInst, Reg, StackSlot, VReg, VRegData};
+use super::{
+    CallInfo, CallInst, InstExtra, InstExtraId, InstId, MachineInst, Reg, StackSlot, VReg, VRegData,
+};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -41,6 +43,7 @@ impl MachineBlock {
 /// 栈槽数据
 #[derive(Debug, Clone)]
 pub struct StackSlotData {
+    pub(crate) base_reg: Reg,
     pub(crate) size: u32,
     pub(crate) align: u32,
     pub(crate) offset: i32,
@@ -153,7 +156,10 @@ impl<'a, S> BlockRewriteCursor<'a, S> {
 
     pub fn as_untyped(&self) -> &BlockRewriteCursor<'a, crate::pipeline::stages::Untyped> {
         // SAFETY: stage marker is ZST metadata only.
-        unsafe { &*(self as *const Self as *const BlockRewriteCursor<'a, crate::pipeline::stages::Untyped>) }
+        unsafe {
+            &*(self as *const Self
+                as *const BlockRewriteCursor<'a, crate::pipeline::stages::Untyped>)
+        }
     }
 
     pub fn as_untyped_mut(
@@ -387,25 +393,6 @@ impl<S> MachineFunction<S> {
         Ok(())
     }
 
-    /// 以单次提交的方式重写一个基本块的指令列表。
-    ///
-    /// 回调逐条消费旧指令，并将新的布局顺序写入 `output`。
-    /// 适合做指令扩展、ABI lowering、序言/尾声插入等需要批量调整布局的阶段。
-    pub(crate) fn rewrite_block_insts<E, F>(&mut self, block_idx: usize, mut f: F) -> Result<(), E>
-    where
-        F: FnMut(&mut Self, InstId, &mut Vec<InstId>) -> Result<(), E>,
-    {
-        let old_insts = self.blocks[block_idx].insts.clone();
-        let mut new_insts = Vec::with_capacity(old_insts.len());
-
-        for inst_id in old_insts {
-            f(self, inst_id, &mut new_insts)?;
-        }
-
-        self.replace_block_insts(block_idx, new_insts);
-        Ok(())
-    }
-
     /// 分配并追加指令到指定基本块末尾。
     pub fn alloc_inst_and_append_to_block(
         &mut self,
@@ -448,7 +435,7 @@ impl<S> MachineFunction<S> {
     }
 
     /// 分配栈槽
-    pub fn alloc_stack_slot(&mut self, size: u32, align: u32) -> StackSlot {
+    pub fn alloc_stack_slot(&mut self, base_reg: Reg, size: u32, align: u32) -> StackSlot {
         let offset = -(self.stack_frame.local_size as i32 + size as i32);
         self.stack_frame.local_size += size;
         // 对齐
@@ -458,6 +445,23 @@ impl<S> MachineFunction<S> {
         }
 
         self.stack_frame.slots.push(StackSlotData {
+            base_reg,
+            size,
+            align,
+            offset,
+        })
+    }
+
+    /// 分配一个具有显式基址寄存器/偏移的栈槽。
+    pub fn alloc_stack_slot_with_base(
+        &mut self,
+        base_reg: Reg,
+        offset: i32,
+        size: u32,
+        align: u32,
+    ) -> StackSlot {
+        self.stack_frame.slots.push(StackSlotData {
+            base_reg,
             size,
             align,
             offset,
@@ -492,29 +496,29 @@ impl<S> MachineFunction<S> {
     }
 
     /// 获取调用指令的签名信息。
-    pub fn call_info(&self, inst_id: InstId) -> crate::error::Result<&CallInfo> {
+    pub fn call_info(&self, inst_id: InstId) -> &CallInfo {
         match self.inst_extra(inst_id) {
-            Some(InstExtra::Call(info)) => Ok(info),
-            Some(_) => Err(crate::error::Error::Codegen(alloc::format!(
+            Some(InstExtra::Call(info)) => info,
+            Some(_) => panic!(
                 "instruction {:?} in `{}` does not carry call info payload",
                 inst_id,
                 self.name
-            ))),
-            None => Err(crate::error::Error::Codegen(alloc::format!(
+            ),
+            None => panic!(
                 "call instruction {:?} in `{}` is missing call info payload",
                 inst_id,
                 self.name
-            ))),
+            ),
         }
     }
 
     /// 以 typed view 的形式解码 call/call_indirect。
-    pub fn as_call(&self, inst_id: InstId) -> crate::error::Result<CallInst<'_>> {
+    pub fn as_call(&self, inst_id: InstId) -> CallInst<'_> {
         let inst = &self.dfg[inst_id];
-        Ok(CallInst {
-            shape: inst.as_call_shape()?,
-            info: self.call_info(inst_id)?,
-        })
+        CallInst {
+            shape: inst.as_call_shape(),
+            info: self.call_info(inst_id),
+        }
     }
 
     /// 生成便于调试的文本格式 MIR。

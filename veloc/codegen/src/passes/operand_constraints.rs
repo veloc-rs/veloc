@@ -1,9 +1,9 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::mir::{MachineFunction, MachineInst, Reg, Writable};
+use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{
     FixedUseConstraint, OperandConstraintStage, TargetLowering, TiedOperandConstraint,
 };
-use alloc::format;
 
 /// 在给定阶段应用 target/指令元数据定义的操作数约束。
 pub struct OperandConstraintPass<'a> {
@@ -17,42 +17,61 @@ impl<'a> OperandConstraintPass<'a> {
     }
 
     pub fn run<S>(&self, mfunc: &mut MachineFunction<S>) -> Result<()> {
+        let _ = self.apply(mfunc)?;
+        Ok(())
+    }
+
+    fn apply<S>(&self, mfunc: &mut MachineFunction<S>) -> Result<usize> {
         let num_blocks = mfunc.num_blocks();
+        let mut changed = 0usize;
         for block_idx in 0..num_blocks {
-            mfunc.rewrite_block(block_idx, |cursor| {
+            mfunc.rewrite_block(block_idx, |cursor| -> Result<()> {
                 if cursor.current_inst().is_invalid() {
                     cursor.remove_current();
+                    changed += 1;
                     return Ok(());
                 }
 
                 let mut inst = cursor.current_inst_clone();
-                let constraints =
-                    self.lowering
-                        .operand_constraints(self.stage, &inst, cursor.mfunc().as_untyped());
+                let constraints = self.lowering.operand_constraints(
+                    self.stage,
+                    &inst,
+                    cursor.mfunc().as_untyped(),
+                );
                 if constraints.is_empty() {
                     cursor.keep_current();
                     return Ok(());
                 }
 
+                let mut inst_changed = false;
                 for tied in &constraints.tied_operands {
-                    self.apply_tied_constraint(
+                    if self.apply_tied_constraint(
                         cursor,
                         &mut inst,
                         tied,
                         &constraints.commute_operand_pairs,
-                    )?;
+                    )? {
+                        inst_changed = true;
+                    }
                 }
 
                 for fixed in &constraints.fixed_uses {
-                    self.apply_fixed_use_constraint(cursor, &mut inst, fixed)?;
+                    if self.apply_fixed_use_constraint(cursor, &mut inst, fixed)? {
+                        inst_changed = true;
+                    }
                 }
 
-                cursor.replace_current(inst);
+                if !inst_changed {
+                    cursor.keep_current();
+                } else {
+                    changed += 1;
+                    cursor.replace_current(inst);
+                }
                 Ok(())
             })?;
         }
 
-        Ok(())
+        Ok(changed)
     }
 
     fn apply_tied_constraint<S>(
@@ -61,22 +80,25 @@ impl<'a> OperandConstraintPass<'a> {
         inst: &mut MachineInst,
         tied: &TiedOperandConstraint,
         commute_pairs: &[(usize, usize)],
-    ) -> Result<()> {
-        let def_reg = expect_operand_reg(inst, tied.def_operand, "def", operand_reg)?;
-        let mut source_reg = expect_operand_reg(inst, tied.use_operand, "use", use_reg)?;
+    ) -> Result<bool> {
+        let def_reg = expect_operand_reg(inst, tied.def_operand, "def", operand_reg);
+        let mut source_reg = expect_operand_reg(inst, tied.use_operand, "use", use_reg);
+        let mut commuted = false;
 
         if source_reg != def_reg
             && try_commute_tied_use(inst, tied.use_operand, def_reg, commute_pairs)
         {
             source_reg = def_reg;
+            commuted = true;
         }
 
         if source_reg == def_reg {
-            return Ok(());
+            return Ok(commuted);
         }
 
         self.emit_constraint_copy(cursor, def_reg, source_reg)?;
-        set_use_reg(inst, tied.use_operand, def_reg)
+        set_use_reg(inst, tied.use_operand, def_reg);
+        Ok(true)
     }
 
     fn apply_fixed_use_constraint<S>(
@@ -84,14 +106,15 @@ impl<'a> OperandConstraintPass<'a> {
         cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
         inst: &mut MachineInst,
         fixed: &FixedUseConstraint,
-    ) -> Result<()> {
-        let current = expect_operand_reg(inst, fixed.use_operand, "fixed use", use_reg)?;
+    ) -> Result<bool> {
+        let current = expect_operand_reg(inst, fixed.use_operand, "fixed use", use_reg);
         if current == fixed.reg {
-            return Ok(());
+            return Ok(false);
         }
 
         self.emit_constraint_copy(cursor, fixed.reg, current)?;
-        set_use_reg(inst, fixed.use_operand, fixed.reg)
+        set_use_reg(inst, fixed.use_operand, fixed.reg);
+        Ok(true)
     }
 
     fn emit_constraint_copy<S>(
@@ -100,10 +123,36 @@ impl<'a> OperandConstraintPass<'a> {
         dst: Reg,
         src: Reg,
     ) -> Result<()> {
-        let copy_inst =
-            build_constraint_copy(self.lowering, cursor.mfunc().as_untyped(), self.stage, dst, src)?;
+        let copy_inst = build_constraint_copy(
+            self.lowering,
+            cursor.mfunc().as_untyped(),
+            self.stage,
+            dst,
+            src,
+        );
         cursor.emit_before(copy_inst);
         Ok(())
+    }
+}
+
+impl<'a, S> FunctionPass<S> for OperandConstraintPass<'a> {
+    fn name(&self) -> &'static str {
+        "operand-constraints"
+    }
+
+    fn run(
+        &self,
+        mfunc: &mut MachineFunction<S>,
+        _ctx: &mut FunctionPassContext<'_, S>,
+    ) -> Result<PassEffect> {
+        let changed = self.apply(mfunc)?;
+        if changed == 0 {
+            Ok(PassEffect::NONE)
+        } else {
+            Ok(PassEffect::new(
+                ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS,
+            ))
+        }
     }
 }
 
@@ -125,11 +174,11 @@ fn use_reg(operand: &MachineOperand) -> Option<Reg> {
     }
 }
 
-fn missing_operand_error(inst: &MachineInst, role: &str, operand_idx: usize) -> Error {
-    Error::Codegen(format!(
+fn missing_operand_error(inst: &MachineInst, role: &str, operand_idx: usize) -> ! {
+    panic!(
         "missing {} operand {} for instruction {:?} while applying operand constraints",
         role, operand_idx, inst.opcode
-    ))
+    )
 }
 
 fn expect_operand_reg(
@@ -137,31 +186,30 @@ fn expect_operand_reg(
     operand_idx: usize,
     role: &str,
     reg_of: fn(&MachineOperand) -> Option<Reg>,
-) -> Result<Reg> {
+) -> Reg {
     inst.operands
         .get(operand_idx)
         .and_then(reg_of)
-        .ok_or_else(|| missing_operand_error(inst, role, operand_idx))
+        .unwrap_or_else(|| missing_operand_error(inst, role, operand_idx))
 }
 
-fn set_use_reg(inst: &mut MachineInst, operand_idx: usize, reg: Reg) -> Result<()> {
-    let operand = inst.operands.get_mut(operand_idx).ok_or_else(|| {
-        Error::Codegen(format!(
+fn set_use_reg(inst: &mut MachineInst, operand_idx: usize, reg: Reg) {
+    let operand = inst.operands.get_mut(operand_idx).unwrap_or_else(|| {
+        panic!(
             "operand index {} out of bounds while applying operand constraints",
             operand_idx
-        ))
-    })?;
+        )
+    });
     match operand {
         MachineOperand::Use(slot) => *slot = reg,
         MachineOperand::TiedDefUse(slot) => *slot = Writable(reg),
         _ => {
-            return Err(Error::Codegen(format!(
+            panic!(
                 "operand {} is not a use operand while applying operand constraints",
                 operand_idx
-            )));
+            );
         }
     }
-    Ok(())
 }
 
 fn build_constraint_copy(
@@ -170,11 +218,18 @@ fn build_constraint_copy(
     stage: OperandConstraintStage,
     dst: Reg,
     src: Reg,
-) -> Result<MachineInst> {
+) -> MachineInst {
     if dst.is_preg() || src.is_preg() || stage == OperandConstraintStage::PostSelect {
-        lowering.build_reg_copy(mfunc, dst, src)
+        lowering
+            .build_reg_copy(mfunc, dst, src)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to build target reg copy for {:?} <- {:?}: {}",
+                    dst, src, err
+                )
+            })
     } else {
-        Ok(MachineInst::build_copy(Writable(dst), src))
+        MachineInst::build_copy(Writable(dst), src)
     }
 }
 
@@ -207,42 +262,13 @@ mod tests {
     use crate::isel::{LegalizerInfo, SelectResult, SelectionContext};
     use crate::mir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
     use crate::target::arch::{
-        CallLowering, FixedUseConstraint, OperandConstraintSet, OperandConstraintStage,
-        TargetLowering, TiedOperandConstraint,
+        FixedUseConstraint, OperandConstraintSet, OperandConstraintStage, TargetLowering,
+        TiedOperandConstraint,
     };
     use alloc::vec;
     use alloc::vec::Vec;
 
-    #[derive(Default)]
-    struct DummyCallLowering;
-
-    impl CallLowering for DummyCallLowering {
-        fn lower_formal_arguments(
-            &self,
-            _mfunc: &mut MachineFunction,
-            _sig: &veloc_ir::Signature,
-        ) -> Result<(), crate::error::Error> {
-            Ok(())
-        }
-
-        fn lower_call(
-            &self,
-            _cursor: &mut crate::mir::BlockRewriteCursor<'_, crate::pipeline::stages::Untyped>,
-        ) -> Result<(), crate::error::Error> {
-            Ok(())
-        }
-
-        fn lower_return(
-            &self,
-            _cursor: &mut crate::mir::BlockRewriteCursor<'_, crate::pipeline::stages::Untyped>,
-            _sig: &veloc_ir::Signature,
-        ) -> Result<(), crate::error::Error> {
-            Ok(())
-        }
-    }
-
     struct DummyLowering {
-        call_lowering: DummyCallLowering,
         legalizer_info: LegalizerInfo,
         constraints: OperandConstraintSet,
     }
@@ -250,7 +276,6 @@ mod tests {
     impl DummyLowering {
         fn new(constraints: OperandConstraintSet) -> Self {
             Self {
-                call_lowering: DummyCallLowering,
                 legalizer_info: LegalizerInfo::new(),
                 constraints,
             }
@@ -258,10 +283,6 @@ mod tests {
     }
 
     impl TargetLowering for DummyLowering {
-        fn call_lowering(&self) -> &dyn CallLowering {
-            &self.call_lowering
-        }
-
         fn finalize_stack_frame(
             &self,
             _mfunc: &mut MachineFunction,

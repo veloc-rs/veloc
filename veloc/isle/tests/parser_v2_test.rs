@@ -46,6 +46,26 @@ fn parse_combine_rule_with_match_pair() {
 }
 
 #[test]
+fn parse_rewrite_rule_definition() {
+    let input = r#"
+        (rewrite-rule
+          (match (G_ADD (GPR64 $x) (GPR64 $y) @n))
+          (replace (G_ADD (GPR64 $y) (GPR64 $x) @n))
+          (cost 1)
+          (priority 10))
+    "#;
+
+    let module = parse(input).expect("parse should succeed");
+    let Def::RewriteRule(rule) = &module.defs[0] else {
+        panic!("expected rewrite-rule");
+    };
+
+    assert_eq!(rule.attrs.cost, Some(1));
+    assert_eq!(rule.attrs.priority, Some(10));
+    assert_eq!(rule.patterns.len(), 1);
+}
+
+#[test]
 fn parse_pseudo_inst_definition() {
     let input = r#"
         (def-pseudo-inst X86SDivRem64Pseudo

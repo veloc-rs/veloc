@@ -290,6 +290,13 @@ impl MachineOperand {
             _ => None,
         }
     }
+
+    pub fn as_stack_slot(&self) -> Option<StackSlot> {
+        match self {
+            Self::StackSlot(slot) => Some(*slot),
+            _ => None,
+        }
+    }
 }
 
 macro_rules! define_mir_ops {
@@ -687,6 +694,36 @@ define_mir_ops! {
             base: Reg = expect_use_reg(1, "store base register not found"),
         }
     }
+    StackLoad => StackLoadInst / as_stack_load {
+        opcodes: [GenericOpcode::G_STACK_LOAD],
+        builders: {
+            build_stack_load => GenericOpcode::G_STACK_LOAD => (
+                def: Writable<Reg> => Def,
+                slot: StackSlot => StackSlot
+            );
+        },
+        len: exact(2),
+        len_message: "stack load expects def/stackslot operands",
+        fields: {
+            dst: Reg = expect_def_reg(0, "stack load operand 0 must be a def"),
+            slot: StackSlot = expect_stackslot(1, "stack load operand 1 must be a stack slot"),
+        }
+    }
+    StackStore => StackStoreInst / as_stack_store {
+        opcodes: [GenericOpcode::G_STACK_STORE],
+        builders: {
+            build_stack_store => GenericOpcode::G_STACK_STORE => (
+                src: Reg => Use,
+                slot: StackSlot => StackSlot
+            );
+        },
+        len: exact(2),
+        len_message: "stack store expects use/stackslot operands",
+        fields: {
+            src: Reg = expect_use_reg(0, "stack store operand 0 must be a value register"),
+            slot: StackSlot = expect_stackslot(1, "stack store operand 1 must be a stack slot"),
+        }
+    }
     StoreOffset => StoreOffsetInst / as_store_offset {
         opcodes: [GenericOpcode::G_OFFSET_STORE],
         builders: {
@@ -1038,8 +1075,10 @@ impl MachineInst {
         }
     }
 
-    pub fn as_call_shape(&self) -> crate::error::Result<CallShape> {
-        Ok(self.as_call_shape_data()?.shape)
+    pub fn as_call_shape(&self) -> CallShape {
+        self.as_call_shape_data()
+            .unwrap_or_else(|err| panic!("{}", err))
+            .shape
     }
 
     fn expect_schema(&self, expected: GenericInstSchema) -> crate::error::Result<()> {
@@ -1119,6 +1158,13 @@ impl MachineInst {
     fn expect_tied_def_reg(&self, index: usize, message: &str) -> crate::error::Result<Reg> {
         match self.operands.get(index) {
             Some(MachineOperand::TiedDefUse(w)) => Ok(w.to_reg()),
+            _ => Err(self.decode_error(message)),
+        }
+    }
+
+    fn expect_stackslot(&self, index: usize, message: &str) -> crate::error::Result<StackSlot> {
+        match self.operands.get(index) {
+            Some(MachineOperand::StackSlot(slot)) => Ok(*slot),
             _ => Err(self.decode_error(message)),
         }
     }
@@ -1225,7 +1271,7 @@ impl MachineInst {
     }
 
     fn decode_error_owned(&self, message: String) -> crate::error::Error {
-        crate::error::Error::Select(self.opcode.clone(), message)
+        crate::error::Error::select(self.opcode.clone(), message)
     }
 }
 
@@ -1385,7 +1431,7 @@ mod tests {
         );
 
         assert_eq!(
-            direct.as_call_shape().unwrap(),
+            direct.as_call_shape(),
             CallShape {
                 defs: smallvec::smallvec![Reg::new_vreg(0)],
                 callee: CallCallee::Direct(SymbolId::from_u32(3)),
@@ -1393,7 +1439,7 @@ mod tests {
             }
         );
         assert_eq!(
-            indirect.as_call_shape().unwrap(),
+            indirect.as_call_shape(),
             CallShape {
                 defs: smallvec::smallvec![Reg::new_vreg(4)],
                 callee: CallCallee::Indirect(Reg::new_vreg(5)),

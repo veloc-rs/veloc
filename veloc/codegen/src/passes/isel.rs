@@ -1,23 +1,21 @@
 use crate::error::Result;
-use crate::isel::InstructionSelector;
 use crate::isel::generic_egraph::run_generic_pre_isel_egraph_combine;
+use crate::isel::InstructionSelector;
 use crate::pipeline::stages::{BankSelected, PostIselOptimized, PreIselPrepared, SelectedMir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::OperandConstraintStage;
 
-pub struct PreIselPreparePass<'a> {
-    lowering: &'a dyn crate::target::arch::TargetLowering,
-}
+pub struct GenericCombinePass;
 
-impl<'a> PreIselPreparePass<'a> {
-    pub fn new(lowering: &'a dyn crate::target::arch::TargetLowering) -> Self {
-        Self { lowering }
+impl GenericCombinePass {
+    pub fn new() -> Self {
+        Self
     }
 }
 
-impl<'a> StageTransformPass<BankSelected, PreIselPrepared> for PreIselPreparePass<'a> {
+impl StageTransformPass<BankSelected, PreIselPrepared> for GenericCombinePass {
     fn name(&self) -> &'static str {
-        "pre-isel-prepared"
+        "generic-combine"
     }
 
     fn run(
@@ -25,13 +23,14 @@ impl<'a> StageTransformPass<BankSelected, PreIselPrepared> for PreIselPreparePas
         mut mfunc: crate::mir::MachineFunction<BankSelected>,
         ctx: &mut FunctionPassContext<'_, BankSelected>,
     ) -> Result<(crate::mir::MachineFunction<PreIselPrepared>, PassEffect)> {
-        run_generic_pre_isel_egraph_combine(mfunc.as_untyped_mut(), ctx.function_analyses);
-        crate::passes::OperandConstraintPass::new(self.lowering, OperandConstraintStage::PreSelect)
-            .run(&mut mfunc)?;
-        Ok((
-            mfunc.into_stage(),
-            PassEffect::new(ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS),
-        ))
+        loop {
+            let changed =
+                run_generic_pre_isel_egraph_combine(mfunc.as_untyped_mut(), ctx.function_analyses);
+            if changed == 0 {
+                break;
+            }
+        }
+        Ok((mfunc.into_stage(), PassEffect::NONE))
     }
 }
 

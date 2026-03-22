@@ -4,8 +4,8 @@
 //! 这类规范化属于 generic MIR 规范化，应该发生在指令选择之前。
 
 use crate::mir::{
-    GenericOpcode, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg, UseDefChain,
-    Writable,
+    GenericOpcode, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg,
+    UseDefChain, Writable,
 };
 use crate::pipeline::FunctionAnalysisCtx;
 use alloc::format;
@@ -13,7 +13,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use egg::{
-    CostFunction, Extractor, Id, RecExpr, Rewrite, Runner, Symbol, define_language, rewrite as rw,
+    define_language, rewrite as rw, CostFunction, Extractor, Id, RecExpr, Rewrite, Runner, Symbol,
 };
 use hashbrown::{HashMap, HashSet};
 
@@ -320,18 +320,24 @@ fn apply_rewrite_plan(
 pub(crate) fn run_generic_pre_isel_egraph_combine(
     mfunc: &mut MachineFunction,
     analyses: &mut FunctionAnalysisCtx,
-) {
+) -> usize {
+    let mut total_changed = 0usize;
     loop {
         let mut changed = 0usize;
         for block_idx in 0..mfunc.num_blocks() {
             let use_def = analyses.use_def(mfunc).clone();
-            changed += rewrite_block_assoc_commutative_trees_with_use_def(mfunc, block_idx, &use_def);
+            changed +=
+                rewrite_block_assoc_commutative_trees_with_use_def(mfunc, block_idx, &use_def);
         }
         if changed == 0 {
             break;
         }
-        analyses.apply(crate::pipeline::ChangeSet::INST_SEMANTICS | crate::pipeline::ChangeSet::INST_OPERANDS);
+        total_changed += changed;
+        analyses.apply(
+            crate::pipeline::ChangeSet::INST_SEMANTICS | crate::pipeline::ChangeSet::INST_OPERANDS,
+        );
     }
+    total_changed
 }
 
 fn rewrite_block_assoc_commutative_trees_with_use_def(
@@ -367,18 +373,26 @@ fn rewrite_block_assoc_commutative_trees_with_use_def(
 
     let mut changed = 0usize;
     mfunc
-        .rewrite_block_insts(block_idx, |mfunc, inst_id, output| {
+        .rewrite_block(block_idx, |cursor| {
+            let inst_id = cursor.current_inst_id();
             if let Some(plan) = planned_roots.get(&inst_id) {
-                if apply_rewrite_plan(mfunc, output, plan) {
+                let mut rewritten = Vec::new();
+                if apply_rewrite_plan(cursor.mfunc_mut(), &mut rewritten, plan) {
                     changed += 1;
                 } else {
-                    output.push(inst_id);
+                    rewritten.push(inst_id);
+                }
+                cursor.remove_current();
+                for new_id in rewritten {
+                    cursor.emit_existing_before(new_id);
                 }
                 return Ok::<(), ()>(());
             }
 
             if !covered.contains(&inst_id) {
-                output.push(inst_id);
+                cursor.keep_current();
+            } else {
+                cursor.remove_current();
             }
 
             Ok(())
