@@ -4,6 +4,7 @@
 //! 具体编码字节序列由 ISLE DSL 生成的 `TargetInst::emit()` 负责。
 
 use crate::mir::{MachineBlock, MachineFunction, MachineInst, MachineOpcode};
+use crate::pipeline::stages::PrologueEpilogueInserted;
 use crate::target::arch::TargetEmitter;
 
 /// x86_64 机器码发射器实现
@@ -20,7 +21,7 @@ impl TargetEmitter for X86_64CodeEmitter {
         &self,
         emitter: &mut crate::Emitter,
         block: &MachineBlock,
-        _mfunc: &MachineFunction,
+        _mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {
         emitter.mark_block(block.id);
         Ok(())
@@ -30,7 +31,7 @@ impl TargetEmitter for X86_64CodeEmitter {
         &self,
         emitter: &mut crate::Emitter,
         inst: &MachineInst,
-        mfunc: &MachineFunction,
+        mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {
         match &inst.opcode {
             MachineOpcode::Invalid => {
@@ -57,7 +58,7 @@ impl TargetEmitter for X86_64CodeEmitter {
     fn finish_function(
         &self,
         emitter: &mut crate::Emitter,
-        _mfunc: &MachineFunction,
+        _mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {
         emitter.apply_fixups()
     }

@@ -3,7 +3,7 @@ use crate::mir::{
     BrTableInfo, BrTableTarget, GenericOpcode, InstExtra, MachineFunction, MachineInst, Reg,
     Writable,
 };
-use crate::pipeline::stages::{LegalizedMir, RawMir};
+use crate::pipeline::stages::{AllowsUnbankedVRegAlloc, LegalizedMir, RawMir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use alloc::vec::Vec;
 use hashbrown::HashMap;
@@ -43,7 +43,7 @@ impl ParallelCopyScratch {
 }
 
 impl BlockParamLoweringPass {
-    pub fn run<S>(mfunc: &mut MachineFunction<S>) -> Result<()> {
+    pub fn run<S: AllowsUnbankedVRegAlloc>(mfunc: &mut MachineFunction<S>) -> Result<()> {
         let mut scratch = ParallelCopyScratch::new();
         let original_blocks = mfunc.num_blocks();
         for block_idx in 0..original_blocks {
@@ -64,7 +64,7 @@ impl BlockParamLoweringPass {
         Ok(())
     }
 
-    fn lower_branch<S>(
+    fn lower_branch<S: AllowsUnbankedVRegAlloc>(
         cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
         inst: &MachineInst,
@@ -76,7 +76,7 @@ impl BlockParamLoweringPass {
         Ok(())
     }
 
-    fn lower_cond_branch<S>(
+    fn lower_cond_branch<S: AllowsUnbankedVRegAlloc>(
         cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
         inst: &MachineInst,
@@ -89,24 +89,16 @@ impl BlockParamLoweringPass {
             return Ok(());
         }
 
-        let then_blk = Self::redirect_edge(
-            cursor.mfunc_mut().as_untyped_mut(),
-            scratch,
-            branch.then_blk,
-            &then_args,
-        )?;
-        let else_blk = Self::redirect_edge(
-            cursor.mfunc_mut().as_untyped_mut(),
-            scratch,
-            branch.else_blk,
-            &else_args,
-        )?;
+        let then_blk =
+            Self::redirect_edge(cursor.mfunc_mut(), scratch, branch.then_blk, &then_args)?;
+        let else_blk =
+            Self::redirect_edge(cursor.mfunc_mut(), scratch, branch.else_blk, &else_args)?;
 
         cursor.replace_current(MachineInst::build_br_cond(branch.cond, then_blk, else_blk));
         Ok(())
     }
 
-    fn lower_jump_table<S>(
+    fn lower_jump_table<S: AllowsUnbankedVRegAlloc>(
         cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
     ) -> Result<()> {
@@ -119,12 +111,8 @@ impl BlockParamLoweringPass {
 
         let mut new_targets = Vec::with_capacity(info.targets.len());
         for target in info.targets {
-            let block = Self::redirect_edge(
-                cursor.mfunc_mut().as_untyped_mut(),
-                scratch,
-                target.block,
-                &target.args,
-            )?;
+            let block =
+                Self::redirect_edge(cursor.mfunc_mut(), scratch, target.block, &target.args)?;
             new_targets.push(BrTableTarget {
                 block,
                 args: SmallVec::new(),
@@ -164,7 +152,7 @@ impl BlockParamLoweringPass {
         }
     }
 
-    fn emit_branch_arg_copies<S>(
+    fn emit_branch_arg_copies<S: AllowsUnbankedVRegAlloc>(
         cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
         target: Block,
@@ -174,15 +162,14 @@ impl BlockParamLoweringPass {
             return Ok(());
         }
 
-        let copies =
-            Self::build_edge_copies(cursor.mfunc_mut().as_untyped_mut(), scratch, target, args)?;
+        let copies = Self::build_edge_copies(cursor.mfunc_mut(), scratch, target, args)?;
         cursor.emit_before_many(copies.iter().cloned());
         cursor.clear_current_extra();
         Ok(())
     }
 
-    fn redirect_edge(
-        mfunc: &mut MachineFunction,
+    fn redirect_edge<S: AllowsUnbankedVRegAlloc>(
+        mfunc: &mut MachineFunction<S>,
         scratch: &mut ParallelCopyScratch,
         target: Block,
         args: &[Reg],
@@ -194,8 +181,8 @@ impl BlockParamLoweringPass {
         }
     }
 
-    fn build_edge_copies<'a>(
-        mfunc: &mut MachineFunction,
+    fn build_edge_copies<'a, S: AllowsUnbankedVRegAlloc>(
+        mfunc: &mut MachineFunction<S>,
         scratch: &'a mut ParallelCopyScratch,
         target: Block,
         args: &[Reg],
@@ -224,9 +211,9 @@ impl BlockParamLoweringPass {
         ))
     }
 
-    fn build_parallel_copies<'a>(
+    fn build_parallel_copies<'a, S: AllowsUnbankedVRegAlloc>(
         scratch: &'a mut ParallelCopyScratch,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut MachineFunction<S>,
         dsts: &[Reg],
         srcs: &[Reg],
     ) -> &'a [MachineInst] {
@@ -322,7 +309,7 @@ impl BlockParamLoweringPass {
         &scratch.out
     }
 
-    fn copy_temp_type(mfunc: &MachineFunction, cycle_src: Reg) -> Type {
+    fn copy_temp_type<S>(mfunc: &MachineFunction<S>, cycle_src: Reg) -> Type {
         debug_assert!(
             cycle_src.is_vreg(),
             "block param lowering expects vreg sources before ABI lowering"
@@ -330,8 +317,8 @@ impl BlockParamLoweringPass {
         mfunc.vreg_data(cycle_src).ty
     }
 
-    fn create_edge_move_block(
-        mfunc: &mut MachineFunction,
+    fn create_edge_move_block<S: AllowsUnbankedVRegAlloc>(
+        mfunc: &mut MachineFunction<S>,
         scratch: &mut ParallelCopyScratch,
         target: Block,
         args: &[Reg],
@@ -375,15 +362,16 @@ mod tests {
     use crate::mir::{
         BrTableInfo, BrTableTarget, InstExtra, MachineBlock, MachineFunction, MachineInst,
     };
+    use crate::pipeline::stages::RawMir;
     use alloc::vec;
     use smallvec::smallvec;
     use veloc_ir::{Block, Type};
 
-    fn make_function() -> MachineFunction {
-        MachineFunction::new("test".into())
+    fn make_function() -> MachineFunction<RawMir> {
+        MachineFunction::<RawMir>::new("test".into())
     }
 
-    fn push_block(mfunc: &mut MachineFunction, block: Block, params: &[crate::mir::Reg]) {
+    fn push_block(mfunc: &mut MachineFunction<RawMir>, block: Block, params: &[crate::mir::Reg]) {
         let mut mblock = MachineBlock::new(block);
         mblock.params = params.to_vec();
         mfunc.blocks.push(mblock);

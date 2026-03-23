@@ -8,14 +8,14 @@ use crate::mir::{
     GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
     Reg, VReg, Writable,
 };
-use crate::passes::lowering::LegalizerInfo;
+use crate::passes::lowering::{LegalizeAction, LegalizeResult};
+use crate::pipeline::stages::{LegalizedMir, PreIselPrepared, RegAllocated, SelectedMir};
 use crate::regalloc::regbank_select::RegisterBank;
 use crate::target::arch::{
     CallConv as TargetCallConv, CpuDescription, LoweringContext, OperandConstraintSet,
-    OperandConstraintStage, SelectionContext, TargetArch, TargetLowering,
+    SelectionContext, TargetArch, TargetLowering,
 };
 use crate::target::x86_64::isle::{TargetInst, generated};
-use alloc::vec;
 use alloc::vec::Vec;
 use smallvec::smallvec;
 use veloc_ir::{FloatCC, IntCC, Type};
@@ -41,8 +41,8 @@ fn x86_mov_opcode_for_type(ty: Type) -> Result<TargetInst, crate::error::Error> 
     }
 }
 
-fn x86_copy_type_for_regs(
-    mfunc: &MachineFunction,
+fn x86_copy_type_for_regs<S>(
+    mfunc: &MachineFunction<S>,
     dst: Reg,
     src: Reg,
 ) -> Result<Type, crate::error::Error> {
@@ -58,8 +58,8 @@ fn x86_copy_type_for_regs(
     )
 }
 
-fn build_x86_copy_inst(
-    mfunc: &MachineFunction,
+fn build_x86_copy_inst<S>(
+    mfunc: &MachineFunction<S>,
     dst: Reg,
     src: Reg,
 ) -> Result<MachineInst, crate::error::Error> {
@@ -97,118 +97,24 @@ fn build_target_binary_uses(opcode: TargetInst, lhs: Reg, rhs: Reg) -> MachineIn
     )
 }
 
-fn build_target_tied_binary(opcode: TargetInst, dst: Writable<Reg>, src: Reg) -> MachineInst {
-    MachineInst::build_tied_binary(MachineOpcode::Target(opcode.as_u32()), dst, src)
-}
-
-fn setcc_opcode_for_intcc(cc: IntCC) -> TargetInst {
-    match cc {
-        IntCC::Eq => TargetInst::X86Sete,
-        IntCC::Ne => TargetInst::X86Setne,
-        IntCC::LtS => TargetInst::X86Setl,
-        IntCC::LtU => TargetInst::X86Setb,
-        IntCC::GtS => TargetInst::X86Setg,
-        IntCC::GtU => TargetInst::X86Seta,
-        IntCC::LeS => TargetInst::X86Setle,
-        IntCC::LeU => TargetInst::X86Setbe,
-        IntCC::GeS => TargetInst::X86Setge,
-        IntCC::GeU => TargetInst::X86Setae,
-    }
-}
-
 /// x86_64 Lowering
 pub struct X86_64Lowering {
-    legalizer_info: LegalizerInfo,
     /// 当前 target instance 选中的 CPU 描述。
     pub cpu: CpuDescription,
 }
 
 impl X86_64Lowering {
     pub fn new(cpu: CpuDescription) -> Self {
-        let legalizer_info = Self::create_legalizer_info();
-        Self {
-            legalizer_info,
-            cpu,
-        }
+        Self { cpu }
     }
 
-    /// 创建合法化信息
-    fn create_legalizer_info() -> LegalizerInfo {
-        use crate::mir::GenericOpcode;
-
-        let mut info = LegalizerInfo::new();
-
-        // x86_64 支持 I32 和 I64 类型
-        for opcode in [
-            GenericOpcode::G_ADD,
-            GenericOpcode::G_SUB,
-            GenericOpcode::G_MUL,
-            GenericOpcode::G_AND,
-            GenericOpcode::G_OR,
-            GenericOpcode::G_XOR,
-        ] {
-            info.get_action_definitions_builder(opcode)
-                .legal_for_types(&[Type::I32, Type::I64])
-                .widen_scalar_for_type(Type::I8)
-                .widen_scalar_for_type(Type::I16);
-        }
-
-        // 移位操作
-        for opcode in [
-            GenericOpcode::G_SHL,
-            GenericOpcode::G_LSHR,
-            GenericOpcode::G_ASHR,
-        ] {
-            info.get_action_definitions_builder(opcode)
-                .legal_for_types(&[Type::I32, Type::I64]);
-        }
-
-        // 其他操作
-        for opcode in [
-            GenericOpcode::G_ICMP,
-            GenericOpcode::G_LOAD,
-            GenericOpcode::G_STORE,
-            GenericOpcode::G_OFFSET_LOAD,
-            GenericOpcode::G_OFFSET_STORE,
-            GenericOpcode::G_INDEXED_LOAD,
-            GenericOpcode::G_INDEXED_STORE,
-            GenericOpcode::G_CONSTANT,
-        ] {
-            info.get_action_definitions_builder(opcode)
-                .legal_for_types(&[Type::I32, Type::I64, Type::F32, Type::F64]);
-        }
-
-        for opcode in [
-            GenericOpcode::G_COPY,
-            GenericOpcode::G_BITCAST,
-            GenericOpcode::G_FCONSTANT,
-            GenericOpcode::G_FADD,
-            GenericOpcode::G_FSUB,
-            GenericOpcode::G_FMUL,
-            GenericOpcode::G_FDIV,
-        ] {
-            info.get_action_definitions_builder(opcode)
-                .legal_for_types(&[Type::F32, Type::F64]);
-        }
-
-        info.get_action_definitions_builder(GenericOpcode::G_BRJT)
-            .lower_for(vec![Type::I32]);
-        info.get_action_definitions_builder(GenericOpcode::G_CTPOP)
-            .lower_for(vec![Type::I32, Type::I32])
-            .lower_for(vec![Type::I64, Type::I64]);
-        info.get_action_definitions_builder(GenericOpcode::G_CTLZ)
-            .lower_for(vec![Type::I32, Type::I32])
-            .lower_for(vec![Type::I64, Type::I64]);
-        info.get_action_definitions_builder(GenericOpcode::G_CTTZ)
-            .lower_for(vec![Type::I32, Type::I32])
-            .lower_for(vec![Type::I64, Type::I64]);
-
-        info
+    fn alloc_gpr_temp<S>(&self, mfunc: &mut MachineFunction<S>, ty: Type) -> Reg {
+        mfunc.alloc_vreg_in_bank(ty, RegisterBank::GPR)
     }
 
     fn push_legalized_inst(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut MachineFunction<LegalizedMir>,
         output: &mut Vec<InstId>,
         inst: MachineInst,
     ) -> InstId {
@@ -219,7 +125,7 @@ impl X86_64Lowering {
 
     fn emit_legalize_constant_reg(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut MachineFunction<LegalizedMir>,
         output: &mut Vec<InstId>,
         ty: Type,
         imm: i64,
@@ -235,7 +141,7 @@ impl X86_64Lowering {
 
     fn emit_legalize_binary_reg(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut MachineFunction<LegalizedMir>,
         output: &mut Vec<InstId>,
         opcode: GenericOpcode,
         ty: Type,
@@ -253,7 +159,7 @@ impl X86_64Lowering {
 
     fn legalize_ctpop_into(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut MachineFunction<LegalizedMir>,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,
@@ -358,7 +264,7 @@ impl X86_64Lowering {
 
     fn legalize_cttz_into(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut MachineFunction<LegalizedMir>,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,
@@ -400,7 +306,7 @@ impl X86_64Lowering {
 
     fn legalize_ctlz_into(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: &mut MachineFunction<LegalizedMir>,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,
@@ -472,14 +378,19 @@ impl X86_64Lowering {
         Ok(())
     }
 
-    fn normalize_cond_to_i32(&self, ctx: &mut SelectionContext, cond: Reg, cond_ty: Type) -> Reg {
+    fn normalize_cond_to_i32(
+        &self,
+        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        cond: Reg,
+        cond_ty: Type,
+    ) -> Reg {
         let test_opcode = if cond_ty.size_bytes() <= 4 {
             TargetInst::X86Test32
         } else {
             TargetInst::X86Test64
         };
-        let cond_byte = ctx.mfunc.alloc_vreg(Type::I8);
-        let cond_i32 = ctx.mfunc.alloc_vreg(Type::I32);
+        let cond_byte = self.alloc_gpr_temp(ctx.mfunc, Type::I8);
+        let cond_i32 = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
 
         ctx.selected
             .push(build_target_binary_uses(test_opcode, cond, cond));
@@ -498,14 +409,14 @@ impl X86_64Lowering {
 
     fn emit_select_i32(
         &self,
-        ctx: &mut SelectionContext,
+        ctx: &mut SelectionContext<'_, PreIselPrepared>,
         dst: Reg,
         cond_i32: Reg,
         true_val: Reg,
         false_val: Reg,
     ) {
-        let mask = ctx.mfunc.alloc_vreg(Type::I32);
-        let diff = ctx.mfunc.alloc_vreg(Type::I32);
+        let mask = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
+        let diff = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
 
         ctx.selected
             .push(build_target_imm(TargetInst::X86Mov32Imm, Writable(mask), 0));
@@ -543,16 +454,16 @@ impl X86_64Lowering {
 
     fn emit_select_i64_like(
         &self,
-        ctx: &mut SelectionContext,
+        ctx: &mut SelectionContext<'_, PreIselPrepared>,
         dst: Reg,
         cond_i32: Reg,
         true_val: Reg,
         false_val: Reg,
         wide_ty: Type,
     ) {
-        let cond_i64 = ctx.mfunc.alloc_vreg(Type::I64);
-        let mask = ctx.mfunc.alloc_vreg(Type::I64);
-        let diff = ctx.mfunc.alloc_vreg(wide_ty);
+        let cond_i64 = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
+        let mask = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
+        let diff = self.alloc_gpr_temp(ctx.mfunc, wide_ty);
 
         ctx.selected.push(MachineInst::build_tied_binary(
             MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
@@ -598,7 +509,7 @@ impl X86_64Lowering {
 
     fn select_fcmp(
         &self,
-        ctx: &mut SelectionContext,
+        ctx: &mut SelectionContext<'_, PreIselPrepared>,
         inst: &MachineInst,
     ) -> Result<SelectResult, crate::error::Error> {
         let fcmp = inst.as_fcmp().unwrap_or_else(|err| {
@@ -619,54 +530,23 @@ impl X86_64Lowering {
         ctx.selected
             .push(build_target_binary_uses(compare_opcode, fcmp.lhs, fcmp.rhs));
 
-        let emit_setcc_i32 = |ctx: &mut SelectionContext, opcode: TargetInst| -> Reg {
-            let tmp8 = ctx.mfunc.alloc_vreg(Type::I8);
-            let tmp32 = ctx.mfunc.alloc_vreg(Type::I32);
-            ctx.selected.push(build_target_inst(
-                opcode,
-                smallvec![MachineOperand::Def(Writable(tmp8))],
-            ));
-            ctx.selected.push(build_target_unary(
-                TargetInst::X86Movzx8to32,
-                Writable(tmp32),
-                tmp8,
-            ));
-            tmp32
-        };
+        let emit_setcc_i32 =
+            |ctx: &mut SelectionContext<'_, PreIselPrepared>, opcode: TargetInst| -> Reg {
+                let tmp8 = self.alloc_gpr_temp(ctx.mfunc, Type::I8);
+                let tmp32 = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
+                ctx.selected.push(build_target_inst(
+                    opcode,
+                    smallvec![MachineOperand::Def(Writable(tmp8))],
+                ));
+                ctx.selected.push(build_target_unary(
+                    TargetInst::X86Movzx8to32,
+                    Writable(tmp32),
+                    tmp8,
+                ));
+                tmp32
+            };
 
         match fcmp.cc {
-            FloatCC::Lt => {
-                let tmp = emit_setcc_i32(ctx, TargetInst::X86Setb);
-                ctx.selected.push(MachineInst::build_tied_binary(
-                    MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-                    Writable(fcmp.dst),
-                    tmp,
-                ));
-            }
-            FloatCC::Gt => {
-                let tmp = emit_setcc_i32(ctx, TargetInst::X86Seta);
-                ctx.selected.push(MachineInst::build_tied_binary(
-                    MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-                    Writable(fcmp.dst),
-                    tmp,
-                ));
-            }
-            FloatCC::Le => {
-                let tmp = emit_setcc_i32(ctx, TargetInst::X86Setbe);
-                ctx.selected.push(MachineInst::build_tied_binary(
-                    MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-                    Writable(fcmp.dst),
-                    tmp,
-                ));
-            }
-            FloatCC::Ge => {
-                let tmp = emit_setcc_i32(ctx, TargetInst::X86Setae);
-                ctx.selected.push(MachineInst::build_tied_binary(
-                    MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-                    Writable(fcmp.dst),
-                    tmp,
-                ));
-            }
             FloatCC::Eq => {
                 let is_eq = emit_setcc_i32(ctx, TargetInst::X86Sete);
                 let ordered = emit_setcc_i32(ctx, TargetInst::X86Setnp);
@@ -695,6 +575,12 @@ impl X86_64Lowering {
                     unordered,
                 ));
             }
+            other => {
+                panic!(
+                    "x86_64 special FCMP selector should only handle Eq/Ne, found {:?}",
+                    other
+                );
+            }
         }
 
         Ok(SelectResult::Replace)
@@ -702,7 +588,7 @@ impl X86_64Lowering {
 
     fn select_select(
         &self,
-        ctx: &mut SelectionContext,
+        ctx: &mut SelectionContext<'_, PreIselPrepared>,
         inst: &MachineInst,
     ) -> Result<SelectResult, crate::error::Error> {
         let select = inst.as_select().unwrap_or_else(|err| {
@@ -725,9 +611,9 @@ impl X86_64Lowering {
 
         match dst_ty {
             Type::F32 => {
-                let true_bits = ctx.mfunc.alloc_vreg(Type::I32);
-                let false_bits = ctx.mfunc.alloc_vreg(Type::I32);
-                let dst_bits = ctx.mfunc.alloc_vreg(Type::I32);
+                let true_bits = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
+                let false_bits = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
+                let dst_bits = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
 
                 ctx.selected.push(build_target_unary(
                     TargetInst::X86MovdFromXmm,
@@ -747,9 +633,9 @@ impl X86_64Lowering {
                 ));
             }
             Type::F64 => {
-                let true_bits = ctx.mfunc.alloc_vreg(Type::I64);
-                let false_bits = ctx.mfunc.alloc_vreg(Type::I64);
-                let dst_bits = ctx.mfunc.alloc_vreg(Type::I64);
+                let true_bits = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
+                let false_bits = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
+                let dst_bits = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
 
                 ctx.selected.push(build_target_unary(
                     TargetInst::X86MovqFromXmm,
@@ -792,7 +678,7 @@ impl X86_64Lowering {
 
 /// x86_64 专属的 Context 扩展实现
 pub struct X86SelectionContext<'a, 'b> {
-    pub base: &'a mut SelectionContext<'b>,
+    pub base: &'a mut SelectionContext<'b, PreIselPrepared>,
     pub cpu: CpuDescription,
 }
 
@@ -821,7 +707,11 @@ impl<'a, 'b> X86LoweringContext for X86SelectionContext<'a, 'b> {
 }
 
 impl TargetLowering for X86_64Lowering {
-    fn finalize_stack_frame(&self, mfunc: &mut MachineFunction, call_conv: TargetCallConv) {
+    fn finalize_stack_frame(
+        &self,
+        mfunc: &mut MachineFunction<RegAllocated>,
+        call_conv: TargetCallConv,
+    ) {
         let preserved_regs = call_conv.preserved_regs(TargetArch::X86_64);
         let mut used_callee_saved = Vec::new();
         for block in &mfunc.blocks {
@@ -848,7 +738,7 @@ impl TargetLowering for X86_64Lowering {
         mfunc.stack_frame.total_size = total;
     }
 
-    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction) {
+    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>) {
         use crate::mir::MachineOpcode;
         use crate::target::x86_64::isle::{REG_RBP, REG_RSP, TargetInst};
 
@@ -967,12 +857,111 @@ impl TargetLowering for X86_64Lowering {
         }
     }
 
+    fn legalize_action(
+        &self,
+        inst: &MachineInst,
+        mfunc: &MachineFunction<LegalizedMir>,
+    ) -> Result<Option<LegalizeAction>, crate::error::Error> {
+        crate::legalize_matcher!(inst, mfunc, {
+            G_ARG => {
+                [def(any), imm] => legal,
+            };
+            G_RET => {
+                seq[..use(any)] => legal,
+            };
+            G_UNREACHABLE => {
+                [] => legal,
+            };
+            G_BR => {
+                [block] => legal,
+            };
+            G_BRCOND => {
+                [use(BOOL), block, block] => legal,
+            };
+            G_CALL => {
+                seq[..def(any), global, ..use(any)] => legal,
+            };
+            G_CALLIND => {
+                seq[..def(any), use(PTR), ..use(any)] => legal,
+            };
+            G_ADD | G_SUB | G_MUL | G_AND | G_OR | G_XOR => {
+                [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
+                    if same_types(0, 1, 2) => legal,
+                [def(scalar_int(8, 16)), use(scalar_int(8, 16)), use(scalar_int(8, 16))]
+                    if same_types(0, 1, 2) => widen_scalar(I32),
+            };
+            G_SHL | G_LSHR | G_ASHR => {
+                [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
+                    if same_types(0, 1, 2) => legal,
+            };
+            G_ICMP => {
+                [def(BOOL), use(int_or_ptr_scalar(32, 64)), use(int_or_ptr_scalar(32, 64)), condcode]
+                    if same_types(1, 2) => legal,
+            };
+            G_FCMP => {
+                [def(BOOL), use(scalar_float(32, 64)), use(scalar_float(32, 64)), condcode]
+                    if same_types(1, 2) => legal,
+            };
+            G_SELECT => {
+                [def(BOOL), use(BOOL), use(BOOL), use(BOOL)]
+                    if same_types(0, 2, 3) => legal,
+                [def(scalar_value(32, 64)), use(BOOL), use(scalar_value(32, 64)), use(scalar_value(32, 64))]
+                    if same_types(0, 2, 3) => legal,
+            };
+            G_LOAD => {
+                [def(scalar_numeric(32, 64)), use(PTR)] => legal,
+            };
+            G_STORE => {
+                [use(scalar_numeric(32, 64)), use(PTR)] => legal,
+            };
+            G_OFFSET_LOAD => {
+                [def(scalar_numeric(32, 64)), use(PTR), imm] => legal,
+            };
+            G_OFFSET_STORE => {
+                [use(scalar_numeric(32, 64)), use(PTR), imm] => legal,
+            };
+            G_INDEXED_LOAD => {
+                [def(scalar_numeric(32, 64)), tied(PTR), use(PTR), imm] => legal,
+            };
+            G_INDEXED_STORE => {
+                [tied(PTR), use(scalar_numeric(32, 64)), use(PTR), imm] => legal,
+            };
+            G_CONSTANT => {
+                [def(int_or_ptr_scalar(32, 64)), imm] => legal,
+            };
+            G_COPY => {
+                [def(scalar_value(32, 64)), use(scalar_value(32, 64))]
+                    if same_types(0, 1) => legal,
+            };
+            G_BITCAST => {
+                [def(F32), use(I32)] => legal,
+                [def(I32), use(F32)] => legal,
+                [def(F64), use(I64)] => legal,
+                [def(I64), use(F64)] => legal,
+            };
+            G_FCONSTANT => {
+                [def(scalar_float(32, 64)), fimm] => legal,
+            };
+            G_FADD | G_FSUB | G_FMUL | G_FDIV => {
+                [def(scalar_float(32, 64)), use(scalar_float(32, 64)), use(scalar_float(32, 64))]
+                    if same_types(0, 1, 2) => legal,
+            };
+            G_BRJT => {
+                [use(I32)] => lower,
+            };
+            G_CTPOP | G_CTLZ | G_CTTZ => {
+                [def(scalar_int(32, 64)), use(scalar_int(32, 64))]
+                    if same_types(0, 1) => lower,
+            };
+        })
+    }
+
     fn legalize_instruction(
         &self,
         inst_id: crate::mir::InstId,
-        mfunc: &mut crate::mir::MachineFunction,
-        output: &mut Vec<crate::mir::InstId>,
-    ) {
+        mfunc: &mut crate::mir::MachineFunction<LegalizedMir>,
+    ) -> Result<LegalizeResult, crate::error::Error> {
+        let mut output = Vec::new();
         let opcode = mfunc.dfg[inst_id].generic_opcode();
         if let Some(opcode) = opcode {
             match opcode {
@@ -994,20 +983,35 @@ impl TargetLowering for X86_64Lowering {
                     };
                     match opcode {
                         GenericOpcode::G_CTPOP => {
-                            let _ =
-                                self.legalize_ctpop_into(mfunc, output, unary.src, unary.dst, ty);
+                            let _ = self.legalize_ctpop_into(
+                                mfunc,
+                                &mut output,
+                                unary.src,
+                                unary.dst,
+                                ty,
+                            );
                         }
                         GenericOpcode::G_CTLZ => {
-                            let _ =
-                                self.legalize_ctlz_into(mfunc, output, unary.src, unary.dst, ty);
+                            let _ = self.legalize_ctlz_into(
+                                mfunc,
+                                &mut output,
+                                unary.src,
+                                unary.dst,
+                                ty,
+                            );
                         }
                         GenericOpcode::G_CTTZ => {
-                            let _ =
-                                self.legalize_cttz_into(mfunc, output, unary.src, unary.dst, ty);
+                            let _ = self.legalize_cttz_into(
+                                mfunc,
+                                &mut output,
+                                unary.src,
+                                unary.dst,
+                                ty,
+                            );
                         }
                         _ => unreachable!(),
                     };
-                    return;
+                    return Ok(LegalizeResult::Replace(output));
                 }
                 _ => {}
             }
@@ -1025,7 +1029,7 @@ impl TargetLowering for X86_64Lowering {
             };
 
             if info.targets.is_empty() {
-                return;
+                return Ok(LegalizeResult::Replace(output));
             }
 
             let index = brjt.index;
@@ -1057,16 +1061,18 @@ impl TargetLowering for X86_64Lowering {
                 smallvec::smallvec![MachineOperand::Block(default_target.block)],
             );
             output.push(mfunc.alloc_inst(jmp_inst));
-            return;
+            return Ok(LegalizeResult::Replace(output));
         }
 
-        // 对于 x86_64，大多数指令可以直接选择
-        output.push(inst_id);
+        Err(crate::error::Error::codegen(alloc::format!(
+            "x86_64 missing custom legalizer for opcode {:?}",
+            mfunc.dfg[inst_id].opcode
+        )))
     }
 
     fn select_instruction(
         &self,
-        ctx: &mut SelectionContext,
+        ctx: &mut SelectionContext<'_, PreIselPrepared>,
     ) -> Result<SelectResult, crate::error::Error> {
         let cpu = self.cpu;
         let inst = ctx.mfunc.dfg[ctx.inst_id].clone();
@@ -1077,7 +1083,14 @@ impl TargetLowering for X86_64Lowering {
 
         if let MachineOpcode::Generic(_opcode) = inst.opcode {
             match _opcode {
-                GenericOpcode::G_FCMP => return self.select_fcmp(ctx, &inst),
+                GenericOpcode::G_FCMP => {
+                    let fcmp = inst.as_fcmp().unwrap_or_else(|err| {
+                        panic!("invalid fcmp instruction during x86_64 selection: {}", err);
+                    });
+                    if matches!(fcmp.cc, FloatCC::Eq | FloatCC::Ne) {
+                        return self.select_fcmp(ctx, &inst);
+                    }
+                }
                 GenericOpcode::G_SELECT => {
                     let select = inst.as_select().unwrap_or_else(|err| {
                         panic!(
@@ -1112,83 +1125,69 @@ impl TargetLowering for X86_64Lowering {
         Ok(result)
     }
 
-    fn operand_constraints(
+    fn preselect_operand_constraints(
         &self,
-        stage: OperandConstraintStage,
         inst: &MachineInst,
-        _mfunc: &MachineFunction,
+        _mfunc: &MachineFunction<PreIselPrepared>,
     ) -> OperandConstraintSet {
-        match stage {
-            OperandConstraintStage::PreSelect => {
-                let Some(opcode) = inst.generic_opcode() else {
-                    return OperandConstraintSet::default();
-                };
-                generated::generic_inst_metadata(opcode).operand_constraints()
-            }
-            OperandConstraintStage::PostSelect => {
-                let MachineOpcode::Target(opcode) = inst.opcode else {
-                    return OperandConstraintSet::default();
-                };
-                generated::target_inst_metadata(TargetInst::from_u32(opcode)).operand_constraints()
-            }
-        }
+        let Some(opcode) = inst.generic_opcode() else {
+            return OperandConstraintSet::default();
+        };
+        generated::generic_inst_metadata(opcode).operand_constraints()
     }
 
-    fn build_reg_copy(
+    fn postselect_operand_constraints(
         &self,
-        mfunc: &MachineFunction,
+        inst: &MachineInst,
+        _mfunc: &MachineFunction<SelectedMir>,
+    ) -> OperandConstraintSet {
+        let MachineOpcode::Target(opcode) = inst.opcode else {
+            return OperandConstraintSet::default();
+        };
+        generated::target_inst_metadata(TargetInst::from_u32(opcode)).operand_constraints()
+    }
+
+    fn build_preselect_reg_copy(
+        &self,
+        mfunc: &MachineFunction<PreIselPrepared>,
         dst: Reg,
         src: Reg,
     ) -> Result<MachineInst, crate::error::Error> {
         Ok(build_x86_copy_inst(mfunc, dst, src).unwrap_or_else(|err| {
             panic!(
-                "failed to build x86_64 reg copy for {:?} <- {:?}: {}",
+                "failed to build x86_64 pre-select reg copy for {:?} <- {:?}: {}",
                 dst, src, err
             )
         }))
     }
 
-    fn legalizer_info(&self) -> &LegalizerInfo {
-        &self.legalizer_info
+    fn build_postselect_reg_copy(
+        &self,
+        mfunc: &MachineFunction<SelectedMir>,
+        dst: Reg,
+        src: Reg,
+    ) -> Result<MachineInst, crate::error::Error> {
+        Ok(build_x86_copy_inst(mfunc, dst, src).unwrap_or_else(|err| {
+            panic!(
+                "failed to build x86_64 post-select reg copy for {:?} <- {:?}: {}",
+                dst, src, err
+            )
+        }))
     }
 }
 
 impl crate::regalloc::regbank_select::TargetRegBankSelect for X86_64Lowering {
-    fn suggest_bank(
-        &self,
-        opcode: crate::mir::GenericOpcode,
-        _index: usize,
-        ty: Type,
-    ) -> Option<crate::regalloc::regbank_select::RegisterBank> {
-        use crate::mir::GenericOpcode;
+    fn regbank_select_mode(&self) -> crate::regalloc::regbank_select::RegisterBankSelectMode {
+        crate::regalloc::regbank_select::RegisterBankSelectMode::TypeDerived
+    }
+
+    fn default_bank_for_type(&self, ty: Type) -> crate::regalloc::regbank_select::RegisterBank {
         use crate::regalloc::regbank_select::RegisterBank;
 
-        match opcode {
-            // 算术指令通常建议 GPR
-            GenericOpcode::G_ADD | GenericOpcode::G_SUB | GenericOpcode::G_MUL => {
-                if ty.is_float() {
-                    Some(RegisterBank::FPR)
-                } else {
-                    Some(RegisterBank::GPR)
-                }
-            }
-            // 浮点运算强制建议 FPR
-            GenericOpcode::G_FADD
-            | GenericOpcode::G_FSUB
-            | GenericOpcode::G_FMUL
-            | GenericOpcode::G_FDIV => Some(RegisterBank::FPR),
-            // 内存操作
-            GenericOpcode::G_LOAD
-            | GenericOpcode::G_STORE
-            | GenericOpcode::G_OFFSET_LOAD
-            | GenericOpcode::G_OFFSET_STORE => {
-                if ty.is_float() || ty.is_vector() {
-                    Some(RegisterBank::FPR)
-                } else {
-                    Some(RegisterBank::GPR)
-                }
-            }
-            _ => None,
+        if ty.is_float() || ty.is_vector() {
+            RegisterBank::FPR
+        } else {
+            RegisterBank::GPR
         }
     }
 }

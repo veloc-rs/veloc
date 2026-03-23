@@ -100,7 +100,7 @@ fn build_store_to_assignment<S>(
 
 fn lower_formal_arguments(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction,
+    mfunc: &mut MachineFunction<LegalizedMir>,
     plan: &CallConvPlan,
 ) {
     if mfunc.blocks.is_empty() {
@@ -231,7 +231,7 @@ impl StageTransformPass<LegalizedMir, LegalizedMir> for AbiLoweringPass {
     ) -> Result<(MachineFunction<LegalizedMir>, PassEffect)> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
         mfunc.stack_frame.arg_size = plan.stack_arg_bytes;
-        lower_formal_arguments(ctx.target, mfunc.as_untyped_mut(), &plan);
+        lower_formal_arguments(ctx.target, &mut mfunc, &plan);
 
         let func_name = mfunc.name.clone();
         let num_blocks = mfunc.num_blocks();

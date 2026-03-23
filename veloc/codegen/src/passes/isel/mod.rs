@@ -25,7 +25,7 @@ impl<'a> StageTransformPass<PreIselPrepared, SelectedMir> for InstructionSelecti
         mut mfunc: crate::mir::MachineFunction<PreIselPrepared>,
         ctx: &mut FunctionPassContext<'_, PreIselPrepared>,
     ) -> Result<(crate::mir::MachineFunction<SelectedMir>, PassEffect)> {
-        select::InstructionSelector::new(self.lowering).select(mfunc.as_untyped_mut())?;
+        select::InstructionSelector::new(self.lowering).select(&mut mfunc)?;
         ctx.stats.selected_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
         Ok((
             mfunc.into_stage(),

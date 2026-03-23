@@ -15,7 +15,12 @@ impl StageTransformPass<LegalizedMir, PreIselPrepared> for RegisterBankSelection
         mut mfunc: crate::mir::MachineFunction<LegalizedMir>,
         ctx: &mut FunctionPassContext<'_, LegalizedMir>,
     ) -> Result<(crate::mir::MachineFunction<PreIselPrepared>, PassEffect)> {
-        RegisterBankSelector::new().select(mfunc.as_untyped_mut(), ctx.target);
-        Ok((mfunc.into_stage(), PassEffect::new(ChangeSet::VREG_BANKS)))
+        let changed = RegisterBankSelector::new().select(&mut mfunc, ctx.target);
+        let effect = if changed {
+            PassEffect::new(ChangeSet::VREG_BANKS)
+        } else {
+            PassEffect::NONE
+        };
+        Ok((mfunc.into_stage(), effect))
     }
 }

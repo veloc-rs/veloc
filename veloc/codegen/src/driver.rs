@@ -223,7 +223,7 @@ impl<'a> CodegenPipeline<'a> {
         let mfunc_id = mmodule
             .find_function_by_name(&func.name)
             .ok_or_else(|| Error::translated_function_not_found(func.name.clone()))?;
-        let mfunc = mmodule.functions[mfunc_id].clone().into_stage::<RawMir>();
+        let mfunc = mmodule.functions[mfunc_id].clone();
         let sig = module.get_signature(func.signature);
         let mut function_analyses = FunctionAnalysisCtx::default();
 
@@ -367,23 +367,23 @@ impl<'a> CodegenPipeline<'a> {
         Ok(())
     }
 
-    fn emit_function_with_relocations<S>(
+    fn emit_function_with_relocations(
         &self,
-        mfunc: &MachineFunction<S>,
+        mfunc: &MachineFunction<PrologueEpilogueInserted>,
         stats: &mut CodegenStats,
     ) -> Result<crate::EmittedCode> {
         let emitter = self.target.target_emitter();
         let mut output = crate::Emitter::new();
 
         for block in &mfunc.blocks {
-            emitter.begin_block(&mut output, block, mfunc.as_untyped())?;
+            emitter.begin_block(&mut output, block, mfunc)?;
             for &inst_id in &block.insts {
                 let inst = &mfunc.dfg[inst_id];
-                emitter.emit_instruction(&mut output, inst, mfunc.as_untyped())?;
+                emitter.emit_instruction(&mut output, inst, mfunc)?;
             }
         }
 
-        emitter.finish_function(&mut output, mfunc.as_untyped())?;
+        emitter.finish_function(&mut output, mfunc)?;
         stats.stack_frame_size = mfunc.stack_frame.total_size;
         Ok(output.finish())
     }

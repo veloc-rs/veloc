@@ -6,10 +6,14 @@
 //! 通过 TargetLowering trait 委托给具体的目标后端实现。
 
 use crate::mir::{BlockRewriteCursor, InstId, MachineFunction, MachineInst};
+use crate::pipeline::stages::PreIselPrepared;
 use crate::target::arch::TargetLowering;
 use alloc::vec::Vec;
 
-fn format_select_failure_inst(mfunc: &MachineFunction, inst_id: InstId) -> alloc::string::String {
+fn format_select_failure_inst<S>(
+    mfunc: &MachineFunction<S>,
+    inst_id: InstId,
+) -> alloc::string::String {
     use alloc::format;
 
     let inst = &mfunc.dfg[inst_id];
@@ -54,13 +58,13 @@ pub enum SelectResult {
 }
 
 /// 指令选择上下文
-pub struct SelectionContext<'a> {
-    pub mfunc: &'a mut MachineFunction,
+pub struct SelectionContext<'a, S> {
+    pub mfunc: &'a mut MachineFunction<S>,
     pub inst_id: InstId,
     pub selected: &'a mut Vec<MachineInst>,
 }
 
-impl<'a> crate::target::arch::LoweringContext for SelectionContext<'a> {
+impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
     fn get_type(&self, vreg: crate::mir::VReg) -> veloc_ir::Type {
         self.mfunc.vregs[vreg].ty
     }
@@ -148,7 +152,10 @@ impl<'a> InstructionSelector<'a> {
     /// 对所有基本块执行指令选择
     ///
     /// 与 `select` 相同，提供更清晰的命名。
-    pub fn select(&self, mfunc: &mut MachineFunction) -> Result<(), crate::error::Error> {
+    pub fn select(
+        &self,
+        mfunc: &mut MachineFunction<PreIselPrepared>,
+    ) -> Result<(), crate::error::Error> {
         let num_blocks = mfunc.blocks.len();
         // 复用的临时缓冲区，避免每条指令分配
         let mut selected: Vec<MachineInst> = Vec::with_capacity(4);

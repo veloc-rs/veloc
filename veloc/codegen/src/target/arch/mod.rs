@@ -6,11 +6,14 @@ mod abi;
 mod callconv;
 mod types;
 
-use crate::Emitter;
 pub use crate::mir::ValueId;
 pub use crate::mir::{InstId, MachineFunction, MachineInst, Reg, VReg};
-pub use crate::passes::lowering::LegalizerInfo;
+pub use crate::passes::lowering::{LegalizeAction, LegalizeResult};
+use crate::pipeline::stages::{
+    LegalizedMir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedMir,
+};
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
+use crate::Emitter;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use veloc_ir::Type;
@@ -124,7 +127,7 @@ pub trait TargetEmitter: Send + Sync {
         &self,
         _emitter: &mut Emitter,
         _block: &crate::mir::MachineBlock,
-        _mfunc: &MachineFunction,
+        _mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {
         Ok(())
     }
@@ -134,14 +137,14 @@ pub trait TargetEmitter: Send + Sync {
         &self,
         emitter: &mut Emitter,
         inst: &MachineInst,
-        mfunc: &MachineFunction,
+        mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error>;
 
     /// 完成整个函数的发射，例如回填分支位移。
     fn finish_function(
         &self,
         _emitter: &mut Emitter,
-        _mfunc: &MachineFunction,
+        _mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {
         Ok(())
     }
@@ -155,12 +158,6 @@ pub enum RewriteResult {
     InPlace,
     Replace,
     Remove,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperandConstraintStage {
-    PreSelect,
-    PostSelect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,65 +270,95 @@ pub trait TargetLowering: Send + Sync {
     ///
     /// 在寄存器分配之后、插入序言/尾声之前调用，用于计算 callee-saved 保存区、
     /// 最终栈大小和 ABI 对齐等目标相关信息。
-    fn finalize_stack_frame(&self, _mfunc: &mut MachineFunction, _call_conv: CallConv) {}
+    fn finalize_stack_frame(
+        &self,
+        _mfunc: &mut MachineFunction<RegAllocated>,
+        _call_conv: CallConv,
+    ) {
+    }
+
+    /// 查询一条 generic MIR 指令在当前目标上的 legalize 动作。
+    fn legalize_action(
+        &self,
+        _inst: &MachineInst,
+        _mfunc: &MachineFunction<LegalizedMir>,
+    ) -> Result<Option<LegalizeAction>, crate::error::Error> {
+        Ok(None)
+    }
 
     /// 插入函数序言和尾声 (Prologue/Epilogue Insertion)
     /// 在寄存器分配之后调用，将序言/尾声指令插入到 MIR 中。
-    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction);
+    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>);
 
-    /// 合法化 MIR 指令
-    /// 将伪指令或复杂指令展开为目标支持的简单指令序列。
-    /// 结果指令（可以是原指令或新指令）应推入 `output` 缓冲区。
+    /// 应用 target-specific legalization。
+    ///
+    /// 只有当 `legalize_action()` 返回 `Some(LegalizeAction::Lower)` 或其他
+    /// 需要目标私有重写的动作时，driver 才会调用这个 hook。
     fn legalize_instruction(
         &self,
         inst_id: crate::mir::InstId,
-        mfunc: &mut crate::mir::MachineFunction,
-        output: &mut Vec<crate::mir::InstId>,
-    );
+        mfunc: &mut crate::mir::MachineFunction<LegalizedMir>,
+    ) -> Result<LegalizeResult, crate::error::Error>;
 
     /// 选择目标指令
     ///
     /// 返回选择结果，由指令选择驱动器统一处理。
     fn select_instruction(
         &self,
-        ctx: &mut SelectionContext,
+        ctx: &mut SelectionContext<'_, PreIselPrepared>,
     ) -> Result<SelectResult, crate::error::Error>;
 
     /// 指令融合（可选）
     ///
     /// 在指令选择后、寄存器分配前执行。
     /// 默认不做任何处理，目标后端可以按需覆写。
-    fn combine_instructions(&self, _mfunc: &mut MachineFunction) {}
+    fn combine_instructions(&self, _mfunc: &mut MachineFunction<SelectedMir>) {}
 
-    /// 查询某条指令在当前阶段需要满足的操作数约束。
+    /// 查询一条 pre-isel 指令需要满足的操作数约束。
     ///
-    /// `PreSelect` 适合处理会丢失语义信息的 destructive/two-address 约束；
-    /// `PostSelect` 适合处理固定寄存器等 target instruction 级别的约束。
-    fn operand_constraints(
+    /// 适合处理会在 isel 后丢失语义信息的 destructive/two-address 约束。
+    fn preselect_operand_constraints(
         &self,
-        _stage: OperandConstraintStage,
         _inst: &MachineInst,
-        _mfunc: &MachineFunction,
+        _mfunc: &MachineFunction<PreIselPrepared>,
     ) -> OperandConstraintSet {
         OperandConstraintSet::default()
     }
 
-    /// 为约束准备阶段构造一条目标相关的寄存器拷贝指令。
+    /// 查询一条 selected MIR 指令需要满足的操作数约束。
+    ///
+    /// 适合处理固定寄存器等 target instruction 级别的约束。
+    fn postselect_operand_constraints(
+        &self,
+        _inst: &MachineInst,
+        _mfunc: &MachineFunction<SelectedMir>,
+    ) -> OperandConstraintSet {
+        OperandConstraintSet::default()
+    }
+
+    /// 为 pre-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
     ///
     /// 当拷贝两端任一操作数已经绑定到物理寄存器时，调用方应优先使用这条
     /// hook，而不是继续发射通用 `G_COPY`。这样可以保证位宽/寄存器别名等
     /// 目标相关语义在进入后续阶段前已经明确。
-    fn build_reg_copy(
+    fn build_preselect_reg_copy(
         &self,
-        _mfunc: &MachineFunction,
+        _mfunc: &MachineFunction<PreIselPrepared>,
+        _dst: Reg,
+        _src: Reg,
+    ) -> Result<MachineInst, crate::error::Error> {
+        panic!("target does not support pre-select register copy construction",)
+    }
+
+    /// 为 post-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
+    fn build_postselect_reg_copy(
+        &self,
+        _mfunc: &MachineFunction<SelectedMir>,
         _dst: Reg,
         _src: Reg,
     ) -> Result<MachineInst, crate::error::Error> {
         panic!("target does not support post-select register copy construction",)
     }
-
-    /// 获取合法化信息
-    fn legalizer_info(&self) -> &LegalizerInfo;
 
     /// 在合法化之后追加 target 自定义 function passes。
     fn post_legalize_passes(

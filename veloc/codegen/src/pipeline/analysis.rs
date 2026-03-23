@@ -651,6 +651,7 @@ fn compute_register_pressure<S>(
 mod tests {
     use super::{ChangeSet, FunctionAnalysisCtx};
     use crate::mir::{MachineBlock, MachineFunction, MachineInst, Writable};
+    use crate::pipeline::stages::RawMir;
     use veloc_ir::{Block, Type};
 
     #[test]
@@ -662,7 +663,7 @@ mod tests {
 
     #[test]
     fn use_def_change_does_not_invalidate_cfg() {
-        let mut mfunc = MachineFunction::<crate::pipeline::stages::Untyped>::new("test".into());
+        let mut mfunc = MachineFunction::<RawMir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         let a = mfunc.alloc_vreg(Type::I64);
         let b = mfunc.alloc_vreg(Type::I64);
@@ -678,7 +679,7 @@ mod tests {
 
     #[test]
     fn cfg_change_invalidates_cfg_and_dependents() {
-        let mut mfunc = MachineFunction::<crate::pipeline::stages::Untyped>::new("test".into());
+        let mut mfunc = MachineFunction::<RawMir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(1)));
         let mut analyses = FunctionAnalysisCtx::default();
@@ -694,7 +695,7 @@ mod tests {
 
     #[test]
     fn stack_frame_change_does_not_invalidate_cfg() {
-        let mut mfunc = MachineFunction::<crate::pipeline::stages::Untyped>::new("test".into());
+        let mut mfunc = MachineFunction::<RawMir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg_before = analyses.cfg(&mfunc) as *const _;

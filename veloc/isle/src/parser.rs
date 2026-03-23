@@ -1,3 +1,5 @@
+#![allow(unused_assignments)]
+
 use crate::ast::*;
 use crate::lexer::Token;
 use logos::{Logos, SpannedIter};

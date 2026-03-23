@@ -3,6 +3,8 @@
 use super::{
     CallInfo, CallInst, InstExtra, InstExtraId, InstId, MachineInst, Reg, StackSlot, VReg, VRegData,
 };
+use crate::pipeline::stages::AllowsUnbankedVRegAlloc;
+use crate::regalloc::regbank_select::RegisterBank;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -18,10 +20,6 @@ pub struct MachineBlock {
     pub id: Block,
     pub params: Vec<Reg>,
     pub insts: Vec<InstId>,
-    /// 前驱块
-    pub(crate) preds: Vec<Block>,
-    /// 后继块
-    pub(crate) succs: Vec<Block>,
 }
 
 impl MachineBlock {
@@ -30,8 +28,6 @@ impl MachineBlock {
             id,
             params: Vec::new(),
             insts: Vec::new(),
-            preds: Vec::new(),
-            succs: Vec::new(),
         }
     }
 
@@ -44,7 +40,9 @@ impl MachineBlock {
 #[derive(Debug, Clone)]
 pub struct StackSlotData {
     pub(crate) base_reg: Reg,
+    #[allow(dead_code)]
     pub(crate) size: u32,
+    #[allow(dead_code)]
     pub(crate) align: u32,
     pub(crate) offset: i32,
 }
@@ -88,7 +86,7 @@ pub struct MachineFunctionData {
 ///
 /// `S` 是阶段标记类型，用来表达当前函数处于哪一个 codegen 阶段。
 #[derive(Debug, Clone)]
-pub struct MachineFunction<S = crate::pipeline::stages::Untyped> {
+pub struct MachineFunction<S> {
     data: MachineFunctionData,
     _stage: PhantomData<S>,
 }
@@ -152,24 +150,6 @@ impl<'a, S> BlockRewriteCursor<'a, S> {
 
     pub fn mfunc_mut(&mut self) -> &mut MachineFunction<S> {
         self.mfunc
-    }
-
-    pub fn as_untyped(&self) -> &BlockRewriteCursor<'a, crate::pipeline::stages::Untyped> {
-        // SAFETY: stage marker is ZST metadata only.
-        unsafe {
-            &*(self as *const Self
-                as *const BlockRewriteCursor<'a, crate::pipeline::stages::Untyped>)
-        }
-    }
-
-    pub fn as_untyped_mut(
-        &mut self,
-    ) -> &mut BlockRewriteCursor<'a, crate::pipeline::stages::Untyped> {
-        // SAFETY: stage marker is ZST metadata only.
-        unsafe {
-            &mut *(self as *mut Self
-                as *mut BlockRewriteCursor<'a, crate::pipeline::stages::Untyped>)
-        }
     }
 
     pub fn emit_before(&mut self, inst: MachineInst) -> InstId {
@@ -295,16 +275,6 @@ impl<S> MachineFunction<S> {
         }
     }
 
-    pub fn as_untyped(&self) -> &MachineFunction {
-        // SAFETY: stage marker is ZST metadata only.
-        unsafe { &*(self as *const Self as *const MachineFunction) }
-    }
-
-    pub fn as_untyped_mut(&mut self) -> &mut MachineFunction {
-        // SAFETY: stage marker is ZST metadata only.
-        unsafe { &mut *(self as *mut Self as *mut MachineFunction) }
-    }
-
     /// 获取指定基本块的指令 ID 列表
     pub fn block_insts(&self, block_idx: usize) -> &[InstId] {
         &self.blocks[block_idx].insts
@@ -404,15 +374,19 @@ impl<S> MachineFunction<S> {
         inst_id
     }
 
-    /// 分配新的虚拟寄存器
-    pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
+    fn alloc_vreg_with_bank_opt(&mut self, ty: Type, bank: Option<RegisterBank>) -> Reg {
         let vreg = self.vregs.push(VRegData {
             ty,
-            bank: None,
+            bank,
             assigned_reg: None,
             stack_slot: None,
         });
         Reg::new_vreg(vreg.as_u32())
+    }
+
+    /// 分配新的虚拟寄存器，并显式指定寄存器 bank。
+    pub fn alloc_vreg_in_bank(&mut self, ty: Type, bank: RegisterBank) -> Reg {
+        self.alloc_vreg_with_bank_opt(ty, Some(bank))
     }
 
     /// 在 DFG 中分配新指令
@@ -560,5 +534,15 @@ impl<S> MachineFunction<S> {
         }
 
         out
+    }
+}
+
+impl<S: AllowsUnbankedVRegAlloc> MachineFunction<S> {
+    /// 分配新的虚拟寄存器。
+    ///
+    /// 只允许在 `regbankselect` 之前的阶段调用；进入后续阶段后，必须使用
+    /// `alloc_vreg_in_bank()` 显式携带 bank。
+    pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
+        self.alloc_vreg_with_bank_opt(ty, None)
     }
 }

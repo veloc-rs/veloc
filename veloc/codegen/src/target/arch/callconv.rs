@@ -1,9 +1,9 @@
-use super::Reg;
 use super::abi::{
     AbiAssignment, AbiClassifierEntry, AbiDescriptor, AbiLocation, AbiPart, AbiStackBase,
     AbiValueClass, CallConvPlan,
 };
 use super::types::TargetArch;
+use super::Reg;
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -328,26 +328,29 @@ static ABI_CLASSIFIER_REGISTRY: &[AbiClassifierEntry] = &[
     },
 ];
 
+#[cfg(test)]
 #[inline]
 pub(crate) fn x86_64_rax() -> Reg {
     crate::target::x86_64::isle::REG_RAX
 }
 
+#[cfg(test)]
 #[inline]
 pub(crate) fn x86_64_rdx() -> Reg {
     crate::target::x86_64::isle::REG_RDX
 }
 
+#[cfg(test)]
 fn x86_64_systemv_arg_regs() -> &'static [Reg] {
     x86_64_systemv_descriptor().regs_for_class(AbiValueClass::Integer, false)
 }
 
 fn x86_64_systemv_descriptor() -> &'static AbiDescriptor {
-    &crate::target::x86_64::isle::ABI_X86_64SystemV
+    &crate::target::x86_64::isle::ABI_X86_64SYSTEMV
 }
 
 fn x86_64_win64_descriptor() -> &'static AbiDescriptor {
-    &crate::target::x86_64::isle::ABI_X86_64WindowsFastcall
+    &crate::target::x86_64::isle::ABI_X86_64WINDOWSFASTCALL
 }
 
 fn aarch64_aapcs_descriptor() -> &'static AbiDescriptor {
@@ -391,7 +394,7 @@ fn aarch64_aapcs_descriptor() -> &'static AbiDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use super::{CallConv, Reg, TargetArch, x86_64_rax, x86_64_rdx};
+    use super::{x86_64_rax, x86_64_rdx, CallConv, Reg, TargetArch};
     use crate::target::arch::{AbiLocation, AbiStackBase};
     use alloc::vec;
     use veloc_ir::Type;

@@ -1,28 +1,125 @@
 use crate::error::Result;
 use crate::mir::MachineOperand;
 use crate::mir::{MachineFunction, MachineInst, Reg, Writable};
+use crate::pipeline::stages::{PreIselPrepared, SelectedMir};
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{
-    FixedUseConstraint, OperandConstraintStage, TargetLowering, TiedOperandConstraint,
-};
+use crate::target::arch::{FixedUseConstraint, TargetLowering, TiedOperandConstraint};
+use core::marker::PhantomData;
 
 /// 在给定阶段应用 target/指令元数据定义的操作数约束。
-pub struct OperandConstraintPass<'a> {
+struct OperandConstraintPassImpl<'a, Stage> {
     lowering: &'a dyn TargetLowering,
-    stage: OperandConstraintStage,
+    _stage: PhantomData<Stage>,
 }
 
-impl<'a> OperandConstraintPass<'a> {
-    pub fn new(lowering: &'a dyn TargetLowering, stage: OperandConstraintStage) -> Self {
-        Self { lowering, stage }
+trait ConstraintStageSpec {
+    type Stage;
+
+    fn operand_constraints(
+        lowering: &dyn TargetLowering,
+        inst: &MachineInst,
+        mfunc: &MachineFunction<Self::Stage>,
+    ) -> crate::target::arch::OperandConstraintSet;
+
+    fn build_copy(
+        lowering: &dyn TargetLowering,
+        mfunc: &MachineFunction<Self::Stage>,
+        dst: Reg,
+        src: Reg,
+    ) -> MachineInst;
+}
+
+struct PreSelectConstraintStage;
+struct PostSelectConstraintStage;
+
+impl ConstraintStageSpec for PreSelectConstraintStage {
+    type Stage = PreIselPrepared;
+
+    fn operand_constraints(
+        lowering: &dyn TargetLowering,
+        inst: &MachineInst,
+        mfunc: &MachineFunction<PreIselPrepared>,
+    ) -> crate::target::arch::OperandConstraintSet {
+        lowering.preselect_operand_constraints(inst, mfunc)
     }
 
-    pub fn run<S>(&self, mfunc: &mut MachineFunction<S>) -> Result<()> {
+    fn build_copy(
+        lowering: &dyn TargetLowering,
+        mfunc: &MachineFunction<PreIselPrepared>,
+        dst: Reg,
+        src: Reg,
+    ) -> MachineInst {
+        if dst.is_vreg() && src.is_vreg() {
+            MachineInst::build_copy(Writable(dst), src)
+        } else {
+            lowering
+                .build_preselect_reg_copy(mfunc, dst, src)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "failed to build pre-select reg copy for {:?} <- {:?}: {}",
+                        dst, src, err
+                    )
+                })
+        }
+    }
+}
+
+impl ConstraintStageSpec for PostSelectConstraintStage {
+    type Stage = SelectedMir;
+
+    fn operand_constraints(
+        lowering: &dyn TargetLowering,
+        inst: &MachineInst,
+        mfunc: &MachineFunction<SelectedMir>,
+    ) -> crate::target::arch::OperandConstraintSet {
+        lowering.postselect_operand_constraints(inst, mfunc)
+    }
+
+    fn build_copy(
+        lowering: &dyn TargetLowering,
+        mfunc: &MachineFunction<SelectedMir>,
+        dst: Reg,
+        src: Reg,
+    ) -> MachineInst {
+        lowering
+            .build_postselect_reg_copy(mfunc, dst, src)
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to build post-select reg copy for {:?} <- {:?}: {}",
+                    dst, src, err
+                )
+            })
+    }
+}
+
+impl<'a, Stage> OperandConstraintPassImpl<'a, Stage>
+where
+    Stage: ConstraintStageSpec,
+{
+    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
+        Self {
+            lowering,
+            _stage: PhantomData,
+        }
+    }
+
+    pub fn run(&self, mfunc: &mut MachineFunction<Stage::Stage>) -> Result<()> {
         let _ = self.apply(mfunc)?;
         Ok(())
     }
 
-    fn apply<S>(&self, mfunc: &mut MachineFunction<S>) -> Result<usize> {
+    fn run_with_effect(&self, mfunc: &mut MachineFunction<Stage::Stage>) -> Result<PassEffect> {
+        let changed = self.apply(mfunc)?;
+        if changed == 0 {
+            Ok(PassEffect::NONE)
+        } else {
+            Ok(PassEffect::new(
+                ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS,
+            ))
+        }
+    }
+
+    fn apply(&self, mfunc: &mut MachineFunction<Stage::Stage>) -> Result<usize> {
         let num_blocks = mfunc.num_blocks();
         let mut changed = 0usize;
         for block_idx in 0..num_blocks {
@@ -32,9 +129,9 @@ impl<'a> OperandConstraintPass<'a> {
         Ok(changed)
     }
 
-    fn rewrite_block<S>(
+    fn rewrite_block(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
         changed: &mut usize,
     ) -> Result<()> {
         if cursor.current_inst().is_invalid() {
@@ -44,9 +141,7 @@ impl<'a> OperandConstraintPass<'a> {
         }
 
         let mut inst = cursor.current_inst_clone();
-        let constraints =
-            self.lowering
-                .operand_constraints(self.stage, &inst, cursor.mfunc().as_untyped());
+        let constraints = Stage::operand_constraints(self.lowering, &inst, cursor.mfunc());
         if constraints.is_empty() {
             cursor.keep_current();
             return Ok(());
@@ -62,9 +157,9 @@ impl<'a> OperandConstraintPass<'a> {
         Ok(())
     }
 
-    fn apply_constraints<S>(
+    fn apply_constraints(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         constraints: &crate::target::arch::OperandConstraintSet,
     ) -> Result<bool> {
@@ -89,9 +184,9 @@ impl<'a> OperandConstraintPass<'a> {
         Ok(changed)
     }
 
-    fn apply_tied_operand_constraint<S>(
+    fn apply_tied_operand_constraint(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         tied: &TiedOperandConstraint,
         commute_pairs: &[(usize, usize)],
@@ -116,9 +211,9 @@ impl<'a> OperandConstraintPass<'a> {
         Ok(true)
     }
 
-    fn apply_fixed_use_constraint<S>(
+    fn apply_fixed_use_constraint(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         fixed: &FixedUseConstraint,
     ) -> Result<bool> {
@@ -132,42 +227,75 @@ impl<'a> OperandConstraintPass<'a> {
         Ok(true)
     }
 
-    fn emit_constraint_copy<S>(
+    fn emit_constraint_copy(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
         dst: Reg,
         src: Reg,
     ) -> Result<()> {
-        let copy_inst = build_constraint_copy(
-            self.lowering,
-            cursor.mfunc().as_untyped(),
-            self.stage,
-            dst,
-            src,
-        );
+        let copy_inst = Stage::build_copy(self.lowering, cursor.mfunc(), dst, src);
         cursor.emit_before(copy_inst);
         Ok(())
     }
 }
 
-impl<'a, S> FunctionPass<S> for OperandConstraintPass<'a> {
+pub struct PreSelectOperandConstraintPass<'a> {
+    inner: OperandConstraintPassImpl<'a, PreSelectConstraintStage>,
+}
+
+impl<'a> PreSelectOperandConstraintPass<'a> {
+    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
+        Self {
+            inner: OperandConstraintPassImpl::new(lowering),
+        }
+    }
+
+    pub fn run(&self, mfunc: &mut MachineFunction<PreIselPrepared>) -> Result<()> {
+        self.inner.run(mfunc)
+    }
+}
+
+impl<'a> FunctionPass<PreIselPrepared> for PreSelectOperandConstraintPass<'a> {
     fn name(&self) -> &'static str {
         "operand-constraints"
     }
 
     fn run(
         &self,
-        mfunc: &mut MachineFunction<S>,
-        _ctx: &mut FunctionPassContext<'_, S>,
+        mfunc: &mut MachineFunction<PreIselPrepared>,
+        _ctx: &mut FunctionPassContext<'_, PreIselPrepared>,
     ) -> Result<PassEffect> {
-        let changed = self.apply(mfunc)?;
-        if changed == 0 {
-            Ok(PassEffect::NONE)
-        } else {
-            Ok(PassEffect::new(
-                ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS,
-            ))
+        self.inner.run_with_effect(mfunc)
+    }
+}
+
+pub struct PostSelectOperandConstraintPass<'a> {
+    inner: OperandConstraintPassImpl<'a, PostSelectConstraintStage>,
+}
+
+impl<'a> PostSelectOperandConstraintPass<'a> {
+    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
+        Self {
+            inner: OperandConstraintPassImpl::new(lowering),
         }
+    }
+
+    pub fn run(&self, mfunc: &mut MachineFunction<SelectedMir>) -> Result<()> {
+        self.inner.run(mfunc)
+    }
+}
+
+impl<'a> FunctionPass<SelectedMir> for PostSelectOperandConstraintPass<'a> {
+    fn name(&self) -> &'static str {
+        "operand-constraints"
+    }
+
+    fn run(
+        &self,
+        mfunc: &mut MachineFunction<SelectedMir>,
+        _ctx: &mut FunctionPassContext<'_, SelectedMir>,
+    ) -> Result<PassEffect> {
+        self.inner.run_with_effect(mfunc)
     }
 }
 
@@ -225,27 +353,6 @@ fn set_use_reg(inst: &mut MachineInst, operand_idx: usize, reg: Reg) {
     }
 }
 
-fn build_constraint_copy(
-    lowering: &dyn TargetLowering,
-    mfunc: &MachineFunction,
-    stage: OperandConstraintStage,
-    dst: Reg,
-    src: Reg,
-) -> MachineInst {
-    if dst.is_preg() || src.is_preg() || stage == OperandConstraintStage::PostSelect {
-        lowering
-            .build_reg_copy(mfunc, dst, src)
-            .unwrap_or_else(|err| {
-                panic!(
-                    "failed to build target reg copy for {:?} <- {:?}: {}",
-                    dst, src, err
-                )
-            })
-    } else {
-        MachineInst::build_copy(Writable(dst), src)
-    }
-}
-
 fn try_commute_tied_use(
     inst: &mut MachineInst,
     use_operand: usize,
@@ -271,81 +378,73 @@ fn try_commute_tied_use(
 
 #[cfg(test)]
 mod tests {
-    use super::OperandConstraintPass;
+    use super::PreSelectOperandConstraintPass;
     use crate::isel::{SelectResult, SelectionContext};
     use crate::mir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
-    use crate::passes::lowering::LegalizerInfo;
+    use crate::pipeline::stages::{LegalizedMir, PreIselPrepared, RegAllocated};
     use crate::target::arch::{
-        FixedUseConstraint, OperandConstraintSet, OperandConstraintStage, TargetLowering,
-        TiedOperandConstraint,
+        FixedUseConstraint, OperandConstraintSet, TargetLowering, TiedOperandConstraint,
     };
     use alloc::vec;
     use alloc::vec::Vec;
 
     struct DummyLowering {
-        legalizer_info: LegalizerInfo,
         constraints: OperandConstraintSet,
     }
 
     impl DummyLowering {
         fn new(constraints: OperandConstraintSet) -> Self {
-            Self {
-                legalizer_info: LegalizerInfo::new(),
-                constraints,
-            }
+            Self { constraints }
         }
     }
 
     impl TargetLowering for DummyLowering {
         fn finalize_stack_frame(
             &self,
-            _mfunc: &mut MachineFunction,
+            _mfunc: &mut MachineFunction<RegAllocated>,
             _call_conv: crate::target::arch::CallConv,
         ) {
         }
 
-        fn insert_prologue_epilogue(&self, _mfunc: &mut MachineFunction) {}
+        fn insert_prologue_epilogue(&self, _mfunc: &mut MachineFunction<RegAllocated>) {}
 
         fn legalize_instruction(
             &self,
             _inst_id: crate::mir::InstId,
-            _mfunc: &mut MachineFunction,
-            _output: &mut Vec<crate::mir::InstId>,
-        ) {
+            _mfunc: &mut MachineFunction<LegalizedMir>,
+        ) -> Result<crate::target::arch::LegalizeResult, crate::error::Error> {
+            unreachable!("legalization is not used in operand constraint tests")
         }
 
         fn select_instruction(
             &self,
-            _ctx: &mut SelectionContext,
+            _ctx: &mut SelectionContext<'_, PreIselPrepared>,
         ) -> Result<SelectResult, crate::error::Error> {
             unreachable!("selection is not used in operand constraint tests")
         }
 
-        fn operand_constraints(
+        fn preselect_operand_constraints(
             &self,
-            _stage: OperandConstraintStage,
             _inst: &MachineInst,
-            _mfunc: &MachineFunction,
+            _mfunc: &MachineFunction<PreIselPrepared>,
         ) -> OperandConstraintSet {
             self.constraints.clone()
         }
 
-        fn build_reg_copy(
+        fn build_preselect_reg_copy(
             &self,
-            _mfunc: &MachineFunction,
+            _mfunc: &MachineFunction<PreIselPrepared>,
             dst: Reg,
             src: Reg,
         ) -> Result<MachineInst, crate::error::Error> {
             Ok(MachineInst::build_copy(Writable(dst), src))
         }
-
-        fn legalizer_info(&self) -> &LegalizerInfo {
-            &self.legalizer_info
-        }
     }
 
-    fn make_function_with_inst(inst: MachineInst) -> (MachineFunction, crate::mir::InstId) {
-        let mut mfunc = MachineFunction::new("test".into());
+    fn make_function_with_inst(
+        inst: MachineInst,
+    ) -> (MachineFunction<PreIselPrepared>, crate::mir::InstId) {
+        let mut mfunc = MachineFunction::<PreIselPrepared>::new("test".into());
         mfunc
             .blocks
             .push(MachineBlock::new(veloc_ir::Block::from_u32(0)));
@@ -373,7 +472,7 @@ mod tests {
             fixed_uses: Vec::new(),
         });
 
-        OperandConstraintPass::new(&lowering, OperandConstraintStage::PreSelect)
+        PreSelectOperandConstraintPass::new(&lowering)
             .run(&mut mfunc)
             .unwrap();
 
@@ -400,7 +499,7 @@ mod tests {
             fixed_uses: Vec::new(),
         });
 
-        OperandConstraintPass::new(&lowering, OperandConstraintStage::PreSelect)
+        PreSelectOperandConstraintPass::new(&lowering)
             .run(&mut mfunc)
             .unwrap();
 
@@ -430,7 +529,7 @@ mod tests {
             }],
         });
 
-        OperandConstraintPass::new(&lowering, OperandConstraintStage::PreSelect)
+        PreSelectOperandConstraintPass::new(&lowering)
             .run(&mut mfunc)
             .unwrap();
 

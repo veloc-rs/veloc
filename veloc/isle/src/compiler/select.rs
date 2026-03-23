@@ -177,8 +177,13 @@ fn generate_pattern_condition(
             let conds: Vec<String> = pats
                 .iter()
                 .map(|p| generate_pattern_condition(p, var_name, decls))
+                .filter(|cond| cond != "true")
                 .collect();
-            format!("({})", conds.join(" && "))
+            match conds.len() {
+                0 => "true".to_string(),
+                1 => conds.into_iter().next().unwrap(),
+                _ => conds.join(" && "),
+            }
         }
         Pattern::Schema { .. } => "true".to_string(),
         Pattern::Opcode { opcode, args, .. } => match opcode.as_str() {
@@ -191,7 +196,7 @@ fn generate_pattern_condition(
             "has_bmi2" => "ctx.has_bmi2()".to_string(),
             "has_avx2" => "ctx.has_avx2()".to_string(),
             "not" => positional_arg_at(args, 0)
-                .map(|arg| format!("!{}", generate_pattern_condition(arg, var_name, decls)))
+                .map(|arg| format!("!({})", generate_pattern_condition(arg, var_name, decls)))
                 .unwrap_or_else(|| "true".to_string()),
             _ => {
                 if let Some(decl) = decls.get(opcode) {
@@ -207,6 +212,87 @@ fn generate_pattern_condition(
         },
         _ => "true".to_string(),
     }
+}
+
+fn pattern_condition_needs_value(pattern: &Pattern, decls: &HashMap<String, DeclDef>) -> bool {
+    match strip_node_binds(pattern) {
+        Pattern::And(parts) => parts
+            .iter()
+            .any(|part| pattern_condition_needs_value(part, decls)),
+        Pattern::Schema { .. }
+        | Pattern::Variable(_)
+        | Pattern::IntConst(_)
+        | Pattern::CondCode(_)
+        | Pattern::StackSlot(_)
+        | Pattern::Block(_) => false,
+        Pattern::Opcode { opcode, args, .. } => match opcode.as_str() {
+            "is_i8" | "is_i16" | "is_i32" | "is_i64" | "is_ptr" | "is_fpr" => true,
+            "has_bmi2" | "has_avx2" => false,
+            "not" => positional_arg_at(args, 0)
+                .map(|arg| pattern_condition_needs_value(arg, decls))
+                .unwrap_or(false),
+            _ => decls
+                .get(opcode)
+                .is_some_and(|decl| !decl.params.is_empty()),
+        },
+        Pattern::NodeBind { .. } => unreachable!("node binds are stripped above"),
+    }
+}
+
+fn collect_used_extractors_in_pattern(
+    pattern: &Pattern,
+    extractors: &HashMap<String, ExtractorDef>,
+    used: &mut BTreeSet<String>,
+) {
+    match strip_node_binds(pattern) {
+        Pattern::Schema { args, .. } | Pattern::Opcode { args, .. } => {
+            if let Pattern::Opcode { opcode, .. } = strip_node_binds(pattern) {
+                if let Some(extractor) = extractors.get(opcode) {
+                    if used.insert(opcode.clone()) {
+                        collect_used_extractors_in_pattern(&extractor.body, extractors, used);
+                    }
+                }
+            }
+
+            for arg in args {
+                match arg {
+                    PatternArg::Positional(pattern) => {
+                        collect_used_extractors_in_pattern(pattern, extractors, used);
+                    }
+                    PatternArg::Named { pattern, .. } => {
+                        collect_used_extractors_in_pattern(pattern, extractors, used);
+                    }
+                }
+            }
+        }
+        Pattern::And(parts) => {
+            for part in parts {
+                collect_used_extractors_in_pattern(part, extractors, used);
+            }
+        }
+        Pattern::Variable(_)
+        | Pattern::IntConst(_)
+        | Pattern::CondCode(_)
+        | Pattern::StackSlot(_)
+        | Pattern::Block(_) => {}
+        Pattern::NodeBind { .. } => unreachable!("node binds are stripped above"),
+    }
+}
+
+fn collect_used_extractors(
+    module: &crate::ast::Module,
+    extractors: &HashMap<String, ExtractorDef>,
+) -> BTreeSet<String> {
+    let mut used = BTreeSet::new();
+    for def in &module.defs {
+        let Def::SelectRule(rule) = def else {
+            continue;
+        };
+        for pattern in &rule.patterns {
+            collect_used_extractors_in_pattern(pattern, extractors, &mut used);
+        }
+    }
+    used
 }
 
 fn collect_positional_rule_conditions(
@@ -1316,6 +1402,7 @@ pub(crate) fn generate_select_instruction(
     let needs_positional_helpers = module_has_positional_rules(module);
     let decls = collect_decl_map(module);
     let opcode_rules = collect_select_rules_by_opcode(module);
+    let used_extractors = collect_used_extractors(module, extractors);
 
     let extra_bound = if arch == "x86_64" {
         " + crate::target::x86_64::lowering::X86LoweringContext"
@@ -1348,12 +1435,21 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
     }
     writeln!(output).unwrap();
 
-    for (name, exc) in extractors {
+    for name in used_extractors {
+        let exc = extractors
+            .get(&name)
+            .unwrap_or_else(|| panic!("missing extractor definition for {}", name));
         let cond = generate_pattern_condition(&exc.body, "v", &decls);
+        let value_param = if pattern_condition_needs_value(&exc.body, &decls) {
+            "v"
+        } else {
+            "_v"
+        };
         writeln!(
             output,
-            "    let is_{} = |v_opt: Option<VReg>| v_opt.map_or(false, |v| {});",
+            "    let is_{} = |v_opt: Option<VReg>| v_opt.map_or(false, |{}| {});",
             name.to_lowercase(),
+            value_param,
             cond
         )
         .unwrap();

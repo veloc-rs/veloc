@@ -14,7 +14,7 @@ use self::generic_egraph::run_generic_pre_isel_egraph_combine;
 
 pub use abi::AbiLoweringPass;
 pub use block_params::BlockParamLoweringPass;
-pub use legalize::{Legalizer, LegalizerInfo};
+pub use legalize::{LegalizeAction, LegalizeResult, Legalizer};
 pub use regbank::RegisterBankSelectionPass;
 
 pub struct LegalizePass<'a> {
@@ -43,8 +43,8 @@ impl<'a> StageTransformPass<LegalizedMir, PreIselPrepared> for LegalizePass<'a> 
         mut mfunc: MachineFunction<LegalizedMir>,
         ctx: &mut FunctionPassContext<'_, LegalizedMir>,
     ) -> Result<(MachineFunction<PreIselPrepared>, PassEffect)> {
-        let legalizer = Legalizer::new(self.lowering.legalizer_info(), self.lowering);
-        legalizer.legalize(mfunc.as_untyped_mut());
+        let legalizer = Legalizer::new(self.lowering);
+        legalizer.legalize(&mut mfunc)?;
         ctx.stats.legalized_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
         Self::apply_effect(
             PassEffect::new(ChangeSet::INST_SEMANTICS | ChangeSet::CFG),
@@ -56,7 +56,7 @@ impl<'a> StageTransformPass<LegalizedMir, PreIselPrepared> for LegalizePass<'a> 
             Self::apply_effect(effect, ctx);
         }
 
-        run_generic_pre_isel_egraph_combine(mfunc.as_untyped_mut(), ctx.function_analyses);
+        run_generic_pre_isel_egraph_combine(&mut mfunc, ctx.function_analyses);
 
         let abi = AbiLoweringPass::new();
         let (mfunc, effect) = abi.run(mfunc, ctx)?;

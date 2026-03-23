@@ -45,7 +45,7 @@ impl<'a> RegisterAllocator<'a> {
     }
 
     /// 执行寄存器分配
-    pub fn allocate(&mut self, mfunc: &mut MachineFunction, call_conv: veloc_ir::CallConv) {
+    pub fn allocate<S>(&mut self, mfunc: &mut MachineFunction<S>, call_conv: veloc_ir::CallConv) {
         // 1. 计算活跃区间
         let intervals = self.compute_live_intervals(mfunc);
         let preserved_regs = CallConv::from(call_conv).preserved_regs(self.target.desc().arch);
@@ -77,7 +77,7 @@ impl<'a> RegisterAllocator<'a> {
     }
 
     /// 计算活跃区间
-    fn compute_live_intervals(&self, mfunc: &MachineFunction) -> Vec<LiveInterval> {
+    fn compute_live_intervals<S>(&self, mfunc: &MachineFunction<S>) -> Vec<LiveInterval> {
         let mut intervals: BTreeMap<Reg, LiveInterval> = BTreeMap::new();
         let mut inst_idx: u32 = 0;
 
@@ -127,12 +127,12 @@ impl<'a> RegisterAllocator<'a> {
         result
     }
 
-    fn get_vreg_class(&self, vreg: Reg, mfunc: &MachineFunction) -> RegClass {
-        let ty = mfunc.vreg_data(vreg).ty;
-        self.target.desc().reg_class_for_type(&ty)
+    fn get_vreg_class<S>(&self, vreg: Reg, mfunc: &MachineFunction<S>) -> RegClass {
+        let data = mfunc.vreg_data(vreg);
+        self.target.desc().reg_class_for_vreg(&data.ty, data.bank)
     }
 
-    fn collect_call_positions(&self, mfunc: &MachineFunction) -> Vec<u32> {
+    fn collect_call_positions<S>(&self, mfunc: &MachineFunction<S>) -> Vec<u32> {
         let mut positions = Vec::new();
         let mut inst_idx = 0;
 
@@ -193,7 +193,7 @@ impl<'a> RegisterAllocator<'a> {
     }
 
     /// 将虚拟寄存器溢出到栈
-    fn spill_vreg(&mut self, vreg: Reg, mfunc: &mut MachineFunction) {
+    fn spill_vreg<S>(&mut self, vreg: Reg, mfunc: &mut MachineFunction<S>) {
         let ty = mfunc.vreg_data(vreg).ty;
         let size = self.target.desc().data_layout.type_size(&ty);
         let align = self.target.desc().data_layout.type_align(&ty);
@@ -212,7 +212,7 @@ impl<'a> RegisterAllocator<'a> {
     }
 
     /// 重写指令，替换虚拟寄存器
-    fn rewrite_instructions(&self, mfunc: &mut MachineFunction) {
+    fn rewrite_instructions<S>(&self, mfunc: &mut MachineFunction<S>) {
         let num_blocks = mfunc.num_blocks();
         for block_idx in 0..num_blocks {
             mfunc
@@ -230,10 +230,13 @@ impl<'a> RegisterAllocator<'a> {
                                 if let Some(&preg) = self.allocation.get(vreg) {
                                     *operand = MachineOperand::Use(preg);
                                 } else if let Some(&slot) = self.spilled.get(vreg) {
-                                    let ty = cursor.mfunc().vreg_data(*vreg).ty;
+                                    let vreg_data = cursor.mfunc().vreg_data(*vreg);
+                                    let ty = vreg_data.ty;
+                                    let class =
+                                        self.target.desc().reg_class_for_vreg(&ty, vreg_data.bank);
                                     let scratch = self.ensure_scratch_reg(
                                         *vreg,
-                                        ty,
+                                        class,
                                         &mut scratch_bindings,
                                         &mut used_gpr_scratch,
                                         &mut used_fpr_scratch,
@@ -251,10 +254,13 @@ impl<'a> RegisterAllocator<'a> {
                                 if let Some(&preg) = self.allocation.get(&vreg) {
                                     *operand = MachineOperand::Def(Writable(preg));
                                 } else if let Some(&slot) = self.spilled.get(&vreg) {
-                                    let ty = cursor.mfunc().vreg_data(vreg).ty;
+                                    let vreg_data = cursor.mfunc().vreg_data(vreg);
+                                    let ty = vreg_data.ty;
+                                    let class =
+                                        self.target.desc().reg_class_for_vreg(&ty, vreg_data.bank);
                                     let scratch = self.ensure_scratch_reg(
                                         vreg,
-                                        ty,
+                                        class,
                                         &mut scratch_bindings,
                                         &mut used_gpr_scratch,
                                         &mut used_fpr_scratch,
@@ -268,10 +274,13 @@ impl<'a> RegisterAllocator<'a> {
                                 if let Some(&preg) = self.allocation.get(&vreg) {
                                     *operand = MachineOperand::TiedDefUse(Writable(preg));
                                 } else if let Some(&slot) = self.spilled.get(&vreg) {
-                                    let ty = cursor.mfunc().vreg_data(vreg).ty;
+                                    let vreg_data = cursor.mfunc().vreg_data(vreg);
+                                    let ty = vreg_data.ty;
+                                    let class =
+                                        self.target.desc().reg_class_for_vreg(&ty, vreg_data.bank);
                                     let scratch = self.ensure_scratch_reg(
                                         vreg,
-                                        ty,
+                                        class,
                                         &mut scratch_bindings,
                                         &mut used_gpr_scratch,
                                         &mut used_fpr_scratch,
@@ -316,7 +325,7 @@ impl<'a> RegisterAllocator<'a> {
     fn ensure_scratch_reg(
         &self,
         vreg: Reg,
-        ty: Type,
+        class: RegClass,
         bindings: &mut Vec<(Reg, Reg)>,
         used_gpr_scratch: &mut usize,
         used_fpr_scratch: &mut usize,
@@ -325,7 +334,7 @@ impl<'a> RegisterAllocator<'a> {
             return *scratch;
         }
 
-        let scratch = match self.target.desc().reg_class_for_type(&ty) {
+        let scratch = match class {
             RegClass::GPR => {
                 let scratch = match *used_gpr_scratch {
                     0 => Reg::new_preg(10),
@@ -354,9 +363,9 @@ impl<'a> RegisterAllocator<'a> {
         scratch
     }
 
-    fn build_stack_load(
+    fn build_stack_load<S>(
         &self,
-        mfunc: &MachineFunction,
+        mfunc: &MachineFunction<S>,
         slot: StackSlot,
         dst: Reg,
         ty: Type,
@@ -374,9 +383,9 @@ impl<'a> RegisterAllocator<'a> {
         )
     }
 
-    fn build_stack_store(
+    fn build_stack_store<S>(
         &self,
-        mfunc: &MachineFunction,
+        mfunc: &MachineFunction<S>,
         slot: StackSlot,
         src: Reg,
         ty: Type,

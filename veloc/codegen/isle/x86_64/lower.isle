@@ -910,6 +910,23 @@ do
     (cost 1))
 end
 
+for (cmp, src_ty, cc, setcc) in
+  X86Ucomiss, FPR32, B, X86Setb
+  X86Ucomiss, FPR32, A, X86Seta
+  X86Ucomiss, FPR32, BE, X86Setbe
+  X86Ucomiss, FPR32, AE, X86Setae
+  X86Ucomisd, FPR64, B, X86Setb
+  X86Ucomisd, FPR64, A, X86Seta
+  X86Ucomisd, FPR64, BE, X86Setbe
+  X86Ucomisd, FPR64, AE, X86Setae
+do
+(select-rule
+    (match (schema FCmp G_FCMP (dst (BOOL $dst)) (lhs ({{src_ty}} $x)) (rhs ({{src_ty}} $y)) (cc {{cc}}) @n))
+    (emit (seq ({{cmp}} $x $y) ({{setcc}} $dst) (X86Movzx8to32 $dst $dst)))
+    (covers (@n))
+    (cost 1))
+end
+
 for (test, src_ty) in
   X86Test32, GPR32Like
   X86Test64, GPR64Like

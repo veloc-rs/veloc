@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::pipeline::stages::PreIselPrepared;
 use crate::pipeline::{FunctionPass, FunctionPassContext, PassEffect, StageTransformPass};
-use crate::target::arch::{OperandConstraintStage, TargetLowering};
+use crate::target::arch::TargetLowering;
 
 pub struct PreIselPass<'a> {
     lowering: &'a dyn TargetLowering,
@@ -34,10 +34,7 @@ impl<'a> StageTransformPass<PreIselPrepared, PreIselPrepared> for PreIselPass<'a
             Self::apply_effect(effect, ctx);
         }
 
-        let pass = crate::passes::constraints::OperandConstraintPass::new(
-            self.lowering,
-            OperandConstraintStage::PreSelect,
-        );
+        let pass = crate::passes::constraints::PreSelectOperandConstraintPass::new(self.lowering);
         let effect = FunctionPass::run(&pass, &mut mfunc, ctx)?;
         Self::apply_effect(effect, ctx);
 

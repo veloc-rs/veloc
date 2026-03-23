@@ -8,15 +8,49 @@ use veloc_ir::Type;
 pub enum RegisterBank {
     GPR,
     FPR,
+    VR,
+    PR,
+    Special,
+}
+
+/// 寄存器库分辨策略。
+///
+/// `TypeDerived` 适合 bank 主要由值类型决定的目标；
+/// `GlobalHints` 适合需要借助操作数 hint 与 copy 传播的目标；
+/// `Disabled` 则表示当前目标不依赖显式 bank 标注。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterBankSelectMode {
+    Disabled,
+    TypeDerived,
+    GlobalHints,
 }
 
 pub trait TargetRegBankSelect: Send + Sync {
+    fn regbank_select_mode(&self) -> RegisterBankSelectMode {
+        RegisterBankSelectMode::TypeDerived
+    }
+
+    fn default_bank_for_type(&self, ty: Type) -> RegisterBank {
+        if ty.is_predicate() {
+            RegisterBank::PR
+        } else if ty.is_vector() {
+            RegisterBank::VR
+        } else if ty.is_float() {
+            RegisterBank::FPR
+        } else {
+            RegisterBank::GPR
+        }
+    }
+
     fn suggest_bank(
         &self,
         opcode: crate::mir::GenericOpcode,
         index: usize,
         ty: Type,
-    ) -> Option<RegisterBank>;
+    ) -> Option<RegisterBank> {
+        let _ = (opcode, index, ty);
+        None
+    }
 }
 
 pub struct RegisterBankSelector;
@@ -26,9 +60,37 @@ impl RegisterBankSelector {
         Self
     }
 
-    pub fn select(&self, mfunc: &mut MachineFunction, tm: &dyn TargetMachine) {
+    pub fn select<S>(&self, mfunc: &mut MachineFunction<S>, tm: &dyn TargetMachine) -> bool {
         let rb_select = tm.target_regbank_select();
+        match rb_select.regbank_select_mode() {
+            RegisterBankSelectMode::Disabled => false,
+            RegisterBankSelectMode::TypeDerived => self.assign_derived_banks(mfunc, rb_select),
+            RegisterBankSelectMode::GlobalHints => self.assign_hint_banks(mfunc, rb_select),
+        }
+    }
 
+    fn assign_derived_banks<S>(
+        &self,
+        mfunc: &mut MachineFunction<S>,
+        rb_select: &dyn TargetRegBankSelect,
+    ) -> bool {
+        let mut changed = false;
+        for i in 0..mfunc.vregs.len() {
+            let vreg = crate::mir::VReg::from_u32(i as u32);
+            let data = &mut mfunc.vregs[vreg];
+            if data.bank.is_none() {
+                data.bank = Some(rb_select.default_bank_for_type(data.ty));
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn assign_hint_banks<S>(
+        &self,
+        mfunc: &mut MachineFunction<S>,
+        rb_select: &dyn TargetRegBankSelect,
+    ) -> bool {
         let mut updates = Vec::new();
         for block in &mfunc.blocks {
             for &inst_id in &block.insts {
@@ -43,7 +105,7 @@ impl RegisterBankSelector {
                         };
                         if let Some(r) = reg {
                             if r.is_vreg() {
-                                let ty = mfunc.vreg_data(r).ty.clone();
+                                let ty = mfunc.vreg_data(r).ty;
                                 if let Some(bank) = rb_select.suggest_bank(opcode, op_idx, ty) {
                                     updates.push((r, bank));
                                 }
@@ -53,8 +115,9 @@ impl RegisterBankSelector {
                 }
             }
         }
+        let mut any_change = false;
         for (r, bank) in updates {
-            mfunc.vreg_data_mut(r).bank = Some(bank);
+            any_change |= assign_bank(mfunc, r, bank);
         }
 
         let mut changed = true;
@@ -85,8 +148,9 @@ impl RegisterBankSelector {
                 }
             }
             for (r, bank) in local_updates {
-                mfunc.vreg_data_mut(r).bank = Some(bank);
-                changed = true;
+                let updated = assign_bank(mfunc, r, bank);
+                changed |= updated;
+                any_change |= updated;
             }
         }
 
@@ -94,12 +158,30 @@ impl RegisterBankSelector {
             let vreg = crate::mir::VReg::from_u32(i as u32);
             let data = &mut mfunc.vregs[vreg];
             if data.bank.is_none() {
-                if data.ty.is_float() || data.ty.is_vector() {
-                    data.bank = Some(RegisterBank::FPR);
-                } else {
-                    data.bank = Some(RegisterBank::GPR);
-                }
+                data.bank = Some(rb_select.default_bank_for_type(data.ty));
+                any_change = true;
             }
         }
+
+        any_change
     }
+}
+
+fn assign_bank<S>(
+    mfunc: &mut MachineFunction<S>,
+    reg: crate::mir::Reg,
+    bank: RegisterBank,
+) -> bool {
+    let data = mfunc.vreg_data_mut(reg);
+    if data.bank == Some(bank) {
+        return false;
+    }
+
+    if data.bank.is_none() {
+        data.bank = Some(bank);
+        return true;
+    }
+
+    // `GlobalHints` 仍是启发式传播器，不在这里覆盖已经稳定的 bank 结论。
+    false
 }

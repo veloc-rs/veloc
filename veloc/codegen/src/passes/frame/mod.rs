@@ -26,12 +26,9 @@ impl<'a> StageTransformPass<RegAllocated, PrologueEpilogueInserted> for FrameFin
         crate::mir::MachineFunction<PrologueEpilogueInserted>,
         PassEffect,
     )> {
-        self.lowering.finalize_stack_frame(
-            mfunc.as_untyped_mut(),
-            CallConv::from(ctx.func_sig.call_conv),
-        );
         self.lowering
-            .insert_prologue_epilogue(mfunc.as_untyped_mut());
+            .finalize_stack_frame(&mut mfunc, CallConv::from(ctx.func_sig.call_conv));
+        self.lowering.insert_prologue_epilogue(&mut mfunc);
         Ok((
             mfunc.into_stage(),
             PassEffect::new(ChangeSet::BLOCK_LAYOUT | ChangeSet::STACK_FRAME),

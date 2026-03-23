@@ -3,9 +3,10 @@
 //! MachineModule 是 MIR 层级的顶级容器，包含模块级共享资源、符号表和函数集合。
 
 use super::{MachineFunction, SymbolTable};
+use crate::pipeline::stages::RawMir;
 use alloc::vec::Vec;
-use cranelift_entity::PrimaryMap;
 use cranelift_entity::entity_impl;
+use cranelift_entity::PrimaryMap;
 
 /// 机器函数标识符
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -19,7 +20,7 @@ pub struct MachineModule {
     /// 模块级符号表（跨函数共享）
     pub symbols: SymbolTable,
     /// 包含的机器函数
-    pub functions: PrimaryMap<MachineFuncId, MachineFunction>,
+    pub functions: PrimaryMap<MachineFuncId, MachineFunction<RawMir>>,
     /// 函数顺序（保持与 IR 一致或优化后的顺序）
     pub func_order: Vec<MachineFuncId>,
     /// 模块级全局常量/数据（可选扩展）
@@ -38,7 +39,7 @@ impl MachineModule {
     }
 
     /// 添加一个机器函数
-    pub fn add_function(&mut self, func: MachineFunction) -> MachineFuncId {
+    pub fn add_function(&mut self, func: MachineFunction<RawMir>) -> MachineFuncId {
         let id = self.functions.push(func);
         self.func_order.push(id);
         id

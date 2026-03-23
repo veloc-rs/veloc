@@ -9,7 +9,7 @@ pub mod lowering;
 pub use emitter::X86_64CodeEmitter;
 pub use lowering::X86_64Lowering;
 
-use crate::regalloc::regbank_select::TargetRegBankSelect;
+use crate::regalloc::regbank_select::{RegisterBank, TargetRegBankSelect};
 use crate::target::arch::{
     CpuDescription, DataLayout, RegClass, RegClassInfo, RegisterFile, SpecialRegs, TargetConfig,
     TargetDescription, TargetEmitter, TargetLowering, TargetMachine,
@@ -48,11 +48,13 @@ const X86_64_FPR_ALLOCATABLE: &[crate::mir::Reg] = &[
 const X86_64_REG_CLASSES: &[RegClassInfo] = &[
     RegClassInfo {
         kind: RegClass::GPR,
+        bank: RegisterBank::GPR,
         members: isle::REGCLASS_GPR64,
         allocatable: X86_64_GPR_ALLOCATABLE,
     },
     RegClassInfo {
         kind: RegClass::FPR,
+        bank: RegisterBank::FPR,
         members: isle::REGCLASS_FPR128,
         allocatable: X86_64_FPR_ALLOCATABLE,
     },

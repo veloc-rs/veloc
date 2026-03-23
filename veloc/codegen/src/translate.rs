@@ -8,6 +8,7 @@ use crate::mir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
     MachineBlock, MachineFunction, MachineInst, MachineModule, MachineOpcode, MachineOperand, Reg,
 };
+use crate::pipeline::stages::RawMir;
 use alloc::format;
 use hashbrown::HashMap;
 use veloc_ir::{Function, InstructionData, Module, Opcode, Value};
@@ -21,7 +22,7 @@ pub struct IRTranslator<'a> {
 struct TranslationContext<'a> {
     func: &'a Function,
     mmodule: &'a mut MachineModule,
-    mfunc: MachineFunction,
+    mfunc: MachineFunction<RawMir>,
     value_map: HashMap<Value, Reg>,
 }
 
@@ -88,11 +89,11 @@ impl<'a> IRTranslator<'a> {
         &self,
         func: &Function,
         mmodule: &mut MachineModule,
-    ) -> Result<MachineFunction> {
+    ) -> Result<MachineFunction<RawMir>> {
         let mut ctx = TranslationContext {
             func,
             mmodule,
-            mfunc: MachineFunction::new(func.name.clone()),
+            mfunc: MachineFunction::<RawMir>::new(func.name.clone()),
             value_map: HashMap::new(),
         };
 

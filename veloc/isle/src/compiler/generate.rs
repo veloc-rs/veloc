@@ -586,7 +586,7 @@ impl TargetInst {{
         &self,
         emitter: &mut crate::Emitter,
         inst: &MachineInst,
-        mfunc: &crate::mir::MachineFunction,
+        mfunc: &crate::mir::MachineFunction<crate::pipeline::stages::PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {{
         match self {{"#
     )
@@ -863,7 +863,7 @@ pub(crate) fn generate_abi_descriptors(
     writeln!(output, "\n/// ABI descriptors generated from `def-abi`.").unwrap();
 
     for abi in abis {
-        let prefix = sanitize_ident(&format!("ABI_{}", abi.name));
+        let prefix = sanitize_ident(&format!("ABI_{}", abi.name)).to_ascii_uppercase();
         let args_name = format!("{}_ARGS", prefix);
         let returns_name = format!("{}_RETURNS", prefix);
         let preserved_name = format!("{}_PRESERVED", prefix);

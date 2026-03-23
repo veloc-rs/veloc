@@ -7,6 +7,7 @@ use crate::mir::{
     GenericOpcode, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg,
     UseDefChain, Writable,
 };
+use crate::pipeline::stages::AllowsUnbankedVRegAlloc;
 use crate::pipeline::FunctionAnalysisCtx;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -175,8 +176,8 @@ fn generic_binary_of_opcode(inst: &MachineInst, opcode: GenericOpcode) -> Option
     Some((def, lhs, rhs))
 }
 
-fn add_tree_from_reg(
-    mfunc: &MachineFunction,
+fn add_tree_from_reg<S>(
+    mfunc: &MachineFunction<S>,
     use_def: &UseDefChain,
     block_set: &HashSet<InstId>,
     parent_inst: InstId,
@@ -210,8 +211,8 @@ fn add_tree_from_reg(
     expr.add(AssocExpr::Symbol(sym.into()))
 }
 
-fn build_rewrite_plan(
-    mfunc: &MachineFunction,
+fn build_rewrite_plan<S>(
+    mfunc: &MachineFunction<S>,
     use_def: &UseDefChain,
     block_set: &HashSet<InstId>,
     root: InstId,
@@ -287,8 +288,8 @@ fn build_rewrite_plan(
     })
 }
 
-fn apply_rewrite_plan(
-    mfunc: &mut MachineFunction,
+fn apply_rewrite_plan<S: AllowsUnbankedVRegAlloc>(
+    mfunc: &mut MachineFunction<S>,
     new_insts: &mut Vec<InstId>,
     plan: &RewritePlan,
 ) -> bool {
@@ -317,8 +318,8 @@ fn apply_rewrite_plan(
     true
 }
 
-pub(crate) fn run_generic_pre_isel_egraph_combine(
-    mfunc: &mut MachineFunction,
+pub(crate) fn run_generic_pre_isel_egraph_combine<S: AllowsUnbankedVRegAlloc>(
+    mfunc: &mut MachineFunction<S>,
     analyses: &mut FunctionAnalysisCtx,
 ) -> usize {
     let mut total_changed = 0usize;
@@ -340,8 +341,8 @@ pub(crate) fn run_generic_pre_isel_egraph_combine(
     total_changed
 }
 
-fn rewrite_block_assoc_commutative_trees_with_use_def(
-    mfunc: &mut MachineFunction,
+fn rewrite_block_assoc_commutative_trees_with_use_def<S: AllowsUnbankedVRegAlloc>(
+    mfunc: &mut MachineFunction<S>,
     block_idx: usize,
     use_def: &UseDefChain,
 ) -> usize {
@@ -409,11 +410,12 @@ mod tests {
         GenericOpcode, MachineBlock, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
         Writable,
     };
+    use crate::pipeline::stages::RawMir;
     use crate::pipeline::FunctionAnalysisCtx;
     use veloc_ir::{Block, Type};
 
-    fn new_test_function() -> MachineFunction {
-        let mut mfunc = MachineFunction::new("test".into());
+    fn new_test_function() -> MachineFunction<RawMir> {
+        let mut mfunc = MachineFunction::<RawMir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         mfunc
     }
