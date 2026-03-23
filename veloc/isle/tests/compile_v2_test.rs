@@ -25,12 +25,12 @@ fn compile_select_rule_v2_generates_target_inst_and_match_arm() {
 #[test]
 fn compile_for_block_syntax_expands_table_rows() {
     let input = r#"
-        @for reg_name
+        for (reg_name) in
           R10
           R11
-        @do
+        do
         (def-reg {{reg_name}} (size 64) (hw-enc 10))
-        @end
+        end
     "#;
 
     let output = compile(input, "x86_64").expect("compile should succeed");
@@ -40,19 +40,117 @@ fn compile_for_block_syntax_expands_table_rows() {
 }
 
 #[test]
-fn compile_rewrite_rule_generates_rewrite_function() {
+fn compile_for_block_syntax_expands_multi_column_rows() {
     let input = r#"
-        (rewrite-rule
-          (match (schema BinaryReg G_ADD (dst (GPR64 $dst)) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
-          (replace (G_ADD $rhs $lhs))
-          (cost 1)
-          (priority 1))
+        for (reg_name, size, enc) in
+          RAX, 64, 0
+          RBX, 64, 3
+        do
+        (def-reg {{reg_name}} (size {{size}}) (hw-enc {{enc}}))
+        end
     "#;
 
     let output = compile(input, "x86_64").expect("compile should succeed");
 
-    assert!(output.contains("pub fn rewrite_instructions"));
-    assert!(output.contains("RewriteResult::Keep"));
+    assert!(output.contains("REG_RAX"));
+    assert!(output.contains("REG_RBX"));
+}
+
+#[test]
+fn compile_for_block_syntax_supports_nested_blocks() {
+    let input = r#"
+        for (outer) in
+          RAX
+          RBX
+        do
+        for (inner) in
+          8
+          16
+        do
+        (def-reg {{outer}}_{{inner}} (size {{inner}}) (hw-enc 0))
+        end
+        end
+    "#;
+
+    let output = compile(input, "x86_64").expect("compile should succeed");
+
+    assert!(output.contains("REG_RAX_8"));
+    assert!(output.contains("REG_RAX_16"));
+    assert!(output.contains("REG_RBX_8"));
+    assert!(output.contains("REG_RBX_16"));
+}
+
+#[test]
+fn compile_for_block_placeholder_replacement_is_explicit() {
+    let input = r#"
+        for (reg) in
+          RAX
+        do
+        (def-abi TestAbi
+          (arch X86_64)
+          (stack (align 16))
+          (classifier target_reg))
+        (def-reg {{reg}}_alias (size 64) (hw-enc 0))
+        end
+    "#;
+
+    let output = compile(input, "x86_64").expect("compile should succeed");
+
+    assert!(output.contains("classifier: Some(\"target_reg\")"));
+    assert!(output.contains("REG_RAX_alias"));
+}
+
+#[test]
+fn compile_for_block_missing_do_reports_error() {
+    let input = r#"
+        for (reg, size) in
+          RAX, 64
+        end
+    "#;
+
+    let err = compile(input, "x86_64").expect_err("compile should reject missing do");
+    assert!(err.contains("missing `do` for `for` block"));
+}
+
+#[test]
+fn compile_for_block_missing_end_reports_error() {
+    let input = r#"
+        for (reg) in
+          RAX
+        do
+        (def-reg {{reg}} (size 64) (hw-enc 0))
+    "#;
+
+    let err = compile(input, "x86_64").expect_err("compile should reject missing end");
+    assert!(err.contains("missing `end` for `for` block"));
+}
+
+#[test]
+fn compile_for_block_tuple_arity_mismatch_reports_error() {
+    let input = r#"
+        for (reg, size) in
+          RAX
+        do
+        (def-reg {{reg}} (size {{size}}) (hw-enc 0))
+        end
+    "#;
+
+    let err = compile(input, "x86_64").expect_err("compile should reject bad tuple arity");
+    assert!(err.contains("invalid `for` tuple"));
+}
+
+#[test]
+fn compile_for_block_old_syntax_is_rejected() {
+    let input = r#"
+        for reg
+          RAX
+        do
+        (def-reg {{reg}} (size 64) (hw-enc 0))
+        end
+    "#;
+
+    let err = compile(input, "x86_64").expect_err("compile should reject old syntax");
+    assert!(err.contains("expected `for (vars) in`"));
 }
 
 #[test]
