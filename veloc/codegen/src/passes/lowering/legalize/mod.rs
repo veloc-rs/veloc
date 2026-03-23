@@ -23,7 +23,6 @@ impl<'a> Legalizer<'a> {
             mfunc
                 .rewrite_block(i, |cursor| {
                     let inst_id = cursor.current_inst_id();
-                    // 如果指令已无效，跳过
                     if cursor.current_inst().is_invalid() {
                         cursor.remove_current();
                         return Ok::<(), ()>(());
@@ -48,11 +47,12 @@ impl<'a> Legalizer<'a> {
                                 cursor.keep_current();
                             }
                             LegalizeAction::Lower => {
-                                // 调用架构特定的合法化逻辑
-                                // 后端负责将原指令或新生成的指令推入输出序列
                                 let mut output = Vec::new();
-                                self.lowering
-                                    .legalize_instruction(inst_id, cursor.mfunc_mut(), &mut output);
+                                self.lowering.legalize_instruction(
+                                    inst_id,
+                                    cursor.mfunc_mut(),
+                                    &mut output,
+                                );
                                 cursor.remove_current();
                                 for new_id in output {
                                     cursor.emit_existing_before(new_id);
@@ -67,12 +67,10 @@ impl<'a> Legalizer<'a> {
                                 }
                             }
                             _ => {
-                                // 其他 action 暂不处理，保留原指令
                                 cursor.keep_current();
                             }
                         }
                     } else {
-                        // 非通用指令直通
                         cursor.keep_current();
                     }
 
@@ -107,7 +105,6 @@ impl<'a> Legalizer<'a> {
         _opcode: &GenericOpcode,
         _types: Vec<Type>,
     ) {
-        // 简化实现：示例性的逻辑
     }
 
     fn narrow_scalar(
@@ -117,7 +114,6 @@ impl<'a> Legalizer<'a> {
         _opcode: &GenericOpcode,
         _types: Vec<Type>,
     ) {
-        // 简化实现
     }
 
     fn lower(
@@ -127,6 +123,5 @@ impl<'a> Legalizer<'a> {
         _opcode: &GenericOpcode,
         _types: Vec<Type>,
     ) {
-        // 简化实现
     }
 }

@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::mir::MachineOperand;
 use crate::mir::{MachineFunction, MachineInst, Reg, Writable};
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{
@@ -25,56 +26,70 @@ impl<'a> OperandConstraintPass<'a> {
         let num_blocks = mfunc.num_blocks();
         let mut changed = 0usize;
         for block_idx in 0..num_blocks {
-            mfunc.rewrite_block(block_idx, |cursor| -> Result<()> {
-                if cursor.current_inst().is_invalid() {
-                    cursor.remove_current();
-                    changed += 1;
-                    return Ok(());
-                }
-
-                let mut inst = cursor.current_inst_clone();
-                let constraints = self.lowering.operand_constraints(
-                    self.stage,
-                    &inst,
-                    cursor.mfunc().as_untyped(),
-                );
-                if constraints.is_empty() {
-                    cursor.keep_current();
-                    return Ok(());
-                }
-
-                let mut inst_changed = false;
-                for tied in &constraints.tied_operands {
-                    if self.apply_tied_constraint(
-                        cursor,
-                        &mut inst,
-                        tied,
-                        &constraints.commute_operand_pairs,
-                    )? {
-                        inst_changed = true;
-                    }
-                }
-
-                for fixed in &constraints.fixed_uses {
-                    if self.apply_fixed_use_constraint(cursor, &mut inst, fixed)? {
-                        inst_changed = true;
-                    }
-                }
-
-                if !inst_changed {
-                    cursor.keep_current();
-                } else {
-                    changed += 1;
-                    cursor.replace_current(inst);
-                }
-                Ok(())
-            })?;
+            mfunc.rewrite_block(block_idx, |cursor| self.rewrite_block(cursor, &mut changed))?;
         }
 
         Ok(changed)
     }
 
-    fn apply_tied_constraint<S>(
+    fn rewrite_block<S>(
+        &self,
+        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        changed: &mut usize,
+    ) -> Result<()> {
+        if cursor.current_inst().is_invalid() {
+            cursor.remove_current();
+            *changed += 1;
+            return Ok(());
+        }
+
+        let mut inst = cursor.current_inst_clone();
+        let constraints =
+            self.lowering
+                .operand_constraints(self.stage, &inst, cursor.mfunc().as_untyped());
+        if constraints.is_empty() {
+            cursor.keep_current();
+            return Ok(());
+        }
+
+        let inst_changed = self.apply_constraints(cursor, &mut inst, &constraints)?;
+        if inst_changed {
+            *changed += 1;
+            cursor.replace_current(inst);
+        } else {
+            cursor.keep_current();
+        }
+        Ok(())
+    }
+
+    fn apply_constraints<S>(
+        &self,
+        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        inst: &mut MachineInst,
+        constraints: &crate::target::arch::OperandConstraintSet,
+    ) -> Result<bool> {
+        let mut changed = false;
+        for tied in &constraints.tied_operands {
+            if self.apply_tied_operand_constraint(
+                cursor,
+                inst,
+                tied,
+                &constraints.commute_operand_pairs,
+            )? {
+                changed = true;
+            }
+        }
+
+        for fixed in &constraints.fixed_uses {
+            if self.apply_fixed_use_constraint(cursor, inst, fixed)? {
+                changed = true;
+            }
+        }
+
+        Ok(changed)
+    }
+
+    fn apply_tied_operand_constraint<S>(
         &self,
         cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
         inst: &mut MachineInst,
@@ -155,8 +170,6 @@ impl<'a, S> FunctionPass<S> for OperandConstraintPass<'a> {
         }
     }
 }
-
-use crate::mir::MachineOperand;
 
 fn operand_reg(operand: &MachineOperand) -> Option<Reg> {
     match operand {
@@ -259,8 +272,9 @@ fn try_commute_tied_use(
 #[cfg(test)]
 mod tests {
     use super::OperandConstraintPass;
-    use crate::isel::{LegalizerInfo, SelectResult, SelectionContext};
+    use crate::isel::{SelectResult, SelectionContext};
     use crate::mir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
+    use crate::passes::lowering::LegalizerInfo;
     use crate::target::arch::{
         FixedUseConstraint, OperandConstraintSet, OperandConstraintStage, TargetLowering,
         TiedOperandConstraint,

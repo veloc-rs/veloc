@@ -3,7 +3,7 @@ use crate::mir::{
     BrTableInfo, BrTableTarget, GenericOpcode, InstExtra, MachineFunction, MachineInst, Reg,
     Writable,
 };
-use crate::pipeline::stages::{BlockParamsLowered, RawMir};
+use crate::pipeline::stages::{LegalizedMir, RawMir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use alloc::vec::Vec;
 use hashbrown::HashMap;
@@ -351,7 +351,7 @@ impl BlockParamLoweringPass {
     }
 }
 
-impl StageTransformPass<RawMir, BlockParamsLowered> for BlockParamLoweringPass {
+impl StageTransformPass<RawMir, LegalizedMir> for BlockParamLoweringPass {
     fn name(&self) -> &'static str {
         "edge-args-lowered"
     }
@@ -360,7 +360,7 @@ impl StageTransformPass<RawMir, BlockParamsLowered> for BlockParamLoweringPass {
         &self,
         mut mfunc: MachineFunction<RawMir>,
         _ctx: &mut FunctionPassContext<'_, RawMir>,
-    ) -> Result<(MachineFunction<BlockParamsLowered>, PassEffect)> {
+    ) -> Result<(MachineFunction<LegalizedMir>, PassEffect)> {
         Self::run(&mut mfunc)?;
         Ok((
             mfunc.into_stage(),

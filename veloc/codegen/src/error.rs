@@ -18,17 +18,29 @@ pub enum Error {
 
 #[derive(Debug, Clone)]
 pub enum CodegenError {
-    TargetMachineUnavailable { arch: TargetArch },
-    MissingEmittedCode { function: String },
-    UnexpectedRelocation { symbol: String },
-    TranslatedFunctionNotFound { function: String },
+    TargetMachineUnavailable {
+        arch: TargetArch,
+    },
+    MissingEmittedCode {
+        function: String,
+    },
+    UnexpectedRelocation {
+        symbol: String,
+    },
+    TranslatedFunctionNotFound {
+        function: String,
+    },
     ObjectFileRelocation {
         function: String,
         symbol: String,
         message: String,
     },
-    ObjectFileWrite { message: String },
-    UnsupportedObjectFormat { arch: TargetArch },
+    ObjectFileWrite {
+        message: String,
+    },
+    UnsupportedObjectFormat {
+        arch: TargetArch,
+    },
     Message(String),
 }
 
@@ -149,7 +161,11 @@ impl fmt::Display for CodegenError {
                 arch.name()
             ),
             CodegenError::MissingEmittedCode { function } => {
-                write!(f, "missing emitted code for compiled function `{}`", function)
+                write!(
+                    f,
+                    "missing emitted code for compiled function `{}`",
+                    function
+                )
             }
             CodegenError::UnexpectedRelocation { symbol } => write!(
                 f,

@@ -5,13 +5,14 @@
 
 pub use crate::isel::SelectResult;
 use crate::mir::{
-    CallCallee, GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode,
-    MachineOperand, Reg, VReg, Writable,
+    GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
+    Reg, VReg, Writable,
 };
+use crate::passes::lowering::LegalizerInfo;
 use crate::regalloc::regbank_select::RegisterBank;
 use crate::target::arch::{
-    CallConv as TargetCallConv, CpuDescription, LegalizerInfo, LoweringContext,
-    OperandConstraintSet, OperandConstraintStage, SelectionContext, TargetArch, TargetLowering,
+    CallConv as TargetCallConv, CpuDescription, LoweringContext, OperandConstraintSet,
+    OperandConstraintStage, SelectionContext, TargetArch, TargetLowering,
 };
 use crate::target::x86_64::isle::{TargetInst, generated};
 use alloc::vec;
@@ -595,76 +596,6 @@ impl X86_64Lowering {
         ));
     }
 
-    fn select_icmp(
-        &self,
-        ctx: &mut SelectionContext,
-        inst: &MachineInst,
-    ) -> Result<SelectResult, crate::error::Error> {
-        let icmp = inst.as_icmp().unwrap_or_else(|err| {
-            panic!("invalid icmp instruction during x86_64 selection: {}", err);
-        });
-        let rhs = icmp.rhs.unwrap_or_else(|| {
-            panic!("x86_64 icmp selection expects a rhs operand");
-        });
-        let cc = icmp.cc.unwrap_or_else(|| {
-            panic!("x86_64 icmp selection expects an integer condition code");
-        });
-        let lhs_ty = if icmp.lhs.is_vreg() {
-            ctx.mfunc.vreg_data(icmp.lhs).ty
-        } else {
-            Type::I64
-        };
-        let cmp_opcode = if lhs_ty.size_bytes() <= 4 {
-            TargetInst::X86Cmp32
-        } else {
-            TargetInst::X86Cmp64
-        };
-        let cond_byte = ctx.mfunc.alloc_vreg(Type::I8);
-
-        ctx.selected
-            .push(build_target_binary_uses(cmp_opcode, icmp.lhs, rhs));
-        ctx.selected.push(build_target_inst(
-            setcc_opcode_for_intcc(cc),
-            smallvec![MachineOperand::Def(Writable(cond_byte))],
-        ));
-        ctx.selected.push(build_target_unary(
-            TargetInst::X86Movzx8to32,
-            Writable(icmp.dst),
-            cond_byte,
-        ));
-
-        Ok(SelectResult::Replace)
-    }
-
-    fn select_ieqz(
-        &self,
-        ctx: &mut SelectionContext,
-        inst: &MachineInst,
-    ) -> Result<SelectResult, crate::error::Error> {
-        let unary = inst.as_unary_reg()?;
-        let ty = ctx.mfunc.vreg_data(unary.src).ty;
-        let test_opcode = if ty.size_bytes() <= 4 {
-            TargetInst::X86Test32
-        } else {
-            TargetInst::X86Test64
-        };
-        let cond_byte = ctx.mfunc.alloc_vreg(Type::I8);
-
-        ctx.selected
-            .push(build_target_binary_uses(test_opcode, unary.src, unary.src));
-        ctx.selected.push(build_target_inst(
-            TargetInst::X86Sete,
-            smallvec![MachineOperand::Def(Writable(cond_byte))],
-        ));
-        ctx.selected.push(build_target_unary(
-            TargetInst::X86Movzx8to32,
-            Writable(unary.dst),
-            cond_byte,
-        ));
-
-        Ok(SelectResult::Replace)
-    }
-
     fn select_fcmp(
         &self,
         ctx: &mut SelectionContext,
@@ -856,109 +787,6 @@ impl X86_64Lowering {
         }
 
         Ok(SelectResult::Replace)
-    }
-
-    fn select_tied_int_binary(
-        &self,
-        ctx: &mut SelectionContext,
-        inst: &MachineInst,
-        opcode: GenericOpcode,
-    ) -> Result<SelectResult, crate::error::Error> {
-        let binary = inst.as_binary_reg().unwrap_or_else(|err| {
-            panic!(
-                "invalid tied integer binary instruction during x86_64 selection: {}",
-                err
-            );
-        });
-        if binary.dst != binary.lhs {
-            panic!(
-                "expected tied lhs after operand-constraint preparation, got dst={:?}, lhs={:?}",
-                binary.dst, binary.lhs
-            );
-        }
-
-        let dst_ty = if binary.dst.is_vreg() {
-            ctx.mfunc.vreg_data(binary.dst).ty
-        } else {
-            Type::I64
-        };
-
-        let target_opcode = match (opcode, dst_ty) {
-            (GenericOpcode::G_ADD, Type::I32) => TargetInst::X86Add32,
-            (GenericOpcode::G_SUB, Type::I32) => TargetInst::X86Sub32,
-            (GenericOpcode::G_MUL, Type::I32) => TargetInst::X86IMul32,
-            (GenericOpcode::G_AND, Type::I32) => TargetInst::X86And32,
-            (GenericOpcode::G_OR, Type::I32) => TargetInst::X86Or32,
-            (GenericOpcode::G_XOR, Type::I32) => TargetInst::X86Xor32,
-            (GenericOpcode::G_ADD, Type::I64 | Type::PTR) => TargetInst::X86Add64,
-            (GenericOpcode::G_SUB, Type::I64) => TargetInst::X86Sub64,
-            (GenericOpcode::G_MUL, Type::I64) => TargetInst::X86IMul64,
-            (GenericOpcode::G_AND, Type::I64) => TargetInst::X86And64,
-            (GenericOpcode::G_OR, Type::I64) => TargetInst::X86Or64,
-            (GenericOpcode::G_XOR, Type::I64) => TargetInst::X86Xor64,
-            (GenericOpcode::G_PTR_ADD, Type::I64 | Type::PTR) => TargetInst::X86Add64,
-            _ => {
-                panic!(
-                    "unsupported x86 integer binary selection for opcode {:?} with type {:?}",
-                    opcode, dst_ty
-                );
-            }
-        };
-
-        ctx.selected.push(build_target_tied_binary(
-            target_opcode,
-            Writable(binary.dst),
-            binary.rhs,
-        ));
-        Ok(SelectResult::InPlace)
-    }
-
-    fn select_tied_shift(
-        &self,
-        ctx: &mut SelectionContext,
-        inst: &MachineInst,
-        opcode: GenericOpcode,
-    ) -> Result<SelectResult, crate::error::Error> {
-        let binary = inst.as_binary_reg().unwrap_or_else(|err| {
-            panic!(
-                "invalid tied shift instruction during x86_64 selection: {}",
-                err
-            );
-        });
-        if binary.dst != binary.lhs {
-            panic!(
-                "expected tied lhs after operand-constraint preparation, got dst={:?}, lhs={:?}",
-                binary.dst, binary.lhs
-            );
-        }
-
-        let dst_ty = if binary.dst.is_vreg() {
-            ctx.mfunc.vreg_data(binary.dst).ty
-        } else {
-            Type::I64
-        };
-
-        let target_opcode = match (opcode, dst_ty) {
-            (GenericOpcode::G_SHL, Type::I32) => TargetInst::X86Shl32Cl,
-            (GenericOpcode::G_LSHR, Type::I32) => TargetInst::X86Shr32Cl,
-            (GenericOpcode::G_ASHR, Type::I32) => TargetInst::X86Sar32Cl,
-            (GenericOpcode::G_SHL, Type::I64) => TargetInst::X86Shl64Cl,
-            (GenericOpcode::G_LSHR, Type::I64) => TargetInst::X86Shr64Cl,
-            (GenericOpcode::G_ASHR, Type::I64) => TargetInst::X86Sar64Cl,
-            _ => {
-                panic!(
-                    "unsupported x86 shift selection for opcode {:?} with type {:?}",
-                    opcode, dst_ty
-                );
-            }
-        };
-
-        ctx.selected.push(build_target_tied_binary(
-            target_opcode,
-            Writable(binary.dst),
-            binary.rhs,
-        ));
-        Ok(SelectResult::InPlace)
     }
 }
 
@@ -1249,44 +1077,6 @@ impl TargetLowering for X86_64Lowering {
 
         if let MachineOpcode::Generic(_opcode) = inst.opcode {
             match _opcode {
-                GenericOpcode::G_CALL => {
-                    let call = ctx.mfunc.as_call(ctx.inst_id);
-                    return Ok(match call.shape.callee {
-                        CallCallee::Direct(callee) => {
-                            ctx.selected.push(MachineInst::build_generic(
-                                MachineOpcode::Target(TargetInst::X86Call.as_u32()),
-                                smallvec![MachineOperand::Global(callee)],
-                            ));
-                            SelectResult::Replace
-                        }
-                        CallCallee::Indirect(callee_reg) => {
-                            ctx.selected.push(MachineInst::build_generic(
-                                MachineOpcode::Target(TargetInst::X86CallReg.as_u32()),
-                                smallvec![MachineOperand::Use(callee_reg)],
-                            ));
-                            SelectResult::Replace
-                        }
-                    });
-                }
-                GenericOpcode::G_CALLIND => {
-                    let call = ctx.mfunc.as_call(ctx.inst_id);
-                    return Ok(match call.shape.callee {
-                        CallCallee::Direct(callee) => {
-                            ctx.selected.push(MachineInst::build_generic(
-                                MachineOpcode::Target(TargetInst::X86Call.as_u32()),
-                                smallvec![MachineOperand::Global(callee)],
-                            ));
-                            SelectResult::Replace
-                        }
-                        CallCallee::Indirect(callee_reg) => {
-                            ctx.selected.push(MachineInst::build_generic(
-                                MachineOpcode::Target(TargetInst::X86CallReg.as_u32()),
-                                smallvec![MachineOperand::Use(callee_reg)],
-                            ));
-                            SelectResult::Replace
-                        }
-                    });
-                }
                 GenericOpcode::G_FCMP => return self.select_fcmp(ctx, &inst),
                 GenericOpcode::G_SELECT => {
                     let select = inst.as_select().unwrap_or_else(|err| {
@@ -1298,7 +1088,9 @@ impl TargetLowering for X86_64Lowering {
                     let dst_ty = if select.dst.is_vreg() {
                         ctx.mfunc.vreg_data(select.dst).ty
                     } else {
-                        panic!("x86_64 select destination must be a virtual register before regalloc",);
+                        panic!(
+                            "x86_64 select destination must be a virtual register before regalloc",
+                        );
                     };
                     if dst_ty.is_float() {
                         return self.select_select(ctx, &inst);

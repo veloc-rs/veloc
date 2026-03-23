@@ -6,7 +6,6 @@ extern crate std;
 pub mod backend;
 pub mod driver;
 pub mod error;
-pub mod isel;
 pub mod isle {
     pub use crate::target::x86_64::isle::*;
 }
@@ -16,12 +15,15 @@ pub mod passes;
 pub mod pipeline;
 pub mod regalloc;
 pub mod target;
+pub mod translate;
+
+pub use crate::passes::isel;
 
 pub use backend::Backend;
 pub use driver::{CodegenOptions, CodegenPipeline, CodegenStats};
 pub use target::arch::{
-    CallConv, RewriteResult, SelectResult, TargetArch, TargetConfig, TargetEmitter,
-    TargetLowering, TargetMachine,
+    CallConv, RewriteResult, SelectResult, TargetArch, TargetConfig, TargetEmitter, TargetLowering,
+    TargetMachine,
 };
 
 /// 根据目标配置创建对应的目标机器

@@ -49,10 +49,10 @@ impl ObjectFileBuilder {
         for relocation in &emitted.relocations {
             let sym_name = &symbols.get(relocation.symbol).name;
             let target_symbol = self.ensure_text_symbol_name(sym_name);
-                self.object
-                    .add_relocation(
-                        self.text_section,
-                        Relocation {
+            self.object
+                .add_relocation(
+                    self.text_section,
+                    Relocation {
                         offset: base_offset + relocation.offset,
                         symbol: target_symbol,
                         addend: relocation.addend,
@@ -60,9 +60,9 @@ impl ObjectFileBuilder {
                             kind: RelocationKind::Relative,
                             encoding: RelocationEncoding::X86Branch,
                             size: 32,
-                            },
                         },
-                    )
+                    },
+                )
                 .map_err(|err| {
                     Error::object_file_relocation_error(
                         func.name.clone(),

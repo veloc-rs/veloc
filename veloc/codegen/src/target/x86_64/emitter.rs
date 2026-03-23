@@ -44,9 +44,11 @@ impl TargetEmitter for X86_64CodeEmitter {
             }
             MachineOpcode::Target(target_inst_code) => {
                 let target = crate::target::x86_64::isle::TargetInst::from_u32(*target_inst_code);
-                target.emit::<Self>(emitter, inst, mfunc).unwrap_or_else(|err| {
-                    panic!("{err} | inst={:?}", inst);
-                });
+                target
+                    .emit::<Self>(emitter, inst, mfunc)
+                    .unwrap_or_else(|err| {
+                        panic!("{err} | inst={:?}", inst);
+                    });
                 Ok(())
             }
         }

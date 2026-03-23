@@ -3,23 +3,22 @@
 //! 提供从 SSA IR 到机器码/目标文件的编译驱动。
 
 use crate::error::{Error, Result};
-use crate::isel::IRTranslator;
 use crate::mir::{MachineFunction, MachineModule};
 use crate::object::ObjectFileBuilder;
 use crate::passes::{
-    AbiLoweringPass, BlockParamLoweringPass, FrameFinalizePass, GenericCombinePass,
-    InstructionSelectionPass, LegalizePass, OperandConstraintPass, PostIselOptimizePass,
-    PrologueEpiloguePass, RegisterAllocationPass, RegisterBankSelectionPass,
+    BlockParamLoweringPass, FrameFinalizePass, InstructionSelectionPass, LegalizePass,
+    PostIselOptimizePass, PreIselPass, RegisterAllocationPass,
 };
 use crate::pipeline::stages::{
-    AbiLowered, BankSelected, BlockParamsLowered, FrameFinalized, LegalizedMir, PostIselOptimized,
-    PreIselPrepared, PrologueEpilogueInserted, RawMir, RegAllocated, SelectedMir,
+    LegalizedMir, PostIselOptimized, PreIselPrepared, PrologueEpilogueInserted, RawMir,
+    RegAllocated, SelectedMir,
 };
 use crate::pipeline::{
     CompiledFunction, CompiledModule, FunctionAnalysisCtx, FunctionPassContext, ModuleAnalysisCtx,
     ModulePassContext, ModulePassPipeline, StagePassPipeline, StageTransformPass,
 };
-use crate::target::arch::{OperandConstraintStage, TargetMachine};
+use crate::target::arch::TargetMachine;
+use crate::translate::IRTranslator;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use veloc_ir::{FuncId, Function, Module};
@@ -264,36 +263,10 @@ impl<'a> CodegenPipeline<'a> {
         );
         let mfunc = self.apply_stage_transform(&BlockParamLoweringPass, mfunc, &mut ctx)?;
 
-        let mut ctx = ctx.into_stage::<BlockParamsLowered>();
-        let mut mfunc =
-            self.apply_stage_transform(&LegalizePass::new(lowering), mfunc, &mut ctx)?;
-
-        let mut post_legalize = StagePassPipeline::<LegalizedMir>::new();
-        for pass in lowering.post_legalize_passes() {
-            post_legalize.add_boxed_pass(pass);
-        }
         let mut ctx = ctx.into_stage::<LegalizedMir>();
-        self.run_stage_pipeline("post-legalize", &post_legalize, &mut mfunc, &mut ctx)?;
-
-        let mfunc = self.apply_stage_transform(&AbiLoweringPass::new(), mfunc, &mut ctx)?;
-        let mut ctx = ctx.into_stage::<AbiLowered>();
-        let mfunc = self.apply_stage_transform(&RegisterBankSelectionPass, mfunc, &mut ctx)?;
-
-        let mut ctx = ctx.into_stage::<BankSelected>();
-        let mfunc = self.apply_stage_transform(&GenericCombinePass::new(), mfunc, &mut ctx)?;
-
-        let mut pre_isel = StagePassPipeline::<PreIselPrepared>::new();
-        for pass in lowering.pre_isel_passes() {
-            pre_isel.add_boxed_pass(pass);
-        }
+        let mfunc = self.apply_stage_transform(&LegalizePass::new(lowering), mfunc, &mut ctx)?;
         let mut ctx = ctx.into_stage::<PreIselPrepared>();
-        let mut mfunc = mfunc;
-        self.run_stage_pipeline("pre-isel", &pre_isel, &mut mfunc, &mut ctx)?;
-        OperandConstraintPass::new(lowering, OperandConstraintStage::PreSelect).run(&mut mfunc)?;
-        ctx.function_analyses.apply(
-            crate::pipeline::ChangeSet::INST_SEMANTICS | crate::pipeline::ChangeSet::INST_OPERANDS,
-        );
-        self.maybe_dump_mfunc("pre-isel-constraints", &mfunc);
+        let mfunc = self.apply_stage_transform(&PreIselPass::new(lowering), mfunc, &mut ctx)?;
 
         let mfunc =
             self.apply_stage_transform(&InstructionSelectionPass::new(lowering), mfunc, &mut ctx)?;
@@ -319,10 +292,7 @@ impl<'a> CodegenPipeline<'a> {
         let mut mfunc = mfunc;
         self.run_stage_pipeline("post-regalloc", &post_regalloc, &mut mfunc, &mut ctx)?;
 
-        let mfunc =
-            self.apply_stage_transform(&FrameFinalizePass::new(lowering), mfunc, &mut ctx)?;
-        let mut ctx = ctx.into_stage::<FrameFinalized>();
-        self.apply_stage_transform(&PrologueEpiloguePass::new(lowering), mfunc, &mut ctx)
+        self.apply_stage_transform(&FrameFinalizePass::new(lowering), mfunc, &mut ctx)
     }
 
     fn run_module_pre_emit_passes(

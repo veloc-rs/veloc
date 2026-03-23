@@ -290,11 +290,21 @@ impl<'a> RegisterAllocator<'a> {
                     }
 
                     for (slot, scratch, ty) in before {
-                        cursor.emit_before(self.build_stack_load(cursor.mfunc(), slot, scratch, ty));
+                        cursor.emit_before(self.build_stack_load(
+                            cursor.mfunc(),
+                            slot,
+                            scratch,
+                            ty,
+                        ));
                     }
                     cursor.replace_current(inst);
                     for (slot, scratch, ty) in after {
-                        cursor.emit_before(self.build_stack_store(cursor.mfunc(), slot, scratch, ty));
+                        cursor.emit_before(self.build_stack_store(
+                            cursor.mfunc(),
+                            slot,
+                            scratch,
+                            ty,
+                        ));
                     }
 
                     Ok::<(), ()>(())

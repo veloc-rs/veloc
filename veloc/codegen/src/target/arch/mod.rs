@@ -6,11 +6,11 @@ mod abi;
 mod callconv;
 mod types;
 
-pub use crate::isel::LegalizerInfo;
+use crate::Emitter;
 pub use crate::mir::ValueId;
 pub use crate::mir::{InstId, MachineFunction, MachineInst, Reg, VReg};
+pub use crate::passes::lowering::LegalizerInfo;
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
-use crate::Emitter;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use veloc_ir::Type;
@@ -147,7 +147,7 @@ pub trait TargetEmitter: Send + Sync {
     }
 }
 
-pub use crate::isel::select::{SelectResult, SelectionContext};
+pub use crate::isel::{SelectResult, SelectionContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteResult {

@@ -251,6 +251,18 @@
     (covers (@n))
     (cost 1))
 
+;; 调用
+(select-rule
+    (match (schema Call G_CALL (shape $target) @n))
+    (emit (X86Call $target))
+    (covers (@n))
+    (cost 1))
+(select-rule
+    (match (schema Call G_CALLIND (shape $target) @n))
+    (emit (X86CallReg $target))
+    (covers (@n))
+    (cost 1))
+
 ;; 算术运算
 (select-rule
     (match (schema BinaryReg G_ADD (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
@@ -869,7 +881,7 @@
     (cost 1))
 
 ;; 比较/条件化选择
-@for cmp,src_ty,cc,setcc
+for (cmp, src_ty, cc, setcc) in
   X86Cmp32, GPR32Like, E, X86Sete
   X86Cmp32, GPR32Like, NE, X86Setne
   X86Cmp32, GPR32Like, L, X86Setl
@@ -890,30 +902,30 @@
   X86Cmp64, GPR64Like, BE, X86Setbe
   X86Cmp64, GPR64Like, A, X86Seta
   X86Cmp64, GPR64Like, AE, X86Setae
-@do
+do
 (select-rule
     (match (schema ICmp G_ICMP (dst (BOOL $dst)) (lhs ({{src_ty}} $x)) (rhs ({{src_ty}} $y)) (cc {{cc}}) @n))
     (emit (seq ({{cmp}} $x $y) ({{setcc}} $dst) (X86Movzx8to32 $dst $dst)))
     (covers (@n))
     (cost 1))
-@end
+end
 
-@for test,src_ty
+for (test, src_ty) in
   X86Test32, GPR32Like
   X86Test64, GPR64Like
-@do
+do
 (select-rule
     (match (schema UnaryReg G_IEQZ (dst (BOOL $dst)) (src ({{src_ty}} $src)) @n))
     (emit (seq ({{test}} $src $src) (X86Sete $dst) (X86Movzx8to32 $dst $dst)))
     (covers (@n))
     (cost 1))
-@end
+end
 
-@for test,movimm,movop,xorop,subop,andop,ty
+for (test, movimm, movop, xorop, subop, andop, ty) in
   X86Test32, X86Mov32Imm, X86Mov32, X86Xor32, X86Sub32, X86And32, BOOL
   X86Test32, X86Mov32Imm, X86Mov32, X86Xor32, X86Sub32, X86And32, GPR32Like
   X86Test64, X86Mov64Imm32, X86Mov64, X86Xor64, X86Sub64, X86And64, GPR64Like
-@do
+do
 (select-rule
     (match (schema Select G_SELECT (dst ({{ty}} $dst)) (cond (BOOL $cond)) (v1 ({{ty}} $v1)) (v2 ({{ty}} $v2)) @n))
     (emit (seq
@@ -928,7 +940,7 @@
         ({{xorop}} $dst $v2)))
     (covers (@n))
     (cost 1))
-@end
+end
 
 ;; 
 (select-rule

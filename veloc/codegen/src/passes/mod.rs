@@ -1,17 +1,14 @@
-pub mod abi;
-pub mod block_params;
+pub mod constraints;
 pub mod frame;
 pub mod isel;
-pub mod legalize;
-pub mod operand_constraints;
+pub mod lowering;
+pub mod postisel;
+pub mod preisel;
 pub mod regalloc;
-pub mod regbank;
 
-pub use abi::AbiLoweringPass;
-pub use block_params::BlockParamLoweringPass;
-pub use frame::{FrameFinalizePass, PrologueEpiloguePass};
-pub use isel::{GenericCombinePass, InstructionSelectionPass, PostIselOptimizePass};
-pub use legalize::LegalizePass;
-pub use operand_constraints::OperandConstraintPass;
+pub use frame::FrameFinalizePass;
+pub use isel::InstructionSelectionPass;
+pub use lowering::{BlockParamLoweringPass, LegalizePass};
+pub use postisel::PostIselOptimizePass;
+pub use preisel::PreIselPass;
 pub use regalloc::RegisterAllocationPass;
-pub use regbank::RegisterBankSelectionPass;

@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::mir::{
     GenericOpcode, MachineFunction, MachineInst, MachineOpcode, Reg, StackSlot, Writable,
 };
-use crate::pipeline::stages::{AbiLowered, LegalizedMir};
+use crate::pipeline::stages::LegalizedMir;
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
 use alloc::vec::Vec;
@@ -219,7 +219,7 @@ fn lower_return<S>(
     pre
 }
 
-impl StageTransformPass<LegalizedMir, AbiLowered> for AbiLoweringPass {
+impl StageTransformPass<LegalizedMir, LegalizedMir> for AbiLoweringPass {
     fn name(&self) -> &'static str {
         "abi-lowered"
     }
@@ -228,7 +228,7 @@ impl StageTransformPass<LegalizedMir, AbiLowered> for AbiLoweringPass {
         &self,
         mut mfunc: MachineFunction<LegalizedMir>,
         ctx: &mut FunctionPassContext<'_, LegalizedMir>,
-    ) -> Result<(MachineFunction<AbiLowered>, PassEffect)> {
+    ) -> Result<(MachineFunction<LegalizedMir>, PassEffect)> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
         mfunc.stack_frame.arg_size = plan.stack_arg_bytes;
         lower_formal_arguments(ctx.target, mfunc.as_untyped_mut(), &plan);

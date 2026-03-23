@@ -501,13 +501,11 @@ impl<S> MachineFunction<S> {
             Some(InstExtra::Call(info)) => info,
             Some(_) => panic!(
                 "instruction {:?} in `{}` does not carry call info payload",
-                inst_id,
-                self.name
+                inst_id, self.name
             ),
             None => panic!(
                 "call instruction {:?} in `{}` is missing call info payload",
-                inst_id,
-                self.name
+                inst_id, self.name
             ),
         }
     }

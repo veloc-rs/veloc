@@ -1,9 +1,9 @@
+use super::Reg;
 use super::abi::{
     AbiAssignment, AbiClassifierEntry, AbiDescriptor, AbiLocation, AbiPart, AbiStackBase,
     AbiValueClass, CallConvPlan,
 };
 use super::types::TargetArch;
-use super::Reg;
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -391,7 +391,7 @@ fn aarch64_aapcs_descriptor() -> &'static AbiDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use super::{x86_64_rax, x86_64_rdx, CallConv, Reg, TargetArch};
+    use super::{CallConv, Reg, TargetArch, x86_64_rax, x86_64_rdx};
     use crate::target::arch::{AbiLocation, AbiStackBase};
     use alloc::vec;
     use veloc_ir::Type;
