@@ -1,15 +1,15 @@
 use crate::error::Result;
 use crate::pipeline::stages::{PrologueEpilogueInserted, RegAllocated};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
-use crate::target::arch::CallConv;
+use crate::target::arch::{CallConv, TargetFrameLowering};
 
 pub struct FrameFinalizePass<'a> {
-    lowering: &'a dyn crate::target::arch::TargetLowering,
+    frame_lowering: &'a dyn TargetFrameLowering,
 }
 
 impl<'a> FrameFinalizePass<'a> {
-    pub fn new(lowering: &'a dyn crate::target::arch::TargetLowering) -> Self {
-        Self { lowering }
+    pub fn new(frame_lowering: &'a dyn TargetFrameLowering) -> Self {
+        Self { frame_lowering }
     }
 }
 
@@ -26,9 +26,9 @@ impl<'a> StageTransformPass<RegAllocated, PrologueEpilogueInserted> for FrameFin
         crate::mir::MachineFunction<PrologueEpilogueInserted>,
         PassEffect,
     )> {
-        self.lowering
+        self.frame_lowering
             .finalize_stack_frame(&mut mfunc, CallConv::from(ctx.func_sig.call_conv));
-        self.lowering.insert_prologue_epilogue(&mut mfunc);
+        self.frame_lowering.insert_prologue_epilogue(&mut mfunc);
         Ok((
             mfunc.into_stage(),
             PassEffect::new(ChangeSet::BLOCK_LAYOUT | ChangeSet::STACK_FRAME),

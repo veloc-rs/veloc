@@ -251,7 +251,12 @@ impl<'a> CodegenPipeline<'a> {
         function_analyses: &mut FunctionAnalysisCtx,
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<MachineFunction<PrologueEpilogueInserted>> {
-        let lowering = self.target.target_lowering();
+        let legalizer = self.target.target_legalizer();
+        let selector = self.target.target_selector();
+        let operand_lowering = self.target.target_operand_lowering();
+        let target_post_isel = self.target.target_post_isel();
+        let frame_lowering = self.target.target_frame_lowering();
+        let pass_config = self.target.target_pass_config();
 
         let mut ctx = FunctionPassContext::<RawMir>::new(
             self.target,
@@ -264,35 +269,51 @@ impl<'a> CodegenPipeline<'a> {
         let mfunc = self.apply_stage_transform(&BlockParamLoweringPass, mfunc, &mut ctx)?;
 
         let mut ctx = ctx.into_stage::<LegalizedMir>();
-        let mfunc = self.apply_stage_transform(&LegalizePass::new(lowering), mfunc, &mut ctx)?;
+        let mfunc = self.apply_stage_transform(
+            &LegalizePass::new(legalizer, pass_config),
+            mfunc,
+            &mut ctx,
+        )?;
         let mut ctx = ctx.into_stage::<PreIselPrepared>();
-        let mfunc = self.apply_stage_transform(&PreIselPass::new(lowering), mfunc, &mut ctx)?;
+        let mfunc = self.apply_stage_transform(
+            &PreIselPass::new(operand_lowering, pass_config),
+            mfunc,
+            &mut ctx,
+        )?;
 
         let mfunc =
-            self.apply_stage_transform(&InstructionSelectionPass::new(lowering), mfunc, &mut ctx)?;
-        let mut post_isel = StagePassPipeline::<SelectedMir>::new();
-        for pass in lowering.post_isel_passes() {
-            post_isel.add_boxed_pass(pass);
+            self.apply_stage_transform(&InstructionSelectionPass::new(selector), mfunc, &mut ctx)?;
+        let mut post_isel_pipeline = StagePassPipeline::<SelectedMir>::new();
+        for pass in pass_config.post_isel_passes() {
+            post_isel_pipeline.add_boxed_pass(pass);
         }
         let mut ctx = ctx.into_stage::<SelectedMir>();
         let mut mfunc = mfunc;
-        self.run_stage_pipeline("post-isel-target", &post_isel, &mut mfunc, &mut ctx)?;
+        self.run_stage_pipeline(
+            "post-isel-target",
+            &post_isel_pipeline,
+            &mut mfunc,
+            &mut ctx,
+        )?;
 
-        let mfunc =
-            self.apply_stage_transform(&PostIselOptimizePass::new(lowering), mfunc, &mut ctx)?;
+        let mfunc = self.apply_stage_transform(
+            &PostIselOptimizePass::new(target_post_isel, operand_lowering),
+            mfunc,
+            &mut ctx,
+        )?;
         let mut ctx = ctx.into_stage::<PostIselOptimized>();
         let mfunc =
             self.apply_stage_transform(&RegisterAllocationPass::new(self.target), mfunc, &mut ctx)?;
 
         let mut post_regalloc = StagePassPipeline::<RegAllocated>::new();
-        for pass in lowering.post_regalloc_passes() {
+        for pass in pass_config.post_regalloc_passes() {
             post_regalloc.add_boxed_pass(pass);
         }
         let mut ctx = ctx.into_stage::<RegAllocated>();
         let mut mfunc = mfunc;
         self.run_stage_pipeline("post-regalloc", &post_regalloc, &mut mfunc, &mut ctx)?;
 
-        self.apply_stage_transform(&FrameFinalizePass::new(lowering), mfunc, &mut ctx)
+        self.apply_stage_transform(&FrameFinalizePass::new(frame_lowering), mfunc, &mut ctx)
     }
 
     fn run_module_pre_emit_passes(
@@ -302,7 +323,7 @@ impl<'a> CodegenPipeline<'a> {
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<()> {
         let mut pipeline = ModulePassPipeline::new();
-        for pass in self.target.target_lowering().pre_emit_module_passes() {
+        for pass in self.target.target_pass_config().pre_emit_module_passes() {
             pipeline.add_boxed_pass(pass);
         }
         let mut ctx = ModulePassContext::new(self.target, &self.options, stats, module_analyses);
@@ -317,7 +338,7 @@ impl<'a> CodegenPipeline<'a> {
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<()> {
         let mut pipeline = ModulePassPipeline::new();
-        for pass in self.target.target_lowering().post_emit_module_passes() {
+        for pass in self.target.target_pass_config().post_emit_module_passes() {
             pipeline.add_boxed_pass(pass);
         }
         let mut ctx = ModulePassContext::new(self.target, &self.options, stats, module_analyses);

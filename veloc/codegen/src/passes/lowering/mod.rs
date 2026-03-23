@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::mir::MachineFunction;
 use crate::pipeline::stages::{LegalizedMir, PreIselPrepared};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
-use crate::target::arch::TargetLowering;
+use crate::target::arch::{TargetLegalizer, TargetPassConfig};
 
 use self::generic_egraph::run_generic_pre_isel_egraph_combine;
 
@@ -18,12 +18,16 @@ pub use legalize::{LegalizeAction, LegalizeResult, Legalizer};
 pub use regbank::RegisterBankSelectionPass;
 
 pub struct LegalizePass<'a> {
-    lowering: &'a dyn TargetLowering,
+    legalizer: &'a dyn TargetLegalizer,
+    pass_config: &'a dyn TargetPassConfig,
 }
 
 impl<'a> LegalizePass<'a> {
-    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
-        Self { lowering }
+    pub fn new(legalizer: &'a dyn TargetLegalizer, pass_config: &'a dyn TargetPassConfig) -> Self {
+        Self {
+            legalizer,
+            pass_config,
+        }
     }
 
     fn apply_effect(effect: PassEffect, ctx: &mut FunctionPassContext<'_, LegalizedMir>) {
@@ -43,7 +47,7 @@ impl<'a> StageTransformPass<LegalizedMir, PreIselPrepared> for LegalizePass<'a> 
         mut mfunc: MachineFunction<LegalizedMir>,
         ctx: &mut FunctionPassContext<'_, LegalizedMir>,
     ) -> Result<(MachineFunction<PreIselPrepared>, PassEffect)> {
-        let legalizer = Legalizer::new(self.lowering);
+        let legalizer = Legalizer::new(self.legalizer);
         legalizer.legalize(&mut mfunc)?;
         ctx.stats.legalized_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
         Self::apply_effect(
@@ -51,7 +55,7 @@ impl<'a> StageTransformPass<LegalizedMir, PreIselPrepared> for LegalizePass<'a> 
             ctx,
         );
 
-        for pass in self.lowering.post_legalize_passes() {
+        for pass in self.pass_config.post_legalize_passes() {
             let effect = pass.run(&mut mfunc, ctx)?;
             Self::apply_effect(effect, ctx);
         }

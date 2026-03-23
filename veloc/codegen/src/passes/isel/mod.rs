@@ -4,14 +4,15 @@ pub use self::select::*;
 use crate::error::Result;
 use crate::pipeline::stages::{PreIselPrepared, SelectedMir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
+use crate::target::arch::TargetInstructionSelector;
 
 pub struct InstructionSelectionPass<'a> {
-    lowering: &'a dyn crate::target::arch::TargetLowering,
+    selector: &'a dyn TargetInstructionSelector,
 }
 
 impl<'a> InstructionSelectionPass<'a> {
-    pub fn new(lowering: &'a dyn crate::target::arch::TargetLowering) -> Self {
-        Self { lowering }
+    pub fn new(selector: &'a dyn TargetInstructionSelector) -> Self {
+        Self { selector }
     }
 }
 
@@ -25,7 +26,7 @@ impl<'a> StageTransformPass<PreIselPrepared, SelectedMir> for InstructionSelecti
         mut mfunc: crate::mir::MachineFunction<PreIselPrepared>,
         ctx: &mut FunctionPassContext<'_, PreIselPrepared>,
     ) -> Result<(crate::mir::MachineFunction<SelectedMir>, PassEffect)> {
-        select::InstructionSelector::new(self.lowering).select(&mut mfunc)?;
+        select::InstructionSelector::new(self.selector).select(&mut mfunc)?;
         ctx.stats.selected_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
         Ok((
             mfunc.into_stage(),

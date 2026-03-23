@@ -110,8 +110,23 @@ pub trait TargetMachine {
     /// 获取当前 target instance 的完整描述。
     fn desc(&self) -> &TargetDescription;
 
-    /// 获取 Lowering 实现（如 Legalizer 规则、指令选择）
-    fn target_lowering(&self) -> &dyn TargetLowering;
+    /// 获取 legalize 组件。
+    fn target_legalizer(&self) -> &dyn TargetLegalizer;
+
+    /// 获取指令选择组件。
+    fn target_selector(&self) -> &dyn TargetInstructionSelector;
+
+    /// 获取操作数/寄存器拷贝 lowering 组件。
+    fn target_operand_lowering(&self) -> &dyn TargetOperandLowering;
+
+    /// 获取 post-isel 组件。
+    fn target_post_isel(&self) -> &dyn TargetPostIsel;
+
+    /// 获取栈帧和序言/尾声 lowering 组件。
+    fn target_frame_lowering(&self) -> &dyn TargetFrameLowering;
+
+    /// 获取 target-specific pipeline 配置。
+    fn target_pass_config(&self) -> &dyn TargetPassConfig;
 
     /// 获取汇编器/发射器
     fn target_emitter(&self) -> &dyn crate::target::arch::TargetEmitter;
@@ -265,18 +280,7 @@ impl TargetInstMetadata {
     }
 }
 
-pub trait TargetLowering: Send + Sync {
-    /// 完成目标相关的栈帧布局。
-    ///
-    /// 在寄存器分配之后、插入序言/尾声之前调用，用于计算 callee-saved 保存区、
-    /// 最终栈大小和 ABI 对齐等目标相关信息。
-    fn finalize_stack_frame(
-        &self,
-        _mfunc: &mut MachineFunction<RegAllocated>,
-        _call_conv: CallConv,
-    ) {
-    }
-
+pub trait TargetLegalizer: Send + Sync {
     /// 查询一条 generic MIR 指令在当前目标上的 legalize 动作。
     fn legalize_action(
         &self,
@@ -285,10 +289,6 @@ pub trait TargetLowering: Send + Sync {
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
         Ok(None)
     }
-
-    /// 插入函数序言和尾声 (Prologue/Epilogue Insertion)
-    /// 在寄存器分配之后调用，将序言/尾声指令插入到 MIR 中。
-    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>);
 
     /// 应用 target-specific legalization。
     ///
@@ -299,7 +299,9 @@ pub trait TargetLowering: Send + Sync {
         inst_id: crate::mir::InstId,
         mfunc: &mut crate::mir::MachineFunction<LegalizedMir>,
     ) -> Result<LegalizeResult, crate::error::Error>;
+}
 
+pub trait TargetInstructionSelector: Send + Sync {
     /// 选择目标指令
     ///
     /// 返回选择结果，由指令选择驱动器统一处理。
@@ -307,13 +309,9 @@ pub trait TargetLowering: Send + Sync {
         &self,
         ctx: &mut SelectionContext<'_, PreIselPrepared>,
     ) -> Result<SelectResult, crate::error::Error>;
+}
 
-    /// 指令融合（可选）
-    ///
-    /// 在指令选择后、寄存器分配前执行。
-    /// 默认不做任何处理，目标后端可以按需覆写。
-    fn combine_instructions(&self, _mfunc: &mut MachineFunction<SelectedMir>) {}
-
+pub trait TargetOperandLowering: Send + Sync {
     /// 查询一条 pre-isel 指令需要满足的操作数约束。
     ///
     /// 适合处理会在 isel 后丢失语义信息的 destructive/two-address 约束。
@@ -359,7 +357,34 @@ pub trait TargetLowering: Send + Sync {
     ) -> Result<MachineInst, crate::error::Error> {
         panic!("target does not support post-select register copy construction",)
     }
+}
 
+pub trait TargetPostIsel: Send + Sync {
+    /// 指令融合（可选）
+    ///
+    /// 在指令选择后、寄存器分配前执行。
+    /// 默认不做任何处理，目标后端可以按需覆写。
+    fn combine_instructions(&self, _mfunc: &mut MachineFunction<SelectedMir>) {}
+}
+
+pub trait TargetFrameLowering: Send + Sync {
+    /// 完成目标相关的栈帧布局。
+    ///
+    /// 在寄存器分配之后、插入序言/尾声之前调用，用于计算 callee-saved 保存区、
+    /// 最终栈大小和 ABI 对齐等目标相关信息。
+    fn finalize_stack_frame(
+        &self,
+        _mfunc: &mut MachineFunction<RegAllocated>,
+        _call_conv: CallConv,
+    ) {
+    }
+
+    /// 插入函数序言和尾声 (Prologue/Epilogue Insertion)
+    /// 在寄存器分配之后调用，将序言/尾声指令插入到 MIR 中。
+    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>);
+}
+
+pub trait TargetPassConfig: Send + Sync {
     /// 在合法化之后追加 target 自定义 function passes。
     fn post_legalize_passes(
         &self,

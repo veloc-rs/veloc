@@ -3,12 +3,12 @@ use crate::mir::MachineOperand;
 use crate::mir::{MachineFunction, MachineInst, Reg, Writable};
 use crate::pipeline::stages::{PreIselPrepared, SelectedMir};
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{FixedUseConstraint, TargetLowering, TiedOperandConstraint};
+use crate::target::arch::{FixedUseConstraint, TargetOperandLowering, TiedOperandConstraint};
 use core::marker::PhantomData;
 
 /// 在给定阶段应用 target/指令元数据定义的操作数约束。
 struct OperandConstraintPassImpl<'a, Stage> {
-    lowering: &'a dyn TargetLowering,
+    lowering: &'a dyn TargetOperandLowering,
     _stage: PhantomData<Stage>,
 }
 
@@ -16,13 +16,13 @@ trait ConstraintStageSpec {
     type Stage;
 
     fn operand_constraints(
-        lowering: &dyn TargetLowering,
+        lowering: &dyn TargetOperandLowering,
         inst: &MachineInst,
         mfunc: &MachineFunction<Self::Stage>,
     ) -> crate::target::arch::OperandConstraintSet;
 
     fn build_copy(
-        lowering: &dyn TargetLowering,
+        lowering: &dyn TargetOperandLowering,
         mfunc: &MachineFunction<Self::Stage>,
         dst: Reg,
         src: Reg,
@@ -36,7 +36,7 @@ impl ConstraintStageSpec for PreSelectConstraintStage {
     type Stage = PreIselPrepared;
 
     fn operand_constraints(
-        lowering: &dyn TargetLowering,
+        lowering: &dyn TargetOperandLowering,
         inst: &MachineInst,
         mfunc: &MachineFunction<PreIselPrepared>,
     ) -> crate::target::arch::OperandConstraintSet {
@@ -44,7 +44,7 @@ impl ConstraintStageSpec for PreSelectConstraintStage {
     }
 
     fn build_copy(
-        lowering: &dyn TargetLowering,
+        lowering: &dyn TargetOperandLowering,
         mfunc: &MachineFunction<PreIselPrepared>,
         dst: Reg,
         src: Reg,
@@ -68,7 +68,7 @@ impl ConstraintStageSpec for PostSelectConstraintStage {
     type Stage = SelectedMir;
 
     fn operand_constraints(
-        lowering: &dyn TargetLowering,
+        lowering: &dyn TargetOperandLowering,
         inst: &MachineInst,
         mfunc: &MachineFunction<SelectedMir>,
     ) -> crate::target::arch::OperandConstraintSet {
@@ -76,7 +76,7 @@ impl ConstraintStageSpec for PostSelectConstraintStage {
     }
 
     fn build_copy(
-        lowering: &dyn TargetLowering,
+        lowering: &dyn TargetOperandLowering,
         mfunc: &MachineFunction<SelectedMir>,
         dst: Reg,
         src: Reg,
@@ -96,7 +96,7 @@ impl<'a, Stage> OperandConstraintPassImpl<'a, Stage>
 where
     Stage: ConstraintStageSpec,
 {
-    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
+    pub fn new(lowering: &'a dyn TargetOperandLowering) -> Self {
         Self {
             lowering,
             _stage: PhantomData,
@@ -244,7 +244,7 @@ pub struct PreSelectOperandConstraintPass<'a> {
 }
 
 impl<'a> PreSelectOperandConstraintPass<'a> {
-    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
+    pub fn new(lowering: &'a dyn TargetOperandLowering) -> Self {
         Self {
             inner: OperandConstraintPassImpl::new(lowering),
         }
@@ -274,7 +274,7 @@ pub struct PostSelectOperandConstraintPass<'a> {
 }
 
 impl<'a> PostSelectOperandConstraintPass<'a> {
-    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
+    pub fn new(lowering: &'a dyn TargetOperandLowering) -> Self {
         Self {
             inner: OperandConstraintPassImpl::new(lowering),
         }
@@ -379,11 +379,10 @@ fn try_commute_tied_use(
 #[cfg(test)]
 mod tests {
     use super::PreSelectOperandConstraintPass;
-    use crate::isel::{SelectResult, SelectionContext};
     use crate::mir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
-    use crate::pipeline::stages::{LegalizedMir, PreIselPrepared, RegAllocated};
+    use crate::pipeline::stages::PreIselPrepared;
     use crate::target::arch::{
-        FixedUseConstraint, OperandConstraintSet, TargetLowering, TiedOperandConstraint,
+        FixedUseConstraint, OperandConstraintSet, TargetOperandLowering, TiedOperandConstraint,
     };
     use alloc::vec;
     use alloc::vec::Vec;
@@ -398,31 +397,7 @@ mod tests {
         }
     }
 
-    impl TargetLowering for DummyLowering {
-        fn finalize_stack_frame(
-            &self,
-            _mfunc: &mut MachineFunction<RegAllocated>,
-            _call_conv: crate::target::arch::CallConv,
-        ) {
-        }
-
-        fn insert_prologue_epilogue(&self, _mfunc: &mut MachineFunction<RegAllocated>) {}
-
-        fn legalize_instruction(
-            &self,
-            _inst_id: crate::mir::InstId,
-            _mfunc: &mut MachineFunction<LegalizedMir>,
-        ) -> Result<crate::target::arch::LegalizeResult, crate::error::Error> {
-            unreachable!("legalization is not used in operand constraint tests")
-        }
-
-        fn select_instruction(
-            &self,
-            _ctx: &mut SelectionContext<'_, PreIselPrepared>,
-        ) -> Result<SelectResult, crate::error::Error> {
-            unreachable!("selection is not used in operand constraint tests")
-        }
-
+    impl TargetOperandLowering for DummyLowering {
         fn preselect_operand_constraints(
             &self,
             _inst: &MachineInst,

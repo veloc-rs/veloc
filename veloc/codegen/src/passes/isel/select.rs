@@ -3,11 +3,11 @@
 //! 将通用 MIR 指令转换为目标架构特定指令。
 //!
 //! 这是一个通用的指令选择驱动器，实际的架构特定选择逻辑
-//! 通过 TargetLowering trait 委托给具体的目标后端实现。
+//! 通过 TargetInstructionSelector trait 委托给具体的目标后端实现。
 
 use crate::mir::{BlockRewriteCursor, InstId, MachineFunction, MachineInst};
 use crate::pipeline::stages::PreIselPrepared;
-use crate::target::arch::TargetLowering;
+use crate::target::arch::TargetInstructionSelector;
 use alloc::vec::Vec;
 
 fn format_select_failure_inst<S>(
@@ -138,15 +138,15 @@ fn apply_select_result<'a, S>(
 /// 指令选择器
 ///
 /// 这是 GlobalISel 的核心组件之一，负责驱动指令选择过程。
-/// 实际的选择逻辑委托给 TargetLowering 实现。
+/// 实际的选择逻辑委托给 TargetInstructionSelector 实现。
 pub struct InstructionSelector<'a> {
-    lowering: &'a dyn TargetLowering,
+    target: &'a dyn TargetInstructionSelector,
 }
 
 impl<'a> InstructionSelector<'a> {
     /// 创建新的指令选择器
-    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
-        Self { lowering }
+    pub fn new(target: &'a dyn TargetInstructionSelector) -> Self {
+        Self { target }
     }
 
     /// 对所有基本块执行指令选择
@@ -175,7 +175,7 @@ impl<'a> InstructionSelector<'a> {
                         inst_id,
                         selected: &mut selected,
                     };
-                    match self.lowering.select_instruction(&mut ctx) {
+                    match self.target.select_instruction(&mut ctx) {
                         Ok(result) => result,
                         Err(crate::error::Error::Select(err)) => {
                             return Err(crate::error::Error::select(

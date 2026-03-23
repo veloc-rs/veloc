@@ -7,12 +7,16 @@ pub mod isle;
 pub mod lowering;
 
 pub use emitter::X86_64CodeEmitter;
-pub use lowering::X86_64Lowering;
+pub use lowering::{
+    X86_64FrameLowering, X86_64Legalizer, X86_64OperandLowering, X86_64PassConfig, X86_64PostIsel,
+    X86_64RegBankSelect, X86_64Selector,
+};
 
 use crate::regalloc::regbank_select::{RegisterBank, TargetRegBankSelect};
 use crate::target::arch::{
     CpuDescription, DataLayout, RegClass, RegClassInfo, RegisterFile, SpecialRegs, TargetConfig,
-    TargetDescription, TargetEmitter, TargetLowering, TargetMachine,
+    TargetDescription, TargetEmitter, TargetFrameLowering, TargetInstructionSelector,
+    TargetLegalizer, TargetMachine, TargetOperandLowering, TargetPassConfig, TargetPostIsel,
 };
 
 const X86_64_GPR_ALLOCATABLE: &[crate::mir::Reg] = &[
@@ -78,7 +82,13 @@ const GENERIC_CPU_NAME: &str = "generic";
 pub struct X86_64TargetMachine {
     config: TargetConfig,
     desc: TargetDescription,
-    lowering: X86_64Lowering,
+    legalizer: X86_64Legalizer,
+    selector: X86_64Selector,
+    operand_lowering: X86_64OperandLowering,
+    post_isel: X86_64PostIsel,
+    frame_lowering: X86_64FrameLowering,
+    pass_config: X86_64PassConfig,
+    regbank_select: X86_64RegBankSelect,
     emitter: X86_64CodeEmitter,
 }
 
@@ -95,7 +105,13 @@ impl X86_64TargetMachine {
         Self {
             config,
             desc,
-            lowering: X86_64Lowering::new(cpu),
+            legalizer: X86_64Legalizer::new(cpu),
+            selector: X86_64Selector::new(cpu),
+            operand_lowering: X86_64OperandLowering::new(cpu),
+            post_isel: X86_64PostIsel::new(cpu),
+            frame_lowering: X86_64FrameLowering::new(cpu),
+            pass_config: X86_64PassConfig::new(cpu),
+            regbank_select: X86_64RegBankSelect::new(cpu),
             emitter: X86_64CodeEmitter::new(),
         }
     }
@@ -127,8 +143,28 @@ impl TargetMachine for X86_64TargetMachine {
         &self.desc
     }
 
-    fn target_lowering(&self) -> &dyn TargetLowering {
-        &self.lowering
+    fn target_legalizer(&self) -> &dyn TargetLegalizer {
+        &self.legalizer
+    }
+
+    fn target_selector(&self) -> &dyn TargetInstructionSelector {
+        &self.selector
+    }
+
+    fn target_operand_lowering(&self) -> &dyn TargetOperandLowering {
+        &self.operand_lowering
+    }
+
+    fn target_post_isel(&self) -> &dyn TargetPostIsel {
+        &self.post_isel
+    }
+
+    fn target_frame_lowering(&self) -> &dyn TargetFrameLowering {
+        &self.frame_lowering
+    }
+
+    fn target_pass_config(&self) -> &dyn TargetPassConfig {
+        &self.pass_config
     }
 
     fn target_emitter(&self) -> &dyn TargetEmitter {
@@ -136,6 +172,6 @@ impl TargetMachine for X86_64TargetMachine {
     }
 
     fn target_regbank_select(&self) -> &dyn TargetRegBankSelect {
-        &self.lowering
+        &self.regbank_select
     }
 }

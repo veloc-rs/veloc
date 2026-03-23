@@ -22,8 +22,9 @@ pub use crate::passes::isel;
 pub use backend::Backend;
 pub use driver::{CodegenOptions, CodegenPipeline, CodegenStats};
 pub use target::arch::{
-    CallConv, RewriteResult, SelectResult, TargetArch, TargetConfig, TargetEmitter, TargetLowering,
-    TargetMachine,
+    CallConv, RewriteResult, SelectResult, TargetArch, TargetConfig, TargetEmitter,
+    TargetFrameLowering, TargetInstructionSelector, TargetLegalizer, TargetMachine,
+    TargetOperandLowering, TargetPassConfig, TargetPostIsel,
 };
 
 /// 根据目标配置创建对应的目标机器

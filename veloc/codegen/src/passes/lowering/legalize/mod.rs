@@ -5,15 +5,15 @@ pub use info::*;
 use crate::error::{Error, Result};
 use crate::mir::{GenericOpcode, MachineFunction, MachineInst};
 use crate::pipeline::stages::LegalizedMir;
-use crate::target::arch::TargetLowering;
+use crate::target::arch::TargetLegalizer;
 
 pub struct Legalizer<'a> {
-    lowering: &'a dyn TargetLowering,
+    target: &'a dyn TargetLegalizer,
 }
 
 impl<'a> Legalizer<'a> {
-    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
-        Self { lowering }
+    pub fn new(target: &'a dyn TargetLegalizer) -> Self {
+        Self { target }
     }
 
     pub fn legalize(&self, mfunc: &mut MachineFunction<LegalizedMir>) -> Result<()> {
@@ -34,7 +34,7 @@ impl<'a> Legalizer<'a> {
 
                     let action = {
                         let inst = cursor.current_inst();
-                        self.lowering.legalize_action(inst, cursor.mfunc())?
+                        self.target.legalize_action(inst, cursor.mfunc())?
                     };
 
                     match action {
@@ -51,7 +51,7 @@ impl<'a> Legalizer<'a> {
                         }
                         Some(LegalizeAction::Lower) => {
                             let LegalizeResult::Replace(output) = self
-                                .lowering
+                                .target
                                 .legalize_instruction(inst_id, cursor.mfunc_mut())?;
                             cursor.remove_current();
                             for new_id in output {

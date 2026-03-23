@@ -1,15 +1,22 @@
 use crate::error::Result;
 use crate::pipeline::stages::PreIselPrepared;
 use crate::pipeline::{FunctionPass, FunctionPassContext, PassEffect, StageTransformPass};
-use crate::target::arch::TargetLowering;
+use crate::target::arch::{TargetOperandLowering, TargetPassConfig};
 
 pub struct PreIselPass<'a> {
-    lowering: &'a dyn TargetLowering,
+    operand_lowering: &'a dyn TargetOperandLowering,
+    pass_config: &'a dyn TargetPassConfig,
 }
 
 impl<'a> PreIselPass<'a> {
-    pub fn new(lowering: &'a dyn TargetLowering) -> Self {
-        Self { lowering }
+    pub fn new(
+        operand_lowering: &'a dyn TargetOperandLowering,
+        pass_config: &'a dyn TargetPassConfig,
+    ) -> Self {
+        Self {
+            operand_lowering,
+            pass_config,
+        }
     }
 
     fn apply_effect(effect: PassEffect, ctx: &mut FunctionPassContext<'_, PreIselPrepared>) {
@@ -29,12 +36,13 @@ impl<'a> StageTransformPass<PreIselPrepared, PreIselPrepared> for PreIselPass<'a
         mut mfunc: crate::mir::MachineFunction<PreIselPrepared>,
         ctx: &mut FunctionPassContext<'_, PreIselPrepared>,
     ) -> Result<(crate::mir::MachineFunction<PreIselPrepared>, PassEffect)> {
-        for pass in self.lowering.pre_isel_passes() {
+        for pass in self.pass_config.pre_isel_passes() {
             let effect = pass.run(&mut mfunc, ctx)?;
             Self::apply_effect(effect, ctx);
         }
 
-        let pass = crate::passes::constraints::PreSelectOperandConstraintPass::new(self.lowering);
+        let pass =
+            crate::passes::constraints::PreSelectOperandConstraintPass::new(self.operand_lowering);
         let effect = FunctionPass::run(&pass, &mut mfunc, ctx)?;
         Self::apply_effect(effect, ctx);
 
