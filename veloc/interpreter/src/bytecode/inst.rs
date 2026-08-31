@@ -230,12 +230,6 @@ impl Instruction {
     pub const fn imm_hi32(&self) -> u32 {
         (self.imm64 >> 32) as u32
     }
-
-    /// Pack register counts for call instructions: (num_rets << 16) | num_args
-    #[inline(always)]
-    pub const fn pack_counts(num_rets: u16, num_args: u16) -> u32 {
-        ((num_rets as u32) << 16) | (num_args as u32)
-    }
 }
 
 macro_rules! define_opcodes {
@@ -557,7 +551,6 @@ define_opcodes! {
     F64ConvertI64U { dst: Reg, src: Reg => src1 };
     F32DemoteF64 { dst: Reg, src: Reg => src1 };
     F64PromoteF32 { dst: Reg, src: Reg => src1 };
-    Bitcast { dst: Reg, src: Reg => src1 };
 
     // === Bitwise ===
     I32Clz { dst: Reg, src: Reg => src1 };
@@ -592,8 +585,6 @@ define_opcodes! {
     // Note: Call/CallIndirect/CallIntrinsic layout:
     // - data_offset: offset in regs where ret_regs + arg_regs are stored
     // - num_rets/num_args: encoded in src1/src2/dst slots to avoid memory access
-
-    GlobalAddr { dst: Reg, global_idx: u32 => lo32 };
 
     RegMove { dst: Reg, src: Reg => src1 };
     Unreachable {};

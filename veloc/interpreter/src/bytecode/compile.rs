@@ -1,10 +1,10 @@
 use crate::bytecode::inst::{Instruction, Reg, TypePair, emit};
 use cranelift_entity::SecondaryMap;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, UseDefAnalysis, analyze_liveness};
 use veloc_ir::{
-    Block, BlockCall, DataFlowGraph, FuncId, Function, Inst, InstructionData, Intrinsic, ModuleId,
-    Opcode as IrOpcode, ScalarType, StackSlot, Type, Value, ValueDef, ValueList,
+    Block, BlockCall, FuncId, Function, Inst, InstructionData, Intrinsic, ModuleId,
+    Opcode as IrOpcode, ScalarType, StackSlot, Type, Value, ValueList,
 };
 
 macro_rules! unary_dispatch_op {
@@ -139,13 +139,10 @@ pub struct CompiledFunction {
     pub(crate) data_section: DataSection,
     pub(crate) stack_slots_sizes: Vec<usize>,
     pub(crate) param_indices: Vec<Reg>,
-    pub(crate) ret_indices: Vec<Reg>, // Return value register indices (support multi-value)
     pub(crate) register_count: usize,
-    pub(crate) constant_pool: Vec<Vec<u8>>,
 }
 
 struct ValueMapper<'a> {
-    dfg: &'a DataFlowGraph,
     map: SecondaryMap<Value, Reg>,
     free_registers: Vec<Reg>,
     next_register: u16,
@@ -216,13 +213,11 @@ impl<'a> ValueMapper<'a> {
 
 impl<'a> ValueMapper<'a> {
     fn new(
-        dfg: &'a DataFlowGraph,
         intervals_map: &'a SecondaryMap<Value, LiveInterval>,
         block_params: &'a std::collections::HashSet<Value>,
         fused_values: &'a std::collections::HashSet<Value>,
     ) -> Self {
         Self {
-            dfg,
             map: SecondaryMap::new(),
             free_registers: Vec::new(),
             next_register: 1,
@@ -398,8 +393,6 @@ impl<'a> Compiler<'a> {
     fn emit_binary(&mut self, inst: Inst, opcode: IrOpcode, args: &[Value; 2]) {
         let res = self.func.dfg.first_result(inst).unwrap();
         let ty = self.func.dfg.value_type(res);
-        let pc = self.liveness.inst_pcs[inst];
-
         let mut bin = |imm_f: &dyn Fn(&mut Vec<Instruction>, Reg, Reg, i64),
                        reg_f: &dyn Fn(&mut Vec<Instruction>, Reg, Reg, Reg),
                        commutative: bool| {
@@ -635,7 +628,6 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_icmp(&mut self, inst: Inst, kind: veloc_ir::IntCC, args: &[Value; 2]) {
-        let pc = self.liveness.inst_pcs[inst];
         let lhs = self.mapper.use_val(args[0]);
         let rhs = self.mapper.use_val(args[1]);
         let dst = self
@@ -678,7 +670,6 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_fcmp(&mut self, inst: Inst, kind: veloc_ir::FloatCC, args: &[Value; 2]) {
-        let pc = self.liveness.inst_pcs[inst];
         let lhs = self.mapper.use_val(args[0]);
         let rhs = self.mapper.use_val(args[1]);
         let dst = self
@@ -705,7 +696,6 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_load(&mut self, inst: Inst, ptr: Value, offset: u32) {
-        let pc = self.liveness.inst_pcs[inst];
         let ptr_reg = self.mapper.use_val(ptr);
         let res = self.func.dfg.first_result(inst).unwrap();
         let dst = self.mapper.alloc_val(res);
@@ -724,7 +714,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_jump(&mut self, dest: BlockCall, pc: u32) {
+    fn emit_jump(&mut self, dest: BlockCall) {
         let target_block = self.func.dfg.block_calls[dest].block;
         let moves = calculate_moves(self.func, dest, &mut self.mapper);
 
@@ -738,7 +728,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_br(&mut self, condition: Value, then_dest: BlockCall, else_dest: BlockCall, pc: u32) {
+    fn emit_br(&mut self, condition: Value, then_dest: BlockCall, else_dest: BlockCall) {
         // Build targets first, then consume condition to avoid freeing it before
         // edge-argument move computation.
         let then_idx = self.push_target(then_dest);
@@ -747,7 +737,7 @@ impl<'a> Compiler<'a> {
         emit::Br(&mut self.code, cond_reg, then_idx, else_idx);
     }
 
-    fn emit_br_table(&mut self, index: Value, table: veloc_ir::JumpTable, pc: u32) {
+    fn emit_br_table(&mut self, index: Value, table: veloc_ir::JumpTable) {
         let table_data = self.func.dfg.jump_tables[table].targets.clone();
         let num_targets = table_data.len() as u32;
 
@@ -763,7 +753,7 @@ impl<'a> Compiler<'a> {
         emit::BrTable(&mut self.code, index_reg, br_offset, num_targets);
     }
 
-    fn emit_return(&mut self, values: veloc_ir::ValueList, pc: u32) {
+    fn emit_return(&mut self, values: veloc_ir::ValueList) {
         let ret_vals = self.func.dfg.get_value_list(values);
         let ret_regs: SmallVec<[Reg; 2]> =
             ret_vals.iter().map(|&v| self.mapper.use_val(v)).collect();
@@ -772,7 +762,7 @@ impl<'a> Compiler<'a> {
         emit::Return(&mut self.code, data_offset, num_vals);
     }
 
-    fn emit_call(&mut self, inst: Inst, pc: u32, func_id: FuncId, args: veloc_ir::ValueList) {
+    fn emit_call(&mut self, inst: Inst, func_id: FuncId, args: veloc_ir::ValueList) {
         let args_regs: SmallVec<[Reg; 4]> = self
             .func
             .dfg
@@ -797,7 +787,7 @@ impl<'a> Compiler<'a> {
         );
     }
 
-    fn emit_call_indirect(&mut self, inst: Inst, ptr: Value, args: ValueList, pc: u32) {
+    fn emit_call_indirect(&mut self, inst: Inst, ptr: Value, args: ValueList) {
         let ptr_reg = self.mapper.use_val(ptr);
         let args_regs: SmallVec<[Reg; 4]> = self
             .func
@@ -822,7 +812,7 @@ impl<'a> Compiler<'a> {
         );
     }
 
-    fn emit_call_intrinsic(&mut self, inst: Inst, intrinsic: Intrinsic, args: ValueList, pc: u32) {
+    fn emit_call_intrinsic(&mut self, inst: Inst, intrinsic: Intrinsic, args: ValueList) {
         let args_regs: SmallVec<[Reg; 4]> = self
             .func
             .dfg
@@ -852,7 +842,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_unary(&mut self, inst: Inst, opcode: IrOpcode, arg: Value, pc: u32) {
+    fn emit_unary(&mut self, inst: Inst, opcode: IrOpcode, arg: Value) {
         let from_ty = self.val_ty(arg);
         let res = self.func.dfg.first_result(inst).unwrap();
         let to_ty = self.val_ty(res);
@@ -1077,7 +1067,7 @@ impl<'a> Compiler<'a> {
         self.func.dfg.value_type(v).scalar_type()
     }
 
-    fn emit_store(&mut self, ptr: Value, value: Value, offset: u32, pc: u32) {
+    fn emit_store(&mut self, ptr: Value, value: Value, offset: u32) {
         let ptr_reg = self.mapper.use_val(ptr);
         let val_reg = self.mapper.use_val(value);
         let ty = self.val_ty(value);
@@ -1120,17 +1110,7 @@ impl<'a> Compiler<'a> {
                 .map(|(_, d)| d.size as usize)
                 .collect(),
             param_indices: self.param_indices,
-            ret_indices: Vec::new(),
             register_count: self.mapper.next_register as usize,
-            constant_pool: self
-                .func
-                .dfg
-                .constant_pool
-                .values()
-                .map(|d| match d {
-                    veloc_ir::ConstantPoolData::Bytes(b) => b.clone(),
-                })
-                .collect(),
         }
     }
 }
@@ -1152,7 +1132,7 @@ pub(crate) fn compile_function(
         .collect();
     let fused_values = identify_fused_values(func, &rpo);
 
-    let mapper = ValueMapper::new(&func.dfg, &liveness.intervals, &block_params, &fused_values);
+    let mapper = ValueMapper::new(&liveness.intervals, &block_params, &fused_values);
     let mut compiler = Compiler::new(func, &liveness, mapper);
 
     compiler.apply_rpo(&rpo);
@@ -1249,33 +1229,31 @@ impl<'a> Compiler<'a> {
             InstructionData::Load { ptr, offset, .. } => self.emit_load(inst, *ptr, *offset as u32),
             InstructionData::Store {
                 ptr, value, offset, ..
-            } => self.emit_store(*ptr, *value, *offset as u32, pc),
-            InstructionData::Jump { dest } => self.emit_jump(*dest, pc),
+            } => self.emit_store(*ptr, *value, *offset as u32),
+            InstructionData::Jump { dest } => self.emit_jump(*dest),
             InstructionData::Br {
                 condition,
                 then_dest,
                 else_dest,
             } => {
-                self.emit_br(*condition, *then_dest, *else_dest, pc);
+                self.emit_br(*condition, *then_dest, *else_dest);
             }
-            InstructionData::BrTable { index, table } => self.emit_br_table(*index, *table, pc),
-            InstructionData::Return { values } => self.emit_return(*values, pc),
-            InstructionData::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg, pc),
+            InstructionData::BrTable { index, table } => self.emit_br_table(*index, *table),
+            InstructionData::Return { values } => self.emit_return(*values),
+            InstructionData::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg),
             InstructionData::IntToPtr { arg } | InstructionData::PtrToInt { arg, .. } => {
                 let arg_reg = self.mapper.use_val(*arg);
                 let res = self.func.dfg.first_result(inst).unwrap();
                 let dst = self.mapper.alloc_val(res);
                 emit::RegMove(&mut self.code, dst, arg_reg);
             }
-            InstructionData::Call { func_id, args, .. } => {
-                self.emit_call(inst, pc, *func_id, *args)
-            }
+            InstructionData::Call { func_id, args, .. } => self.emit_call(inst, *func_id, *args),
             InstructionData::CallIndirect { ptr, args, .. } => {
-                self.emit_call_indirect(inst, *ptr, *args, pc)
+                self.emit_call_indirect(inst, *ptr, *args)
             }
             InstructionData::CallIntrinsic {
                 intrinsic, args, ..
-            } => self.emit_call_intrinsic(inst, *intrinsic, *args, pc),
+            } => self.emit_call_intrinsic(inst, *intrinsic, *args),
             InstructionData::PtrIndex { ptr, index, imm_id } => {
                 let ptr_reg = self.mapper.use_val(*ptr);
                 let index_reg = self.mapper.use_val(*index);

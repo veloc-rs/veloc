@@ -1,8 +1,8 @@
-use crate::Val;
 use crate::engine::Strategy;
 use crate::module::{GlobalInit, Module, ModuleArtifact};
 use crate::store::{Instance, Store};
 use crate::vm::{__sigsetjmp, TrapCode, VMContext, VMFuncRef, VMGlobal, VMMemory, VMTable};
+use crate::Val;
 use crate::{Extern, Result};
 use alloc::format;
 use alloc::string::String;
@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use hashbrown::HashMap;
 use std::mem;
-use veloc::interpreter::{ImportTarget, Interpreter, InterpreterValue, Program, VirtualMemory};
+use veloc::interpreter::{CallTarget, Interpreter, InterpreterValue, Program, VirtualMemory};
 use veloc::ir::FuncId;
 use wasmparser::{ExternalKind, ValType};
 
@@ -148,11 +148,14 @@ impl VMInstance {
             let args = vec![InterpreterValue::i64(vmctx_ptr as i64)];
 
             if let Some(id) = self.interp_module_id {
-                interpreter
+                let result = interpreter
                     .run_function(program, &WasmVirtualMemory, id, init_func_id, &args)
-                    .unwrap();
+                    .map(|_| ());
+                self.interpreter = Some(interpreter);
+                result?;
+            } else {
+                self.interpreter = Some(interpreter);
             }
-            self.interpreter = Some(interpreter);
         } else {
             let loaded = self.module.loaded().ok_or_else(|| {
                 crate::error::Error::Message("Loaded object not found".to_string())
@@ -611,11 +614,30 @@ impl VMInstance {
             }
         }
 
+        for (i, func_ref) in imported_funcs.iter().enumerate() {
+            let ty = meta.functions[i].type_index;
+            let expected = meta.signatures[ty as usize].hash;
+            if func_ref.type_index != expected {
+                let import = meta
+                    .imports
+                    .iter()
+                    .filter(|import| import.kind == ExternalKind::Func)
+                    .nth(i)
+                    .expect("function import metadata must match the function table");
+                return Err(crate::error::Error::IncompatibleImport {
+                    module: import.module.clone(),
+                    field: import.field.clone(),
+                    expected: format!("sig hash {}", expected),
+                    actual: format!("sig hash {}", func_ref.type_index),
+                });
+            }
+        }
+
         // 1. 如果是解释器模式，记录模块 ID
         let interp_module_id = if module.strategy() == Strategy::Interpreter {
             match module.artifact() {
                 ModuleArtifact::Interpreter(ir) => {
-                    let mid = store.program.register_module(ir.clone());
+                    let mut builder = store.program.builder(ir.clone());
                     // 链接运行时函数
                     let runtime_names = [
                         "wasm_trap_handler",
@@ -636,13 +658,17 @@ impl VMInstance {
                         "wasm_init_table",
                     ];
                     for name in runtime_names {
-                        if let Some(fid) = ir.get_func_id(name) {
-                            if let Some(host_id) = store.program.get_host_function(name) {
-                                store.program.link_host(mid, fid, host_id);
+                        if let Some(func) = ir.get_func_id(name) {
+                            if let Some(host) = builder.find_host(name) {
+                                builder.link_host(func, host)?;
                             }
                         }
                     }
-                    Some(mid)
+                    for (i, func_ref) in imported_funcs.iter().enumerate() {
+                        let func = meta.functions[i].func_id;
+                        builder.link_ref(func, func_ref.native_call as usize)?;
+                    }
+                    Some(builder.finish()?)
                 }
                 _ => None,
             }
@@ -735,40 +761,7 @@ impl VMInstance {
                     func_ref.vmctx = vmctx_ptr;
                 }
 
-                // Type check
-                let ty_idx = meta.functions[i].type_index;
-                let expected_hash = meta.signatures[ty_idx as usize].hash;
-                if func_ref.type_index != expected_hash {
-                    let import = meta
-                        .imports
-                        .iter()
-                        .filter(|imp| imp.kind == ExternalKind::Func)
-                        .nth(i)
-                        .unwrap();
-                    return Err(crate::error::Error::IncompatibleImport {
-                        module: import.module.clone(),
-                        field: import.field.clone(),
-                        expected: format!("sig hash {}", expected_hash),
-                        actual: format!("sig hash {}", func_ref.type_index),
-                    });
-                }
                 vm_functions[i] = func_ref;
-
-                if let Some(mid) = interp_module_id {
-                    let fid = meta.functions[i].func_id;
-                    let ptr_val = func_ref.native_call as usize;
-                    if let Some(target) = store.program.decode_ptr(ptr_val) {
-                        match target {
-                            ImportTarget::Module(target_mid, target_fid) => {
-                                store.program.link_import(mid, fid, target_mid, target_fid);
-                            }
-                            ImportTarget::Host(host_id) => {
-                                store.program.link_host(mid, fid, host_id);
-                            }
-                            ImportTarget::None => {}
-                        }
-                    }
-                }
             }
             for i in meta.num_imported_funcs..meta.functions.len() {
                 let func_meta = &meta.functions[i];
@@ -781,7 +774,14 @@ impl VMInstance {
                     let mid = interp_module_id.expect("Interpreter module not registered");
                     store
                         .program
-                        .get_interpreter_func_ptr(mid, func_meta.func_id)
+                        .func_ref(mid, func_meta.func_id)
+                        .ok_or_else(|| {
+                            crate::error::Error::Message(format!(
+                                "Missing interpreter function reference for {:?}/{:?}",
+                                mid, func_meta.func_id
+                            ))
+                        })?
+                        .as_opaque_ptr()
                 };
 
                 vm_functions[i] = VMFuncRef {
@@ -991,18 +991,16 @@ impl Instance {
             let sig = &meta.signatures[ty_idx as usize];
 
             let kind = if instance.module.strategy() == Strategy::Interpreter {
-                // For interpreter mode, the func_ref.native_call is a tagged pointer
-                // that encodes (ModuleId, FuncId). We should decode it to get the
-                // actual FuncId in the target module.
-                let target = store.program.decode_ptr(func_ref.native_call as usize);
-                let actual_func_id = if let Some(ImportTarget::Module(_, fid)) = target {
-                    fid
+                // Interpreter entries are opaque Program-owned references.
+                let target = store.program.resolve_ref(func_ref.native_call as usize);
+                let func = if let Some(CallTarget::Bytecode(_, func)) = target {
+                    func
                 } else {
                     meta.functions[func_idx].func_id
                 };
 
                 TypedFuncKind::Interpreter {
-                    target_func_id: actual_func_id,
+                    target_func_id: func,
                 }
             } else {
                 let tramp_name = format!("{}_trampoline", name);
@@ -1142,31 +1140,34 @@ impl TypedFunc {
 
                     let mut interpreter = if let Some(int) = instance.interpreter.take() {
                         int
-                    } else if let Some(_) = instance.interp_module_id {
+                    } else if instance.interp_module_id.is_some() {
                         // 如果因为之前的 trap 导致解释器丢失，则重新创建一个
                         Interpreter::new()
                     } else {
-                        panic!("Interpreter not initialized and no module ID found");
+                        return Err(crate::error::Error::Message(
+                            "Interpreter not initialized and no module ID found".into(),
+                        ));
                     };
 
+                    let module_id = instance.interp_module_id.ok_or_else(|| {
+                        crate::error::Error::Message("Interpreter module ID missing".into())
+                    })?;
                     let interp_results = interpreter
                         .run_function(
                             &store.program,
                             &WasmVirtualMemory,
-                            instance.interp_module_id.expect("Module ID missing"),
+                            module_id,
                             target_func_id,
                             &int_args,
                         )
-                        .unwrap();
+                        .map(|values| {
+                            for (result, value) in results_raw.iter_mut().zip(values) {
+                                *result = value.to_i64_bits();
+                            }
+                            values.first().map(|value| value.to_i64_bits()).unwrap_or(0)
+                        });
                     instance.interpreter = Some(interpreter);
-                    // Copy results to results_raw
-                    for (i, val) in interp_results.iter().enumerate() {
-                        if i < results_raw.len() {
-                            results_raw[i] = val.to_i64_bits();
-                        }
-                    }
-                    // Return first result as res_bits (for single result case)
-                    interp_results.first().map(|v| v.to_i64_bits()).unwrap_or(0)
+                    interp_results?
                 }
             };
 

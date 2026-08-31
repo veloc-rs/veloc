@@ -97,10 +97,6 @@ define_register_handlers! {
     F64PromoteF32 { dst, src } => {
         set!(dst, InterpreterValue::f64(get!(src).unwrap_f32() as f64))
     }
-    Bitcast { dst, src } => {
-        set!(dst, get!(src));
-    }
-
     I32TruncSatF32S { dst, src } => {
         let val = get!(src).unwrap_f32();
         set!(

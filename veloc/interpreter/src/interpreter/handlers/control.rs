@@ -74,7 +74,7 @@ define_control_handlers! {
         frame.base = prev.base;
         frame.stack_base = prev.stack_base;
         frame.func = prev.func;
-        frame.mid = prev.mid;
+        frame.module = prev.module;
         next_ip = frame.func.code.as_ptr().add(frame.pc);
         values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
 
@@ -101,29 +101,38 @@ define_control_handlers! {
             num_rets,
             num_args,
         );
-        let f_id = veloc_ir::FuncId::from_u32(func_id);
+        let func = veloc_ir::FuncId::from_u32(func_id);
         let return_pc = next_ip.offset_from(frame.func.code.as_ptr()) as usize;
 
-        match program.modules[frame.mid].links[f_id] {
-            ImportTarget::Module(m, f) => {
-                if !interpreter.do_call(
+        match program.call_target(frame.module, func) {
+            CallTarget::Bytecode(target_module, target_func) => {
+                if let Err(exit) = interpreter.do_call(
                     program,
-                    m,
-                    f,
+                    target_module,
+                    target_func,
                     dst_start,
                     num_rets as usize,
                     return_pc,
                     frame,
                 ) {
-                    return DispatchExit::StackOverflow;
+                    return exit;
                 }
                 next_ip = frame.func.code.as_ptr();
                 values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
                 dispatch_next!(next_ip, values_ptr);
             }
-            ImportTarget::Host(h_id) => {
-                program.host_functions_list[h_id]
-                    .call(&mut interpreter.args_buffer, num_args as usize);
+            CallTarget::Host(host) => {
+                if program
+                    .call_host(
+                        host,
+                        &mut interpreter.args_buffer,
+                        num_args as usize,
+                        num_rets as usize,
+                    )
+                    .is_err()
+                {
+                    return DispatchExit::InvalidHostCall;
+                }
                 values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
                 for i in 0..num_rets as usize {
                     let dst = interpreter.dst_regs_buffer[dst_start + i];
@@ -132,22 +141,6 @@ define_control_handlers! {
                     }
                 }
                 interpreter.dst_regs_buffer.truncate(dst_start);
-            }
-            ImportTarget::None => {
-                if !interpreter.do_call(
-                    program,
-                    frame.mid,
-                    f_id,
-                    dst_start,
-                    num_rets as usize,
-                    return_pc,
-                    frame,
-                ) {
-                    return DispatchExit::StackOverflow;
-                }
-                next_ip = frame.func.code.as_ptr();
-                values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
-                dispatch_next!(next_ip, values_ptr);
             }
         }
     }
@@ -164,29 +157,38 @@ define_control_handlers! {
             num_rets,
             num_args,
         );
-        let p = get!(ptr).0 as usize;
+        let address = get!(ptr).0 as usize;
         let return_pc = next_ip.offset_from(frame.func.code.as_ptr()) as usize;
 
-        match program.decode_ptr(p) {
-            Some(ImportTarget::Module(m, f)) => {
-                if !interpreter.do_call(
+        match program.resolve_ref(address) {
+            Some(CallTarget::Bytecode(target_module, target_func)) => {
+                if let Err(exit) = interpreter.do_call(
                     program,
-                    m,
-                    f,
+                    target_module,
+                    target_func,
                     dst_start,
                     num_rets as usize,
                     return_pc,
                     frame,
                 ) {
-                    return DispatchExit::StackOverflow;
+                    return exit;
                 }
                 next_ip = frame.func.code.as_ptr();
                 values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
                 dispatch_next!(next_ip, values_ptr);
             }
-            Some(ImportTarget::Host(h_id)) => {
-                program.host_functions_list[h_id]
-                    .call(&mut interpreter.args_buffer, num_args as usize);
+            Some(CallTarget::Host(host)) => {
+                if program
+                    .call_host(
+                        host,
+                        &mut interpreter.args_buffer,
+                        num_args as usize,
+                        num_rets as usize,
+                    )
+                    .is_err()
+                {
+                    return DispatchExit::InvalidHostCall;
+                }
                 values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
                 for i in 0..num_rets as usize {
                     let dst = interpreter.dst_regs_buffer[dst_start + i];
@@ -196,7 +198,9 @@ define_control_handlers! {
                 }
                 interpreter.dst_regs_buffer.truncate(dst_start);
             }
-            _ => panic!("Invalid function pointer: {:x}", p),
+            None => {
+                return DispatchExit::InvalidFunctionReference;
+            }
         }
     }
     PtrIndex {
@@ -231,9 +235,6 @@ define_control_handlers! {
         );
     }
     RegMove { dst, src } => { set!(dst, get!(src)); }
-    GlobalAddr { dst, global_idx } => {
-        todo!("GlobalAddr in interpreter");
-    }
     CallIntrinsic {
         intrinsic,
         data_offset,

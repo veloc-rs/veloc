@@ -3,252 +3,484 @@
 //! This module provides the main Program structure that manages all loaded
 //! modules, host functions, and their interactions.
 
-use crate::bytecode::{CompiledFunction, compile_function};
-use crate::host::{HostFunc, HostFuncId, HostFunction};
-use crate::runtime::RuntimeModule;
-use crate::runtime::ptr::ImportTarget;
-use crate::value::{HostFuncArgs, HostFuncRets};
-use ::alloc::boxed::Box;
-use ::alloc::string::String;
-use ::alloc::sync::Arc;
-use ::alloc::vec::Vec;
-use cranelift_entity::{EntityRef, PrimaryMap, SecondaryMap};
+use crate::bytecode::{compile_function, CompiledFunction};
+use crate::error::{Error, Result};
+use crate::host::{HostFuncId, HostFunction};
+use crate::runtime::{CallTarget, FunctionRef, RuntimeModule};
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use cranelift_entity::PrimaryMap;
 use hashbrown::HashMap;
 use veloc_ir::{FuncId, Module, ModuleId};
 
 /// Main program structure managing all modules and host functions
 pub struct Program {
     /// Map from host function name to ID
-    pub(crate) host_functions: HashMap<String, HostFuncId>,
+    hosts_by_name: HashMap<String, HostFuncId>,
     /// Storage for host function implementations
-    pub(crate) host_functions_list: PrimaryMap<HostFuncId, HostFunc>,
+    hosts: PrimaryMap<HostFuncId, HostFunction>,
     /// Loaded modules
-    pub(crate) modules: PrimaryMap<ModuleId, RuntimeModule>,
+    modules: PrimaryMap<ModuleId, RuntimeModule>,
+    /// Stable opaque references used by indirect calls.
+    func_refs: Vec<CallTarget>,
+    /// Reference handle assigned to each host function.
+    host_refs: PrimaryMap<HostFuncId, FunctionRef>,
 }
 
-// ============== Accessors ==============
+/// Stages one module and commits it only after every import is linked.
+pub struct ProgramBuilder<'a> {
+    program: &'a mut Program,
+    module: Module,
+    id: ModuleId,
+    targets: PrimaryMap<FuncId, Option<CallTarget>>,
+}
 
 impl Program {
+    /// Start building a module without exposing partial state through `Program`.
+    pub fn builder(&mut self, module: Module) -> ProgramBuilder<'_> {
+        ProgramBuilder::new(self, module)
+    }
+
     /// Get a host function ID by name
-    pub fn get_host_function(&self, name: &str) -> Option<HostFuncId> {
-        self.host_functions.get(name).copied()
+    pub fn find_host(&self, name: &str) -> Option<HostFuncId> {
+        self.hosts_by_name.get(name).copied()
     }
 
-    /// Get the number of loaded modules
-    pub fn module_count(&self) -> usize {
-        self.modules.len()
+    /// Iterate over compiled functions without allocating or cloning their `Arc`s.
+    pub fn compiled_funcs(&self) -> impl Iterator<Item = (ModuleId, FuncId, &CompiledFunction)> {
+        self.modules.iter().flat_map(|(module, runtime_module)| {
+            runtime_module
+                .compiled
+                .iter()
+                .filter_map(move |(func, compiled)| {
+                    compiled.as_deref().map(|compiled| (module, func, compiled))
+                })
+        })
     }
 
-    /// Collect all compiled functions into a Vec
-    /// Returns Vec of (module_id, function_id, compiled_function)
-    pub fn all_compiled_functions(&self) -> Vec<(ModuleId, FuncId, Arc<CompiledFunction>)> {
-        let mut result = Vec::new();
-        for (mid, module) in self.modules.iter() {
-            for (fid, func) in module.compiled.iter() {
-                if let Some(compiled) = func {
-                    result.push((mid, fid, compiled.clone()));
-                }
-            }
-        }
-        result
-    }
-}
-
-impl Program {
     /// Create a new empty program
     pub fn new() -> Self {
         Self {
-            host_functions: HashMap::new(),
-            host_functions_list: PrimaryMap::new(),
+            hosts_by_name: HashMap::new(),
+            hosts: PrimaryMap::new(),
             modules: PrimaryMap::new(),
+            func_refs: Vec::new(),
+            host_refs: PrimaryMap::new(),
         }
     }
 
     /// Get a compiled function from a module
-    pub(crate) fn get_compiled_func(&self, mid: ModuleId, fid: FuncId) -> Arc<CompiledFunction> {
-        self.modules[mid].compiled[fid]
-            .clone()
-            .expect("Function not compiled or not defined")
-    }
-
-    /// Register a module and compile its defined functions
-    pub fn register_module(&mut self, module: Module) -> ModuleId {
-        // Predict the ModuleId that will be assigned
-        let mid = ModuleId::new(self.modules.len());
-
-        let mut compiled: SecondaryMap<FuncId, Option<Arc<CompiledFunction>>> = SecondaryMap::new();
-        let mut links: SecondaryMap<FuncId, ImportTarget> = SecondaryMap::new();
-
-        for (fid, func) in module.functions.iter() {
-            if func.is_defined() {
-                compiled[fid] = Some(Arc::new(compile_function(mid, fid, func)));
-            } else {
-                compiled[fid] = None;
-            }
-            links[fid] = ImportTarget::None;
-        }
-
-        let actual_mid = self
+    pub(crate) fn compiled_func(
+        &self,
+        module: ModuleId,
+        func: FuncId,
+    ) -> Result<Arc<CompiledFunction>> {
+        let loaded = self
             .modules
-            .push(RuntimeModule::new(module, compiled, links));
-        debug_assert_eq!(mid, actual_mid);
-        actual_mid
+            .get(module)
+            .ok_or(Error::InvalidModule(module))?;
+        let compiled = loaded
+            .compiled
+            .get(func)
+            .and_then(Option::as_ref)
+            .ok_or(Error::InvalidFunction { module, func })?;
+        Ok(Arc::clone(compiled))
     }
 
-    /// Get a pointer to a host function (for indirect calls)
-    pub fn get_host_func_ptr(&self, id: HostFuncId) -> *const u8 {
-        crate::runtime::VMFuncPointer::from_host(id).as_ptr()
+    fn push_func_ref(&mut self, target: CallTarget) -> FunctionRef {
+        let index = self.func_refs.len();
+        let reference = FunctionRef::from_index(index)
+            .expect("function-reference table exceeded the address space");
+        self.func_refs.push(target);
+        reference
     }
 
-    /// Get a pointer to an interpreter function (for indirect calls)
-    pub fn get_interpreter_func_ptr(&self, module_id: ModuleId, func_id: FuncId) -> *const u8 {
-        crate::runtime::VMFuncPointer::from_interpreter(module_id, func_id).as_ptr()
+    /// Get the stable reference assigned to a host function.
+    pub fn host_ref(&self, host: HostFuncId) -> Option<FunctionRef> {
+        self.host_refs.get(host).copied()
     }
 
-    /// Decode a function pointer to its target
-    pub fn decode_ptr(&self, ptr_val: usize) -> Option<ImportTarget> {
-        crate::runtime::VMFuncPointer(ptr_val).decode()
+    /// Get the stable reference assigned to a compiled bytecode function.
+    pub fn func_ref(&self, module: ModuleId, func: FuncId) -> Option<FunctionRef> {
+        self.modules
+            .get(module)?
+            .func_refs
+            .get(func)
+            .and_then(|reference| *reference)
     }
 
-    /// Register a raw host function
-    pub fn register_raw(&mut self, name: String, f: HostFunction) -> HostFuncId {
-        unsafe extern "C" fn trampoline(
-            env: *mut u8,
-            args_results: *mut crate::value::InterpreterValue,
-            arity: usize,
-            buffer_len: usize,
-        ) {
-            unsafe {
-                assert!(buffer_len > 0, "raw host function requires one result slot");
-                let func = &*(env as *const HostFunction);
-                let args_slice = core::slice::from_raw_parts(args_results, arity);
-                let res = func(args_slice);
-                *args_results = res;
-            }
-        }
-
-        self.register_handler(name, f, trampoline)
+    /// Resolve the pointer-sized function reference used by the current VM ABI.
+    pub fn resolve_ref(&self, address: usize) -> Option<CallTarget> {
+        let index = FunctionRef::index_from_address(address)?;
+        self.func_refs.get(index).copied()
     }
 
-    /// Register a typed host function
-    pub fn register_func<F, Args, Rets>(&mut self, name: String, func: F) -> HostFuncId
-    where
-        F: Fn(Args) -> Rets + Send + Sync + 'static,
-        Args: HostFuncArgs,
-        Rets: HostFuncRets,
-    {
-        unsafe extern "C" fn trampoline<F, Args, Rets>(
-            env: *mut u8,
-            args_results: *mut crate::value::InterpreterValue,
-            arity: usize,
-            buffer_len: usize,
-        ) where
-            F: Fn(Args) -> Rets + Send + Sync + 'static,
-            Args: HostFuncArgs,
-            Rets: HostFuncRets,
-        {
-            unsafe {
-                let func = &*(env as *const F);
-                let args_slice = core::slice::from_raw_parts(args_results, arity);
-                let args = Args::decode(args_slice);
-                let rets = func(args);
-                let results_slice = core::slice::from_raw_parts_mut(args_results, buffer_len);
-                rets.encode(results_slice);
-            }
-        }
-
-        self.register_handler(name, func, trampoline::<F, Args, Rets>)
+    #[inline(always)]
+    pub(crate) fn call_target(&self, module: ModuleId, func: FuncId) -> CallTarget {
+        self.modules[module].call_targets[func]
     }
 
-    fn register_handler<F>(
-        &mut self,
-        name: String,
-        handler: F,
-        trampoline: unsafe extern "C" fn(
-            *mut u8,
-            *mut crate::value::InterpreterValue,
-            usize,
-            usize,
-        ),
-    ) -> HostFuncId
-    where
-        F: Send + Sync + 'static,
-    {
-        let env = Box::into_raw(Box::new(handler)) as *mut u8;
-        let drop_fn = |ptr: *mut u8| unsafe {
-            let _ = Box::from_raw(ptr as *mut F);
-        };
+    #[inline(always)]
+    pub(crate) fn call_host(
+        &self,
+        host: HostFuncId,
+        values: &mut [crate::value::InterpreterValue],
+        args: usize,
+        results: usize,
+    ) -> Result<()> {
+        self.hosts[host].call(values, args, results)
+    }
 
-        let host_func = HostFunc(Arc::new(crate::host::HostFunctionInner {
-            handler: trampoline,
-            env,
-            drop_fn,
-        }));
-
-        let id = self.host_functions_list.push(host_func);
-        self.host_functions.insert(name, id);
+    /// Register a host function. Its signature is used to validate links and calls.
+    pub fn register_host(&mut self, name: String, host: HostFunction) -> HostFuncId {
+        let id = self.hosts.push(host);
+        let reference = self.push_func_ref(CallTarget::Host(id));
+        let ref_id = self.host_refs.push(reference);
+        debug_assert_eq!(id, ref_id);
+        self.hosts_by_name.insert(name, id);
         id
     }
+}
 
-    /// Link an import to another module's function
+impl<'a> ProgramBuilder<'a> {
+    fn new(program: &'a mut Program, module: Module) -> Self {
+        let id = program.modules.next_key();
+        let mut targets = PrimaryMap::new();
+        for (func, function) in module.functions.iter() {
+            let target = function
+                .is_defined()
+                .then_some(CallTarget::Bytecode(id, func));
+            let actual = targets.push(target);
+            debug_assert_eq!(func, actual);
+        }
+        Self {
+            program,
+            module,
+            id,
+            targets,
+        }
+    }
+
+    /// ID the module will have after a successful `finish`.
+    pub fn id(&self) -> ModuleId {
+        self.id
+    }
+
+    /// Find a host function registered in the target program.
+    pub fn find_host(&self, name: &str) -> Option<HostFuncId> {
+        self.program.find_host(name)
+    }
+
+    /// Link one import to a defined bytecode function.
     pub fn link_import(
         &mut self,
-        mid: ModuleId,
-        fid: FuncId,
-        target_mid: ModuleId,
-        target_fid: FuncId,
-    ) {
-        self.modules[mid].links[fid] = ImportTarget::Module(target_mid, target_fid);
+        import: FuncId,
+        target_module: ModuleId,
+        target_func: FuncId,
+    ) -> Result<&mut Self> {
+        self.validate_import(import)?;
+
+        let target = if target_module == self.id {
+            &self.module
+        } else {
+            &self
+                .program
+                .modules
+                .get(target_module)
+                .ok_or(Error::InvalidModule(target_module))?
+                .ir
+        };
+        let target_data = target
+            .functions
+            .get(target_func)
+            .ok_or(Error::InvalidFunction {
+                module: target_module,
+                func: target_func,
+            })?;
+        if !target_data.is_defined() {
+            return Err(Error::InvalidFunction {
+                module: target_module,
+                func: target_func,
+            });
+        }
+
+        let source = &self.module.functions[import];
+        let source_sig = self.module.get_signature(source.signature);
+        let target_sig = target.get_signature(target_data.signature);
+        if source_sig != target_sig {
+            return Err(Error::SignatureMismatch {
+                module: self.id,
+                func: import,
+                target_module,
+                target_func,
+            });
+        }
+
+        self.targets[import] = Some(CallTarget::Bytecode(target_module, target_func));
+        Ok(self)
     }
 
-    /// Link an import to a host function
-    pub fn link_host(&mut self, mid: ModuleId, fid: FuncId, host_fid: HostFuncId) {
-        self.modules[mid].links[fid] = ImportTarget::Host(host_fid);
+    /// Link one import to a host function.
+    pub fn link_host(&mut self, import: FuncId, host: HostFuncId) -> Result<&mut Self> {
+        self.validate_import(import)?;
+        let host_func = self
+            .program
+            .hosts
+            .get(host)
+            .ok_or(Error::InvalidHostFunction(host))?;
+        let source = &self.module.functions[import];
+        let signature = self.module.get_signature(source.signature);
+        if host_func.signature() != signature {
+            return Err(Error::HostSignatureMismatch {
+                module: self.id,
+                func: import,
+                host,
+            });
+        }
+        self.targets[import] = Some(CallTarget::Host(host));
+        Ok(self)
     }
 
-    /// Automatically link imports based on symbol names
-    pub fn auto_link(&mut self) {
-        let mut links = Vec::new();
+    /// Resolve and link an opaque function reference owned by this program.
+    pub fn link_ref(&mut self, import: FuncId, address: usize) -> Result<&mut Self> {
+        match self
+            .program
+            .resolve_ref(address)
+            .ok_or(Error::InvalidFunctionReference)?
+        {
+            CallTarget::Bytecode(module, func) => self.link_import(import, module, func),
+            CallTarget::Host(host) => self.link_host(import, host),
+        }
+    }
 
-        for (mid, runtime_module) in self.modules.iter() {
-            for (fid, func) in runtime_module.ir().functions.iter() {
-                if func.linkage == veloc_ir::Linkage::Import {
-                    let name = &func.name;
-
-                    // 1. Try to link to host functions
-                    if let Some(&host_id) = self.host_functions.get(name) {
-                        links.push((mid, fid, ImportTarget::Host(host_id)));
-                        continue;
-                    }
-
-                    // 2. Try to link to other modules' exports
-                    for (target_mid, target_module) in self.modules.iter() {
-                        if target_mid == mid {
-                            continue;
-                        }
-                        if let Some(target_fid) = target_module.ir().find_function_by_name(name) {
-                            if target_module.ir().get_function(target_fid).linkage
-                                == veloc_ir::Linkage::Export
-                            {
-                                links.push((
-                                    mid,
-                                    fid,
-                                    ImportTarget::Module(target_mid, target_fid),
-                                ));
-                                break;
-                            }
-                        }
-                    }
-                }
+    /// Validate, compile, and atomically add the module to the program.
+    pub fn finish(self) -> Result<ModuleId> {
+        for (func, function) in self.module.functions.iter() {
+            if !function.is_defined() && self.targets[func].is_none() {
+                return Err(Error::UnresolvedImport {
+                    module: self.id,
+                    func,
+                });
             }
         }
 
-        for (mid, fid, target) in links {
-            match target {
-                ImportTarget::Module(tm, tf) => self.link_import(mid, fid, tm, tf),
-                ImportTarget::Host(h) => self.link_host(mid, fid, h),
-                ImportTarget::None => {}
-            }
+        let Self {
+            program,
+            module,
+            id,
+            targets,
+        } = self;
+        debug_assert_eq!(id, program.modules.next_key());
+
+        let mut compiled = PrimaryMap::new();
+        let mut call_targets = PrimaryMap::new();
+        let mut func_refs = PrimaryMap::new();
+        for (func, function) in module.functions.iter() {
+            let target = targets[func].expect("imports were validated above");
+            let compiled_func = function
+                .is_defined()
+                .then(|| Arc::new(compile_function(id, func, function)));
+            let reference = function.is_defined().then(|| program.push_func_ref(target));
+
+            let compiled_id = compiled.push(compiled_func);
+            let target_id = call_targets.push(target);
+            let ref_id = func_refs.push(reference);
+            debug_assert_eq!(func, compiled_id);
+            debug_assert_eq!(func, target_id);
+            debug_assert_eq!(func, ref_id);
         }
+
+        let actual = program.modules.push(RuntimeModule {
+            ir: module,
+            compiled,
+            call_targets,
+            func_refs,
+        });
+        debug_assert_eq!(id, actual);
+        Ok(actual)
+    }
+
+    fn validate_import(&self, import: FuncId) -> Result<()> {
+        let func = self
+            .module
+            .functions
+            .get(import)
+            .ok_or(Error::InvalidFunction {
+                module: self.id,
+                func: import,
+            })?;
+        if func.linkage != veloc_ir::Linkage::Import {
+            return Err(Error::ExpectedImport {
+                module: self.id,
+                func: import,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for Program {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::value::InterpreterValue;
+    use veloc_ir::{CallConv, Linkage, ModuleBuilder, Signature, Type};
+
+    fn module_with_func(
+        name: &str,
+        linkage: Linkage,
+        params: Vec<Type>,
+        returns: Vec<Type>,
+    ) -> (Module, FuncId) {
+        let mut module = ModuleBuilder::new();
+        let signature = module.make_signature(params, returns, CallConv::SystemV);
+        let function = module.declare_function(name.into(), signature, linkage);
+        if linkage != Linkage::Import {
+            let mut builder = module.builder(function);
+            builder.init_entry_block();
+            builder.ins().ret(&[]);
+        }
+        (module.build(), function)
+    }
+
+    #[test]
+    fn builder_commits_only_resolved_modules() {
+        let mut program = Program::new();
+        let (local_module, local_function) =
+            module_with_func("local", Linkage::Export, Vec::new(), Vec::new());
+        let local_module = program.builder(local_module).finish().unwrap();
+        assert_eq!(
+            program.modules[local_module].call_targets[local_function],
+            CallTarget::Bytecode(local_module, local_function)
+        );
+
+        let reference = program.func_ref(local_module, local_function).unwrap();
+        assert_eq!(
+            program.resolve_ref(reference.address()),
+            Some(CallTarget::Bytecode(local_module, local_function))
+        );
+
+        let (import_module, import_function) =
+            module_with_func("missing", Linkage::Import, Vec::new(), Vec::new());
+        assert!(matches!(
+            program.builder(import_module).finish(),
+            Err(Error::UnresolvedImport { func, .. }) if func == import_function
+        ));
+        assert_eq!(program.modules.len(), 1);
+    }
+
+    #[test]
+    fn linking_checks_import_kind_and_signature() {
+        let mut program = Program::new();
+        let (target, target_function) =
+            module_with_func("target", Linkage::Export, Vec::new(), Vec::new());
+        let target = program.builder(target).finish().unwrap();
+
+        let (source, import) =
+            module_with_func("target", Linkage::Import, vec![Type::I32], Vec::new());
+        let mut builder = program.builder(source);
+        assert!(matches!(
+            builder.link_import(import, target, target_function),
+            Err(Error::SignatureMismatch { .. })
+        ));
+        drop(builder);
+
+        let (source, import) = module_with_func("target", Linkage::Import, Vec::new(), Vec::new());
+        let mut builder = program.builder(source);
+        builder
+            .link_import(import, target, target_function)
+            .unwrap();
+        let source = builder.finish().unwrap();
+        assert_eq!(
+            program.modules[source].call_targets[import],
+            CallTarget::Bytecode(target, target_function)
+        );
+
+        let (defined, function) =
+            module_with_func("defined", Linkage::Export, Vec::new(), Vec::new());
+        let mut builder = program.builder(defined);
+        assert!(matches!(
+            builder.link_import(function, target, target_function),
+            Err(Error::ExpectedImport { .. })
+        ));
+    }
+
+    #[test]
+    fn host_links_require_the_exact_signature() {
+        let mut program = Program::new();
+        let (module, import) =
+            module_with_func("host", Linkage::Import, vec![Type::I32], vec![Type::I32]);
+
+        let wrong = program.register_host(
+            "wrong".into(),
+            HostFunction::new(
+                Signature::new(vec![Type::F32], vec![Type::I32], CallConv::SystemV),
+                |_| {},
+            ),
+        );
+        let host = program.register_host(
+            "host".into(),
+            HostFunction::new(
+                Signature::new(vec![Type::I32], vec![Type::I32], CallConv::SystemV),
+                |values| values[0] = InterpreterValue::i32(values[0].unwrap_i32() + 1),
+            ),
+        );
+        let mut builder = program.builder(module);
+        assert!(matches!(
+            builder.link_host(import, wrong),
+            Err(Error::HostSignatureMismatch { .. })
+        ));
+        builder.link_host(import, host).unwrap();
+        let module = builder.finish().unwrap();
+        assert_eq!(
+            program.modules[module].call_targets[import],
+            CallTarget::Host(host)
+        );
+    }
+
+    #[test]
+    fn reregistering_a_name_keeps_existing_hosts_stable() {
+        let mut program = Program::new();
+        let first = program.register_host(
+            "host".into(),
+            HostFunction::new(
+                Signature::new(Vec::new(), vec![Type::I32], CallConv::SystemV),
+                |values| values[0] = InterpreterValue::i32(1),
+            ),
+        );
+        let reference = program.host_ref(first).unwrap();
+        let second = program.register_host(
+            "host".into(),
+            HostFunction::new(
+                Signature::new(Vec::new(), vec![Type::I32], CallConv::SystemV),
+                |values| values[0] = InterpreterValue::i32(2),
+            ),
+        );
+
+        assert_ne!(first, second);
+        assert_eq!(program.find_host("host"), Some(second));
+        assert_eq!(
+            program.resolve_ref(reference.address()),
+            Some(CallTarget::Host(first))
+        );
+        let mut buffer = [InterpreterValue::none()];
+        program.hosts[first].call(&mut buffer, 0, 1).unwrap();
+        assert_eq!(buffer[0].unwrap_i32(), 1);
+        program.hosts[second].call(&mut buffer, 0, 1).unwrap();
+        assert_eq!(buffer[0].unwrap_i32(), 2);
+    }
+
+    #[test]
+    fn arbitrary_addresses_do_not_decode_as_function_references() {
+        let program = Program::new();
+        assert_eq!(program.resolve_ref(0), None);
+        assert_eq!(program.resolve_ref(usize::MAX), None);
+        assert_eq!(program.resolve_ref(0x1000), None);
     }
 }

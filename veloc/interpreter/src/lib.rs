@@ -2,7 +2,6 @@
 #![feature(macro_metavar_expr)]
 #![feature(rust_preserve_none_cc)]
 #![expect(incomplete_features)]
-#![allow(dead_code, unused)]
 
 extern crate alloc;
 
@@ -19,8 +18,8 @@ pub mod value;
 
 pub use bytecode::printer::FuncPrinter;
 pub use error::{Error, Result};
-pub use host::{HostFunc, HostFuncId, HostFunction};
+pub use host::{HostFuncId, HostFunction};
 pub use interpreter::{Interpreter, VirtualMemory};
-pub use runtime::{ImportTarget, Program, VMFuncPointer};
+pub use runtime::{CallTarget, FunctionRef, Program, ProgramBuilder};
 pub use value::InterpreterValue;
 pub use veloc_ir::ModuleId;

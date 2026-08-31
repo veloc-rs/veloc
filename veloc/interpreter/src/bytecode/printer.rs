@@ -4,13 +4,12 @@
 //! in a human-readable format similar to assembly.
 
 use crate::bytecode::{
-    CompiledFunction,
     compile::{DataSection, JumpTarget},
-    inst::{DecodedInstruction, Instruction, Reg, TypePair},
+    inst::{DecodedInstruction, Instruction},
+    CompiledFunction,
 };
 use core::fmt::{Display, Formatter, Result, Write};
 use cranelift_entity::EntityRef;
-use veloc_ir::ScalarType;
 
 /// Format a scalar type (encoded as u8) to human-readable name
 fn scalar_ty_name(ty: u8) -> &'static str {
@@ -269,8 +268,7 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::F64ConvertI64S { dst, src }
             | DecodedInstruction::F64ConvertI64U { dst, src }
             | DecodedInstruction::F32DemoteF64 { dst, src }
-            | DecodedInstruction::F64PromoteF32 { dst, src }
-            | DecodedInstruction::Bitcast { dst, src } => {
+            | DecodedInstruction::F64PromoteF32 { dst, src } => {
                 write!(f, " {}, {}", dst, src)
             }
 
@@ -505,10 +503,6 @@ impl<'a> InstPrinter<'a> {
                 )
             }
 
-            DecodedInstruction::GlobalAddr { dst, global_idx } => {
-                write!(f, " {}, global[{}]", dst, global_idx)
-            }
-
             DecodedInstruction::RegMove { dst, src } => {
                 write!(f, " {}, {}", dst, src)
             }
@@ -572,18 +566,6 @@ impl<'a> FuncPrinter<'a> {
         if !self.func.param_indices.is_empty() {
             write!(f, "  params: [")?;
             for (i, &reg) in self.func.param_indices.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{}", reg)?;
-            }
-            writeln!(f, "]")?;
-        }
-
-        // Print returns
-        if !self.func.ret_indices.is_empty() {
-            write!(f, "  returns: [")?;
-            for (i, &reg) in self.func.ret_indices.iter().enumerate() {
                 if i > 0 {
                     write!(f, ", ")?;
                 }

@@ -1,10 +1,10 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 use veloc_wasm::{
-    Engine, Module, Store,
     engine::{Config, Strategy},
+    Engine, Module, Store,
 };
 
 #[derive(Parser, Debug)]
@@ -60,7 +60,7 @@ fn print_interpreter_bytecode(store: &veloc_wasm::Store) {
     let program = store.program();
 
     let mut current_module: Option<ModuleId> = None;
-    for (module_id, func_id, func) in program.all_compiled_functions() {
+    for (module_id, func_id, func) in program.compiled_funcs() {
         if current_module != Some(module_id) {
             println!("\nmodule {:?}:", module_id);
             current_module = Some(module_id);

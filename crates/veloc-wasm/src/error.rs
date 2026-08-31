@@ -61,6 +61,12 @@ impl From<veloc_optimizer::Error> for Error {
     }
 }
 
+impl From<veloc::interpreter::Error> for Error {
+    fn from(e: veloc::interpreter::Error) -> Self {
+        Error::Message(e.to_string())
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

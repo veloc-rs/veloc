@@ -1,12 +1,12 @@
-use crate::Extern;
-use crate::Result;
 use crate::func::IntoFunc;
 use crate::instance::VMInstance;
-use crate::module::Module;
 use crate::module::types::WasmSignature;
+use crate::module::Module;
 use crate::store::{Instance, Store};
 use crate::vm::VMFuncRef;
 use crate::wasi;
+use crate::Extern;
+use crate::Result;
 use alloc::format;
 use alloc::string::String;
 use hashbrown::HashMap;
@@ -67,8 +67,12 @@ impl Linker {
     {
         let (params, results, host_fn) = f.into_func();
         let full_name = format!("{}.{}", module, name);
-        let id = store.program.register_raw(full_name, host_fn);
-        let native_call = store.program.get_host_func_ptr(id);
+        let id = store.program.register_host(full_name, host_fn);
+        let native_call = store
+            .program
+            .host_ref(id)
+            .expect("newly registered host function must have a function reference")
+            .as_opaque_ptr();
 
         let sig = WasmSignature::new(params, results);
 

@@ -1,11 +1,10 @@
 use crate::bytecode::{decode, CompiledFunction, Instruction, OpcodeHandlers, Reg};
 use crate::error::Result;
-use crate::runtime::{ImportTarget, Program};
+use crate::runtime::{CallTarget, Program};
 use crate::value::InterpreterValue;
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use cranelift_entity::EntityRef;
 use veloc_ir::{ModuleId, ScalarType};
 
 pub trait VirtualMemory {
@@ -23,7 +22,7 @@ pub struct Interpreter {
 }
 
 pub(crate) struct StackFrame {
-    mid: ModuleId,
+    module: ModuleId,
     func: ::alloc::sync::Arc<CompiledFunction>,
     pc: usize,
     base: usize,
@@ -48,6 +47,9 @@ pub(crate) enum DispatchExit {
     OutOfBounds,
     StackOverflow,
     Unreachable,
+    InvalidFunction(ModuleId, veloc_ir::FuncId),
+    InvalidFunctionReference,
+    InvalidHostCall,
 }
 
 // Opcode boundaries are tail jumps, so preserving callee-saved registers at
@@ -88,7 +90,14 @@ macro_rules! define_handlers {
     )*) => {
         $(
             $(#[$meta])*
-            #[allow(non_snake_case)]
+            #[allow(
+                non_snake_case,
+                unreachable_code,
+                unused_assignments,
+                unused_macros,
+                unused_mut,
+                unused_variables
+            )]
             pub(crate) unsafe extern "rust-preserve-none" fn $name<M>(
                 $context_ptr: *mut DispatchContext<M>,
                 $ip: *const Instruction,
@@ -281,14 +290,14 @@ impl Interpreter {
         &mut self,
         program: &Program,
         mem: &M,
-        mid: ModuleId,
-        fid: veloc_ir::FuncId,
+        module: ModuleId,
+        func: veloc_ir::FuncId,
         args: &[InterpreterValue],
-    ) -> Result<Vec<InterpreterValue>>
+    ) -> Result<&[InterpreterValue]>
     where
         M: VirtualMemory,
     {
-        let func = program.get_compiled_func(mid, fid);
+        let func = program.compiled_func(module, func)?;
         let frame_checkpoint = self.frames.len();
         let dst_checkpoint = self.dst_regs_buffer.len();
         let base = self.value_stack.len();
@@ -306,7 +315,7 @@ impl Interpreter {
         }
 
         self.frames.push(StackFrame {
-            mid,
+            module,
             func,
             pc: 0,
             base,
@@ -325,33 +334,30 @@ impl Interpreter {
         self.dst_regs_buffer.truncate(dst_checkpoint);
         self.args_buffer.clear();
 
-        result
+        result?;
+        Ok(&self.results_buffer)
     }
 
     #[inline(always)]
     fn do_call(
         &mut self,
         program: &Program,
-        target_mid: ModuleId,
-        target_fid: veloc_ir::FuncId,
+        target_module: ModuleId,
+        target_func: veloc_ir::FuncId,
         dst_regs_start: usize,
         dst_regs_count: usize,
         return_pc: usize,
         frame: &mut StackFrame,
-    ) -> bool {
-        if program.modules[target_mid].compiled[target_fid].is_none() {
-            panic!(
-                "Calling uncompiled function: mid={:?}, fid={:?}",
-                target_mid, target_fid
-            );
-        }
-        let next_func = program.get_compiled_func(target_mid, target_fid);
+    ) -> core::result::Result<(), DispatchExit> {
+        let next_func = program
+            .compiled_func(target_module, target_func)
+            .map_err(|_| DispatchExit::InvalidFunction(target_module, target_func))?;
         let total_size: usize = next_func.stack_slots_sizes.iter().sum();
         let Some(next_stack_base) = self.alloc_stack_frame(total_size) else {
-            return false;
+            return Err(DispatchExit::StackOverflow);
         };
         self.frames.push(StackFrame {
-            mid: frame.mid,
+            module: frame.module,
             func: frame.func.clone(),
             pc: return_pc,
             base: frame.base,
@@ -359,7 +365,7 @@ impl Interpreter {
             dst_regs_start,
             dst_regs_count,
         });
-        frame.mid = target_mid;
+        frame.module = target_module;
         frame.func = next_func;
         frame.pc = 0;
         frame.base = self.value_stack.len();
@@ -372,10 +378,10 @@ impl Interpreter {
             let val = self.args_buffer[i];
             self.value_stack[frame.base + new_idx.0 as usize] = val;
         }
-        true
+        Ok(())
     }
 
-    fn execute<M>(&mut self, program: &Program, mem: &M) -> Result<Vec<InterpreterValue>>
+    fn execute<M>(&mut self, program: &Program, mem: &M) -> Result<()>
     where
         M: VirtualMemory,
     {
@@ -395,10 +401,17 @@ impl Interpreter {
             handler(&mut context, ip, values_ptr)
         };
         match exit {
-            DispatchExit::Returned => Ok(core::mem::take(&mut self.results_buffer)),
+            DispatchExit::Returned => Ok(()),
             DispatchExit::OutOfBounds => Err(crate::error::Error::OutOfBounds),
             DispatchExit::StackOverflow => Err(crate::error::Error::StackOverflow),
             DispatchExit::Unreachable => Err(crate::error::Error::Unreachable),
+            DispatchExit::InvalidFunction(module, func) => {
+                Err(crate::error::Error::InvalidFunction { module, func })
+            }
+            DispatchExit::InvalidFunctionReference => {
+                Err(crate::error::Error::InvalidFunctionReference)
+            }
+            DispatchExit::InvalidHostCall => Err(crate::error::Error::InvalidHostCall),
         }
     }
 }

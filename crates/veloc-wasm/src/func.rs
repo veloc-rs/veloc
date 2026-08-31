@@ -1,7 +1,7 @@
 use crate::vm::VMContext;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
-use veloc::interpreter::{InterpreterValue, host::HostFunction};
+use veloc::interpreter::{host::HostFunction, InterpreterValue};
+use veloc::ir::{CallConv, Signature, Type};
 use wasmparser::ValType;
 
 pub struct Caller<'a> {
@@ -149,15 +149,28 @@ macro_rules! impl_into_func {
                 })*
 
                 let results = R::val_types();
-                let host_fn = Arc::new(move |args: &[InterpreterValue]| {
+                let mut ir_params = Vec::with_capacity(params.len() + 1);
+                ir_params.push(Type::PTR);
+                ir_params.extend(params.iter().copied().map(crate::module::types::valtype_to_veloc));
+                let ir_results = results
+                    .iter()
+                    .copied()
+                    .map(crate::module::types::valtype_to_veloc)
+                    .collect();
+                let signature = Signature::new(ir_params, ir_results, CallConv::SystemV);
+                let args = signature.params.len();
+                let has_result = !signature.returns.is_empty();
+                let host_fn = HostFunction::new(signature, move |values| {
                     #[allow(unused_variables)]
-                    let vmctx = args[0].to_i64_bits() as *const VMContext as *mut VMContext;
+                    let vmctx = values[0].to_i64_bits() as *const VMContext as *mut VMContext;
                     #[allow(unused_mut, unused_variables)]
-                    let mut iter = args.iter().skip(1);
+                    let mut iter = values[..args].iter().skip(1);
 
                     $(let $p = $p::from_args(vmctx, if $p::is_caller() { None } else { iter.next().copied() });)*
                     let res = self($($p),*);
-                    res.to_vals()
+                    if has_result {
+                        values[0] = res.to_vals();
+                    }
                 });
                 (params, results, host_fn)
             }
