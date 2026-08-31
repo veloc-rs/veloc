@@ -84,6 +84,13 @@ impl FromRawImm for u16 {
     }
 }
 
+impl FromRawImm for i32 {
+    #[inline(always)]
+    fn from_raw_u32(v: u32) -> Self {
+        v as i32
+    }
+}
+
 impl FromRawImm for Reg {
     #[inline(always)]
     fn from_raw_u32(v: u32) -> Self {
@@ -104,6 +111,13 @@ impl IntoRawImm for u32 {
 }
 
 impl IntoRawImm for u16 {
+    #[inline(always)]
+    fn into_raw_imm(self) -> u32 {
+        self as u32
+    }
+}
+
+impl IntoRawImm for i32 {
     #[inline(always)]
     fn into_raw_imm(self) -> u32 {
         self as u32
@@ -251,16 +265,22 @@ macro_rules! define_opcodes {
 
         /// Direct-threaded dispatch table. Keeping this generated beside
         /// `Opcode` guarantees that discriminants and handler slots cannot drift.
-        pub(crate) struct OpcodeHandlers<M>(core::marker::PhantomData<fn() -> M>);
+        #[repr(transparent)]
+        pub(crate) struct OpcodeHandlers<M>(
+            [crate::interpreter::OpcodeHandler<M>; Opcode::COUNT],
+        );
 
         impl<M: crate::interpreter::VirtualMemory> OpcodeHandlers<M> {
-            pub(crate) const TABLE: [crate::interpreter::OpcodeHandler<M>; Opcode::COUNT] = [
+            pub(crate) const TABLE: Self = Self([
                 $(crate::interpreter::handlers::$name::<M>),*
-            ];
+            ]);
 
             #[inline(always)]
-            pub(crate) unsafe fn get(opcode: Opcode) -> crate::interpreter::OpcodeHandler<M> {
-                unsafe { *Self::TABLE.get_unchecked(opcode as usize) }
+            pub(crate) unsafe fn get(
+                &self,
+                opcode: Opcode,
+            ) -> crate::interpreter::OpcodeHandler<M> {
+                unsafe { *self.0.get_unchecked(opcode as usize) }
             }
         }
 
@@ -363,7 +383,7 @@ macro_rules! define_opcodes {
     // Immediate slots: use IntoRawImm for type-safe conversion
     (@assign $inst:ident, $val:ident, $ty:ty, lo32) => { $inst.imm64 = ($inst.imm64 & 0xFFFFFFFF00000000) | ($val.into_raw_imm() as u64); };
     (@assign $inst:ident, $val:ident, $ty:ty, hi32) => { $inst.imm64 = ($inst.imm64 & 0x00000000FFFFFFFF) | (($val.into_raw_imm() as u64) << 32); };
-    (@assign $inst:ident, $val:ident, $ty:ty, imm64) => { $inst.imm64 = $val; };
+    (@assign $inst:ident, $val:ident, $ty:ty, imm64) => { $inst.imm64 = $val as u64; };
     // If no field mapped, assume it's one of the standard ones by name (treat as register)
     // Note: this rule uses .into() because types like Reg implement Into<u16>
     (@assign $inst:ident, $val:ident, $ty:ty, ) => {
@@ -570,9 +590,10 @@ define_opcodes! {
     PtrIndex { dst: Reg, ptr: Reg => src1, index: Reg => src2, scale: u32 => lo32, offset: u32 => hi32 };
 
     // === Control Flow ===
-    Jump { pc: u32 => lo32 };
+    Jump { offset: i64 => imm64 };
     JumpWithMoves { data_offset: u32 => lo32 };
-    Br { cond: Reg => dst, then_idx: u32 => lo32, else_idx: u32 => hi32 };
+    Br { cond: Reg => dst, then_offset: i32 => lo32, else_offset: i32 => hi32 };
+    BrWithMoves { cond: Reg => dst, then_idx: u32 => lo32, else_idx: u32 => hi32 };
     BrTable { idx_reg: Reg => dst, data_offset: u32 => lo32, num_targets: u32 => hi32 };
 
     Select { dst: Reg, cond: Reg => src1, then_reg: Reg => src2, else_reg: Reg => lo32 };

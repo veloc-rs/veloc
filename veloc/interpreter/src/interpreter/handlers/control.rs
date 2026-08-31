@@ -2,17 +2,29 @@ use super::super::*;
 use super::intrinsic::execute_intrinsic;
 
 define_control_handlers! {
-    interpreter, program, frame, next_ip, values_ptr;
+    interpreter, program, frame, ip, next_ip, values_ptr;
     // === Control Flow ===
-    Jump { pc: target_pc } => {
-        next_ip = frame.func.code.as_ptr().add(target_pc as usize);
+    Jump { offset } => {
+        next_ip = ip.byte_offset(offset as isize);
     }
     JumpWithMoves { data_offset } => {
         let target = &frame.func.data_section.jump_targets[data_offset as usize];
         Interpreter::execute_moves(frame, values_ptr, target);
-        next_ip = frame.func.code.as_ptr().add(target.pc as usize);
+        next_ip = ip.byte_offset(target.offset as isize);
     }
     Br {
+        cond,
+        then_offset,
+        else_offset,
+    } => {
+        let offset = if get!(cond).unwrap_bool() {
+            then_offset
+        } else {
+            else_offset
+        };
+        next_ip = ip.byte_offset(offset as isize);
+    }
+    BrWithMoves {
         cond,
         then_idx,
         else_idx,
@@ -21,7 +33,7 @@ define_control_handlers! {
         let target_idx = if c { then_idx } else { else_idx };
         let target = &frame.func.data_section.jump_targets[target_idx as usize];
         Interpreter::execute_moves(frame, values_ptr, target);
-        next_ip = frame.func.code.as_ptr().add(target.pc as usize);
+        next_ip = ip.byte_offset(target.offset as isize);
     }
     BrTable {
         idx_reg,
@@ -38,7 +50,7 @@ define_control_handlers! {
         let target =
             &frame.func.data_section.jump_targets[data_offset as usize + target_idx];
         Interpreter::execute_moves(frame, values_ptr, target);
-        next_ip = frame.func.code.as_ptr().add(target.pc as usize);
+        next_ip = ip.byte_offset(target.offset as isize);
     }
     Return {
         data_offset,

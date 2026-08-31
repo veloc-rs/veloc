@@ -54,11 +54,14 @@ pub(crate) enum DispatchExit {
 
 // Opcode boundaries are tail jumps, so preserving callee-saved registers at
 // every boundary is pure overhead. This ABI lets the whole handler chain keep
-// interpreter state in registers without a push/pop pair per instruction.
+// interpreter state in registers without a push/pop pair per instruction. The
+// table pointer is threaded through the chain so handlers do not rematerialize
+// its address before every dispatch.
 pub(crate) type OpcodeHandler<M> = unsafe extern "rust-preserve-none" fn(
     *mut DispatchContext<M>,
     *const Instruction,
     *mut InterpreterValue,
+    *const OpcodeHandlers<M>,
 ) -> DispatchExit;
 
 /// Low-level generator shared by the semantic handler macros below.
@@ -71,18 +74,20 @@ macro_rules! define_handlers {
         $frame:ident,
         $ip:ident,
         $next_ip:ident,
-        $values_ptr:ident;
+        $values_ptr:ident,
+        $handlers:ident;
         $($rest:tt)*
     ) => {
         define_handlers!(@handlers
-            [$context_ptr, $interpreter, $program, $mem, $frame, $ip, $next_ip, $values_ptr]
+            [$context_ptr, $interpreter, $program, $mem, $frame, $ip, $next_ip, $values_ptr,
+             $handlers]
             $($rest)*
         );
     };
 
     (@handlers
         [$context_ptr:ident, $interpreter:ident, $program:ident, $mem:ident, $frame:ident,
-         $ip:ident, $next_ip:ident, $values_ptr:ident]
+         $ip:ident, $next_ip:ident, $values_ptr:ident, $handlers:ident]
     $($(#[$meta:meta])*
         $name:ident {
             $($arg:ident $( : $binding:ident )?),* $(,)?
@@ -102,6 +107,7 @@ macro_rules! define_handlers {
                 $context_ptr: *mut DispatchContext<M>,
                 $ip: *const Instruction,
                 mut $values_ptr: *mut InterpreterValue,
+                $handlers: *const OpcodeHandlers<M>,
             ) -> DispatchExit
             where
                 M: VirtualMemory,
@@ -131,8 +137,8 @@ macro_rules! define_handlers {
                     macro_rules! dispatch_next {
                         ($$next:expr, $$values:expr) => {{
                             let opcode = (*$$next).opcode;
-                            let handler = OpcodeHandlers::<M>::get(opcode);
-                            become handler($context_ptr, $$next, $$values)
+                            let handler = (*$handlers).get(opcode);
+                            become handler($context_ptr, $$next, $$values, $handlers)
                         }};
                     }
                     let inst: Instruction = *$ip;
@@ -157,7 +163,7 @@ macro_rules! define_register_handlers {
     ($($rest:tt)*) => {
         define_handlers! {
             __context_ptr, __interpreter, __program, __mem, __frame,
-            __ip, __next_ip, __values_ptr;
+            __ip, __next_ip, __values_ptr, __handlers;
             $($rest)*
         }
     };
@@ -171,7 +177,7 @@ macro_rules! define_memory_handlers {
     ) => {
         define_handlers! {
             __context_ptr, $interpreter, __program, $mem, $frame,
-            __ip, __next_ip, __values_ptr;
+            __ip, __next_ip, __values_ptr, __handlers;
             $($rest)*
         }
     };
@@ -181,12 +187,12 @@ macro_rules! define_memory_handlers {
 macro_rules! define_control_handlers {
     (
         $interpreter:ident, $program:ident, $frame:ident,
-        $next_ip:ident, $values_ptr:ident;
+        $ip:ident, $next_ip:ident, $values_ptr:ident;
         $($rest:tt)*
     ) => {
         define_handlers! {
             __context_ptr, $interpreter, $program, __mem, $frame,
-            __ip, $next_ip, $values_ptr;
+            $ip, $next_ip, $values_ptr, __handlers;
             $($rest)*
         }
     };
@@ -397,8 +403,9 @@ impl Interpreter {
                 frame: &mut frame,
             };
             let opcode = (*ip).opcode;
-            let handler = OpcodeHandlers::<M>::get(opcode);
-            handler(&mut context, ip, values_ptr)
+            let handlers = &OpcodeHandlers::<M>::TABLE;
+            let handler = handlers.get(opcode);
+            handler(&mut context, ip, values_ptr, handlers)
         };
         match exit {
             DispatchExit::Returned => Ok(()),

@@ -50,15 +50,31 @@ macro_rules! convert_int_to_float_op {
     };
 }
 
-/// Represents a single BrTable target with direct PC and register moves for argument passing
+/// A control-flow target relative to its source instruction.
 #[derive(Debug, Clone, Default)]
+#[repr(C)]
 pub struct JumpTarget {
-    /// Target PC (direct block address)
-    pub pc: u32,
+    /// Signed byte offset from the source instruction.
+    pub offset: i32,
     /// Number of register moves
     pub num_moves: u16,
     /// Offset into regs where moves are stored (as pairs of dst, src)
     pub moves_offset: u32,
+}
+
+const _: () = assert!(core::mem::size_of::<JumpTarget>() == 12);
+
+fn relative_byte_offset(source_pc: usize, target_pc: u32) -> i64 {
+    let source_pc = i64::try_from(source_pc).expect("bytecode source PC overflow");
+    let instruction_offset = i64::from(target_pc) - source_pc;
+    instruction_offset
+        .checked_mul(core::mem::size_of::<Instruction>() as i64)
+        .expect("bytecode jump offset overflow")
+}
+
+fn relative_i32_byte_offset(source_pc: usize, target_pc: u32) -> i32 {
+    i32::try_from(relative_byte_offset(source_pc, target_pc))
+        .expect("bytecode jump offset exceeds i32")
 }
 
 /// Data section stored as u16 words for efficient register access
@@ -334,7 +350,8 @@ struct Compiler<'a> {
     slot_to_offset: SecondaryMap<StackSlot, u32>,
     block_to_pc: SecondaryMap<Block, u32>,
     jump_fixups: Vec<(usize, Block)>,
-    data_fixups: Vec<(usize, Block)>,
+    br_fixups: Vec<(usize, Block, Block)>,
+    data_fixups: Vec<(usize, Block, usize)>,
     param_indices: Vec<Reg>,
 }
 
@@ -360,14 +377,18 @@ impl<'a> Compiler<'a> {
             slot_to_offset,
             block_to_pc: SecondaryMap::new(),
             jump_fixups: Vec::new(),
+            br_fixups: Vec::new(),
             data_fixups: Vec::new(),
             param_indices: Vec::new(),
         }
     }
 
-    fn push_target(&mut self, call: veloc_ir::types::BlockCall) -> u32 {
-        let target_block = self.func.dfg.block_calls[call].block;
-        let moves = calculate_moves(self.func, call, &mut self.mapper);
+    fn push_target(
+        &mut self,
+        target_block: Block,
+        moves: Vec<(Reg, Reg)>,
+        source_pc: usize,
+    ) -> u32 {
         let num_moves = moves.len() as u16;
         let moves_offset = if num_moves == 0 {
             0
@@ -381,12 +402,13 @@ impl<'a> Compiler<'a> {
         };
 
         let br_offset = self.data_section.add_jump_target(JumpTarget {
-            pc: 0,
+            offset: 0,
             num_moves,
             moves_offset,
         });
 
-        self.data_fixups.push((br_offset as usize, target_block));
+        self.data_fixups
+            .push((br_offset as usize, target_block, source_pc));
         br_offset
     }
 
@@ -723,27 +745,40 @@ impl<'a> Compiler<'a> {
             emit::Jump(&mut self.code, 0);
             self.jump_fixups.push((inst_idx, target_block));
         } else {
-            let id = self.push_target(dest);
+            let id = self.push_target(target_block, moves, self.code.len());
             emit::JumpWithMoves(&mut self.code, id);
         }
     }
 
     fn emit_br(&mut self, condition: Value, then_dest: BlockCall, else_dest: BlockCall) {
-        // Build targets first, then consume condition to avoid freeing it before
-        // edge-argument move computation.
-        let then_idx = self.push_target(then_dest);
-        let else_idx = self.push_target(else_dest);
+        let then_block = self.func.dfg.block_calls[then_dest].block;
+        let then_moves = calculate_moves(self.func, then_dest, &mut self.mapper);
+        let else_block = self.func.dfg.block_calls[else_dest].block;
+        let else_moves = calculate_moves(self.func, else_dest, &mut self.mapper);
+        let source_pc = self.code.len();
         let cond_reg = self.mapper.use_val(condition);
-        emit::Br(&mut self.code, cond_reg, then_idx, else_idx);
+
+        if then_moves.is_empty() && else_moves.is_empty() {
+            emit::Br(&mut self.code, cond_reg, 0, 0);
+            self.br_fixups
+                .push((source_pc, then_block, else_block));
+        } else {
+            let then_idx = self.push_target(then_block, then_moves, source_pc);
+            let else_idx = self.push_target(else_block, else_moves, source_pc);
+            emit::BrWithMoves(&mut self.code, cond_reg, then_idx, else_idx);
+        }
     }
 
     fn emit_br_table(&mut self, index: Value, table: veloc_ir::JumpTable) {
         let table_data = self.func.dfg.jump_tables[table].targets.clone();
         let num_targets = table_data.len() as u32;
+        let source_pc = self.code.len();
 
         let mut br_offset = 0;
         for (i, &target_call) in table_data.iter().enumerate() {
-            let id = self.push_target(target_call);
+            let target_block = self.func.dfg.block_calls[target_call].block;
+            let moves = calculate_moves(self.func, target_call, &mut self.mapper);
+            let id = self.push_target(target_block, moves, source_pc);
             if i == 0 {
                 br_offset = id;
             }
@@ -1089,13 +1124,23 @@ impl<'a> Compiler<'a> {
         // Patch jump targets
         for (inst_idx, target_block) in self.jump_fixups {
             let target_pc = self.block_to_pc[target_block];
-            self.code[inst_idx].imm64 = target_pc as u64;
+            let byte_offset = relative_byte_offset(inst_idx, target_pc);
+            self.code[inst_idx].imm64 = byte_offset as u64;
+        }
+
+        // Patch direct conditional branch targets.
+        for (inst_idx, then_block, else_block) in self.br_fixups {
+            let then_offset = relative_i32_byte_offset(inst_idx, self.block_to_pc[then_block]);
+            let else_offset = relative_i32_byte_offset(inst_idx, self.block_to_pc[else_block]);
+            self.code[inst_idx].imm64 =
+                u64::from(then_offset as u32) | (u64::from(else_offset as u32) << 32);
         }
 
         // Patch data section targets
-        for (data_idx, target_block) in self.data_fixups {
+        for (data_idx, target_block, source_pc) in self.data_fixups {
             let target_pc = self.block_to_pc[target_block];
-            self.data_section.jump_targets[data_idx].pc = target_pc;
+            self.data_section.jump_targets[data_idx].offset =
+                relative_i32_byte_offset(source_pc, target_pc);
         }
 
         CompiledFunction {

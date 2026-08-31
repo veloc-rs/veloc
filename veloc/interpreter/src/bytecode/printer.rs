@@ -365,20 +365,34 @@ impl<'a> InstPrinter<'a> {
             }
 
             // Control flow
-            DecodedInstruction::Jump { pc: target_pc } => {
+            DecodedInstruction::Jump { offset } => {
+                let target_pc = pc as i64 + offset / core::mem::size_of::<Instruction>() as i64;
                 write!(f, " pc={}", target_pc)
             }
 
             DecodedInstruction::JumpWithMoves { data_offset } => {
                 if (data_offset as usize) < self.data_section.jump_targets.len() {
                     let target = &self.data_section.jump_targets[data_offset as usize];
-                    write!(f, " pc={}", target.pc)?;
+                    let target_pc = pc as i64
+                        + i64::from(target.offset) / core::mem::size_of::<Instruction>() as i64;
+                    write!(f, " pc={}", target_pc)?;
                     fmt_moves(f, self.data_section, target)?;
                 }
                 Ok(())
             }
 
             DecodedInstruction::Br {
+                cond,
+                then_offset,
+                else_offset,
+            } => {
+                let instruction_size = core::mem::size_of::<Instruction>() as i64;
+                let then_pc = pc as i64 + i64::from(then_offset) / instruction_size;
+                let else_pc = pc as i64 + i64::from(else_offset) / instruction_size;
+                write!(f, " {} then={} else={}", cond, then_pc, else_pc)
+            }
+
+            DecodedInstruction::BrWithMoves {
                 cond,
                 then_idx,
                 else_idx,
@@ -397,12 +411,14 @@ impl<'a> InstPrinter<'a> {
                 for i in 0..num {
                     if idx + i < self.data_section.jump_targets.len() {
                         let target = &self.data_section.jump_targets[idx + i];
+                        let target_pc = pc as i64
+                            + i64::from(target.offset) / core::mem::size_of::<Instruction>() as i64;
                         write!(
                             f,
                             "\n        [{}{}] pc={}",
                             idx + i,
                             if i == 0 { " (default)" } else { "" },
-                            target.pc
+                            target_pc
                         )?;
                         fmt_moves(f, self.data_section, target)?;
                     }
