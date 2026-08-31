@@ -202,6 +202,7 @@ impl IntoRawReg for ScalarType {
 /// Represents a fixed-size bytecode instruction (16 bytes)
 /// Layout: opcode(1) + pad(1) + dst(2) + src1(2) + src2(2) + imm64(8) = 16 bytes
 #[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub(crate) struct Instruction {
     /// Opcode
     pub opcode: Opcode,
@@ -214,6 +215,8 @@ pub(crate) struct Instruction {
     /// 64-bit immediate data (lo32/hi32)
     pub imm64: u64,
 }
+
+const _: () = assert!(core::mem::size_of::<Instruction>() == 16);
 
 impl Instruction {
     /// Get low 32 bits of immediate
@@ -247,6 +250,26 @@ macro_rules! define_opcodes {
             $($name),*
         }
 
+        impl Opcode {
+            /// Number of entries in the dense opcode space.
+            pub(crate) const COUNT: usize = 0 $(+ { let _ = stringify!($name); 1 })*;
+        }
+
+        /// Direct-threaded dispatch table. Keeping this generated beside
+        /// `Opcode` guarantees that discriminants and handler slots cannot drift.
+        pub(crate) struct OpcodeHandlers<M>(core::marker::PhantomData<fn() -> M>);
+
+        impl<M: crate::interpreter::VirtualMemory> OpcodeHandlers<M> {
+            pub(crate) const TABLE: [crate::interpreter::OpcodeHandler<M>; Opcode::COUNT] = [
+                $(crate::interpreter::handlers::$name::<M>),*
+            ];
+
+            #[inline(always)]
+            pub(crate) unsafe fn get(opcode: Opcode) -> crate::interpreter::OpcodeHandler<M> {
+                unsafe { *Self::TABLE.get_unchecked(opcode as usize) }
+            }
+        }
+
         /// Decoded view of a bytecode instruction with logical field names.
         ///
         /// Obtained via [`Instruction::decode`]. Each variant mirrors the argument
@@ -258,6 +281,23 @@ macro_rules! define_opcodes {
             $(
                 $name { $($arg: $ty),* }
             ),*
+        }
+
+        /// Per-opcode typed decoders used by direct-threaded handlers. Unlike
+        /// `Instruction::decode`, these functions contain no opcode dispatch.
+        #[allow(non_snake_case)]
+        pub(crate) mod decode {
+            use super::*;
+
+            $(
+                #[inline(always)]
+                pub(crate) fn $name(inst: Instruction) -> ($($ty,)*) {
+                    debug_assert_eq!(inst.opcode, Opcode::$name);
+                    ($(
+                        define_opcodes!(@decode_field inst, $arg, $ty, $($field)?),
+                    )*)
+                }
+            )*
         }
 
         impl Instruction {

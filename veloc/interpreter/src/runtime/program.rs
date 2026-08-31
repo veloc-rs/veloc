@@ -116,8 +116,10 @@ impl Program {
             env: *mut u8,
             args_results: *mut crate::value::InterpreterValue,
             arity: usize,
+            buffer_len: usize,
         ) {
             unsafe {
+                assert!(buffer_len > 0, "raw host function requires one result slot");
                 let func = &*(env as *const HostFunction);
                 let args_slice = core::slice::from_raw_parts(args_results, arity);
                 let res = func(args_slice);
@@ -139,6 +141,7 @@ impl Program {
             env: *mut u8,
             args_results: *mut crate::value::InterpreterValue,
             arity: usize,
+            buffer_len: usize,
         ) where
             F: Fn(Args) -> Rets + Send + Sync + 'static,
             Args: HostFuncArgs,
@@ -149,7 +152,7 @@ impl Program {
                 let args_slice = core::slice::from_raw_parts(args_results, arity);
                 let args = Args::decode(args_slice);
                 let rets = func(args);
-                let results_slice = core::slice::from_raw_parts_mut(args_results, 8.max(arity));
+                let results_slice = core::slice::from_raw_parts_mut(args_results, buffer_len);
                 rets.encode(results_slice);
             }
         }
@@ -161,7 +164,12 @@ impl Program {
         &mut self,
         name: String,
         handler: F,
-        trampoline: unsafe extern "C" fn(*mut u8, *mut crate::value::InterpreterValue, usize),
+        trampoline: unsafe extern "C" fn(
+            *mut u8,
+            *mut crate::value::InterpreterValue,
+            usize,
+            usize,
+        ),
     ) -> HostFuncId
     where
         F: Send + Sync + 'static,

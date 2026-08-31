@@ -9,6 +9,8 @@ pub enum Error {
     OutOfBounds,
     /// 执行了 unreachable 指令
     Unreachable,
+    /// 解释器的固定栈空间不足
+    StackOverflow,
     /// 通用错误消息
     Message(String),
 }

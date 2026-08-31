@@ -11,8 +11,12 @@ use cranelift_entity::entity_impl;
 pub type HostFunction = Arc<dyn Fn(&[InterpreterValue]) -> InterpreterValue + Send + Sync>;
 
 /// Trampoline function type for calling host functions
-pub type TrampolineFn =
-    unsafe extern "C" fn(env: *mut u8, args_results: *mut InterpreterValue, arity: usize);
+pub type TrampolineFn = unsafe extern "C" fn(
+    env: *mut u8,
+    args_results: *mut InterpreterValue,
+    param_count: usize,
+    buffer_len: usize,
+);
 
 /// Internal representation of a host function
 pub struct HostFunctionInner {
@@ -44,7 +48,12 @@ impl HostFunc {
     /// Call the host function with the given arguments
     pub fn call(&self, args_results: &mut [InterpreterValue], param_count: usize) {
         unsafe {
-            (self.0.handler)(self.0.env, args_results.as_mut_ptr(), param_count);
+            (self.0.handler)(
+                self.0.env,
+                args_results.as_mut_ptr(),
+                param_count,
+                args_results.len(),
+            );
         }
     }
 }
