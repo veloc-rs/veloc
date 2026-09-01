@@ -25,7 +25,7 @@ macro_rules! unary_dispatch_op {
 }
 
 macro_rules! convert_op {
-    ($arg:expr, $dst:expr, $code:expr, $from_ty:expr, $to_ty:expr, 
+    ($arg:expr, $dst:expr, $code:expr, $from_ty:expr, $to_ty:expr,
      $f32_i32:ident, $f64_i32:ident, $f32_i64:ident, $f64_i64:ident) => {
         match ($from_ty, $to_ty) {
             (ScalarType::F32, ScalarType::I32) => emit::$f32_i32($code, $dst, $arg),
@@ -38,7 +38,7 @@ macro_rules! convert_op {
 }
 
 macro_rules! convert_int_to_float_op {
-    ($arg:expr, $dst:expr, $code:expr, $from_ty:expr, $to_ty:expr, 
+    ($arg:expr, $dst:expr, $code:expr, $from_ty:expr, $to_ty:expr,
      $i32_f32:ident, $i64_f32:ident, $i32_f64:ident, $i64_f64:ident) => {
         match ($from_ty, $to_ty) {
             (ScalarType::I32, ScalarType::F32) => emit::$i32_f32($code, $dst, $arg),
@@ -72,18 +72,13 @@ fn relative_byte_offset(source_pc: usize, target_pc: u32) -> i64 {
         .expect("bytecode jump offset overflow")
 }
 
-fn relative_i32_byte_offset(source_pc: usize, target_pc: u32) -> i32 {
-    i32::try_from(relative_byte_offset(source_pc, target_pc))
-        .expect("bytecode jump offset exceeds i32")
-}
-
 /// Data section stored as u16 words for efficient register access
 /// For Jump targets, they are stored in a separate Vec<JumpTarget>
 #[derive(Debug, Clone, Default)]
 pub struct DataSection {
     /// Register lists stored as Reg (counts are encoded in instructions)
     pub regs: Vec<Reg>,
-    /// Jump targets with direct PC and moves
+    /// Jump targets with relative offsets and register moves
     pub jump_targets: Vec<JumpTarget>,
 }
 
@@ -160,15 +155,66 @@ pub struct CompiledFunction {
 
 struct ValueMapper<'a> {
     map: SecondaryMap<Value, Reg>,
-    free_registers: Vec<Reg>,
     next_register: u16,
-    intervals: &'a SecondaryMap<Value, LiveInterval>,
-    block_params: &'a std::collections::HashSet<Value>,
+    move_temp: Option<Reg>,
     fused_values: &'a std::collections::HashSet<Value>,
 }
 
 impl<'a> ValueMapper<'a> {
-    fn use_val(&self, val: Value) -> Reg {
+    fn new(
+        func: &Function,
+        intervals: &SecondaryMap<Value, LiveInterval>,
+        fused_values: &'a std::collections::HashSet<Value>,
+    ) -> Self {
+        let mut values: Vec<Value> = func
+            .dfg
+            .values
+            .keys()
+            .filter(|value| !fused_values.contains(value) && !intervals[*value].ranges.is_empty())
+            .collect();
+        values.sort_by_key(|value| intervals[*value].start());
+
+        // Allocate every value before emission so block parameters keep one
+        // stable destination register on all incoming edges. Treat interval
+        // holes as live: this is slightly conservative, but keeps the linear
+        // scan simple and guarantees that reused registers never interfere.
+        let mut map = SecondaryMap::new();
+        let mut active = Vec::<(u32, Reg)>::new();
+        let mut free_registers = Vec::new();
+        let mut next_register = 1u16;
+
+        for value in values {
+            let start = intervals[value].start();
+            let mut i = 0;
+            while i < active.len() {
+                if active[i].0 <= start {
+                    let (_, reg) = active.swap_remove(i);
+                    free_registers.push(reg);
+                } else {
+                    i += 1;
+                }
+            }
+
+            let reg = free_registers.pop().unwrap_or_else(|| {
+                let reg = Reg(next_register);
+                next_register = next_register
+                    .checked_add(1)
+                    .expect("interpreter register space exhausted");
+                reg
+            });
+            map[value] = reg;
+            active.push((intervals[value].end(), reg));
+        }
+
+        Self {
+            map,
+            next_register,
+            move_temp: None,
+            fused_values,
+        }
+    }
+
+    fn reg(&self, val: Value) -> Reg {
         let reg = self.map[val];
         if reg != Reg::NULL {
             return reg;
@@ -177,70 +223,20 @@ impl<'a> ValueMapper<'a> {
         if self.fused_values.contains(&val) {
             panic!("Value {:?} is fused as constant and has no register", val);
         }
-        panic!("Value {:?} used before defined or mapping missing", val);
+        panic!("Value {:?} has no register mapping", val);
     }
 
-    fn free_if_last_use(&mut self, val: Value, current_pc: u32) {
-        // Block params must keep stable registers across all incoming edges.
-        if self.block_params.contains(&val) {
-            return;
+    fn move_temp(&mut self) -> Reg {
+        if let Some(reg) = self.move_temp {
+            return reg;
         }
-
-        if let Some(range) = self.intervals.get(val) {
-            if current_pc >= range.end().saturating_sub(1) {
-                let reg = self.map[val];
-                if reg != Reg::NULL {
-                    self.map[val] = Reg::NULL;
-                    self.free_registers.push(reg);
-                }
-            }
-        }
-    }
-
-    fn alloc_val(&mut self, val: Value) -> Reg {
-        // Assert that we are not re-allocating a register for the same value
-        debug_assert_eq!(
-            self.map[val],
-            Reg::NULL,
-            "Value {:?} already has a register assigned",
-            val
-        );
-
-        let reg = self.free_registers.pop().unwrap_or_else(|| {
-            let r = Reg(self.next_register);
-            self.next_register += 1;
-            r
-        });
-
-        self.map[val] = reg;
+        let reg = Reg(self.next_register);
+        self.next_register = self
+            .next_register
+            .checked_add(1)
+            .expect("interpreter register space exhausted");
+        self.move_temp = Some(reg);
         reg
-    }
-
-    fn use_block_param(&mut self, param: Value) -> Reg {
-        if self.map[param] != Reg::NULL {
-            return self.map[param];
-        }
-
-        // All block parameters should have been pre-allocated in apply_rpo,
-        // but for forward jumps we might not have reached that block yet.
-        self.alloc_val(param)
-    }
-}
-
-impl<'a> ValueMapper<'a> {
-    fn new(
-        intervals_map: &'a SecondaryMap<Value, LiveInterval>,
-        block_params: &'a std::collections::HashSet<Value>,
-        fused_values: &'a std::collections::HashSet<Value>,
-    ) -> Self {
-        Self {
-            map: SecondaryMap::new(),
-            free_registers: Vec::new(),
-            next_register: 1,
-            intervals: intervals_map,
-            block_params,
-            fused_values,
-        }
     }
 }
 
@@ -343,7 +339,6 @@ fn identify_fused_values(func: &Function, rpo: &[Block]) -> std::collections::Ha
 
 struct Compiler<'a> {
     func: &'a Function,
-    liveness: &'a veloc_analyzer::Liveness,
     mapper: ValueMapper<'a>,
     code: Vec<Instruction>,
     data_section: DataSection,
@@ -356,11 +351,7 @@ struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    fn new(
-        func: &'a Function,
-        liveness: &'a veloc_analyzer::Liveness,
-        mapper: ValueMapper<'a>,
-    ) -> Self {
+    fn new(func: &'a Function, mapper: ValueMapper<'a>) -> Self {
         let mut slot_to_offset = SecondaryMap::new();
         let mut current_offset = 0u32;
         for (id, data) in &func.stack_slots {
@@ -370,7 +361,6 @@ impl<'a> Compiler<'a> {
 
         Self {
             func,
-            liveness,
             mapper,
             code: Vec::new(),
             data_section: DataSection::new(),
@@ -423,18 +413,18 @@ impl<'a> Compiler<'a> {
 
             if rhs_fused {
                 let imm = self.func.dfg.as_const(args[1]).unwrap().as_i64().unwrap();
-                let lhs = self.mapper.use_val(args[0]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let dst = self.mapper.reg(res);
                 imm_f(&mut self.code, dst, lhs, imm);
             } else if commutative && lhs_fused {
                 let imm = self.func.dfg.as_const(args[0]).unwrap().as_i64().unwrap();
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 imm_f(&mut self.code, dst, rhs, imm);
             } else {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 reg_f(&mut self.code, dst, lhs, rhs);
             }
         };
@@ -467,9 +457,9 @@ impl<'a> Compiler<'a> {
                 false,
             ),
             (Type::I32, IrOpcode::IMul) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I32Mul(&mut self.code, dst, lhs, rhs);
             }
             (Type::I32, IrOpcode::IAnd) => bin(
@@ -503,39 +493,39 @@ impl<'a> Compiler<'a> {
                 false,
             ),
             (Type::I32, IrOpcode::IDivS) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I32DivS(&mut self.code, dst, lhs, rhs);
             }
             (Type::I32, IrOpcode::IDivU) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I32DivU(&mut self.code, dst, lhs, rhs);
             }
             (Type::I32, IrOpcode::IRemS) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I32RemS(&mut self.code, dst, lhs, rhs);
             }
             (Type::I32, IrOpcode::IRemU) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I32RemU(&mut self.code, dst, lhs, rhs);
             }
             (Type::I32, IrOpcode::IRotl) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I32RotL(&mut self.code, dst, lhs, rhs);
             }
             (Type::I32, IrOpcode::IRotr) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I32RotR(&mut self.code, dst, lhs, rhs);
             }
             (Type::I64, IrOpcode::IAdd) => bin(
@@ -549,9 +539,9 @@ impl<'a> Compiler<'a> {
                 false,
             ),
             (Type::I64, IrOpcode::IMul) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I64Mul(&mut self.code, dst, lhs, rhs);
             }
             (Type::I64, IrOpcode::IAnd) => bin(
@@ -585,45 +575,45 @@ impl<'a> Compiler<'a> {
                 false,
             ),
             (Type::I64, IrOpcode::IDivS) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I64DivS(&mut self.code, dst, lhs, rhs);
             }
             (Type::I64, IrOpcode::IDivU) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I64DivU(&mut self.code, dst, lhs, rhs);
             }
             (Type::I64, IrOpcode::IRemS) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I64RemS(&mut self.code, dst, lhs, rhs);
             }
             (Type::I64, IrOpcode::IRemU) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I64RemU(&mut self.code, dst, lhs, rhs);
             }
             (Type::I64, IrOpcode::IRotl) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I64RotL(&mut self.code, dst, lhs, rhs);
             }
             (Type::I64, IrOpcode::IRotr) => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 emit::I64RotR(&mut self.code, dst, lhs, rhs);
             }
             (ty, opcode) if ty.is_float() => {
-                let lhs = self.mapper.use_val(args[0]);
-                let rhs = self.mapper.use_val(args[1]);
-                let dst = self.mapper.alloc_val(res);
+                let lhs = self.mapper.reg(args[0]);
+                let rhs = self.mapper.reg(args[1]);
+                let dst = self.mapper.reg(res);
                 let is_f32 = ty == Type::F32;
                 match (opcode, is_f32) {
                     (IrOpcode::FAdd, true) => emit::F32Add(&mut self.code, dst, lhs, rhs),
@@ -650,11 +640,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_icmp(&mut self, inst: Inst, kind: veloc_ir::IntCC, args: &[Value; 2]) {
-        let lhs = self.mapper.use_val(args[0]);
-        let rhs = self.mapper.use_val(args[1]);
-        let dst = self
-            .mapper
-            .alloc_val(self.func.dfg.first_result(inst).unwrap());
+        let lhs = self.mapper.reg(args[0]);
+        let rhs = self.mapper.reg(args[1]);
+        let dst = self.mapper.reg(self.func.dfg.first_result(inst).unwrap());
         let ty = self.func.dfg.value_type(args[0]);
 
         use veloc_ir::IntCC::*;
@@ -692,11 +680,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_fcmp(&mut self, inst: Inst, kind: veloc_ir::FloatCC, args: &[Value; 2]) {
-        let lhs = self.mapper.use_val(args[0]);
-        let rhs = self.mapper.use_val(args[1]);
-        let dst = self
-            .mapper
-            .alloc_val(self.func.dfg.first_result(inst).unwrap());
+        let lhs = self.mapper.reg(args[0]);
+        let rhs = self.mapper.reg(args[1]);
+        let dst = self.mapper.reg(self.func.dfg.first_result(inst).unwrap());
         let ty = self.func.dfg.value_type(args[0]);
 
         use veloc_ir::FloatCC::*;
@@ -718,9 +704,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_load(&mut self, inst: Inst, ptr: Value, offset: u32) {
-        let ptr_reg = self.mapper.use_val(ptr);
+        let ptr_reg = self.mapper.reg(ptr);
         let res = self.func.dfg.first_result(inst).unwrap();
-        let dst = self.mapper.alloc_val(res);
+        let dst = self.mapper.reg(res);
         let ty = self.val_ty(res);
 
         match ty {
@@ -756,12 +742,11 @@ impl<'a> Compiler<'a> {
         let else_block = self.func.dfg.block_calls[else_dest].block;
         let else_moves = calculate_moves(self.func, else_dest, &mut self.mapper);
         let source_pc = self.code.len();
-        let cond_reg = self.mapper.use_val(condition);
+        let cond_reg = self.mapper.reg(condition);
 
         if then_moves.is_empty() && else_moves.is_empty() {
             emit::Br(&mut self.code, cond_reg, 0, 0);
-            self.br_fixups
-                .push((source_pc, then_block, else_block));
+            self.br_fixups.push((source_pc, then_block, else_block));
         } else {
             let then_idx = self.push_target(then_block, then_moves, source_pc);
             let else_idx = self.push_target(else_block, else_moves, source_pc);
@@ -784,14 +769,13 @@ impl<'a> Compiler<'a> {
             }
         }
         // Consume index after building all targets to avoid premature free.
-        let index_reg = self.mapper.use_val(index);
+        let index_reg = self.mapper.reg(index);
         emit::BrTable(&mut self.code, index_reg, br_offset, num_targets);
     }
 
     fn emit_return(&mut self, values: veloc_ir::ValueList) {
         let ret_vals = self.func.dfg.get_value_list(values);
-        let ret_regs: SmallVec<[Reg; 2]> =
-            ret_vals.iter().map(|&v| self.mapper.use_val(v)).collect();
+        let ret_regs: SmallVec<[Reg; 2]> = ret_vals.iter().map(|&v| self.mapper.reg(v)).collect();
         let num_vals = ret_regs.len() as u32;
         let data_offset = self.data_section.add_return_regs(&ret_regs);
         emit::Return(&mut self.code, data_offset, num_vals);
@@ -803,13 +787,13 @@ impl<'a> Compiler<'a> {
             .dfg
             .get_value_list(args)
             .iter()
-            .map(|&v| self.mapper.use_val(v))
+            .map(|&v| self.mapper.reg(v))
             .collect();
 
         let res_vals = self.func.dfg.inst_results(inst);
         let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
-            ret_regs.push(self.mapper.alloc_val(v));
+            ret_regs.push(self.mapper.reg(v));
         }
 
         let data_offset = self.data_section.add_call_data(&ret_regs, &args_regs);
@@ -823,19 +807,19 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_call_indirect(&mut self, inst: Inst, ptr: Value, args: ValueList) {
-        let ptr_reg = self.mapper.use_val(ptr);
+        let ptr_reg = self.mapper.reg(ptr);
         let args_regs: SmallVec<[Reg; 4]> = self
             .func
             .dfg
             .get_value_list(args)
             .iter()
-            .map(|&v| self.mapper.use_val(v))
+            .map(|&v| self.mapper.reg(v))
             .collect();
 
         let res_vals = self.func.dfg.inst_results(inst);
         let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
-            ret_regs.push(self.mapper.alloc_val(v));
+            ret_regs.push(self.mapper.reg(v));
         }
         let data_offset = self.data_section.add_call_data(&ret_regs, &args_regs);
         emit::CallIndirect(
@@ -853,12 +837,12 @@ impl<'a> Compiler<'a> {
             .dfg
             .get_value_list(args)
             .iter()
-            .map(|&v| self.mapper.use_val(v))
+            .map(|&v| self.mapper.reg(v))
             .collect();
         let res_vals = self.func.dfg.inst_results(inst);
         let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
-            ret_regs.push(self.mapper.alloc_val(v));
+            ret_regs.push(self.mapper.reg(v));
         }
 
         if ret_regs.len() == 1
@@ -893,7 +877,7 @@ impl<'a> Compiler<'a> {
                             ScalarType::I32 => val as i32 as i64,
                             _ => panic!("Unsupported ExtendS from_ty: {:?}", from_ty),
                         };
-                        let dst = self.mapper.alloc_val(res);
+                        let dst = self.mapper.reg(res);
                         emit::Iconst(&mut self.code, dst, res_val as u64);
                         return;
                     }
@@ -904,12 +888,12 @@ impl<'a> Compiler<'a> {
                             ScalarType::I32 => (val as u32) as u64 as i64,
                             _ => panic!("Unsupported ExtendU from_ty: {:?}", from_ty),
                         };
-                        let dst = self.mapper.alloc_val(res);
+                        let dst = self.mapper.reg(res);
                         emit::Iconst(&mut self.code, dst, res_val as u64);
                         return;
                     }
                     IrOpcode::Wrap => {
-                        let dst = self.mapper.alloc_val(res);
+                        let dst = self.mapper.reg(res);
                         emit::Iconst(&mut self.code, dst, (val as u32) as u64);
                         return;
                     }
@@ -920,7 +904,7 @@ impl<'a> Compiler<'a> {
                     IrOpcode::FloatDemote => {
                         if let Some(f64_val) = c.as_f64() {
                             let f = f64_val as f32;
-                            let dst = self.mapper.alloc_val(res);
+                            let dst = self.mapper.reg(res);
                             emit::Fconst(&mut self.code, dst, f.to_bits() as u64);
                             return;
                         }
@@ -928,7 +912,7 @@ impl<'a> Compiler<'a> {
                     IrOpcode::FloatPromote => {
                         if let Some(f32_val) = c.as_f32() {
                             let f = f32_val as f64;
-                            let dst = self.mapper.alloc_val(res);
+                            let dst = self.mapper.reg(res);
                             emit::Fconst(&mut self.code, dst, f.to_bits());
                             return;
                         }
@@ -938,8 +922,8 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        let arg_reg = self.mapper.use_val(arg);
-        let dst = self.mapper.alloc_val(res);
+        let arg_reg = self.mapper.reg(arg);
+        let dst = self.mapper.reg(res);
 
         match opcode {
             IrOpcode::ExtendS => {
@@ -1103,8 +1087,8 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_store(&mut self, ptr: Value, value: Value, offset: u32) {
-        let ptr_reg = self.mapper.use_val(ptr);
-        let val_reg = self.mapper.use_val(value);
+        let ptr_reg = self.mapper.reg(ptr);
+        let val_reg = self.mapper.reg(value);
         let ty = self.val_ty(value);
 
         match ty {
@@ -1130,8 +1114,12 @@ impl<'a> Compiler<'a> {
 
         // Patch direct conditional branch targets.
         for (inst_idx, then_block, else_block) in self.br_fixups {
-            let then_offset = relative_i32_byte_offset(inst_idx, self.block_to_pc[then_block]);
-            let else_offset = relative_i32_byte_offset(inst_idx, self.block_to_pc[else_block]);
+            let then_offset: i32 = relative_byte_offset(inst_idx, self.block_to_pc[then_block])
+                .try_into()
+                .expect("conditional branch offset exceeds i32");
+            let else_offset: i32 = relative_byte_offset(inst_idx, self.block_to_pc[else_block])
+                .try_into()
+                .expect("conditional branch offset exceeds i32");
             self.code[inst_idx].imm64 =
                 u64::from(then_offset as u32) | (u64::from(else_offset as u32) << 32);
         }
@@ -1140,7 +1128,9 @@ impl<'a> Compiler<'a> {
         for (data_idx, target_block, source_pc) in self.data_fixups {
             let target_pc = self.block_to_pc[target_block];
             self.data_section.jump_targets[data_idx].offset =
-                relative_i32_byte_offset(source_pc, target_pc);
+                relative_byte_offset(source_pc, target_pc)
+                    .try_into()
+                    .expect("data-section jump offset exceeds i32");
         }
 
         CompiledFunction {
@@ -1169,16 +1159,10 @@ pub(crate) fn compile_function(
     let rpo = func.layout.compute_rpo(entry);
 
     let liveness = analyze_liveness(func);
-    let block_params: std::collections::HashSet<Value> = func
-        .layout
-        .blocks
-        .values()
-        .flat_map(|b| b.params.iter().copied())
-        .collect();
     let fused_values = identify_fused_values(func, &rpo);
 
-    let mapper = ValueMapper::new(&liveness.intervals, &block_params, &fused_values);
-    let mut compiler = Compiler::new(func, &liveness, mapper);
+    let mapper = ValueMapper::new(func, &liveness.intervals, &fused_values);
+    let mut compiler = Compiler::new(func, mapper);
 
     compiler.apply_rpo(&rpo);
     compiler.finish(module_id, func_id)
@@ -1188,59 +1172,44 @@ impl<'a> Compiler<'a> {
     fn apply_rpo(&mut self, rpo: &[Block]) {
         let entry_block = self.func.entry_block.unwrap();
         for &param in &self.func.layout.blocks[entry_block].params {
-            self.param_indices.push(self.mapper.alloc_val(param));
+            self.param_indices.push(self.mapper.reg(param));
         }
 
         for &block in rpo {
             self.block_to_pc[block] = self.code.len() as u32;
             let block_data = &self.func.layout.blocks[block];
 
-            if block != entry_block {
-                for &param in &block_data.params {
-                    if self.mapper.map[param] == Reg::NULL {
-                        self.mapper.alloc_val(param);
-                    }
-                }
-            }
-
             for &inst in &block_data.insts {
                 self.compile_inst(inst);
-            }
-
-            // Also free parameters if they are not used anymore after this block
-            let pc = self.liveness.block_ends[block];
-            for &param in &block_data.params {
-                self.mapper.free_if_last_use(param, pc);
             }
         }
     }
 
     fn compile_inst(&mut self, inst: Inst) {
-        let pc = self.liveness.inst_pcs[inst];
         let idata = &self.func.dfg.instructions[inst];
 
         match idata {
             InstructionData::Iconst { value } => {
                 let res = self.func.dfg.first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
-                    let dst = self.mapper.alloc_val(res);
+                    let dst = self.mapper.reg(res);
                     emit::Iconst(&mut self.code, dst, *value);
                 }
             }
             InstructionData::Fconst { value } => {
                 let res = self.func.dfg.first_result(inst).unwrap();
-                let dst = self.mapper.alloc_val(res);
+                let dst = self.mapper.reg(res);
                 emit::Fconst(&mut self.code, dst, *value);
             }
             InstructionData::Vconst { pool_id } => {
                 let res = self.func.dfg.first_result(inst).unwrap();
-                let dst = self.mapper.alloc_val(res);
+                let dst = self.mapper.reg(res);
                 emit::Vconst(&mut self.code, dst, pool_id.as_u32());
             }
             InstructionData::Bconst { value } => {
                 let res = self.func.dfg.first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
-                    let dst = self.mapper.alloc_val(res);
+                    let dst = self.mapper.reg(res);
                     emit::Bconst(&mut self.code, dst, *value);
                 }
             }
@@ -1249,13 +1218,13 @@ impl<'a> Compiler<'a> {
             InstructionData::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args),
             InstructionData::StackAddr { slot, offset, .. } => {
                 let res = self.func.dfg.first_result(inst).unwrap();
-                let dst = self.mapper.alloc_val(res);
+                let dst = self.mapper.reg(res);
                 let base_offset = self.slot_to_offset[*slot];
                 emit::StackAddr(&mut self.code, dst, base_offset + *offset);
             }
             InstructionData::StackLoad { slot, offset } => {
                 let res = self.func.dfg.first_result(inst).unwrap();
-                let dst = self.mapper.alloc_val(res);
+                let dst = self.mapper.reg(res);
                 let base_offset = self.slot_to_offset[*slot];
                 let ty = self.val_ty(res);
                 emit::StackLoad(&mut self.code, dst, ty, base_offset + *offset);
@@ -1267,7 +1236,7 @@ impl<'a> Compiler<'a> {
                 ..
             } => {
                 let base_offset = self.slot_to_offset[*slot];
-                let val_reg = self.mapper.use_val(*value);
+                let val_reg = self.mapper.reg(*value);
                 let ty = self.val_ty(*value);
                 emit::StackStore(&mut self.code, val_reg, ty, base_offset + *offset);
             }
@@ -1287,9 +1256,9 @@ impl<'a> Compiler<'a> {
             InstructionData::Return { values } => self.emit_return(*values),
             InstructionData::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg),
             InstructionData::IntToPtr { arg } | InstructionData::PtrToInt { arg, .. } => {
-                let arg_reg = self.mapper.use_val(*arg);
+                let arg_reg = self.mapper.reg(*arg);
                 let res = self.func.dfg.first_result(inst).unwrap();
-                let dst = self.mapper.alloc_val(res);
+                let dst = self.mapper.reg(res);
                 emit::RegMove(&mut self.code, dst, arg_reg);
             }
             InstructionData::Call { func_id, args, .. } => self.emit_call(inst, *func_id, *args),
@@ -1300,10 +1269,10 @@ impl<'a> Compiler<'a> {
                 intrinsic, args, ..
             } => self.emit_call_intrinsic(inst, *intrinsic, *args),
             InstructionData::PtrIndex { ptr, index, imm_id } => {
-                let ptr_reg = self.mapper.use_val(*ptr);
-                let index_reg = self.mapper.use_val(*index);
+                let ptr_reg = self.mapper.reg(*ptr);
+                let index_reg = self.mapper.reg(*index);
                 let res = self.func.dfg.first_result(inst).unwrap();
-                let dst = self.mapper.alloc_val(res);
+                let dst = self.mapper.reg(res);
                 let imm = self.func.dfg.get_ptr_imm(*imm_id);
                 emit::PtrIndex(
                     &mut self.code,
@@ -1315,27 +1284,25 @@ impl<'a> Compiler<'a> {
                 );
             }
             InstructionData::PtrOffset { ptr, offset } => {
-                let ptr_reg = self.mapper.use_val(*ptr);
+                let ptr_reg = self.mapper.reg(*ptr);
                 let res = self.func.dfg.first_result(inst).unwrap();
-                let dst = self.mapper.alloc_val(res);
+                let dst = self.mapper.reg(res);
                 emit::I64AddImm(&mut self.code, dst, ptr_reg, *offset as u64);
             }
             InstructionData::Unreachable => {
                 emit::Unreachable(&mut self.code);
             }
             InstructionData::Ternary { opcode, args } if *opcode == IrOpcode::Select => {
-                let cond_reg = self.mapper.use_val(args[0]);
-                let then_reg = self.mapper.use_val(args[1]);
-                let else_reg = self.mapper.use_val(args[2]);
+                let cond_reg = self.mapper.reg(args[0]);
+                let then_reg = self.mapper.reg(args[1]);
+                let else_reg = self.mapper.reg(args[2]);
                 let res = self.func.dfg.first_result(inst).unwrap();
-                let dst = self.mapper.alloc_val(res);
+                let dst = self.mapper.reg(res);
                 emit::Select(&mut self.code, dst, cond_reg, then_reg, else_reg);
             }
             InstructionData::Nop => {}
             _ => todo!("Unsupported instruction: {:?}", idata),
         }
-
-        idata.visit_operands(&self.func.dfg, |v| self.mapper.free_if_last_use(v, pc));
     }
 }
 
@@ -1362,14 +1329,6 @@ fn calculate_moves(
         None
     }
 
-    fn alloc_temp_reg(mapper: &mut ValueMapper) -> Reg {
-        mapper.free_registers.pop().unwrap_or_else(|| {
-            let r = Reg(mapper.next_register);
-            mapper.next_register += 1;
-            r
-        })
-    }
-
     let target_block = func.dfg.block_calls[call].block;
     let args = func.dfg.get_value_list(func.dfg.block_calls[call].args);
     let params = &func.layout.blocks[target_block].params;
@@ -1377,8 +1336,8 @@ fn calculate_moves(
     // 1. Collect all move requests with pre-allocated capacity
     let mut pending: Vec<(Reg, Reg)> = Vec::with_capacity(params.len());
     for (&p, &a) in params.iter().zip(args.iter()) {
-        let src = mapper.use_val(a);
-        let dst = mapper.use_block_param(p);
+        let src = mapper.reg(a);
+        let dst = mapper.reg(p);
         if dst != src {
             pending.push((dst, src));
         }
@@ -1399,8 +1358,8 @@ fn calculate_moves(
         // Pick the first move (d, s) and save s to a temp register.
         let (d, s) = pending.swap_remove(0);
 
-        // Prefer reusing a free register over allocating a new one.
-        let temp = alloc_temp_reg(mapper);
+        // A dedicated register cannot overlap any value that is live on this edge.
+        let temp = mapper.move_temp();
 
         result.push((temp, s));
 
@@ -1410,4 +1369,59 @@ fn calculate_moves(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use veloc_ir::{CallConv, Linkage, ModuleBuilder};
+
+    #[test]
+    fn block_parameters_reuse_registers() {
+        const BLOCKS: usize = 64;
+
+        let mut module = ModuleBuilder::new();
+        let sig = module.make_signature(Vec::new(), vec![Type::I32], CallConv::SystemV);
+        let func = module.declare_function("block_params".into(), sig, Linkage::Local);
+
+        {
+            let mut builder = module.builder(func);
+            builder.init_entry_block();
+
+            let blocks: Vec<_> = (0..BLOCKS)
+                .map(|_| {
+                    let block = builder.create_block();
+                    builder.add_block_param(block, Type::I32);
+                    block
+                })
+                .collect();
+
+            let initial = builder.ins().iconst(Type::I32, 0);
+            builder.ins().jump(blocks[0], &[initial]);
+
+            for (index, &block) in blocks.iter().enumerate() {
+                builder.seal_block(block);
+                builder.switch_to_block(block);
+                let param = builder.block_params(block)[0];
+
+                if let Some(&next_block) = blocks.get(index + 1) {
+                    let one = builder.ins().iconst(Type::I32, 1);
+                    let next = builder.ins().iadd(param, one);
+                    builder.ins().jump(next_block, &[next]);
+                } else {
+                    builder.ins().ret(&[param]);
+                }
+            }
+        }
+
+        module.validate().unwrap();
+        let module = module.build();
+        let compiled = compile_function(ModuleId::from_u32(0), func, module.get_function(func));
+
+        assert!(
+            compiled.register_count <= 3,
+            "linear block parameters used {} registers",
+            compiled.register_count
+        );
+    }
 }
