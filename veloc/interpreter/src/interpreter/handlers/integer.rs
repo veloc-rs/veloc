@@ -10,6 +10,10 @@ define_register_handlers! {
         let a = get!(src1).unwrap_i32();
         set!(dst, InterpreterValue::i32(a.wrapping_add(imm as i32)));
     }
+    I32AddImm16 { dst, src1, imm16 } => {
+        let a = get!(src1).unwrap_i32();
+        set!(dst, InterpreterValue::i32(a.wrapping_add(imm16 as i32)));
+    }
     I32Sub { dst, src1, src2 } => {
         let (a, b) = (get!(src1).unwrap_i32(), get!(src2).unwrap_i32());
         set!(dst, InterpreterValue::i32(a.wrapping_sub(b)));
@@ -204,6 +208,10 @@ define_register_handlers! {
     I64AddImm { dst, src1, imm64 } => {
         let a = get!(src1).unwrap_i64();
         set!(dst, InterpreterValue::i64(a.wrapping_add(imm64 as i64)));
+    }
+    I64AddImm16 { dst, src1, imm16 } => {
+        let a = get!(src1).unwrap_i64();
+        set!(dst, InterpreterValue::i64(a.wrapping_add(imm16 as i64)));
     }
     I64Sub { dst, src1, src2 } => {
         let (a, b) = (get!(src1).unwrap_i64(), get!(src2).unwrap_i64());

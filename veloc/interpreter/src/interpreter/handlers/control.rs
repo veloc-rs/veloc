@@ -101,10 +101,10 @@ define_control_handlers! {
         dispatch_next!(next_ip, values_ptr);
     }
     Call {
-        func_id,
-        data_offset,
         num_rets,
         num_args,
+        func_id,
+        data_offset,
     } => {
         let dst_start = interpreter.read_call_data(
             &frame.func.data_section,
@@ -158,9 +158,9 @@ define_control_handlers! {
     }
     CallIndirect {
         ptr,
-        data_offset,
         num_rets,
         num_args,
+        data_offset,
     } => {
         let dst_start = interpreter.read_call_data(
             &frame.func.data_section,
@@ -249,9 +249,9 @@ define_control_handlers! {
     RegMove { dst, src } => { set!(dst, get!(src)); }
     CallIntrinsic {
         intrinsic,
-        data_offset,
         num_rets,
         num_args,
+        data_offset,
     } => {
         let dst_start = interpreter.read_call_data(
             &frame.func.data_section,

@@ -48,10 +48,7 @@ fn fmt_reg_list(
 
 /// Formats register moves from data section
 fn fmt_moves(f: &mut dyn Write, data_section: &DataSection, target: &JumpTarget) -> Result {
-    if target.num_moves == 0 {
-        return Ok(());
-    }
-    write!(f, " moves=[")?;
+    write!(f, ", moves=[")?;
     let offset = target.moves_offset as usize;
     for i in 0..target.num_moves as usize {
         if i > 0 {
@@ -59,9 +56,32 @@ fn fmt_moves(f: &mut dyn Write, data_section: &DataSection, target: &JumpTarget)
         }
         let dst = data_section.regs[offset + i * 2];
         let src = data_section.regs[offset + i * 2 + 1];
-        write!(f, "r{}<-r{}", dst, src)?;
+        write!(f, "{} <- {}", dst, src)?;
     }
     write!(f, "]")
+}
+
+fn fmt_indexed_jump_target(
+    f: &mut dyn Write,
+    data_section: &DataSection,
+    source_pc: usize,
+    target_idx: u32,
+) -> Result {
+    let Some(target) = data_section.jump_targets.get(target_idx as usize) else {
+        return write!(f, "<invalid-target:{}>", target_idx);
+    };
+    let target_pc =
+        source_pc as i64 + i64::from(target.offset) / core::mem::size_of::<CodeWord>() as i64;
+    write!(f, "{}", target_pc)?;
+    fmt_moves(f, data_section, target)
+}
+
+fn fmt_signed_hex(f: &mut dyn Write, value: i64) -> Result {
+    if value < 0 {
+        write!(f, "-0x{:x}", value.unsigned_abs())
+    } else {
+        write!(f, "0x{:x}", value)
+    }
 }
 
 /// Bytecode instruction printer
@@ -91,8 +111,14 @@ impl<'a> InstPrinter<'a> {
             DecodedInstruction::Iconst { dst, imm64 } => {
                 write!(f, " {}, 0x{:x}", dst, imm64)
             }
+            DecodedInstruction::Iconst32 { dst, imm32 } => {
+                write!(f, " {}, 0x{:x}", dst, imm32)
+            }
             DecodedInstruction::Fconst { dst, imm64 } => {
                 write!(f, " {}, 0x{:x}", dst, imm64)
+            }
+            DecodedInstruction::Fconst32 { dst, bits32 } => {
+                write!(f, " {}, 0x{:x}", dst, bits32)
             }
             DecodedInstruction::Bconst { dst, val } => {
                 write!(f, " {}, {}", dst, val)
@@ -192,6 +218,9 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::I32ShrUImm { dst, src1, imm } => {
                 write!(f, " {}, {}, {}", dst, src1, imm as i32)
             }
+            DecodedInstruction::I32AddImm16 { dst, src1, imm16 } => {
+                write!(f, " {}, {}, {}", dst, src1, imm16)
+            }
 
             DecodedInstruction::I64AddImm { dst, src1, imm64 }
             | DecodedInstruction::I64SubImm { dst, src1, imm64 }
@@ -202,6 +231,10 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::I64ShrSImm { dst, src1, imm64 }
             | DecodedInstruction::I64ShrUImm { dst, src1, imm64 } => {
                 write!(f, " {}, {}, 0x{:x}", dst, src1, imm64)
+            }
+            DecodedInstruction::I64AddImm16 { dst, src1, imm16 } => {
+                write!(f, " {}, {}, ", dst, src1)?;
+                fmt_signed_hex(f, imm16 as i64)
             }
 
             // Unary operations - Float
@@ -367,14 +400,8 @@ impl<'a> InstPrinter<'a> {
             }
 
             DecodedInstruction::JumpWithMoves { data_offset } => {
-                if (data_offset as usize) < self.data_section.jump_targets.len() {
-                    let target = &self.data_section.jump_targets[data_offset as usize];
-                    let target_pc = pc as i64
-                        + i64::from(target.offset) / core::mem::size_of::<CodeWord>() as i64;
-                    write!(f, " pc={}", target_pc)?;
-                    fmt_moves(f, self.data_section, target)?;
-                }
-                Ok(())
+                write!(f, " pc=")?;
+                fmt_indexed_jump_target(f, self.data_section, pc, data_offset)
             }
 
             DecodedInstruction::Br {
@@ -393,7 +420,11 @@ impl<'a> InstPrinter<'a> {
                 then_idx,
                 else_idx,
             } => {
-                write!(f, " {} then={} else={}", cond, then_idx, else_idx)
+                write!(f, " if {}", cond)?;
+                write!(f, "\n        then: pc=")?;
+                fmt_indexed_jump_target(f, self.data_section, pc, then_idx)?;
+                write!(f, "\n        else: pc=")?;
+                fmt_indexed_jump_target(f, self.data_section, pc, else_idx)
             }
 
             DecodedInstruction::BrTable {
@@ -406,17 +437,13 @@ impl<'a> InstPrinter<'a> {
                 let num = num_targets as usize;
                 for i in 0..num {
                     if idx + i < self.data_section.jump_targets.len() {
-                        let target = &self.data_section.jump_targets[idx + i];
-                        let target_pc = pc as i64
-                            + i64::from(target.offset) / core::mem::size_of::<CodeWord>() as i64;
                         write!(
                             f,
-                            "\n        [{}{}] pc={}",
+                            "\n        [{}{}] pc=",
                             idx + i,
                             if i == 0 { " (default)" } else { "" },
-                            target_pc
                         )?;
-                        fmt_moves(f, self.data_section, target)?;
+                        fmt_indexed_jump_target(f, self.data_section, pc, (idx + i) as u32)?;
                     }
                 }
                 Ok(())

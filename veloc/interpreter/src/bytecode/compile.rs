@@ -1,4 +1,4 @@
-use crate::bytecode::inst::{CodeWord, Reg, TypePair, emit};
+use crate::bytecode::inst::{CodeWord, Reg, TypePair, emit, emit_auto};
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, UseDefAnalysis, analyze_liveness};
@@ -447,7 +447,7 @@ impl<'a> Compiler<'a> {
                 true,
             ),
             (Type::I32, IrOpcode::IAdd) => bin(
-                &|c, d, l, i| emit::I32AddImm(c, d, l, i as u32),
+                &|c, d, l, i| emit_auto::I32AddImm(c, d, l, i as u32),
                 &emit::I32Add,
                 true,
             ),
@@ -529,7 +529,7 @@ impl<'a> Compiler<'a> {
                 emit::I32RotR(&mut self.code, dst, lhs, rhs);
             }
             (Type::I64, IrOpcode::IAdd) => bin(
-                &|c, d, l, i| emit::I64AddImm(c, d, l, i as u64),
+                &|c, d, l, i| emit_auto::I64AddImm(c, d, l, i as u64),
                 &emit::I64Add,
                 true,
             ),
@@ -799,10 +799,10 @@ impl<'a> Compiler<'a> {
         let data_offset = self.data_section.add_call_data(&ret_regs, &args_regs);
         emit::Call(
             &mut self.code,
-            func_id.as_u32(),
-            data_offset,
             ret_regs.len() as u16,
             args_regs.len() as u16,
+            func_id.as_u32(),
+            data_offset,
         );
     }
 
@@ -825,9 +825,9 @@ impl<'a> Compiler<'a> {
         emit::CallIndirect(
             &mut self.code,
             ptr_reg,
-            data_offset,
             ret_regs.len() as u16,
             args_regs.len() as u16,
+            data_offset,
         );
     }
 
@@ -854,9 +854,9 @@ impl<'a> Compiler<'a> {
             emit::CallIntrinsic(
                 &mut self.code,
                 intrinsic.as_u16(),
-                data_offset,
                 ret_regs.len() as u16,
                 args_regs.len() as u16,
+                data_offset,
             );
         }
     }
@@ -878,7 +878,7 @@ impl<'a> Compiler<'a> {
                             _ => panic!("Unsupported ExtendS from_ty: {:?}", from_ty),
                         };
                         let dst = self.mapper.reg(res);
-                        emit::Iconst(&mut self.code, dst, res_val as u64);
+                        emit_auto::Iconst(&mut self.code, dst, res_val as u64);
                         return;
                     }
                     IrOpcode::ExtendU => {
@@ -889,12 +889,12 @@ impl<'a> Compiler<'a> {
                             _ => panic!("Unsupported ExtendU from_ty: {:?}", from_ty),
                         };
                         let dst = self.mapper.reg(res);
-                        emit::Iconst(&mut self.code, dst, res_val as u64);
+                        emit_auto::Iconst(&mut self.code, dst, res_val as u64);
                         return;
                     }
                     IrOpcode::Wrap => {
                         let dst = self.mapper.reg(res);
-                        emit::Iconst(&mut self.code, dst, (val as u32) as u64);
+                        emit_auto::Iconst(&mut self.code, dst, (val as u32) as u64);
                         return;
                     }
                     _ => {}
@@ -905,7 +905,7 @@ impl<'a> Compiler<'a> {
                         if let Some(f64_val) = c.as_f64() {
                             let f = f64_val as f32;
                             let dst = self.mapper.reg(res);
-                            emit::Fconst(&mut self.code, dst, f.to_bits() as u64);
+                            emit_auto::Fconst(&mut self.code, dst, f.to_bits() as u64);
                             return;
                         }
                     }
@@ -913,7 +913,7 @@ impl<'a> Compiler<'a> {
                         if let Some(f32_val) = c.as_f32() {
                             let f = f32_val as f64;
                             let dst = self.mapper.reg(res);
-                            emit::Fconst(&mut self.code, dst, f.to_bits());
+                            emit_auto::Fconst(&mut self.code, dst, f.to_bits());
                             return;
                         }
                     }
@@ -1194,13 +1194,13 @@ impl<'a> Compiler<'a> {
                 let res = self.func.dfg.first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
                     let dst = self.mapper.reg(res);
-                    emit::Iconst(&mut self.code, dst, *value);
+                    emit_auto::Iconst(&mut self.code, dst, *value);
                 }
             }
             InstructionData::Fconst { value } => {
                 let res = self.func.dfg.first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
-                emit::Fconst(&mut self.code, dst, *value);
+                emit_auto::Fconst(&mut self.code, dst, *value);
             }
             InstructionData::Vconst { pool_id } => {
                 let res = self.func.dfg.first_result(inst).unwrap();
@@ -1288,7 +1288,7 @@ impl<'a> Compiler<'a> {
                 let ptr_reg = self.mapper.reg(*ptr);
                 let res = self.func.dfg.first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
-                emit::I64AddImm(&mut self.code, dst, ptr_reg, *offset as u64);
+                emit_auto::I64AddImm(&mut self.code, dst, ptr_reg, *offset as u64);
             }
             InstructionData::Unreachable => {
                 emit::Unreachable(&mut self.code);

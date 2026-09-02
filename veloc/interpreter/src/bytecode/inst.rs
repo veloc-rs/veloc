@@ -65,7 +65,7 @@ impl Reg {
 }
 
 /// Decode a raw `u32` immediate-slot value into the logical field type.
-/// Works symmetrically with [`FromRawReg`] but for immediate/offset slots.
+/// Works symmetrically with [`FromSlot`] but for immediate/offset slots.
 pub(crate) trait FromRawImm: Sized {
     fn from_raw_u32(v: u32) -> Self;
 }
@@ -131,107 +131,182 @@ impl IntoRawImm for Reg {
     }
 }
 
-/// Decode a raw `u16` register-slot value into the logical field type.
-/// - `Reg`  → wraps the index in `Reg(...)`
-/// - `u16`  → returns the raw value as-is
-pub(crate) trait FromRawReg: Sized {
-    fn from_raw_reg(v: u16) -> Self;
+trait FromRawImm64: Sized {
+    fn from_raw_u64(v: u64) -> Self;
 }
 
-/// Convert a logical field value into a raw `u16` for storage in a register slot.
-pub(crate) trait IntoRawReg {
-    fn into_raw_reg(self) -> u16;
-}
-
-impl FromRawReg for Reg {
+impl FromRawImm64 for u64 {
     #[inline(always)]
-    fn from_raw_reg(v: u16) -> Self {
-        Reg(v)
-    }
-}
-
-impl FromRawReg for u16 {
-    #[inline(always)]
-    fn from_raw_reg(v: u16) -> Self {
+    fn from_raw_u64(v: u64) -> Self {
         v
     }
 }
 
-impl FromRawReg for bool {
+impl FromRawImm64 for i64 {
     #[inline(always)]
-    fn from_raw_reg(v: u16) -> Self {
-        v != 0
+    fn from_raw_u64(v: u64) -> Self {
+        v as i64
     }
 }
 
-impl IntoRawReg for Reg {
-    #[inline(always)]
-    fn into_raw_reg(self) -> u16 {
-        self.0
-    }
+trait IntoRawImm64 {
+    fn into_raw_imm64(self) -> u64;
 }
 
-impl IntoRawReg for u16 {
+impl IntoRawImm64 for u64 {
     #[inline(always)]
-    fn into_raw_reg(self) -> u16 {
+    fn into_raw_imm64(self) -> u64 {
         self
     }
 }
 
-impl IntoRawReg for bool {
+impl IntoRawImm64 for i64 {
     #[inline(always)]
-    fn into_raw_reg(self) -> u16 {
+    fn into_raw_imm64(self) -> u64 {
+        self as u64
+    }
+}
+
+trait FromInlineImm16: Sized {
+    fn from_inline_imm16(v: u16) -> Self;
+}
+
+impl FromInlineImm16 for i16 {
+    #[inline(always)]
+    fn from_inline_imm16(v: u16) -> Self {
+        v as i16
+    }
+}
+
+trait IntoInlineImm16 {
+    fn into_inline_imm16(self) -> u16;
+}
+
+impl IntoInlineImm16 for i16 {
+    #[inline(always)]
+    fn into_inline_imm16(self) -> u16 {
         self as u16
     }
 }
 
-impl FromRawReg for TypePair {
+/// Decode a raw `u16` slot into the logical field type.
+/// - `Reg`  → wraps the index in `Reg(...)`
+/// - `u16`  → returns the raw value as-is
+pub(crate) trait FromSlot: Sized {
+    fn from_slot(v: u16) -> Self;
+}
+
+/// Convert a logical field value into a raw `u16` slot.
+pub(crate) trait IntoSlot {
+    fn into_slot(self) -> u16;
+}
+
+impl FromSlot for Reg {
     #[inline(always)]
-    fn from_raw_reg(v: u16) -> Self {
+    fn from_slot(v: u16) -> Self {
+        Reg(v)
+    }
+}
+
+impl FromSlot for u16 {
+    #[inline(always)]
+    fn from_slot(v: u16) -> Self {
+        v
+    }
+}
+
+impl FromSlot for bool {
+    #[inline(always)]
+    fn from_slot(v: u16) -> Self {
+        v != 0
+    }
+}
+
+impl IntoSlot for Reg {
+    #[inline(always)]
+    fn into_slot(self) -> u16 {
+        self.0
+    }
+}
+
+impl IntoSlot for u16 {
+    #[inline(always)]
+    fn into_slot(self) -> u16 {
+        self
+    }
+}
+
+impl IntoSlot for bool {
+    #[inline(always)]
+    fn into_slot(self) -> u16 {
+        self as u16
+    }
+}
+
+impl FromSlot for TypePair {
+    #[inline(always)]
+    fn from_slot(v: u16) -> Self {
         TypePair::unpack(v)
     }
 }
 
-impl IntoRawReg for TypePair {
+impl IntoSlot for TypePair {
     #[inline(always)]
-    fn into_raw_reg(self) -> u16 {
+    fn into_slot(self) -> u16 {
         TypePair::pack(self.from, self.to)
     }
 }
 
-impl FromRawReg for ScalarType {
+impl FromSlot for ScalarType {
     #[inline(always)]
-    fn from_raw_reg(v: u16) -> Self {
+    fn from_slot(v: u16) -> Self {
         unsafe { core::mem::transmute(v as u8) }
     }
 }
 
-impl IntoRawReg for ScalarType {
+impl IntoSlot for ScalarType {
     #[inline(always)]
-    fn into_raw_reg(self) -> u16 {
+    fn into_slot(self) -> u16 {
         self as u16
     }
 }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct HeaderWord {
-    opcode: u8,
-    reserved: u8,
+struct SlotsWord {
+    opcode: u16,
+    slot0: u16,
+    slot1: u16,
+    slot2: u16,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Const32Word {
+    opcode: u16,
     dst: u16,
-    src1: u16,
-    src2: u16,
+    imm: u32,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct BinaryImm16Word {
+    opcode: u16,
+    dst: u16,
+    src: u16,
+    imm: u16,
 }
 
 /// One aligned word in the executable bytecode stream.
 ///
-/// A word is either an instruction header or the payload belonging to the
-/// preceding header. Register-only instructions contain just a header; an
-/// instruction with an immediate appends one payload word.
+/// An instruction is either fully encoded in one word or followed by one
+/// payload word. The opcode always occupies the first `u16` of its first word.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub(crate) union CodeWord {
-    header: HeaderWord,
+    slots: SlotsWord,
+    const32: Const32Word,
+    binary_imm16: BinaryImm16Word,
     raw: u64,
 }
 
@@ -245,26 +320,33 @@ impl core::fmt::Debug for CodeWord {
 }
 
 const _: () = {
-    assert!(core::mem::size_of::<HeaderWord>() == 8);
-    assert!(core::mem::offset_of!(HeaderWord, opcode) == 0);
-    assert!(core::mem::offset_of!(HeaderWord, reserved) == 1);
-    assert!(core::mem::offset_of!(HeaderWord, dst) == 2);
-    assert!(core::mem::offset_of!(HeaderWord, src1) == 4);
-    assert!(core::mem::offset_of!(HeaderWord, src2) == 6);
+    assert!(core::mem::size_of::<SlotsWord>() == 8);
+    assert!(core::mem::offset_of!(SlotsWord, opcode) == 0);
+    assert!(core::mem::offset_of!(SlotsWord, slot0) == 2);
+    assert!(core::mem::offset_of!(SlotsWord, slot1) == 4);
+    assert!(core::mem::offset_of!(SlotsWord, slot2) == 6);
+    assert!(core::mem::size_of::<Const32Word>() == 8);
+    assert!(core::mem::offset_of!(Const32Word, opcode) == 0);
+    assert!(core::mem::offset_of!(Const32Word, dst) == 2);
+    assert!(core::mem::offset_of!(Const32Word, imm) == 4);
+    assert!(core::mem::size_of::<BinaryImm16Word>() == 8);
+    assert!(core::mem::offset_of!(BinaryImm16Word, opcode) == 0);
+    assert!(core::mem::offset_of!(BinaryImm16Word, dst) == 2);
+    assert!(core::mem::offset_of!(BinaryImm16Word, src) == 4);
+    assert!(core::mem::offset_of!(BinaryImm16Word, imm) == 6);
     assert!(core::mem::size_of::<CodeWord>() == 8);
     assert!(core::mem::align_of::<CodeWord>() == 8);
 };
 
 impl CodeWord {
     #[inline(always)]
-    const fn header(opcode: Opcode, dst: u16, src1: u16, src2: u16) -> Self {
+    const fn slots(opcode: Opcode, slot0: u16, slot1: u16, slot2: u16) -> Self {
         Self {
-            header: HeaderWord {
-                opcode: opcode as u8,
-                reserved: 0,
-                dst,
-                src1,
-                src2,
+            slots: SlotsWord {
+                opcode: opcode as u16,
+                slot0,
+                slot1,
+                slot2,
             },
         }
     }
@@ -276,8 +358,8 @@ impl CodeWord {
 
     #[inline(always)]
     pub(crate) unsafe fn opcode(self) -> Opcode {
-        // SAFETY: every header initializes all eight bytes with integer fields.
-        let raw = unsafe { self.header.opcode };
+        // SAFETY: every instruction word initializes all eight bytes.
+        let raw = unsafe { self.slots.opcode };
         debug_assert!((raw as usize) < Opcode::COUNT);
         // SAFETY: executable instruction headers are only constructed from an
         // Opcode. Payload words are never passed to dispatch as headers.
@@ -285,21 +367,33 @@ impl CodeWord {
     }
 
     #[inline(always)]
-    unsafe fn read_dst(ip: *const CodeWord) -> u16 {
+    unsafe fn read_slot0(ip: *const CodeWord) -> u16 {
         // SAFETY: `ip` points to an instruction header.
-        unsafe { (*ip).header.dst }
+        unsafe { (*ip).slots.slot0 }
     }
 
     #[inline(always)]
-    unsafe fn read_src1(ip: *const CodeWord) -> u16 {
+    unsafe fn read_slot1(ip: *const CodeWord) -> u16 {
         // SAFETY: `ip` points to an instruction header.
-        unsafe { (*ip).header.src1 }
+        unsafe { (*ip).slots.slot1 }
     }
 
     #[inline(always)]
-    unsafe fn read_src2(ip: *const CodeWord) -> u16 {
+    unsafe fn read_slot2(ip: *const CodeWord) -> u16 {
         // SAFETY: `ip` points to an instruction header.
-        unsafe { (*ip).header.src2 }
+        unsafe { (*ip).slots.slot2 }
+    }
+
+    #[inline(always)]
+    unsafe fn read_inline_imm32(ip: *const CodeWord) -> u32 {
+        // SAFETY: `ip` points to an instruction using `Const32Word`.
+        unsafe { (*ip).const32.imm }
+    }
+
+    #[inline(always)]
+    unsafe fn read_inline_imm16(ip: *const CodeWord) -> u16 {
+        // SAFETY: `ip` points to an instruction using `BinaryImm16Word`.
+        unsafe { (*ip).binary_imm16.imm }
     }
 
     #[inline(always)]
@@ -313,32 +407,44 @@ impl CodeWord {
     }
 
     #[inline(always)]
-    fn set_dst(&mut self, value: u16) {
-        self.header.dst = value;
+    fn set_slot0(&mut self, value: u16) {
+        self.slots.slot0 = value;
     }
 
     #[inline(always)]
-    fn set_src1(&mut self, value: u16) {
-        self.header.src1 = value;
+    fn set_slot1(&mut self, value: u16) {
+        self.slots.slot1 = value;
     }
 
     #[inline(always)]
-    fn set_src2(&mut self, value: u16) {
-        self.header.src2 = value;
+    fn set_slot2(&mut self, value: u16) {
+        self.slots.slot2 = value;
+    }
+
+    #[inline(always)]
+    fn set_inline_imm32(&mut self, value: u32) {
+        self.const32.imm = value;
+    }
+
+    #[inline(always)]
+    fn set_inline_imm16(&mut self, value: u16) {
+        self.binary_imm16.imm = value;
     }
 }
 
 macro_rules! define_opcodes {
     ($(
-        $name:ident {
-            $( $arg:ident : $ty:ty $( => $field:ident )? ),*
+        $name:ident [$format:ident] {
+            $( $arg:ident : $ty:ty ),*
         }
     );* $(;)?) => {
-        #[repr(u8)]
+        #[repr(u16)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub(crate) enum Opcode {
             $($name),*
         }
+
+        const _: () = assert!(Opcode::COUNT <= u16::MAX as usize + 1);
 
         impl Opcode {
             /// Number of entries in the dense opcode space.
@@ -348,11 +454,7 @@ macro_rules! define_opcodes {
             #[inline(always)]
             pub(crate) const fn has_payload(self) -> bool {
                 match self {
-                    $(
-                        Opcode::$name => false $(
-                            || define_opcodes!(@uses_payload $arg $(, $field)?)
-                        )*
-                    ),*
+                    $(Opcode::$name => define_opcodes!(@has_payload $format)),*
                 }
             }
 
@@ -410,9 +512,8 @@ macro_rules! define_opcodes {
                     debug_assert_eq!(unsafe { (*ip).opcode() }, Opcode::$name);
                     // SAFETY: `ip` refers to the expected logical instruction.
                     let payload = unsafe { CodeWord::payload(ip, Opcode::$name) };
-                    ($(
-                        define_opcodes!(@decode_field ip, payload, $arg, $ty, $($field)?),
-                    )*)
+                    define_opcodes!(@decode $format, ip, payload; $($arg),*);
+                    ($($arg,)*)
                 }
             )*
         }
@@ -444,13 +545,11 @@ macro_rules! define_opcodes {
                     $($arg : $ty),*
                 ) {
                     #[allow(unused_mut, unused_assignments)]
-                    let mut header = CodeWord::header(Opcode::$name, 0, 0, 0);
+                    let mut header = CodeWord::slots(Opcode::$name, 0, 0, 0);
                     #[allow(unused_mut, unused_assignments)]
                     let mut payload = 0u64;
 
-                    $(
-                        define_opcodes!(@assign header, payload, $arg, $ty, $( $field )? );
-                    )*
+                    define_opcodes!(@encode $format, header, payload; $($arg),*);
 
                     code.push(header);
                     if Opcode::$name.has_payload() {
@@ -461,262 +560,425 @@ macro_rules! define_opcodes {
         }
     };
 
-    // --- Decode helpers: reverse-map raw fields back to logical arg names ---
-    // Register slots: FromRawReg dispatches on $ty — Reg-typed fields become Reg(...),
-    // non-register types (e.g. u16) receive the raw value directly. No per-name special cases needed.
-    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, dst)   => { <$ty as FromRawReg>::from_raw_reg(unsafe { CodeWord::read_dst($ip) }) };
-    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, src1)  => { <$ty as FromRawReg>::from_raw_reg(unsafe { CodeWord::read_src1($ip) }) };
-    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, src2)  => { <$ty as FromRawReg>::from_raw_reg(unsafe { CodeWord::read_src2($ip) }) };
-    // Other fields use direct cast with trait dispatch
-    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, lo32) => { <$ty as FromRawImm>::from_raw_u32($payload as u32) };
-    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, hi32) => { <$ty as FromRawImm>::from_raw_u32(($payload >> 32) as u32) };
-    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, imm64) => { $payload as $ty };
-    // No explicit mapping: the arg name itself is the raw field name.
-    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, ) => {
-        define_opcodes!(@decode_field $ip, $payload, $arg, $ty, $arg)
+    (@has_payload Slots) => { false };
+    (@has_payload Const32) => { false };
+    (@has_payload BinaryImm16) => { false };
+    (@has_payload Payload32) => { true };
+    (@has_payload Payload32x2) => { true };
+    (@has_payload Payload64) => { true };
+
+    // Types are inferred from each generated decoder's return tuple. Format
+    // helpers recursively consume register slots, leaving trailing immediates.
+    (@decode Slots, $ip:ident, $payload:ident; $($arg:ident),*) => {
+        define_opcodes!(@decode_slots $ip; [read_slot0 read_slot1 read_slot2]; $($arg),*);
+    };
+    (@encode Slots, $word:ident, $payload:ident; $($arg:ident),*) => {
+        define_opcodes!(@encode_slots $word; [set_slot0 set_slot1 set_slot2]; $($arg),*);
     };
 
-    // Determine whether a logical field lives in the optional payload word.
-    (@uses_payload $arg:ident, lo32) => { true };
-    (@uses_payload $arg:ident, hi32) => { true };
-    (@uses_payload $arg:ident, imm64) => { true };
-    (@uses_payload $arg:ident, $field:ident) => { false };
-    (@uses_payload imm64) => { true };
-    (@uses_payload $arg:ident) => { false };
+    // Inline layouts: opcode:u16 + dst:u16 + immediate/register fields.
+    (@decode Const32, $ip:ident, $payload:ident; $dst:ident, $imm:ident) => {
+        let $dst = FromSlot::from_slot(unsafe { CodeWord::read_slot0($ip) });
+        let $imm =
+            FromRawImm::from_raw_u32(unsafe { CodeWord::read_inline_imm32($ip) });
+    };
+    (@encode Const32, $word:ident, $payload:ident; $dst:ident, $imm:ident) => {
+        $word.set_slot0($dst.into_slot());
+        $word.set_inline_imm32($imm.into_raw_imm());
+    };
 
-    // --- Assign helpers (emit side) ---
-    // Register fields (dst/src1/src2): use IntoRawReg for type-safe conversion
-    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, dst) => { $header.set_dst($val.into_raw_reg()); };
-    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, src1) => { $header.set_src1($val.into_raw_reg()); };
-    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, src2) => { $header.set_src2($val.into_raw_reg()); };
-    // Immediate slots: use IntoRawImm for type-safe conversion
-    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, lo32) => { $payload = ($payload & 0xFFFFFFFF00000000) | ($val.into_raw_imm() as u64); };
-    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, hi32) => { $payload = ($payload & 0x00000000FFFFFFFF) | (($val.into_raw_imm() as u64) << 32); };
-    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, imm64) => { $payload = $val as u64; };
-    // If no field mapped, assume it's one of the standard ones by name (treat as register)
-    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, ) => {
-        define_opcodes!(@assign $header, $payload, $val, $ty, $val)
+    (@decode BinaryImm16, $ip:ident, $payload:ident; $dst:ident, $src:ident, $imm:ident) => {
+        let $dst = FromSlot::from_slot(unsafe { CodeWord::read_slot0($ip) });
+        let $src = FromSlot::from_slot(unsafe { CodeWord::read_slot1($ip) });
+        let $imm = FromInlineImm16::from_inline_imm16(unsafe {
+            CodeWord::read_inline_imm16($ip)
+        });
+    };
+    (@encode BinaryImm16, $word:ident, $payload:ident; $dst:ident, $src:ident, $imm:ident) => {
+        $word.set_slot0($dst.into_slot());
+        $word.set_slot1($src.into_slot());
+        $word.set_inline_imm16($imm.into_inline_imm16());
+    };
+
+    (@decode Payload32, $ip:ident, $payload:ident; $($arg:ident),*) => {
+        define_opcodes!(
+            @decode_regs_then_imm32 $ip, $payload;
+            [read_slot0 read_slot1 read_slot2];
+            $($arg),*
+        );
+    };
+    (@encode Payload32, $word:ident, $payload:ident; $($arg:ident),*) => {
+        define_opcodes!(
+            @encode_regs_then_imm32 $word, $payload;
+            [set_slot0 set_slot1 set_slot2];
+            $($arg),*
+        );
+    };
+
+    (@decode Payload32x2, $ip:ident, $payload:ident; $($arg:ident),*) => {
+        define_opcodes!(
+            @decode_regs_then_imm32x2 $ip, $payload;
+            [read_slot0 read_slot1 read_slot2];
+            $($arg),*
+        );
+    };
+    (@encode Payload32x2, $word:ident, $payload:ident; $($arg:ident),*) => {
+        define_opcodes!(
+            @encode_regs_then_imm32x2 $word, $payload;
+            [set_slot0 set_slot1 set_slot2];
+            $($arg),*
+        );
+    };
+
+    (@decode Payload64, $ip:ident, $payload:ident; $($arg:ident),*) => {
+        define_opcodes!(
+            @decode_regs_then_imm64 $ip, $payload;
+            [read_slot0 read_slot1 read_slot2];
+            $($arg),*
+        );
+    };
+    (@encode Payload64, $word:ident, $payload:ident; $($arg:ident),*) => {
+        define_opcodes!(
+            @encode_regs_then_imm64 $word, $payload;
+            [set_slot0 set_slot1 set_slot2];
+            $($arg),*
+        );
+    };
+
+    // Recursively map leading operands to the available u16 slots.
+    (@decode_slots $ip:ident; [$($read:ident)*];) => {};
+    (@decode_slots $ip:ident; [$read:ident $($reads:ident)*]; $arg:ident $(, $rest:ident)*) => {
+        let $arg = FromSlot::from_slot(unsafe { CodeWord::$read($ip) });
+        define_opcodes!(@decode_slots $ip; [$($reads)*]; $($rest),*);
+    };
+    (@encode_slots $word:ident; [$($set:ident)*];) => {};
+    (@encode_slots $word:ident; [$set:ident $($sets:ident)*]; $arg:ident $(, $rest:ident)*) => {
+        $word.$set($arg.into_slot());
+        define_opcodes!(@encode_slots $word; [$($sets)*]; $($rest),*);
+    };
+
+    // The final operand is a 32-bit payload; preceding operands use slots.
+    (@decode_regs_then_imm32 $ip:ident, $payload:ident; [$($read:ident)*]; $imm:ident) => {
+        let $imm = FromRawImm::from_raw_u32($payload as u32);
+    };
+    (@decode_regs_then_imm32 $ip:ident, $payload:ident; [$read:ident $($reads:ident)*]; $reg:ident, $($rest:ident),+) => {
+        let $reg = FromSlot::from_slot(unsafe { CodeWord::$read($ip) });
+        define_opcodes!(
+            @decode_regs_then_imm32 $ip, $payload; [$($reads)*]; $($rest),+
+        );
+    };
+    (@encode_regs_then_imm32 $word:ident, $payload:ident; [$($set:ident)*]; $imm:ident) => {
+        $payload = $imm.into_raw_imm() as u64;
+    };
+    (@encode_regs_then_imm32 $word:ident, $payload:ident; [$set:ident $($sets:ident)*]; $reg:ident, $($rest:ident),+) => {
+        $word.$set($reg.into_slot());
+        define_opcodes!(
+            @encode_regs_then_imm32 $word, $payload; [$($sets)*]; $($rest),+
+        );
+    };
+
+    // The final two operands occupy the low/high halves of one payload word.
+    (@decode_regs_then_imm32x2 $ip:ident, $payload:ident; [$($read:ident)*]; $lo:ident, $hi:ident) => {
+        let $lo = FromRawImm::from_raw_u32($payload as u32);
+        let $hi = FromRawImm::from_raw_u32(($payload >> 32) as u32);
+    };
+    (@decode_regs_then_imm32x2 $ip:ident, $payload:ident; [$read:ident $($reads:ident)*]; $reg:ident, $next:ident, $($rest:ident),+) => {
+        let $reg = FromSlot::from_slot(unsafe { CodeWord::$read($ip) });
+        define_opcodes!(
+            @decode_regs_then_imm32x2 $ip, $payload;
+            [$($reads)*];
+            $next, $($rest),+
+        );
+    };
+    (@encode_regs_then_imm32x2 $word:ident, $payload:ident; [$($set:ident)*]; $lo:ident, $hi:ident) => {
+        $payload = ($lo.into_raw_imm() as u64) | (($hi.into_raw_imm() as u64) << 32);
+    };
+    (@encode_regs_then_imm32x2 $word:ident, $payload:ident; [$set:ident $($sets:ident)*]; $reg:ident, $next:ident, $($rest:ident),+) => {
+        $word.$set($reg.into_slot());
+        define_opcodes!(
+            @encode_regs_then_imm32x2 $word, $payload;
+            [$($sets)*];
+            $next, $($rest),+
+        );
+    };
+
+    // The final operand is a full 64-bit payload; preceding operands use slots.
+    (@decode_regs_then_imm64 $ip:ident, $payload:ident; [$($read:ident)*]; $imm:ident) => {
+        let $imm = FromRawImm64::from_raw_u64($payload);
+    };
+    (@decode_regs_then_imm64 $ip:ident, $payload:ident; [$read:ident $($reads:ident)*]; $reg:ident, $($rest:ident),+) => {
+        let $reg = FromSlot::from_slot(unsafe { CodeWord::$read($ip) });
+        define_opcodes!(
+            @decode_regs_then_imm64 $ip, $payload; [$($reads)*]; $($rest),+
+        );
+    };
+    (@encode_regs_then_imm64 $word:ident, $payload:ident; [$($set:ident)*]; $imm:ident) => {
+        $payload = $imm.into_raw_imm64();
+    };
+    (@encode_regs_then_imm64 $word:ident, $payload:ident; [$set:ident $($sets:ident)*]; $reg:ident, $($rest:ident),+) => {
+        $word.$set($reg.into_slot());
+        define_opcodes!(
+            @encode_regs_then_imm64 $word, $payload; [$($sets)*]; $($rest),+
+        );
     };
 }
 
-// Field mapping conventions:
-// - dst: destination register (for 2-result ops, hi32 may hold 2nd dst)
-// - src1: first source register
-// - src2: second source register
-// - lo32: low 32-bits of 64-bit immediate, also used for 32-bit immediates/offsets
-// - hi32: high 32-bits of 64-bit immediate, also used for data section offsets or packed counts
-
 define_opcodes! {
     // === Constants ===
-    Iconst { dst: Reg, imm64: u64 };
-    Fconst { dst: Reg, imm64: u64 };
-    Bconst { dst: Reg, val: bool => src2 };
-    Vconst { dst: Reg, pool_id: u32 => lo32 };
+    Iconst [Payload64] { dst: Reg, imm64: u64 };
+    Iconst32 [Const32] { dst: Reg, imm32: u32 };
+    Fconst [Payload64] { dst: Reg, imm64: u64 };
+    Fconst32 [Const32] { dst: Reg, bits32: u32 };
+    Bconst [Slots] { dst: Reg, val: bool };
+    Vconst [Payload32] { dst: Reg, pool_id: u32 };
 
     // === I32 Arithmetic ===
-    I32Add { dst: Reg, src1: Reg, src2: Reg };
-    I32Sub { dst: Reg, src1: Reg, src2: Reg };
-    I32Mul { dst: Reg, src1: Reg, src2: Reg };
-    I32DivS { dst: Reg, src1: Reg, src2: Reg };
-    I32DivU { dst: Reg, src1: Reg, src2: Reg };
-    I32RemS { dst: Reg, src1: Reg, src2: Reg };
-    I32RemU { dst: Reg, src1: Reg, src2: Reg };
-    I32And { dst: Reg, src1: Reg, src2: Reg };
-    I32Or { dst: Reg, src1: Reg, src2: Reg };
-    I32Xor { dst: Reg, src1: Reg, src2: Reg };
-    I32Shl { dst: Reg, src1: Reg, src2: Reg };
-    I32ShrS { dst: Reg, src1: Reg, src2: Reg };
-    I32ShrU { dst: Reg, src1: Reg, src2: Reg };
-    I32RotL { dst: Reg, src1: Reg, src2: Reg };
-    I32RotR { dst: Reg, src1: Reg, src2: Reg };
+    I32Add [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32AddImm16 [BinaryImm16] { dst: Reg, src1: Reg, imm16: i16 };
+    I32Sub [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32Mul [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32DivS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32DivU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32RemS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32RemU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32And [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32Or [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32Xor [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32Shl [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32ShrS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32ShrU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32RotL [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32RotR [Slots] { dst: Reg, src1: Reg, src2: Reg };
 
-    I32AddImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
-    I32SubImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
-    I32AndImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
-    I32OrImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
-    I32XorImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
-    I32ShlImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
-    I32ShrSImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
-    I32ShrUImm { dst: Reg, src1: Reg, imm: u32 => lo32 };
+    I32AddImm [Payload32] { dst: Reg, src1: Reg, imm: u32 };
+    I32SubImm [Payload32] { dst: Reg, src1: Reg, imm: u32 };
+    I32AndImm [Payload32] { dst: Reg, src1: Reg, imm: u32 };
+    I32OrImm [Payload32] { dst: Reg, src1: Reg, imm: u32 };
+    I32XorImm [Payload32] { dst: Reg, src1: Reg, imm: u32 };
+    I32ShlImm [Payload32] { dst: Reg, src1: Reg, imm: u32 };
+    I32ShrSImm [Payload32] { dst: Reg, src1: Reg, imm: u32 };
+    I32ShrUImm [Payload32] { dst: Reg, src1: Reg, imm: u32 };
 
     // === I64 Arithmetic ===
-    I64Add { dst: Reg, src1: Reg, src2: Reg };
-    I64Sub { dst: Reg, src1: Reg, src2: Reg };
-    I64Mul { dst: Reg, src1: Reg, src2: Reg };
-    I64DivS { dst: Reg, src1: Reg, src2: Reg };
-    I64DivU { dst: Reg, src1: Reg, src2: Reg };
-    I64RemS { dst: Reg, src1: Reg, src2: Reg };
-    I64RemU { dst: Reg, src1: Reg, src2: Reg };
-    I64And { dst: Reg, src1: Reg, src2: Reg };
-    I64Or { dst: Reg, src1: Reg, src2: Reg };
-    I64Xor { dst: Reg, src1: Reg, src2: Reg };
-    I64Shl { dst: Reg, src1: Reg, src2: Reg };
-    I64ShrS { dst: Reg, src1: Reg, src2: Reg };
-    I64ShrU { dst: Reg, src1: Reg, src2: Reg };
-    I64RotL { dst: Reg, src1: Reg, src2: Reg };
-    I64RotR { dst: Reg, src1: Reg, src2: Reg };
+    I64Add [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64AddImm16 [BinaryImm16] { dst: Reg, src1: Reg, imm16: i16 };
+    I64Sub [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64Mul [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64DivS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64DivU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64RemS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64RemU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64And [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64Or [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64Xor [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64Shl [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64ShrS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64ShrU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64RotL [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64RotR [Slots] { dst: Reg, src1: Reg, src2: Reg };
 
-    I64AddImm { dst: Reg, src1: Reg, imm64: u64 };
-    I64SubImm { dst: Reg, src1: Reg, imm64: u64 };
-    I64AndImm { dst: Reg, src1: Reg, imm64: u64 };
-    I64OrImm { dst: Reg, src1: Reg, imm64: u64 };
-    I64XorImm { dst: Reg, src1: Reg, imm64: u64 };
-    I64ShlImm { dst: Reg, src1: Reg, imm64: u64 };
-    I64ShrSImm { dst: Reg, src1: Reg, imm64: u64 };
-    I64ShrUImm { dst: Reg, src1: Reg, imm64: u64 };
+    I64AddImm [Payload64] { dst: Reg, src1: Reg, imm64: u64 };
+    I64SubImm [Payload64] { dst: Reg, src1: Reg, imm64: u64 };
+    I64AndImm [Payload64] { dst: Reg, src1: Reg, imm64: u64 };
+    I64OrImm [Payload64] { dst: Reg, src1: Reg, imm64: u64 };
+    I64XorImm [Payload64] { dst: Reg, src1: Reg, imm64: u64 };
+    I64ShlImm [Payload64] { dst: Reg, src1: Reg, imm64: u64 };
+    I64ShrSImm [Payload64] { dst: Reg, src1: Reg, imm64: u64 };
+    I64ShrUImm [Payload64] { dst: Reg, src1: Reg, imm64: u64 };
 
     // === Comparisons ===
-    I32Eq { dst: Reg, src1: Reg, src2: Reg };
-    I32Ne { dst: Reg, src1: Reg, src2: Reg };
-    I32LtS { dst: Reg, src1: Reg, src2: Reg };
-    I32LtU { dst: Reg, src1: Reg, src2: Reg };
-    I32LeS { dst: Reg, src1: Reg, src2: Reg };
-    I32LeU { dst: Reg, src1: Reg, src2: Reg };
-    I32GtS { dst: Reg, src1: Reg, src2: Reg };
-    I32GtU { dst: Reg, src1: Reg, src2: Reg };
-    I32GeS { dst: Reg, src1: Reg, src2: Reg };
-    I32GeU { dst: Reg, src1: Reg, src2: Reg };
+    I32Eq [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32Ne [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32LtS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32LtU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32LeS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32LeU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32GtS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32GtU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32GeS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I32GeU [Slots] { dst: Reg, src1: Reg, src2: Reg };
 
-    I64Eq { dst: Reg, src1: Reg, src2: Reg };
-    I64Ne { dst: Reg, src1: Reg, src2: Reg };
-    I64LtS { dst: Reg, src1: Reg, src2: Reg };
-    I64LtU { dst: Reg, src1: Reg, src2: Reg };
-    I64LeS { dst: Reg, src1: Reg, src2: Reg };
-    I64LeU { dst: Reg, src1: Reg, src2: Reg };
-    I64GtS { dst: Reg, src1: Reg, src2: Reg };
-    I64GtU { dst: Reg, src1: Reg, src2: Reg };
-    I64GeS { dst: Reg, src1: Reg, src2: Reg };
-    I64GeU { dst: Reg, src1: Reg, src2: Reg };
+    I64Eq [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64Ne [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64LtS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64LtU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64LeS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64LeU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64GtS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64GtU [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64GeS [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    I64GeU [Slots] { dst: Reg, src1: Reg, src2: Reg };
 
     // === Float Arithmetic ===
-    F32Add { dst: Reg, src1: Reg, src2: Reg };
-    F32Sub { dst: Reg, src1: Reg, src2: Reg };
-    F32Mul { dst: Reg, src1: Reg, src2: Reg };
-    F32Div { dst: Reg, src1: Reg, src2: Reg };
-    F32Neg { dst: Reg, src1: Reg };
-    F32Abs { dst: Reg, src1: Reg };
-    F32Sqrt { dst: Reg, src1: Reg };
-    F32Ceil { dst: Reg, src1: Reg };
-    F32Floor { dst: Reg, src1: Reg };
-    F32Trunc { dst: Reg, src1: Reg };
-    F32Nearest { dst: Reg, src1: Reg };
-    F32Min { dst: Reg, src1: Reg, src2: Reg };
-    F32Max { dst: Reg, src1: Reg, src2: Reg };
-    F32CopySign { dst: Reg, src1: Reg, src2: Reg };
+    F32Add [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Sub [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Mul [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Div [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Neg [Slots] { dst: Reg, src1: Reg };
+    F32Abs [Slots] { dst: Reg, src1: Reg };
+    F32Sqrt [Slots] { dst: Reg, src1: Reg };
+    F32Ceil [Slots] { dst: Reg, src1: Reg };
+    F32Floor [Slots] { dst: Reg, src1: Reg };
+    F32Trunc [Slots] { dst: Reg, src1: Reg };
+    F32Nearest [Slots] { dst: Reg, src1: Reg };
+    F32Min [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Max [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32CopySign [Slots] { dst: Reg, src1: Reg, src2: Reg };
 
-    F64Add { dst: Reg, src1: Reg, src2: Reg };
-    F64Sub { dst: Reg, src1: Reg, src2: Reg };
-    F64Mul { dst: Reg, src1: Reg, src2: Reg };
-    F64Div { dst: Reg, src1: Reg, src2: Reg };
-    F64Neg { dst: Reg, src1: Reg };
-    F64Abs { dst: Reg, src1: Reg };
-    F64Sqrt { dst: Reg, src1: Reg };
-    F64Ceil { dst: Reg, src1: Reg };
-    F64Floor { dst: Reg, src1: Reg };
-    F64Trunc { dst: Reg, src1: Reg };
-    F64Nearest { dst: Reg, src1: Reg };
-    F64Min { dst: Reg, src1: Reg, src2: Reg };
-    F64Max { dst: Reg, src1: Reg, src2: Reg };
-    F64CopySign { dst: Reg, src1: Reg, src2: Reg };
+    F64Add [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Sub [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Mul [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Div [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Neg [Slots] { dst: Reg, src1: Reg };
+    F64Abs [Slots] { dst: Reg, src1: Reg };
+    F64Sqrt [Slots] { dst: Reg, src1: Reg };
+    F64Ceil [Slots] { dst: Reg, src1: Reg };
+    F64Floor [Slots] { dst: Reg, src1: Reg };
+    F64Trunc [Slots] { dst: Reg, src1: Reg };
+    F64Nearest [Slots] { dst: Reg, src1: Reg };
+    F64Min [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Max [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64CopySign [Slots] { dst: Reg, src1: Reg, src2: Reg };
 
-    F32Eq { dst: Reg, src1: Reg, src2: Reg };
-    F32Ne { dst: Reg, src1: Reg, src2: Reg };
-    F32Lt { dst: Reg, src1: Reg, src2: Reg };
-    F32Le { dst: Reg, src1: Reg, src2: Reg };
-    F32Gt { dst: Reg, src1: Reg, src2: Reg };
-    F32Ge { dst: Reg, src1: Reg, src2: Reg };
-    F64Eq { dst: Reg, src1: Reg, src2: Reg };
-    F64Ne { dst: Reg, src1: Reg, src2: Reg };
-    F64Lt { dst: Reg, src1: Reg, src2: Reg };
-    F64Le { dst: Reg, src1: Reg, src2: Reg };
-    F64Gt { dst: Reg, src1: Reg, src2: Reg };
-    F64Ge { dst: Reg, src1: Reg, src2: Reg };
+    F32Eq [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Ne [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Lt [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Le [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Gt [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F32Ge [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Eq [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Ne [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Lt [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Le [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Gt [Slots] { dst: Reg, src1: Reg, src2: Reg };
+    F64Ge [Slots] { dst: Reg, src1: Reg, src2: Reg };
 
     // === Memory ===
-    I32Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
-    I64Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
-    F32Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
-    F64Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
-    I8Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
-    I16Load { dst: Reg, ptr: Reg => src1, offset: u32 => lo32 };
+    I32Load [Payload32] { dst: Reg, ptr: Reg, offset: u32 };
+    I64Load [Payload32] { dst: Reg, ptr: Reg, offset: u32 };
+    F32Load [Payload32] { dst: Reg, ptr: Reg, offset: u32 };
+    F64Load [Payload32] { dst: Reg, ptr: Reg, offset: u32 };
+    I8Load [Payload32] { dst: Reg, ptr: Reg, offset: u32 };
+    I16Load [Payload32] { dst: Reg, ptr: Reg, offset: u32 };
 
-    I32Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
-    I64Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
-    F32Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
-    F64Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
-    I8Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
-    I16Store { val: Reg => src1, ptr: Reg => src2, offset: u32 => lo32 };
+    I32Store [Payload32] { val: Reg, ptr: Reg, offset: u32 };
+    I64Store [Payload32] { val: Reg, ptr: Reg, offset: u32 };
+    F32Store [Payload32] { val: Reg, ptr: Reg, offset: u32 };
+    F64Store [Payload32] { val: Reg, ptr: Reg, offset: u32 };
+    I8Store [Payload32] { val: Reg, ptr: Reg, offset: u32 };
+    I16Store [Payload32] { val: Reg, ptr: Reg, offset: u32 };
 
     // === Conversions ===
-    ExtendS { dst: Reg, src: Reg => src1, ty: TypePair => src2 };
-    ExtendU { dst: Reg, src: Reg => src1, ty: TypePair => src2 };
-    Wrap { dst: Reg, src: Reg => src1, ty: TypePair => src2 };
+    ExtendS [Slots] { dst: Reg, src: Reg, ty: TypePair };
+    ExtendU [Slots] { dst: Reg, src: Reg, ty: TypePair };
+    Wrap [Slots] { dst: Reg, src: Reg, ty: TypePair };
 
-    I32TruncF32S { dst: Reg, src: Reg => src1 };
-    I32TruncF32U { dst: Reg, src: Reg => src1 };
-    I32TruncF64S { dst: Reg, src: Reg => src1 };
-    I32TruncF64U { dst: Reg, src: Reg => src1 };
-    I64TruncF32S { dst: Reg, src: Reg => src1 };
-    I64TruncF32U { dst: Reg, src: Reg => src1 };
-    I64TruncF64S { dst: Reg, src: Reg => src1 };
-    I64TruncF64U { dst: Reg, src: Reg => src1 };
-    I32TruncSatF32S { dst: Reg, src: Reg => src1 };
-    I32TruncSatF32U { dst: Reg, src: Reg => src1 };
-    I32TruncSatF64S { dst: Reg, src: Reg => src1 };
-    I32TruncSatF64U { dst: Reg, src: Reg => src1 };
-    I64TruncSatF32S { dst: Reg, src: Reg => src1 };
-    I64TruncSatF32U { dst: Reg, src: Reg => src1 };
-    I64TruncSatF64S { dst: Reg, src: Reg => src1 };
-    I64TruncSatF64U { dst: Reg, src: Reg => src1 };
+    I32TruncF32S [Slots] { dst: Reg, src: Reg };
+    I32TruncF32U [Slots] { dst: Reg, src: Reg };
+    I32TruncF64S [Slots] { dst: Reg, src: Reg };
+    I32TruncF64U [Slots] { dst: Reg, src: Reg };
+    I64TruncF32S [Slots] { dst: Reg, src: Reg };
+    I64TruncF32U [Slots] { dst: Reg, src: Reg };
+    I64TruncF64S [Slots] { dst: Reg, src: Reg };
+    I64TruncF64U [Slots] { dst: Reg, src: Reg };
+    I32TruncSatF32S [Slots] { dst: Reg, src: Reg };
+    I32TruncSatF32U [Slots] { dst: Reg, src: Reg };
+    I32TruncSatF64S [Slots] { dst: Reg, src: Reg };
+    I32TruncSatF64U [Slots] { dst: Reg, src: Reg };
+    I64TruncSatF32S [Slots] { dst: Reg, src: Reg };
+    I64TruncSatF32U [Slots] { dst: Reg, src: Reg };
+    I64TruncSatF64S [Slots] { dst: Reg, src: Reg };
+    I64TruncSatF64U [Slots] { dst: Reg, src: Reg };
 
-    F32ConvertI32S { dst: Reg, src: Reg => src1 };
-    F32ConvertI32U { dst: Reg, src: Reg => src1 };
-    F32ConvertI64S { dst: Reg, src: Reg => src1 };
-    F32ConvertI64U { dst: Reg, src: Reg => src1 };
-    F64ConvertI32S { dst: Reg, src: Reg => src1 };
-    F64ConvertI32U { dst: Reg, src: Reg => src1 };
-    F64ConvertI64S { dst: Reg, src: Reg => src1 };
-    F64ConvertI64U { dst: Reg, src: Reg => src1 };
-    F32DemoteF64 { dst: Reg, src: Reg => src1 };
-    F64PromoteF32 { dst: Reg, src: Reg => src1 };
+    F32ConvertI32S [Slots] { dst: Reg, src: Reg };
+    F32ConvertI32U [Slots] { dst: Reg, src: Reg };
+    F32ConvertI64S [Slots] { dst: Reg, src: Reg };
+    F32ConvertI64U [Slots] { dst: Reg, src: Reg };
+    F64ConvertI32S [Slots] { dst: Reg, src: Reg };
+    F64ConvertI32U [Slots] { dst: Reg, src: Reg };
+    F64ConvertI64S [Slots] { dst: Reg, src: Reg };
+    F64ConvertI64U [Slots] { dst: Reg, src: Reg };
+    F32DemoteF64 [Slots] { dst: Reg, src: Reg };
+    F64PromoteF32 [Slots] { dst: Reg, src: Reg };
 
     // === Bitwise ===
-    I32Clz { dst: Reg, src: Reg => src1 };
-    I32Ctz { dst: Reg, src: Reg => src1 };
-    I32Popcnt { dst: Reg, src: Reg => src1 };
-    I64Clz { dst: Reg, src: Reg => src1 };
-    I64Ctz { dst: Reg, src: Reg => src1 };
-    I64Popcnt { dst: Reg, src: Reg => src1 };
-    I32Eqz { dst: Reg, src_val: Reg => src1 };
-    I64Eqz { dst: Reg, src_val: Reg => src1 };
+    I32Clz [Slots] { dst: Reg, src: Reg };
+    I32Ctz [Slots] { dst: Reg, src: Reg };
+    I32Popcnt [Slots] { dst: Reg, src: Reg };
+    I64Clz [Slots] { dst: Reg, src: Reg };
+    I64Ctz [Slots] { dst: Reg, src: Reg };
+    I64Popcnt [Slots] { dst: Reg, src: Reg };
+    I32Eqz [Slots] { dst: Reg, src_val: Reg };
+    I64Eqz [Slots] { dst: Reg, src_val: Reg };
 
     // === Stack ===
-    StackAddr { dst: Reg, offset: u32 => lo32 };
-    StackLoad { dst: Reg, ty: ScalarType => src2, offset: u32 => lo32 };
-    StackStore { val: Reg => src1, ty: ScalarType => src2, offset: u32 => lo32 };
+    StackAddr [Payload32] { dst: Reg, offset: u32 };
+    StackLoad [Payload32] { dst: Reg, ty: ScalarType, offset: u32 };
+    StackStore [Payload32] { val: Reg, ty: ScalarType, offset: u32 };
 
-    PtrIndex { dst: Reg, ptr: Reg => src1, index: Reg => src2, scale: u32 => lo32, offset: u32 => hi32 };
+    PtrIndex [Payload32x2] { dst: Reg, ptr: Reg, index: Reg, scale: u32, offset: u32 };
 
     // === Control Flow ===
-    Jump { offset: i64 => imm64 };
-    JumpWithMoves { data_offset: u32 => lo32 };
-    Br { cond: Reg => dst, then_offset: i32 => lo32, else_offset: i32 => hi32 };
-    BrWithMoves { cond: Reg => dst, then_idx: u32 => lo32, else_idx: u32 => hi32 };
-    BrTable { idx_reg: Reg => dst, data_offset: u32 => lo32, num_targets: u32 => hi32 };
+    Jump [Payload64] { offset: i64 };
+    JumpWithMoves [Payload32] { data_offset: u32 };
+    Br [Payload32x2] { cond: Reg, then_offset: i32, else_offset: i32 };
+    BrWithMoves [Payload32x2] { cond: Reg, then_idx: u32, else_idx: u32 };
+    BrTable [Payload32x2] { idx_reg: Reg, data_offset: u32, num_targets: u32 };
 
-    Select { dst: Reg, cond: Reg => src1, then_reg: Reg => src2, else_reg: Reg => lo32 };
-    Return { data_offset: u32 => lo32, num_vals: u32 => hi32 };
+    Select [Payload32] { dst: Reg, cond: Reg, then_reg: Reg, else_reg: Reg };
+    Return [Payload32x2] { data_offset: u32, num_vals: u32 };
 
-    Call { func_id: u32 => lo32, data_offset: u32 => hi32, num_rets: u16 => src2, num_args: u16 => src1 };
-    CallIndirect { ptr: Reg => dst, data_offset: u32 => lo32, num_rets: u16 => src2, num_args: u16 => src1 };
-    CallIntrinsic { intrinsic: u16 => src2, data_offset: u32 => lo32, num_rets: u16 => dst, num_args: u16 => src1 };
+    // Slots fields come first; data-section identifiers occupy the payload.
+    Call [Payload32x2] { num_rets: u16, num_args: u16, func_id: u32, data_offset: u32 };
+    CallIndirect [Payload32] { ptr: Reg, num_rets: u16, num_args: u16, data_offset: u32 };
+    CallIntrinsic [Payload32] { intrinsic: u16, num_rets: u16, num_args: u16, data_offset: u32 };
 
-    // Note: Call/CallIndirect/CallIntrinsic layout:
-    // - data_offset: offset in regs where ret_regs + arg_regs are stored
-    // - num_rets/num_args: encoded in src1/src2/dst slots to avoid memory access
+    RegMove [Slots] { dst: Reg, src: Reg };
+    Unreachable [Slots] {};
+}
 
-    RegMove { dst: Reg, src: Reg => src1 };
-    Unreachable {};
+/// Select the narrowest lossless encoding for instructions with compact forms.
+/// The choice happens while compiling bytecode, so dispatch remains one opcode
+/// lookup with no encoding-mode branch in the hot interpreter loop.
+#[allow(non_snake_case)]
+pub(crate) mod emit_auto {
+    use super::{CodeWord, Reg, emit};
+
+    #[inline(always)]
+    pub(crate) fn Iconst(code: &mut Vec<CodeWord>, dst: Reg, imm64: u64) {
+        if let Ok(imm32) = u32::try_from(imm64) {
+            emit::Iconst32(code, dst, imm32);
+        } else {
+            emit::Iconst(code, dst, imm64);
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn Fconst(code: &mut Vec<CodeWord>, dst: Reg, bits64: u64) {
+        if let Ok(bits32) = u32::try_from(bits64) {
+            emit::Fconst32(code, dst, bits32);
+        } else {
+            emit::Fconst(code, dst, bits64);
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn I32AddImm(code: &mut Vec<CodeWord>, dst: Reg, src1: Reg, imm: u32) {
+        if let Ok(imm16) = i16::try_from(imm as i32) {
+            emit::I32AddImm16(code, dst, src1, imm16);
+        } else {
+            emit::I32AddImm(code, dst, src1, imm);
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn I64AddImm(code: &mut Vec<CodeWord>, dst: Reg, src1: Reg, imm64: u64) {
+        if let Ok(imm16) = i16::try_from(imm64 as i64) {
+            emit::I64AddImm16(code, dst, src1, imm16);
+        } else {
+            emit::I64AddImm(code, dst, src1, imm64);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -729,6 +991,7 @@ mod tests {
         emit::I32Add(&mut code, Reg(60_000), Reg(50_000), Reg(40_000));
 
         assert_eq!(core::mem::size_of::<CodeWord>(), 8);
+        assert_eq!(core::mem::size_of::<Opcode>(), 2);
         assert_eq!(code.len(), 1);
         assert!(matches!(
             unsafe { DecodedInstruction::read(code.as_ptr()) },
@@ -753,6 +1016,64 @@ mod tests {
                 imm64: 0xfedc_ba98_7654_3210,
             }
         ));
+    }
+
+    #[test]
+    fn auto_emit_uses_inline_immediates_at_the_boundaries() {
+        let mut code = Vec::new();
+
+        emit_auto::Iconst(&mut code, Reg(1), u32::MAX as u64);
+        emit_auto::Fconst(&mut code, Reg(2), u32::MAX as u64);
+        emit_auto::I32AddImm(&mut code, Reg(3), Reg(4), (-32_768_i32) as u32);
+        emit_auto::I64AddImm(&mut code, Reg(5), Reg(6), (-32_768_i64) as u64);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr()) },
+            DecodedInstruction::Iconst32 {
+                dst: Reg(1),
+                imm32: u32::MAX,
+            }
+        ));
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr().add(1)) },
+            DecodedInstruction::Fconst32 {
+                dst: Reg(2),
+                bits32: u32::MAX,
+            }
+        ));
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr().add(2)) },
+            DecodedInstruction::I32AddImm16 {
+                dst: Reg(3),
+                src1: Reg(4),
+                imm16: -32_768,
+            }
+        ));
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr().add(3)) },
+            DecodedInstruction::I64AddImm16 {
+                dst: Reg(5),
+                src1: Reg(6),
+                imm16: -32_768,
+            }
+        ));
+    }
+
+    #[test]
+    fn auto_emit_falls_back_when_immediate_does_not_fit() {
+        let mut code = Vec::new();
+
+        emit_auto::Iconst(&mut code, Reg(1), u32::MAX as u64 + 1);
+        emit_auto::Fconst(&mut code, Reg(2), u32::MAX as u64 + 1);
+        emit_auto::I32AddImm(&mut code, Reg(3), Reg(4), 32_768);
+        emit_auto::I64AddImm(&mut code, Reg(5), Reg(6), 32_768);
+
+        assert_eq!(code.len(), 8);
+        assert_eq!(unsafe { code[0].opcode() }, Opcode::Iconst);
+        assert_eq!(unsafe { code[2].opcode() }, Opcode::Fconst);
+        assert_eq!(unsafe { code[4].opcode() }, Opcode::I32AddImm);
+        assert_eq!(unsafe { code[6].opcode() }, Opcode::I64AddImm);
     }
 
     #[test]
