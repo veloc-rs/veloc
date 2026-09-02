@@ -1,122 +1,139 @@
-# Veloc 编译框架
+# Veloc
 
-[![Rust](https://img.shields.io/badge/Rust-2024%20Edition-orange.svg)](https://www.rust-lang.org/)
+[![Rust 2024](https://img.shields.io/badge/Rust-2024-orange.svg)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Veloc 是一个用 Rust 编写的现代化编译器基础设施，它提供了一套完整、灵活且高性能的工具链，用于构建从源码到机器码的全流程编译解决方案。
+English | [简体中文](README.zh-CN.md)
 
-## 🎯 项目愿景
+Veloc is an experimental compiler infrastructure and WebAssembly runtime written in Rust. It combines a typed SSA IR, reusable analyses and optimizations, a compact register-bytecode interpreter, and an x86-64 native code generator in one workspace.
 
-我们的目标是打造一个**模块化、可扩展、高性能**的编译框架：
+> Veloc is under active development. Public APIs and supported WebAssembly features may change without notice.
 
-- **🧩 模块化架构**：清晰分离的前端、中端（IR）、后端设计
-- **🔧 易于扩展**：简洁的 API 设计，方便添加新的语言前端和目标后端
-- **🌐 多目标支持**：内置 WebAssembly 支持，可扩展至更多架构
-- **📦 开箱即用**：内置解释器和 JIT 编译器，支持快速原型验证
+## Quick start
 
-## 🏗️ 架构设计
+Veloc uses the nightly toolchain pinned in [`rust-toolchain.toml`](rust-toolchain.toml). With [Rustup](https://rustup.rs/) installed, Cargo selects and installs it automatically.
 
-Veloc 采用经典的编译器三段式设计：
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        前端 (Frontends)                      │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │  WebAssembly │  │     C       │  │   更多...   │         │
-│  │  (veloc_wasm)│  │  (veloc_c)  │  │             │         │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
-└─────────┼────────────────┼────────────────┼────────────────┘
-          │                │                │
-          ▼                ▼                ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   中间表示 (IR) - veloc_ir                   │
-│  • SSA 形式的指令集                                         │
-│  • 类型系统（整数、浮点、指针、向量）                        │
-│  • 控制流图（CFG）                                          │
-│  • 多返回值支持                                             │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-          ┌───────────┴───────────┐
-          ▼                       ▼
-┌──────────────────┐   ┌──────────────────┐
-│   分析器         │   │   优化器         │
-│  (analyzer)      │   │  (optimizer)     │
-│  • 活跃变量分析   │   │  • 常量传播       │
-│  • 数据流分析     │   │  • 死代码消除     │
-└──────────────────┘   └──────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     后端 (Backends)                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   x86_64     │  │  Interpreter │  │    ARM64     │      │
-│  │  (计划中)   │  │   (解释器)    │  │   (计划中)   │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## ✨ 主要特性
-
-### 1. 强大的 IR 层 (`veloc_ir`)
-- **SSA 形式**：静态单赋值形式，简化优化实现
-- **多返回值**：原生支持多值返回，简化复杂运算表达
-- **丰富的指令集**：算术、逻辑、内存、控制流指令
-- **类型安全**：完整的类型系统和验证器
-
-### 2. 灵活的代码生成
-- **解释器模式**：快速执行，适合调试和原型验证
-- **JIT 编译**：即时编译到机器码，平衡启动速度和执行性能
-- **AOT 编译**（计划中）：提前编译，生成高性能原生代码
-
-### 3. WebAssembly 支持 (`veloc_wasm`)
-- 完整的 WebAssembly 运行时支持
-- 通过 WebAssembly Spec Tests 测试套件验证
-- 支持 WASI 标准
-
-### 4. 开发中特性
-- [ ] x86_64 原生代码生成
-- [ ] 更多优化通道（循环优化、向量化）
-- [ ] 更多目标架构（ARM64、RISC-V）
-- [ ] C/C++ 前端完善
-
-## 🚀 快速开始
-
-### 构建项目
 ```bash
-# 克隆仓库
-git clone https://github.com/veloc-rs/veloc
+git clone https://github.com/veloc-rs/veloc.git
 cd veloc
-
-# 构建整个项目
-cargo build --release
-
-# 运行测试
-cargo test
-
-# 运行 WebAssembly Spec 测试
-cargo run -p veloc-spec -- crates/veloc-wasm/tests/testsuite/
+cargo build --workspace --release
 ```
 
-### 使用示例
+Run the bundled CoreMark WebAssembly module with the interpreter:
 
-#### 执行 WebAssembly 文件
 ```bash
-# 解释器模式（默认）
-cargo r -r -p veloc_wasm ./coremark.wasm
+cargo run --release -p veloc-wasm -- \
+  crates/veloc-wasm/tests/wasm/coremark.wasm \
+  --strategy interpreter
 ```
 
-## 🧪 测试
+Use the native x86-64 JIT instead:
 
-项目包含全面的测试套件：
-
-### WebAssembly Spec 测试
-运行官方 WebAssembly 测试套件验证兼容性：
 ```bash
-cargo run -p veloc-spec -- crates/veloc_wasm/tests/testsuite/
+cargo run --release -p veloc-wasm -- path/to/module.wasm --strategy jit
 ```
 
-## 📜 许可证
+The CLI accepts `.wasm` and `.wat` files, invokes `_start` by default, and supports `interpreter`, `jit`, and `auto` execution strategies.
 
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+## Inspect generated code
 
+```bash
+# Print Veloc IR without executing the module
+cargo run -p veloc-wasm -- path/to/module.wat --dump-ir
 
-**🚧 注意**：本项目正在积极开发中，API 可能会发生变化。欢迎试用并提供反馈！
+# Write Veloc IR to a file
+cargo run -p veloc-wasm -- path/to/module.wasm \
+  --output-ir module.veloc-ir
+
+# Print interpreter bytecode
+cargo run -p veloc-wasm -- path/to/module.wasm \
+  --strategy interpreter --dump-bytecode
+
+# Print optimizer statistics and write a Chrome trace
+cargo run -p veloc-wasm -- path/to/module.wasm \
+  -O 1 --print-stats --trace-file optimizer-trace.json
+```
+
+Run `cargo run -p veloc-wasm -- --help` for all CLI options.
+
+## How it works
+
+```text
+ WebAssembly                     Experimental C frontend
+     │                                    │
+     └──────────────┬─────────────────────┘
+                    ▼
+             Veloc typed SSA IR
+                    │
+          ┌─────────┴──────────┐
+          │ analyses           │ optimizations
+          │ use-def/liveness   │ constant folding/DCE
+          └─────────┬──────────┘
+                    ▼
+          ┌─────────┴──────────────┐
+          ▼                        ▼
+ register-bytecode interpreter    MIR and x86-64 backend
+          │                        │
+          ▼                        ▼
+      execution              ELF object / JIT
+```
+
+WebAssembly and C source are translated into the same Veloc IR. From there, the runtime can compile the IR into compact bytecode or lower it through MIR to native x86-64 code.
+
+## Repository layout
+
+| Crate | Purpose |
+| --- | --- |
+| `veloc` | Top-level facade for the IR, interpreter, and code generator. |
+| `veloc-ir` | Typed SSA IR, builders, data-flow graph, text format, and validator. |
+| `veloc-analyzer` | Use-def and liveness analyses. |
+| `veloc-optimizer` | Pass management, metrics, constant folding, and dead-code elimination. |
+| `veloc-interpreter` | IR-to-bytecode compiler and register-bytecode runtime. |
+| `veloc-codegen` | Target-independent MIR pipeline and x86-64 backend. |
+| `veloc-isle` | Rule compiler used by target lowering and instruction selection. |
+| `veloc-wasm` | WebAssembly translator, runtime, CLI, linker, JIT, and WASI support. |
+| `veloc-c` | Experimental C parser and IR frontend. |
+| `veloc-spec` | WebAssembly specification test runner. |
+
+## Development
+
+Build and test the complete workspace:
+
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
+```
+
+Run focused interpreter and WebAssembly tests:
+
+```bash
+cargo test -p veloc-interpreter
+cargo test -p veloc-wasm
+```
+
+The specification runner accepts either a `.wast` file or a directory from the upstream WebAssembly specification tests:
+
+```bash
+cargo run --release -p veloc-spec -- \
+  /path/to/wasm-spec/test/core \
+  --strategy interp
+```
+
+Replace `interp` with `jit` to exercise the native backend.
+
+## Documentation
+
+- [Veloc IR instruction reference](veloc/ir/docs/en/instructions.md)
+- [Veloc IR 指令参考（中文）](veloc/ir/docs/zh/instructions.md)
+
+## Project status
+
+Veloc is suitable for compiler and runtime experimentation, but is not yet a stable production toolchain. Current priorities include broader WebAssembly coverage, more x86-64 instructions and ABI support, additional optimization passes and targets, completion of the C frontend, and API stabilization.
+
+Issues and pull requests are welcome.
+
+## License
+
+Veloc is available under the [MIT License](LICENSE).
