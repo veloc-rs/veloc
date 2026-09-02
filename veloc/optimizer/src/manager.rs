@@ -65,7 +65,6 @@ impl PassManager {
                     let pa = mp.run(module, &mut self.am, &self.config, &mut self.stats.metrics);
                     if pa.changed() {
                         changed = true;
-                        module.bump_revision();
                     }
                     pa
                 }

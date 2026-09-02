@@ -1274,7 +1274,11 @@ impl<'a> Compiler<'a> {
                 let index_reg = self.mapper.reg(*index);
                 let res = self.func.dfg.first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
-                let imm = self.func.dfg.get_ptr_imm(*imm_id);
+                let imm = self
+                    .func
+                    .dfg
+                    .ptr_imm(*imm_id)
+                    .expect("validated ptr-index must have an immediate");
                 emit::PtrIndex(
                     &mut self.code,
                     dst,

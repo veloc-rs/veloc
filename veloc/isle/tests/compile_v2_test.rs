@@ -201,7 +201,7 @@ fn compile_def_abi_generates_descriptor_constant() {
 
     let output = compile(input, "x86_64").expect("compile should succeed");
 
-    assert!(output.contains("pub static ABI_X86_64SystemV: AbiDescriptor"));
+    assert!(output.contains("pub static ABI_X86_64SYSTEMV: AbiDescriptor"));
     assert!(output.contains("AbiStackDescriptor"));
     assert!(output.contains("classifier: Some(\"x86_64_sysv_classifier\")"));
 }

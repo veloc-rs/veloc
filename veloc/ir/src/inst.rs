@@ -1,4 +1,5 @@
 use super::dfg::DataFlowGraph;
+use crate::opspec::{MemoryEffect, OpFormat};
 use crate::types::{BlockCall, FuncId, JumpTable, StackSlot, Value, ValueList};
 use crate::{FloatCC, IntCC, Intrinsic, MemFlags, Opcode, SigId};
 use core::fmt;
@@ -47,17 +48,15 @@ pub enum ConstantPoolData {
 /// 用于存储带 Mask 和 EVL 的向量操作（RISC-V V / AVX-512）
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VectorExtData {
-    /// 谓词/掩码 (Type::Predicate)
+    /// 谓词/掩码 (boolean vector)
     pub mask: Value,
-    /// 显式向量长度 (Type::EVL), None 表示使用默认 VL
+    /// 显式向量长度 (Type::I32), None 表示使用默认 VL
     pub evl: Option<Value>,
 }
 
-/// 向量内存操作的扩展配置
-/// 存储在 DFG 的 vector_mem_ext_pool 中
-/// 包含静态配置和可选的高级特性（Mask/EVL）
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VectorMemExtData {
+/// Optional configuration shared by vector memory operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VectorMemOptions {
     /// 立即数偏移
     pub offset: i32,
     /// 内存标志 (对齐、Volatile等)
@@ -68,6 +67,18 @@ pub struct VectorMemExtData {
     pub mask: Option<Value>,
     /// 显式向量长度 (可选)
     pub evl: Option<Value>,
+}
+
+impl Default for VectorMemOptions {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            flags: MemFlags::new(),
+            scale: 1,
+            mask: None,
+            evl: None,
+        }
+    }
 }
 
 /// 扩展配置 ID
@@ -262,291 +273,390 @@ pub enum InstructionData {
     Nop,
 }
 
-impl InstructionData {
-    pub fn visit_operands<F>(&self, dfg: &DataFlowGraph, mut f: F)
-    where
-        F: FnMut(Value),
-    {
-        match self {
-            InstructionData::Unary { arg, .. } => f(*arg),
-            InstructionData::Binary { args, .. } => {
-                f(args[0]);
-                f(args[1]);
-            }
-            InstructionData::Load { ptr, .. } => f(*ptr),
-            InstructionData::Store { ptr, value, .. } => {
-                f(*ptr);
-                f(*value);
-            }
-            InstructionData::StackLoad { .. }
-            | InstructionData::StackAddr { .. }
-            | InstructionData::Iconst { .. }
-            | InstructionData::Fconst { .. }
-            | InstructionData::Bconst { .. }
-            | InstructionData::Vconst { .. }
-            | InstructionData::Unreachable
-            | InstructionData::Nop => {}
+// Keep the physical instruction layout in one declarative table. The table is
+// expanded into format checks, operand walking/rewrite, and opcode extraction;
+// adding a new layout therefore cannot update only one of those views.
+macro_rules! schema_opcode {
+    (dynamic($opcode:ident)) => {
+        *$opcode
+    };
+    (fixed($opcode:ident)) => {
+        Opcode::$opcode
+    };
+}
 
-            InstructionData::StackStore { value: arg, .. }
-            | InstructionData::IntToPtr { arg }
-            | InstructionData::PtrToInt { arg }
-            | InstructionData::PtrOffset { ptr: arg, .. } => f(*arg),
-
-            InstructionData::IntCompare { args, .. }
-            | InstructionData::FloatCompare { args, .. }
-            | InstructionData::Shuffle { args, .. } => {
-                f(args[0]);
-                f(args[1]);
-            }
-
-            InstructionData::Ternary { args, .. } => {
-                f(args[0]);
-                f(args[1]);
-                f(args[2]);
-            }
-
-            InstructionData::Call { args, .. }
-            | InstructionData::Return { values: args }
-            | InstructionData::CallIntrinsic { args, .. } => {
-                dfg.visit_value_list(*args, f);
-            }
-
-            InstructionData::CallIndirect { ptr, args, .. } => {
-                f(*ptr);
-                dfg.visit_value_list(*args, f);
-            }
-
-            InstructionData::Jump { dest } => dfg.visit_block_call(*dest, f),
-
-            InstructionData::Br {
-                condition,
-                then_dest,
-                else_dest,
-            } => {
-                f(*condition);
-                dfg.visit_block_call(*then_dest, &mut f);
-                dfg.visit_block_call(*else_dest, &mut f);
-            }
-
-            InstructionData::BrTable { index, table } => {
-                f(*index);
-                dfg.visit_jump_table(*table, f);
-            }
-
-            InstructionData::PtrIndex { ptr, index, .. } => {
-                f(*ptr);
-                f(*index);
-            }
-
-            InstructionData::VectorOpWithExt { args, ext, .. } => {
-                dfg.visit_value_list(*args, &mut f);
-                dfg.visit_vector_ext(*ext, f);
-            }
-
-            InstructionData::VectorLoadStrided { ptr, stride, ext } => {
-                f(*ptr);
-                f(*stride);
-                dfg.visit_vector_mem_ext(*ext, f);
-            }
-
-            InstructionData::VectorStoreStrided { args, ext }
-            | InstructionData::VectorScatter { args, ext } => {
-                dfg.visit_value_list(*args, &mut f);
-                dfg.visit_vector_mem_ext(*ext, f);
-            }
-
-            InstructionData::VectorGather { ptr, index, ext } => {
-                f(*ptr);
-                f(*index);
-                dfg.visit_vector_mem_ext(*ext, f);
-            }
-        }
-    }
-
-    pub fn replace_value(&mut self, dfg: &mut DataFlowGraph, old_val: Value, new_val: Value) {
-        let v = |val: &mut Value| {
-            if *val == old_val {
-                *val = new_val;
-            }
-        };
-
-        match self {
-            InstructionData::Unary { arg, .. }
-            | InstructionData::IntToPtr { arg }
-            | InstructionData::PtrToInt { arg }
-            | InstructionData::PtrOffset { ptr: arg, .. }
-            | InstructionData::StackStore { value: arg, .. } => v(arg),
-
-            InstructionData::Binary { args, .. }
-            | InstructionData::IntCompare { args, .. }
-            | InstructionData::FloatCompare { args, .. }
-            | InstructionData::Shuffle { args, .. } => {
-                v(&mut args[0]);
-                v(&mut args[1]);
-            }
-
-            InstructionData::Ternary { args, .. } => {
-                v(&mut args[0]);
-                v(&mut args[1]);
-                v(&mut args[2]);
-            }
-
-            InstructionData::Load { ptr, .. } => v(ptr),
-            InstructionData::Store { ptr, value, .. } => {
-                v(ptr);
-                v(value);
-            }
-
-            InstructionData::Call { args, .. }
-            | InstructionData::Return { values: args }
-            | InstructionData::CallIntrinsic { args, .. } => {
-                dfg.replace_value_list(args, old_val, new_val);
-            }
-
-            InstructionData::CallIndirect { ptr, args, .. } => {
-                v(ptr);
-                dfg.replace_value_list(args, old_val, new_val);
-            }
-
-            InstructionData::Jump { dest } => dfg.replace_block_call(*dest, old_val, new_val),
-
-            InstructionData::Br {
-                condition,
-                then_dest,
-                else_dest,
-            } => {
-                v(condition);
-                dfg.replace_block_call(*then_dest, old_val, new_val);
-                dfg.replace_block_call(*else_dest, old_val, new_val);
-            }
-
-            InstructionData::BrTable { index, table } => {
-                v(index);
-                dfg.replace_jump_table(*table, old_val, new_val);
-            }
-
-            InstructionData::PtrIndex { ptr, index, .. } => {
-                v(ptr);
-                v(index);
-            }
-
-            InstructionData::VectorOpWithExt { args, ext, .. } => {
-                dfg.replace_value_list(args, old_val, new_val);
-                dfg.replace_vector_ext(ext, old_val, new_val);
-            }
-
-            InstructionData::VectorLoadStrided { ptr, stride, ext } => {
-                v(ptr);
-                v(stride);
-                dfg.replace_vector_mem_ext(ext, old_val, new_val);
-            }
-
-            InstructionData::VectorStoreStrided { args, ext }
-            | InstructionData::VectorScatter { args, ext } => {
-                dfg.replace_value_list(args, old_val, new_val);
-                dfg.replace_vector_mem_ext(ext, old_val, new_val);
-            }
-
-            InstructionData::VectorGather { ptr, index, ext } => {
-                v(ptr);
-                v(index);
-                dfg.replace_vector_mem_ext(ext, old_val, new_val);
-            }
-
-            InstructionData::StackLoad { .. }
-            | InstructionData::StackAddr { .. }
-            | InstructionData::Iconst { .. }
-            | InstructionData::Fconst { .. }
-            | InstructionData::Bconst { .. }
-            | InstructionData::Vconst { .. }
-            | InstructionData::Unreachable
-            | InstructionData::Nop => {}
-        }
-    }
-
-    pub fn opcode(&self) -> Opcode {
-        match self {
-            InstructionData::Unary { opcode, .. } => *opcode,
-            InstructionData::Binary { opcode, .. } => *opcode,
-            InstructionData::Load { .. } => Opcode::Load,
-            InstructionData::Store { .. } => Opcode::Store,
-            InstructionData::StackLoad { .. } => Opcode::StackLoad,
-            InstructionData::StackStore { .. } => Opcode::StackStore,
-            InstructionData::StackAddr { .. } => Opcode::StackAddr,
-            InstructionData::Iconst { .. } => Opcode::Iconst,
-            InstructionData::Fconst { .. } => Opcode::Fconst,
-            InstructionData::Bconst { .. } => Opcode::Bconst,
-            InstructionData::Vconst { .. } => Opcode::Vconst,
-            InstructionData::Call { .. } => Opcode::Call,
-            InstructionData::Jump { .. } => Opcode::Jump,
-            InstructionData::Br { .. } => Opcode::Br,
-            InstructionData::BrTable { .. } => Opcode::BrTable,
-            InstructionData::Return { .. } => Opcode::Return,
-            InstructionData::IntCompare { .. } => Opcode::Icmp,
-            InstructionData::FloatCompare { .. } => Opcode::Fcmp,
-            InstructionData::Unreachable => Opcode::Unreachable,
-            InstructionData::CallIndirect { .. } => Opcode::CallIndirect,
-            InstructionData::IntToPtr { .. } => Opcode::IntToPtr,
-            InstructionData::PtrToInt { .. } => Opcode::PtrToInt,
-            InstructionData::PtrOffset { .. } => Opcode::PtrOffset,
-            InstructionData::PtrIndex { .. } => Opcode::PtrIndex,
-            InstructionData::CallIntrinsic { .. } => Opcode::CallIntrinsic,
-            // Vector operations
-            InstructionData::Ternary { opcode, .. } => *opcode,
-            InstructionData::VectorOpWithExt { opcode, .. } => *opcode,
-            // Vector memory operations
-            InstructionData::VectorLoadStrided { .. } => Opcode::LoadStride,
-            InstructionData::VectorStoreStrided { .. } => Opcode::StoreStride,
-            InstructionData::VectorGather { .. } => Opcode::Gather,
-            InstructionData::VectorScatter { .. } => Opcode::Scatter,
-            InstructionData::Shuffle { .. } => Opcode::Shuffle,
-            InstructionData::Nop => Opcode::Nop,
-        }
-    }
-
-    pub fn is_terminator(&self) -> bool {
-        matches!(
-            self.opcode(),
-            Opcode::Jump | Opcode::Br | Opcode::BrTable | Opcode::Return | Opcode::Unreachable
-        )
-    }
-
-    pub fn has_side_effects(&self) -> bool {
-        // 首先检查是否是向量存储操作
-        if matches!(
-            self,
-            InstructionData::VectorStoreStrided { .. } | InstructionData::VectorScatter { .. }
-        ) {
-            return true;
-        }
-
-        match self.opcode() {
-            Opcode::Store
-            | Opcode::StackStore
-            | Opcode::Call
-            | Opcode::CallIndirect
-            | Opcode::CallIntrinsic
-            | Opcode::Return
-            | Opcode::Jump
-            | Opcode::Br
-            | Opcode::BrTable
-            | Opcode::Unreachable => true,
+macro_rules! schema_matches_format {
+    ($dfg:ident, $format:ident, fixed($expected:ident)) => {
+        $format == OpFormat::$expected
+    };
+    ($dfg:ident, $format:ident, arity($args:ident)) => {
+        match $dfg.get_value_list(*$args).len() {
+            1 => $format == OpFormat::Unary,
+            2 => $format == OpFormat::Binary,
+            3 => $format == OpFormat::Ternary,
             _ => false,
         }
+    };
+}
+
+macro_rules! schema_visit_operand {
+    ($dfg:ident, $f:ident, value($value:ident)) => {
+        $f(*$value);
+    };
+    ($dfg:ident, $f:ident, array($values:ident)) => {
+        for &value in $values.iter() {
+            $f(value);
+        }
+    };
+    ($dfg:ident, $f:ident, value_list($values:ident)) => {
+        $dfg.visit_value_list(*$values, &mut $f);
+    };
+    ($dfg:ident, $f:ident, block_call($call:ident)) => {
+        $dfg.visit_block_call(*$call, &mut $f);
+    };
+    ($dfg:ident, $f:ident, jump_table($table:ident)) => {
+        $dfg.visit_jump_table(*$table, &mut $f);
+    };
+    ($dfg:ident, $f:ident, vector_ext($ext:ident)) => {
+        $dfg.visit_vector_ext(*$ext, &mut $f);
+    };
+    ($dfg:ident, $f:ident, vector_mem_ext($ext:ident)) => {
+        $dfg.visit_vector_mem_ext(*$ext, &mut $f);
+    };
+}
+
+macro_rules! schema_replace_operand {
+    ($dfg:ident, $old:ident, $new:ident, value($value:ident)) => {
+        if *$value == $old {
+            *$value = $new;
+        }
+    };
+    ($dfg:ident, $old:ident, $new:ident, array($values:ident)) => {
+        for value in $values.iter_mut() {
+            if *value == $old {
+                *value = $new;
+            }
+        }
+    };
+    ($dfg:ident, $old:ident, $new:ident, value_list($values:ident)) => {
+        $dfg.replace_value_list($values, $old, $new);
+    };
+    ($dfg:ident, $old:ident, $new:ident, block_call($call:ident)) => {
+        $dfg.replace_block_call(*$call, $old, $new);
+    };
+    ($dfg:ident, $old:ident, $new:ident, jump_table($table:ident)) => {
+        $dfg.replace_jump_table(*$table, $old, $new);
+    };
+    ($dfg:ident, $old:ident, $new:ident, vector_ext($ext:ident)) => {
+        $dfg.replace_vector_ext($ext, $old, $new);
+    };
+    ($dfg:ident, $old:ident, $new:ident, vector_mem_ext($ext:ident)) => {
+        $dfg.replace_vector_mem_ext($ext, $old, $new);
+    };
+}
+
+macro_rules! define_instruction_schema {
+    ($(
+        $pattern:pat => {
+            opcode: $opcode_kind:ident($opcode_arg:ident),
+            format: $format_kind:ident($format_arg:ident),
+            primary: [$($primary_kind:ident($primary:ident)),* $(,)?],
+            auxiliary: [$($aux_kind:ident($aux:ident)),* $(,)?]
+        }
+    ),* $(,)?) => {
+        #[allow(unused_variables)]
+        pub fn matches_format(&self, dfg: &DataFlowGraph, format: OpFormat) -> bool {
+            match self {
+                $($pattern => schema_matches_format!(dfg, format, $format_kind($format_arg))),*
+            }
+        }
+
+        /// Visit operands that participate in the opcode's type scheme.
+        ///
+        /// Auxiliary mask/EVL operands belong to the predication envelope and
+        /// are validated separately from the core operation.
+        #[allow(unused_variables)]
+        pub fn visit_type_operands<F>(&self, dfg: &DataFlowGraph, mut f: F)
+        where
+            F: FnMut(Value),
+        {
+            match self {
+                $($pattern => {
+                    $(schema_visit_operand!(dfg, f, $primary_kind($primary));)*
+                }),*
+            }
+        }
+
+        #[allow(unused_variables)]
+        pub fn visit_operands<F>(&self, dfg: &DataFlowGraph, mut f: F)
+        where
+            F: FnMut(Value),
+        {
+            match self {
+                $($pattern => {
+                    $(schema_visit_operand!(dfg, f, $primary_kind($primary));)*
+                    $(schema_visit_operand!(dfg, f, $aux_kind($aux));)*
+                }),*
+            }
+        }
+
+        #[allow(unused_variables)]
+        pub fn replace_value(
+            &mut self,
+            dfg: &mut DataFlowGraph,
+            old_val: Value,
+            new_val: Value,
+        ) {
+            match self {
+                $($pattern => {
+                    $(schema_replace_operand!(dfg, old_val, new_val, $primary_kind($primary));)*
+                    $(schema_replace_operand!(dfg, old_val, new_val, $aux_kind($aux));)*
+                }),*
+            }
+        }
+
+        #[allow(unused_variables)]
+        pub fn opcode(&self) -> Opcode {
+            match self {
+                $($pattern => schema_opcode!($opcode_kind($opcode_arg))),*
+            }
+        }
+    };
+}
+
+impl InstructionData {
+    define_instruction_schema! {
+        Self::Unary { opcode, arg } => {
+            opcode: dynamic(opcode),
+            format: fixed(Unary),
+            primary: [value(arg)],
+            auxiliary: []
+        },
+        Self::Binary { opcode, args } => {
+            opcode: dynamic(opcode),
+            format: fixed(Binary),
+            primary: [array(args)],
+            auxiliary: []
+        },
+        Self::Load { ptr, .. } => {
+            opcode: fixed(Load),
+            format: fixed(Load),
+            primary: [value(ptr)],
+            auxiliary: []
+        },
+        Self::Store { ptr, value, .. } => {
+            opcode: fixed(Store),
+            format: fixed(Store),
+            primary: [value(ptr), value(value)],
+            auxiliary: []
+        },
+        Self::StackLoad { .. } => {
+            opcode: fixed(StackLoad),
+            format: fixed(StackLoad),
+            primary: [],
+            auxiliary: []
+        },
+        Self::StackStore { value, .. } => {
+            opcode: fixed(StackStore),
+            format: fixed(StackStore),
+            primary: [value(value)],
+            auxiliary: []
+        },
+        Self::StackAddr { .. } => {
+            opcode: fixed(StackAddr),
+            format: fixed(StackAddr),
+            primary: [],
+            auxiliary: []
+        },
+        Self::Iconst { .. } => {
+            opcode: fixed(Iconst),
+            format: fixed(Iconst),
+            primary: [],
+            auxiliary: []
+        },
+        Self::Fconst { .. } => {
+            opcode: fixed(Fconst),
+            format: fixed(Fconst),
+            primary: [],
+            auxiliary: []
+        },
+        Self::Bconst { .. } => {
+            opcode: fixed(Bconst),
+            format: fixed(Bconst),
+            primary: [],
+            auxiliary: []
+        },
+        Self::Vconst { .. } => {
+            opcode: fixed(Vconst),
+            format: fixed(Vconst),
+            primary: [],
+            auxiliary: []
+        },
+        Self::Call { args, .. } => {
+            opcode: fixed(Call),
+            format: fixed(Call),
+            primary: [value_list(args)],
+            auxiliary: []
+        },
+        Self::Jump { dest } => {
+            opcode: fixed(Jump),
+            format: fixed(Jump),
+            primary: [block_call(dest)],
+            auxiliary: []
+        },
+        Self::Br {
+            condition,
+            then_dest,
+            else_dest,
+        } => {
+            opcode: fixed(Br),
+            format: fixed(Br),
+            primary: [value(condition), block_call(then_dest), block_call(else_dest)],
+            auxiliary: []
+        },
+        Self::BrTable { index, table } => {
+            opcode: fixed(BrTable),
+            format: fixed(BrTable),
+            primary: [value(index), jump_table(table)],
+            auxiliary: []
+        },
+        Self::Return { values } => {
+            opcode: fixed(Return),
+            format: fixed(Return),
+            primary: [value_list(values)],
+            auxiliary: []
+        },
+        Self::IntCompare { args, .. } => {
+            opcode: fixed(Icmp),
+            format: fixed(IntCompare),
+            primary: [array(args)],
+            auxiliary: []
+        },
+        Self::FloatCompare { args, .. } => {
+            opcode: fixed(Fcmp),
+            format: fixed(FloatCompare),
+            primary: [array(args)],
+            auxiliary: []
+        },
+        Self::Unreachable => {
+            opcode: fixed(Unreachable),
+            format: fixed(Unreachable),
+            primary: [],
+            auxiliary: []
+        },
+        Self::CallIndirect { ptr, args, .. } => {
+            opcode: fixed(CallIndirect),
+            format: fixed(CallIndirect),
+            primary: [value(ptr), value_list(args)],
+            auxiliary: []
+        },
+        Self::IntToPtr { arg } => {
+            opcode: fixed(IntToPtr),
+            format: fixed(IntToPtr),
+            primary: [value(arg)],
+            auxiliary: []
+        },
+        Self::PtrToInt { arg } => {
+            opcode: fixed(PtrToInt),
+            format: fixed(PtrToInt),
+            primary: [value(arg)],
+            auxiliary: []
+        },
+        Self::PtrOffset { ptr, .. } => {
+            opcode: fixed(PtrOffset),
+            format: fixed(PtrOffset),
+            primary: [value(ptr)],
+            auxiliary: []
+        },
+        Self::PtrIndex { ptr, index, .. } => {
+            opcode: fixed(PtrIndex),
+            format: fixed(PtrIndex),
+            primary: [value(ptr), value(index)],
+            auxiliary: []
+        },
+        Self::CallIntrinsic { args, .. } => {
+            opcode: fixed(CallIntrinsic),
+            format: fixed(CallIntrinsic),
+            primary: [value_list(args)],
+            auxiliary: []
+        },
+        Self::Ternary { opcode, args } => {
+            opcode: dynamic(opcode),
+            format: fixed(Ternary),
+            primary: [array(args)],
+            auxiliary: []
+        },
+        Self::VectorOpWithExt { opcode, args, ext } => {
+            opcode: dynamic(opcode),
+            format: arity(args),
+            primary: [value_list(args)],
+            auxiliary: [vector_ext(ext)]
+        },
+        Self::VectorLoadStrided { ptr, stride, ext } => {
+            opcode: fixed(LoadStride),
+            format: fixed(VectorLoadStrided),
+            primary: [value(ptr), value(stride)],
+            auxiliary: [vector_mem_ext(ext)]
+        },
+        Self::VectorStoreStrided { args, ext } => {
+            opcode: fixed(StoreStride),
+            format: fixed(VectorStoreStrided),
+            primary: [value_list(args)],
+            auxiliary: [vector_mem_ext(ext)]
+        },
+        Self::VectorGather { ptr, index, ext } => {
+            opcode: fixed(Gather),
+            format: fixed(VectorGather),
+            primary: [value(ptr), value(index)],
+            auxiliary: [vector_mem_ext(ext)]
+        },
+        Self::VectorScatter { args, ext } => {
+            opcode: fixed(Scatter),
+            format: fixed(VectorScatter),
+            primary: [value_list(args)],
+            auxiliary: [vector_mem_ext(ext)]
+        },
+        Self::Shuffle { args, .. } => {
+            opcode: fixed(Shuffle),
+            format: fixed(Shuffle),
+            primary: [array(args)],
+            auxiliary: []
+        },
+        Self::Nop => {
+            opcode: fixed(Nop),
+            format: fixed(Nop),
+            primary: [],
+            auxiliary: []
+        }
+    }
+    pub fn is_terminator(&self) -> bool {
+        self.opcode().spec().is_terminator()
     }
 
-    /// 检查是否是向量操作
-    pub fn is_vector_op(&self) -> bool {
-        matches!(
-            self,
-            InstructionData::Ternary { .. }
-                | InstructionData::VectorOpWithExt { .. }
-                | InstructionData::VectorLoadStrided { .. }
-                | InstructionData::VectorStoreStrided { .. }
-                | InstructionData::VectorGather { .. }
-                | InstructionData::VectorScatter { .. }
-                | InstructionData::Shuffle { .. }
-        )
+    pub fn memory_effect(&self, dfg: &DataFlowGraph) -> MemoryEffect {
+        let effect = self.opcode().spec().memory_effect;
+        let flags = match self {
+            Self::Load { flags, .. } | Self::Store { flags, .. } => Some(*flags),
+            Self::VectorLoadStrided { ext, .. }
+            | Self::VectorStoreStrided { ext, .. }
+            | Self::VectorGather { ext, .. }
+            | Self::VectorScatter { ext, .. } => Some(
+                dfg.vector_mem_ext(*ext)
+                    .expect("instruction refers to a missing vector memory extension")
+                    .flags,
+            ),
+            _ => None,
+        };
+        if flags.is_some_and(|flags| flags.is_volatile()) {
+            effect.with_volatile()
+        } else {
+            effect
+        }
+    }
+
+    pub fn has_side_effects(&self, dfg: &DataFlowGraph) -> bool {
+        let spec = self.opcode().spec();
+        spec.is_terminator() || spec.may_trap() || self.memory_effect(dfg).has_side_effects()
     }
 }
 

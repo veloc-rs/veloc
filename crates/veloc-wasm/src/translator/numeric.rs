@@ -37,26 +37,26 @@ impl<'a> WasmTranslator<'a> {
             Operator::I32Rotr => self.bin_i32(|b, l, r| b.irotr(l, r)),
             Operator::I64Rotr => self.bin_i64(|b, l, r| b.irotr(l, r)),
 
-            Operator::I32Eq => self.bin_i32(|b, l, r| b.eq(l, r)),
-            Operator::I64Eq => self.bin_i64(|b, l, r| b.eq(l, r)),
-            Operator::I32Ne => self.bin_i32(|b, l, r| b.ne(l, r)),
-            Operator::I64Ne => self.bin_i64(|b, l, r| b.ne(l, r)),
-            Operator::I32LtS => self.bin_i32(|b, l, r| b.lt_s(l, r)),
-            Operator::I64LtS => self.bin_i64(|b, l, r| b.lt_s(l, r)),
-            Operator::I32LtU => self.bin_i32(|b, l, r| b.lt_u(l, r)),
-            Operator::I64LtU => self.bin_i64(|b, l, r| b.lt_u(l, r)),
-            Operator::I32GtS => self.bin_i32(|b, l, r| b.gt_s(l, r)),
-            Operator::I64GtS => self.bin_i64(|b, l, r| b.gt_s(l, r)),
-            Operator::I32GtU => self.bin_i32(|b, l, r| b.gt_u(l, r)),
-            Operator::I64GtU => self.bin_i64(|b, l, r| b.gt_u(l, r)),
-            Operator::I32LeS => self.bin_i32(|b, l, r| b.le_s(l, r)),
-            Operator::I64LeS => self.bin_i64(|b, l, r| b.le_s(l, r)),
-            Operator::I32LeU => self.bin_i32(|b, l, r| b.le_u(l, r)),
-            Operator::I64LeU => self.bin_i64(|b, l, r| b.le_u(l, r)),
-            Operator::I32GeS => self.bin_i32(|b, l, r| b.ge_s(l, r)),
-            Operator::I64GeS => self.bin_i64(|b, l, r| b.ge_s(l, r)),
-            Operator::I32GeU => self.bin_i32(|b, l, r| b.ge_u(l, r)),
-            Operator::I64GeU => self.bin_i64(|b, l, r| b.ge_u(l, r)),
+            Operator::I32Eq => self.bin_i32(|b, l, r| b.icmp(IntCC::Eq, l, r)),
+            Operator::I64Eq => self.bin_i64(|b, l, r| b.icmp(IntCC::Eq, l, r)),
+            Operator::I32Ne => self.bin_i32(|b, l, r| b.icmp(IntCC::Ne, l, r)),
+            Operator::I64Ne => self.bin_i64(|b, l, r| b.icmp(IntCC::Ne, l, r)),
+            Operator::I32LtS => self.bin_i32(|b, l, r| b.icmp(IntCC::LtS, l, r)),
+            Operator::I64LtS => self.bin_i64(|b, l, r| b.icmp(IntCC::LtS, l, r)),
+            Operator::I32LtU => self.bin_i32(|b, l, r| b.icmp(IntCC::LtU, l, r)),
+            Operator::I64LtU => self.bin_i64(|b, l, r| b.icmp(IntCC::LtU, l, r)),
+            Operator::I32GtS => self.bin_i32(|b, l, r| b.icmp(IntCC::GtS, l, r)),
+            Operator::I64GtS => self.bin_i64(|b, l, r| b.icmp(IntCC::GtS, l, r)),
+            Operator::I32GtU => self.bin_i32(|b, l, r| b.icmp(IntCC::GtU, l, r)),
+            Operator::I64GtU => self.bin_i64(|b, l, r| b.icmp(IntCC::GtU, l, r)),
+            Operator::I32LeS => self.bin_i32(|b, l, r| b.icmp(IntCC::LeS, l, r)),
+            Operator::I64LeS => self.bin_i64(|b, l, r| b.icmp(IntCC::LeS, l, r)),
+            Operator::I32LeU => self.bin_i32(|b, l, r| b.icmp(IntCC::LeU, l, r)),
+            Operator::I64LeU => self.bin_i64(|b, l, r| b.icmp(IntCC::LeU, l, r)),
+            Operator::I32GeS => self.bin_i32(|b, l, r| b.icmp(IntCC::GeS, l, r)),
+            Operator::I64GeS => self.bin_i64(|b, l, r| b.icmp(IntCC::GeS, l, r)),
+            Operator::I32GeU => self.bin_i32(|b, l, r| b.icmp(IntCC::GeU, l, r)),
+            Operator::I64GeU => self.bin_i64(|b, l, r| b.icmp(IntCC::GeU, l, r)),
 
             Operator::I32Eqz => self.un_i32(|b, v| b.ieqz(v)),
             Operator::I64Eqz => self.un_i64(|b, v| b.ieqz(v)),
@@ -121,21 +121,21 @@ impl<'a> WasmTranslator<'a> {
             Operator::F32Copysign => self.bin_f32(|b, l, r| b.fcopysign(l, r)),
             Operator::F64Copysign => self.bin_f64(|b, l, r| b.fcopysign(l, r)),
 
-            Operator::F32Eq => self.bin_f32(|b, l, r| b.feq(l, r)),
-            Operator::F32Ne => self.bin_f32(|b, l, r| b.fne(l, r)),
-            Operator::F32Lt => self.bin_f32(|b, l, r| b.flt(l, r)),
-            Operator::F32Gt => self.bin_f32(|b, l, r| b.fgt(l, r)),
-            Operator::F32Le => self.bin_f32(|b, l, r| b.fle(l, r)),
-            Operator::F32Ge => self.bin_f32(|b, l, r| b.fge(l, r)),
-            Operator::F64Eq => self.bin_f64(|b, l, r| b.feq(l, r)),
-            Operator::F64Ne => self.bin_f64(|b, l, r| b.fne(l, r)),
-            Operator::F64Lt => self.bin_f64(|b, l, r| b.flt(l, r)),
-            Operator::F64Gt => self.bin_f64(|b, l, r| b.fgt(l, r)),
-            Operator::F64Le => self.bin_f64(|b, l, r| b.fle(l, r)),
-            Operator::F64Ge => self.bin_f64(|b, l, r| b.fge(l, r)),
+            Operator::F32Eq => self.bin_f32(|b, l, r| b.fcmp(FloatCC::Eq, l, r)),
+            Operator::F32Ne => self.bin_f32(|b, l, r| b.fcmp(FloatCC::Ne, l, r)),
+            Operator::F32Lt => self.bin_f32(|b, l, r| b.fcmp(FloatCC::Lt, l, r)),
+            Operator::F32Gt => self.bin_f32(|b, l, r| b.fcmp(FloatCC::Gt, l, r)),
+            Operator::F32Le => self.bin_f32(|b, l, r| b.fcmp(FloatCC::Le, l, r)),
+            Operator::F32Ge => self.bin_f32(|b, l, r| b.fcmp(FloatCC::Ge, l, r)),
+            Operator::F64Eq => self.bin_f64(|b, l, r| b.fcmp(FloatCC::Eq, l, r)),
+            Operator::F64Ne => self.bin_f64(|b, l, r| b.fcmp(FloatCC::Ne, l, r)),
+            Operator::F64Lt => self.bin_f64(|b, l, r| b.fcmp(FloatCC::Lt, l, r)),
+            Operator::F64Gt => self.bin_f64(|b, l, r| b.fcmp(FloatCC::Gt, l, r)),
+            Operator::F64Le => self.bin_f64(|b, l, r| b.fcmp(FloatCC::Le, l, r)),
+            Operator::F64Ge => self.bin_f64(|b, l, r| b.fcmp(FloatCC::Ge, l, r)),
 
-            Operator::F64PromoteF32 => self.un_f32(|b, v| b.float_promote(v, VelocType::F64)),
-            Operator::F32DemoteF64 => self.un_f64(|b, v| b.float_demote(v, VelocType::F32)),
+            Operator::F64PromoteF32 => self.un_f32(|b, v| b.float_promote(v)),
+            Operator::F32DemoteF64 => self.un_f64(|b, v| b.float_demote(v)),
             Operator::F32ConvertI32S => self.un_i32(|b, v| b.int_to_float_s(v, VelocType::F32)),
             Operator::F32ConvertI32U => self.un_i32(|b, v| b.int_to_float_u(v, VelocType::F32)),
             Operator::F32ConvertI64S => self.un_i64(|b, v| b.int_to_float_s(v, VelocType::F32)),
@@ -268,7 +268,7 @@ impl<'a> WasmTranslator<'a> {
         dst_ty: VelocType,
     ) {
         let val = self.pop();
-        let is_nan = self.builder.ins().fne(val, val);
+        let is_nan = self.builder.ins().fcmp(FloatCC::Ne, val, val);
         self.trap_if(is_nan, TrapCode::InvalidConversionToInteger);
 
         let (is_over, is_under) = match (dst_ty, src_ty, is_signed) {
@@ -276,64 +276,64 @@ impl<'a> WasmTranslator<'a> {
                 let upper = self.builder.ins().f32const(2147483648.0);
                 let lower = self.builder.ins().f32const(-2147483648.0);
                 (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().flt(val, lower),
+                    self.builder.ins().fcmp(FloatCC::Ge, val, upper),
+                    self.builder.ins().fcmp(FloatCC::Lt, val, lower),
                 )
             }
             (VelocType::I32, VelocType::F32, false) => {
                 let upper = self.builder.ins().f32const(4294967296.0);
                 let lower = self.builder.ins().f32const(-1.0);
                 (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
+                    self.builder.ins().fcmp(FloatCC::Ge, val, upper),
+                    self.builder.ins().fcmp(FloatCC::Le, val, lower),
                 )
             }
             (VelocType::I32, VelocType::F64, true) => {
                 let upper = self.builder.ins().f64const(2147483648.0);
                 let lower = self.builder.ins().f64const(-2147483649.0);
                 (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
+                    self.builder.ins().fcmp(FloatCC::Ge, val, upper),
+                    self.builder.ins().fcmp(FloatCC::Le, val, lower),
                 )
             }
             (VelocType::I32, VelocType::F64, false) => {
                 let upper = self.builder.ins().f64const(4294967296.0);
                 let lower = self.builder.ins().f64const(-1.0);
                 (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
+                    self.builder.ins().fcmp(FloatCC::Ge, val, upper),
+                    self.builder.ins().fcmp(FloatCC::Le, val, lower),
                 )
             }
             (VelocType::I64, VelocType::F32, true) => {
                 let upper = self.builder.ins().f32const(9223372036854775808.0);
                 let lower = self.builder.ins().f32const(-9223372036854775808.0);
                 (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().flt(val, lower),
+                    self.builder.ins().fcmp(FloatCC::Ge, val, upper),
+                    self.builder.ins().fcmp(FloatCC::Lt, val, lower),
                 )
             }
             (VelocType::I64, VelocType::F32, false) => {
                 let upper = self.builder.ins().f32const(18446744073709551616.0);
                 let lower = self.builder.ins().f32const(-1.0);
                 (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
+                    self.builder.ins().fcmp(FloatCC::Ge, val, upper),
+                    self.builder.ins().fcmp(FloatCC::Le, val, lower),
                 )
             }
             (VelocType::I64, VelocType::F64, true) => {
                 let upper = self.builder.ins().f64const(9223372036854775808.0);
                 let lower = self.builder.ins().f64const(-9223372036854775808.0);
                 (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().flt(val, lower),
+                    self.builder.ins().fcmp(FloatCC::Ge, val, upper),
+                    self.builder.ins().fcmp(FloatCC::Lt, val, lower),
                 )
             }
             (VelocType::I64, VelocType::F64, false) => {
                 let upper = self.builder.ins().f64const(18446744073709551616.0);
                 let lower = self.builder.ins().f64const(-1.0);
                 (
-                    self.builder.ins().fge(val, upper),
-                    self.builder.ins().fle(val, lower),
+                    self.builder.ins().fcmp(FloatCC::Ge, val, upper),
+                    self.builder.ins().fcmp(FloatCC::Le, val, lower),
                 )
             }
             _ => unreachable!(),

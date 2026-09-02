@@ -43,7 +43,7 @@ pub fn run_dce(
     // 1. Identify roots: instructions with side effects
     for block in &func.layout.block_order {
         for &inst in &func.layout.blocks[*block].insts {
-            if func.dfg.instructions[inst].has_side_effects() {
+            if func.dfg.instructions[inst].has_side_effects(&func.dfg) {
                 if live_insts.insert(inst) {
                     worklist.push(inst);
                 }

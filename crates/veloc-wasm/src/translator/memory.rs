@@ -228,7 +228,13 @@ impl<'a> WasmTranslator<'a> {
     fn translate_load(&mut self, ty: VelocType, memarg: MemArg) {
         let addr = self.pop_i32();
         let mem_idx = memarg.memory;
-        self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes() as u32);
+        self.memory_bounds_check(
+            mem_idx,
+            addr,
+            memarg.offset,
+            ty.fixed_size_bytes()
+                .expect("Wasm loads have fixed-size types"),
+        );
         let mem_base = self.get_memory_base(mem_idx);
         let addr_i64 = self.addr_to_i64(addr);
         let actual_ptr = self.builder.ins().ptr_index(mem_base, addr_i64, 1, 0);
@@ -244,7 +250,13 @@ impl<'a> WasmTranslator<'a> {
         let val = self.pop_typed(ty);
         let addr = self.pop_i32();
         let mem_idx = memarg.memory;
-        self.memory_bounds_check(mem_idx, addr, memarg.offset, ty.size_bytes() as u32);
+        self.memory_bounds_check(
+            mem_idx,
+            addr,
+            memarg.offset,
+            ty.fixed_size_bytes()
+                .expect("Wasm stores have fixed-size types"),
+        );
         let mem_base = self.get_memory_base(mem_idx);
         let addr_i64 = self.addr_to_i64(addr);
         let actual_ptr = self.builder.ins().ptr_index(mem_base, addr_i64, 1, 0);

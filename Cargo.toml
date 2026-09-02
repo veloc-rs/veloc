@@ -52,7 +52,6 @@ smallvec = { version = "1.13", default-features = false }
 cranelift-entity = { version = "0.128.3", default-features = false }
 
 # --- Parser ---
-chumsky = "0.12.0"
 
 # --- Async ---
 futures = "0.3"
@@ -74,12 +73,10 @@ elf_loader = { version = "0.14.1" }
 veloc-ir = { workspace = true }
 veloc-interpreter = { workspace = true }
 veloc-codegen = { workspace = true }
-cranelift-entity = { workspace = true }
-hashbrown = { workspace = true }
 
 [features]
 default = ["std"]
-std = ["hashbrown/default"]
+std = []
 
 [profile.release]
 debug = true

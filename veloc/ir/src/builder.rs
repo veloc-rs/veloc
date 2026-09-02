@@ -1,14 +1,15 @@
 use super::function::{Function, StackSlotData};
-use super::inst::{ConstantPoolData, Inst, InstructionData};
-use super::opcode::{FloatCC, IntCC, MemFlags, Opcode};
+use super::inst::{ConstantPoolData, Inst, InstructionData, VectorMemOptions};
+use super::opcode::{MemFlags, Opcode};
 use super::types::{
-    Block, BlockCall, FuncId, JumpTable, Signature, StackSlot, Type, Value, ValueList, Variable,
+    Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
+use crate::opspec::ResultTypes;
 use crate::types::{BlockCallData, JumpTableData};
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
 use alloc::vec::Vec;
 use hashbrown::HashMap;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 
 pub struct ModuleBuilder {
     data: ModuleData,
@@ -60,6 +61,12 @@ impl ModuleBuilder {
     }
 }
 
+impl Default for ModuleBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct FunctionBuilder<'a> {
     module: &'a mut ModuleData,
     func_id: FuncId,
@@ -68,8 +75,6 @@ pub struct FunctionBuilder<'a> {
     var_types: HashMap<Variable, Type>,
     // 每个 Block 对变量的最新定义: Block -> Variable -> Value
     def_map: HashMap<Block, HashMap<Variable, Value>>,
-    // 跟踪已密封的 Block。密封意味着该 Block 的所有前驱都已确定。
-    sealed_blocks: Vec<Block>,
     // 未密封 Block 中待处理的 Phi 节点: Block -> Variable -> Phi Value
     incomplete_phis: HashMap<Block, Vec<(Variable, Value)>>,
 }
@@ -82,7 +87,6 @@ impl<'a> FunctionBuilder<'a> {
             current_block: None,
             var_types: HashMap::new(),
             def_map: HashMap::new(),
-            sealed_blocks: Vec::new(),
             incomplete_phis: HashMap::new(),
         };
 
@@ -129,143 +133,80 @@ impl<'a> FunctionBuilder<'a> {
     /// Compute the result types of an instruction.
     /// Uses SmallVec to avoid heap allocation for most instructions (0-2 results).
     fn inst_result_types(&self, data: &InstructionData) -> SmallVec<[Type; 2]> {
-        use super::inst::InstructionData;
-        match data {
-            // Unary ops: result type same as input operand
-            InstructionData::Unary { arg, .. } => smallvec![self.value_type(*arg)],
-            // Binary ops: result type same as input operand
-            // Overflow variants return (result, overflow_flag) tuple
-            InstructionData::Binary { opcode, args, .. } => match opcode {
-                Opcode::IAddWithOverflow | Opcode::ISubWithOverflow | Opcode::IMulWithOverflow => {
-                    smallvec![self.value_type(args[0]), Type::BOOL]
-                }
-                _ => smallvec![self.value_type(args[0])],
-            },
+        let spec = data.opcode().spec();
+        let mut operands = SmallVec::<[Type; 4]>::new();
+        data.visit_type_operands(&self.func().dfg, |value| {
+            operands.push(self.value_type(value));
+        });
 
-            // Load/StackLoad/PtrToInt: type must be provided by caller (via push_inst_with_type)
-            InstructionData::Load { .. }
-            | InstructionData::StackLoad { .. }
-            | InstructionData::PtrToInt { .. }
-            | InstructionData::Iconst { .. }
-            | InstructionData::Fconst { .. }
-            | InstructionData::Vconst { .. } => panic!(
-                "Instructions like Load, StackLoad, PtrToInt, Iconst, Fconst, Vconst require explicit type annotation via push_inst_with_type"
-            ),
-
-            // Instructions with fixed result type
-            InstructionData::Bconst { .. } => smallvec![Type::BOOL],
-            InstructionData::StackAddr { .. } => smallvec![Type::PTR],
-            InstructionData::IntToPtr { .. } => smallvec![Type::PTR],
-            InstructionData::PtrOffset { .. } => smallvec![Type::PTR],
-            InstructionData::PtrIndex { .. } => smallvec![Type::PTR],
-
-            // Comparisons: always return Bool
-            InstructionData::IntCompare { .. } | InstructionData::FloatCompare { .. } => {
-                smallvec![Type::BOOL]
+        match spec.type_scheme.infer_results(&operands) {
+            ResultTypes::Inferred(types) => types,
+            ResultTypes::Explicit => {
+                panic!("{} requires an explicit result type", spec.mnemonic)
             }
-
-            // Ternary ops: Select result type same as then_val (args[1]), others same as first operand
-            InstructionData::Ternary { opcode, args, .. } => {
-                if *opcode == Opcode::Select {
-                    smallvec![self.value_type(args[1])] // then_val
-                } else {
-                    smallvec![self.value_type(args[0])]
-                }
-            }
-
-            // Instructions that never produce a value
-            InstructionData::Store { .. }
-            | InstructionData::StackStore { .. }
-            | InstructionData::Jump { .. }
-            | InstructionData::Br { .. }
-            | InstructionData::BrTable { .. }
-            | InstructionData::Return { .. }
-            | InstructionData::Unreachable => smallvec![],
-
-            // Call instructions: return types are obtained from the signature
-            InstructionData::Call { func_id, .. } => {
-                let sig_id = self.module.functions[*func_id].signature;
+            ResultTypes::Signature => {
+                let sig_id = match data {
+                    InstructionData::Call { func_id, .. } => {
+                        self.module.functions[*func_id].signature
+                    }
+                    InstructionData::CallIndirect { sig_id, .. }
+                    | InstructionData::CallIntrinsic { sig_id, .. } => *sig_id,
+                    _ => unreachable!("{} must carry a signature", spec.mnemonic),
+                };
                 self.module.signatures[sig_id]
                     .returns
                     .iter()
-                    .cloned()
+                    .copied()
                     .collect()
             }
-            InstructionData::CallIndirect { sig_id, .. } => self.module.signatures[*sig_id]
-                .returns
-                .iter()
-                .cloned()
-                .collect(),
-            InstructionData::CallIntrinsic { sig_id, .. } => self.module.signatures[*sig_id]
-                .returns
-                .iter()
-                .cloned()
-                .collect(),
-
-            // Vector operations that require explicit type
-            InstructionData::VectorOpWithExt { args, .. } => {
-                // Result type same as first operand
-                smallvec![self.value_type(args.as_slice(&self.func().dfg.value_list_pool())[0])]
-            }
-
-            // Strided/Gather Load 必须通过 push_inst_with_type 构造
-            InstructionData::VectorLoadStrided { .. } | InstructionData::VectorGather { .. } => {
-                panic!(
-                    "Vector load instructions require explicit type annotation via push_inst_with_type"
-                )
-            }
-
-            InstructionData::VectorStoreStrided { .. } | InstructionData::VectorScatter { .. } => {
-                smallvec![]
-            }
-
-            InstructionData::Shuffle { args, .. } => {
-                // Result type same as input vectors
-                smallvec![self.value_type(args[0])]
-            }
-
-            InstructionData::Nop => smallvec![],
         }
     }
 
+    fn assert_inst_matches_spec(&self, data: &InstructionData, results: &[Type]) {
+        let spec = data.opcode().spec();
+        assert!(
+            data.matches_format(&self.func().dfg, spec.format),
+            "{} constructed with the wrong instruction format",
+            spec.mnemonic
+        );
+        let mut operands = SmallVec::<[Type; 4]>::new();
+        data.visit_type_operands(&self.func().dfg, |value| {
+            operands.push(self.value_type(value));
+        });
+        assert!(
+            spec.type_scheme.validate(&operands, results).is_ok(),
+            "{} constructed with types outside its type scheme",
+            spec.mnemonic
+        );
+    }
+
     fn push_inst(&mut self, block: Block, data: InstructionData) -> Option<Value> {
-        let types = self.inst_result_types(&data);
-        let inst = self.func_mut().dfg.instructions.push(data);
-        self.func_mut().layout.append_inst(block, inst);
-        if types.is_empty() {
-            None
-        } else {
-            let list = self.func_mut().dfg.append_results(inst, &types);
-            Some(self.func().dfg.get_value_list(list)[0])
-        }
+        let inst = self.push_inst_raw(block, data);
+        self.func().dfg.first_result(inst)
     }
 
     fn push_inst_raw(&mut self, block: Block, data: InstructionData) -> Inst {
         let types = self.inst_result_types(&data);
+        self.append_inst(block, data, &types)
+    }
+
+    fn append_inst(&mut self, block: Block, data: InstructionData, types: &[Type]) -> Inst {
+        self.assert_inst_matches_spec(&data, types);
         let inst = self.func_mut().dfg.instructions.push(data);
         self.func_mut().layout.append_inst(block, inst);
         if !types.is_empty() {
-            self.func_mut().dfg.append_results(inst, &types);
+            self.func_mut().dfg.append_results(inst, types);
         }
         inst
     }
 
-    /// Push an instruction that requires explicit result type (like Load, Iconst, etc.)
-    fn push_inst_with_type(
-        &mut self,
-        block: Block,
-        data: InstructionData,
-        ty: Type,
-    ) -> Option<Value> {
-        let inst = self.func_mut().dfg.instructions.push(data);
-        self.func_mut().layout.append_inst(block, inst);
-
-        if ty != Type::VOID {
-            let list = self.func_mut().dfg.append_results(inst, &[ty]);
-            Some(self.func().dfg.get_value_list(list)[0])
-        } else {
-            None
-        }
+    /// Push an instruction whose result type is selected by the caller.
+    fn push_inst_with_type(&mut self, block: Block, data: InstructionData, ty: Type) -> Value {
+        let inst = self.append_inst(block, data, &[ty]);
+        self.func()
+            .dfg
+            .first_result(inst)
+            .expect("an explicitly typed instruction must produce one result")
     }
 
     pub fn make_value_list(&mut self, values: &[Value]) -> ValueList {
@@ -278,20 +219,6 @@ impl<'a> FunctionBuilder<'a> {
             block,
             args: args_list,
         })
-    }
-
-    pub fn make_jump_table(&mut self, targets: Vec<BlockCall>) -> JumpTable {
-        self.func_mut()
-            .dfg
-            .jump_tables
-            .push(JumpTableData { targets })
-    }
-
-    pub fn is_pristine(&self) -> bool {
-        self.current_block.is_some()
-            && self.func().layout.blocks[self.current_block.unwrap()]
-                .insts
-                .is_empty()
     }
 
     pub fn create_block(&mut self) -> Block {
@@ -314,14 +241,6 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn block_params(&self, block: Block) -> &[Value] {
         &self.func().layout.blocks[block].params
-    }
-
-    pub fn block_params_len(&self, block: Block) -> usize {
-        self.func().layout.blocks[block].params.len()
-    }
-
-    pub fn entry_block(&self) -> Option<Block> {
-        self.func().entry_block
     }
 
     pub fn value_type(&self, val: Value) -> Type {
@@ -451,10 +370,7 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn def_var(&mut self, var: Variable, val: Value) {
         let block = self.current_block.expect("No current block");
-        self.def_map
-            .entry(block)
-            .or_insert_with(HashMap::new)
-            .insert(var, val);
+        self.def_map.entry(block).or_default().insert(var, val);
     }
 
     pub fn use_var(&mut self, var: Variable) -> Value {
@@ -472,33 +388,27 @@ impl<'a> FunctionBuilder<'a> {
 
     fn use_var_recursive(&mut self, block: Block, var: Variable) -> Value {
         let val;
-        if !self.sealed_blocks.contains(&block) {
+        if !self.func().layout.blocks[block].is_sealed {
             // Incomplete phi
-            let ty = self.var_types[&var].clone();
+            let ty = self.var_types[&var];
             val = self.add_block_param(block, ty);
             self.incomplete_phis
                 .entry(block)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((var, val));
         } else {
             let preds = self.func().layout.blocks[block].preds.clone();
             if preds.len() == 1 {
                 val = self.use_var_on_block(preds[0], var);
             } else {
-                let ty = self.var_types[&var].clone();
+                let ty = self.var_types[&var];
                 val = self.add_block_param(block, ty);
                 // Break recursion
-                self.def_map
-                    .entry(block)
-                    .or_insert_with(HashMap::new)
-                    .insert(var, val);
+                self.def_map.entry(block).or_default().insert(var, val);
                 self.add_phi_operands(block, var, val);
             }
         }
-        self.def_map
-            .entry(block)
-            .or_insert_with(HashMap::new)
-            .insert(var, val);
+        self.def_map.entry(block).or_default().insert(var, val);
         val
     }
 
@@ -516,7 +426,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn seal_block(&mut self, block: Block) {
-        if self.sealed_blocks.contains(&block) {
+        if self.func().layout.blocks[block].is_sealed {
             return;
         }
         if let Some(phis) = self.incomplete_phis.remove(&block) {
@@ -524,12 +434,11 @@ impl<'a> FunctionBuilder<'a> {
                 self.add_phi_operands(block, var, phi);
             }
         }
-        self.sealed_blocks.push(block);
         self.func_mut().layout.blocks[block].is_sealed = true;
     }
 
     pub fn seal_all_blocks(&mut self) {
-        let blocks: Vec<_> = self.func().layout.block_order.iter().cloned().collect();
+        let blocks = self.func().layout.block_order.clone();
         for block in blocks {
             self.seal_block(block);
         }
@@ -656,28 +565,33 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.builder.value_type(val)
     }
 
-    fn push(&mut self, data: InstructionData) -> Option<Value> {
+    pub(crate) fn push(&mut self, data: InstructionData) -> Option<Value> {
         let block = self.block();
         self.builder.push_inst(block, data)
     }
 
-    fn push_with_type(&mut self, data: InstructionData, ty: Type) -> Option<Value> {
+    pub(crate) fn push_with_type(&mut self, data: InstructionData, ty: Type) -> Value {
         let block = self.block();
         self.builder.push_inst_with_type(block, data, ty)
     }
 
-    fn push_raw(&mut self, data: InstructionData) -> Inst {
+    pub(crate) fn push_raw(&mut self, data: InstructionData) -> Inst {
         let block = self.block();
         self.builder.push_inst_raw(block, data)
     }
 
+    pub(crate) fn result_pair(&self, inst: Inst) -> (Value, Value) {
+        let results = self.builder.func().dfg.inst_results(inst);
+        (results[0], results[1])
+    }
+
     /// Helper for unary operations
-    fn push_unary(&mut self, opcode: Opcode, arg: Value) -> Value {
+    pub(crate) fn push_unary(&mut self, opcode: Opcode, arg: Value) -> Value {
         self.push(InstructionData::Unary { opcode, arg }).unwrap()
     }
 
     /// Helper for binary operations
-    fn push_binary(&mut self, opcode: Opcode, lhs: Value, rhs: Value) -> Value {
+    pub(crate) fn push_binary(&mut self, opcode: Opcode, lhs: Value, rhs: Value) -> Value {
         self.push(InstructionData::Binary {
             opcode,
             args: [lhs, rhs],
@@ -686,9 +600,8 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
-        if ty.is_integer() {
+        if ty.is_scalar() && ty.is_integer() {
             self.push_with_type(InstructionData::Iconst { value: val as u64 }, ty)
-                .unwrap()
         } else {
             panic!("iconst only supports integer types")
         }
@@ -704,7 +617,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn fconst(&mut self, ty: Type, val: u64) -> Value {
         self.push_with_type(InstructionData::Fconst { value: val }, ty)
-            .unwrap()
     }
 
     pub fn f32const(&mut self, val: f32) -> Value {
@@ -726,7 +638,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             .dfg
             .make_constant_pool_data(ConstantPoolData::Bytes(data));
         self.push_with_type(InstructionData::Vconst { pool_id }, ty)
-            .unwrap()
     }
 
     pub fn i8x16const(&mut self, values: [i8; 16]) -> Value {
@@ -774,419 +685,8 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.vconst(Type::F64X2, data)
     }
 
-    pub fn iadd(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IAdd, lhs, rhs)
-    }
-
-    pub fn isub(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::ISub, lhs, rhs)
-    }
-
-    pub fn imul(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IMul, lhs, rhs)
-    }
-
-    /// Integer add with overflow detection.
-    /// Returns (result, overflow_flag) tuple.
-    pub fn iadd_with_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
-        let inst = self.push_raw(InstructionData::Binary {
-            opcode: Opcode::IAddWithOverflow,
-            args: [lhs, rhs],
-        });
-        let results = self.builder.func().dfg.inst_results(inst);
-        (results[0], results[1])
-    }
-
-    /// Integer subtract with overflow detection.
-    /// Returns (result, overflow_flag) tuple.
-    pub fn isub_with_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
-        let inst = self.push_raw(InstructionData::Binary {
-            opcode: Opcode::ISubWithOverflow,
-            args: [lhs, rhs],
-        });
-        let results = self.builder.func().dfg.inst_results(inst);
-        (results[0], results[1])
-    }
-
-    /// Integer multiply with overflow detection.
-    /// Returns (result, overflow_flag) tuple.
-    pub fn imul_with_overflow(&mut self, lhs: Value, rhs: Value) -> (Value, Value) {
-        let inst = self.push_raw(InstructionData::Binary {
-            opcode: Opcode::IMulWithOverflow,
-            args: [lhs, rhs],
-        });
-        let results = self.builder.func().dfg.inst_results(inst);
-        (results[0], results[1])
-    }
-
-    /// Integer saturating addition.
-    /// Returns the result clamped to the integer type's minimum/maximum value on overflow.
-    pub fn iadd_sat(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IAddSat, lhs, rhs)
-    }
-
-    /// Integer saturating subtraction.
-    /// Returns the result clamped to the integer type's minimum/maximum value on underflow.
-    pub fn isub_sat(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::ISubSat, lhs, rhs)
-    }
-
-    pub fn fadd(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::FAdd, lhs, rhs)
-    }
-
-    pub fn fsub(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::FSub, lhs, rhs)
-    }
-
-    pub fn fmul(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::FMul, lhs, rhs)
-    }
-
-    pub fn idiv_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IDivS, lhs, rhs)
-    }
-
-    pub fn idiv_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IDivU, lhs, rhs)
-    }
-
-    pub fn fdiv(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::FDiv, lhs, rhs)
-    }
-
-    pub fn irem_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IRemS, lhs, rhs)
-    }
-
-    pub fn irem_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IRemU, lhs, rhs)
-    }
-
-    pub fn iand(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IAnd, lhs, rhs)
-    }
-
-    pub fn ior(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IOr, lhs, rhs)
-    }
-
-    pub fn ixor(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IXor, lhs, rhs)
-    }
-
-    pub fn ishl(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IShl, lhs, rhs)
-    }
-
-    pub fn ishr_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IShrS, lhs, rhs)
-    }
-
-    pub fn ishr_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IShrU, lhs, rhs)
-    }
-
-    pub fn irotl(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IRotl, lhs, rhs)
-    }
-
-    pub fn irotr(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::IRotr, lhs, rhs)
-    }
-
-    pub fn icmp(&mut self, kind: IntCC, lhs: Value, rhs: Value) -> Value {
-        self.push(InstructionData::IntCompare {
-            kind,
-            args: [lhs, rhs],
-        })
-        .unwrap()
-    }
-
-    pub fn fcmp(&mut self, kind: FloatCC, lhs: Value, rhs: Value) -> Value {
-        self.push(InstructionData::FloatCompare {
-            kind,
-            args: [lhs, rhs],
-        })
-        .unwrap()
-    }
-
-    pub fn eq(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::Eq, lhs, rhs)
-    }
-
-    pub fn ne(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::Ne, lhs, rhs)
-    }
-
-    pub fn lt_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::LtS, lhs, rhs)
-    }
-
-    pub fn lt_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::LtU, lhs, rhs)
-    }
-
-    pub fn gt_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::GtS, lhs, rhs)
-    }
-
-    pub fn gt_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::GtU, lhs, rhs)
-    }
-
-    pub fn le_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::LeS, lhs, rhs)
-    }
-
-    pub fn le_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::LeU, lhs, rhs)
-    }
-
-    pub fn ge_s(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::GeS, lhs, rhs)
-    }
-
-    pub fn ge_u(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.icmp(IntCC::GeU, lhs, rhs)
-    }
-
-    pub fn feq(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.fcmp(FloatCC::Eq, lhs, rhs)
-    }
-
-    pub fn fne(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.fcmp(FloatCC::Ne, lhs, rhs)
-    }
-
-    pub fn flt(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.fcmp(FloatCC::Lt, lhs, rhs)
-    }
-
-    pub fn fgt(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.fcmp(FloatCC::Gt, lhs, rhs)
-    }
-
-    pub fn fle(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.fcmp(FloatCC::Le, lhs, rhs)
-    }
-
-    pub fn fge(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.fcmp(FloatCC::Ge, lhs, rhs)
-    }
-
-    pub fn ieqz(&mut self, val: Value) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::IEqz,
-                arg: val,
-            },
-            Type::BOOL,
-        )
-        .unwrap()
-    }
-
-    pub fn iclz(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::IClz, val)
-    }
-
-    pub fn ictz(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::ICtz, val)
-    }
-
-    pub fn ipopcnt(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::IPopcnt, val)
-    }
-
-    pub fn ineg(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::INeg, val)
-    }
-
-    pub fn fneg(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::FNeg, val)
-    }
-
-    pub fn fabs(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::FAbs, val)
-    }
-
-    pub fn fsqrt(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::FSqrt, val)
-    }
-
-    pub fn fceil(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::FCeil, val)
-    }
-
-    pub fn ffloor(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::FFloor, val)
-    }
-
-    pub fn ftrunc(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::FTrunc, val)
-    }
-
-    pub fn fnearest(&mut self, val: Value) -> Value {
-        self.push_unary(Opcode::FNearest, val)
-    }
-
-    pub fn fmin(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::FMin, lhs, rhs)
-    }
-
-    pub fn fmax(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::FMax, lhs, rhs)
-    }
-
-    pub fn fcopysign(&mut self, lhs: Value, rhs: Value) -> Value {
-        self.push_binary(Opcode::FCopysign, lhs, rhs)
-    }
-
-    pub fn extend_s(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ExtendS,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    pub fn extend_u(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ExtendU,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    pub fn wrap(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::Wrap,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    /// Float to signed int (saturating)
-    /// On overflow, returns the min/max value of the target type
-    pub fn float_to_int_sat_s(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::FloatToIntSatS,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    /// Float to unsigned int (saturating)
-    /// On overflow, returns the min/max value of the target type
-    pub fn float_to_int_sat_u(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::FloatToIntSatU,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    /// Float to signed int (truncate)
-    pub fn float_to_int_s(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::FloatToIntS,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    /// Float to unsigned int (truncate)
-    pub fn float_to_int_u(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::FloatToIntU,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    /// Signed int to float
-    pub fn int_to_float_s(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::IntToFloatS,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    /// Unsigned int to float
-    pub fn int_to_float_u(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::IntToFloatU,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    /// F32 to F64 promotion
-    pub fn float_promote(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::FloatPromote,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    /// F64 to F32 demotion
-    pub fn float_demote(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::FloatDemote,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
-    pub fn reinterpret(&mut self, val: Value, ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::Reinterpret,
-                arg: val,
-            },
-            ty,
-        )
-        .unwrap()
-    }
-
     pub fn load(&mut self, ty: Type, ptr: Value, offset: u32, flags: MemFlags) -> Value {
         self.push_with_type(InstructionData::Load { ptr, offset, flags }, ty)
-            .unwrap()
     }
 
     pub fn store(&mut self, value: Value, ptr: Value, offset: u32, flags: MemFlags) {
@@ -1200,7 +700,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn stack_load(&mut self, ty: Type, slot: StackSlot, offset: u32) -> Value {
         self.push_with_type(InstructionData::StackLoad { slot, offset }, ty)
-            .unwrap()
     }
 
     pub fn stack_store(&mut self, value: Value, slot: StackSlot, offset: u32) {
@@ -1224,17 +723,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     pub fn ptr_index(&mut self, ptr: Value, index: Value, scale: u32, offset: i32) -> Value {
         let imm_id = self.builder.func_mut().dfg.make_ptr_imm(offset, scale);
         self.push(InstructionData::PtrIndex { ptr, index, imm_id })
-            .unwrap()
-    }
-
-    pub fn int_to_ptr(&mut self, arg: Value) -> Value {
-        self.push(InstructionData::IntToPtr { arg }).unwrap()
-    }
-
-    pub fn ptr_to_int(&mut self, arg: Value, ty: Type) -> Value {
-        let block = self.block();
-        self.builder
-            .push_inst_with_type(block, InstructionData::PtrToInt { arg }, ty)
             .unwrap()
     }
 
@@ -1307,29 +795,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.push(InstructionData::Return { values: value_list });
     }
 
-    pub fn unreachable(&mut self) {
-        self.push(InstructionData::Unreachable);
-    }
-
-    pub fn select(&mut self, condition: Value, then_val: Value, else_val: Value) -> Value {
-        debug_assert_eq!(
-            self.builder.value_type(condition),
-            Type::BOOL,
-            "Condition for select must be a bool"
-        );
-        let ty = self.builder.value_type(then_val);
-        debug_assert_eq!(
-            ty,
-            self.builder.value_type(else_val),
-            "Select types must match"
-        );
-        self.push(InstructionData::Ternary {
-            opcode: Opcode::Select,
-            args: [condition, then_val, else_val],
-        })
-        .unwrap()
-    }
-
     /// Call an intrinsic function.
     /// Returns the instruction handle, use `dfg.inst_results(inst)` to get return values.
     pub fn call_intrinsic(&mut self, intrinsic: Intrinsic, sig_id: SigId, args: &[Value]) -> Inst {
@@ -1345,151 +810,33 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     // 向量操作构建方法
     // ======================================
 
-    /// 标量 -> 向量广播 (Splat)
-    /// 将标量值广播到向量的所有通道
-    pub fn splat(&mut self, scalar: Value, result_ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::Splat,
-                arg: scalar,
-            },
-            result_ty,
-        )
-        .unwrap()
-    }
-
     /// 向量重排/混洗 (Shuffle)
     /// 根据掩码从两个输入向量中选择元素
-    pub fn shuffle(
-        &mut self,
-        v1: Value,
-        v2: Value,
-        mask_id: crate::inst::ConstantPoolId,
-        result_ty: Type,
-    ) -> Value {
-        self.push_with_type(
-            InstructionData::Shuffle {
-                args: [v1, v2],
-                mask: mask_id,
-            },
-            result_ty,
-        )
+    pub fn shuffle(&mut self, v1: Value, v2: Value, mask_id: crate::inst::ConstantPoolId) -> Value {
+        self.push(InstructionData::Shuffle {
+            args: [v1, v2],
+            mask: mask_id,
+        })
         .unwrap()
     }
 
     /// 插入标量到向量的指定通道
-    pub fn insert_element(
-        &mut self,
-        vector: Value,
-        scalar: Value,
-        lane_index: u32,
-        result_ty: Type,
-    ) -> Value {
+    pub fn insert_element(&mut self, vector: Value, scalar: Value, lane_index: u32) -> Value {
         let lane_val = self.i32const(lane_index as i32);
-        self.push_with_type(
-            InstructionData::Ternary {
-                opcode: Opcode::InsertElement,
-                args: [vector, scalar, lane_val],
-            },
-            result_ty,
-        )
+        self.push(InstructionData::Ternary {
+            opcode: Opcode::InsertElement,
+            args: [vector, scalar, lane_val],
+        })
         .unwrap()
     }
 
     /// 从向量提取指定通道的标量
-    pub fn extract_element(&mut self, vector: Value, lane_index: u32, result_ty: Type) -> Value {
+    pub fn extract_element(&mut self, vector: Value, lane_index: u32) -> Value {
         let lane_val = self.i32const(lane_index as i32);
-        self.push_with_type(
-            InstructionData::Binary {
-                opcode: Opcode::ExtractElement,
-                args: [vector, lane_val],
-            },
-            result_ty,
-        )
-        .unwrap()
-    }
-
-    /// 向量归约操作 - 求和 (无序)
-    pub fn reduce_sum(&mut self, vector: Value, result_ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ReduceSum,
-                arg: vector,
-            },
-            result_ty,
-        )
-        .unwrap()
-    }
-
-    /// 向量归约操作 - 求和 (有序/确定顺序)
-    pub fn reduce_add(&mut self, vector: Value, result_ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ReduceAdd,
-                arg: vector,
-            },
-            result_ty,
-        )
-        .unwrap()
-    }
-
-    /// 向量归约操作 - 最小值
-    pub fn reduce_min(&mut self, vector: Value, result_ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ReduceMin,
-                arg: vector,
-            },
-            result_ty,
-        )
-        .unwrap()
-    }
-
-    /// 向量归约操作 - 最大值
-    pub fn reduce_max(&mut self, vector: Value, result_ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ReduceMax,
-                arg: vector,
-            },
-            result_ty,
-        )
-        .unwrap()
-    }
-
-    /// 向量归约操作 - 按位与
-    pub fn reduce_and(&mut self, vector: Value, result_ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ReduceAnd,
-                arg: vector,
-            },
-            result_ty,
-        )
-        .unwrap()
-    }
-
-    /// 向量归约操作 - 按位或
-    pub fn reduce_or(&mut self, vector: Value, result_ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ReduceOr,
-                arg: vector,
-            },
-            result_ty,
-        )
-        .unwrap()
-    }
-
-    /// 向量归约操作 - 按位异或
-    pub fn reduce_xor(&mut self, vector: Value, result_ty: Type) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::ReduceXor,
-                arg: vector,
-            },
-            result_ty,
-        )
+        self.push(InstructionData::Binary {
+            opcode: Opcode::ExtractElement,
+            args: [vector, lane_val],
+        })
         .unwrap()
     }
 
@@ -1498,8 +845,8 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     /// # Arguments
     /// * `opcode` - 操作码 (如 IAdd, FMul 等)
     /// * `args` - 输入参数
-    /// * `mask` - 谓词/掩码 (Predicate 类型)
-    /// * `evl` - 显式向量长度 (EVL 类型), None 表示使用默认 VL
+    /// * `mask` - 谓词/掩码 (boolean vector)
+    /// * `evl` - 显式向量长度 (i32), None 表示使用默认 VL
     /// * `result_ty` - 结果类型
     pub fn vector_op_ext(
         &mut self,
@@ -1520,144 +867,62 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             },
             result_ty,
         )
-        .unwrap()
     }
 
     /// 固定步长向量加载 (Strided Load)
     pub fn load_stride(
         &mut self,
+        ty: Type,
         ptr: Value,
         stride: Value,
-        offset: i32,
-        mask: Option<Value>,
-        evl: Option<Value>,
-        flags: MemFlags,
-        result_ty: Type,
+        options: VectorMemOptions,
     ) -> Value {
-        let ext = crate::inst::VectorMemExtData {
-            offset,
-            flags,
-            scale: 1, // Strided 不需要 scale
-            mask,
-            evl,
-        };
-        let ext_id = self.builder.func_mut().dfg.make_vector_mem_ext(ext);
+        let ext = self.builder.func_mut().dfg.make_vector_mem_ext(options);
 
-        self.push_with_type(
-            InstructionData::VectorLoadStrided {
-                ptr,
-                stride,
-                ext: ext_id,
-            },
-            result_ty,
-        )
-        .unwrap()
+        self.push_with_type(InstructionData::VectorLoadStrided { ptr, stride, ext }, ty)
     }
 
     /// 固定步长向量存储 (Strided Store)
     pub fn store_stride(
         &mut self,
+        value: Value,
         ptr: Value,
         stride: Value,
-        value: Value,
-        offset: i32,
-        mask: Option<Value>,
-        evl: Option<Value>,
-        flags: MemFlags,
+        options: VectorMemOptions,
     ) {
-        let ext = crate::inst::VectorMemExtData {
-            offset,
-            flags,
-            scale: 1,
-            mask,
-            evl,
-        };
-        let ext_id = self.builder.func_mut().dfg.make_vector_mem_ext(ext);
+        let ext = self.builder.func_mut().dfg.make_vector_mem_ext(options);
         let args = self
             .builder
             .func_mut()
             .dfg
             .make_value_list(&[ptr, stride, value]);
 
-        self.push(InstructionData::VectorStoreStrided { args, ext: ext_id });
+        self.push(InstructionData::VectorStoreStrided { args, ext });
     }
 
     /// 离散向量加载 (Gather)
     /// base_ptr + index[i] * scale
     pub fn gather(
         &mut self,
-        base_ptr: Value,
-        indices: Value,
-        offset: i32,
-        mask: Option<Value>,
-        evl: Option<Value>,
-        flags: MemFlags,
-        result_ty: Type,
+        ty: Type,
+        ptr: Value,
+        index: Value,
+        options: VectorMemOptions,
     ) -> Value {
-        let ext = crate::inst::VectorMemExtData {
-            offset,
-            flags,
-            scale: 1, // 默认 scale = 1
-            mask,
-            evl,
-        };
-        let ext_id = self.builder.func_mut().dfg.make_vector_mem_ext(ext);
+        let ext = self.builder.func_mut().dfg.make_vector_mem_ext(options);
 
-        self.push_with_type(
-            InstructionData::VectorGather {
-                ptr: base_ptr,
-                index: indices,
-                ext: ext_id,
-            },
-            result_ty,
-        )
-        .unwrap()
+        self.push_with_type(InstructionData::VectorGather { ptr, index, ext }, ty)
     }
 
     /// 离散向量存储 (Scatter)
-    pub fn scatter(
-        &mut self,
-        base_ptr: Value,
-        indices: Value,
-        value: Value,
-        offset: i32,
-        mask: Option<Value>,
-        evl: Option<Value>,
-        flags: MemFlags,
-    ) {
-        let ext = crate::inst::VectorMemExtData {
-            offset,
-            flags,
-            scale: 1,
-            mask,
-            evl,
-        };
-        let ext_id = self.builder.func_mut().dfg.make_vector_mem_ext(ext);
+    pub fn scatter(&mut self, value: Value, ptr: Value, index: Value, options: VectorMemOptions) {
+        let ext = self.builder.func_mut().dfg.make_vector_mem_ext(options);
         let args = self
             .builder
             .func_mut()
             .dfg
-            .make_value_list(&[base_ptr, indices, value]);
+            .make_value_list(&[ptr, index, value]);
 
-        self.push(InstructionData::VectorScatter { args, ext: ext_id });
-    }
-
-    /// 设置向量长度 (Set Vector Length)
-    /// 类似 RISC-V V 的 vsetvli 指令
-    ///
-    /// # Arguments
-    /// * `avl` - 申请的向量长度 (Application Vector Length)
-    ///
-    /// # Returns
-    /// * 实际的向量长度 (VL)
-    pub fn setvl(&mut self, avl: Value) -> Value {
-        self.push_with_type(
-            InstructionData::Unary {
-                opcode: Opcode::SetVL,
-                arg: avl,
-            },
-            Type::EVL,
-        )
-        .unwrap()
+        self.push(InstructionData::VectorScatter { args, ext });
     }
 }

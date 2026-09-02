@@ -49,12 +49,22 @@ impl CodeGenContext {
             builder.make_signature(sig.params.to_vec(), sig.returns.to_vec(), CallConv::SystemV);
         let func_id = builder.declare_function(name, sig_id, Linkage::Export);
 
+        let return_type = sig.returns.first().copied();
         let mut func_builder = builder.builder(func_id);
         func_builder.init_entry_block();
 
-        // Generate return 0 for now
-        let zero = func_builder.ins().i64const(0);
-        func_builder.ins().ret(&[zero]);
+        // Generate a zero value for the temporary function body.
+        if let Some(ty) = return_type {
+            let zero = match ty {
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 => func_builder.ins().iconst(ty, 0),
+                Type::F32 => func_builder.ins().f32const(0.0),
+                Type::F64 => func_builder.ins().f64const(0.0),
+                _ => return Err(Error::semantic("unsupported return type", 0, 0)),
+            };
+            func_builder.ins().ret(&[zero]);
+        } else {
+            func_builder.ins().ret(&[]);
+        }
         func_builder.seal_all_blocks();
 
         Ok(())
@@ -68,26 +78,30 @@ impl CodeGenContext {
     ) -> Result<Signature> {
         let ret_type = type_from_specifiers(specifiers)?;
         let params = Vec::new();
-        Ok(Signature::new(params, vec![ret_type], CallConv::SystemV))
+        Ok(Signature::new(
+            params,
+            ret_type.into_iter().collect(),
+            CallConv::SystemV,
+        ))
     }
 }
 
 /// Get Type from C type specifiers
-fn type_from_specifiers(specifiers: &[DeclarationSpecifier]) -> Result<Type> {
+fn type_from_specifiers(specifiers: &[DeclarationSpecifier]) -> Result<Option<Type>> {
     for spec in specifiers {
         if let DeclarationSpecifier::TypeSpecifier(ts) = spec {
             match ts {
-                TypeSpecifier::Void => return Ok(Type::VOID),
-                TypeSpecifier::Char => return Ok(Type::I8),
-                TypeSpecifier::Short => return Ok(Type::I16),
-                TypeSpecifier::Long => return Ok(Type::I64),
-                TypeSpecifier::Float => return Ok(Type::F32),
-                TypeSpecifier::Double => return Ok(Type::F64),
+                TypeSpecifier::Void => return Ok(None),
+                TypeSpecifier::Char => return Ok(Some(Type::I8)),
+                TypeSpecifier::Short => return Ok(Some(Type::I16)),
+                TypeSpecifier::Long => return Ok(Some(Type::I64)),
+                TypeSpecifier::Float => return Ok(Some(Type::F32)),
+                TypeSpecifier::Double => return Ok(Some(Type::F64)),
                 _ => {}
             }
         }
     }
-    Ok(Type::I32)
+    Ok(Some(Type::I32))
 }
 
 impl Default for CodeGenContext {

@@ -10,28 +10,23 @@ pub type ValueListPool = ListPool<Value>;
 /// Value 列表（使用 cranelift-entity 的紧凑表示）
 pub type ValueList = EntityList<Value>;
 
-/// 标量类型枚举 (4 bits)
+/// Scalar lane types supported by the core IR.
+///
+/// Signedness is carried by operations rather than types. Discriminant zero is
+/// deliberately unused so that [`Type::INVALID`] cannot be mistaken for a real
+/// scalar type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum ScalarType {
-    // 整数类型 (0-7)
-    I8 = 0,
-    I16 = 1,
-    I32 = 2,
-    I64 = 3,
-    // 预留: I128 = 4
-
-    // 浮点类型 (4-7)
-    F32 = 4,
-    F64 = 5,
-    // 预留: F16 = 6, F128 = 7
-
-    // 特殊类型 (8-15)
-    Bool = 8,
-    Ptr = 9,   // 指针类型 (不透明，大小取决于目标平台)
-    Void = 10, // 无返回值
-    EVL = 11,  // 显式向量长度 (Explicit Vector Length)
-               // 预留: 12-15
+    I8 = 1,
+    I16 = 2,
+    I32 = 3,
+    I64 = 4,
+    F32 = 5,
+    F64 = 6,
+    Bool = 7,
+    /// Opaque pointer. Its size is supplied by the target data layout.
+    Ptr = 8,
 }
 
 impl Display for ScalarType {
@@ -45,27 +40,35 @@ impl Display for ScalarType {
             ScalarType::F64 => "f64",
             ScalarType::Bool => "bool",
             ScalarType::Ptr => "ptr",
-            ScalarType::Void => "void",
-            ScalarType::EVL => "evl",
         };
         write!(f, "{}", name)
     }
 }
 
 impl ScalarType {
-    /// 获取标量类型的大小（字节）
-    pub fn size_bytes(&self) -> usize {
+    /// Decode the compact scalar code used by [`Type`] and bytecode metadata.
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::I8),
+            2 => Some(Self::I16),
+            3 => Some(Self::I32),
+            4 => Some(Self::I64),
+            5 => Some(Self::F32),
+            6 => Some(Self::F64),
+            7 => Some(Self::Bool),
+            8 => Some(Self::Ptr),
+            _ => None,
+        }
+    }
+
+    /// Size of a non-pointer lane in bytes.
+    pub const fn fixed_size_bytes(self) -> Option<u32> {
         match self {
-            ScalarType::I8 => 1,
-            ScalarType::I16 => 2,
-            ScalarType::I32 => 4,
-            ScalarType::I64 => 8,
-            ScalarType::F32 => 4,
-            ScalarType::F64 => 8,
-            ScalarType::Bool => 1,
-            ScalarType::Ptr => 8, // 假设 64 位平台
-            ScalarType::Void => 0,
-            ScalarType::EVL => 8, // EVL 是 64 位整数
+            Self::I8 | Self::Bool => Some(1),
+            Self::I16 => Some(2),
+            Self::I32 | Self::F32 => Some(4),
+            Self::I64 | Self::F64 => Some(8),
+            Self::Ptr => None,
         }
     }
 
@@ -83,15 +86,40 @@ impl ScalarType {
     }
 }
 
+/// Target-independent size information for an SSA value type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeSize {
+    Fixed(u32),
+    Scalable { min_bytes: u32 },
+    TargetDependent,
+}
+
+impl TypeSize {
+    /// Return the exact size when it is independent of the target and runtime.
+    pub const fn fixed_bytes(self) -> Option<u32> {
+        match self {
+            Self::Fixed(bytes) => Some(bytes),
+            Self::Scalable { .. } | Self::TargetDependent => None,
+        }
+    }
+
+    /// Return the statically known minimum size, if one exists.
+    pub const fn min_bytes(self) -> Option<u32> {
+        match self {
+            Self::Fixed(bytes) | Self::Scalable { min_bytes: bytes } => Some(bytes),
+            Self::TargetDependent => None,
+        }
+    }
+}
+
 /// 类型表示（位压缩）
 ///
 /// 位域布局 (16 bits):
 /// ```text
-/// [0..4]   Scalar Type ID (4 bits)
+/// [0..4]   Scalar Type ID (4 bits; zero is invalid)
 /// [4..8]   Lane Count Log2 (4 bits): 0=scalar, 1=2lanes, 2=4lanes, ...
 /// [8]      Scalable Flag (1 bit): 0=Fixed, 1=Scalable
-/// [9]      Predicate Flag (1 bit): 0=Data, 1=Predicate/Mask
-/// [10..16] Reserved (6 bits)
+/// [9..16]  Reserved (7 bits)
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Type(u16);
@@ -100,10 +128,9 @@ pub struct Type(u16);
 const SCALAR_MASK: u16 = 0x000F; // [0..4]
 const LANES_LOG2_MASK: u16 = 0x00F0; // [4..8]
 const SCALABLE_MASK: u16 = 0x0100; // [8]
-const PREDICATE_MASK: u16 = 0x0200; // [9]
+const USED_MASK: u16 = SCALAR_MASK | LANES_LOG2_MASK | SCALABLE_MASK;
 const LANES_LOG2_SHIFT: u16 = 4;
 const SCALABLE_SHIFT: u16 = 8;
-const PREDICATE_SHIFT: u16 = 9;
 
 impl Type {
     // === 构造函数 ===
@@ -113,32 +140,30 @@ impl Type {
         Self(scalar as u16)
     }
 
-    /// 创建向量类型
-    pub const fn new_vector(element: ScalarType, lanes: u16, scalable: bool) -> Self {
-        debug_assert!(lanes.is_power_of_two(), "Lane count must be power of 2");
+    /// Create a vector type. The compact core encoding supports power-of-two
+    /// lane counts from 2 through 32768.
+    pub const fn new_vector(element: ScalarType, lanes: u16, scalable: bool) -> Option<Self> {
+        if lanes < 2 || !lanes.is_power_of_two() || element as u8 == ScalarType::Ptr as u8 {
+            return None;
+        }
         let elem_bits = element as u16;
         let log2_lanes = lanes.trailing_zeros() as u16;
         let scalable_bit = if scalable { 1 << SCALABLE_SHIFT } else { 0 };
 
-        Self(elem_bits | (log2_lanes << LANES_LOG2_SHIFT) | scalable_bit)
+        Some(Self(
+            elem_bits | (log2_lanes << LANES_LOG2_SHIFT) | scalable_bit,
+        ))
     }
 
-    /// 创建谓词/掩码类型
-    pub const fn new_predicate(lanes: u16, scalable: bool) -> Self {
-        debug_assert!(lanes.is_power_of_two(), "Lane count must be power of 2");
-        let log2_lanes = lanes.trailing_zeros() as u16;
-        let scalable_bit = if scalable { 1 << SCALABLE_SHIFT } else { 0 };
-
-        Self(
-            ScalarType::Bool as u16
-                | (log2_lanes << LANES_LOG2_SHIFT)
-                | scalable_bit
-                | (1 << PREDICATE_SHIFT),
-        )
+    /// Create a vector mask. Masks are boolean vectors rather than a separate
+    /// type family.
+    pub const fn new_mask(lanes: u16, scalable: bool) -> Option<Self> {
+        Self::new_vector(ScalarType::Bool, lanes, scalable)
     }
 
     // === 预定义常量 ===
 
+    pub const INVALID: Self = Self(0);
     pub const I8: Self = Self::new_scalar(ScalarType::I8);
     pub const I16: Self = Self::new_scalar(ScalarType::I16);
     pub const I32: Self = Self::new_scalar(ScalarType::I32);
@@ -147,22 +172,25 @@ impl Type {
     pub const F64: Self = Self::new_scalar(ScalarType::F64);
     pub const BOOL: Self = Self::new_scalar(ScalarType::Bool);
     pub const PTR: Self = Self::new_scalar(ScalarType::Ptr);
-    pub const VOID: Self = Self::new_scalar(ScalarType::Void);
-    pub const EVL: Self = Self::new_scalar(ScalarType::EVL);
 
-    pub const I32X4: Self = Self::new_vector(ScalarType::I32, 4, false);
-    pub const I64X2: Self = Self::new_vector(ScalarType::I64, 2, false);
-    pub const F32X4: Self = Self::new_vector(ScalarType::F32, 4, false);
-    pub const F64X2: Self = Self::new_vector(ScalarType::F64, 2, false);
-    pub const I8X16: Self = Self::new_vector(ScalarType::I8, 16, false);
-    pub const I16X8: Self = Self::new_vector(ScalarType::I16, 8, false);
+    pub const I32X4: Self = Self::vector_unchecked(ScalarType::I32, 4, false);
+    pub const I64X2: Self = Self::vector_unchecked(ScalarType::I64, 2, false);
+    pub const F32X4: Self = Self::vector_unchecked(ScalarType::F32, 4, false);
+    pub const F64X2: Self = Self::vector_unchecked(ScalarType::F64, 2, false);
+    pub const I8X16: Self = Self::vector_unchecked(ScalarType::I8, 16, false);
+    pub const I16X8: Self = Self::vector_unchecked(ScalarType::I16, 8, false);
+
+    const fn vector_unchecked(element: ScalarType, lanes: u16, scalable: bool) -> Self {
+        let scalable_bit = if scalable { 1 << SCALABLE_SHIFT } else { 0 };
+        Self(element as u16 | ((lanes.trailing_zeros() as u16) << LANES_LOG2_SHIFT) | scalable_bit)
+    }
 
     // === 访问器 ===
 
     /// 获取标量类型 ID
-    pub fn scalar_type(&self) -> ScalarType {
-        // 安全：我们只存储有效的标量类型 ID
-        unsafe { core::mem::transmute((self.0 & SCALAR_MASK) as u8) }
+    pub fn scalar_type(self) -> ScalarType {
+        ScalarType::from_code((self.0 & SCALAR_MASK) as u8)
+            .expect("invalid core IR type has no scalar lane type")
     }
 
     /// 获取通道数的 log2 值
@@ -176,93 +204,118 @@ impl Type {
     }
 
     /// 是否是标量类型
-    pub fn is_scalar(&self) -> bool {
-        self.lanes_log2() == 0 && !self.is_predicate()
+    pub fn is_valid(self) -> bool {
+        Self::try_from_raw(self.0).is_some()
+    }
+
+    pub fn is_scalar(self) -> bool {
+        self.0 != 0 && self.lanes_log2() == 0 && !self.is_scalable()
     }
 
     /// 是否是向量类型（数据向量）
-    pub fn is_vector(&self) -> bool {
-        self.lanes_log2() > 0 && !self.is_predicate()
+    pub fn is_vector(self) -> bool {
+        self.lanes_log2() > 0
     }
 
     /// 是否是谓词/掩码类型
-    pub fn is_predicate(&self) -> bool {
-        (self.0 & PREDICATE_MASK) != 0
+    pub fn is_predicate(self) -> bool {
+        self.is_vector() && self.scalar_type() == ScalarType::Bool
     }
 
     /// 是否是可伸缩向量
-    pub fn is_scalable(&self) -> bool {
+    pub fn is_scalable(self) -> bool {
         (self.0 & SCALABLE_MASK) != 0
     }
 
     /// 是否是固定长度向量
-    pub fn is_fixed(&self) -> bool {
+    pub fn is_fixed(self) -> bool {
         self.is_vector() && !self.is_scalable()
     }
 
     /// 获取元素类型（向量）或自身（标量）
-    pub fn element_type(&self) -> Type {
-        if self.is_vector() || self.is_predicate() {
-            // 创建相同标量类型的标量版本
+    pub fn element_type(self) -> Type {
+        if self.is_vector() {
             Self(self.0 & SCALAR_MASK)
         } else {
-            *self
+            self
         }
     }
 
     /// 获取向量形状（通道数 + 是否可伸缩）
     /// 返回 (lanes, scalable)
-    pub fn vector_shape(&self) -> (u16, bool) {
+    pub fn vector_shape(self) -> (u16, bool) {
         (self.lane_count(), self.is_scalable())
     }
 
     /// 是否是整数类型
-    pub fn is_integer(&self) -> bool {
-        self.scalar_type().is_integer()
+    pub fn is_integer(self) -> bool {
+        self.is_valid() && self.scalar_type().is_integer()
     }
 
     /// 是否是指针类型
-    pub fn is_ptr(&self) -> bool {
-        self.scalar_type() == ScalarType::Ptr
+    pub fn is_ptr(self) -> bool {
+        self == Self::PTR
     }
 
     /// 是否是浮点类型
-    pub fn is_float(&self) -> bool {
-        self.scalar_type().is_float()
+    pub fn is_float(self) -> bool {
+        self.is_valid() && self.scalar_type().is_float()
     }
 
-    /// 类型大小（字节）
-    /// 对于可伸缩向量，返回 min_lanes * element_size
-    pub fn size_bytes(&self) -> usize {
-        let scalar_size = self.scalar_type().size_bytes();
-        let lanes = self.lane_count() as usize;
-        scalar_size * lanes
+    pub fn size(self) -> TypeSize {
+        let Some(lane_bytes) = self.scalar_type().fixed_size_bytes() else {
+            return TypeSize::TargetDependent;
+        };
+        let min_bytes = lane_bytes * u32::from(self.lane_count());
+        if self.is_scalable() {
+            TypeSize::Scalable { min_bytes }
+        } else {
+            TypeSize::Fixed(min_bytes)
+        }
     }
 
-    /// 类型的位宽
-    pub fn bit_width(&self) -> usize {
-        self.size_bytes() * 8
+    pub fn fixed_size_bytes(self) -> Option<u32> {
+        self.size().fixed_bytes()
     }
 
-    /// 获取原始内部值（用于调试/序列化）
-    pub fn raw(&self) -> u16 {
-        self.0
+    pub fn min_size_bytes(self) -> Option<u32> {
+        self.size().min_bytes()
     }
 
-    /// 从原始值创建（用于反序列化）
-    pub fn from_raw(raw: u16) -> Self {
-        Self(raw)
+    pub fn min_bit_width(self) -> Option<u32> {
+        self.min_size_bytes().map(|bytes| bytes * 8)
+    }
+
+    /// Decode a raw value after validating all currently defined fields.
+    pub(crate) const fn try_from_raw(raw: u16) -> Option<Self> {
+        if raw == 0 || raw & !USED_MASK != 0 {
+            return None;
+        }
+        let Some(scalar) = ScalarType::from_code((raw & SCALAR_MASK) as u8) else {
+            return None;
+        };
+        let lanes_log2 = (raw & LANES_LOG2_MASK) >> LANES_LOG2_SHIFT;
+        let scalable = raw & SCALABLE_MASK != 0;
+        if (lanes_log2 == 0 && scalable)
+            || (lanes_log2 > 0 && scalar as u8 == ScalarType::Ptr as u8)
+        {
+            return None;
+        }
+        Some(Self(raw))
     }
 }
 
 impl Default for Type {
     fn default() -> Self {
-        Self::VOID
+        Self::INVALID
     }
 }
 
 impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.is_valid() {
+            return f.write_str("invalid");
+        }
         if self.is_predicate() {
             let lanes = self.lane_count();
             if self.is_scalable() {
@@ -286,6 +339,9 @@ impl fmt::Debug for Type {
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.is_valid() {
+            return f.write_str("invalid");
+        }
         if self.is_predicate() {
             let lanes = self.lane_count();
             if self.is_scalable() {
@@ -302,30 +358,8 @@ impl fmt::Display for Type {
                 write!(f, "{}<{}>", elem, lanes)
             }
         } else {
-            write!(f, "{}", &self.scalar_type())
+            write!(f, "{}", self.scalar_type())
         }
-    }
-}
-
-/// 向量种类（兼容旧 API）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VectorKind {
-    Fixed(u16),
-    Scalable { min_lanes: u16 },
-}
-
-impl VectorKind {
-    /// 获取最小通道数
-    pub fn min_lanes(&self) -> u16 {
-        match self {
-            VectorKind::Fixed(lanes) => *lanes,
-            VectorKind::Scalable { min_lanes } => *min_lanes,
-        }
-    }
-
-    /// 是否是可伸缩向量
-    pub fn is_scalable(&self) -> bool {
-        matches!(self, VectorKind::Scalable { .. })
     }
 }
 
@@ -434,35 +468,36 @@ mod tests {
         assert!(Type::I32.is_scalar());
         assert!(!Type::I32.is_vector());
         assert_eq!(Type::I32.scalar_type(), ScalarType::I32);
-        assert_eq!(Type::I32.size_bytes(), 4);
+        assert_eq!(Type::I32.size(), TypeSize::Fixed(4));
         assert!(Type::I32.is_integer());
         assert!(!Type::I32.is_float());
     }
 
     #[test]
     fn test_vector_types() {
-        let v4i32 = Type::new_vector(ScalarType::I32, 4, false);
+        let v4i32 = Type::new_vector(ScalarType::I32, 4, false).unwrap();
         assert!(!v4i32.is_scalar());
         assert!(v4i32.is_vector());
         assert!(!v4i32.is_scalable());
         assert_eq!(v4i32.lane_count(), 4);
         assert_eq!(v4i32.element_type(), Type::I32);
-        assert_eq!(v4i32.size_bytes(), 16);
+        assert_eq!(v4i32.size(), TypeSize::Fixed(16));
     }
 
     #[test]
     fn test_scalable_vector() {
-        let scalable = Type::new_vector(ScalarType::F32, 4, true);
+        let scalable = Type::new_vector(ScalarType::F32, 4, true).unwrap();
         assert!(scalable.is_vector());
         assert!(scalable.is_scalable());
         assert_eq!(scalable.lane_count(), 4);
+        assert_eq!(scalable.size(), TypeSize::Scalable { min_bytes: 16 });
     }
 
     #[test]
     fn test_predicate() {
-        let mask = Type::new_predicate(8, false);
+        let mask = Type::new_mask(8, false).unwrap();
         assert!(mask.is_predicate());
-        assert!(!mask.is_vector());
+        assert!(mask.is_vector());
         assert!(!mask.is_scalar());
         assert_eq!(mask.lane_count(), 8);
     }
@@ -478,45 +513,35 @@ mod tests {
     fn test_display() {
         assert_eq!(format!("{}", Type::I32), "i32");
         assert_eq!(
-            format!("{}", Type::new_vector(ScalarType::I32, 4, false)),
+            format!("{}", Type::new_vector(ScalarType::I32, 4, false).unwrap()),
             "i32<4>"
         );
         assert_eq!(
-            format!("{}", Type::new_vector(ScalarType::F64, 2, true)),
+            format!("{}", Type::new_vector(ScalarType::F64, 2, true).unwrap()),
             "f64<scalable 2>"
         );
     }
 
     #[test]
-    fn test_evl_type() {
-        assert_eq!(Type::EVL.scalar_type(), ScalarType::EVL);
-        assert!(Type::EVL.is_scalar());
-        assert!(!Type::EVL.is_vector());
-        assert!(!Type::EVL.is_predicate());
+    fn rejects_invalid_encodings() {
+        assert_eq!(core::mem::size_of::<Type>(), 2);
+        assert_eq!(Type::try_from_raw(0), None);
+        assert_eq!(Type::try_from_raw(0xffff), None);
+        assert_eq!(Type::new_vector(ScalarType::Ptr, 4, false), None);
+        assert_eq!(Type::new_vector(ScalarType::I32, 3, false), None);
     }
 
     #[test]
     fn test_predicate_type() {
-        let mask_fixed = Type::new_predicate(8, false);
+        let mask_fixed = Type::new_mask(8, false).unwrap();
         assert!(mask_fixed.is_predicate());
-        assert!(!mask_fixed.is_vector());
+        assert!(mask_fixed.is_vector());
         assert!(!mask_fixed.is_scalable());
         assert_eq!(mask_fixed.lane_count(), 8);
 
-        let mask_scalable = Type::new_predicate(4, true);
+        let mask_scalable = Type::new_mask(4, true).unwrap();
         assert!(mask_scalable.is_predicate());
         assert!(mask_scalable.is_scalable());
         assert_eq!(mask_scalable.lane_count(), 4);
-    }
-
-    #[test]
-    fn test_vector_kind() {
-        let fixed = VectorKind::Fixed(8);
-        assert_eq!(fixed.min_lanes(), 8);
-        assert!(!fixed.is_scalable());
-
-        let scalable = VectorKind::Scalable { min_lanes: 4 };
-        assert_eq!(scalable.min_lanes(), 4);
-        assert!(scalable.is_scalable());
     }
 }

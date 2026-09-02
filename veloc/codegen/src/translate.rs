@@ -495,7 +495,11 @@ impl<'a> IRTranslator<'a> {
             InstructionData::PtrIndex { ptr, index, imm_id } => {
                 let base_ptr = ctx.value_map[ptr];
                 let idx = ctx.value_map[index];
-                let imm = ctx.func.dfg.ptr_imm_pool[*imm_id];
+                let imm = *ctx
+                    .func
+                    .dfg
+                    .ptr_imm(*imm_id)
+                    .expect("validated ptr-index must have an immediate");
 
                 // 1. scale index: idx * scale
                 let scaled_idx = if imm.scale != 1 {

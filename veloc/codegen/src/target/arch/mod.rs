@@ -36,34 +36,34 @@ pub trait LoweringContext {
 
     /// 谓词：检查是否为 i32
     fn is_i32(&self, val: VReg) -> bool {
-        self.get_type(val).is_integer() && self.get_type(val).size_bytes() == 4
+        self.get_type(val).is_integer() && self.get_type(val).fixed_size_bytes() == Some(4)
     }
 
     /// 谓词：检查是否为 i16
     fn is_i16(&self, val: VReg) -> bool {
-        self.get_type(val).is_integer() && self.get_type(val).size_bytes() == 2
+        self.get_type(val).is_integer() && self.get_type(val).fixed_size_bytes() == Some(2)
     }
 
     /// 谓词：检查是否为 i8
     fn is_i8(&self, val: VReg) -> bool {
-        self.get_type(val).is_integer() && self.get_type(val).size_bytes() == 1
+        self.get_type(val).is_integer() && self.get_type(val).fixed_size_bytes() == Some(1)
     }
 
     /// 谓词：检查是否为 i64
     fn is_i64(&self, val: VReg) -> bool {
-        self.get_type(val).is_integer() && self.get_type(val).size_bytes() == 8
+        self.get_type(val).is_integer() && self.get_type(val).fixed_size_bytes() == Some(8)
     }
 
     /// 谓词：检查是否为 32 位整数宽度的值
     fn is_int32like(&self, val: VReg) -> bool {
         let ty = self.get_type(val);
-        ty.is_integer() && ty.size_bytes() <= 4
+        ty.is_integer() && ty.fixed_size_bytes().is_some_and(|bytes| bytes <= 4)
     }
 
     /// 谓词：检查是否为 64 位整数或指针宽度的值
     fn is_64like(&self, val: VReg) -> bool {
         let ty = self.get_type(val);
-        (ty.is_integer() && ty.size_bytes() == 8) || ty.is_ptr()
+        (ty.is_integer() && ty.fixed_size_bytes() == Some(8)) || ty.is_ptr()
     }
 
     /// 谓词：检查是否为 bool

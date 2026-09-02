@@ -24,6 +24,17 @@ impl core::fmt::Display for Linkage {
     }
 }
 
+impl Linkage {
+    pub fn from_mnemonic(mnemonic: &str) -> Option<Self> {
+        match mnemonic {
+            "local" => Some(Self::Local),
+            "export" => Some(Self::Export),
+            "import" => Some(Self::Import),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Global {
     pub name: String,
@@ -37,18 +48,9 @@ pub struct ModuleData {
     pub signatures: PrimaryMap<SigId, Signature>,
     pub globals: Vec<Global>,
     sig_map: HashMap<Signature, SigId>,
-    revision: u64,
 }
 
 impl ModuleData {
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    pub fn bump_revision(&mut self) {
-        self.revision += 1;
-    }
-
     pub fn get_func_id(&self, name: &str) -> Option<FuncId> {
         self.functions
             .iter()

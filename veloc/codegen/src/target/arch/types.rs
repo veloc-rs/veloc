@@ -143,7 +143,12 @@ pub struct DataLayout {
 
 impl DataLayout {
     pub fn type_size(&self, ty: &Type) -> u32 {
-        ty.size_bytes() as u32
+        if ty.is_ptr() {
+            u32::from(self.pointer_size)
+        } else {
+            ty.min_size_bytes()
+                .expect("valid non-pointer types have a known minimum size")
+        }
     }
 
     pub fn type_align(&self, ty: &Type) -> u32 {
@@ -403,7 +408,7 @@ mod tests {
 
     #[test]
     fn reg_class_for_type_uses_predicate_bank_when_available() {
-        let mask_ty = Type::new_predicate(8, false);
+        let mask_ty = Type::new_mask(8, false).unwrap();
         assert_eq!(TEST_DESC_WITH_VR.reg_class_for_type(&mask_ty), RegClass::PR);
     }
 

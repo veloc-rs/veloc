@@ -786,7 +786,7 @@ impl<'a> Lexer<'a> {
                         ));
                     }
                 }
-                Some(c) => {
+                Some(_) => {
                     lexeme.push(self.advance().unwrap());
                 }
                 None => {

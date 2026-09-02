@@ -50,7 +50,7 @@ fn parse_rewrite_rule_definition() {
     let input = r#"
         (rewrite-rule
           (match (G_ADD (GPR64 $x) (GPR64 $y) @n))
-          (replace (G_ADD (GPR64 $y) (GPR64 $x) @n))
+          (replace (G_ADD (GPR64 $y) (GPR64 $x)))
           (cost 1)
           (priority 10))
     "#;

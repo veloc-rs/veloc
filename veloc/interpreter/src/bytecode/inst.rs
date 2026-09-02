@@ -17,10 +17,13 @@ impl TypePair {
     /// Unpack u16 into TypePair
     #[inline(always)]
     pub const fn unpack(raw: u16) -> Self {
-        Self {
-            from: unsafe { core::mem::transmute((raw & 0xFF) as u8) },
-            to: unsafe { core::mem::transmute((raw >> 8) as u8) },
-        }
+        let Some(from) = ScalarType::from_code((raw & 0xFF) as u8) else {
+            panic!("invalid source scalar type in bytecode")
+        };
+        let Some(to) = ScalarType::from_code((raw >> 8) as u8) else {
+            panic!("invalid destination scalar type in bytecode")
+        };
+        Self { from, to }
     }
 }
 
@@ -260,7 +263,7 @@ impl IntoSlot for TypePair {
 impl FromSlot for ScalarType {
     #[inline(always)]
     fn from_slot(v: u16) -> Self {
-        unsafe { core::mem::transmute(v as u8) }
+        Self::from_code(v as u8).expect("invalid scalar type in bytecode")
     }
 }
 

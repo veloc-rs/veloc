@@ -1,7 +1,7 @@
 //! Vector IR Integration Tests
 
 use veloc_ir::{
-    CallConv, Linkage, MemFlags, Opcode,
+    CallConv, Linkage, Opcode, VectorMemOptions,
     builder::ModuleBuilder,
     types::{ScalarType, Type},
 };
@@ -14,7 +14,7 @@ fn test_simple_vector_add_fixed() {
     let mut builder = mb.builder(func_id);
     builder.init_entry_block();
 
-    let v4i32 = Type::new_vector(ScalarType::I32, 4, false);
+    let v4i32 = Type::new_vector(ScalarType::I32, 4, false).unwrap();
 
     let scalar_a = builder.ins().i32const(1);
     let scalar_b = builder.ins().i32const(2);
@@ -36,11 +36,11 @@ fn test_vector_splat() {
     let mut builder = mb.builder(func_id);
     builder.init_entry_block();
 
-    let v8i32 = Type::new_vector(ScalarType::I32, 8, false);
-    let v4f64 = Type::new_vector(ScalarType::F64, 4, false);
+    let v8i32 = Type::new_vector(ScalarType::I32, 8, false).unwrap();
+    let v4f64 = Type::new_vector(ScalarType::F64, 4, false).unwrap();
 
     let scalar_i = builder.ins().i32const(42);
-    let scalar_f = builder.ins().f64const(3.14);
+    let scalar_f = builder.ins().f64const(core::f64::consts::PI);
 
     let vec_i = builder.ins().splat(scalar_i, v8i32);
     let vec_f = builder.ins().splat(scalar_f, v4f64);
@@ -60,14 +60,14 @@ fn test_vector_reduction_ops() {
     let mut builder = mb.builder(func_id);
     builder.init_entry_block();
 
-    let v4f32 = Type::new_vector(ScalarType::F32, 4, false);
+    let v4f32 = Type::new_vector(ScalarType::F32, 4, false).unwrap();
     let scalar = builder.ins().f32const(1.0);
     let vec = builder.ins().splat(scalar, v4f32);
 
-    let sum = builder.ins().reduce_sum(vec, Type::F32);
-    let add = builder.ins().reduce_add(vec, Type::F32);
-    let min = builder.ins().reduce_min(vec, Type::F32);
-    let max = builder.ins().reduce_max(vec, Type::F32);
+    let sum = builder.ins().reduce_sum(vec);
+    let add = builder.ins().reduce_add(vec);
+    let min = builder.ins().reduce_min(vec);
+    let max = builder.ins().reduce_max(vec);
 
     assert_eq!(builder.value_type(sum), Type::F32);
     assert_eq!(builder.value_type(add), Type::F32);
@@ -86,15 +86,15 @@ fn test_vector_extract_insert() {
     let mut builder = mb.builder(func_id);
     builder.init_entry_block();
 
-    let v4i32 = Type::new_vector(ScalarType::I32, 4, false);
+    let v4i32 = Type::new_vector(ScalarType::I32, 4, false).unwrap();
     let scalar = builder.ins().i32const(10);
     let vec = builder.ins().splat(scalar, v4i32);
 
-    let extracted = builder.ins().extract_element(vec, 0, Type::I32);
+    let extracted = builder.ins().extract_element(vec, 0);
     assert_eq!(builder.value_type(extracted), Type::I32);
 
     let new_val = builder.ins().i32const(20);
-    let inserted = builder.ins().insert_element(vec, new_val, 1, v4i32);
+    let inserted = builder.ins().insert_element(vec, new_val, 1);
     assert_eq!(builder.value_type(inserted), v4i32);
 
     builder.ins().ret(&[]);
@@ -109,14 +109,15 @@ fn test_vector_with_mask_evl() {
     let mut builder = mb.builder(func_id);
     builder.init_entry_block();
 
-    let scalable_v4i32 = Type::new_vector(ScalarType::I32, 4, true);
+    let scalable_v4i32 = Type::new_vector(ScalarType::I32, 4, true).unwrap();
 
     let scalar_a = builder.ins().i32const(1);
     let scalar_b = builder.ins().i32const(2);
     let vec_a = builder.ins().splat(scalar_a, scalable_v4i32);
     let vec_b = builder.ins().splat(scalar_b, scalable_v4i32);
 
-    let mask = builder.ins().bconst(true);
+    let mask_ty = Type::new_mask(4, true).unwrap();
+    let mask = builder.ins().vconst(mask_ty, vec![u8::MAX; 4]);
     let avl = builder.ins().i64const(16);
     let vl = builder.ins().setvl(avl);
 
@@ -132,6 +133,8 @@ fn test_vector_with_mask_evl() {
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
+    drop(builder);
+    mb.validate().unwrap();
 }
 
 #[test]
@@ -142,8 +145,8 @@ fn test_gather_load() {
     let mut builder = mb.builder(func_id);
     builder.init_entry_block();
 
-    let v4i32 = Type::new_vector(ScalarType::I32, 4, false);
-    let v4i64 = Type::new_vector(ScalarType::I64, 4, false);
+    let v4i32 = Type::new_vector(ScalarType::I32, 4, false).unwrap();
+    let v4i64 = Type::new_vector(ScalarType::I64, 4, false).unwrap();
 
     let ptr_val = builder.ins().i64const(0x1000);
     let base_ptr = builder.ins().int_to_ptr(ptr_val);
@@ -152,7 +155,7 @@ fn test_gather_load() {
 
     let loaded = builder
         .ins()
-        .gather(base_ptr, indices, 0, None, None, MemFlags::new(), v4i32);
+        .gather(v4i32, base_ptr, indices, VectorMemOptions::default());
 
     assert_eq!(builder.value_type(loaded), v4i32);
 
@@ -168,7 +171,7 @@ fn test_strided_load_store() {
     let mut builder = mb.builder(func_id);
     builder.init_entry_block();
 
-    let v8f32 = Type::new_vector(ScalarType::F32, 8, false);
+    let v8f32 = Type::new_vector(ScalarType::F32, 8, false).unwrap();
 
     let ptr_val = builder.ins().i64const(0x1000);
     let base_ptr = builder.ins().int_to_ptr(ptr_val);
@@ -176,13 +179,13 @@ fn test_strided_load_store() {
 
     let loaded = builder
         .ins()
-        .load_stride(base_ptr, stride, 0, None, None, MemFlags::new(), v8f32);
+        .load_stride(v8f32, base_ptr, stride, VectorMemOptions::default());
 
     assert_eq!(builder.value_type(loaded), v8f32);
 
     builder
         .ins()
-        .store_stride(base_ptr, stride, loaded, 0, None, None, MemFlags::new());
+        .store_stride(loaded, base_ptr, stride, VectorMemOptions::default());
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
@@ -199,7 +202,7 @@ fn test_setvl() {
     let avl = builder.ins().i64const(100);
     let vl = builder.ins().setvl(avl);
 
-    assert_eq!(builder.value_type(vl), Type::EVL);
+    assert_eq!(builder.value_type(vl), Type::I32);
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
@@ -207,23 +210,23 @@ fn test_setvl() {
 
 #[test]
 fn test_vector_types_properties() {
-    let v4i32 = Type::new_vector(ScalarType::I32, 4, false);
+    let v4i32 = Type::new_vector(ScalarType::I32, 4, false).unwrap();
     assert!(v4i32.is_vector());
     assert!(!v4i32.is_scalable());
     assert!(!v4i32.is_predicate());
     assert_eq!(v4i32.lane_count(), 4);
     assert_eq!(v4i32.element_type(), Type::I32);
-    assert_eq!(v4i32.size_bytes(), 16);
+    assert_eq!(v4i32.fixed_size_bytes(), Some(16));
 
-    let scalable_v4f32 = Type::new_vector(ScalarType::F32, 4, true);
+    let scalable_v4f32 = Type::new_vector(ScalarType::F32, 4, true).unwrap();
     assert!(scalable_v4f32.is_vector());
     assert!(scalable_v4f32.is_scalable());
 
-    let mask_fixed = Type::new_predicate(8, false);
-    assert!(!mask_fixed.is_vector());
+    let mask_fixed = Type::new_mask(8, false).unwrap();
+    assert!(mask_fixed.is_vector());
     assert!(mask_fixed.is_predicate());
 
-    let mask_scalable = Type::new_predicate(4, true);
+    let mask_scalable = Type::new_mask(4, true).unwrap();
     assert!(mask_scalable.is_scalable());
     assert!(mask_scalable.is_predicate());
 }

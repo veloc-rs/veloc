@@ -1,38 +1,52 @@
-//! IR 文本解析器
+//! Parser for the canonical textual IR.
 //!
-//! 使用 chumsky 实现的高性能、高可读性解析器。
-//! 这是 printer.rs 的逆操作。
+//! Instruction dispatch is selected from [`TextCodec`], which is an exhaustive
+//! projection of [`crate::OpFormat`]. A small delimiter-aware scanner handles
+//! vector types, variadic calls, and nested block calls without duplicating one
+//! parser-combinator tree per opcode.
 
+use super::{TextCodec, format};
 use crate::{
-    CallConv, Result,
-    function::{Function, StackSlotData},
-    inst::{ConstantPoolId, InstructionData, VectorExtData, VectorMemExtData},
-    module::{Linkage, Module},
-    opcode::{FloatCC, IntCC, MemFlags, Opcode},
-    types::{
-        Block, BlockCallData, FuncId, SigId, Signature, StackSlot, Type, Value, ValueData, ValueDef,
-    },
+    Block, BlockCall, CallConv, FuncId, Function, InstructionData, Intrinsic, Linkage, MemFlags,
+    Module, ModuleData, Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
+    function::StackSlotData,
+    inst::{ConstantPoolData, VectorMemOptions},
+    opspec::ResultTypes,
+    types::{BlockCallData, JumpTableData, ValueData},
 };
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
-use chumsky::prelude::*;
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use hashbrown::HashMap;
 
-pub use super::format;
-use super::format::*;
-
-/// 解析错误
 #[derive(Debug, Clone)]
 pub struct ParseError(pub String);
 
 impl core::fmt::Display for ParseError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.0)
+        f.write_str(&self.0)
     }
 }
 
-/// 模块解析步骤数据
-pub struct ModuleParser {}
+#[derive(Debug, Clone)]
+struct FunctionHeader {
+    name: String,
+    linkage: Linkage,
+    signature: Signature,
+}
+
+#[derive(Debug)]
+struct FunctionSource {
+    header: FunctionHeader,
+    body: Vec<(usize, String)>,
+}
+
+/// Complete-module parser. Function symbols are declared before any body is
+/// decoded, so direct calls may refer to functions appearing later in a file.
+pub struct ModuleParser;
 
 impl Default for ModuleParser {
     fn default() -> Self {
@@ -41,898 +55,685 @@ impl Default for ModuleParser {
 }
 
 impl ModuleParser {
-    pub fn new() -> Self {
-        Self {}
+    pub const fn new() -> Self {
+        Self
     }
 
     pub fn parse(&mut self, input: &str) -> Result<Module> {
-        let input = input.trim();
-        if input.is_empty() {
-            return Err(ParseError("Empty input".to_string()).into());
+        if input.trim().is_empty() {
+            return parse_err("empty input");
         }
 
-        let mut func_parser = FuncParser::new();
-        let func = func_parser.parse(input)?;
-        let mut module_data = crate::module::ModuleData::default();
-        let sig = Signature::new(vec![], vec![], CallConv::SystemV);
-        let sig_id = module_data.intern_signature(sig);
-        module_data.declare_function(func.name.clone(), sig_id, func.linkage);
-        module_data.functions[FuncId(0)].dfg = func.dfg;
-        module_data.functions[FuncId(0)].layout = func.layout;
-        module_data.functions[FuncId(0)].stack_slots = func.stack_slots;
-        module_data.functions[FuncId(0)].entry_block = func.entry_block;
-        Ok(Module::new(module_data))
+        let mut sources = Vec::<FunctionSource>::new();
+        let mut globals = Vec::<(String, Type, Linkage)>::new();
+        let mut current = None;
+
+        for (index, raw) in input.lines().enumerate() {
+            let line_no = index + 1;
+            let line = strip_comment(raw).trim();
+            if line.is_empty() {
+                continue;
+            }
+            if is_function_header(line) {
+                let header =
+                    parse_function_header(line).map_err(|error| with_line(error, line_no, line))?;
+                sources.push(FunctionSource {
+                    header,
+                    body: Vec::new(),
+                });
+                current = Some(sources.len() - 1);
+            } else if line.starts_with("global ") {
+                if current.is_some() {
+                    return parse_err(format!(
+                        "line {line_no}: global declaration inside function"
+                    ));
+                }
+                globals.push(parse_global(line).map_err(|error| with_line(error, line_no, line))?);
+            } else if let Some(source) = current.map(|index| &mut sources[index]) {
+                source.body.push((line_no, line.to_string()));
+            } else {
+                return parse_err(format!(
+                    "line {line_no}: expected global or function declaration"
+                ));
+            }
+        }
+
+        if sources.is_empty() && globals.is_empty() {
+            return parse_err("module contains no declarations");
+        }
+
+        let mut module = ModuleData::default();
+        for (name, ty, linkage) in globals {
+            module.add_global(name, ty, linkage);
+        }
+
+        let mut func_ids = HashMap::new();
+        for source in &sources {
+            if func_ids.contains_key(&source.header.name) {
+                return parse_err(format!("duplicate function `{}`", source.header.name));
+            }
+            let sig = module.intern_signature(source.header.signature.clone());
+            let id =
+                module.declare_function(source.header.name.clone(), sig, source.header.linkage);
+            func_ids.insert(source.header.name.clone(), id);
+        }
+
+        for source in sources {
+            let id = func_ids[&source.header.name];
+            let sig = module.functions[id].signature;
+            let func =
+                parse_function_body(source.header, sig, &source.body, &func_ids, &mut module)?;
+            module.functions[id] = func;
+        }
+        Ok(Module::new(module))
     }
-}
-
-/// 解析上下文：管理值和基本块的映射
-pub struct ParseContext {
-    pub value_map: HashMap<String, Value>,
-    pub block_map: HashMap<String, Block>,
-    pub next_value_idx: u32,
-}
-
-/// 函数解析器
-pub struct FuncParser {
-    pub ctx: ParseContext,
-}
-
-impl Default for FuncParser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn identifier<'a>() -> impl Parser<'a, &'a str, String, extra::Err<Simple<'a, char>>> + Clone {
-    any()
-        .filter(|c: &char| c.is_ascii_alphabetic() || *c == '_')
-        .then(
-            any()
-                .filter(|c: &char| c.is_ascii_alphanumeric() || matches!(*c, '_' | '.' | '-'))
-                .repeated()
-                .collect::<Vec<char>>(),
-        )
-        .map(|(c, mut rest)| {
-            rest.insert(0, c);
-            rest.into_iter().collect::<String>()
-        })
-}
-
-fn type_parser<'a>() -> impl Parser<'a, &'a str, Type, extra::Err<Simple<'a, char>>> + Clone {
-    let simple = choice((
-        just("i8"),
-        just("i16"),
-        just("i32"),
-        just("i64"),
-        just("f32"),
-        just("f64"),
-        just("bool"),
-        just("ptr"),
-        just("void"),
-    ));
-
-    let vector = just('<')
-        .ignore_then(
-            any()
-                .filter(|c: &char| *c != '>')
-                .repeated()
-                .collect::<String>(),
-        )
-        .then_ignore(just('>'))
-        .map(|s| format!("<{}>", s));
-
-    simple
-        .map(|s| s.to_string())
-        .or(vector)
-        .try_map(|s, span| parse_type(&s).ok_or_else(|| Simple::new(None, span)))
-}
-
-fn value_name_parser<'a>() -> impl Parser<'a, &'a str, String, extra::Err<Simple<'a, char>>> + Clone
-{
-    identifier()
-}
-
-fn block_id_parser<'a>() -> impl Parser<'a, &'a str, u32, extra::Err<Simple<'a, char>>> + Clone {
-    just("block").ignore_then(text::int(10).from_str().unwrapped())
-}
-
-fn block_call_parser<'a>()
--> impl Parser<'a, &'a str, (u32, Vec<String>), extra::Err<Simple<'a, char>>> + Clone {
-    block_id_parser().then(
-        value_name_parser()
-            .padded()
-            .separated_by(just(','))
-            .allow_trailing()
-            .collect::<Vec<String>>()
-            .delimited_by(just('('), just(')')),
-    )
-}
-
-fn stack_slot_id_parser<'a>() -> impl Parser<'a, &'a str, u32, extra::Err<Simple<'a, char>>> + Clone
-{
-    just("ss").ignore_then(text::int(10).from_str().unwrapped())
-}
-
-fn opcode_parts_parser<'a>()
--> impl Parser<'a, &'a str, (String, Option<Type>, MemFlags), extra::Err<Simple<'a, char>>> + Clone
-{
-    identifier()
-        .then(
-            just('.')
-                .ignore_then(identifier())
-                .repeated()
-                .collect::<Vec<String>>()
-                .map(|parts| {
-                    let mut ty = None;
-                    let mut flags = MemFlags::new();
-                    for part in parts {
-                        if let Some(t) = parse_type(&part) {
-                            ty = Some(t);
-                        } else if part == "trusted" {
-                            flags = flags.union(MemFlags::TRUSTED);
-                        } else if part.starts_with("align") {
-                            if let Ok(align) = part["align".len()..].parse::<u32>() {
-                                flags = flags.with_alignment(align);
-                            }
-                        }
-                    }
-                    (ty, flags)
-                }),
-        )
-        .map(|(opcode, (ty, flags))| (opcode, ty, flags))
-}
-
-fn result_names_parser<'a>()
--> impl Parser<'a, &'a str, Vec<String>, extra::Err<Simple<'a, char>>> + Clone {
-    let single = identifier().map(|s| vec![s]);
-    let multiple = identifier()
-        .padded()
-        .separated_by(just(','))
-        .at_least(1)
-        .collect::<Vec<String>>()
-        .delimited_by(just('('), just(')'));
-    multiple.or(single).then_ignore(just('=').padded())
 }
 
 #[derive(Default)]
-struct ParsedVMemExt {
-    stride: Option<String>,
-    index: Option<String>,
-    scale: u32,
-    mask: Option<String>,
-    evl: Option<String>,
+struct ParseContext {
+    value_map: HashMap<String, Value>,
+    block_map: HashMap<String, Block>,
+    next_value_idx: u32,
+    defined_values: HashMap<Value, String>,
 }
 
-fn vector_ext_parser<'a>()
--> impl Parser<'a, &'a str, ParsedVMemExt, extra::Err<Simple<'a, char>>> + Clone {
-    let stride = just("stride=")
-        .ignore_then(value_name_parser())
-        .map(|v| (format::STRIDE, (v, 1)));
-    let index = just("index=")
-        .ignore_then(value_name_parser())
-        .then(
-            just("*")
-                .padded()
-                .ignore_then(text::int(10).from_str::<u32>().unwrapped())
-                .or_not()
-                .map(|v| v.unwrap_or(1)),
-        )
-        .map(|(v, s)| (format::INDEX, (v, s)));
-    let mask = just("mask=")
-        .ignore_then(value_name_parser())
-        .map(|v| (format::MASK, (v, 1)));
-    let evl = just("evl=")
-        .ignore_then(value_name_parser())
-        .map(|v| (format::EVL, (v, 1)));
+fn parse_function_body(
+    header: FunctionHeader,
+    sig_id: SigId,
+    body: &[(usize, String)],
+    func_ids: &HashMap<String, FuncId>,
+    module: &mut ModuleData,
+) -> Result<Function> {
+    let mut func = Function::new(header.name, sig_id, header.linkage);
+    let mut ctx = ParseContext::default();
 
-    choice((stride, index, mask, evl))
-        .padded()
-        .separated_by(just(','))
-        .allow_trailing()
-        .collect::<Vec<(&str, (String, u32))>>()
-        .map(|fields| {
-            let mut ext = ParsedVMemExt {
-                scale: 1,
-                ..Default::default()
-            };
-            for (key, (v, s)) in fields {
-                match key {
-                    format::STRIDE => ext.stride = Some(v),
-                    format::INDEX => {
-                        ext.index = Some(v);
-                        ext.scale = s;
-                    }
-                    format::MASK => ext.mask = Some(v),
-                    format::EVL => ext.evl = Some(v),
-                    _ => unreachable!(),
-                }
+    // Predeclare every block and parameter. Forward branches are therefore a
+    // normal case instead of depending on textual block order.
+    for (line_no, line) in body {
+        if is_block_header(line) {
+            let (block_id, params) =
+                parse_block_header(line).map_err(|error| with_line(error, *line_no, line))?;
+            while func.layout.blocks.len() <= block_id as usize {
+                func.layout.create_block();
             }
-            ext
-        })
+            let block = Block(block_id);
+            let key = format!("block{block_id}");
+            if ctx.block_map.insert(key, block).is_some() {
+                return parse_err(format!("line {line_no}: duplicate block{block_id}"));
+            }
+            func.layout.append_block(block);
+            if func.entry_block.is_none() {
+                func.entry_block = Some(block);
+            }
+            for (name, ty) in params {
+                let value = define_value(&name, &mut func, &mut ctx, ty, ValueDef::Param(block))
+                    .map_err(|error| with_line(error, *line_no, line))?;
+                func.layout.blocks[block].params.push(value);
+            }
+        } else if line.starts_with("ss") {
+            parse_stack_slot(line, &mut func).map_err(|error| with_line(error, *line_no, line))?;
+        }
+    }
+
+    let mut current = None;
+    for (line_no, line) in body {
+        if is_block_header(line) {
+            let (block_id, _) =
+                parse_block_header(line).map_err(|error| with_line(error, *line_no, line))?;
+            current = Some(Block(block_id));
+            continue;
+        }
+        if line.starts_with("ss") {
+            continue;
+        }
+        let block = current.ok_or_else(|| {
+            ParseError(format!("line {line_no}: instruction outside a basic block"))
+        })?;
+        parse_instruction(line, *line_no, block, &mut func, &mut ctx, func_ids, module)?;
+    }
+
+    for &block in &func.layout.block_order {
+        func.layout.blocks[block].is_sealed = true;
+    }
+    Ok(func)
 }
 
-// ==================== FuncParser Implementation ====================
+#[allow(clippy::too_many_arguments)]
+fn parse_instruction(
+    line: &str,
+    line_no: usize,
+    block: Block,
+    func: &mut Function,
+    ctx: &mut ParseContext,
+    func_ids: &HashMap<String, FuncId>,
+    module: &mut ModuleData,
+) -> Result<()> {
+    let (result_names, instruction) =
+        parse_result_names(line).map_err(|error| with_line(error, line_no, line))?;
+    let (opcode, ty_hint, flags, operands) =
+        parse_instruction_header(instruction).map_err(|error| with_line(error, line_no, line))?;
 
-impl FuncParser {
-    pub fn new() -> Self {
-        Self {
-            ctx: ParseContext {
-                value_map: HashMap::new(),
-                block_map: HashMap::new(),
-                next_value_idx: 0,
-            },
-        }
-    }
-
-    pub fn parse(&mut self, input: &str) -> Result<Function> {
-        let mut lines = input.lines();
-        let sig_line = lines
-            .next()
-            .ok_or_else(|| ParseError("Empty input".to_string()))?;
-        let (name, linkage, _params, _returns) = self.parse_signature(sig_line)?;
-
-        let mut func = Function::new(name, SigId(0), linkage);
-        let mut current_block: Option<Block> = None;
-
-        for (line_idx, line) in lines.enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("//") {
-                continue;
-            }
-
-            if line.ends_with(':') && !line.contains('=') && !line.starts_with("ss") {
-                let (block_idx, params_info) = self.parse_block_header(line)?;
-                let block = Block(block_idx);
-                current_block = Some(block);
-                self.ctx
-                    .block_map
-                    .insert(format!("block{}", block_idx), block);
-
-                if func.entry_block.is_none() {
-                    func.entry_block = Some(block);
-                }
-                while func.layout.blocks.len() <= block_idx as usize {
-                    func.layout.create_block();
-                }
-                if !func.layout.block_order.contains(&block) {
-                    func.layout.block_order.push(block);
-                }
-
-                for (p_name, p_ty) in params_info {
-                    let val = get_or_create_value(
-                        &p_name,
-                        &mut func,
-                        &mut self.ctx,
-                        p_ty,
-                        ValueDef::Param(block),
-                    );
-                    func.layout.blocks[block].params.push(val);
-                }
-                continue;
-            }
-
-            if line.starts_with("ss") {
-                self.parse_stack_slot(line, &mut func)?;
-                continue;
-            }
-
-            if let Some(block) = current_block {
-                self.parse_instruction(line, &mut func, block, line_idx + 2)?;
-            } else {
-                return Err(ParseError(format!(
-                    "Instruction outside of block at line {}: {}",
-                    line_idx + 2,
-                    line
-                ))
-                .into());
-            }
-        }
-        Ok(func)
-    }
-
-    fn parse_signature(&self, line: &str) -> Result<(String, Linkage, Vec<Type>, Vec<Type>)> {
-        let parser = choice((just("local"), just("export"), just("import")))
-            .map(|s| parse_linkage(s).unwrap())
-            .padded()
-            .then_ignore(just("function").padded())
-            .then(identifier())
-            .then_ignore(just('('))
-            .then(
-                type_parser()
-                    .padded()
-                    .separated_by(just(','))
-                    .allow_trailing()
-                    .collect::<Vec<Type>>(),
-            )
-            .then_ignore(just(')'))
-            .then(
-                just("->")
-                    .padded()
-                    .ignored()
-                    .ignore_then(choice((
-                        just("void").map(|_| Vec::new()),
-                        type_parser()
-                            .padded()
-                            .separated_by(just(','))
-                            .at_least(1)
-                            .collect::<Vec<Type>>(),
-                    )))
-                    .or_not()
-                    .map(|v| v.unwrap_or_default()),
-            );
-
-        parser
-            .parse(line.trim())
-            .into_result()
-            .map(|(((linkage, name), params), returns)| (name, linkage, params, returns))
-            .map_err(|errs| ParseError(format!("Invalid signature: {:?}", errs)).into())
-    }
-
-    fn parse_block_header(&self, line: &str) -> Result<(u32, Vec<(String, Type)>)> {
-        let parser = block_id_parser()
-            .then(
-                just('(')
-                    .ignore_then(
-                        identifier()
-                            .then_ignore(just(':').padded())
-                            .then(type_parser())
-                            .padded()
-                            .separated_by(just(','))
-                            .allow_trailing()
-                            .collect::<Vec<(String, Type)>>(),
-                    )
-                    .then_ignore(just(')'))
-                    .or_not()
-                    .map(|v| v.unwrap_or_default()),
-            )
-            .then_ignore(just(':'));
-
-        parser
-            .parse(line.trim())
-            .into_result()
-            .map_err(|errs| ParseError(format!("Invalid block header: {:?}", errs)).into())
-    }
-
-    fn parse_stack_slot(&self, line: &str, func: &mut Function) -> Result<()> {
-        let parser = stack_slot_id_parser()
-            .then_ignore(just(':').padded())
-            .then_ignore(just("size").padded())
-            .then(text::int(10).from_str().unwrapped());
-
-        let (idx, size) = parser
-            .parse(line.trim())
-            .into_result()
-            .map_err(|errs| ParseError(format!("Invalid stack slot: {:?}", errs)))?;
-
-        while func.stack_slots.len() <= idx as usize {
-            func.stack_slots.push(StackSlotData { size: 0 });
-        }
-        func.stack_slots[StackSlot(idx)] = StackSlotData { size };
-        Ok(())
-    }
-
-    fn parse_instruction(
-        &mut self,
-        line: &str,
-        func: &mut Function,
-        block: Block,
-        _line_no: usize,
-    ) -> Result<()> {
-        let parser = result_names_parser()
-            .or_not()
-            .then(opcode_parts_parser())
-            .then(any().repeated().collect::<String>());
-
-        let ((result_names, (opcode_str, ty_hint, flags)), rest) = parser
-            .parse(line.trim())
-            .into_result()
-            .map_err(|errs| ParseError(format!("Invalid instruction structure: {:?}", errs)))?;
-
-        let result_names = result_names.unwrap_or_default();
-        let opcode = parse_opcode(&opcode_str)
-            .ok_or_else(|| ParseError(format!("Unknown opcode: {}", opcode_str)))?;
-
-        let rtypes = {
-            let mut inst_parser = InstDataParser {
-                func,
-                ctx: &mut self.ctx,
-            };
-            let idata = inst_parser.parse_operands(opcode, ty_hint, flags, &rest)?;
-            if let Some(ty) = ty_hint {
-                (idata, alloc::vec![ty])
-            } else {
-                let rtypes = inst_parser.infer_result_types(&idata);
-                (idata, rtypes)
-            }
+    let data = {
+        let mut parser = OperandParser {
+            func,
+            ctx,
+            func_ids,
+            module,
         };
-        let (idata, rtypes) = rtypes;
+        parser
+            .parse(opcode, ty_hint, flags, operands)
+            .map_err(|error| with_line(error, line_no, line))?
+    };
+    let result_types = resolve_result_types(&data, ty_hint, func, module)
+        .map_err(|error| with_line(error, line_no, line))?;
+    if result_names.len() != result_types.len() {
+        return parse_err(format!(
+            "line {line_no}: `{}` defines {} result name(s), but its type scheme produces {}",
+            opcode.spec().mnemonic,
+            result_names.len(),
+            result_types.len()
+        ));
+    }
 
-        let inst = func.dfg.instructions.push(idata);
-        func.layout.append_inst(block, inst);
+    let successors = instruction_successors(&data, func);
+    let inst = func.dfg.instructions.push(data);
+    func.layout.append_inst(block, inst);
+    if !result_names.is_empty() {
+        let values = result_names
+            .iter()
+            .zip(result_types)
+            .map(|(name, ty)| define_value(name, func, ctx, ty, ValueDef::Inst(inst)))
+            .collect::<core::result::Result<Vec<_>, _>>()
+            .map_err(|error| with_line(error, line_no, line))?;
+        let list = func.dfg.make_value_list(&values);
+        func.dfg.inst_results[inst] = list;
+    }
+    for successor in successors {
+        func.layout.add_edge(block, successor);
+    }
+    Ok(())
+}
 
-        if !result_names.is_empty() {
-            let values: Vec<Value> = result_names
-                .iter()
-                .enumerate()
-                .map(|(i, name)| {
-                    let ty = rtypes.get(i).copied().unwrap_or(Type::VOID);
-                    get_or_create_value(name, func, &mut self.ctx, ty, ValueDef::Inst(inst))
-                })
-                .collect();
+fn resolve_result_types(
+    data: &InstructionData,
+    hint: Option<Type>,
+    func: &Function,
+    module: &ModuleData,
+) -> core::result::Result<Vec<Type>, ParseError> {
+    let spec = data.opcode().spec();
+    let mut operands = Vec::new();
+    data.visit_type_operands(&func.dfg, |value| {
+        operands.push(func.dfg.value_type(value));
+    });
+    let inferred = spec.type_scheme.infer_results(&operands);
+    let mut results = match &inferred {
+        ResultTypes::Inferred(types) => types.clone().into_vec(),
+        ResultTypes::Explicit => hint.into_iter().collect(),
+        ResultTypes::Signature => instruction_signature(data, module)?.returns.clone(),
+    };
 
-            let list = func.dfg.make_value_list(&values);
-            func.dfg.inst_results[inst] = list;
+    if let Some(hint) = hint {
+        if let Some(first) = results.first_mut() {
+            if first.is_valid() && *first != hint {
+                return Err(ParseError(format!(
+                    "result annotation `{hint}` conflicts with inferred type `{first}`"
+                )));
+            }
+            *first = hint;
+        } else if !matches!(inferred, ResultTypes::Explicit) {
+            return Err(ParseError(format!(
+                "`{}` does not produce an annotatable result",
+                spec.mnemonic
+            )));
         }
+    }
+    Ok(results)
+}
 
-        Ok(())
+fn instruction_signature<'a>(
+    data: &InstructionData,
+    module: &'a ModuleData,
+) -> core::result::Result<&'a Signature, ParseError> {
+    let sig = match data {
+        InstructionData::Call { func_id, .. } => module
+            .functions
+            .get(*func_id)
+            .map(|func| func.signature)
+            .ok_or_else(|| ParseError(format!("unknown function id {}", func_id.0)))?,
+        InstructionData::CallIndirect { sig_id, .. }
+        | InstructionData::CallIntrinsic { sig_id, .. } => *sig_id,
+        _ => {
+            return Err(ParseError(
+                "signature result on non-call instruction".into(),
+            ));
+        }
+    };
+    module
+        .signatures
+        .get(sig)
+        .ok_or_else(|| ParseError(format!("unknown signature id {}", sig.0)))
+}
+
+fn instruction_successors(data: &InstructionData, func: &Function) -> Vec<Block> {
+    match data {
+        InstructionData::Jump { dest } => vec![func.dfg.block_call_block(*dest)],
+        InstructionData::Br {
+            then_dest,
+            else_dest,
+            ..
+        } => vec![
+            func.dfg.block_call_block(*then_dest),
+            func.dfg.block_call_block(*else_dest),
+        ],
+        InstructionData::BrTable { table, .. } => func
+            .dfg
+            .jump_table_targets(*table)
+            .iter()
+            .map(|&call| func.dfg.block_call_block(call))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
-struct InstDataParser<'a> {
+struct OperandParser<'a> {
     func: &'a mut Function,
     ctx: &'a mut ParseContext,
+    func_ids: &'a HashMap<String, FuncId>,
+    module: &'a mut ModuleData,
 }
 
-/// Helper to parse value ID from string representation (e.g., "v123" -> 123 or "tmp.v123" -> 123)
-fn parse_value_idx(name: &str) -> Option<u32> {
-    // If it's something like "v123", strip 'v'
-    if let Some(s) = name.strip_prefix('v') {
-        let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !digits.is_empty() {
-            return digits.parse().ok();
-        }
-    }
-    // Handle "name.v123" - search for ".v" and then take digits
-    if let Some(idx) = name.rfind(".v") {
-        let s = &name[idx + 2..];
-        let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !digits.is_empty() {
-            return digits.parse().ok();
-        }
-    }
-    None
-}
-
-impl<'a> InstDataParser<'a> {
-    fn parse_operands(
+impl OperandParser<'_> {
+    fn parse(
         &mut self,
         opcode: Opcode,
-        _ty_hint: Option<Type>,
+        ty: Option<Type>,
         flags: MemFlags,
-        rest: &str,
-    ) -> Result<InstructionData> {
-        let rest = rest.trim();
-        let inst_format = format::opcode_to_format(opcode);
-
-        match inst_format {
-            InstFormat::Iconst => {
-                let val: i64 = text::int::<_, extra::Err<Simple<char>>>(10)
-                    .from_str::<i64>()
-                    .unwrapped()
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|_| ParseError(format!("Expected i64 constant, found: {}", rest)))?;
-                Ok(InstructionData::Iconst { value: val as u64 })
-            }
-            InstFormat::Fconst => {
-                let val: u64 = rest.parse().unwrap_or(0);
-                Ok(InstructionData::Fconst { value: val })
-            }
-            InstFormat::Bconst => {
-                let b = rest.starts_with("true");
-                Ok(InstructionData::Bconst { value: b })
-            }
-            InstFormat::Unary => {
-                let v = self.parse_v(rest)?;
-                Ok(InstructionData::Unary { opcode, arg: v })
-            }
-            InstFormat::Binary => {
-                let (v0, v1) = value_name_parser()
-                    .padded()
-                    .then_ignore(just(',').padded())
-                    .then(value_name_parser().padded())
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid binary args: {:?}", e)))?;
-                Ok(InstructionData::Binary {
-                    opcode,
-                    args: [self.get_v_by_name(&v0), self.get_v_by_name(&v1)],
+        text: &str,
+    ) -> core::result::Result<InstructionData, ParseError> {
+        let codec = TextCodec::for_opcode(opcode);
+        if !flags.is_empty() && !codec.accepts_memory_flags() {
+            return Err(ParseError(format!(
+                "memory flags are not valid on `{}`",
+                opcode.spec().mnemonic
+            )));
+        }
+        match codec {
+            TextCodec::Values { arity } => self.parse_values(opcode, arity as usize, text),
+            TextCodec::Nullary => {
+                require_empty(text)?;
+                Ok(match opcode {
+                    Opcode::Unreachable => InstructionData::Unreachable,
+                    Opcode::Nop => InstructionData::Nop,
+                    _ => return Err(codec_mismatch(opcode, codec)),
                 })
             }
-            InstFormat::Ternary => {
-                let ((v0, v1), v2) = value_name_parser()
-                    .padded()
-                    .then_ignore(just(',').padded())
-                    .then(value_name_parser().padded())
-                    .then_ignore(just(',').padded())
-                    .then(value_name_parser().padded())
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid ternary args: {:?}", e)))?;
-                Ok(InstructionData::Ternary {
-                    opcode,
-                    args: [
-                        self.get_v_by_name(&v0),
-                        self.get_v_by_name(&v1),
-                        self.get_v_by_name(&v2),
-                    ],
-                })
+            TextCodec::IntegerConstant => Ok(InstructionData::Iconst {
+                value: parse_integer_bits(text)?,
+            }),
+            TextCodec::FloatConstant => Ok(InstructionData::Fconst {
+                value: parse_float_bits(text, ty)?,
+            }),
+            TextCodec::BoolConstant => Ok(InstructionData::Bconst {
+                value: match text.trim() {
+                    "true" => true,
+                    "false" => false,
+                    other => {
+                        return Err(ParseError(format!(
+                            "expected `true` or `false`, found `{other}`"
+                        )));
+                    }
+                },
+            }),
+            TextCodec::VectorConstant => {
+                let bytes = parse_hex_bytes(text)?;
+                let pool_id = self
+                    .func
+                    .dfg
+                    .make_constant_pool_data(ConstantPoolData::Bytes(bytes));
+                Ok(InstructionData::Vconst { pool_id })
             }
-            InstFormat::IntCompare => {
-                let (kind, (v0, v1)) = identifier()
-                    .padded()
-                    .then(
-                        value_name_parser()
-                            .padded()
-                            .then_ignore(just(',').padded())
-                            .then(value_name_parser().padded()),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid int_compare: {:?}", e)))?;
-                let kind = parse_intcc(&kind)?;
-                Ok(InstructionData::IntCompare {
-                    kind,
-                    args: [self.get_v_by_name(&v0), self.get_v_by_name(&v1)],
-                })
-            }
-            InstFormat::FloatCompare => {
-                let (kind, (v0, v1)) = identifier()
-                    .padded()
-                    .then(
-                        value_name_parser()
-                            .padded()
-                            .then_ignore(just(',').padded())
-                            .then(value_name_parser().padded()),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid float_compare: {:?}", e)))?;
-                let kind = parse_floatcc(&kind)?;
-                Ok(InstructionData::FloatCompare {
-                    kind,
-                    args: [self.get_v_by_name(&v0), self.get_v_by_name(&v1)],
-                })
-            }
-            InstFormat::Load => {
-                let (v, offset) = value_name_parser()
-                    .then(
-                        just('+')
-                            .padded()
-                            .ignore_then(text::int(10).from_str::<u32>().unwrapped())
-                            .or_not()
-                            .map(|v| v.unwrap_or(0)),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid load args: {:?}", e)))?;
+            TextCodec::Load => {
+                let (core, named) = split_core_and_named(text, 1)?;
+                reject_unknown_named(&named, &["offset"])?;
                 Ok(InstructionData::Load {
-                    ptr: self.get_v_by_name(&v),
-                    offset,
+                    ptr: self.value(core[0])?,
+                    offset: parse_named_u32(&named, "offset", 0)?,
                     flags,
                 })
             }
-            InstFormat::Store => {
-                let (val_id, (ptr_id, offset)) = value_name_parser()
-                    .padded()
-                    .then_ignore(just(',').padded())
-                    .then(
-                        value_name_parser().then(
-                            just('+')
-                                .padded()
-                                .ignore_then(text::int(10).from_str::<u32>().unwrapped())
-                                .or_not()
-                                .map(|v| v.unwrap_or(0)),
-                        ),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid store args: {:?}", e)))?;
+            TextCodec::Store => {
+                let (core, named) = split_core_and_named(text, 2)?;
+                reject_unknown_named(&named, &["offset"])?;
                 Ok(InstructionData::Store {
-                    ptr: self.get_v_by_name(&ptr_id),
-                    value: self.get_v_by_name(&val_id),
-                    offset,
+                    value: self.value(core[0])?,
+                    ptr: self.value(core[1])?,
+                    offset: parse_named_u32(&named, "offset", 0)?,
                     flags,
                 })
             }
-            InstFormat::StackLoad => {
-                let (slot, offset) = stack_slot_id_parser()
-                    .then(
-                        just('+')
-                            .padded()
-                            .ignore_then(text::int(10).from_str::<u32>().unwrapped())
-                            .or_not()
-                            .map(|v| v.unwrap_or(0)),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid stack_load args: {:?}", e)))?;
+            TextCodec::StackLoad => {
+                let (core, named) = split_core_and_named(text, 1)?;
+                reject_unknown_named(&named, &["offset"])?;
                 Ok(InstructionData::StackLoad {
-                    slot: StackSlot(slot),
-                    offset,
+                    slot: parse_stack_slot_ref(core[0])?,
+                    offset: parse_named_u32(&named, "offset", 0)?,
                 })
             }
-            InstFormat::StackStore => {
-                let (val_id, (slot, offset)) = value_name_parser()
-                    .padded()
-                    .then_ignore(just(',').padded())
-                    .then(
-                        stack_slot_id_parser().then(
-                            just('+')
-                                .padded()
-                                .ignore_then(text::int(10).from_str::<u32>().unwrapped())
-                                .or_not()
-                                .map(|v| v.unwrap_or(0)),
-                        ),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid stack_store args: {:?}", e)))?;
+            TextCodec::StackStore => {
+                let (core, named) = split_core_and_named(text, 2)?;
+                reject_unknown_named(&named, &["offset"])?;
                 Ok(InstructionData::StackStore {
-                    slot: StackSlot(slot),
-                    value: self.get_v_by_name(&val_id),
-                    offset,
+                    value: self.value(core[0])?,
+                    slot: parse_stack_slot_ref(core[1])?,
+                    offset: parse_named_u32(&named, "offset", 0)?,
                 })
             }
-            InstFormat::StackAddr => {
-                let (slot, offset) = stack_slot_id_parser()
-                    .then(
-                        just('+')
-                            .padded()
-                            .ignore_then(text::int(10).from_str::<u32>().unwrapped())
-                            .or_not()
-                            .map(|v| v.unwrap_or(0)),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid stack_addr args: {:?}", e)))?;
+            TextCodec::StackAddr => {
+                let (core, named) = split_core_and_named(text, 1)?;
+                reject_unknown_named(&named, &["offset"])?;
                 Ok(InstructionData::StackAddr {
-                    slot: StackSlot(slot),
-                    offset,
+                    slot: parse_stack_slot_ref(core[0])?,
+                    offset: parse_named_u32(&named, "offset", 0)?,
                 })
             }
-            InstFormat::Jump => {
-                let (block_idx, args) = block_call_parser()
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid jump args: {:?}", e)))?;
-                let dest = self.create_block_call(block_idx, args)?;
-                Ok(InstructionData::Jump { dest })
+            TextCodec::PtrOffset => {
+                let fields = exact_fields(text, 2)?;
+                Ok(InstructionData::PtrOffset {
+                    ptr: self.value(fields[0])?,
+                    offset: parse_i32(fields[1], "pointer offset")?,
+                })
             }
-            InstFormat::Br => {
-                let ((cond_id, (then_block, then_args)), (else_block, else_args)) =
-                    value_name_parser()
-                        .padded()
-                        .then_ignore(just(',').padded())
-                        .then(block_call_parser().padded())
-                        .then_ignore(just(',').padded())
-                        .then(block_call_parser().padded())
-                        .parse(rest)
-                        .into_result()
-                        .map_err(|e| ParseError(format!("Invalid br args: {:?}", e)))?;
-
-                let then_dest = self.create_block_call(then_block, then_args)?;
-                let else_dest = self.create_block_call(else_block, else_args)?;
-
+            TextCodec::PtrIndex => {
+                let (core, named) = split_core_and_named(text, 2)?;
+                reject_unknown_named(&named, &["scale", "offset"])?;
+                let imm_id = self.func.dfg.make_ptr_imm(
+                    parse_named_i32(&named, "offset", 0)?,
+                    parse_named_u32(&named, "scale", 1)?,
+                );
+                Ok(InstructionData::PtrIndex {
+                    ptr: self.value(core[0])?,
+                    index: self.value(core[1])?,
+                    imm_id,
+                })
+            }
+            TextCodec::DirectCall => self.parse_direct_call(text),
+            TextCodec::IndirectCall => self.parse_indirect_call(text),
+            TextCodec::IntrinsicCall => self.parse_intrinsic_call(text),
+            TextCodec::Jump => Ok(InstructionData::Jump {
+                dest: self.block_call(text)?,
+            }),
+            TextCodec::Branch => {
+                let fields = exact_fields(text, 3)?;
                 Ok(InstructionData::Br {
-                    condition: self.get_v_by_name(&cond_id),
-                    then_dest,
-                    else_dest,
+                    condition: self.value(fields[0])?,
+                    then_dest: self.block_call(fields[1])?,
+                    else_dest: self.block_call(fields[2])?,
                 })
             }
-            InstFormat::Return => {
-                let args = value_name_parser()
-                    .padded()
-                    .separated_by(just(','))
-                    .collect::<Vec<String>>()
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid return args: {:?}", e)))?;
+            TextCodec::BranchTable => self.parse_branch_table(text),
+            TextCodec::Return => {
+                let values = if text.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    split_top_level(text, ',')
+                        .into_iter()
+                        .map(|field| self.value(field))
+                        .collect::<core::result::Result<Vec<_>, _>>()?
+                };
                 Ok(InstructionData::Return {
-                    values: self.make_value_list_from_names(&args),
+                    values: self.func.dfg.make_value_list(&values),
                 })
             }
-            InstFormat::Call => {
-                let (_func_name, args) = identifier()
-                    .padded()
-                    .then(
-                        value_name_parser()
-                            .padded()
-                            .separated_by(just(','))
-                            .allow_trailing()
-                            .collect::<Vec<String>>(),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid call args: {:?}", e)))?;
-                // TODO: 真正的函数 ID 查找
-                let func_id = FuncId(0);
-                Ok(InstructionData::Call {
-                    func_id,
-                    args: self.make_value_list_from_names(&args),
+            TextCodec::IntCompare => {
+                let (cc, values) = split_condition(text)?;
+                Ok(InstructionData::IntCompare {
+                    kind: crate::IntCC::from_mnemonic(cc)
+                        .ok_or_else(|| ParseError(format!("unknown integer condition `{cc}`")))?,
+                    args: [self.value(values[0])?, self.value(values[1])?],
                 })
             }
-            InstFormat::Shuffle => {
-                let ((v0, v1), mask) = value_name_parser()
-                    .padded()
-                    .then_ignore(just(',').padded())
-                    .then(value_name_parser().padded())
-                    .then(
-                        just(',')
-                            .padded()
-                            .ignore_then(just("mask="))
-                            .ignore_then(text::int(10).from_str::<u32>().unwrapped())
-                            .or_not()
-                            .map(|v| v.unwrap_or(0)),
-                    )
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid shuffle args: {:?}", e)))?;
+            TextCodec::FloatCompare => {
+                let (cc, values) = split_condition(text)?;
+                Ok(InstructionData::FloatCompare {
+                    kind: crate::FloatCC::from_mnemonic(cc)
+                        .ok_or_else(|| ParseError(format!("unknown float condition `{cc}`")))?,
+                    args: [self.value(values[0])?, self.value(values[1])?],
+                })
+            }
+            TextCodec::VectorLoadStrided
+            | TextCodec::VectorStoreStrided
+            | TextCodec::VectorGather
+            | TextCodec::VectorScatter => self.parse_vector_memory(codec, flags, text),
+            TextCodec::Shuffle => {
+                let (core, named) = split_core_and_named(text, 2)?;
+                reject_unknown_named(&named, &["mask"])?;
+                let bytes = parse_hex_bytes(named_value(&named, "mask")?)?;
+                let mask = self
+                    .func
+                    .dfg
+                    .make_constant_pool_data(ConstantPoolData::Bytes(bytes));
                 Ok(InstructionData::Shuffle {
-                    args: [self.get_v_by_name(&v0), self.get_v_by_name(&v1)],
-                    mask: ConstantPoolId(mask),
+                    args: [self.value(core[0])?, self.value(core[1])?],
+                    mask,
                 })
             }
-            InstFormat::VectorOpWithExt => {
-                let (args, ext_info) = value_name_parser()
-                    .padded()
-                    .repeated()
-                    .collect::<Vec<String>>()
-                    .then(vector_ext_parser())
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid vector_op args: {:?}", e)))?;
-
-                let mask = ext_info.mask.as_ref().map(|id| self.get_v_by_name(id));
-                let evl = ext_info.evl.as_ref().map(|id| self.get_v_by_name(id));
-                let mask_val = mask.ok_or_else(|| ParseError("Missing mask".to_string()))?;
-
-                let ext = self.func.dfg.vector_ext_pool.push(VectorExtData {
-                    mask: mask_val,
-                    evl,
-                });
-
-                Ok(InstructionData::VectorOpWithExt {
-                    opcode,
-                    args: self.make_value_list_from_names(&args),
-                    ext,
-                })
-            }
-            InstFormat::VectorLoadStrided => {
-                let (ptr_id, ext_info) = value_name_parser()
-                    .padded()
-                    .then(vector_ext_parser())
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid vload_strided: {:?}", e)))?;
-
-                let ext = self.build_vector_mem_ext(&ext_info, flags, 1);
-                Ok(InstructionData::VectorLoadStrided {
-                    ptr: self.get_v_by_name(&ptr_id),
-                    stride: self.get_v_by_name(
-                        ext_info
-                            .stride
-                            .as_ref()
-                            .ok_or_else(|| ParseError("Missing stride".to_string()))?,
-                    ),
-                    ext,
-                })
-            }
-            InstFormat::VectorStoreStrided => {
-                let ((val_id, ptr_id), ext_info) = value_name_parser()
-                    .padded()
-                    .then_ignore(just(',').padded())
-                    .then(value_name_parser().padded())
-                    .then(vector_ext_parser())
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid vstore_strided: {:?}", e)))?;
-
-                let ext = self.build_vector_mem_ext(&ext_info, flags, 1);
-                let ptr = self.get_v_by_name(&ptr_id);
-                let stride = self.get_v_by_name(
-                    ext_info
-                        .stride
-                        .as_ref()
-                        .ok_or_else(|| ParseError("Missing stride".to_string()))?,
-                );
-                let val = self.get_v_by_name(&val_id);
-                Ok(InstructionData::VectorStoreStrided {
-                    args: self.func.dfg.make_value_list(&[ptr, stride, val]),
-                    ext,
-                })
-            }
-            InstFormat::VectorGather => {
-                let (ptr_id, ext_info) = value_name_parser()
-                    .padded()
-                    .then(vector_ext_parser())
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid vgather: {:?}", e)))?;
-
-                let ext = self.build_vector_mem_ext(&ext_info, flags, ext_info.scale as u8);
-                Ok(InstructionData::VectorGather {
-                    ptr: self.get_v_by_name(&ptr_id),
-                    index: self.get_v_by_name(
-                        ext_info
-                            .index
-                            .as_ref()
-                            .ok_or_else(|| ParseError("Missing index".to_string()))?,
-                    ),
-                    ext,
-                })
-            }
-            InstFormat::VectorScatter => {
-                let ((val_id, ptr_id), ext_info) = value_name_parser()
-                    .padded()
-                    .then_ignore(just(',').padded())
-                    .then(value_name_parser().padded())
-                    .then(vector_ext_parser())
-                    .parse(rest)
-                    .into_result()
-                    .map_err(|e| ParseError(format!("Invalid vscatter: {:?}", e)))?;
-
-                let ext = self.build_vector_mem_ext(&ext_info, flags, ext_info.scale as u8);
-                let ptr = self.get_v_by_name(&ptr_id);
-                let index = self.get_v_by_name(
-                    ext_info
-                        .index
-                        .as_ref()
-                        .ok_or_else(|| ParseError("Missing index".to_string()))?,
-                );
-                let val = self.get_v_by_name(&val_id);
-                Ok(InstructionData::VectorScatter {
-                    args: self.func.dfg.make_value_list(&[ptr, index, val]),
-                    ext,
-                })
-            }
-            _ => Err(ParseError(format!("Unsupported format: {:?}", inst_format)).into()),
         }
     }
 
-    /// Parse a value name and get/create the corresponding Value.
-    /// Uses provided type and definition for newly created values.
-    fn parse_v(&mut self, s: &str) -> Result<Value> {
-        let name = identifier()
-            .parse(s.trim())
-            .into_result()
-            .map_err(|e| ParseError(format!("Invalid value ID: {:?}", e)))?;
-        Ok(get_or_create_value(
-            &name,
-            self.func,
-            self.ctx,
-            Type::VOID,
-            // Placeholder: actual definition will be set when the value is defined by an instruction
-            ValueDef::Param(Block(0)),
-        ))
-    }
-
-    /// Get/create a Value by its name (e.g., "v123", "tmp.v123").
-    fn get_v_by_name(&mut self, name: &str) -> Value {
-        get_or_create_value(
-            name,
-            self.func,
-            self.ctx,
-            Type::VOID,
-            // Placeholder: actual definition will be set when the value is defined by an instruction
-            ValueDef::Param(Block(0)),
-        )
-    }
-
-    /// Create a ValueList from a slice of value names.
-    fn make_value_list_from_names(&mut self, names: &[String]) -> crate::types::ValueList {
-        let values: Vec<Value> = names.iter().map(|n| self.get_v_by_name(n)).collect();
-        self.func.dfg.make_value_list(&values)
-    }
-
-    /// Create a BlockCall from block ID and argument names.
-    fn create_block_call(
+    fn parse_values(
         &mut self,
-        block_id: u32,
-        arg_names: Vec<String>,
-    ) -> Result<crate::types::BlockCall> {
-        let block = self.get_block_by_id(block_id)?;
-        let args = self.make_value_list_from_names(&arg_names);
+        opcode: Opcode,
+        arity: usize,
+        text: &str,
+    ) -> core::result::Result<InstructionData, ParseError> {
+        let (core, named) = split_core_and_named(text, arity)?;
+        let args = core
+            .iter()
+            .map(|field| self.value(field))
+            .collect::<core::result::Result<Vec<_>, _>>()?;
+        if !named.is_empty() {
+            reject_unknown_named(&named, &["mask", "evl"])?;
+            let mask = self.value(named_value(&named, "mask")?)?;
+            let evl = self.optional_named_value(&named, "evl")?;
+            let ext = self.func.dfg.make_vector_ext(mask, evl);
+            let args = self.func.dfg.make_value_list(&args);
+            return Ok(InstructionData::VectorOpWithExt { opcode, args, ext });
+        }
+
+        Ok(match opcode.spec().format {
+            crate::opspec::OpFormat::Unary => InstructionData::Unary {
+                opcode,
+                arg: args[0],
+            },
+            crate::opspec::OpFormat::Binary => InstructionData::Binary {
+                opcode,
+                args: [args[0], args[1]],
+            },
+            crate::opspec::OpFormat::Ternary => InstructionData::Ternary {
+                opcode,
+                args: [args[0], args[1], args[2]],
+            },
+            crate::opspec::OpFormat::IntToPtr => InstructionData::IntToPtr { arg: args[0] },
+            crate::opspec::OpFormat::PtrToInt => InstructionData::PtrToInt { arg: args[0] },
+            _ => {
+                return Err(codec_mismatch(
+                    opcode,
+                    TextCodec::Values { arity: arity as u8 },
+                ));
+            }
+        })
+    }
+
+    fn parse_direct_call(
+        &mut self,
+        text: &str,
+    ) -> core::result::Result<InstructionData, ParseError> {
+        let (callee, args, trailing) = parse_invocation(text)?;
+        if !trailing.trim().is_empty() {
+            return Err(ParseError(format!(
+                "unexpected text after direct call: `{trailing}`"
+            )));
+        }
+        let func_id = self
+            .func_ids
+            .get(callee)
+            .copied()
+            .or_else(|| parse_func_ref(callee))
+            .ok_or_else(|| ParseError(format!("unknown function `{callee}`")))?;
+        let args = self.values(args)?;
+        Ok(InstructionData::Call {
+            func_id,
+            args: self.func.dfg.make_value_list(&args),
+        })
+    }
+
+    fn parse_indirect_call(
+        &mut self,
+        text: &str,
+    ) -> core::result::Result<InstructionData, ParseError> {
+        let (ptr, args, trailing) = parse_invocation(text)?;
+        let sig_id = self
+            .module
+            .intern_signature(parse_signature_suffix(trailing)?);
+        let args = self.values(args)?;
+        Ok(InstructionData::CallIndirect {
+            ptr: self.value(ptr)?,
+            args: self.func.dfg.make_value_list(&args),
+            sig_id,
+        })
+    }
+
+    fn parse_intrinsic_call(
+        &mut self,
+        text: &str,
+    ) -> core::result::Result<InstructionData, ParseError> {
+        let (name, args, trailing) = parse_invocation(text)?;
+        let intrinsic = Intrinsic::from_name(name)
+            .ok_or_else(|| ParseError(format!("unknown intrinsic `{name}`")))?;
+        let sig_id = self
+            .module
+            .intern_signature(parse_signature_suffix(trailing)?);
+        let args = self.values(args)?;
+        Ok(InstructionData::CallIntrinsic {
+            intrinsic,
+            args: self.func.dfg.make_value_list(&args),
+            sig_id,
+        })
+    }
+
+    fn parse_branch_table(
+        &mut self,
+        text: &str,
+    ) -> core::result::Result<InstructionData, ParseError> {
+        let fields = exact_fields(text, 3)?;
+        let index = self.value(fields[0])?;
+        let cases = fields[1]
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .ok_or_else(|| ParseError("branch-table cases must be enclosed in `[]`".into()))?;
+        let mut targets = if cases.trim().is_empty() {
+            Vec::new()
+        } else {
+            split_top_level(cases, ',')
+                .into_iter()
+                .map(|field| self.block_call(field))
+                .collect::<core::result::Result<Vec<_>, _>>()?
+        };
+        // Physical order is case zero through case N, followed by default.
+        targets.push(self.block_call(fields[2])?);
+        let table = self.func.dfg.jump_tables.push(JumpTableData { targets });
+        Ok(InstructionData::BrTable { index, table })
+    }
+
+    fn parse_vector_memory(
+        &mut self,
+        codec: TextCodec,
+        flags: MemFlags,
+        text: &str,
+    ) -> core::result::Result<InstructionData, ParseError> {
+        let core_count = match codec {
+            TextCodec::VectorLoadStrided | TextCodec::VectorGather => 1,
+            TextCodec::VectorStoreStrided | TextCodec::VectorScatter => 2,
+            _ => unreachable!(),
+        };
+        let (core, named) = split_core_and_named(text, core_count)?;
+        reject_unknown_named(
+            &named,
+            &["stride", "index", "scale", "offset", "mask", "evl"],
+        )?;
+        let scale = u8::try_from(parse_named_u32(&named, "scale", 1)?)
+            .map_err(|_| ParseError("vector index scale must fit in u8".into()))?;
+        let mask = self.optional_named_value(&named, "mask")?;
+        let evl = self.optional_named_value(&named, "evl")?;
+        let ext = self.func.dfg.make_vector_mem_ext(VectorMemOptions {
+            offset: parse_named_i32(&named, "offset", 0)?,
+            flags,
+            scale,
+            mask,
+            evl,
+        });
+        let ptr = self.value(core[core_count - 1])?;
+
+        match codec {
+            TextCodec::VectorLoadStrided => Ok(InstructionData::VectorLoadStrided {
+                ptr,
+                stride: self.value(named_value(&named, "stride")?)?,
+                ext,
+            }),
+            TextCodec::VectorStoreStrided => {
+                let value = self.value(core[0])?;
+                let stride = self.value(named_value(&named, "stride")?)?;
+                let args = self.func.dfg.make_value_list(&[ptr, stride, value]);
+                Ok(InstructionData::VectorStoreStrided { args, ext })
+            }
+            TextCodec::VectorGather => Ok(InstructionData::VectorGather {
+                ptr,
+                index: self.value(named_value(&named, "index")?)?,
+                ext,
+            }),
+            TextCodec::VectorScatter => {
+                let value = self.value(core[0])?;
+                let index = self.value(named_value(&named, "index")?)?;
+                let args = self.func.dfg.make_value_list(&[ptr, index, value]);
+                Ok(InstructionData::VectorScatter { args, ext })
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn value(&mut self, name: &str) -> core::result::Result<Value, ParseError> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().any(char::is_whitespace) {
+            return Err(ParseError(format!("invalid SSA value `{name}`")));
+        }
+        Ok(get_or_create_value(name, self.func, self.ctx))
+    }
+
+    fn values(&mut self, fields: &str) -> core::result::Result<Vec<Value>, ParseError> {
+        if fields.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        split_top_level(fields, ',')
+            .into_iter()
+            .map(|field| self.value(field))
+            .collect()
+    }
+
+    fn block_call(&mut self, text: &str) -> core::result::Result<BlockCall, ParseError> {
+        let (name, args, trailing) = parse_invocation(text)?;
+        if !trailing.trim().is_empty() {
+            return Err(ParseError(format!(
+                "unexpected text after block call: `{trailing}`"
+            )));
+        }
+        let block = self
+            .ctx
+            .block_map
+            .get(name)
+            .copied()
+            .ok_or_else(|| ParseError(format!("unknown block `{name}`")))?;
+        let values = self.values(args)?;
+        let args = self.func.dfg.make_value_list(&values);
         Ok(self
             .func
             .dfg
@@ -940,86 +741,601 @@ impl<'a> InstDataParser<'a> {
             .push(BlockCallData { block, args }))
     }
 
-    /// Build VectorMemExtData and push to pool.
-    fn build_vector_mem_ext(
+    fn optional_named_value(
         &mut self,
-        ext_info: &ParsedVMemExt,
-        flags: MemFlags,
-        scale: u8,
-    ) -> crate::inst::VectorMemExtId {
-        let mask = ext_info.mask.as_ref().map(|id| self.get_v_by_name(id));
-        let evl = ext_info.evl.as_ref().map(|id| self.get_v_by_name(id));
-        self.func.dfg.vector_mem_ext_pool.push(VectorMemExtData {
-            offset: 0,
-            flags,
-            scale,
-            mask,
-            evl,
-        })
-    }
-
-    fn get_block_by_id(&self, id: u32) -> Result<Block> {
-        let name = format!("block{}", id);
-        self.ctx
-            .block_map
-            .get(&name)
-            .copied()
-            .ok_or_else(|| ParseError(format!("Unknown block: {}", name)).into())
-    }
-
-    fn infer_result_types(&self, data: &InstructionData) -> Vec<Type> {
-        use crate::inst::InstructionData as ID;
-        match data {
-            ID::Unary { arg, .. } => alloc::vec![self.func.dfg.value_type(*arg)],
-            ID::Binary { opcode, args, .. } => match opcode {
-                Opcode::IAddWithOverflow | Opcode::ISubWithOverflow | Opcode::IMulWithOverflow => {
-                    alloc::vec![self.func.dfg.value_type(args[0]), Type::BOOL]
-                }
-                _ => alloc::vec![self.func.dfg.value_type(args[0])],
-            },
-            ID::IntCompare { .. } | ID::FloatCompare { .. } => alloc::vec![Type::BOOL],
-            _ => alloc::vec![Type::VOID],
-        }
+        named: &[(&str, &str)],
+        key: &str,
+    ) -> core::result::Result<Option<Value>, ParseError> {
+        named
+            .iter()
+            .find(|(candidate, _)| *candidate == key)
+            .map(|(_, value)| self.value(value))
+            .transpose()
     }
 }
 
-/// Get an existing Value by name, or create a new one with the given type and definition.
-fn get_or_create_value(
+fn parse_result_names(line: &str) -> core::result::Result<(Vec<String>, &str), ParseError> {
+    let Some((lhs, rhs)) = line.split_once(" = ") else {
+        return Ok((Vec::new(), line.trim()));
+    };
+    let lhs = lhs.trim();
+    let names = if let Some(inner) = lhs
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        split_top_level(inner, ',')
+    } else {
+        vec![lhs]
+    };
+    if names.iter().any(|name| name.is_empty()) {
+        return Err(ParseError("empty result name".into()));
+    }
+    Ok((names.into_iter().map(str::to_string).collect(), rhs.trim()))
+}
+
+fn parse_instruction_header(
+    text: &str,
+) -> core::result::Result<(Opcode, Option<Type>, MemFlags, &str), ParseError> {
+    let text = text.trim();
+    let opcode = Opcode::ALL
+        .iter()
+        .copied()
+        .filter(|opcode| {
+            let name = opcode.spec().mnemonic;
+            text.strip_prefix(name).is_some_and(|rest| {
+                rest.is_empty()
+                    || rest.starts_with('.')
+                    || rest.chars().next().is_some_and(char::is_whitespace)
+            })
+        })
+        .max_by_key(|opcode| opcode.spec().mnemonic.len())
+        .ok_or_else(|| ParseError(format!("unknown opcode in `{text}`")))?;
+    let mut rest = &text[opcode.spec().mnemonic.len()..];
+    let mut ty = None;
+    let mut flags = MemFlags::new();
+
+    if rest.starts_with('.') {
+        let end = token_end_with_angles(rest);
+        let suffix = &rest[1..end];
+        rest = &rest[end..];
+        for part in split_top_level(suffix, '.') {
+            if let Some(parsed) = format::parse_type(part) {
+                if ty.replace(parsed).is_some() {
+                    return Err(ParseError("multiple result type suffixes".into()));
+                }
+            } else if part == "trusted" {
+                flags = flags.union(MemFlags::TRUSTED);
+            } else if part == "volatile" {
+                flags = flags.union(MemFlags::VOLATILE);
+            } else if let Some(value) = part.strip_prefix("align") {
+                let alignment = value
+                    .parse::<u32>()
+                    .map_err(|_| ParseError(format!("invalid alignment `{part}`")))?;
+                if alignment == 0 || !alignment.is_power_of_two() {
+                    return Err(ParseError(format!(
+                        "alignment must be a non-zero power of two: {alignment}"
+                    )));
+                }
+                flags = flags.with_alignment(alignment);
+            } else {
+                return Err(ParseError(format!("unknown opcode suffix `{part}`")));
+            }
+        }
+    }
+    Ok((opcode, ty, flags, rest.trim()))
+}
+
+fn token_end_with_angles(text: &str) -> usize {
+    let mut angles = 0u32;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '<' => angles += 1,
+            '>' => angles = angles.saturating_sub(1),
+            _ if ch.is_whitespace() && angles == 0 => return index,
+            _ => {}
+        }
+    }
+    text.len()
+}
+
+fn parse_function_header(text: &str) -> core::result::Result<FunctionHeader, ParseError> {
+    let split = text
+        .find(char::is_whitespace)
+        .ok_or_else(|| ParseError("incomplete function header".into()))?;
+    let linkage_text = &text[..split];
+    let linkage = Linkage::from_mnemonic(linkage_text)
+        .ok_or_else(|| ParseError(format!("unknown linkage `{linkage_text}`")))?;
+    let rest = text[split..]
+        .trim_start()
+        .strip_prefix("function ")
+        .ok_or_else(|| ParseError("expected `function`".into()))?;
+    let (name, params, trailing) = parse_invocation(rest)?;
+    let params = parse_type_list(params)?;
+    let trailing = trailing.trim();
+    let returns = if let Some(ret) = trailing.strip_prefix("->") {
+        parse_return_types(ret.trim())?
+    } else if trailing.is_empty() {
+        Vec::new()
+    } else {
+        return Err(ParseError(format!(
+            "unexpected function header suffix `{trailing}`"
+        )));
+    };
+    Ok(FunctionHeader {
+        name: name.to_string(),
+        linkage,
+        signature: Signature::new(params, returns, CallConv::SystemV),
+    })
+}
+
+fn parse_signature_suffix(text: &str) -> core::result::Result<Signature, ParseError> {
+    let text = text
+        .trim()
+        .strip_prefix(':')
+        .ok_or_else(|| ParseError("call signature must follow `:`".into()))?
+        .trim();
+    let signature_text = format!("sig{text}");
+    let (_, params, trailing) = parse_invocation(&signature_text)?;
+    let returns = trailing
+        .trim()
+        .strip_prefix("->")
+        .ok_or_else(|| ParseError("call signature is missing `->`".into()))?;
+    Ok(Signature::new(
+        parse_type_list(params)?,
+        parse_return_types(returns.trim())?,
+        CallConv::SystemV,
+    ))
+}
+
+fn parse_type_list(text: &str) -> core::result::Result<Vec<Type>, ParseError> {
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    split_top_level(text, ',')
+        .into_iter()
+        .map(|field| {
+            format::parse_type(field).ok_or_else(|| ParseError(format!("unknown type `{field}`")))
+        })
+        .collect()
+}
+
+fn parse_return_types(text: &str) -> core::result::Result<Vec<Type>, ParseError> {
+    let text = text.trim();
+    if text == "void" {
+        return Ok(Vec::new());
+    }
+    let inner = text
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(text);
+    parse_type_list(inner)
+}
+
+fn parse_global(text: &str) -> core::result::Result<(String, Type, Linkage), ParseError> {
+    let rest = text
+        .strip_prefix("global ")
+        .ok_or_else(|| ParseError("expected `global`".into()))?;
+    let (name, rest) = rest
+        .split_once(':')
+        .ok_or_else(|| ParseError("global is missing `:`".into()))?;
+    let open = rest
+        .rfind('(')
+        .ok_or_else(|| ParseError("global is missing linkage".into()))?;
+    let ty_text = rest[..open].trim();
+    let ty = format::parse_type(ty_text)
+        .ok_or_else(|| ParseError(format!("unknown global type `{ty_text}`")))?;
+    let linkage_text = rest[open + 1..]
+        .trim()
+        .strip_suffix(')')
+        .ok_or_else(|| ParseError("global linkage is missing `)`".into()))?;
+    let linkage = Linkage::from_mnemonic(linkage_text)
+        .ok_or_else(|| ParseError(format!("unknown linkage `{linkage_text}`")))?;
+    Ok((name.trim().to_string(), ty, linkage))
+}
+
+fn is_function_header(text: &str) -> bool {
+    ["local function ", "export function ", "import function "]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+}
+
+fn is_block_header(text: &str) -> bool {
+    text.starts_with("block") && text.ends_with(':')
+}
+
+fn parse_block_header(text: &str) -> core::result::Result<(u32, Vec<(String, Type)>), ParseError> {
+    let text = text
+        .strip_suffix(':')
+        .ok_or_else(|| ParseError("block header is missing `:`".into()))?
+        .trim();
+    let (name, params, trailing) = parse_invocation(text)?;
+    if !trailing.trim().is_empty() {
+        return Err(ParseError(format!(
+            "unexpected block metadata `{trailing}`"
+        )));
+    }
+    let id = name
+        .strip_prefix("block")
+        .ok_or_else(|| ParseError("block name must start with `block`".into()))?
+        .parse::<u32>()
+        .map_err(|_| ParseError(format!("invalid block name `{name}`")))?;
+    let params = if params.trim().is_empty() {
+        Vec::new()
+    } else {
+        split_top_level(params, ',')
+            .into_iter()
+            .map(|field| {
+                let (name, ty) = field.split_once(':').ok_or_else(|| {
+                    ParseError(format!("block parameter `{field}` is missing `:`"))
+                })?;
+                let ty = format::parse_type(ty.trim())
+                    .ok_or_else(|| ParseError(format!("unknown type `{}`", ty.trim())))?;
+                Ok((name.trim().to_string(), ty))
+            })
+            .collect::<core::result::Result<Vec<_>, ParseError>>()?
+    };
+    Ok((id, params))
+}
+
+fn parse_stack_slot(text: &str, func: &mut Function) -> core::result::Result<(), ParseError> {
+    let (slot, size) = text
+        .split_once(':')
+        .ok_or_else(|| ParseError("stack slot is missing `:`".into()))?;
+    let slot = parse_stack_slot_ref(slot)?;
+    let size = size
+        .trim()
+        .strip_prefix("size ")
+        .ok_or_else(|| ParseError("stack slot is missing `size`".into()))?
+        .parse::<u32>()
+        .map_err(|_| ParseError("invalid stack slot size".into()))?;
+    while func.stack_slots.len() <= slot.0 as usize {
+        func.stack_slots.push(StackSlotData { size: 0 });
+    }
+    func.stack_slots[slot] = StackSlotData { size };
+    Ok(())
+}
+
+fn parse_invocation(text: &str) -> core::result::Result<(&str, &str, &str), ParseError> {
+    let open = text
+        .find('(')
+        .ok_or_else(|| ParseError(format!("expected `(` in `{text}`")))?;
+    let close = matching_delimiter(text, open, '(', ')')?;
+    let name = text[..open].trim();
+    if name.is_empty() {
+        return Err(ParseError("missing invocation target".into()));
+    }
+    Ok((name, &text[open + 1..close], &text[close + 1..]))
+}
+
+fn matching_delimiter(
+    text: &str,
+    open: usize,
+    open_char: char,
+    close_char: char,
+) -> core::result::Result<usize, ParseError> {
+    let mut depth = 0u32;
+    for (offset, ch) in text[open..].char_indices() {
+        if ch == open_char {
+            depth += 1;
+        } else if ch == close_char {
+            depth -= 1;
+            if depth == 0 {
+                return Ok(open + offset);
+            }
+        }
+    }
+    Err(ParseError(format!("unclosed `{open_char}` in `{text}`")))
+}
+
+fn split_top_level(text: &str, separator: char) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let (mut parens, mut brackets, mut angles) = (0u32, 0u32, 0u32);
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '(' => parens += 1,
+            ')' => parens = parens.saturating_sub(1),
+            '[' => brackets += 1,
+            ']' => brackets = brackets.saturating_sub(1),
+            '<' => angles += 1,
+            '>' => angles = angles.saturating_sub(1),
+            _ => {}
+        }
+        if ch == separator && parens == 0 && brackets == 0 && angles == 0 {
+            result.push(text[start..index].trim());
+            start = index + ch.len_utf8();
+        }
+    }
+    result.push(text[start..].trim());
+    result
+}
+
+fn exact_fields(text: &str, count: usize) -> core::result::Result<Vec<&str>, ParseError> {
+    let fields = if text.trim().is_empty() {
+        Vec::new()
+    } else {
+        split_top_level(text, ',')
+    };
+    if fields.len() != count {
+        return Err(ParseError(format!(
+            "expected {count} operand(s), found {}",
+            fields.len()
+        )));
+    }
+    Ok(fields)
+}
+
+type NamedFields<'a> = Vec<(&'a str, &'a str)>;
+
+fn split_core_and_named(
+    text: &str,
+    core_count: usize,
+) -> core::result::Result<(Vec<&str>, NamedFields<'_>), ParseError> {
+    let fields = if text.trim().is_empty() {
+        Vec::new()
+    } else {
+        split_top_level(text, ',')
+    };
+    if fields.len() < core_count {
+        return Err(ParseError(format!(
+            "expected at least {core_count} operand(s), found {}",
+            fields.len()
+        )));
+    }
+    let mut named = Vec::new();
+    for field in &fields[core_count..] {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| ParseError(format!("expected named field, found `{field}`")))?;
+        let key = key.trim();
+        if named.iter().any(|(existing, _)| *existing == key) {
+            return Err(ParseError(format!("duplicate `{key}` field")));
+        }
+        named.push((key, value.trim()));
+    }
+    Ok((fields[..core_count].to_vec(), named))
+}
+
+fn split_condition(text: &str) -> core::result::Result<(&str, Vec<&str>), ParseError> {
+    let split = text
+        .find(char::is_whitespace)
+        .ok_or_else(|| ParseError("comparison is missing operands".into()))?;
+    let cc = text[..split].trim();
+    let values = exact_fields(text[split..].trim(), 2)?;
+    Ok((cc, values))
+}
+
+fn named_value<'a>(
+    named: &'a [(&str, &str)],
+    key: &str,
+) -> core::result::Result<&'a str, ParseError> {
+    named
+        .iter()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, value)| *value)
+        .ok_or_else(|| ParseError(format!("missing `{key}=` field")))
+}
+
+fn reject_unknown_named(
+    named: &[(&str, &str)],
+    allowed: &[&str],
+) -> core::result::Result<(), ParseError> {
+    if let Some((key, _)) = named.iter().find(|(key, _)| !allowed.contains(key)) {
+        Err(ParseError(format!("unknown named field `{key}`")))
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_named_u32(
+    named: &[(&str, &str)],
+    key: &str,
+    default: u32,
+) -> core::result::Result<u32, ParseError> {
+    match named.iter().find(|(candidate, _)| *candidate == key) {
+        Some((_, value)) => value
+            .parse()
+            .map_err(|_| ParseError(format!("invalid `{key}` value `{value}`"))),
+        None => Ok(default),
+    }
+}
+
+fn parse_named_i32(
+    named: &[(&str, &str)],
+    key: &str,
+    default: i32,
+) -> core::result::Result<i32, ParseError> {
+    match named.iter().find(|(candidate, _)| *candidate == key) {
+        Some((_, value)) => parse_i32(value, key),
+        None => Ok(default),
+    }
+}
+
+fn parse_i32(text: &str, what: &str) -> core::result::Result<i32, ParseError> {
+    text.trim()
+        .parse()
+        .map_err(|_| ParseError(format!("invalid {what} `{text}`")))
+}
+
+fn parse_integer_bits(text: &str) -> core::result::Result<u64, ParseError> {
+    let text = text.trim();
+    if let Some(hex) = text.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16)
+            .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
+    } else {
+        text.parse::<i64>()
+            .map(|value| value as u64)
+            .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
+    }
+}
+
+fn parse_float_bits(text: &str, ty: Option<Type>) -> core::result::Result<u64, ParseError> {
+    if !matches!(ty, Some(Type::F32 | Type::F64)) {
+        return Err(ParseError(
+            "floating constants require an `f32` or `f64` result suffix".into(),
+        ));
+    }
+    let text = text.trim();
+    let hex = text.strip_prefix("0x").ok_or_else(|| {
+        ParseError("floating constants use an exact hexadecimal bit pattern".into())
+    })?;
+    let bits = u64::from_str_radix(hex, 16)
+        .map_err(|_| ParseError(format!("invalid floating bit pattern `{text}`")))?;
+    if ty == Some(Type::F32) && bits > u64::from(u32::MAX) {
+        return Err(ParseError(format!(
+            "f32 bit pattern does not fit in 32 bits: `{text}`"
+        )));
+    }
+    Ok(bits)
+}
+
+fn parse_hex_bytes(text: &str) -> core::result::Result<Vec<u8>, ParseError> {
+    let text = text.trim();
+    let hex = text
+        .strip_prefix("0x")
+        .ok_or_else(|| ParseError(format!("expected hexadecimal bytes, found `{text}`")))?;
+    if hex.len() % 2 != 0 {
+        return Err(ParseError(
+            "hex byte strings must contain an even number of digits".into(),
+        ));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&hex[index..index + 2], 16)
+                .map_err(|_| ParseError(format!("invalid hexadecimal bytes `{text}`")))
+        })
+        .collect()
+}
+
+fn parse_stack_slot_ref(text: &str) -> core::result::Result<StackSlot, ParseError> {
+    let id = text
+        .trim()
+        .strip_prefix("ss")
+        .ok_or_else(|| ParseError(format!("expected stack slot, found `{text}`")))?
+        .parse::<u32>()
+        .map_err(|_| ParseError(format!("invalid stack slot `{text}`")))?;
+    Ok(StackSlot(id))
+}
+
+fn parse_func_ref(text: &str) -> Option<FuncId> {
+    let id = text
+        .strip_prefix("func")
+        .or_else(|| text.strip_prefix("FuncId(")?.strip_suffix(')'))?;
+    id.parse().ok().map(FuncId)
+}
+
+fn require_empty(text: &str) -> core::result::Result<(), ParseError> {
+    if text.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(ParseError(format!("unexpected operands `{text}`")))
+    }
+}
+
+fn codec_mismatch(opcode: Opcode, codec: TextCodec) -> ParseError {
+    ParseError(format!(
+        "internal text codec mismatch for `{}`: {codec:?}",
+        opcode.spec().mnemonic
+    ))
+}
+
+fn parse_value_idx(name: &str) -> Option<u32> {
+    name.strip_prefix('v')
+        .and_then(|digits| digits.parse().ok())
+        .or_else(|| {
+            name.rfind(".v")
+                .and_then(|index| name[index + 2..].parse().ok())
+        })
+}
+
+fn get_or_create_value(name: &str, func: &mut Function, ctx: &mut ParseContext) -> Value {
+    if let Some(&value) = ctx.value_map.get(name) {
+        return value;
+    }
+    let index = parse_value_idx(name).unwrap_or(ctx.next_value_idx);
+    let value = Value(index);
+    ensure_value(value, func);
+    set_value_name(value, name, func);
+    ctx.value_map.insert(name.to_string(), value);
+    ctx.next_value_idx = ctx.next_value_idx.max(index + 1);
+    value
+}
+
+fn define_value(
     name: &str,
     func: &mut Function,
     ctx: &mut ParseContext,
     ty: Type,
     def: ValueDef,
-) -> Value {
-    if let Some(&v) = ctx.value_map.get(name) {
-        return v;
+) -> core::result::Result<Value, ParseError> {
+    let value = get_or_create_value(name, func, ctx);
+    if let Some(previous) = ctx.defined_values.get(&value) {
+        return Err(ParseError(format!(
+            "SSA value `{name}` aliases already-defined `{previous}`"
+        )));
     }
+    func.dfg.values[value] = ValueData { ty, def };
+    ctx.defined_values.insert(value, name.to_string());
+    Ok(value)
+}
 
-    // Parse value index from name (e.g., "v123" -> 123), or use next available index
-    let idx = parse_value_idx(name).unwrap_or(ctx.next_value_idx);
-    let v = Value(idx);
-
-    ctx.value_map.insert(name.to_string(), v);
-    if idx >= ctx.next_value_idx {
-        ctx.next_value_idx = idx + 1;
-    }
-
-    // Ensure values vector has enough capacity
-    while func.dfg.values.len() <= idx as usize {
+fn ensure_value(value: Value, func: &mut Function) {
+    while func.dfg.values.len() <= value.0 as usize {
         func.dfg.values.push(ValueData {
-            ty: Type::VOID,
-            // Placeholder: will be overwritten below for the actual value
+            ty: Type::INVALID,
             def: ValueDef::Param(Block(0)),
         });
     }
-    func.dfg.values[v] = ValueData { ty, def };
-    v
 }
 
-fn parse_intcc(s: &str) -> Result<IntCC> {
-    format::parse_intcc(s).ok_or_else(|| ParseError(format!("Invalid intcc: {}", s)).into())
+fn set_value_name(value: Value, text: &str, func: &mut Function) {
+    let name = if text
+        .strip_prefix('v')
+        .is_some_and(|digits| digits.chars().all(|ch| ch.is_ascii_digit()))
+    {
+        ""
+    } else if let Some(index) = text
+        .rfind(".v")
+        .filter(|&index| text[index + 2..].chars().all(|ch| ch.is_ascii_digit()))
+    {
+        &text[..index]
+    } else {
+        text
+    };
+    func.dfg.value_names[value] = name.to_string();
 }
 
-fn parse_floatcc(s: &str) -> Result<FloatCC> {
-    format::parse_floatcc(s).ok_or_else(|| ParseError(format!("Invalid floatcc: {}", s)).into())
+fn strip_comment(text: &str) -> &str {
+    text.split_once("//").map_or(text, |(code, _)| code)
+}
+
+fn with_line(error: ParseError, line_no: usize, line: &str) -> ParseError {
+    ParseError(format!("line {line_no}: {}\n  {line}", error.0))
+}
+
+fn parse_err<T>(message: impl Into<String>) -> Result<T> {
+    Err(ParseError(message.into()).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delimiter_split_ignores_vectors_and_nested_calls() {
+        assert_eq!(
+            split_top_level("i32<scalable 4>, block1(v0, v1), [block2()]", ','),
+            ["i32<scalable 4>", "block1(v0, v1)", "[block2()]"]
+        );
+    }
+
+    #[test]
+    fn instruction_header_accepts_scalable_result_type() {
+        let (opcode, ty, _, args) =
+            parse_instruction_header("iadd.i32<scalable 4> v0, v1").unwrap();
+        assert_eq!(opcode, Opcode::IAdd);
+        assert_eq!(ty, Type::new_vector(crate::ScalarType::I32, 4, true));
+        assert_eq!(args, "v0, v1");
+    }
 }

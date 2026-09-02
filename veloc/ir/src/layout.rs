@@ -97,3 +97,9 @@ impl Layout {
         po
     }
 }
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self::new()
+    }
+}

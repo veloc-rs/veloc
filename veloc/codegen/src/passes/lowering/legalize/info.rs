@@ -167,11 +167,11 @@ pub fn is_ptr_type(ty: Type) -> bool {
 }
 
 pub fn is_ptr_sized_type(ty: Type) -> bool {
-    is_int_or_ptr_scalar_type(ty) && ty.bit_width() == Type::PTR.bit_width()
+    ty.is_ptr() || (is_scalar_int_type(ty) && ty.min_bit_width() == Some(64))
 }
 
 pub fn is_ptr_sized_int_type(ty: Type) -> bool {
-    is_scalar_int_type(ty) && ty.bit_width() == Type::PTR.bit_width()
+    is_scalar_int_type(ty) && ty.min_bit_width() == Some(64)
 }
 
 pub fn is_scalar_type(ty: Type) -> bool {
@@ -198,12 +198,19 @@ pub fn is_predicate_type(ty: Type) -> bool {
     ty.is_predicate()
 }
 
+fn legalization_bit_width(ty: Type) -> Option<u32> {
+    // The only code-generation target currently wired to this generic matcher
+    // is 64-bit. Move this fallback into target-owned matching metadata when a
+    // target with a different pointer width is added.
+    ty.min_bit_width().or_else(|| ty.is_ptr().then_some(64))
+}
+
 pub fn type_width_is_one_of(ty: Type, widths: &[u16]) -> bool {
     widths.is_empty()
         || widths
             .iter()
             .copied()
-            .any(|width| ty.bit_width() == width as usize)
+            .any(|width| legalization_bit_width(ty) == Some(u32::from(width)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,7 +288,9 @@ pub fn operand_bit_width_at<S>(
     mfunc: &MachineFunction<S>,
     index: usize,
 ) -> Result<Option<usize>> {
-    Ok(operand_type_at(inst, mfunc, index)?.map(|ty| ty.bit_width()))
+    Ok(operand_type_at(inst, mfunc, index)?
+        .and_then(legalization_bit_width)
+        .map(|width| width as usize))
 }
 
 pub fn same_operand_types<S>(
@@ -1228,12 +1237,6 @@ macro_rules! legalize_matcher {
     (@type PTR) => {
         veloc_ir::Type::PTR
     };
-    (@type VOID) => {
-        veloc_ir::Type::VOID
-    };
-    (@type EVL) => {
-        veloc_ir::Type::EVL
-    };
     (@type $($ty:tt)+) => {
         $($ty)+
     };
@@ -1370,7 +1373,7 @@ mod tests {
     #[test]
     fn matcher_supports_fixed_vector_element_pattern() {
         let mut mfunc = make_function();
-        let vector_ty = Type::new_vector(ScalarType::I32, 4, false);
+        let vector_ty = Type::new_vector(ScalarType::I32, 4, false).unwrap();
         let dst = mfunc.alloc_vreg(vector_ty);
         let lhs = mfunc.alloc_vreg(vector_ty);
         let rhs = mfunc.alloc_vreg(vector_ty);
@@ -1399,7 +1402,7 @@ mod tests {
     #[test]
     fn matcher_supports_scalable_vector_element_pattern() {
         let mut mfunc = make_function();
-        let vector_ty = Type::new_vector(ScalarType::F32, 4, true);
+        let vector_ty = Type::new_vector(ScalarType::F32, 4, true).unwrap();
         let dst = mfunc.alloc_vreg(vector_ty);
         let lhs = mfunc.alloc_vreg(vector_ty);
         let rhs = mfunc.alloc_vreg(vector_ty);

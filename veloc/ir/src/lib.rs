@@ -11,6 +11,7 @@ pub mod inst;
 
 pub mod layout;
 pub mod module;
+pub mod opspec;
 pub mod text;
 pub mod types;
 pub mod validator;
@@ -40,15 +41,10 @@ pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{Global, Linkage, Module, ModuleData};
 pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 // Re-export text format module
-pub use text::{FuncParser, ModuleParser, ParseError, format as text_format};
+pub use text::{ModuleParser, ParseError};
 pub use types::{
     Block, BlockCall, FuncId, JumpTable, ModuleId, ScalarType, SigId, Signature, StackSlot, Type,
-    Value, ValueDef, ValueList, Variable, VectorKind,
+    TypeSize, Value, ValueDef, ValueList, Variable,
 };
 
-// Internal-only re-exports for the backend and passes
-pub use dfg::DataFlowGraph;
-pub use inst::{
-    ConstantPoolData, ConstantPoolId, Inst, InstructionData, PtrIndexImm, PtrIndexImmId,
-    VectorExtData, VectorExtId, VectorMemExtData, VectorMemExtId,
-};
+pub use inst::{Inst, InstructionData, VectorMemOptions};

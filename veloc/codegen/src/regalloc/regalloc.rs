@@ -411,9 +411,15 @@ impl<'a> RegisterAllocator<'a> {
             TargetArch::X86_64 => match ty {
                 Type::F32 => TargetInst::X86LoadF32.as_u32(),
                 Type::F64 => TargetInst::X86LoadF64.as_u32(),
-                _ if ty == Type::PTR || ty.size_bytes() >= 8 => TargetInst::X86Load64.as_u32(),
-                _ if ty.size_bytes() >= 4 => TargetInst::X86Load32.as_u32(),
-                _ if ty.size_bytes() >= 2 => TargetInst::X86Load16U32.as_u32(),
+                _ if ty == Type::PTR || ty.min_size_bytes().is_some_and(|bytes| bytes >= 8) => {
+                    TargetInst::X86Load64.as_u32()
+                }
+                _ if ty.min_size_bytes().is_some_and(|bytes| bytes >= 4) => {
+                    TargetInst::X86Load32.as_u32()
+                }
+                _ if ty.min_size_bytes().is_some_and(|bytes| bytes >= 2) => {
+                    TargetInst::X86Load16U32.as_u32()
+                }
                 _ => TargetInst::X86Load8U32.as_u32(),
             },
             other => panic!(
@@ -431,9 +437,15 @@ impl<'a> RegisterAllocator<'a> {
             TargetArch::X86_64 => match ty {
                 Type::F32 => TargetInst::X86StoreF32.as_u32(),
                 Type::F64 => TargetInst::X86StoreF64.as_u32(),
-                _ if ty == Type::PTR || ty.size_bytes() >= 8 => TargetInst::X86Store64.as_u32(),
-                _ if ty.size_bytes() >= 4 => TargetInst::X86Store32.as_u32(),
-                _ if ty.size_bytes() >= 2 => TargetInst::X86Store16.as_u32(),
+                _ if ty == Type::PTR || ty.min_size_bytes().is_some_and(|bytes| bytes >= 8) => {
+                    TargetInst::X86Store64.as_u32()
+                }
+                _ if ty.min_size_bytes().is_some_and(|bytes| bytes >= 4) => {
+                    TargetInst::X86Store32.as_u32()
+                }
+                _ if ty.min_size_bytes().is_some_and(|bytes| bytes >= 2) => {
+                    TargetInst::X86Store16.as_u32()
+                }
                 _ => TargetInst::X86Store8.as_u32(),
             },
             other => panic!(

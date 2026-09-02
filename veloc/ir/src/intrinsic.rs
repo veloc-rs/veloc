@@ -13,103 +13,62 @@ impl Intrinsic {
     pub const fn as_u16(self) -> u16 {
         self.0
     }
-    pub fn name(self) -> &'static str {
-        intrinsic_name(self)
-    }
-    pub fn family(self) -> IntrinsicFamily {
-        intrinsic_family(self)
-    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IntrinsicFamily {
-    Math,
-    Memory,
-    Sync,
-    Debug,
-    OverflowArith,
-    SatArith,
-    SatConv,
-    Bit,
+macro_rules! define_intrinsics {
+    ($($constant:ident = $id:literal => $name:literal;)*) => {
+        pub mod ids {
+            use super::Intrinsic;
+
+            $(pub const $constant: Intrinsic = Intrinsic($id);)*
+        }
+
+        impl Intrinsic {
+            pub const ALL: &'static [Self] = &[$(ids::$constant,)*];
+
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(ids::$constant => $name,)*
+                    _ => "veloc.unknown",
+                }
+            }
+
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(ids::$constant),)*
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-pub mod ids {
-    use super::Intrinsic;
-
-    // Math (complex functions not in Opcode)
-    pub const SIN_F32: Intrinsic = Intrinsic(0);
-    pub const SIN_F64: Intrinsic = Intrinsic(1);
-    pub const COS_F32: Intrinsic = Intrinsic(2);
-    pub const COS_F64: Intrinsic = Intrinsic(3);
-    pub const POW_F32: Intrinsic = Intrinsic(4);
-    pub const POW_F64: Intrinsic = Intrinsic(5);
-    pub const EXP_F32: Intrinsic = Intrinsic(6);
-    pub const EXP_F64: Intrinsic = Intrinsic(7);
-    pub const LOG_F32: Intrinsic = Intrinsic(8);
-    pub const LOG_F64: Intrinsic = Intrinsic(9);
-    pub const LOG2_F32: Intrinsic = Intrinsic(10);
-    pub const LOG2_F64: Intrinsic = Intrinsic(11);
-    pub const LOG10_F32: Intrinsic = Intrinsic(12);
-    pub const LOG10_F64: Intrinsic = Intrinsic(13);
-
-    // Memory
-    pub const MEMCPY: Intrinsic = Intrinsic(14);
-    pub const MEMMOVE: Intrinsic = Intrinsic(15);
-    pub const MEMSET: Intrinsic = Intrinsic(16);
-    pub const MEMCMP: Intrinsic = Intrinsic(17);
-
-    // Sync
-    pub const FENCE: Intrinsic = Intrinsic(18);
-    pub const FENCE_ACQ: Intrinsic = Intrinsic(19);
-    pub const FENCE_REL: Intrinsic = Intrinsic(20);
-    pub const FENCE_SEQ: Intrinsic = Intrinsic(21);
-
-    // Debug
-    pub const ASSUME: Intrinsic = Intrinsic(22);
-    pub const EXPECT: Intrinsic = Intrinsic(23);
-    pub const TRAP: Intrinsic = Intrinsic(24);
-}
-
-fn intrinsic_name(i: Intrinsic) -> &'static str {
-    match i.0 {
-        0 => "veloc.sin.f32",
-        1 => "veloc.sin.f64",
-        2 => "veloc.cos.f32",
-        3 => "veloc.cos.f64",
-        4 => "veloc.pow.f32",
-        5 => "veloc.pow.f64",
-        6 => "veloc.exp.f32",
-        7 => "veloc.exp.f64",
-        8 => "veloc.log.f32",
-        9 => "veloc.log.f64",
-        10 => "veloc.log2.f32",
-        11 => "veloc.log2.f64",
-        12 => "veloc.log10.f32",
-        13 => "veloc.log10.f64",
-        14 => "veloc.memcpy",
-        15 => "veloc.memmove",
-        16 => "veloc.memset",
-        17 => "veloc.memcmp",
-        18 => "veloc.fence",
-        19 => "veloc.fence.acq",
-        20 => "veloc.fence.rel",
-        21 => "veloc.fence.seq",
-        22 => "veloc.assume",
-        23 => "veloc.expect",
-        24 => "veloc.trap",
-        _ => "veloc.unknown",
-    }
-}
-
-fn intrinsic_family(i: Intrinsic) -> IntrinsicFamily {
-    use IntrinsicFamily as F;
-    match i.0 {
-        0..=13 => F::Math,
-        14..=17 => F::Memory,
-        18..=21 => F::Sync,
-        22..=24 => F::Debug,
-        _ => F::Math,
-    }
+define_intrinsics! {
+    SIN_F32 = 0 => "veloc.sin.f32";
+    SIN_F64 = 1 => "veloc.sin.f64";
+    COS_F32 = 2 => "veloc.cos.f32";
+    COS_F64 = 3 => "veloc.cos.f64";
+    POW_F32 = 4 => "veloc.pow.f32";
+    POW_F64 = 5 => "veloc.pow.f64";
+    EXP_F32 = 6 => "veloc.exp.f32";
+    EXP_F64 = 7 => "veloc.exp.f64";
+    LOG_F32 = 8 => "veloc.log.f32";
+    LOG_F64 = 9 => "veloc.log.f64";
+    LOG2_F32 = 10 => "veloc.log2.f32";
+    LOG2_F64 = 11 => "veloc.log2.f64";
+    LOG10_F32 = 12 => "veloc.log10.f32";
+    LOG10_F64 = 13 => "veloc.log10.f64";
+    MEMCPY = 14 => "veloc.memcpy";
+    MEMMOVE = 15 => "veloc.memmove";
+    MEMSET = 16 => "veloc.memset";
+    MEMCMP = 17 => "veloc.memcmp";
+    FENCE = 18 => "veloc.fence";
+    FENCE_ACQ = 19 => "veloc.fence.acq";
+    FENCE_REL = 20 => "veloc.fence.rel";
+    FENCE_SEQ = 21 => "veloc.fence.seq";
+    ASSUME = 22 => "veloc.assume";
+    EXPECT = 23 => "veloc.expect";
+    TRAP = 24 => "veloc.trap";
 }
 
 impl fmt::Display for Intrinsic {
