@@ -1,4 +1,4 @@
-use veloc_isle::{parse, Def, MatchKind, Pattern};
+use veloc_isle::{Def, MatchKind, Pattern, parse};
 
 #[test]
 fn parse_select_rule_with_node_bind_and_covers() {

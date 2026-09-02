@@ -213,36 +213,118 @@ impl IntoRawReg for ScalarType {
     }
 }
 
-/// Represents a fixed-size bytecode instruction (16 bytes)
-/// Layout: opcode(1) + pad(1) + dst(2) + src1(2) + src2(2) + imm64(8) = 16 bytes
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 #[repr(C)]
-pub(crate) struct Instruction {
-    /// Opcode
-    pub opcode: Opcode,
-    /// Destination register (2 bytes)
-    pub dst: u16,
-    /// First source register (2 bytes)
-    pub src1: u16,
-    /// Second source register (2 bytes)
-    pub src2: u16,
-    /// 64-bit immediate data (lo32/hi32)
-    pub imm64: u64,
+struct HeaderWord {
+    opcode: u8,
+    reserved: u8,
+    dst: u16,
+    src1: u16,
+    src2: u16,
 }
 
-const _: () = assert!(core::mem::size_of::<Instruction>() == 16);
+/// One aligned word in the executable bytecode stream.
+///
+/// A word is either an instruction header or the payload belonging to the
+/// preceding header. Register-only instructions contain just a header; an
+/// instruction with an immediate appends one payload word.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) union CodeWord {
+    header: HeaderWord,
+    raw: u64,
+}
 
-impl Instruction {
-    /// Get low 32 bits of immediate
+impl core::fmt::Debug for CodeWord {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // SAFETY: both union variants occupy the same fully initialized bytes.
+        f.debug_tuple("CodeWord")
+            .field(&unsafe { self.raw })
+            .finish()
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<HeaderWord>() == 8);
+    assert!(core::mem::offset_of!(HeaderWord, opcode) == 0);
+    assert!(core::mem::offset_of!(HeaderWord, reserved) == 1);
+    assert!(core::mem::offset_of!(HeaderWord, dst) == 2);
+    assert!(core::mem::offset_of!(HeaderWord, src1) == 4);
+    assert!(core::mem::offset_of!(HeaderWord, src2) == 6);
+    assert!(core::mem::size_of::<CodeWord>() == 8);
+    assert!(core::mem::align_of::<CodeWord>() == 8);
+};
+
+impl CodeWord {
     #[inline(always)]
-    pub const fn imm_lo32(&self) -> u32 {
-        self.imm64 as u32
+    const fn header(opcode: Opcode, dst: u16, src1: u16, src2: u16) -> Self {
+        Self {
+            header: HeaderWord {
+                opcode: opcode as u8,
+                reserved: 0,
+                dst,
+                src1,
+                src2,
+            },
+        }
     }
 
-    /// Get high 32 bits of immediate
     #[inline(always)]
-    pub const fn imm_hi32(&self) -> u32 {
-        (self.imm64 >> 32) as u32
+    pub(crate) const fn from_payload(payload: u64) -> Self {
+        Self { raw: payload }
+    }
+
+    #[inline(always)]
+    pub(crate) unsafe fn opcode(self) -> Opcode {
+        // SAFETY: every header initializes all eight bytes with integer fields.
+        let raw = unsafe { self.header.opcode };
+        debug_assert!((raw as usize) < Opcode::COUNT);
+        // SAFETY: executable instruction headers are only constructed from an
+        // Opcode. Payload words are never passed to dispatch as headers.
+        unsafe { core::mem::transmute(raw) }
+    }
+
+    #[inline(always)]
+    unsafe fn read_dst(ip: *const CodeWord) -> u16 {
+        // SAFETY: `ip` points to an instruction header.
+        unsafe { (*ip).header.dst }
+    }
+
+    #[inline(always)]
+    unsafe fn read_src1(ip: *const CodeWord) -> u16 {
+        // SAFETY: `ip` points to an instruction header.
+        unsafe { (*ip).header.src1 }
+    }
+
+    #[inline(always)]
+    unsafe fn read_src2(ip: *const CodeWord) -> u16 {
+        // SAFETY: `ip` points to an instruction header.
+        unsafe { (*ip).header.src2 }
+    }
+
+    #[inline(always)]
+    unsafe fn payload(ip: *const CodeWord, opcode: Opcode) -> u64 {
+        if opcode.has_payload() {
+            // SAFETY: payload-bearing opcodes always emit a second word.
+            unsafe { (*ip.add(1)).raw }
+        } else {
+            0
+        }
+    }
+
+    #[inline(always)]
+    fn set_dst(&mut self, value: u16) {
+        self.header.dst = value;
+    }
+
+    #[inline(always)]
+    fn set_src1(&mut self, value: u16) {
+        self.header.src1 = value;
+    }
+
+    #[inline(always)]
+    fn set_src2(&mut self, value: u16) {
+        self.header.src2 = value;
     }
 }
 
@@ -261,6 +343,24 @@ macro_rules! define_opcodes {
         impl Opcode {
             /// Number of entries in the dense opcode space.
             pub(crate) const COUNT: usize = 0 $(+ { let _ = stringify!($name); 1 })*;
+
+            /// Whether this opcode is followed by a 64-bit payload word.
+            #[inline(always)]
+            pub(crate) const fn has_payload(self) -> bool {
+                match self {
+                    $(
+                        Opcode::$name => false $(
+                            || define_opcodes!(@uses_payload $arg $(, $field)?)
+                        )*
+                    ),*
+                }
+            }
+
+            /// Number of eight-byte code words occupied by this instruction.
+            #[inline(always)]
+            pub(crate) const fn words(self) -> usize {
+                1 + self.has_payload() as usize
+            }
         }
 
         /// Direct-threaded dispatch table. Keeping this generated beside
@@ -285,10 +385,8 @@ macro_rules! define_opcodes {
         }
 
         /// Decoded view of a bytecode instruction with logical field names.
-        ///
-        /// Obtained via [`Instruction::decode`]. Each variant mirrors the argument
-        /// list of the corresponding `define_opcodes!` entry, so you get names like
-        /// `ptr`, `offset`, `val` instead of raw `src1`, `imm_lo32()`, etc.
+        /// Each variant mirrors the argument list of the corresponding
+        /// `define_opcodes!` entry.
         #[derive(Debug, Clone, Copy)]
         #[allow(dead_code)]
         pub(crate) enum DecodedInstruction {
@@ -297,35 +395,39 @@ macro_rules! define_opcodes {
             ),*
         }
 
-        /// Per-opcode typed decoders used by direct-threaded handlers. Unlike
-        /// `Instruction::decode`, these functions contain no opcode dispatch.
+        /// Per-opcode typed decoders used by direct-threaded handlers. These
+        /// functions read fields straight from the compact code words and contain
+        /// no secondary opcode dispatch.
         #[allow(non_snake_case)]
         pub(crate) mod decode {
             use super::*;
 
             $(
+                #[allow(unused_variables)]
                 #[inline(always)]
-                pub(crate) fn $name(inst: Instruction) -> ($($ty,)*) {
-                    debug_assert_eq!(inst.opcode, Opcode::$name);
+                pub(crate) unsafe fn $name(ip: *const CodeWord) -> ($($ty,)*) {
+                    // SAFETY: handlers call their decoder with an instruction header.
+                    debug_assert_eq!(unsafe { (*ip).opcode() }, Opcode::$name);
+                    // SAFETY: `ip` refers to the expected logical instruction.
+                    let payload = unsafe { CodeWord::payload(ip, Opcode::$name) };
                     ($(
-                        define_opcodes!(@decode_field inst, $arg, $ty, $($field)?),
+                        define_opcodes!(@decode_field ip, payload, $arg, $ty, $($field)?),
                     )*)
                 }
             )*
         }
 
-        impl Instruction {
-            /// Decode this instruction into a [`DecodedInstruction`] with logical
-            /// field names. Always inlined — zero run-time overhead.
+        impl DecodedInstruction {
+            /// Decode the instruction at `ip` for diagnostics and tests.
             #[inline(always)]
-            pub(crate) fn decode(self) -> DecodedInstruction {
-                let inst = self;
-                match inst.opcode {
+            pub(crate) unsafe fn read(ip: *const CodeWord) -> Self {
+                // SAFETY: callers pass a logical instruction header.
+                match unsafe { (*ip).opcode() } {
                     $(
-                        Opcode::$name => DecodedInstruction::$name {
-                            $(
-                                $arg: define_opcodes!(@decode_field inst, $arg, $ty, $($field)?)
-                            ),*
+                        Opcode::$name => {
+                            // SAFETY: opcode dispatch selected the matching decoder.
+                            let ($($arg,)*) = unsafe { decode::$name(ip) };
+                            DecodedInstruction::$name { $($arg),* }
                         }
                     ),*
                 }
@@ -338,23 +440,22 @@ macro_rules! define_opcodes {
                 #[allow(non_snake_case)]
                 #[inline(always)]
                 pub fn $name(
-                    code: &mut Vec<Instruction>,
+                    code: &mut Vec<CodeWord>,
                     $($arg : $ty),*
                 ) {
                     #[allow(unused_mut, unused_assignments)]
-                    let mut inst = Instruction {
-                        opcode: Opcode::$name,
-                        dst: 0,
-                        src1: 0,
-                        src2: 0,
-                        imm64: 0,
-                    };
+                    let mut header = CodeWord::header(Opcode::$name, 0, 0, 0);
+                    #[allow(unused_mut, unused_assignments)]
+                    let mut payload = 0u64;
 
                     $(
-                        define_opcodes!(@assign inst, $arg, $ty, $( $field )? );
+                        define_opcodes!(@assign header, payload, $arg, $ty, $( $field )? );
                     )*
 
-                    code.push(inst);
+                    code.push(header);
+                    if Opcode::$name.has_payload() {
+                        code.push(CodeWord::from_payload(payload));
+                    }
                 }
             )*
         }
@@ -363,31 +464,38 @@ macro_rules! define_opcodes {
     // --- Decode helpers: reverse-map raw fields back to logical arg names ---
     // Register slots: FromRawReg dispatches on $ty — Reg-typed fields become Reg(...),
     // non-register types (e.g. u16) receive the raw value directly. No per-name special cases needed.
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, dst)   => { <$ty as FromRawReg>::from_raw_reg($inst.dst) };
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, src1)  => { <$ty as FromRawReg>::from_raw_reg($inst.src1) };
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, src2)  => { <$ty as FromRawReg>::from_raw_reg($inst.src2) };
+    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, dst)   => { <$ty as FromRawReg>::from_raw_reg(unsafe { CodeWord::read_dst($ip) }) };
+    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, src1)  => { <$ty as FromRawReg>::from_raw_reg(unsafe { CodeWord::read_src1($ip) }) };
+    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, src2)  => { <$ty as FromRawReg>::from_raw_reg(unsafe { CodeWord::read_src2($ip) }) };
     // Other fields use direct cast with trait dispatch
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, lo32) => { <$ty as FromRawImm>::from_raw_u32($inst.imm_lo32()) };
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, hi32) => { <$ty as FromRawImm>::from_raw_u32($inst.imm_hi32()) };
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, imm64) => { $inst.imm64 as $ty };
+    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, lo32) => { <$ty as FromRawImm>::from_raw_u32($payload as u32) };
+    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, hi32) => { <$ty as FromRawImm>::from_raw_u32(($payload >> 32) as u32) };
+    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, imm64) => { $payload as $ty };
     // No explicit mapping: the arg name itself is the raw field name.
-    (@decode_field $inst:ident, $arg:ident, $ty:ty, ) => {
-        define_opcodes!(@decode_field $inst, $arg, $ty, $arg)
+    (@decode_field $ip:ident, $payload:ident, $arg:ident, $ty:ty, ) => {
+        define_opcodes!(@decode_field $ip, $payload, $arg, $ty, $arg)
     };
+
+    // Determine whether a logical field lives in the optional payload word.
+    (@uses_payload $arg:ident, lo32) => { true };
+    (@uses_payload $arg:ident, hi32) => { true };
+    (@uses_payload $arg:ident, imm64) => { true };
+    (@uses_payload $arg:ident, $field:ident) => { false };
+    (@uses_payload imm64) => { true };
+    (@uses_payload $arg:ident) => { false };
 
     // --- Assign helpers (emit side) ---
     // Register fields (dst/src1/src2): use IntoRawReg for type-safe conversion
-    (@assign $inst:ident, $val:ident, $ty:ty, dst) => { $inst.dst = $val.into_raw_reg(); };
-    (@assign $inst:ident, $val:ident, $ty:ty, src1) => { $inst.src1 = $val.into_raw_reg(); };
-    (@assign $inst:ident, $val:ident, $ty:ty, src2) => { $inst.src2 = $val.into_raw_reg(); };
+    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, dst) => { $header.set_dst($val.into_raw_reg()); };
+    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, src1) => { $header.set_src1($val.into_raw_reg()); };
+    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, src2) => { $header.set_src2($val.into_raw_reg()); };
     // Immediate slots: use IntoRawImm for type-safe conversion
-    (@assign $inst:ident, $val:ident, $ty:ty, lo32) => { $inst.imm64 = ($inst.imm64 & 0xFFFFFFFF00000000) | ($val.into_raw_imm() as u64); };
-    (@assign $inst:ident, $val:ident, $ty:ty, hi32) => { $inst.imm64 = ($inst.imm64 & 0x00000000FFFFFFFF) | (($val.into_raw_imm() as u64) << 32); };
-    (@assign $inst:ident, $val:ident, $ty:ty, imm64) => { $inst.imm64 = $val as u64; };
+    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, lo32) => { $payload = ($payload & 0xFFFFFFFF00000000) | ($val.into_raw_imm() as u64); };
+    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, hi32) => { $payload = ($payload & 0x00000000FFFFFFFF) | (($val.into_raw_imm() as u64) << 32); };
+    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, imm64) => { $payload = $val as u64; };
     // If no field mapped, assume it's one of the standard ones by name (treat as register)
-    // Note: this rule uses .into() because types like Reg implement Into<u16>
-    (@assign $inst:ident, $val:ident, $ty:ty, ) => {
-        $inst.$val = $val.into();
+    (@assign $header:ident, $payload:ident, $val:ident, $ty:ty, ) => {
+        define_opcodes!(@assign $header, $payload, $val, $ty, $val)
     };
 }
 
@@ -609,4 +717,63 @@ define_opcodes! {
 
     RegMove { dst: Reg, src: Reg => src1 };
     Unreachable {};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_only_instruction_uses_one_word() {
+        let mut code = Vec::new();
+        emit::I32Add(&mut code, Reg(60_000), Reg(50_000), Reg(40_000));
+
+        assert_eq!(core::mem::size_of::<CodeWord>(), 8);
+        assert_eq!(code.len(), 1);
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr()) },
+            DecodedInstruction::I32Add {
+                dst: Reg(60_000),
+                src1: Reg(50_000),
+                src2: Reg(40_000),
+            }
+        ));
+    }
+
+    #[test]
+    fn immediate_instruction_appends_payload_word() {
+        let mut code = Vec::new();
+        emit::Iconst(&mut code, Reg(7), 0xfedc_ba98_7654_3210);
+
+        assert_eq!(code.len(), 2);
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr()) },
+            DecodedInstruction::Iconst {
+                dst: Reg(7),
+                imm64: 0xfedc_ba98_7654_3210,
+            }
+        ));
+    }
+
+    #[test]
+    fn mixed_width_stream_preserves_header_boundaries() {
+        let mut code = Vec::new();
+        emit::RegMove(&mut code, Reg(1), Reg(2));
+        emit::Br(&mut code, Reg(3), -24, 40);
+        emit::Unreachable(&mut code);
+
+        assert_eq!(code.len(), 4);
+        assert_eq!(unsafe { code[0].opcode() }, Opcode::RegMove);
+        assert_eq!(unsafe { code[1].opcode() }, Opcode::Br);
+        assert_eq!(unsafe { code[3].opcode() }, Opcode::Unreachable);
+        assert_eq!(Opcode::Br.words(), 2);
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr().add(1)) },
+            DecodedInstruction::Br {
+                cond: Reg(3),
+                then_offset: -24,
+                else_offset: 40,
+            }
+        ));
+    }
 }

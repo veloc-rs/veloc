@@ -1,4 +1,4 @@
-use crate::bytecode::{decode, CompiledFunction, Instruction, OpcodeHandlers, Reg};
+use crate::bytecode::{CodeWord, CompiledFunction, OpcodeHandlers, Reg, decode};
 use crate::error::Result;
 use crate::runtime::{CallTarget, Program};
 use crate::value::InterpreterValue;
@@ -59,7 +59,7 @@ pub(crate) enum DispatchExit {
 // its address before every dispatch.
 pub(crate) type OpcodeHandler<M> = unsafe extern "rust-preserve-none" fn(
     *mut DispatchContext<M>,
-    *const Instruction,
+    *const CodeWord,
     *mut InterpreterValue,
     *const OpcodeHandlers<M>,
 ) -> DispatchExit;
@@ -105,7 +105,7 @@ macro_rules! define_handlers {
             )]
             pub(crate) unsafe extern "rust-preserve-none" fn $name<M>(
                 $context_ptr: *mut DispatchContext<M>,
-                $ip: *const Instruction,
+                $ip: *const CodeWord,
                 mut $values_ptr: *mut InterpreterValue,
                 $handlers: *const OpcodeHandlers<M>,
             ) -> DispatchExit
@@ -136,16 +136,16 @@ macro_rules! define_handlers {
                     }
                     macro_rules! dispatch_next {
                         ($$next:expr, $$values:expr) => {{
-                            let opcode = (*$$next).opcode;
+                            let opcode = (*$$next).opcode();
                             let handler = (*$handlers).get(opcode);
                             become handler($context_ptr, $$next, $$values, $handlers)
                         }};
                     }
-                    let inst: Instruction = *$ip;
-                    let mut $next_ip = $ip.add(1);
-                    debug_assert_eq!(inst.opcode, crate::bytecode::Opcode::$name);
+                    let header = *$ip;
+                    let mut $next_ip = $ip.add(crate::bytecode::Opcode::$name.words());
+                    debug_assert_eq!(header.opcode(), crate::bytecode::Opcode::$name);
                     let ($(define_handlers!(@binding $arg $(, $binding)?),)*) =
-                        decode::$name(inst);
+                        decode::$name($ip);
 
                     $body
                     dispatch_next!($next_ip, $values_ptr);
@@ -402,7 +402,7 @@ impl Interpreter {
                 memory: mem,
                 frame: &mut frame,
             };
-            let opcode = (*ip).opcode;
+            let opcode = (*ip).opcode();
             let handlers = &OpcodeHandlers::<M>::TABLE;
             let handler = handlers.get(opcode);
             handler(&mut context, ip, values_ptr, handlers)

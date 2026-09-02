@@ -43,7 +43,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
 
     fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>) {
         use crate::mir::MachineOpcode;
-        use crate::target::x86_64::isle::{TargetInst, REG_RBP, REG_RSP};
+        use crate::target::x86_64::isle::{REG_RBP, REG_RSP, TargetInst};
 
         let stack_size = mfunc.stack_frame.total_size;
         let saved_regs = mfunc.stack_frame.used_callee_saved.clone();

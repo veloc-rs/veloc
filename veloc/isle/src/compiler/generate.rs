@@ -3,7 +3,7 @@ use crate::{EmitExpr, Expr, MacroDef};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
-use super::{subst_expr, FinalInstDef};
+use super::{FinalInstDef, subst_expr};
 
 /// 收集寄存器硬件编码
 pub(crate) fn collect_reg_encs(module: &crate::ast::Module) -> HashMap<String, u32> {
@@ -52,7 +52,10 @@ fn generate_variable(var_name: &str, operands: &[OperandConstraint]) -> String {
                     return format!("/* non-numeric operand {} */ 0", var_name);
                 }
             };
-            format!("(match &inst.operands[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})", index, arm, index, var_name)
+            format!(
+                "(match &inst.operands[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})",
+                index, arm, index, var_name
+            )
         }
         None => "0".to_string(),
     }

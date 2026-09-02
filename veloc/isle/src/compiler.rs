@@ -3,7 +3,7 @@ mod preprocess;
 mod select;
 
 use crate::ast::Def;
-use crate::{parser, EmitExpr, Expr, ExtractorDef, MacroDef, OperandConstraint};
+use crate::{EmitExpr, Expr, ExtractorDef, MacroDef, OperandConstraint, parser};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]

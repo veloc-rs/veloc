@@ -3,7 +3,7 @@
 //! This module provides the main Program structure that manages all loaded
 //! modules, host functions, and their interactions.
 
-use crate::bytecode::{compile_function, CompiledFunction};
+use crate::bytecode::{CompiledFunction, compile_function};
 use crate::error::{Error, Result};
 use crate::host::{HostFuncId, HostFunction};
 use crate::runtime::{CallTarget, FunctionRef, RuntimeModule};

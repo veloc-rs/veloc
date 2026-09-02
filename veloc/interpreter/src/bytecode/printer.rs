@@ -4,9 +4,9 @@
 //! in a human-readable format similar to assembly.
 
 use crate::bytecode::{
-    compile::{DataSection, JumpTarget},
-    inst::{DecodedInstruction, Instruction},
     CompiledFunction,
+    compile::{DataSection, JumpTarget},
+    inst::{CodeWord, DecodedInstruction, Opcode},
 };
 use core::fmt::{Display, Formatter, Result, Write};
 use cranelift_entity::EntityRef;
@@ -76,27 +76,23 @@ impl<'a> InstPrinter<'a> {
     }
 
     /// Format a single instruction
-    pub fn fmt_inst(&self, f: &mut dyn Write, pc: usize, inst: &Instruction) -> Result {
-        let inst = inst.decode();
+    pub fn fmt_inst(
+        &self,
+        f: &mut dyn Write,
+        pc: usize,
+        opcode: Opcode,
+        inst: DecodedInstruction,
+    ) -> Result {
         // Write PC and opcode name
-        write!(
-            f,
-            "  {:4}  {:20}",
-            pc,
-            format!("{:?}", inst)
-                .to_lowercase()
-                .split('(')
-                .next()
-                .unwrap_or("")
-        )?;
+        write!(f, "  {:4}  {:20}", pc, format!("{opcode:?}").to_lowercase())?;
 
         match inst {
             // Constants
             DecodedInstruction::Iconst { dst, imm64 } => {
-                write!(f, " {}, 0x{:016x}", dst, imm64)
+                write!(f, " {}, 0x{:x}", dst, imm64)
             }
             DecodedInstruction::Fconst { dst, imm64 } => {
-                write!(f, " {}, 0x{:016x}", dst, imm64)
+                write!(f, " {}, 0x{:x}", dst, imm64)
             }
             DecodedInstruction::Bconst { dst, val } => {
                 write!(f, " {}, {}", dst, val)
@@ -205,7 +201,7 @@ impl<'a> InstPrinter<'a> {
             | DecodedInstruction::I64ShlImm { dst, src1, imm64 }
             | DecodedInstruction::I64ShrSImm { dst, src1, imm64 }
             | DecodedInstruction::I64ShrUImm { dst, src1, imm64 } => {
-                write!(f, " {}, {}, 0x{:016x}", dst, src1, imm64)
+                write!(f, " {}, {}, 0x{:x}", dst, src1, imm64)
             }
 
             // Unary operations - Float
@@ -366,7 +362,7 @@ impl<'a> InstPrinter<'a> {
 
             // Control flow
             DecodedInstruction::Jump { offset } => {
-                let target_pc = pc as i64 + offset / core::mem::size_of::<Instruction>() as i64;
+                let target_pc = pc as i64 + offset / core::mem::size_of::<CodeWord>() as i64;
                 write!(f, " pc={}", target_pc)
             }
 
@@ -374,7 +370,7 @@ impl<'a> InstPrinter<'a> {
                 if (data_offset as usize) < self.data_section.jump_targets.len() {
                     let target = &self.data_section.jump_targets[data_offset as usize];
                     let target_pc = pc as i64
-                        + i64::from(target.offset) / core::mem::size_of::<Instruction>() as i64;
+                        + i64::from(target.offset) / core::mem::size_of::<CodeWord>() as i64;
                     write!(f, " pc={}", target_pc)?;
                     fmt_moves(f, self.data_section, target)?;
                 }
@@ -386,7 +382,7 @@ impl<'a> InstPrinter<'a> {
                 then_offset,
                 else_offset,
             } => {
-                let instruction_size = core::mem::size_of::<Instruction>() as i64;
+                let instruction_size = core::mem::size_of::<CodeWord>() as i64;
                 let then_pc = pc as i64 + i64::from(then_offset) / instruction_size;
                 let else_pc = pc as i64 + i64::from(else_offset) / instruction_size;
                 write!(f, " {} then={} else={}", cond, then_pc, else_pc)
@@ -412,7 +408,7 @@ impl<'a> InstPrinter<'a> {
                     if idx + i < self.data_section.jump_targets.len() {
                         let target = &self.data_section.jump_targets[idx + i];
                         let target_pc = pc as i64
-                            + i64::from(target.offset) / core::mem::size_of::<Instruction>() as i64;
+                            + i64::from(target.offset) / core::mem::size_of::<CodeWord>() as i64;
                         write!(
                             f,
                             "\n        [{}{}] pc={}",
@@ -592,9 +588,18 @@ impl<'a> FuncPrinter<'a> {
 
         // Print instructions
         let inst_printer = InstPrinter::new(&self.func.data_section);
-        for (pc, inst) in self.func.code.iter().enumerate() {
-            inst_printer.fmt_inst(f, pc, inst)?;
+        let mut pc = 0;
+        while pc < self.func.code.len() {
+            // SAFETY: compiled bytecode only records PCs at logical instruction
+            // headers, and each payload-bearing instruction owns the next word.
+            let ip = unsafe { self.func.code.as_ptr().add(pc) };
+            let header = unsafe { *ip };
+            let opcode = unsafe { header.opcode() };
+            let inst = unsafe { DecodedInstruction::read(ip) };
+            let words = opcode.words();
+            inst_printer.fmt_inst(f, pc, opcode, inst)?;
             writeln!(f)?;
+            pc += words;
         }
 
         Ok(())

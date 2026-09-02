@@ -1,12 +1,12 @@
+use crate::Extern;
+use crate::Result;
 use crate::func::IntoFunc;
 use crate::instance::VMInstance;
-use crate::module::types::WasmSignature;
 use crate::module::Module;
+use crate::module::types::WasmSignature;
 use crate::store::{Instance, Store};
 use crate::vm::VMFuncRef;
 use crate::wasi;
-use crate::Extern;
-use crate::Result;
 use alloc::format;
 use alloc::string::String;
 use hashbrown::HashMap;

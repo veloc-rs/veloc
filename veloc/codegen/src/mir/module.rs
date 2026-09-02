@@ -5,8 +5,8 @@
 use super::{MachineFunction, SymbolTable};
 use crate::pipeline::stages::RawMir;
 use alloc::vec::Vec;
-use cranelift_entity::entity_impl;
 use cranelift_entity::PrimaryMap;
+use cranelift_entity::entity_impl;
 
 /// 机器函数标识符
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

@@ -1,6 +1,6 @@
+use super::Reg;
 use super::callconv::CallConv;
 use super::types::TargetArch;
-use super::Reg;
 use alloc::vec::Vec;
 use veloc_ir::Type;
 
@@ -54,27 +54,31 @@ pub struct AbiAssignment {
 impl AbiAssignment {
     pub fn single_reg(&self) -> Option<Reg> {
         match self.parts.as_slice() {
-            [AbiPart {
-                loc: AbiLocation::Reg(reg),
-                ..
-            }] => Some(*reg),
+            [
+                AbiPart {
+                    loc: AbiLocation::Reg(reg),
+                    ..
+                },
+            ] => Some(*reg),
             _ => None,
         }
     }
 
     pub fn single_stack_slot(&self) -> Option<(AbiStackBase, Option<Reg>, i32, u32, u32)> {
         match self.parts.as_slice() {
-            [AbiPart {
-                loc:
-                    AbiLocation::Stack {
-                        base,
-                        base_reg,
-                        offset,
-                        size,
-                        align,
-                    },
-                ..
-            }] => Some((*base, *base_reg, *offset, *size, *align)),
+            [
+                AbiPart {
+                    loc:
+                        AbiLocation::Stack {
+                            base,
+                            base_reg,
+                            offset,
+                            size,
+                            align,
+                        },
+                    ..
+                },
+            ] => Some((*base, *base_reg, *offset, *size, *align)),
             _ => None,
         }
     }

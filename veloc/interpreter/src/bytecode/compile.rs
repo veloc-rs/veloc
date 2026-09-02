@@ -1,4 +1,4 @@
-use crate::bytecode::inst::{Instruction, Reg, TypePair, emit};
+use crate::bytecode::inst::{CodeWord, Reg, TypePair, emit};
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, UseDefAnalysis, analyze_liveness};
@@ -68,7 +68,7 @@ fn relative_byte_offset(source_pc: usize, target_pc: u32) -> i64 {
     let source_pc = i64::try_from(source_pc).expect("bytecode source PC overflow");
     let instruction_offset = i64::from(target_pc) - source_pc;
     instruction_offset
-        .checked_mul(core::mem::size_of::<Instruction>() as i64)
+        .checked_mul(core::mem::size_of::<CodeWord>() as i64)
         .expect("bytecode jump offset overflow")
 }
 
@@ -145,7 +145,7 @@ impl DataSection {
 pub struct CompiledFunction {
     pub(crate) module_id: ModuleId,
     pub(crate) func_id: FuncId,
-    pub(crate) code: Vec<Instruction>,
+    pub(crate) code: Vec<CodeWord>,
     /// Data section: regs for register lists, jump_targets for jump targets
     pub(crate) data_section: DataSection,
     pub(crate) stack_slots_sizes: Vec<usize>,
@@ -243,7 +243,7 @@ impl<'a> ValueMapper<'a> {
 /// Try to emit inline bytecode for intrinsics that map directly to opcodes.
 /// Returns true if the intrinsic was successfully inlined.
 fn try_emit_inline_intrinsic(
-    _code: &mut Vec<Instruction>,
+    _code: &mut Vec<CodeWord>,
     _dst: u16,
     _intrinsic: Intrinsic,
     _args: &[Reg],
@@ -340,7 +340,7 @@ fn identify_fused_values(func: &Function, rpo: &[Block]) -> std::collections::Ha
 struct Compiler<'a> {
     func: &'a Function,
     mapper: ValueMapper<'a>,
-    code: Vec<Instruction>,
+    code: Vec<CodeWord>,
     data_section: DataSection,
     slot_to_offset: SecondaryMap<StackSlot, u32>,
     block_to_pc: SecondaryMap<Block, u32>,
@@ -405,8 +405,8 @@ impl<'a> Compiler<'a> {
     fn emit_binary(&mut self, inst: Inst, opcode: IrOpcode, args: &[Value; 2]) {
         let res = self.func.dfg.first_result(inst).unwrap();
         let ty = self.func.dfg.value_type(res);
-        let mut bin = |imm_f: &dyn Fn(&mut Vec<Instruction>, Reg, Reg, i64),
-                       reg_f: &dyn Fn(&mut Vec<Instruction>, Reg, Reg, Reg),
+        let mut bin = |imm_f: &dyn Fn(&mut Vec<CodeWord>, Reg, Reg, i64),
+                       reg_f: &dyn Fn(&mut Vec<CodeWord>, Reg, Reg, Reg),
                        commutative: bool| {
             let lhs_fused = self.mapper.fused_values.contains(&args[0]);
             let rhs_fused = self.mapper.fused_values.contains(&args[1]);
@@ -1109,7 +1109,7 @@ impl<'a> Compiler<'a> {
         for (inst_idx, target_block) in self.jump_fixups {
             let target_pc = self.block_to_pc[target_block];
             let byte_offset = relative_byte_offset(inst_idx, target_pc);
-            self.code[inst_idx].imm64 = byte_offset as u64;
+            self.code[inst_idx + 1] = CodeWord::from_payload(byte_offset as u64);
         }
 
         // Patch direct conditional branch targets.
@@ -1120,8 +1120,9 @@ impl<'a> Compiler<'a> {
             let else_offset: i32 = relative_byte_offset(inst_idx, self.block_to_pc[else_block])
                 .try_into()
                 .expect("conditional branch offset exceeds i32");
-            self.code[inst_idx].imm64 =
-                u64::from(then_offset as u32) | (u64::from(else_offset as u32) << 32);
+            self.code[inst_idx + 1] = CodeWord::from_payload(
+                u64::from(then_offset as u32) | (u64::from(else_offset as u32) << 32),
+            );
         }
 
         // Patch data section targets

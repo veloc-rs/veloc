@@ -3,8 +3,8 @@ use crate::{ExtractorDef, OperandConstraint, PatternArg};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
-use super::generate::{collect_reg_encs, format_slice, reg_const_name, sanitize_ident};
 use super::FinalInstDef;
+use super::generate::{collect_reg_encs, format_slice, reg_const_name, sanitize_ident};
 
 fn strip_node_binds(pattern: &Pattern) -> &Pattern {
     pattern.strip_node_binds()
@@ -359,11 +359,7 @@ fn collect_schema_field_conditions(
                 })
                 .flatten()
                 .collect();
-            if conds.is_empty() {
-                None
-            } else {
-                Some(conds)
-            }
+            if conds.is_empty() { None } else { Some(conds) }
         }
         Pattern::Opcode { opcode, .. } if extractors.contains_key(opcode) => Some(vec![format!(
             "is_{}(reg_value_to_vreg({}.{}))",

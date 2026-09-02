@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 use veloc_wasm::{
-    engine::{Config, Strategy},
     Engine, Module, Store,
+    engine::{Config, Strategy},
 };
 
 #[derive(Parser, Debug)]

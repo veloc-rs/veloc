@@ -23,7 +23,7 @@ use crate::target::arch::{
     SelectionContext, TargetArch, TargetFrameLowering, TargetInstructionSelector, TargetLegalizer,
     TargetOperandLowering, TargetPassConfig, TargetPostIsel,
 };
-use crate::target::x86_64::isle::{generated, TargetInst};
+use crate::target::x86_64::isle::{TargetInst, generated};
 use alloc::vec::Vec;
 pub use frame::X86_64FrameLowering;
 pub use legalize::X86_64Legalizer;

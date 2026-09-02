@@ -1242,8 +1242,8 @@ macro_rules! legalize_matcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        operand_bit_width_at, operand_type_at, same_operand_types, same_operand_widths,
-        type_width_is_one_of, LegalizeAction,
+        LegalizeAction, operand_bit_width_at, operand_type_at, same_operand_types,
+        same_operand_widths, type_width_is_one_of,
     };
     use crate::mir::{
         GenericOpcode, MachineBlock, MachineFunction, MachineInst, MachineOpcode, SymbolId,

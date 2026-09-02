@@ -6,6 +6,7 @@ mod abi;
 mod callconv;
 mod types;
 
+use crate::Emitter;
 pub use crate::mir::ValueId;
 pub use crate::mir::{InstId, MachineFunction, MachineInst, Reg, VReg};
 pub use crate::passes::lowering::{LegalizeAction, LegalizeResult};
@@ -13,7 +14,6 @@ use crate::pipeline::stages::{
     LegalizedMir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedMir,
 };
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
-use crate::Emitter;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use veloc_ir::Type;

@@ -1,8 +1,8 @@
+use crate::Val;
 use crate::engine::Strategy;
 use crate::module::{GlobalInit, Module, ModuleArtifact};
 use crate::store::{Instance, Store};
 use crate::vm::{__sigsetjmp, TrapCode, VMContext, VMFuncRef, VMGlobal, VMMemory, VMTable};
-use crate::Val;
 use crate::{Extern, Result};
 use alloc::format;
 use alloc::string::String;

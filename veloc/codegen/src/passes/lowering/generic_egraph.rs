@@ -7,14 +7,14 @@ use crate::mir::{
     GenericOpcode, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg,
     UseDefChain, Writable,
 };
-use crate::pipeline::stages::AllowsUnbankedVRegAlloc;
 use crate::pipeline::FunctionAnalysisCtx;
+use crate::pipeline::stages::AllowsUnbankedVRegAlloc;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use egg::{
-    define_language, rewrite as rw, CostFunction, Extractor, Id, RecExpr, Rewrite, Runner, Symbol,
+    CostFunction, Extractor, Id, RecExpr, Rewrite, Runner, Symbol, define_language, rewrite as rw,
 };
 use hashbrown::{HashMap, HashSet};
 
@@ -410,8 +410,8 @@ mod tests {
         GenericOpcode, MachineBlock, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
         Writable,
     };
-    use crate::pipeline::stages::RawMir;
     use crate::pipeline::FunctionAnalysisCtx;
+    use crate::pipeline::stages::RawMir;
     use veloc_ir::{Block, Type};
 
     fn new_test_function() -> MachineFunction<RawMir> {

@@ -1,9 +1,9 @@
 use crate::instance::InstanceHandle;
 use crate::vm::{VMGlobal, VMMemory, VMTable};
 use alloc::sync::Arc;
-use cranelift_entity::{entity_impl, PrimaryMap};
+use cranelift_entity::{PrimaryMap, entity_impl};
 use std::sync::Mutex;
-use veloc::interpreter::{host::HostFunction, InterpreterValue, Program};
+use veloc::interpreter::{InterpreterValue, Program, host::HostFunction};
 use veloc::ir::{CallConv, Signature, Type};
 use wasi_common::WasiCtx;
 use wasmparser::ValType;

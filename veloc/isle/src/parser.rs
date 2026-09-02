@@ -307,7 +307,7 @@ impl<'a> Parser<'a> {
                         span,
                         "size, alias, hw-enc, reserved, or role",
                         &tok,
-                    )
+                    );
                 }
             }
             self.expect(Token::RParen)?;
@@ -1388,7 +1388,7 @@ impl<'a> Parser<'a> {
                     span,
                     "use, def, fixed, tied, imm, block, global, or stackslot",
                     &tok,
-                )
+                );
             }
         };
         self.expect(Token::RParen)?;

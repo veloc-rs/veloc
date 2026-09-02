@@ -5,9 +5,9 @@ use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
 use veloc_ir::{Block, FloatCC, IntCC, Type};
 
+pub use crate::mir::RegisterBank;
 use crate::mir::extra::CallInfo;
 use crate::mir::symbol::SymbolId;
-pub use crate::mir::RegisterBank;
 
 /// 机器指令索引
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
