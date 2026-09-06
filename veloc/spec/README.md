@@ -521,8 +521,9 @@ handwritten implementation of negation. Constants optionally specify their type,
 e.g. `bv.zero(type(arg))`; without it they use the first input type, or the first
 result type for an input-free operation. MIR-to-LIR arithmetic translation maps recognized
 primitive applications; composed negation retains the existing `G_NEG` lowering.
-Programs bind concrete input/result sorts and compile-time properties to the
-same typed graph used for execution and SMT export. Each describes a scalar
+The definition compiler binds concrete input/result sorts and emits specialized
+scalar evaluators. The optional offline `Program` API binds signatures to the
+graph used for reference execution and SMT export. Each recipe describes a scalar
 operation or a per-lane operation, not an entire vector, memory or machine-state
 model. Absent expressions mean **unmodeled**,
 not a claim that an operation is pure or verified.
@@ -561,7 +562,7 @@ traps: [
 The first true guard wins; `MAY_TRAP` is inferred from these guards. Declaring
 `MAY_TRAP` with executable semantics but no guards is rejected. Guards model
 observable failures, not preconditions that remove inputs from SMT checks.
-Constant folding replaces an operation only on `Outcome::Values`; a known trap
+Constant folding replaces an operation only when no guard fires; a known trap
 stays as an instruction. Lowering must separately preserve these outcomes;
 adding the contract does not generate backend trap checks automatically.
 
@@ -574,8 +575,63 @@ Rotations compose shifts and bitwise OR; `bv.clz/ctz/popcnt` provide bit counts.
 The definition compiler checks the recipe against all admitted scalar element
 types, respecting width relations and requiring shared lane shapes. It does not
 claim to model reductions, scalar broadcasts, predication, or whole vectors.
-The scalar constant folder executes this graph and splits multiple results into
-constant definitions while preserving SSA value IDs and use-def information.
+The same signature enumeration drives `evaluation.rs`: only legal scalar types
+representable by MIR `Constant` are emitted, including legal conversion pairs.
+Widths, step references, masks and output layouts become Rust literals and local
+variables. Comparison properties remain parameters, avoiding a predicate/width
+Cartesian expansion. The optimizer calls this generated code; it
+does not instantiate or interpret a graph, and has no graph fallback. Exact
+signature dispatch also rejects unsupported calls without a second full type
+contract check. Multiple results become constant definitions while preserving
+SSA value IDs and use-def information.
+
+MIR owns representation and validation, not evaluation or rewrite rules. Neither
+MIR nor the optimizer has a normal dependency on `veloc-semantics`; generators and
+offline tools depend on it at build/test time. `OpSpec` contains no primitive
+identifier, identity/absorbing constants, or semantic recipe.
+
+`veloc_optimizer::rewrite::evaluate` executes specialized Rust arithmetic, with
+no runtime primitive dispatch. `SimplifyPass` applies constant evaluation and
+generated identity, absorbing-element and idempotence rules through a common
+replacement path that maintains SSA, layout and use-def information. O1 runs
+simplification before dead-code elimination. Removing a use of a trapping
+instruction does not authorize deleting that instruction.
+
+Codegen joins checked direct MIR primitive applications with the reviewed LIR
+bindings in `codegen/defs/generic.rs` at build time. The same declaration supplies
+the generic opcode enum and build-only bindings. The result is a direct
+`Opcode -> Option<GenericOpcode>` match, not an `OpSpec` semantic lookup. Composed,
+reordered, property-dependent, trapping and multi-result recipes do not qualify;
+contextual lowering remains explicit. The bindings are contracts, not proofs of
+target legalization or code generation.
+
+A separate `semantics.rs` artifact contains `SPECS`, a static slice of
+`veloc_semantics::SemanticSpec<veloc_mir::Opcode>`, and the offline `IntCC` predicate
+conversion. Only offline examples/tests include it; MIR exports neither a table
+nor a macro. Tools reuse each opcode's `OpSpec` for type/effect information,
+without duplicating those contracts or requiring a feature switch. Offline checks
+do not imply an automatic rule-proof pipeline or runtime solver calls.
+
+```rust
+mod offline {
+    include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
+}
+let add = offline::SPECS.iter().find(|s| s.opcode == veloc_mir::Opcode::IAdd).unwrap();
+let contract = add.opcode.spec();
+let recipe = add.program;
+```
+
+To compare generated evaluation with the former per-fold graph path:
+
+```sh
+cargo run --release -p veloc-optimizer --example fold_bench
+```
+
+This is a microbenchmark of i64 constant evaluation, including result allocation,
+not an end-to-end compiler or interpreter benchmark. The verification test suite
+also compares generated evaluation against graph execution over every supported
+scalar signature, boundary values, and deterministic random samples. These are
+differential tests, not universal proofs of evaluator correctness.
 
 Direct primitive applications inherit shared trusted algebraic facts, so an add
 definition does not repeat its commutativity, associativity or identity. Explicit
@@ -589,10 +645,10 @@ model is a subsequent step. The `split_add` semantics example demonstrates a
 fixed-width representation check; it is not an enabled wide-integer backend pass.
 
 ```sh
-cargo test -p veloc-opgen -p veloc-mir -p veloc-semantics
+cargo test -p veloc-opgen -p veloc-mir -p veloc-optimizer -p veloc-semantics
 cargo run -q -p veloc-semantics --example split_add | z3 -in
-cargo run -q -p veloc-mir --example semantic_check -- overflow | z3 -in
-cargo run -q -p veloc-mir --example semantic_check -- overflow --broken | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- overflow | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- overflow --broken | z3 -in
 ```
 
 Generated Rust lives in Cargo's `OUT_DIR`, not in the source tree. Building the

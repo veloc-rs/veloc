@@ -305,17 +305,48 @@ pub(crate) fn validate(
         }
         common_shape = Some(shape);
     }
+    let instances = instances(source, op, types)?;
+    for instance in instances {
+        let (ins, outs) = instance.sorts.split_at(inputs.len());
+        let properties = vec![IntPredicate::new(false, 2); sem.properties.len()];
+        sem.program()
+            .instantiate(ins, outs, &properties)
+            .map_err(|e| fail(format!("invalid semantic types {ins:?} -> {outs:?}: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Concrete lane signatures shared by semantic validation and code generation.
+/// `scalar` distinguishes genuinely scalar signatures from vector-only recipes.
+#[derive(PartialEq, Eq)]
+pub(crate) struct Instance {
+    pub codes: Vec<u8>,
+    pub sorts: Vec<Sort>,
+    pub scalar: bool,
+}
+
+pub(crate) fn instances(
+    source: &str,
+    op: &Op,
+    types: &crate::types::Types,
+) -> Result<Vec<Instance>, Error> {
+    let sem = op.semantics.as_ref().expect("semantic operation");
+    let inputs = op.signature.operands.patterns().expect("fixed signature");
+    let outputs = op.signature.results.patterns().expect("fixed signature");
+    let fail = |message: String| Error::at(source, op.offset, message);
     // Pointer values are only modeled for comparisons. Their target width is
     // bound externally, never silently inferred from the build host.
-    let mut checked = 0;
+    let mut instances = Vec::new();
     for pointer_width in [32, 64] {
         let mut assignments = vec![(
             Vec::<Sort>::new(),
             std::collections::BTreeMap::<u8, u8>::new(),
+            Vec::<u8>::new(),
+            true,
         )];
         for pattern in inputs.iter().chain(outputs) {
             let mut next = Vec::new();
-            for (sorts, bindings) in assignments {
+            for (sorts, bindings, codes, scalar_shape) in assignments {
                 let set = match pattern {
                     Pattern::Class(set) | Pattern::Bind(_, set) | Pattern::ShapeOf(_, set) => {
                         set.clone()
@@ -330,7 +361,7 @@ pub(crate) fn validate(
                         ));
                     }
                 };
-                for &code in set.0.keys() {
+                for (&code, &shapes) in &set.0 {
                     if let Pattern::Bind(var, _) = pattern
                         && bindings.get(var).is_some_and(|&bound| bound != code)
                     {
@@ -369,7 +400,9 @@ pub(crate) fn validate(
                     }
                     let mut sorts = sorts.clone();
                     sorts.push(sort);
-                    next.push((sorts, bindings));
+                    let mut codes = codes.clone();
+                    codes.push(code);
+                    next.push((sorts, bindings, codes, scalar_shape && shapes & 1 != 0));
                 }
             }
             assignments = next;
@@ -379,7 +412,7 @@ pub(crate) fn validate(
                 ));
             }
         }
-        for (sorts, _) in assignments {
+        for (sorts, _, codes, scalar) in assignments {
             let (ins, outs) = sorts.split_at(inputs.len());
             let get = |slot: &crate::model::Slot| {
                 if slot.result {
@@ -407,17 +440,20 @@ pub(crate) fn validate(
             {
                 continue;
             }
-            let properties = vec![IntPredicate::new(false, 2); sem.properties.len()];
-            sem.program()
-                .instantiate(ins, outs, &properties)
-                .map_err(|e| fail(format!("invalid semantic types {ins:?} -> {outs:?}: {e}")))?;
-            checked += 1;
+            let instance = Instance {
+                codes,
+                sorts,
+                scalar,
+            };
+            if !instances.contains(&instance) {
+                instances.push(instance);
+            }
         }
     }
-    if checked == 0 {
+    if instances.is_empty() {
         return Err(fail("no admissible semantic signature".into()));
     }
-    Ok(())
+    Ok(instances)
 }
 
 /// Only direct primitive applications inherit reviewed algebraic facts. A

@@ -11,6 +11,12 @@ hashbrown = { workspace = true }
 log = { workspace = true }
 smallvec = { workspace = true }
 
+[build-dependencies]
+veloc-opgen = { workspace = true }
+
+[dev-dependencies]
+veloc-semantics = { workspace = true }
+
 [features]
 default = ["std"]
 std = ["veloc-mir/std"]

@@ -2,7 +2,83 @@ use veloc_analyzer::{AnalysisManager, UseDefAnalysis};
 use veloc_mir::constant::Constant;
 use veloc_mir::{CallConv, InstructionData, Linkage, ModuleBuilder, Opcode, Type};
 use veloc_optimizer::Metrics;
-use veloc_optimizer::passes::function::constant_folding::run_constant_folding;
+use veloc_optimizer::passes::function::simplify::run_simplify;
+
+#[test]
+fn generated_algebraic_rules_share_ssa_replacement_and_use_def_maintenance() {
+    let mut module = ModuleBuilder::new();
+    let sig = module.make_signature(vec![Type::I32], vec![Type::I32; 6], CallConv::SystemV);
+    let id = module.declare_function("algebra".into(), sig, Linkage::Local);
+    let (entry, arg, outputs) = {
+        let mut builder = module.builder(id);
+        let entry = builder.init_entry_block();
+        let arg = builder.func_params()[0];
+        let mut ins = builder.ins();
+        let zero = ins.i32const(0);
+        let ones = ins.i32const(-1);
+        let a = ins.iadd(arg, zero);
+        let b = ins.iadd(zero, a);
+        let same = ins.iand(b, b);
+        let absorbing = ins.ior(arg, ones);
+        let product = ins.imul(arg, zero);
+        let sum = ins.iadd(a, b);
+        let outputs = [a, b, same, absorbing, product, sum];
+        ins.ret(&outputs);
+        (entry, arg, outputs)
+    };
+    let mut data = module.build_data();
+    data.validate().unwrap();
+    let func = &mut data.functions[id];
+    let ret = *func.layout.blocks[entry].insts.last().unwrap();
+    let mut analyses = AnalysisManager::new();
+    analyses.use_def(func);
+    let mut metrics = Metrics::default();
+    assert!(run_simplify(func, &mut analyses, false, &mut metrics));
+    let mut returned = Vec::new();
+    func.dfg
+        .inst(ret)
+        .visit_operands(&func.dfg, |v| returned.push(v));
+    assert_eq!(&returned[..3], &[arg; 3]);
+    assert_eq!(func.dfg.as_const(outputs[3]), Some(Constant::I32(-1)));
+    assert_eq!(func.dfg.as_const(outputs[4]), Some(Constant::I32(0)));
+    let rebuilt = UseDefAnalysis::new(func);
+    for value in func.dfg.values.keys() {
+        let mut actual = analyses.use_def(func).users_of(value).to_vec();
+        let mut expected = rebuilt.users_of(value).to_vec();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+    assert!(!run_simplify(func, &mut analyses, false, &mut metrics));
+    data.validate().unwrap();
+}
+
+#[test]
+fn absorbing_rule_does_not_remove_a_trapping_operand_computation() {
+    let mut module = ModuleBuilder::new();
+    let sig = module.make_signature(vec![Type::I32], vec![Type::I32], CallConv::SystemV);
+    let id = module.declare_function("trap".into(), sig, Linkage::Local);
+    {
+        let mut builder = module.builder(id);
+        builder.init_entry_block();
+        let arg = builder.func_params()[0];
+        let mut ins = builder.ins();
+        let zero = ins.i32const(0);
+        let quotient = ins.idiv_s(arg, zero);
+        let product = ins.imul(quotient, zero);
+        ins.ret(&[product]);
+    }
+    let mut data = module.build_data();
+    assert!(veloc_optimizer::PassManager::new_o1().run_on_module(&mut data));
+    data.validate().unwrap();
+    let func = &data.functions[id];
+    assert!(func.layout.block_order.iter().any(|b| {
+        func.layout.blocks[*b]
+            .insts
+            .iter()
+            .any(|&i| func.dfg.inst(i).opcode() == Opcode::IDivS)
+    }));
+}
 
 #[test]
 fn a_nonconstant_operand_in_any_position_prevents_folding() {
@@ -22,7 +98,7 @@ fn a_nonconstant_operand_in_any_position_prevents_folding() {
     data.validate().unwrap();
     let func = &mut data.functions[id];
     let revision = func.revision();
-    assert!(!run_constant_folding(
+    assert!(!run_simplify(
         func,
         &mut AnalysisManager::new(),
         false,
@@ -60,12 +136,7 @@ fn constant_traps_remain_instructions_while_safe_division_folds() {
     let mut analyses = AnalysisManager::new();
     let mut metrics = Metrics::default();
     analyses.use_def(func);
-    assert!(run_constant_folding(
-        func,
-        &mut analyses,
-        false,
-        &mut metrics
-    ));
+    assert!(run_simplify(func, &mut analyses, false, &mut metrics));
     for (value, op) in values[..2].iter().zip([Opcode::IDivS, Opcode::IDivU]) {
         assert_eq!(func.dfg.as_const(*value), None);
         let veloc_mir::ValueDef::Inst(inst) = func.dfg.values[*value].def else {
@@ -85,12 +156,7 @@ fn constant_traps_remain_instructions_while_safe_division_folds() {
             rebuilt.users_of(value)
         );
     }
-    assert!(!run_constant_folding(
-        func,
-        &mut analyses,
-        false,
-        &mut metrics
-    ));
+    assert!(!run_simplify(func, &mut analyses, false, &mut metrics));
     data.validate().unwrap();
 }
 
@@ -98,7 +164,7 @@ fn constant_traps_remain_instructions_while_safe_division_folds() {
 fn semantic_folding_propagates_wrapping_values_through_ssa_and_returns() {
     // The pass must execute the composite `0 - arg` contract, not require a
     // one-op identity or recover the former BvOp::Neg binding.
-    assert_eq!(Opcode::INeg.spec().semantics.unwrap().primitive(), None);
+    assert!(veloc_optimizer::rewrite::can_fold(Opcode::INeg));
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(vec![], vec![Type::I32; 7], CallConv::SystemV);
     let func_id = module.declare_function("wrapping_chain".into(), sig, Linkage::Local);
@@ -131,12 +197,7 @@ fn semantic_folding_propagates_wrapping_values_through_ssa_and_returns() {
     // Populate the cache before folding so the test also exercises updates to
     // existing use-def information as the arithmetic operands disappear.
     assert_eq!(analyses.use_def(func).users_of(values[0]).len(), 2);
-    assert!(run_constant_folding(
-        func,
-        &mut analyses,
-        false,
-        &mut metrics
-    ));
+    assert!(run_simplify(func, &mut analyses, false, &mut metrics));
 
     for (value, expected) in values.into_iter().zip([
         i32::MIN,
@@ -157,10 +218,7 @@ fn semantic_folding_propagates_wrapping_values_through_ssa_and_returns() {
         panic!("folding replaced the return instruction");
     };
     assert_eq!(func.dfg.get_value_list(*returned), values);
-    assert_eq!(
-        metrics.counters.get("constant_folding.folded_insts"),
-        Some(&7)
-    );
+    assert_eq!(metrics.counters.get("simplify.rewritten_insts"), Some(&7));
 
     let rebuilt = UseDefAnalysis::new(func);
     let cached = analyses.use_def(func);
@@ -169,17 +227,9 @@ fn semantic_folding_propagates_wrapping_values_through_ssa_and_returns() {
     }
 
     let revision = func.revision();
-    assert!(!run_constant_folding(
-        func,
-        &mut analyses,
-        false,
-        &mut metrics
-    ));
+    assert!(!run_simplify(func, &mut analyses, false, &mut metrics));
     assert_eq!(func.revision(), revision);
-    assert_eq!(
-        metrics.counters.get("constant_folding.folded_insts"),
-        Some(&7)
-    );
+    assert_eq!(metrics.counters.get("simplify.rewritten_insts"), Some(&7));
     data.validate().unwrap();
 }
 
@@ -213,12 +263,7 @@ fn multi_result_folding_preserves_values_users_layout_and_types() {
     let mut analyses = AnalysisManager::new();
     let mut metrics = Metrics::default();
     analyses.use_def(func);
-    assert!(run_constant_folding(
-        func,
-        &mut analyses,
-        false,
-        &mut metrics
-    ));
+    assert!(run_simplify(func, &mut analyses, false, &mut metrics));
     assert_eq!(func.dfg.values.len(), value_count);
     for (value, expected) in values.into_iter().zip([
         Constant::I64(-128),
@@ -235,11 +280,6 @@ fn multi_result_folding_preserves_values_users_layout_and_types() {
             rebuilt.users_of(value)
         );
     }
-    assert!(!run_constant_folding(
-        func,
-        &mut analyses,
-        false,
-        &mut metrics
-    ));
+    assert!(!run_simplify(func, &mut analyses, false, &mut metrics));
     data.validate().unwrap();
 }

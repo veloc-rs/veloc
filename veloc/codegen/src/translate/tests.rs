@@ -2,17 +2,16 @@ use crate::lir::{GenericOpcode, MachineFunction, MachineInst};
 use crate::pipeline::stages::RawLir;
 use crate::translate::IRTranslator;
 use alloc::{format, vec::Vec};
-use veloc_mir::semantics::BvOp;
 use veloc_mir::{InstructionData, Module, ModuleParser, Opcode, Type, ValueList};
 
-const OPS: &[(Opcode, BvOp, GenericOpcode)] = &[
-    (Opcode::IAdd, BvOp::Add, GenericOpcode::G_ADD),
-    (Opcode::ISub, BvOp::Sub, GenericOpcode::G_SUB),
-    (Opcode::IMul, BvOp::Mul, GenericOpcode::G_MUL),
-    (Opcode::INeg, BvOp::Neg, GenericOpcode::G_NEG),
-    (Opcode::IAnd, BvOp::And, GenericOpcode::G_AND),
-    (Opcode::IOr, BvOp::Or, GenericOpcode::G_OR),
-    (Opcode::IXor, BvOp::Xor, GenericOpcode::G_XOR),
+const OPS: &[(Opcode, usize, GenericOpcode)] = &[
+    (Opcode::IAdd, 2, GenericOpcode::G_ADD),
+    (Opcode::ISub, 2, GenericOpcode::G_SUB),
+    (Opcode::IMul, 2, GenericOpcode::G_MUL),
+    (Opcode::INeg, 1, GenericOpcode::G_NEG),
+    (Opcode::IAnd, 2, GenericOpcode::G_AND),
+    (Opcode::IOr, 2, GenericOpcode::G_OR),
+    (Opcode::IXor, 2, GenericOpcode::G_XOR),
 ];
 
 fn module(opcode: Opcode, ty: Type, arity: usize) -> Module {
@@ -45,31 +44,25 @@ fn translated_op(function: &MachineFunction<RawLir>) -> &MachineInst {
 
 #[test]
 fn direct_primitives_share_bindings_and_composed_negation_is_not_misidentified() {
-    for &(mir, semantics, lir) in OPS {
-        let program = mir.spec().semantics.unwrap();
-        assert_eq!(program.arity(), semantics.arity());
-        if mir == Opcode::INeg {
-            assert_eq!(program.primitive(), None);
-        } else {
-            assert_eq!(program.primitive(), Some(semantics));
-        }
-        assert_eq!(lir.semantics(), Some(semantics));
-        assert_eq!(GenericOpcode::from_semantics(semantics), Some(lir));
+    for &(mir, _, lir) in OPS {
+        let expected = if mir == Opcode::INeg { None } else { Some(lir) };
+        assert_eq!(super::direct_lowering(mir), expected);
     }
-    for (mir, lir) in [
-        (Opcode::IDivS, GenericOpcode::G_SDIV),
-        (Opcode::FAdd, GenericOpcode::G_FADD),
+    for op in [
+        Opcode::IDivS,
+        Opcode::FAdd,
+        Opcode::IAddWithOverflow,
+        Opcode::IShl,
     ] {
-        assert_eq!(mir.spec().semantics.and_then(|p| p.primitive()), None);
-        assert_eq!(lir.semantics(), None);
+        assert_eq!(super::direct_lowering(op), None);
     }
 }
 
 #[test]
 fn semantic_lowering_preserves_widths_and_operand_order() {
     for ty in [Type::I8, Type::I16, Type::I32, Type::I64] {
-        for &(core, semantics, expected) in OPS {
-            let source = module(core, ty, semantics.arity());
+        for &(core, arity, expected) in OPS {
+            let source = module(core, ty, arity);
             let translated = IRTranslator::new(&source).translate_module().unwrap();
             let function = &translated.functions[translated.func_order[0]];
             let inst = translated_op(function);
@@ -98,7 +91,7 @@ fn lane_bindings_preserve_existing_bool_and_vector_translation() {
         (Opcode::IAdd, Type::I32X4, GenericOpcode::G_ADD),
         (Opcode::INeg, Type::I32X4, GenericOpcode::G_NEG),
     ] {
-        let source = module(core, ty, core.spec().semantics.unwrap().arity());
+        let source = module(core, ty, if core == Opcode::INeg { 1 } else { 2 });
         let translated = IRTranslator::new(&source).translate_module().unwrap();
         let function = &translated.functions[translated.func_order[0]];
         let inst = translated_op(function);

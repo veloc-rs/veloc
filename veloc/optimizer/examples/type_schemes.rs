@@ -5,7 +5,7 @@ use std::time::Instant;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::{CallConv, Linkage, ModuleBuilder, ModuleData, Opcode, Type};
 use veloc_optimizer::Metrics;
-use veloc_optimizer::passes::function::constant_folding::run_constant_folding;
+use veloc_optimizer::passes::function::simplify::run_simplify;
 
 fn module() -> ModuleData {
     let mut module = ModuleBuilder::new();
@@ -106,12 +106,7 @@ fn main() {
                 let mut metrics = Metrics::default();
                 let start = Instant::now();
                 for (_, function) in data.functions.iter_mut() {
-                    assert!(run_constant_folding(
-                        function,
-                        &mut analyses,
-                        false,
-                        &mut metrics
-                    ));
+                    assert!(run_simplify(function, &mut analyses, false, &mut metrics));
                 }
                 elapsed += start.elapsed().as_secs_f64();
                 black_box(&data);

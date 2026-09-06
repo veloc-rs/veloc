@@ -14,6 +14,8 @@ use hashbrown::HashMap;
 use veloc_mir::dfg::PoolKey;
 use veloc_mir::{Function, InstructionData, Module, Opcode, Value};
 
+include!(concat!(env!("OUT_DIR"), "/mir_lowering.rs"));
+
 #[cfg(test)]
 mod tests;
 
@@ -166,8 +168,7 @@ impl<'a> IRTranslator<'a> {
         if matches!(
             inst_data,
             InstructionData::Unary { .. } | InstructionData::Binary { .. }
-        ) && let Some(semantics) = spec.semantics
-        {
+        ) {
             let mut args = SmallVec::<[Value; 2]>::new();
             inst_data.visit_operands(&ctx.func.dfg, |value| args.push(value));
             let operand_types: SmallVec<[_; 2]> = args
@@ -187,17 +188,7 @@ impl<'a> IRTranslator<'a> {
                         spec.mnemonic
                     ))
                 })?;
-            if args.len() != semantics.arity() || results.len() != 1 {
-                return Err(Error::translate(format!(
-                    "invalid arity for {} semantic lowering",
-                    spec.mnemonic
-                )));
-            }
-
-            if let Some(opcode) = semantics
-                .primitive()
-                .and_then(GenericOpcode::from_semantics)
-            {
+            if let Some(opcode) = direct_lowering(inst_data.opcode()) {
                 // The shared binding describes the scalar/per-lane operation.
                 // Preserve source types here; target legalization still decides
                 // which widths and vector shapes the backend can implement.

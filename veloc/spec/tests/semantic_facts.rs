@@ -106,15 +106,17 @@ fn accepts_and_derives_the_shared_primitive_facts() {
         for name in traits {
             assert!(generated.opcodes.contains(&format!("OpTraits::{name}")));
         }
-        if let Some(identity) = facts.identity {
-            assert!(generated.opcodes.contains(&format!(
-                "identity: Some(crate::opspec::AlgebraicConstant::{identity:?})"
-            )));
+        assert!(!generated.opcodes.contains("identity:"));
+        assert!(!generated.opcodes.contains("absorbing:"));
+        if facts.identity.is_some() {
+            assert!(generated.evaluation.contains("Replacement::Value(args["));
         }
-        if let Some(absorbing) = facts.absorbing {
-            assert!(generated.opcodes.contains(&format!(
-                "absorbing: Some(crate::opspec::AlgebraicConstant::{absorbing:?})"
-            )));
+        if facts.absorbing.is_some() {
+            assert!(
+                generated
+                    .evaluation
+                    .contains("Replacement::Constants(alloc::vec![c])")
+            );
         }
     }
 }
@@ -136,20 +138,20 @@ fn composed_semantics_do_not_inherit_the_root_primitive_facts() {
     let source =
         definition(BvOp::Neg, "traits: []").replace("bv.neg(arg)", "bv.sub(bv.zero(), arg)");
     let generated = compile_mir(&source).unwrap();
-    assert!(generated.opcodes.contains("Program { inputs: 1"));
+    assert!(generated.semantics.contains("Program { inputs: 1"));
     assert!(
         generated
-            .opcodes
+            .semantics
             .contains("Step::Const { value: BvConst::Zero")
     );
-    assert!(generated.opcodes.contains("op: BvOp::Sub"));
+    assert!(generated.semantics.contains("op: BvOp::Sub"));
     assert!(!generated.opcodes.contains("OpTraits::COMMUTATIVE"));
     assert!(!generated.opcodes.contains("OpTraits::ASSOCIATIVE"));
 
     let nested = definition(BvOp::Add, "traits: []")
         .replace("bv.add(lhs, rhs)", "bv.add(lhs, bv.add(rhs, bv.one()))");
     let generated = compile_mir(&nested).unwrap();
-    assert_eq!(generated.opcodes.matches("op: BvOp::Add").count(), 2);
-    assert!(generated.opcodes.contains("identity: None"));
+    assert_eq!(generated.semantics.matches("op: BvOp::Add").count(), 2);
+    assert!(!generated.opcodes.contains("identity:"));
     assert!(!generated.opcodes.contains("OpTraits::ASSOCIATIVE"));
 }

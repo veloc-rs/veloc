@@ -160,6 +160,20 @@ impl Comparison {
             .or_else(|| self.predicates.iter().position(matches))
     }
 
+    pub(crate) fn integer_predicates(&self) -> Option<Vec<(&str, veloc_semantics::IntPredicate)>> {
+        (self.domain == Domain::Integer).then(|| {
+            self.predicates
+                .iter()
+                .map(|p| {
+                    (
+                        p.name.as_str(),
+                        veloc_semantics::IntPredicate::new(p.order == Order::Signed, p.outcomes),
+                    )
+                })
+                .collect()
+        })
+    }
+
     pub(crate) fn generate(&self) -> String {
         let mut out = String::new();
         writeln!(
@@ -184,18 +198,6 @@ impl Comparison {
         }
         out.push_str("_ => None,\n} }\n");
         if self.domain == Domain::Integer {
-            self.method(
-                &mut out,
-                "predicate",
-                "crate::semantics::IntPredicate",
-                self.predicates.iter().map(|p| {
-                    format!(
-                        "crate::semantics::IntPredicate::new({}, {})",
-                        p.order == Order::Signed,
-                        p.outcomes
-                    )
-                }),
-            );
             self.method(
                 &mut out,
                 "is_unsigned",

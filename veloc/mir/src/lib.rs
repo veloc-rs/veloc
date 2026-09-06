@@ -17,7 +17,6 @@ pub mod types;
 pub mod validator;
 
 pub mod constant;
-pub use veloc_semantics as semantics;
 pub mod intrinsic;
 mod opcode;
 

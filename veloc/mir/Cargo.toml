@@ -10,7 +10,6 @@ cranelift-entity = { workspace = true }
 hashbrown = { workspace = true, features = ["ahash", "inline-more"] }
 thiserror = { version = "2.0", default-features = false }
 smallvec = { workspace = true }
-veloc-semantics = { workspace = true }
 
 [build-dependencies]
 veloc-opgen = { workspace = true }

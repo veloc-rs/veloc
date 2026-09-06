@@ -4,6 +4,17 @@
 libraries. Its initial model contains pure, fixed-width bitvectors (1–128 bits)
 and booleans, plus explicit operation-level traps.
 
+The primitive/value core supplies the build-time vocabulary and reference
+evaluation. `Program`, `Expr`, `Function`, and SMT export support generators,
+offline checks, and tests without a feature switch. The optimizer's generated
+constant evaluator executes specialized Rust arithmetic; it neither builds graphs
+nor calls this crate. MIR and the optimizer have no normal dependency on this
+crate. Offline recipes live in a separate generated `semantics.rs` artifact that
+tools/tests include directly. `SemanticSpec<O>` is owned by this crate and generic
+over the IR's operation identifier, without a dependency on MIR. Each entry
+contains an opcode and a program; shared type/effect information is accessed
+through `entry.opcode.spec()`.
+
 - `BvOp` is the shared vocabulary for modular arithmetic and bitwise operations.
   `eval` normalizes inputs and results to the declared width.
 - `BvOp::algebra` supplies reviewed primitive facts valid at every supported
@@ -17,7 +28,7 @@ and booleans, plus explicit operation-level traps.
   unused steps, then checks the output sorts. There is no separate Program evaluator.
   `primitive` recognizes only direct applications to all inputs in order; it does
   not infer equivalences. The same recipe representation accepts owned operand
-  lists in the definition compiler and static slices in generated MIR metadata.
+  lists in the definition compiler and static slices in generated offline metadata.
 - `Expr` constructors enforce operation arities and sorts. Cloning an expression
   shares its immutable nodes.
 - `Function` checks every parameter reference against an explicit positional
@@ -56,16 +67,16 @@ signedness and accepted outcomes; MIR generates these properties from its
 comparison definitions. Bitwise and/or/xor accept Bool as well as bitvectors;
 arithmetic requires bitvectors. Explicit conversion bridges Bool and bitvectors.
 
-The MIR example checks actual operation definitions against independent expressions:
+The optimizer's offline example checks MIR definitions against independent expressions:
 
 ```sh
-cargo run -q -p veloc-mir --example semantic_check -- overflow | z3 -in
-cargo run -q -p veloc-mir --example semantic_check -- overflow --broken | z3 -in
-cargo run -q -p veloc-mir --example semantic_check -- comparison | z3 -in
-cargo run -q -p veloc-mir --example semantic_check -- sext | z3 -in
-cargo run -q -p veloc-mir --example semantic_check -- division | z3 -in
-cargo run -q -p veloc-mir --example semantic_check -- division --broken | z3 -in
-cargo run -q -p veloc-mir --example semantic_check -- shift | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- overflow | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- overflow --broken | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- comparison | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- sext | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- division | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- division --broken | z3 -in
+cargo run -q -p veloc-optimizer --example semantic_check -- shift | z3 -in
 cargo run -q -p veloc-semantics --example check_primitives | z3 -in
 ```
 

@@ -1,8 +1,9 @@
 //! Executable, fixed-width semantics shared by IRs and verification tools.
 //!
-//! This crate does not depend on a program IR or an SMT solver. Expressions are
-//! checked when constructed; functions bind them to an explicit input signature.
-//! Both execution and SMT-LIB emission consume the same expression graph.
+//! This crate does not depend on a program IR or an SMT solver. Generated
+//! evaluator generators use its primitive/value vocabulary. Checked graphs,
+//! reference execution and SMT export serve build-time generation and offline
+//! checks; the normal folding path has no dependency on this crate.
 //!
 //! The model covers bitvectors, booleans and explicit operation-level traps: no memory,
 //! floating point, undefined behavior, or scalable vectors. A solver result
@@ -12,11 +13,13 @@ mod comparison;
 mod expr;
 mod program;
 mod smt;
+mod value;
 
 pub use comparison::IntPredicate;
-pub use expr::{Expr, Function, Outcome, Sort, Trap, Value};
-pub use program::{ComparisonRef, Conversion, Program, Step, TypeRef};
+pub use expr::{Expr, Function};
+pub use program::{ComparisonRef, Conversion, Program, SemanticSpec, Step, TypeRef};
 pub use smt::equivalence_query;
+pub use value::{Outcome, Sort, Trap, Value};
 
 /// Width-dependent constants used by trusted algebraic facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -232,6 +235,7 @@ impl BvOp {
     /// Evaluate modulo `2^width`. Inputs are normalized to the same width.
     ///
     /// Widths outside 1..=128 and incorrect operand counts are errors.
+    #[inline]
     pub fn eval(self, width: u16, args: &[u128]) -> Result<u128, Error> {
         let width = Width::new(width)?;
         if args.len() != self.arity() {

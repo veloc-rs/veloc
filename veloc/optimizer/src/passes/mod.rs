@@ -4,4 +4,4 @@ pub mod function;
 pub mod r#loop;
 pub mod module;
 
-pub use function::{ConstantFoldingPass, DcePass};
+pub use function::{DcePass, SimplifyPass};

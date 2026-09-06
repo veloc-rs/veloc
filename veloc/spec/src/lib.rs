@@ -8,6 +8,8 @@ mod builtins;
 mod comparisons;
 mod constraints;
 mod encoding;
+mod evaluate;
+mod lowering;
 mod mir;
 mod model;
 mod packing;
@@ -22,6 +24,7 @@ mod type_rules;
 mod type_set;
 mod types;
 
+pub use lowering::generate_lowering;
 pub use model::Definitions;
 
 /// A diagnostic in the definition source (one-based line and column).
@@ -51,7 +54,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Generated MIR infrastructure; callers decide where to write each artifact.
+/// Generated MIR, optimizer and offline artifacts; callers choose which to write.
 pub struct Generated {
     pub encoding: String,
     pub builtins: String,
@@ -59,6 +62,8 @@ pub struct Generated {
     pub formats: String,
     pub types: String,
     pub validation: String,
+    pub evaluation: String,
+    pub semantics: String,
     pub opcodes: String,
     pub instructions: String,
     pub text_parser: String,

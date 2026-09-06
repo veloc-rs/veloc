@@ -12,7 +12,7 @@ fn traps_are_typed_behavior_not_input_assumptions() {
         }
     "#;
     let output = compile_mir(source).unwrap();
-    assert!(output.opcodes.contains("Trap::DivisionByZero"));
+    assert!(output.semantics.contains("Trap::DivisionByZero"));
     assert!(output.opcodes.contains("MAY_TRAP"));
     rejected(
         &source.replace("bv.eq(rhs, bv.zero())", "rhs"),
@@ -95,8 +95,9 @@ fn comparison_properties_are_bound_by_name_not_ssa_position() {
         }
     "#;
     let output = compile_mir(source).unwrap();
-    assert!(output.opcodes.contains("ComparisonRef::Property(0)"));
-    assert!(output.opcodes.contains("cc.predicate()"));
+    assert!(output.semantics.contains("ComparisonRef::Property(0)"));
+    assert!(output.evaluation.contains("smallvec::smallvec![*cc]"));
+    assert!(!output.opcodes.contains("predicate()"));
     rejected(
         &source.replace("bv.cmp(condition", "bv.cmp(missing"),
         "unknown integer comparison property",

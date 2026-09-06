@@ -33,6 +33,14 @@ pub struct Program<'a, A = &'a [u16]> {
     pub traps: &'a [(u16, Trap)],
 }
 
+/// Offline semantic description keyed by a consumer's operation identifier.
+/// The consumer owns opcode/type/effect metadata; this crate only owns the recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticSpec<O> {
+    pub opcode: O,
+    pub program: Program<'static>,
+}
+
 /// An encoding adapter, not a second evaluator: every step is constructed
 /// through the same checked Expr API used by dynamically constructed graphs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

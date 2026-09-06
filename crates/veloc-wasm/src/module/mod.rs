@@ -278,8 +278,8 @@ impl Module {
 
             let mut pm = if engine.config().opt_level == 1 {
                 let mut pm = PassManager::new(config);
+                pm.add_function_pass(veloc_optimizer::SimplifyPass);
                 pm.add_function_pass(veloc_optimizer::DcePass);
-                pm.add_function_pass(veloc_optimizer::ConstantFoldingPass);
                 pm
             } else {
                 PassManager::new(config)

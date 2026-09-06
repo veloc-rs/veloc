@@ -21,6 +21,7 @@ impl IntPredicate {
         self.outcomes
     }
 
+    #[inline]
     pub fn eval(self, width: u16, lhs: u128, rhs: u128) -> Result<bool, Error> {
         let width = Width::new(width)?;
         let sign = if self.signed {

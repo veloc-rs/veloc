@@ -72,24 +72,6 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
                 .join(", ")
         )
         .unwrap();
-        writeln!(
-            ops,
-            "                    identity: {},",
-            algebraic(op.identity)
-        )
-        .unwrap();
-        writeln!(
-            ops,
-            "                    absorbing: {},",
-            algebraic(op.absorbing)
-        )
-        .unwrap();
-        writeln!(
-            ops,
-            "                    semantics: {},",
-            semantics(op.semantics.as_ref())
-        )
-        .unwrap();
         ops.push_str("                };\n                &SPEC\n            },\n");
     }
     ops.push_str("        }\n    }\n    pub fn from_mnemonic(mnemonic: &str) -> Option<Self> {\n        match mnemonic {\n");
@@ -116,35 +98,6 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
     }
     ops.push_str("}\n");
     ops.push_str(&accessors(defs));
-    ops.push_str("impl crate::InstructionData {\npub fn semantic_properties(&self) -> alloc::vec::Vec<crate::semantics::IntPredicate> { match self.opcode() {\n");
-    for op in &defs.ops {
-        let Some(sem) = &op.semantics else {
-            continue;
-        };
-        if sem.properties.is_empty() {
-            continue;
-        }
-        let mut fields = Vec::new();
-        for property in &sem.properties {
-            let field = op
-                .packing
-                .iter()
-                .find_map(|(field, binding)| match binding {
-                    Binding::Name(name) if name == property => Some(field),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    Error::at(
-                        source,
-                        op.offset,
-                        "semantic comparison properties require a direct storage field",
-                    )
-                })?;
-            fields.push(field.clone());
-        }
-        writeln!(ops, "crate::Opcode::{} => {{ let Self::{} {{ {}, .. }} = self else {{ unreachable!(\"checked semantic property layout\") }}; alloc::vec![{}] }},", op.name, op.format, fields.join(", "), fields.iter().map(|f| format!("{f}.predicate()")).collect::<Vec<_>>().join(", ")).unwrap();
-    }
-    ops.push_str("_ => alloc::vec![],\n} } }\n");
     ops.push_str(&dispatch);
     let (text_parser, text_printer) = crate::text::generate(defs, source)?;
     Ok(Generated {
@@ -157,6 +110,8 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         text_printer,
         types,
         validation: crate::constraints::generate(defs),
+        evaluation: crate::evaluate::generate(defs, source)?,
+        semantics: semantic_specs(defs),
         opcodes: ops,
     })
 }
@@ -193,12 +148,6 @@ pub(crate) fn pattern(p: &Pattern, classes: &crate::type_gen::Classes) -> String
         Pattern::VectorOf(var) => format!("P::VectorOf({var})"),
         Pattern::ShapeOf(var, class) => format!("P::ShapeOf({var}, {})", classes.reference(class)),
     }
-}
-
-fn algebraic(constant: Option<veloc_semantics::BvConst>) -> String {
-    constant
-        .map(|c| format!("Some(crate::opspec::AlgebraicConstant::{c:?})"))
-        .unwrap_or_else(|| "None".into())
 }
 
 fn accessors(defs: &Definitions) -> String {
@@ -264,15 +213,48 @@ fn accessors(defs: &Definitions) -> String {
     output
 }
 
-fn semantics(semantics: Option<&Semantic>) -> String {
-    let Some(semantics) = semantics else {
-        return "None".into();
-    };
+fn semantic_specs(defs: &Definitions) -> String {
+    let mut code = String::from(HEADER);
+    code.push_str(
+        "/// Offline descriptions; include only in a verification tool or test.\n\
+        pub static SPECS: &[veloc_semantics::SemanticSpec<veloc_mir::Opcode>] = &[\n",
+    );
+    for op in &defs.ops {
+        if let Some(sem) = &op.semantics {
+            writeln!(
+                code,
+                "veloc_semantics::SemanticSpec {{ opcode: veloc_mir::Opcode::{}, program: {} }},",
+                op.name,
+                semantics(sem)
+            )
+            .unwrap();
+        }
+    }
+    code.push_str("];\n");
+    if let Some(comparison) = defs.comparisons.iter().find(|c| c.name == "IntCC")
+        && let Some(predicates) = comparison.integer_predicates()
+    {
+        code.push_str("#[allow(dead_code)] pub fn predicate(cc: veloc_mir::IntCC) -> veloc_semantics::IntPredicate { match cc {\n");
+        for (name, p) in predicates {
+            writeln!(
+                code,
+                "veloc_mir::IntCC::{name} => veloc_semantics::IntPredicate::new({}, {}),",
+                p.signed(),
+                p.outcomes()
+            )
+            .unwrap();
+        }
+        code.push_str("} }\n");
+    }
+    code
+}
+
+fn semantics(semantics: &Semantic) -> String {
     let steps = semantics
         .steps
         .iter()
         .map(|step| match step {
-            SemanticStep::Input(input) => format!("crate::semantics::Step::Input({input})"),
+            SemanticStep::Input(input) => format!("Step::Input({input})"),
             SemanticStep::Const { value, ty } => {
                 format!("Step::Const {{ value: BvConst::{value:?}, ty: TypeRef::{ty:?} }}")
             }
@@ -308,7 +290,7 @@ fn semantics(semantics: Option<&Semantic>) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Some({{ #[allow(unused_imports)] use crate::semantics::{{Program, Step, BvConst, BvOp, TypeRef, ComparisonRef, Conversion, IntPredicate, Trap}}; const PROGRAM: Program<'static> = Program {{ inputs: {}, properties: {}, steps: &[{steps}], outputs: &{:?}, traps: &[{traps}] }}; PROGRAM }})",
+        "{{ #[allow(unused_imports)] use veloc_semantics::{{Program, Step, BvConst, BvOp, TypeRef, ComparisonRef, Conversion, IntPredicate, Trap}}; const PROGRAM: Program<'static> = Program {{ inputs: {}, properties: {}, steps: &[{steps}], outputs: &{:?}, traps: &[{traps}] }}; PROGRAM }}",
         semantics.inputs,
         semantics.properties.len(),
         semantics.outputs

@@ -253,10 +253,6 @@ impl core::fmt::Display for OpTraits {
     }
 }
 
-/// Type-independent constants used by canonicalization. Consumers materialize
-/// the value according to the operation's concrete operand type.
-pub use veloc_semantics::BvConst as AlgebraicConstant;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpSpec {
     pub mnemonic: &'static str,
@@ -266,11 +262,6 @@ pub struct OpSpec {
     pub memory_effect: MemoryEffect,
     /// Descriptive predicates/diagnostics; executable checks are generated from definitions.
     pub constraints: &'static [&'static str],
-    pub identity: Option<AlgebraicConstant>,
-    pub absorbing: Option<AlgebraicConstant>,
-    /// Scalar bitvector program, applied independently to vector lanes.
-    /// This does not describe predication, memory, or machine state effects.
-    pub semantics: Option<crate::semantics::Program<'static>>,
 }
 
 impl OpSpec {
@@ -422,38 +413,6 @@ mod tests {
     }
 
     #[test]
-    fn composed_negation_contract_drives_execution_and_smt_export() {
-        use crate::semantics::{BvOp, Expr, Function, Sort, Value, Width, equivalence_query};
-
-        let program = Opcode::INeg.spec().semantics.unwrap();
-        assert_eq!(program.primitive(), None);
-        assert_eq!(program.arity(), 1);
-        for bits in [8, 16, 32, 64, 128] {
-            let width = Width::new(bits).unwrap();
-            let function = program
-                .instantiate(&[Sort::Bv(width)], &[Sort::Bv(width)], &[])
-                .unwrap();
-            let primitive = Function::new(
-                alloc::vec![Sort::Bv(width)],
-                Expr::apply(BvOp::Neg, &[Expr::input(0, Sort::Bv(width))]).unwrap(),
-            )
-            .unwrap();
-            for input in [0, 1, width.mask(), 1u128 << (bits - 1)] {
-                let expected = BvOp::Neg.eval(bits, &[input]).unwrap();
-                assert_eq!(
-                    function.eval(&[Value::Bv(input)]).unwrap(),
-                    Value::Bv(expected)
-                );
-            }
-            // Emission is tested here; proving the query unsatisfiable remains
-            // the optional solver consumer's responsibility.
-            let query = equivalence_query(&function, &primitive).unwrap();
-            assert!(query.contains("bvsub"));
-            assert!(query.contains("bvneg"));
-        }
-    }
-
-    #[test]
     fn opcode_spec_invariants_hold() {
         assert!(core::ptr::eq(
             Opcode::IAdd.spec().type_scheme,
@@ -472,18 +431,6 @@ mod tests {
                 );
             }
 
-            if spec.identity.is_some() || spec.absorbing.is_some() {
-                assert!(
-                    spec.is_commutative(),
-                    "{} algebraic constant",
-                    spec.mnemonic
-                );
-                assert!(
-                    spec.is_associative(),
-                    "{} algebraic constant",
-                    spec.mnemonic
-                );
-            }
             if spec.is_idempotent() {
                 assert!(spec.is_commutative());
                 assert!(spec.is_associative());

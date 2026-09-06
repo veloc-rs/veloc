@@ -1742,6 +1742,8 @@ dependencies = [
  "smallvec",
  "veloc-isle",
  "veloc-mir",
+ "veloc-opgen",
+ "veloc-semantics",
 ]
 
 [[package]]
@@ -1775,7 +1777,6 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "veloc-opgen",
- "veloc-semantics",
 ]
 
 [[package]]
@@ -1794,6 +1795,8 @@ dependencies = [
  "smallvec",
  "veloc-analyzer",
  "veloc-mir",
+ "veloc-opgen",
+ "veloc-semantics",
 ]
 
 [[package]]
