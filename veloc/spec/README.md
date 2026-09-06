@@ -8,7 +8,7 @@ for a future structured representation. The machine-facing IR is LIR, in
 The MIR definitions live in `veloc/mir/defs/`:
 
 - `types.ops`: compact type encoding, scalar definitions, named vectors and type sets.
-- `builtins.ops`: trait bits, memory-region bits and named memory effects.
+- `builtins.ops`: flag sets for traits/memory regions and named memory effects.
 - `comparisons.ops`: integer and floating-point condition-code semantics.
 - `formats.ops`: compact storage layouts, structured property records and
   alternate-layout projections.
@@ -49,6 +49,32 @@ full-domain meanings, mnemonic collisions and invalid outcomes are errors.
 All transforms run at build time and emit direct const Rust matches. Comparison
 evaluation and target lowering remain separate Rust/ISLE consumers; this finite
 model does not specify floating-point exceptions or memory behavior.
+
+## Packed encodings
+
+`encoding` declares sequential bit fields, shared by compact types and memory
+attributes. For example, `builtins.ops` defines:
+
+```text
+encoding MemFlags {
+    storage: u16,
+    fields: [alignment_log2(4), volatile(1)]
+}
+```
+
+Ordinary encodings generate a private integer representation, zero initialization
+(`empty`/`Default`), and const field accessors. One-bit fields generate
+`is_volatile()` and `with_volatile(bool)`; wider fields generate
+`alignment_log2()`, `with_alignment_log2(value)` and `ALIGNMENT_LOG2_MAX`.
+Setters preserve neighboring fields and assert that values fit instead of
+silently truncating them. Storage supports `u8` through `u128`. Widths, duplicate
+fields and generated method conflicts are checked before code generation.
+Unlike flag sets, packed records do not expose `union` or `contains`.
+
+Rust implements semantic wrappers such as `MemFlags::with_alignment`: validating
+power-of-two alignment, converting to log2 and conservatively clamping to the
+declared field limit. `Type` retains its specialized Rust projection and scalar
+code table while sharing the physical layout parser and checks.
 
 ## Type encoding
 
@@ -207,17 +233,41 @@ errors. Defining a predicate does not change type construction or layout legalit
 ## Traits and effects
 
 ```text
-trait COMMUTATIVE { bit: 1 }
-region GLOBAL { bit: 2 }
+flags OpTraits {
+    storage: u16,
+    members: [TERMINATOR(0), COMMUTATIVE(1)],
+    separator: ", "
+}
+flags MemoryRegions {
+    storage: u8,
+    members: [HEAP(0), STACK(1), GLOBAL(2)],
+    separator: ","
+}
 effect GLOBAL_READ { reads: [GLOBAL], writes: [] }
 ```
 
-Trait/region declarations generate constants and display metadata. Explicit bit
-positions preserve the representation independently of declaration/display order.
-`MemoryRegions::NONE` and `ALL` are derived; effects refer to region sets, with
+`flags` declares a named set with unsigned storage (`u8` through `u128`), explicit
+member bit positions and a display separator. It generates the private-storage
+struct, member constants, `NONE`, `ALL`, `empty`, `is_empty`, `union`, `contains`,
+`intersects` and `Display`. Display follows declaration order, lowercases member
+names and changes underscores to hyphens; the empty set prints `none`.
+Bit positions preserve representation independently of declaration/display order.
+Set names are not restricted to `OpTraits` and `MemoryRegions`; these two are the
+MIR adapter's trait and memory-region vocabularies. The old standalone `trait`
+and `region` declarations are no longer supported.
+
+Flag sets and `encoding Type` use the same checked storage and bit-layout code
+for widths, masks, occupied bits and overlap detection. Flags are one-bit fields
+at explicit positions; Type packs multi-bit fields in declaration order. Their
+meaning and generated APIs remain separate: Type is not a set, and its raw APIs
+still require `u16`. Its scalar-code and vector-shape constraints remain in the
+Type adapter. `MemoryEffect` and memory-conflict behavior remain handwritten Rust.
+
+Effects refer to the declared `MemoryRegions` set, with
 `[ALL]` denoting all declared regions. The reserved effect `NONE` must be empty;
 `UNKNOWN` must read and write every region. Purity checks inspect the sets, not
-the effect's name. Duplicate bits and unknown references fail before emission.
+the effect's name. Duplicate members, overlapping bits, out-of-range positions
+and unknown references fail before emission.
 
 This is a vocabulary, not an arbitrary executable extension language. Generic
 type inference, memory-conflict algorithms, primitive bitvector meanings and

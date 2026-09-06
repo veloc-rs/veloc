@@ -1,6 +1,6 @@
 use veloc_mir::dfg::{DataFlowGraph, PoolKey};
 use veloc_mir::inst::{VectorExtData, VectorExtId, VectorMemExtId};
-use veloc_mir::opspec::OpFormat;
+use veloc_mir::opcode::OpFormat;
 use veloc_mir::types::{BlockCallData, JumpTableData};
 use veloc_mir::{
     Block, CallConv, InstructionData, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value,
@@ -76,7 +76,7 @@ fn branch_table_rewriting_visits_successor_arguments() {
 fn pooled_memory_layout_checks_arity_and_keeps_auxiliary_operands_separate() {
     let mut dfg = DataFlowGraph::new();
     let values = [Value(0), Value(1), Value(2)];
-    let flags = MemFlags::VOLATILE.with_alignment(8);
+    let flags = MemFlags::new().with_volatile(true).with_alignment(8);
     let ext = VectorMemExtId::insert(
         &mut dfg,
         VectorMemOptions {
@@ -138,7 +138,7 @@ fn generated_memory_builders_preserve_field_order() {
     let ptr = builder.func_param(0);
     let value = builder.func_param(1);
     let slot = builder.create_stack_slot(64);
-    let flags = MemFlags::VOLATILE.with_alignment(8);
+    let flags = MemFlags::new().with_volatile(true).with_alignment(8);
 
     // Both operands are pointers: reversing them would still pass type validation.
     builder.ins().store(ptr, value, 16, flags);

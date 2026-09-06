@@ -1,16 +1,21 @@
 // Declaration order determines display order; bit positions remain explicit and stable.
 // Semantic laws and control-flow behavior are implemented by trusted Rust consumers.
-trait TERMINATOR { bit: 0 }
-trait COMMUTATIVE { bit: 1 }
-trait ASSOCIATIVE { bit: 3 }
-trait IDEMPOTENT { bit: 4 }
-trait MAY_TRAP { bit: 2 }
+encoding MemFlags {
+    storage: u16,
+    fields: [alignment_log2(4), volatile(1)]
+}
 
-region HEAP { bit: 0 }
-region STACK { bit: 1 }
-region GLOBAL { bit: 2 }
-region TABLE { bit: 3 }
-region EXTERNAL { bit: 4 }
+flags OpTraits {
+    storage: u16,
+    members: [TERMINATOR(0), COMMUTATIVE(1), ASSOCIATIVE(3), IDEMPOTENT(4), MAY_TRAP(2)],
+    separator: ", "
+}
+
+flags MemoryRegions {
+    storage: u8,
+    members: [HEAP(0), STACK(1), GLOBAL(2), TABLE(3), EXTERNAL(4)],
+    separator: ","
+}
 
 effect NONE { reads: [], writes: [] }
 effect UNKNOWN { reads: [ALL], writes: [ALL] }

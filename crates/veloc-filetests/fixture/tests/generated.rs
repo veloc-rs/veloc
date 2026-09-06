@@ -21,6 +21,71 @@ mod offline {
 include!(concat!(env!("OUT_DIR"), "/lowering.rs"));
 
 #[test]
+fn generated_encodings_preserve_neighboring_fields_and_check_ranges() {
+    use veloc_mir::opcode::{MemFlags, PackedRecord, WideRecord};
+    const PACKED: PackedRecord = PackedRecord::empty()
+        .with_enabled(true)
+        .with_count(7)
+        .with_tag(15);
+    assert!(PACKED.is_enabled());
+    assert_eq!(PACKED.count(), 7);
+    assert_eq!(PACKED.tag(), 15);
+    let cleared = PACKED.with_count(0).with_enabled(false);
+    assert!(!cleared.is_enabled());
+    assert_eq!(cleared.count(), 0);
+    assert_eq!(cleared.tag(), 15);
+    assert_eq!(WideRecord::empty().with_value(u128::MAX).value(), u128::MAX);
+    assert!(std::panic::catch_unwind(|| PACKED.with_count(8)).is_err());
+    assert_eq!(MemFlags::default().alignment(), 1);
+    for log2 in 0..32 {
+        let flags = MemFlags::new()
+            .with_volatile(true)
+            .with_alignment(1 << log2);
+        assert!(flags.is_volatile());
+        assert_eq!(flags.alignment(), 1 << log2.min(15));
+        assert_eq!(flags.with_volatile(false).alignment(), flags.alignment());
+    }
+    for invalid in [0, 3, u32::MAX] {
+        assert!(std::panic::catch_unwind(|| MemFlags::new().with_alignment(invalid)).is_err());
+    }
+}
+
+#[test]
+fn generated_flag_sets_preserve_bits_order_and_set_operations() {
+    use veloc_mir::opcode::{EmptyFlags, MemoryRegions, OpTraits, TestFlags as F};
+    const SELECTED: F = F::HIGH.union(F::LOW_BIT);
+    const {
+        assert!(F::ALL.contains(SELECTED));
+        assert!(SELECTED.contains(F::HIGH));
+        assert!(!SELECTED.contains(F::ALL));
+        assert!(SELECTED.intersects(F::LOW_BIT.union(F::MIDDLE)));
+        assert!(!SELECTED.intersects(F::MIDDLE));
+        assert!(F::NONE.is_empty());
+        assert!(F::HIGH.contains(F::NONE));
+        assert!(!F::HIGH.intersects(F::NONE));
+        assert!(EmptyFlags::ALL.is_empty());
+    }
+    assert_eq!(size_of::<F>(), 16);
+    assert_eq!(size_of::<MemoryRegions>(), 1);
+    assert_eq!(size_of::<OpTraits>(), 2);
+    assert_eq!(F::HIGH.union(F::LOW_BIT).union(F::MIDDLE), F::ALL);
+    assert_eq!(F::ALL.to_string(), "high / low-bit / middle");
+    assert_eq!(SELECTED.to_string(), "high / low-bit");
+    assert_eq!(F::empty().to_string(), "none");
+    assert_eq!(EmptyFlags::ALL.to_string(), "none");
+    assert_eq!(
+        MemoryRegions::HEAP.union(MemoryRegions::STACK).to_string(),
+        "heap,stack"
+    );
+    assert_eq!(
+        OpTraits::TERMINATOR
+            .union(OpTraits::COMMUTATIVE)
+            .to_string(),
+        "terminator, commutative"
+    );
+}
+
+#[test]
 fn construction_does_not_validate_type_contracts() {
     for (case, expected) in [
         ("binding", "Pattern { results: false, index: 1"),

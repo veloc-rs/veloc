@@ -1,0 +1,100 @@
+// ----- overlapping-members
+// run: opgen-error
+// check: bit field `SECOND` overlaps another field
+flags TestFlags { storage: u8, members: [FIRST(0), SECOND(0)], separator: "," }
+
+// ----- duplicate-member
+// run: opgen-error
+// check: duplicate bit field `FIRST`
+flags TestFlags { storage: u8, members: [FIRST(0), FIRST(1)], separator: "," }
+
+// ----- bit-outside-storage
+// run: opgen-error
+// check: fit u8
+flags TestFlags { storage: u8, members: [HIGH(8)], separator: "," }
+
+// ----- wider-storage-boundary
+// run: opgen-error
+// check: fit u128
+flags TestFlags { storage: u128, members: [HIGH(128)], separator: "," }
+
+// ----- extreme-bit-position
+// run: opgen-error
+// check: fit u16
+flags TestFlags { storage: u16, members: [HIGH(4294967295)], separator: "," }
+
+// ----- signed-storage
+// run: opgen-error
+// check: bit storage must be u8, u16, u32, u64 or u128
+flags TestFlags { storage: i8, members: [], separator: "," }
+
+// ----- missing-storage
+// run: opgen-error
+// check: missing `storage`
+flags TestFlags { members: [], separator: "," }
+
+// ----- missing-members
+// run: opgen-error
+// check: missing `members`
+flags TestFlags { storage: u8, separator: "," }
+
+// ----- reserved-member
+// run: opgen-error
+// check: cannot be NONE, ALL or NAMES
+flags TestFlags { storage: u8, members: [ALL(1)], separator: "," }
+
+// ----- lowercase-member
+// run: opgen-error
+// check: flag names must be uppercase
+flags TestFlags { storage: u8, members: [lower(1)], separator: "," }
+
+// ----- missing-bit
+// run: opgen-error
+// check: expected MEMBER(bit)
+flags TestFlags { storage: u8, members: [LOW], separator: "," }
+
+// ----- extra-bit
+// run: opgen-error
+// check: exactly one bit position
+flags TestFlags { storage: u8, members: [LOW(0, 1)], separator: "," }
+
+// ----- nonnumeric-bit
+// run: opgen-error
+// check: expected a number
+flags TestFlags { storage: u8, members: [LOW(bit)], separator: "," }
+
+// ----- nontext-separator
+// run: opgen-error
+// check: flag separator must be a string
+flags TestFlags { storage: u8, members: [], separator: 1 }
+
+// ----- unknown-field
+// run: opgen-error
+// check: unknown field `typo`
+flags TestFlags { storage: u8, members: [], separator: ",", typo: 0 }
+
+// ----- duplicate-set
+// run: opgen-error
+// check: duplicate flags `TestFlags`
+flags TestFlags { storage: u8, members: [], separator: "," }
+flags TestFlags { storage: u8, members: [], separator: "," }
+
+// ----- old-trait-syntax
+// run: opgen-error
+// check: unknown definition kind `trait`
+trait EXTRA { bit: 5 }
+
+// ----- reserved-type-name
+// run: opgen-error
+// check: bit layout `MemFlags` conflicts with a MIR opcode type or module
+flags MemFlags { storage: u8, members: [], separator: "," }
+
+// ----- comparison-type-name
+// run: opgen-error
+// check: bit layout `IntCC` conflicts with a MIR opcode type or module
+flags IntCC { storage: u8, members: [], separator: "," }
+
+// ----- old-region-syntax
+// run: opgen-error
+// check: unknown definition kind `region`
+region DEVICE { bit: 5 }

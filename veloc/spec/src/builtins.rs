@@ -1,9 +1,10 @@
-//! Checked trait and memory-effect vocabulary. Type definitions live in types.rs.
+//! Named flag sets and the MIR trait/memory-effect vocabulary.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Error;
-use crate::model::{Fields, list, name};
+use crate::encoding::{BitLayout, Storage};
+use crate::model::{Fields, identifier, list, name};
 use crate::syntax::{Kind, Node, Record};
 
 #[derive(Debug)]
@@ -13,9 +14,71 @@ pub(crate) struct Flag {
 }
 
 #[derive(Debug)]
+pub(crate) struct Flags {
+    pub storage: Storage,
+    pub members: Vec<Flag>,
+    pub separator: String,
+    all: u128,
+}
+
+impl Flags {
+    fn compile(source: &str, fields: &mut Fields<'_>) -> Result<Self, Error> {
+        let storage = Storage::parse(source, fields.take("storage")?)?;
+        let mut layout = BitLayout::new(storage);
+        let mut members: Vec<Flag> = Vec::new();
+        for node in list(source, fields.take("members")?)? {
+            let Kind::Call(name, args) = node.kind else {
+                return Err(Error::at(source, node.offset, "expected MEMBER(bit)"));
+            };
+            identifier(source, node.offset, &name)?;
+            if name != name.to_ascii_uppercase()
+                || matches!(name.as_str(), "NONE" | "ALL" | "NAMES")
+            {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "flag names must be uppercase and cannot be NONE, ALL or NAMES",
+                ));
+            }
+            let [bit] = args.as_slice() else {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "flag member requires exactly one bit position",
+                ));
+            };
+            let bit = number(source, bit.clone())?;
+            layout.insert(source, node.offset, &name, 1, bit)?;
+            members.push(Flag {
+                name,
+                bit: bit as u8,
+            });
+        }
+        let separator = fields.take("separator")?;
+        let Kind::Text(separator) = separator.kind else {
+            return Err(Error::at(
+                source,
+                separator.offset,
+                "flag separator must be a string",
+            ));
+        };
+        Ok(Self {
+            storage,
+            members,
+            separator,
+            all: layout.used,
+        })
+    }
+
+    pub fn all(&self) -> u128 {
+        self.all
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct Effect {
-    pub reads: u8,
-    pub writes: u8,
+    pub reads: u128,
+    pub writes: u128,
 }
 
 impl Effect {
@@ -26,8 +89,8 @@ impl Effect {
 
 #[derive(Debug, Default)]
 pub(crate) struct Builtins {
-    pub traits: Vec<Flag>,
-    pub regions: Vec<Flag>,
+    pub encodings: BTreeMap<String, BitLayout>,
+    pub flags: BTreeMap<String, Flags>,
     pub effects: BTreeMap<String, Effect>,
 }
 
@@ -35,33 +98,41 @@ impl Builtins {
     pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
         let mut defs = Self::default();
         let mut effects = Vec::new();
-        for record in records.iter().filter(|r| Self::is_definition(&r.kind)) {
+        for record in records
+            .iter()
+            .filter(|r| Self::is_definition(&r.kind) && !(r.kind == "encoding" && r.name == "Type"))
+        {
             let mut fields = Fields::new(source, record.clone());
             match record.kind.as_str() {
-                "trait" | "region" => {
-                    let flags = if record.kind == "trait" {
-                        &mut defs.traits
+                "flags" | "encoding" => {
+                    if matches!(
+                        record.name.as_str(),
+                        "Opcode"
+                            | "OpFormat"
+                            | "TypeClass"
+                            | "MemoryEffect"
+                            | "OpSpec"
+                            | "TypeError"
+                            | "type_rules"
+                    ) || records.iter().any(|other| {
+                        (other.kind == "comparison"
+                            || (other.kind != record.kind
+                                && matches!(other.kind.as_str(), "flags" | "encoding")))
+                            && other.name == record.name
+                    }) {
+                        return Err(fields.error(format!(
+                            "bit layout `{}` conflicts with a MIR opcode type or module",
+                            record.name
+                        )));
+                    }
+                    if record.kind == "flags" {
+                        let flags = Flags::compile(source, &mut fields)?;
+                        defs.flags.insert(record.name.clone(), flags);
                     } else {
-                        &mut defs.regions
-                    };
-                    let limit = if record.kind == "trait" { 16 } else { 8 };
-                    let bit = number(source, fields.take("bit")?)?;
-                    if record.name != record.name.to_ascii_uppercase()
-                        || matches!(record.name.as_str(), "NONE" | "ALL" | "NAMES")
-                    {
-                        return Err(fields.error(
-                            "flag names must be uppercase and cannot be NONE, ALL or NAMES",
-                        ));
+                        let layout = BitLayout::packed(source, &mut fields)?;
+                        layout.check_methods(source, record.offset)?;
+                        defs.encodings.insert(record.name.clone(), layout);
                     }
-                    if bit >= limit || flags.iter().any(|f| u32::from(f.bit) == bit) {
-                        return Err(
-                            fields.error(format!("flag bit must be unique and less than {limit}"))
-                        );
-                    }
-                    flags.push(Flag {
-                        name: record.name.clone(),
-                        bit: bit as u8,
-                    });
                 }
                 "effect" => {
                     if record.name != record.name.to_ascii_uppercase() {
@@ -105,7 +176,7 @@ impl Builtins {
     }
 
     pub fn is_definition(kind: &str) -> bool {
-        matches!(kind, "trait" | "region" | "effect")
+        matches!(kind, "flags" | "effect" | "encoding")
     }
 
     pub fn effect(&self, source: &str, node: Node) -> Result<String, Error> {
@@ -118,11 +189,7 @@ impl Builtins {
         let offset = node.offset;
         let values = list(source, node)?
             .into_iter()
-            .map(|n| {
-                self.reference(source, n, "trait", |n| {
-                    self.traits.iter().any(|t| t.name == n)
-                })
-            })
+            .map(|n| self.reference(source, n, "trait", |n| self.has_trait(n)))
             .collect::<Result<Vec<_>, _>>()?;
         if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
             return Err(Error::at(source, offset, "duplicate trait"));
@@ -150,11 +217,17 @@ impl Builtins {
         }
     }
 
-    pub fn all_regions(&self) -> u8 {
-        self.regions.iter().fold(0, |bits, r| bits | (1 << r.bit))
+    pub fn has_trait(&self, name: &str) -> bool {
+        self.flags
+            .get("OpTraits")
+            .is_some_and(|flags| flags.members.iter().any(|flag| flag.name == name))
     }
 
-    fn region_set(&self, source: &str, node: Node) -> Result<u8, Error> {
+    fn all_regions(&self) -> u128 {
+        self.flags.get("MemoryRegions").map_or(0, Flags::all)
+    }
+
+    fn region_set(&self, source: &str, node: Node) -> Result<u128, Error> {
         let mut bits = 0;
         let mut seen = BTreeSet::new();
         let values = list(source, node)?;
@@ -174,9 +247,9 @@ impl Builtins {
                 self.all_regions()
             } else {
                 let region = self
-                    .regions
-                    .iter()
-                    .find(|r| r.name == name)
+                    .flags
+                    .get("MemoryRegions")
+                    .and_then(|flags| flags.members.iter().find(|r| r.name == name))
                     .ok_or_else(|| {
                         Error::at(
                             source,
@@ -184,7 +257,7 @@ impl Builtins {
                             format!("unknown memory region `{name}`"),
                         )
                     })?;
-                1 << region.bit
+                1u128 << region.bit
             };
             bits |= value;
         }

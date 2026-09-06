@@ -84,7 +84,7 @@ fn encodings_are_explicit_and_can_be_forward_referenced() {
     rejected(&format!("{BUILTINS}\n{TYPES}"), "duplicate encoding");
     rejected(
         &TYPES.replace("encoding Type", "encoding Other"),
-        "only supports encoding Type",
+        "missing encoding Type",
     );
 }
 
@@ -95,17 +95,13 @@ fn malformed_or_unsupported_layouts_are_rejected_before_generation() {
         ("storage: u16,", "", "missing `storage`"),
         ("scalar(4)", "scalar(0)", "positive widths"),
         ("scalar(4)", "scalar(4294967295)", "fit u16"),
-        ("scalar(4)", "scalar(16)", "MIR API representation"),
+        ("scalar(4)", "scalar(16)", "fit u16"),
         ("scalable(1)", "scalable(16)", "fit u16"),
         ("scalar(4)", "scalar(9)", "MIR API representation"),
         ("lanes_log2(4)", "lanes_log2(5)", "MIR API representation"),
         ("scalable(1)", "scalable(2)", "MIR API representation"),
         ("scalar(4)", "unknown(4)", "unknown Type encoding field"),
-        (
-            "scalar(4)",
-            "scalar(4), scalar(4)",
-            "duplicate Type encoding field",
-        ),
+        ("scalar(4)", "scalar(4), scalar(4)", "duplicate bit field"),
         ("scalar(4)", "scalar", "expected encoding field(bits)"),
         ("scalar(4)", "scalar(4, 4)", "expected encoding field(bits)"),
         ("scalar(4)", "scalar(width)", "width must be a number"),

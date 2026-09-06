@@ -1,5 +1,5 @@
 use super::dfg::DataFlowGraph;
-use crate::opspec::{MemoryEffect, OpFormat};
+use crate::opcode::{MemoryEffect, OpFormat};
 use crate::types::{BlockCall, FuncId, JumpTable, StackSlot, Value, ValueList};
 use crate::{FloatCC, IntCC, Intrinsic, MemFlags, Opcode, SigId};
 use core::fmt;

@@ -1,0 +1,34 @@
+// ----- packed-overflow
+// run: opgen-error
+// check: fit u8
+encoding Packed { storage: u8, fields: [low(4), high(5)] }
+
+// ----- zero-width
+// run: opgen-error
+// check: positive widths
+encoding Packed { storage: u16, fields: [low(0)] }
+
+// ----- repeated-field
+// run: opgen-error
+// check: duplicate bit field `low`
+encoding Packed { storage: u16, fields: [low(4), low(4)] }
+
+// ----- method-conflict
+// run: opgen-error
+// check: duplicate encoding method `is_enabled`
+encoding Packed { storage: u16, fields: [enabled(1), is_enabled(4)] }
+
+// ----- reserved-method
+// run: opgen-error
+// check: duplicate encoding method `empty`
+encoding Packed { storage: u8, fields: [empty(2)] }
+
+// ----- unknown-field
+// run: opgen-error
+// check: unknown field `typo`
+encoding Packed { storage: u8, fields: [value(8)], typo: 1 }
+
+// ----- type-conflict
+// run: opgen-error
+// check: bit layout `Opcode` conflicts
+encoding Opcode { storage: u8, fields: [] }

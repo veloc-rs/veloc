@@ -1,4 +1,11 @@
 // Exercise contracts not represented by production MIR instructions.
+flags TestFlags {
+    storage: u128,
+    members: [HIGH(127), LOW_BIT(0), MIDDLE(63)],
+    separator: " / "
+}
+flags EmptyFlags { storage: u8, members: [], separator: "," }
+
 format Quinary { fields: [opcode(Opcode), args(values(5))], opcode: dynamic(opcode) }
 format Empty { fields: [opcode(Opcode)], opcode: dynamic(opcode) }
 
@@ -106,3 +113,8 @@ comparison FloatOrderCC {
     predicates: [Before([less]), After([greater]),
                  NotBefore([equal, greater, unordered]), NotAfter([less, equal, unordered])]
 }
+encoding PackedRecord {
+    storage: u8,
+    fields: [enabled(1), count(3), tag(4)]
+}
+encoding WideRecord { storage: u128, fields: [value(128)] }

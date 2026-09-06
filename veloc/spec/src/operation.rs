@@ -152,7 +152,7 @@ pub(super) fn parse(
             &mut absorbing,
         )?;
         for name in &traits {
-            if !builtins.traits.iter().any(|t| &t.name == name) {
+            if !builtins.has_trait(name) {
                 return Err(
                     fields.error(format!("semantic law requires undeclared trait `{name}`"))
                 );

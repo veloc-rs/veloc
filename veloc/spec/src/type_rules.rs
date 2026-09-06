@@ -39,7 +39,7 @@ pub(crate) fn generate(
         groups[id].push(&op.name);
     }
     ops.push_str("impl Opcode {\n");
-    ops.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), crate::opspec::TypeError> {\n    match self {\n");
+    ops.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), crate::opcode::TypeError> {\n    match self {\n");
     for (id, names) in groups.iter().enumerate() {
         let arms = names
             .iter()
@@ -48,7 +48,7 @@ pub(crate) fn generate(
             .join(" | ");
         writeln!(
             ops,
-            "        {arms} => crate::opspec::type_rules::validate_{id}(operands, results),"
+            "        {arms} => crate::opcode::type_rules::validate_{id}(operands, results),"
         )
         .unwrap();
     }

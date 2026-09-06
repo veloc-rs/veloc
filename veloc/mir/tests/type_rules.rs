@@ -1,4 +1,4 @@
-use veloc_mir::opspec::TypeError;
+use veloc_mir::opcode::TypeError;
 use veloc_mir::types::TypeBits;
 use veloc_mir::{Opcode, Type, TypeSize};
 

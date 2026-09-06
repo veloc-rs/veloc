@@ -27,30 +27,30 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         writeln!(ops, "        Self::{},", op.name).unwrap();
     }
     ops.push_str(
-        "    ];\n    pub const fn spec(self) -> &'static crate::opspec::OpSpec {\n        match self {\n",
+        "    ];\n    pub const fn spec(self) -> &'static crate::opcode::OpSpec {\n        match self {\n",
     );
     for op in &defs.ops {
         writeln!(
             ops,
-            "            Self::{} => {{\n                static SPEC: crate::opspec::OpSpec = crate::opspec::OpSpec {{",
+            "            Self::{} => {{\n                static SPEC: crate::opcode::OpSpec = crate::opcode::OpSpec {{",
             op.name
         )
         .unwrap();
         writeln!(ops, "                    mnemonic: {:?},", op.mnemonic).unwrap();
         writeln!(
             ops,
-            "                    format: crate::opspec::OpFormat::{},",
+            "                    format: crate::opcode::OpFormat::{},",
             op.format
         )
         .unwrap();
-        ops.push_str("                    traits: crate::opspec::OpTraits::empty()");
+        ops.push_str("                    traits: crate::opcode::OpTraits::empty()");
         for prop in &op.traits {
-            write!(ops, ".union(crate::opspec::OpTraits::{prop})").unwrap();
+            write!(ops, ".union(crate::opcode::OpTraits::{prop})").unwrap();
         }
         ops.push_str(",\n");
         writeln!(
             ops,
-            "                    memory_effect: crate::opspec::MemoryEffect::{},",
+            "                    memory_effect: crate::opcode::MemoryEffect::{},",
             op.memory
         )
         .unwrap();

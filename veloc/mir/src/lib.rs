@@ -11,14 +11,13 @@ pub mod inst;
 
 pub mod layout;
 pub mod module;
-pub mod opspec;
+pub mod opcode;
 pub mod text;
 pub mod types;
 pub mod validator;
 
 pub mod constant;
 pub mod intrinsic;
-mod opcode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallConv {

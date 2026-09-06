@@ -144,19 +144,11 @@ fn compact_scalar_codes_and_adapter_contracts_are_checked() {
 }
 
 #[test]
-fn traits_and_regions_have_checked_bits_and_generated_names() {
-    for (defs, error) in [
-        ("trait EXTRA { bit: 0 }", "flag bit must be unique"),
-        ("trait EXTRA { bit: 16 }", "less than 16"),
-        ("region EXTRA { bit: 0 }", "flag bit must be unique"),
-        ("region EXTRA { bit: 8 }", "less than 8"),
-        ("trait NAMES { bit: 5 }", "cannot be NONE, ALL or NAMES"),
-        ("region ALL { bit: 5 }", "cannot be NONE, ALL or NAMES"),
-        ("trait lower { bit: 5 }", "must be uppercase"),
-    ] {
-        rejected(&common::source(defs), error);
-    }
-    let output = compile_mir("trait EXTRA_FACT { bit: 5 } region DEVICE { bit: 5 }").unwrap();
+fn traits_and_regions_use_declared_storage_and_members() {
+    let source = common::source("")
+        .replace("MAY_TRAP(2)", "MAY_TRAP(2), EXTRA_FACT(5)")
+        .replace("EXTERNAL(4)", "EXTERNAL(4), DEVICE(5)");
+    let output = veloc_opgen::compile_mir(&source).unwrap();
     assert!(
         output
             .builtins
@@ -173,6 +165,16 @@ fn traits_and_regions_have_checked_bits_and_generated_names() {
             .builtins
             .contains("pub const UNKNOWN: Self = Self::new(MemoryRegions(63), MemoryRegions(63))")
     );
+    // The same region/effect adapter must also handle wider declared storage.
+    let source = source
+        .replace("storage: u8", "storage: u128")
+        .replace("DEVICE(5)", "DEVICE(127)");
+    let output = veloc_opgen::compile_mir(&source).unwrap();
+    let all = (1u128 << 127) | 31;
+    assert!(output.builtins.contains("pub struct MemoryRegions(u128)"));
+    assert!(output.builtins.contains(&format!(
+        "Self::new(MemoryRegions({all}), MemoryRegions({all}))"
+    )));
 }
 
 #[test]
@@ -225,7 +227,7 @@ fn effects_use_declared_regions_and_purity_not_effect_names() {
 
 #[test]
 fn inferred_traits_must_also_be_declared() {
-    let source = common::source(ADD).replace("trait COMMUTATIVE { bit: 1 }", "");
+    let source = common::source(ADD).replace("COMMUTATIVE(1), ", "");
     rejected(
         &source,
         "semantic law requires undeclared trait `COMMUTATIVE`",
@@ -234,7 +236,7 @@ fn inferred_traits_must_also_be_declared() {
 
 #[test]
 fn builtin_diagnostics_keep_the_original_record_location() {
-    let source = "\n\nregion HEAP { bit: 0 }\n\neffect NONE { reads: [HEAP], writes: [] }";
+    let source = "\n\nflags MemoryRegions { storage: u8, members: [HEAP(0)], separator: \",\" }\n\neffect NONE { reads: [HEAP], writes: [] }";
     let error = veloc_opgen::parse(&format!("{source}\n{}", common::TYPES))
         .err()
         .unwrap();

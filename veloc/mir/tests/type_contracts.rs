@@ -1,5 +1,5 @@
 //! Exercise compiled contracts across every opcode, including malformed types.
-use veloc_mir::opspec::TypeError;
+use veloc_mir::opcode::TypeError;
 use veloc_mir::{Opcode, Type};
 
 #[test]

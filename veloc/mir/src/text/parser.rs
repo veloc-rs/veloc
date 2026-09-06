@@ -420,7 +420,7 @@ fn parse_instruction_header(
                     return Err(ParseError("multiple result type suffixes".into()));
                 }
             } else if part == "volatile" {
-                flags = flags.union(MemFlags::VOLATILE);
+                flags = flags.with_volatile(true);
             } else if let Some(value) = part.strip_prefix("align") {
                 let alignment = value
                     .parse::<u32>()
