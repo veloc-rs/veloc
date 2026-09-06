@@ -17,6 +17,7 @@ pub mod types;
 pub mod validator;
 
 pub mod constant;
+pub use veloc_semantics as semantics;
 pub mod intrinsic;
 mod opcode;
 
@@ -44,7 +45,7 @@ pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 pub use text::{ModuleParser, ParseError};
 pub use types::{
     Block, BlockCall, FuncId, JumpTable, ModuleId, ScalarType, SigId, Signature, StackSlot, Type,
-    TypeSize, Value, ValueDef, ValueList, Variable,
+    TypeBits, TypeSize, Value, ValueDef, ValueList, Variable,
 };
 
 pub use inst::{Inst, InstructionData, VectorMemOptions};

@@ -24,7 +24,7 @@ impl TargetOperandLowering for X86_64OperandLowering {
     fn postselect_operand_constraints(
         &self,
         inst: &MachineInst,
-        _mfunc: &MachineFunction<SelectedMir>,
+        _mfunc: &MachineFunction<SelectedLir>,
     ) -> OperandConstraintSet {
         let MachineOpcode::Target(opcode) = inst.opcode else {
             return OperandConstraintSet::default();
@@ -48,7 +48,7 @@ impl TargetOperandLowering for X86_64OperandLowering {
 
     fn build_postselect_reg_copy(
         &self,
-        mfunc: &MachineFunction<SelectedMir>,
+        mfunc: &MachineFunction<SelectedLir>,
         dst: Reg,
         src: Reg,
     ) -> Result<MachineInst, crate::error::Error> {

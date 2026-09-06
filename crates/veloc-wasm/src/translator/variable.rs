@@ -29,7 +29,7 @@ impl<'a> WasmTranslator<'a> {
                 let val = self
                     .builder
                     .ins()
-                    .load(veloc_ty, global_val_ptr, 0, MemFlags::default());
+                    .load(global_val_ptr, 0, MemFlags::default(), veloc_ty);
                 self.stack.push(val);
             }
             Operator::GlobalSet { global_index } => {
@@ -39,7 +39,7 @@ impl<'a> WasmTranslator<'a> {
                 let global_val_ptr = self.get_global_ptr(global_index);
                 self.builder
                     .ins()
-                    .store(val, global_val_ptr, 0, MemFlags::default());
+                    .store(global_val_ptr, val, 0, MemFlags::default());
             }
             _ => unreachable!("Non-variable operator in translate_variable"),
         }

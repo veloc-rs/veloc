@@ -183,10 +183,10 @@ impl<'a> WasmTranslator<'a> {
                 self.global_ptr_vars.push(Some(var));
                 let alignment = if offset % 16 == 0 { 16 } else { 8 };
                 let ptr = self.builder.ins().load(
-                    VelocType::PTR,
                     vmctx,
                     offset,
                     MemFlags::new().with_alignment(alignment),
+                    VelocType::PTR,
                 );
                 if self.use_names {
                     self.builder
@@ -228,13 +228,13 @@ impl<'a> WasmTranslator<'a> {
     pub(super) fn encode_result_bits(&mut self, value: Value, ty: VelocType) -> Value {
         let mut ins = self.builder.ins();
         match ty {
-            VelocType::I32 => ins.extend_u(value, VelocType::I64),
+            VelocType::I32 => ins.extendu(value, VelocType::I64),
             VelocType::F32 => {
                 let bits = ins.reinterpret(value, VelocType::I32);
-                ins.extend_u(bits, VelocType::I64)
+                ins.extendu(bits, VelocType::I64)
             }
             VelocType::F64 => ins.reinterpret(value, VelocType::I64),
-            VelocType::PTR => ins.ptr_to_int(value, VelocType::I64),
+            VelocType::PTR => ins.ptrtoint(value, VelocType::I64),
             _ => value,
         }
     }
@@ -248,7 +248,7 @@ impl<'a> WasmTranslator<'a> {
                 ins.reinterpret(bits32, VelocType::F32)
             }
             VelocType::F64 => ins.reinterpret(bits, VelocType::F64),
-            VelocType::PTR => ins.int_to_ptr(bits),
+            VelocType::PTR => ins.inttoptr(bits),
             _ => bits,
         }
     }
@@ -260,8 +260,8 @@ impl<'a> WasmTranslator<'a> {
             for (i, (&val, &ty)) in vals.iter().zip(result_types.iter()).enumerate() {
                 let bits = self.encode_result_bits(val, ty);
                 self.builder.ins().store(
-                    bits,
                     results_ptr,
+                    bits,
                     (i * 8) as u32,
                     MemFlags::new().with_alignment(8),
                 );
@@ -291,8 +291,8 @@ impl<'a> WasmTranslator<'a> {
                 self.stack.push(v);
             }
             Operator::RefNull { .. } => {
-                let v = self.builder.ins().iconst(VelocType::I64, 0);
-                let null_ptr = self.builder.ins().int_to_ptr(v);
+                let v = self.builder.ins().iconst(0, VelocType::I64);
+                let null_ptr = self.builder.ins().inttoptr(v);
                 self.stack.push(null_ptr);
             }
             Operator::RefFunc { function_index } => {
@@ -412,8 +412,8 @@ impl<'a> WasmTranslator<'a> {
         match ty {
             VelocType::I32 => {
                 if v_ty == VelocType::BOOL {
-                    let one = self.builder.ins().iconst(VelocType::I32, 1);
-                    let zero = self.builder.ins().iconst(VelocType::I32, 0);
+                    let one = self.builder.ins().iconst(1, VelocType::I32);
+                    let zero = self.builder.ins().iconst(0, VelocType::I32);
                     self.builder.ins().select(v, one, zero)
                 } else if v_ty == VelocType::I64 || v_ty == VelocType::PTR {
                     self.builder.ins().wrap(v, VelocType::I32)
@@ -423,13 +423,13 @@ impl<'a> WasmTranslator<'a> {
             }
             VelocType::I64 => {
                 if v_ty == VelocType::BOOL {
-                    let one = self.builder.ins().iconst(VelocType::I64, 1);
-                    let zero = self.builder.ins().iconst(VelocType::I64, 0);
+                    let one = self.builder.ins().iconst(1, VelocType::I64);
+                    let zero = self.builder.ins().iconst(0, VelocType::I64);
                     self.builder.ins().select(v, one, zero)
                 } else if v_ty == VelocType::I32 {
-                    self.builder.ins().extend_u(v, VelocType::I64)
+                    self.builder.ins().extendu(v, VelocType::I64)
                 } else if v_ty == VelocType::PTR {
-                    self.builder.ins().ptr_to_int(v, VelocType::I64)
+                    self.builder.ins().ptrtoint(v, VelocType::I64)
                 } else {
                     v
                 }
@@ -437,7 +437,7 @@ impl<'a> WasmTranslator<'a> {
             VelocType::BOOL => self.as_cond(v),
             VelocType::PTR => {
                 if v_ty == VelocType::I64 {
-                    self.builder.ins().int_to_ptr(v)
+                    self.builder.ins().inttoptr(v)
                 } else {
                     v
                 }
@@ -473,14 +473,14 @@ impl<'a> WasmTranslator<'a> {
         if ty == VelocType::BOOL {
             self.builder.ins().bconst(false)
         } else if ty == VelocType::PTR {
-            let z = self.builder.ins().iconst(VelocType::I64, 0);
-            self.builder.ins().int_to_ptr(z)
+            let z = self.builder.ins().iconst(0, VelocType::I64);
+            self.builder.ins().inttoptr(z)
         } else if ty == VelocType::F32 {
             self.builder.ins().f32const(0.0)
         } else if ty == VelocType::F64 {
             self.builder.ins().f64const(0.0)
         } else {
-            self.builder.ins().iconst(ty, 0)
+            self.builder.ins().iconst(0, ty)
         }
     }
 
@@ -521,7 +521,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn trap(&mut self, code: crate::vm::TrapCode) {
         let vmctx = self.vmctx.expect("vmctx not set");
-        let trap_code = self.builder.ins().iconst(VelocType::I32, code as i64);
+        let trap_code = self.builder.ins().iconst(code as u64, VelocType::I32);
         self.builder
             .ins()
             .call(self.runtime.trap_handler, &[vmctx, trap_code]);

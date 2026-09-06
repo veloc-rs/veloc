@@ -19,7 +19,7 @@ use crate::target::arch::{
     TargetLegalizer, TargetMachine, TargetOperandLowering, TargetPassConfig, TargetPostIsel,
 };
 
-const X86_64_GPR_ALLOCATABLE: &[crate::mir::Reg] = &[
+const X86_64_GPR_ALLOCATABLE: &[crate::lir::Reg] = &[
     isle::REG_RAX,
     isle::REG_RDX,
     isle::REG_RBX,
@@ -32,7 +32,7 @@ const X86_64_GPR_ALLOCATABLE: &[crate::mir::Reg] = &[
     isle::REG_R14,
     isle::REG_R15,
 ];
-const X86_64_FPR_ALLOCATABLE: &[crate::mir::Reg] = &[
+const X86_64_FPR_ALLOCATABLE: &[crate::lir::Reg] = &[
     isle::REG_XMM0,
     isle::REG_XMM1,
     isle::REG_XMM2,

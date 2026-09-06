@@ -10,8 +10,8 @@ use crate::{
     Block, BlockCall, CallConv, FuncId, Function, InstructionData, Intrinsic, Linkage, MemFlags,
     Module, ModuleData, Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
     function::StackSlotData,
-    inst::{ConstantPoolData, VectorMemOptions},
-    opspec::ResultTypes,
+    inst::{ConstantPoolData, Inst, VectorMemOptions},
+    opspec::{ResultTypes, TypeList, TypeSchemeError},
     types::{BlockCallData, JumpTableData, ValueData},
 };
 use alloc::{
@@ -135,6 +135,7 @@ struct ParseContext {
     block_map: HashMap<String, Block>,
     next_value_idx: u32,
     defined_values: HashMap<Value, String>,
+    deferred_types: Vec<(Inst, usize, String)>,
 }
 
 fn parse_function_body(
@@ -192,6 +193,37 @@ fn parse_function_body(
         parse_instruction(line, *line_no, block, &mut func, &mut ctx, func_ids, module)?;
     }
 
+    for (name, value) in &ctx.value_map {
+        if !ctx.defined_values.contains_key(value) {
+            return parse_err(format!("undefined SSA value `{name}`"));
+        }
+    }
+    for (inst, line_no, line) in &ctx.deferred_types {
+        let data = func.dfg.inst(*inst);
+        let mut operands = Vec::new();
+        data.visit_type_operands(&func.dfg, |value| operands.push(func.dfg.value_type(value)));
+        let results = func
+            .dfg
+            .inst_results(*inst)
+            .iter()
+            .map(|&value| func.dfg.value_type(value))
+            .collect::<Vec<_>>();
+        data.opcode()
+            .spec()
+            .type_scheme
+            .validate(&operands, &results)
+            .map_err(|error| {
+                with_line(
+                    ParseError(format!(
+                        "invalid operand types for `{}`: {error:?}",
+                        data.opcode().spec().mnemonic
+                    )),
+                    *line_no,
+                    line,
+                )
+            })?;
+    }
+
     for &block in &func.layout.block_order {
         func.layout.blocks[block].is_sealed = true;
     }
@@ -224,7 +256,7 @@ fn parse_instruction(
             .parse(opcode, ty_hint, flags, operands)
             .map_err(|error| with_line(error, line_no, line))?
     };
-    let result_types = resolve_result_types(&data, ty_hint, func, module)
+    let (result_types, deferred) = resolve_result_types(&data, ty_hint, func, module)
         .map_err(|error| with_line(error, line_no, line))?;
     if result_names.len() != result_types.len() {
         return parse_err(format!(
@@ -238,6 +270,9 @@ fn parse_instruction(
     let successors = instruction_successors(&data, func);
     let inst = func.dfg.instructions.push(data);
     func.layout.append_inst(block, inst);
+    if deferred {
+        ctx.deferred_types.push((inst, line_no, line.to_string()));
+    }
     if !result_names.is_empty() {
         let values = result_names
             .iter()
@@ -259,13 +294,37 @@ fn resolve_result_types(
     hint: Option<Type>,
     func: &Function,
     module: &ModuleData,
-) -> core::result::Result<Vec<Type>, ParseError> {
+) -> core::result::Result<(Vec<Type>, bool), ParseError> {
     let spec = data.opcode().spec();
     let mut operands = Vec::new();
     data.visit_type_operands(&func.dfg, |value| {
         operands.push(func.dfg.value_type(value));
     });
-    let inferred = spec.type_scheme.infer_results(&operands);
+    let (inferred, deferred) = match spec.type_scheme.infer_results(&operands) {
+        Ok(inferred) => (inferred, false),
+        Err(error) => {
+            // A later textual block may define an SSA value that dominates this
+            // instruction. Defer only unresolved variadic prefixes whose result
+            // types are independent of that value; check them after all definitions.
+            let unresolved_prefix = matches!(spec.type_scheme.operands, TypeList::Variadic(_))
+                && matches!(error, TypeSchemeError::Pattern { results: false, got, .. }
+                    if got == Type::INVALID);
+            let independent = match (unresolved_prefix, spec.type_scheme.results) {
+                (true, TypeList::Signature) => Some(ResultTypes::Signature),
+                (true, TypeList::Fixed([])) => Some(ResultTypes::Inferred(Default::default())),
+                _ => None,
+            };
+            match independent {
+                Some(inferred) => (inferred, true),
+                None => {
+                    return Err(ParseError(format!(
+                        "invalid operand types for `{}`: {error:?}",
+                        spec.mnemonic
+                    )));
+                }
+            }
+        }
+    };
     let mut results = match &inferred {
         ResultTypes::Inferred(types) => types.clone().into_vec(),
         ResultTypes::Explicit => hint.into_iter().collect(),
@@ -287,7 +346,7 @@ fn resolve_result_types(
             )));
         }
     }
-    Ok(results)
+    Ok((results, deferred))
 }
 
 fn instruction_signature<'a>(
@@ -361,11 +420,8 @@ impl OperandParser<'_> {
             TextCodec::Values { arity } => self.parse_values(opcode, arity as usize, text),
             TextCodec::Nullary => {
                 require_empty(text)?;
-                Ok(match opcode {
-                    Opcode::Unreachable => InstructionData::Unreachable,
-                    Opcode::Nop => InstructionData::Nop,
-                    _ => return Err(codec_mismatch(opcode, codec)),
-                })
+                InstructionData::from_values(opcode, &[])
+                    .ok_or_else(|| codec_mismatch(opcode, codec))
             }
             TextCodec::IntegerConstant => Ok(InstructionData::Iconst {
                 value: parse_integer_bits(text)?,
@@ -540,28 +596,8 @@ impl OperandParser<'_> {
             return Ok(InstructionData::VectorOpWithExt { opcode, args, ext });
         }
 
-        Ok(match opcode.spec().format {
-            crate::opspec::OpFormat::Unary => InstructionData::Unary {
-                opcode,
-                arg: args[0],
-            },
-            crate::opspec::OpFormat::Binary => InstructionData::Binary {
-                opcode,
-                args: [args[0], args[1]],
-            },
-            crate::opspec::OpFormat::Ternary => InstructionData::Ternary {
-                opcode,
-                args: [args[0], args[1], args[2]],
-            },
-            crate::opspec::OpFormat::IntToPtr => InstructionData::IntToPtr { arg: args[0] },
-            crate::opspec::OpFormat::PtrToInt => InstructionData::PtrToInt { arg: args[0] },
-            _ => {
-                return Err(codec_mismatch(
-                    opcode,
-                    TextCodec::Values { arity: arity as u8 },
-                ));
-            }
-        })
+        InstructionData::from_values(opcode, &args)
+            .ok_or_else(|| codec_mismatch(opcode, TextCodec::Values { arity: arity as u8 }))
     }
 
     fn parse_direct_call(
@@ -803,8 +839,6 @@ fn parse_instruction_header(
                 if ty.replace(parsed).is_some() {
                     return Err(ParseError("multiple result type suffixes".into()));
                 }
-            } else if part == "trusted" {
-                flags = flags.union(MemFlags::TRUSTED);
             } else if part == "volatile" {
                 flags = flags.union(MemFlags::VOLATILE);
             } else if let Some(value) = part.strip_prefix("align") {

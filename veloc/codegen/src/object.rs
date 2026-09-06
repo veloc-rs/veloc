@@ -39,7 +39,7 @@ impl ObjectFileBuilder {
         &mut self,
         func: &Function,
         emitted: &crate::EmittedCode,
-        symbols: &crate::mir::SymbolTable,
+        symbols: &crate::lir::SymbolTable,
     ) -> Result<()> {
         let symbol_id = self.ensure_function_symbol(func);
         let base_offset =

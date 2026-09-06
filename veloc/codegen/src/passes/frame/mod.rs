@@ -20,10 +20,10 @@ impl<'a> StageTransformPass<RegAllocated, PrologueEpilogueInserted> for FrameFin
 
     fn run(
         &self,
-        mut mfunc: crate::mir::MachineFunction<RegAllocated>,
+        mut mfunc: crate::lir::MachineFunction<RegAllocated>,
         ctx: &mut FunctionPassContext<'_, RegAllocated>,
     ) -> Result<(
-        crate::mir::MachineFunction<PrologueEpilogueInserted>,
+        crate::lir::MachineFunction<PrologueEpilogueInserted>,
         PassEffect,
     )> {
         self.frame_lowering

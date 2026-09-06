@@ -1401,7 +1401,7 @@ mod tests {
                 })
                 .collect();
 
-            let initial = builder.ins().iconst(Type::I32, 0);
+            let initial = builder.ins().iconst(0, Type::I32);
             builder.ins().jump(blocks[0], &[initial]);
 
             for (index, &block) in blocks.iter().enumerate() {
@@ -1410,7 +1410,7 @@ mod tests {
                 let param = builder.block_params(block)[0];
 
                 if let Some(&next_block) = blocks.get(index + 1) {
-                    let one = builder.ins().iconst(Type::I32, 1);
+                    let one = builder.ins().iconst(1, Type::I32);
                     let next = builder.ins().iadd(param, one);
                     builder.ins().jump(next_block, &[next]);
                 } else {

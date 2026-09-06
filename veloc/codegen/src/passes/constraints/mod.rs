@@ -1,7 +1,7 @@
 use crate::error::Result;
-use crate::mir::MachineOperand;
-use crate::mir::{MachineFunction, MachineInst, Reg, Writable};
-use crate::pipeline::stages::{PreIselPrepared, SelectedMir};
+use crate::lir::MachineOperand;
+use crate::lir::{MachineFunction, MachineInst, Reg, Writable};
+use crate::pipeline::stages::{PreIselPrepared, SelectedLir};
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{FixedUseConstraint, TargetOperandLowering, TiedOperandConstraint};
 use core::marker::PhantomData;
@@ -65,19 +65,19 @@ impl ConstraintStageSpec for PreSelectConstraintStage {
 }
 
 impl ConstraintStageSpec for PostSelectConstraintStage {
-    type Stage = SelectedMir;
+    type Stage = SelectedLir;
 
     fn operand_constraints(
         lowering: &dyn TargetOperandLowering,
         inst: &MachineInst,
-        mfunc: &MachineFunction<SelectedMir>,
+        mfunc: &MachineFunction<SelectedLir>,
     ) -> crate::target::arch::OperandConstraintSet {
         lowering.postselect_operand_constraints(inst, mfunc)
     }
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &MachineFunction<SelectedMir>,
+        mfunc: &MachineFunction<SelectedLir>,
         dst: Reg,
         src: Reg,
     ) -> MachineInst {
@@ -131,7 +131,7 @@ where
 
     fn rewrite_block(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
         changed: &mut usize,
     ) -> Result<()> {
         if cursor.current_inst().is_invalid() {
@@ -159,7 +159,7 @@ where
 
     fn apply_constraints(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         constraints: &crate::target::arch::OperandConstraintSet,
     ) -> Result<bool> {
@@ -186,7 +186,7 @@ where
 
     fn apply_tied_operand_constraint(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         tied: &TiedOperandConstraint,
         commute_pairs: &[(usize, usize)],
@@ -213,7 +213,7 @@ where
 
     fn apply_fixed_use_constraint(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         fixed: &FixedUseConstraint,
     ) -> Result<bool> {
@@ -229,7 +229,7 @@ where
 
     fn emit_constraint_copy(
         &self,
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
         dst: Reg,
         src: Reg,
     ) -> Result<()> {
@@ -280,20 +280,20 @@ impl<'a> PostSelectOperandConstraintPass<'a> {
         }
     }
 
-    pub fn run(&self, mfunc: &mut MachineFunction<SelectedMir>) -> Result<()> {
+    pub fn run(&self, mfunc: &mut MachineFunction<SelectedLir>) -> Result<()> {
         self.inner.run(mfunc)
     }
 }
 
-impl<'a> FunctionPass<SelectedMir> for PostSelectOperandConstraintPass<'a> {
+impl<'a> FunctionPass<SelectedLir> for PostSelectOperandConstraintPass<'a> {
     fn name(&self) -> &'static str {
         "operand-constraints"
     }
 
     fn run(
         &self,
-        mfunc: &mut MachineFunction<SelectedMir>,
-        _ctx: &mut FunctionPassContext<'_, SelectedMir>,
+        mfunc: &mut MachineFunction<SelectedLir>,
+        _ctx: &mut FunctionPassContext<'_, SelectedLir>,
     ) -> Result<PassEffect> {
         self.inner.run_with_effect(mfunc)
     }
@@ -379,7 +379,7 @@ fn try_commute_tied_use(
 #[cfg(test)]
 mod tests {
     use super::PreSelectOperandConstraintPass;
-    use crate::mir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
+    use crate::lir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
     use crate::pipeline::stages::PreIselPrepared;
     use crate::target::arch::{
         FixedUseConstraint, OperandConstraintSet, TargetOperandLowering, TiedOperandConstraint,
@@ -418,7 +418,7 @@ mod tests {
 
     fn make_function_with_inst(
         inst: MachineInst,
-    ) -> (MachineFunction<PreIselPrepared>, crate::mir::InstId) {
+    ) -> (MachineFunction<PreIselPrepared>, crate::lir::InstId) {
         let mut mfunc = MachineFunction::<PreIselPrepared>::new("test".into());
         mfunc
             .blocks
@@ -432,7 +432,7 @@ mod tests {
     fn tied_use_already_satisfied_inserts_no_copy() {
         let reg = Reg::new_vreg(0);
         let inst = MachineInst::build_binary(
-            crate::mir::MachineOpcode::Generic(crate::mir::GenericOpcode::G_ADD),
+            crate::lir::MachineOpcode::Generic(crate::lir::GenericOpcode::G_ADD),
             Writable(reg),
             reg,
             Reg::new_vreg(1),
@@ -459,7 +459,7 @@ mod tests {
         let dst = Reg::new_vreg(0);
         let lhs = Reg::new_vreg(1);
         let inst = MachineInst::build_binary(
-            crate::mir::MachineOpcode::Generic(crate::mir::GenericOpcode::G_ADD),
+            crate::lir::MachineOpcode::Generic(crate::lir::GenericOpcode::G_ADD),
             Writable(dst),
             lhs,
             dst,
@@ -490,7 +490,7 @@ mod tests {
         let src = Reg::new_vreg(1);
         let fixed = Reg::new_preg(7);
         let inst = MachineInst::build_unary(
-            crate::mir::MachineOpcode::Generic(crate::mir::GenericOpcode::G_NEG),
+            crate::lir::MachineOpcode::Generic(crate::lir::GenericOpcode::G_NEG),
             Writable(dst),
             src,
         );

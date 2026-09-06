@@ -1,0 +1,558 @@
+// Logical signatures name SSA operands, properties and results once.
+// Storage mappings preserve the current compact MIR layout and SSA traversal order.
+
+op Iconst(@value: u64) -> (result: ScalarInteger) {
+    mnemonic: "iconst",
+    storage: Iconst { value: value },
+    memory: NONE
+}
+
+op Fconst(@value: u64) -> (result: ScalarFloat) {
+    mnemonic: "fconst",
+    storage: Fconst { value: value },
+    memory: NONE
+}
+
+op Bconst(@value: bool) -> (result: BOOL) {
+    mnemonic: "bconst",
+    storage: Bconst { value: value },
+    memory: NONE
+}
+
+op Vconst(@pool_id: ConstantPoolId) -> (result: Vector) {
+    mnemonic: "vconst",
+    storage: Vconst { pool_id: pool_id },
+    memory: NONE, constraints: [VectorConstant]
+}
+
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd",
+    storage: Binary { args: [lhs, rhs] },
+    semantics: bv.add(lhs, rhs)
+}
+
+op ISub<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "isub",
+    storage: Binary { args: [lhs, rhs] },
+    semantics: bv.sub(lhs, rhs)
+}
+
+op IMul<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "imul",
+    storage: Binary { args: [lhs, rhs] },
+    semantics: bv.mul(lhs, rhs)
+}
+
+op INeg<T: Integer>(arg: T) -> (result: T) {
+    mnemonic: "ineg",
+    storage: Unary { arg: arg },
+    semantics: bv.sub(bv.zero(), arg)
+}
+
+op IAddSat<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd-sat",
+    storage: Binary { args: [lhs, rhs] },
+    traits: [COMMUTATIVE], memory: NONE
+}
+
+op ISubSat<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "isub-sat",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op IAddWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (result: T, overflow: BOOL) {
+    mnemonic: "iadd-with-overflow",
+    storage: Binary { args: [lhs, rhs] },
+    traits: [COMMUTATIVE], memory: NONE
+}
+
+op ISubWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (result: T, overflow: BOOL) {
+    mnemonic: "isub-with-overflow",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op IMulWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (result: T, overflow: BOOL) {
+    mnemonic: "imul-with-overflow",
+    storage: Binary { args: [lhs, rhs] },
+    traits: [COMMUTATIVE], memory: NONE
+}
+
+op IDivS<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "idiv-s",
+    storage: Binary { args: [lhs, rhs] },
+    traits: [MAY_TRAP], memory: NONE
+}
+
+op IDivU<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "idiv-u",
+    storage: Binary { args: [lhs, rhs] },
+    traits: [MAY_TRAP], memory: NONE
+}
+
+op IRemS<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "irem-s",
+    storage: Binary { args: [lhs, rhs] },
+    traits: [MAY_TRAP], memory: NONE
+}
+
+op IRemU<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "irem-u",
+    storage: Binary { args: [lhs, rhs] },
+    traits: [MAY_TRAP], memory: NONE
+}
+
+op FAdd<T: Float>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "fadd",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op FSub<T: Float>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "fsub",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op FMul<T: Float>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "fmul",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op FNeg<T: Float>(arg: T) -> (result: T) {
+    mnemonic: "fneg",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FDiv<T: Float>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "fdiv",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op FMin<T: Float>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "fmin",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op FMax<T: Float>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "fmax",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op FCopysign<T: Float>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "fcopysign",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op FAbs<T: Float>(arg: T) -> (result: T) {
+    mnemonic: "fabs",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FSqrt<T: Float>(arg: T) -> (result: T) {
+    mnemonic: "fsqrt",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FCeil<T: Float>(arg: T) -> (result: T) {
+    mnemonic: "fceil",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FFloor<T: Float>(arg: T) -> (result: T) {
+    mnemonic: "ffloor",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FTrunc<T: Float>(arg: T) -> (result: T) {
+    mnemonic: "ftrunc",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FNearest<T: Float>(arg: T) -> (result: T) {
+    mnemonic: "fnearest",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op IAnd<T: IntegerOrBool>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iand",
+    storage: Binary { args: [lhs, rhs] },
+    semantics: bv.and(lhs, rhs)
+}
+
+op IOr<T: IntegerOrBool>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "ior",
+    storage: Binary { args: [lhs, rhs] },
+    semantics: bv.or(lhs, rhs)
+}
+
+op IXor<T: IntegerOrBool>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "ixor",
+    storage: Binary { args: [lhs, rhs] },
+    semantics: bv.xor(lhs, rhs)
+}
+
+op IShl<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "ishl",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op IShrS<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "ishr-s",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op IShrU<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "ishr-u",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op IRotl<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "irotl",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op IRotr<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "irotr",
+    storage: Binary { args: [lhs, rhs] },
+    memory: NONE
+}
+
+op IClz<T: Integer>(arg: T) -> (result: T) {
+    mnemonic: "iclz",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op ICtz<T: Integer>(arg: T) -> (result: T) {
+    mnemonic: "ictz",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op IPopcnt<T: Integer>(arg: T) -> (result: T) {
+    mnemonic: "ipopcnt",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op IEqz(arg: ScalarInteger) -> (result: BOOL) {
+    mnemonic: "ieqz",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op Icmp<T: ScalarIntegerOrPointer>(@kind: IntCC, lhs: T, rhs: T) -> (result: BOOL) {
+    mnemonic: "icmp",
+    storage: IntCompare { kind: kind, args: [lhs, rhs] },
+    memory: NONE, constraints: [PointerComparison]
+}
+
+op Fcmp<T: ScalarFloat>(@kind: FloatCC, lhs: T, rhs: T) -> (result: BOOL) {
+    mnemonic: "fcmp",
+    storage: FloatCompare { kind: kind, args: [lhs, rhs] },
+    memory: NONE
+}
+
+op ExtendS<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+    mnemonic: "extends",
+    storage: Unary { arg: arg },
+    where: [wider(arg, result)],
+    memory: NONE
+}
+
+op ExtendU<T: IntegerOrBool>(arg: T) -> (result: shape(T, Integer)) {
+    mnemonic: "extendu",
+    storage: Unary { arg: arg },
+    where: [wider(arg, result)],
+    memory: NONE
+}
+
+op Wrap<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+    mnemonic: "wrap",
+    storage: Unary { arg: arg },
+    where: [narrower(arg, result)],
+    memory: NONE
+}
+
+op FloatToIntSatS<T: Float>(arg: T) -> (result: shape(T, Integer)) {
+    mnemonic: "float-to-int-sat-s",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FloatToIntSatU<T: Float>(arg: T) -> (result: shape(T, Integer)) {
+    mnemonic: "float-to-int-sat-u",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FloatToIntS<T: Float>(arg: T) -> (result: shape(T, Integer)) {
+    mnemonic: "float-to-int-s",
+    storage: Unary { arg: arg },
+    traits: [MAY_TRAP], memory: NONE
+}
+
+op FloatToIntU<T: Float>(arg: T) -> (result: shape(T, Integer)) {
+    mnemonic: "float-to-int-u",
+    storage: Unary { arg: arg },
+    traits: [MAY_TRAP], memory: NONE
+}
+
+op IntToFloatS<T: Integer>(arg: T) -> (result: shape(T, Float)) {
+    mnemonic: "int-to-float-s",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op IntToFloatU<T: Integer>(arg: T) -> (result: shape(T, Float)) {
+    mnemonic: "int-to-float-u",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FloatPromote(arg: F32) -> (result: F64) {
+    mnemonic: "float-promote",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op FloatDemote(arg: F64) -> (result: F32) {
+    mnemonic: "float-demote",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op Reinterpret(arg: Number) -> (result: Number) {
+    mnemonic: "reinterpret",
+    storage: Unary { arg: arg },
+    where: [same_width_distinct(arg, result)],
+    memory: NONE
+}
+
+op IntToPtr(arg: ScalarInteger) -> (result: PTR) {
+    mnemonic: "inttoptr",
+    storage: IntToPtr { arg: arg },
+    memory: NONE
+}
+
+op PtrToInt(arg: PTR) -> (result: ScalarInteger) {
+    mnemonic: "ptrtoint",
+    storage: PtrToInt { arg: arg },
+    memory: NONE
+}
+
+op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
+    mnemonic: "load",
+    storage: Load { ptr: ptr, offset: offset, flags: flags },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}
+
+op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
+    mnemonic: "store",
+    storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
+    traits: [MAY_TRAP], memory: HEAP_WRITE
+}
+
+op StackLoad(@slot: StackSlot, @offset: u32) -> (result: Any) {
+    mnemonic: "stack-load",
+    storage: StackLoad { slot: slot, offset: offset },
+    memory: STACK_READ
+}
+
+op StackStore(@slot: StackSlot, value: Any, @offset: u32) -> () {
+    mnemonic: "stack-store",
+    storage: StackStore { slot: slot, value: value, offset: offset },
+    memory: STACK_WRITE
+}
+
+op StackAddr(@slot: StackSlot, @offset: u32) -> (result: PTR) {
+    mnemonic: "stack-addr",
+    storage: StackAddr { slot: slot, offset: offset },
+    memory: NONE
+}
+
+op PtrOffset(ptr: PTR, @offset: i32) -> (result: PTR) {
+    mnemonic: "ptr-offset",
+    storage: PtrOffset { ptr: ptr, offset: offset },
+    memory: NONE
+}
+
+op PtrIndex(ptr: PTR, index: ScalarInteger, @imm_id: PtrIndexImmId) -> (result: PTR) {
+    mnemonic: "ptr-index",
+    storage: PtrIndex { ptr: ptr, index: index, imm_id: imm_id },
+    memory: NONE, constraints: [NonZeroScale]
+}
+
+op Call(@func_id: FuncId, args: values) -> signature {
+    mnemonic: "call",
+    storage: Call { func_id: func_id, args: args },
+    traits: [MAY_TRAP], memory: UNKNOWN
+}
+
+op CallIndirect(@sig_id: SigId, ptr: PTR, args: values) -> signature {
+    mnemonic: "call-indirect",
+    storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
+    traits: [MAY_TRAP], memory: UNKNOWN
+}
+
+op CallIntrinsic(@intrinsic: Intrinsic, @sig_id: SigId, args: values) -> signature {
+    mnemonic: "call-intrinsic",
+    storage: CallIntrinsic { intrinsic: intrinsic, args: args, sig_id: sig_id },
+    traits: [MAY_TRAP], memory: UNKNOWN
+}
+
+op Jump(dest: successor) -> () {
+    mnemonic: "jump",
+    storage: Jump { dest: dest },
+    traits: [TERMINATOR], memory: NONE
+}
+
+op Br(condition: BOOL, then_dest: successor, else_dest: successor) -> () {
+    mnemonic: "br",
+    storage: Br { condition: condition, then_dest: then_dest, else_dest: else_dest },
+    traits: [TERMINATOR], memory: NONE
+}
+
+op BrTable(index: I32, table: successors) -> () {
+    mnemonic: "br-table",
+    storage: BrTable { index: index, table: table },
+    traits: [TERMINATOR], memory: NONE
+}
+
+op Return(values: values) -> () {
+    mnemonic: "return",
+    storage: Return { values: values },
+    traits: [TERMINATOR], memory: NONE
+}
+
+op Select<T: Any>(condition: BOOL, if_true: T, if_false: T) -> (result: T) {
+    mnemonic: "select",
+    storage: Ternary { args: [condition, if_true, if_false] },
+    memory: NONE
+}
+
+op Unreachable() -> () {
+    mnemonic: "unreachable",
+    storage: Unreachable {  },
+    traits: [TERMINATOR, MAY_TRAP], memory: NONE
+}
+
+op Nop() -> () {
+    mnemonic: "nop",
+    storage: Nop {  },
+    memory: NONE
+}
+
+op Splat<T: Scalar>(arg: T) -> (result: vector(T)) {
+    mnemonic: "splat",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op Shuffle<T: Vector>(lhs: T, rhs: T, @mask: ConstantPoolId) -> (result: T) {
+    mnemonic: "shuffle",
+    storage: Shuffle { args: [lhs, rhs], mask: mask },
+    memory: NONE, constraints: [ShuffleMask]
+}
+
+op InsertElement<T: Vector>(vector: T, scalar: element(T), index: ScalarInteger) -> (result: T) {
+    mnemonic: "insertelement",
+    storage: Ternary { args: [vector, scalar, index] },
+    memory: NONE
+}
+
+op ExtractElement<T: Vector>(vector: T, index: ScalarInteger) -> (result: element(T)) {
+    mnemonic: "extractelement",
+    storage: Binary { args: [vector, index] },
+    memory: NONE
+}
+
+op ReduceSum<T: Vector>(arg: T) -> (result: element(T)) {
+    mnemonic: "reduce-sum",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op ReduceAdd<T: Vector>(arg: T) -> (result: element(T)) {
+    mnemonic: "reduce-add",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op ReduceMin<T: Vector>(arg: T) -> (result: element(T)) {
+    mnemonic: "reduce-min",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op ReduceMax<T: Vector>(arg: T) -> (result: element(T)) {
+    mnemonic: "reduce-max",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op ReduceAnd<T: Vector>(arg: T) -> (result: element(T)) {
+    mnemonic: "reduce-and",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op ReduceOr<T: Vector>(arg: T) -> (result: element(T)) {
+    mnemonic: "reduce-or",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op ReduceXor<T: Vector>(arg: T) -> (result: element(T)) {
+    mnemonic: "reduce-xor",
+    storage: Unary { arg: arg },
+    memory: NONE
+}
+
+op LoadStride(ptr: PTR, stride: ScalarInteger, @ext: VectorMemExtId) -> (result: Vector) {
+    mnemonic: "load-stride",
+    storage: VectorLoadStrided { ptr: ptr, stride: stride, ext: ext },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}
+
+op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, @ext: VectorMemExtId) -> () {
+    mnemonic: "store-stride",
+    storage: VectorStoreStrided { args: [ptr, stride, value], ext: ext },
+    traits: [MAY_TRAP], memory: HEAP_WRITE
+}
+
+op Gather<T: IntegerVector>(ptr: PTR, index: T, @ext: VectorMemExtId) -> (result: shape(T, Vector)) {
+    mnemonic: "gather",
+    storage: VectorGather { ptr: ptr, index: index, ext: ext },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}
+
+op Scatter<T: IntegerVector>(ptr: PTR, index: T, value: shape(T, Vector), @ext: VectorMemExtId) -> () {
+    mnemonic: "scatter",
+    storage: VectorScatter { args: [ptr, index, value], ext: ext },
+    traits: [MAY_TRAP], memory: HEAP_WRITE
+}
+
+op SetVL(arg: ScalarInteger) -> (result: I32) {
+    mnemonic: "setvl",
+    storage: Unary { arg: arg },
+    memory: NONE
+}

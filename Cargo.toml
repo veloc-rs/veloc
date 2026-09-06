@@ -14,6 +14,8 @@ members = [
 	"veloc/analyzer",
 	"veloc/optimizer",
 	"veloc/isle",
+	"veloc/spec",
+	"veloc/semantics",
 ]
 
 [workspace.package]
@@ -32,6 +34,8 @@ veloc-wasm = { path = "crates/veloc-wasm" }
 
 # --- ISLE ---
 veloc-isle = { path = "veloc/isle" }
+veloc-opgen = { path = "veloc/spec" }
+veloc-semantics = { path = "veloc/semantics" }
 
 # --- WebAssembly ---
 wasmparser = "0.244.0"

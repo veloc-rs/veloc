@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::mir::MachineFunction;
+use crate::lir::MachineFunction;
 use crate::pipeline::{CompiledModule, FunctionPassContext, ModulePassContext, PassEffect};
 
 pub trait FunctionPass<S> {

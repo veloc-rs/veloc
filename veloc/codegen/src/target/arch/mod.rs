@@ -7,11 +7,11 @@ mod callconv;
 mod types;
 
 use crate::Emitter;
-pub use crate::mir::ValueId;
-pub use crate::mir::{InstId, MachineFunction, MachineInst, Reg, VReg};
+pub use crate::lir::ValueId;
+pub use crate::lir::{InstId, MachineFunction, MachineInst, Reg, VReg};
 pub use crate::passes::lowering::{LegalizeAction, LegalizeResult};
 use crate::pipeline::stages::{
-    LegalizedMir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedMir,
+    LegalizedLir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedLir,
 };
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
 use alloc::boxed::Box;
@@ -141,7 +141,7 @@ pub trait TargetEmitter: Send + Sync {
     fn begin_block(
         &self,
         _emitter: &mut Emitter,
-        _block: &crate::mir::MachineBlock,
+        _block: &crate::lir::MachineBlock,
         _mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {
         Ok(())
@@ -207,7 +207,7 @@ pub enum PreIselRewriteExpr {
     Var(u32),
     Imm(i64),
     Op {
-        opcode: crate::mir::GenericOpcode,
+        opcode: crate::lir::GenericOpcode,
         args: &'static [PreIselRewriteExpr],
     },
 }
@@ -281,11 +281,11 @@ impl TargetInstMetadata {
 }
 
 pub trait TargetLegalizer: Send + Sync {
-    /// 查询一条 generic MIR 指令在当前目标上的 legalize 动作。
+    /// 查询一条 generic LIR 指令在当前目标上的 legalize 动作。
     fn legalize_action(
         &self,
         _inst: &MachineInst,
-        _mfunc: &MachineFunction<LegalizedMir>,
+        _mfunc: &MachineFunction<LegalizedLir>,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
         Ok(None)
     }
@@ -296,8 +296,8 @@ pub trait TargetLegalizer: Send + Sync {
     /// 需要目标私有重写的动作时，driver 才会调用这个 hook。
     fn legalize_instruction(
         &self,
-        inst_id: crate::mir::InstId,
-        mfunc: &mut crate::mir::MachineFunction<LegalizedMir>,
+        inst_id: crate::lir::InstId,
+        mfunc: &mut crate::lir::MachineFunction<LegalizedLir>,
     ) -> Result<LegalizeResult, crate::error::Error>;
 }
 
@@ -323,13 +323,13 @@ pub trait TargetOperandLowering: Send + Sync {
         OperandConstraintSet::default()
     }
 
-    /// 查询一条 selected MIR 指令需要满足的操作数约束。
+    /// 查询一条 selected LIR 指令需要满足的操作数约束。
     ///
     /// 适合处理固定寄存器等 target instruction 级别的约束。
     fn postselect_operand_constraints(
         &self,
         _inst: &MachineInst,
-        _mfunc: &MachineFunction<SelectedMir>,
+        _mfunc: &MachineFunction<SelectedLir>,
     ) -> OperandConstraintSet {
         OperandConstraintSet::default()
     }
@@ -351,7 +351,7 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 为 post-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
     fn build_postselect_reg_copy(
         &self,
-        _mfunc: &MachineFunction<SelectedMir>,
+        _mfunc: &MachineFunction<SelectedLir>,
         _dst: Reg,
         _src: Reg,
     ) -> Result<MachineInst, crate::error::Error> {
@@ -364,7 +364,7 @@ pub trait TargetPostIsel: Send + Sync {
     ///
     /// 在指令选择后、寄存器分配前执行。
     /// 默认不做任何处理，目标后端可以按需覆写。
-    fn combine_instructions(&self, _mfunc: &mut MachineFunction<SelectedMir>) {}
+    fn combine_instructions(&self, _mfunc: &mut MachineFunction<SelectedLir>) {}
 }
 
 pub trait TargetFrameLowering: Send + Sync {
@@ -380,7 +380,7 @@ pub trait TargetFrameLowering: Send + Sync {
     }
 
     /// 插入函数序言和尾声 (Prologue/Epilogue Insertion)
-    /// 在寄存器分配之后调用，将序言/尾声指令插入到 MIR 中。
+    /// 在寄存器分配之后调用，将序言/尾声指令插入到 LIR 中。
     fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>);
 }
 
@@ -388,7 +388,7 @@ pub trait TargetPassConfig: Send + Sync {
     /// 在合法化之后追加 target 自定义 function passes。
     fn post_legalize_passes(
         &self,
-    ) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::LegalizedMir>>> {
+    ) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::LegalizedLir>>> {
         Vec::new()
     }
 
@@ -400,7 +400,7 @@ pub trait TargetPassConfig: Send + Sync {
     }
 
     /// 在指令选择之后追加 target 自定义 function passes。
-    fn post_isel_passes(&self) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::SelectedMir>>> {
+    fn post_isel_passes(&self) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::SelectedLir>>> {
         Vec::new()
     }
 

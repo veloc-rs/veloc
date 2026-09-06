@@ -70,22 +70,18 @@ impl<'a> InstPrinter<'a> {
         let name = opcode.spec().mnemonic;
         match TextCodec::for_opcode(opcode) {
             TextCodec::Values { arity } => {
-                let (values, ext) = match data {
-                    InstructionData::Unary { arg, .. }
-                    | InstructionData::IntToPtr { arg }
-                    | InstructionData::PtrToInt { arg } => (core::slice::from_ref(arg), None),
-                    InstructionData::Binary { args, .. } => (args.as_slice(), None),
-                    InstructionData::Ternary { args, .. } => (args.as_slice(), None),
-                    InstructionData::VectorOpWithExt { args, ext, .. } => (
-                        self.dfg.get_value_list(*args),
-                        Some(self.dfg.vector_ext(*ext).ok_or(core::fmt::Error)?),
-                    ),
-                    _ => return Err(core::fmt::Error),
+                let mut values = smallvec::SmallVec::<[crate::Value; 3]>::new();
+                data.visit_type_operands(self.dfg, |value| values.push(value));
+                let ext = match data {
+                    InstructionData::VectorOpWithExt { ext, .. } => {
+                        Some(self.dfg.vector_ext(*ext).ok_or(core::fmt::Error)?)
+                    }
+                    _ => None,
                 };
                 debug_assert_eq!(values.len(), arity as usize);
                 self.fmt_head(f, name, ty, MemFlags::new())?;
                 f.write_char(' ')?;
-                self.fmt_values(f, values)?;
+                self.fmt_values(f, &values)?;
                 if let Some(ext) = ext {
                     self.fmt_named_value(f, "mask", ext.mask)?;
                     if let Some(evl) = ext.evl {
@@ -381,9 +377,6 @@ impl<'a> InstPrinter<'a> {
         f.write_str(name)?;
         if let Some(ty) = ty {
             write!(f, ".{ty}")?;
-        }
-        if flags.is_trusted() {
-            f.write_str(".trusted")?;
         }
         if flags.is_volatile() {
             f.write_str(".volatile")?;

@@ -69,27 +69,27 @@ impl<'a> WasmTranslator<'a> {
 
             Operator::I32Extend8S => self.un_i32(|b, v| {
                 let tmp = b.wrap(v, VelocType::I8);
-                b.extend_s(tmp, VelocType::I32)
+                b.extends(tmp, VelocType::I32)
             }),
             Operator::I32Extend16S => self.un_i32(|b, v| {
                 let tmp = b.wrap(v, VelocType::I16);
-                b.extend_s(tmp, VelocType::I32)
+                b.extends(tmp, VelocType::I32)
             }),
             Operator::I64Extend8S => self.un_i64(|b, v| {
                 let tmp = b.wrap(v, VelocType::I8);
-                b.extend_s(tmp, VelocType::I64)
+                b.extends(tmp, VelocType::I64)
             }),
             Operator::I64Extend16S => self.un_i64(|b, v| {
                 let tmp = b.wrap(v, VelocType::I16);
-                b.extend_s(tmp, VelocType::I64)
+                b.extends(tmp, VelocType::I64)
             }),
             Operator::I64Extend32S => self.un_i64(|b, v| {
                 let tmp = b.wrap(v, VelocType::I32);
-                b.extend_s(tmp, VelocType::I64)
+                b.extends(tmp, VelocType::I64)
             }),
             Operator::I32WrapI64 => self.un_i64(|b, v| b.wrap(v, VelocType::I32)),
-            Operator::I64ExtendI32S => self.un_i32(|b, v| b.extend_s(v, VelocType::I64)),
-            Operator::I64ExtendI32U => self.un_i32(|b, v| b.extend_u(v, VelocType::I64)),
+            Operator::I64ExtendI32S => self.un_i32(|b, v| b.extends(v, VelocType::I64)),
+            Operator::I64ExtendI32U => self.un_i32(|b, v| b.extendu(v, VelocType::I64)),
 
             Operator::F64Add => self.bin_f64(|b, l, r| b.fadd(l, r)),
             Operator::F64Sub => self.bin_f64(|b, l, r| b.fsub(l, r)),
@@ -370,7 +370,7 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().fconst(ty, 0);
+        let zero = self.builder.ins().fconst(0, ty);
         let l_is_zero = self.builder.ins().fcmp(FloatCC::Eq, l, zero);
         let r_is_zero = self.builder.ins().fcmp(FloatCC::Eq, r, zero);
         let both_zero = self.builder.ins().iand(l_is_zero, r_is_zero);
@@ -417,12 +417,12 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().iconst(ty, 0);
+        let zero = self.builder.ins().iconst(0, ty);
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
-        let neg_one = self.builder.ins().iconst(ty, -1);
+        let neg_one = self.builder.ins().iconst(-1i64 as u64, ty);
         let min_val = if is_64 { i64::MIN } else { i32::MIN as i64 };
-        let min = self.builder.ins().iconst(ty, min_val);
+        let min = self.builder.ins().iconst(min_val as u64, ty);
         let is_min = self.builder.ins().icmp(IntCC::Eq, l, min);
         let is_neg_one = self.builder.ins().icmp(IntCC::Eq, r, neg_one);
         let is_overflow = self.builder.ins().iand(is_min, is_neg_one);
@@ -439,7 +439,7 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().iconst(ty, 0);
+        let zero = self.builder.ins().iconst(0, ty);
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
         let res = self.builder.ins().idiv_u(l, r);
@@ -454,12 +454,12 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().iconst(ty, 0);
+        let zero = self.builder.ins().iconst(0, ty);
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
-        let neg_one = self.builder.ins().iconst(ty, -1);
+        let neg_one = self.builder.ins().iconst(-1i64 as u64, ty);
         let min_val = if is_64 { i64::MIN } else { i32::MIN as i64 };
-        let min = self.builder.ins().iconst(ty, min_val);
+        let min = self.builder.ins().iconst(min_val as u64, ty);
         let is_min = self.builder.ins().icmp(IntCC::Eq, l, min);
         let is_neg_one = self.builder.ins().icmp(IntCC::Eq, r, neg_one);
         let is_overflow = self.builder.ins().iand(is_min, is_neg_one);
@@ -468,7 +468,7 @@ impl<'a> WasmTranslator<'a> {
         self.builder.if_else(
             is_overflow,
             |b| {
-                let zero_res = b.ins().iconst(ty, 0);
+                let zero_res = b.ins().iconst(0, ty);
                 b.def_var(res_var, zero_res);
             },
             |b| {
@@ -489,7 +489,7 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().iconst(ty, 0);
+        let zero = self.builder.ins().iconst(0, ty);
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
         let res = self.builder.ins().irem_u(l, r);

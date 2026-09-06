@@ -11,12 +11,12 @@ mod regbank;
 mod select;
 
 pub use crate::isel::SelectResult;
-use crate::mir::{
+use crate::lir::{
     GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
     Reg, VReg, Writable,
 };
 use crate::passes::lowering::{LegalizeAction, LegalizeResult};
-use crate::pipeline::stages::{LegalizedMir, PreIselPrepared, RegAllocated, SelectedMir};
+use crate::pipeline::stages::{LegalizedLir, PreIselPrepared, RegAllocated, SelectedLir};
 use crate::regalloc::regbank_select::RegisterBank;
 use crate::target::arch::{
     CallConv as TargetCallConv, CpuDescription, LoweringContext, OperandConstraintSet,
@@ -129,7 +129,7 @@ impl X86_64Lowering {
 
     fn push_legalized_inst(
         &self,
-        mfunc: &mut MachineFunction<LegalizedMir>,
+        mfunc: &mut MachineFunction<LegalizedLir>,
         output: &mut Vec<InstId>,
         inst: MachineInst,
     ) -> InstId {
@@ -140,7 +140,7 @@ impl X86_64Lowering {
 
     fn emit_legalize_constant_reg(
         &self,
-        mfunc: &mut MachineFunction<LegalizedMir>,
+        mfunc: &mut MachineFunction<LegalizedLir>,
         output: &mut Vec<InstId>,
         ty: Type,
         imm: i64,
@@ -156,7 +156,7 @@ impl X86_64Lowering {
 
     fn emit_legalize_binary_reg(
         &self,
-        mfunc: &mut MachineFunction<LegalizedMir>,
+        mfunc: &mut MachineFunction<LegalizedLir>,
         output: &mut Vec<InstId>,
         opcode: GenericOpcode,
         ty: Type,
@@ -174,7 +174,7 @@ impl X86_64Lowering {
 
     fn legalize_ctpop_into(
         &self,
-        mfunc: &mut MachineFunction<LegalizedMir>,
+        mfunc: &mut MachineFunction<LegalizedLir>,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,
@@ -279,7 +279,7 @@ impl X86_64Lowering {
 
     fn legalize_cttz_into(
         &self,
-        mfunc: &mut MachineFunction<LegalizedMir>,
+        mfunc: &mut MachineFunction<LegalizedLir>,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,
@@ -321,7 +321,7 @@ impl X86_64Lowering {
 
     fn legalize_ctlz_into(
         &self,
-        mfunc: &mut MachineFunction<LegalizedMir>,
+        mfunc: &mut MachineFunction<LegalizedLir>,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,

@@ -33,9 +33,9 @@ impl<'a> StageTransformPass<PreIselPrepared, PreIselPrepared> for PreIselPass<'a
 
     fn run(
         &self,
-        mut mfunc: crate::mir::MachineFunction<PreIselPrepared>,
+        mut mfunc: crate::lir::MachineFunction<PreIselPrepared>,
         ctx: &mut FunctionPassContext<'_, PreIselPrepared>,
-    ) -> Result<(crate::mir::MachineFunction<PreIselPrepared>, PassEffect)> {
+    ) -> Result<(crate::lir::MachineFunction<PreIselPrepared>, PassEffect)> {
         for pass in self.pass_config.pre_isel_passes() {
             let effect = pass.run(&mut mfunc, ctx)?;
             Self::apply_effect(effect, ctx);

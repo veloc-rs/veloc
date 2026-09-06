@@ -1,6 +1,6 @@
 use super::function::{Function, StackSlotData};
 use super::inst::{ConstantPoolData, Inst, InstructionData, VectorMemOptions};
-use super::opcode::{MemFlags, Opcode};
+use super::opcode::Opcode;
 use super::types::{
     Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
@@ -139,7 +139,15 @@ impl<'a> FunctionBuilder<'a> {
             operands.push(self.value_type(value));
         });
 
-        match spec.type_scheme.infer_results(&operands) {
+        match spec
+            .type_scheme
+            .infer_results(&operands)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} constructed with invalid operand types: {error:?}",
+                    spec.mnemonic
+                )
+            }) {
             ResultTypes::Inferred(types) => types,
             ResultTypes::Explicit => {
                 panic!("{} requires an explicit result type", spec.mnemonic)
@@ -585,50 +593,20 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         (results[0], results[1])
     }
 
-    /// Helper for unary operations
-    pub(crate) fn push_unary(&mut self, opcode: Opcode, arg: Value) -> Value {
-        self.push(InstructionData::Unary { opcode, arg }).unwrap()
-    }
-
-    /// Helper for binary operations
-    pub(crate) fn push_binary(&mut self, opcode: Opcode, lhs: Value, rhs: Value) -> Value {
-        self.push(InstructionData::Binary {
-            opcode,
-            args: [lhs, rhs],
-        })
-        .unwrap()
-    }
-
-    pub fn iconst(&mut self, ty: Type, val: i64) -> Value {
-        if ty.is_scalar() && ty.is_integer() {
-            self.push_with_type(InstructionData::Iconst { value: val as u64 }, ty)
-        } else {
-            panic!("iconst only supports integer types")
-        }
-    }
-
     pub fn i32const(&mut self, val: i32) -> Value {
-        self.iconst(Type::I32, val as i64)
+        self.iconst(val as i64 as u64, Type::I32)
     }
 
     pub fn i64const(&mut self, val: i64) -> Value {
-        self.iconst(Type::I64, val)
-    }
-
-    pub fn fconst(&mut self, ty: Type, val: u64) -> Value {
-        self.push_with_type(InstructionData::Fconst { value: val }, ty)
+        self.iconst(val as u64, Type::I64)
     }
 
     pub fn f32const(&mut self, val: f32) -> Value {
-        self.fconst(Type::F32, val.to_bits() as u64)
+        self.fconst(val.to_bits() as u64, Type::F32)
     }
 
     pub fn f64const(&mut self, val: f64) -> Value {
-        self.fconst(Type::F64, val.to_bits())
-    }
-
-    pub fn bconst(&mut self, val: bool) -> Value {
-        self.push(InstructionData::Bconst { value: val }).unwrap()
+        self.fconst(val.to_bits(), Type::F64)
     }
 
     pub fn vconst(&mut self, ty: Type, data: Vec<u8>) -> Value {
@@ -683,41 +661,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             data.extend_from_slice(&v.to_bits().to_le_bytes());
         }
         self.vconst(Type::F64X2, data)
-    }
-
-    pub fn load(&mut self, ty: Type, ptr: Value, offset: u32, flags: MemFlags) -> Value {
-        self.push_with_type(InstructionData::Load { ptr, offset, flags }, ty)
-    }
-
-    pub fn store(&mut self, value: Value, ptr: Value, offset: u32, flags: MemFlags) {
-        self.push(InstructionData::Store {
-            ptr,
-            value,
-            offset,
-            flags,
-        });
-    }
-
-    pub fn stack_load(&mut self, ty: Type, slot: StackSlot, offset: u32) -> Value {
-        self.push_with_type(InstructionData::StackLoad { slot, offset }, ty)
-    }
-
-    pub fn stack_store(&mut self, value: Value, slot: StackSlot, offset: u32) {
-        self.push(InstructionData::StackStore {
-            slot,
-            value,
-            offset,
-        });
-    }
-
-    pub fn stack_addr(&mut self, slot: StackSlot, offset: u32) -> Value {
-        self.push(InstructionData::StackAddr { slot, offset })
-            .unwrap()
-    }
-
-    pub fn ptr_offset(&mut self, ptr: Value, offset: i32) -> Value {
-        self.push(InstructionData::PtrOffset { ptr, offset })
-            .unwrap()
     }
 
     pub fn ptr_index(&mut self, ptr: Value, index: Value, scale: u32, offset: i32) -> Value {
@@ -823,21 +766,13 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     /// 插入标量到向量的指定通道
     pub fn insert_element(&mut self, vector: Value, scalar: Value, lane_index: u32) -> Value {
         let lane_val = self.i32const(lane_index as i32);
-        self.push(InstructionData::Ternary {
-            opcode: Opcode::InsertElement,
-            args: [vector, scalar, lane_val],
-        })
-        .unwrap()
+        self.insertelement(vector, scalar, lane_val)
     }
 
     /// 从向量提取指定通道的标量
     pub fn extract_element(&mut self, vector: Value, lane_index: u32) -> Value {
         let lane_val = self.i32const(lane_index as i32);
-        self.push(InstructionData::Binary {
-            opcode: Opcode::ExtractElement,
-            args: [vector, lane_val],
-        })
-        .unwrap()
+        self.extractelement(vector, lane_val)
     }
 
     /// 带扩展信息的向量操作 (用于 RISC-V V / AVX-512 带 Mask/EVL)

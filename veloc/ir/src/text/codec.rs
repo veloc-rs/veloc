@@ -1,9 +1,8 @@
-//! Declarative bridge between semantic opcode formats and the textual IR.
+//! Text grammar implementations selected by the MIR storage schema.
 //!
-//! The core [`OpSpec`](crate::OpSpec) deliberately does not know about a parser
-//! or a printer.  This closed mapping is the text dialect's view of those
-//! formats.  Keeping it exhaustive means adding a new [`OpFormat`] cannot
-//! silently fall through to an "unsupported instruction" path.
+//! The codec vocabulary names the parser/printer algorithms. Format selection
+//! and memory-flag support are generated from the same field definitions as
+//! [`InstructionData`](crate::InstructionData).
 
 use crate::{Opcode, opspec::OpFormat};
 
@@ -42,59 +41,11 @@ pub enum TextCodec {
     Shuffle,
 }
 
-impl TextCodec {
-    /// Select the textual codec from the physical format in `OpSpec`.
-    ///
-    /// This match intentionally has no wildcard arm.  A new physical format
-    /// therefore requires an explicit text-format decision at compile time.
-    pub const fn for_format(format: OpFormat) -> Self {
-        match format {
-            OpFormat::Unary | OpFormat::IntToPtr | OpFormat::PtrToInt => Self::Values { arity: 1 },
-            OpFormat::Binary => Self::Values { arity: 2 },
-            OpFormat::Ternary => Self::Values { arity: 3 },
-            OpFormat::Iconst => Self::IntegerConstant,
-            OpFormat::Fconst => Self::FloatConstant,
-            OpFormat::Bconst => Self::BoolConstant,
-            OpFormat::Vconst => Self::VectorConstant,
-            OpFormat::Load => Self::Load,
-            OpFormat::Store => Self::Store,
-            OpFormat::StackLoad => Self::StackLoad,
-            OpFormat::StackStore => Self::StackStore,
-            OpFormat::StackAddr => Self::StackAddr,
-            OpFormat::PtrOffset => Self::PtrOffset,
-            OpFormat::PtrIndex => Self::PtrIndex,
-            OpFormat::Call => Self::DirectCall,
-            OpFormat::CallIndirect => Self::IndirectCall,
-            OpFormat::CallIntrinsic => Self::IntrinsicCall,
-            OpFormat::Jump => Self::Jump,
-            OpFormat::Br => Self::Branch,
-            OpFormat::BrTable => Self::BranchTable,
-            OpFormat::Return => Self::Return,
-            OpFormat::IntCompare => Self::IntCompare,
-            OpFormat::FloatCompare => Self::FloatCompare,
-            OpFormat::VectorLoadStrided => Self::VectorLoadStrided,
-            OpFormat::VectorStoreStrided => Self::VectorStoreStrided,
-            OpFormat::VectorGather => Self::VectorGather,
-            OpFormat::VectorScatter => Self::VectorScatter,
-            OpFormat::Shuffle => Self::Shuffle,
-            OpFormat::Unreachable | OpFormat::Nop => Self::Nullary,
-        }
-    }
+include!(concat!(env!("OUT_DIR"), "/codecs.rs"));
 
+impl TextCodec {
     pub const fn for_opcode(opcode: Opcode) -> Self {
         Self::for_format(opcode.spec().format)
-    }
-
-    pub const fn accepts_memory_flags(self) -> bool {
-        matches!(
-            self,
-            Self::Load
-                | Self::Store
-                | Self::VectorLoadStrided
-                | Self::VectorStoreStrided
-                | Self::VectorGather
-                | Self::VectorScatter
-        )
     }
 }
 

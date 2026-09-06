@@ -1,4 +1,4 @@
-use crate::mir::{MachineFunction, MachineOperand};
+use crate::lir::{MachineFunction, MachineOperand};
 use crate::target::arch::TargetMachine;
 use alloc::vec::Vec;
 use veloc_ir::Type;
@@ -44,7 +44,7 @@ pub trait TargetRegBankSelect: Send + Sync {
 
     fn suggest_bank(
         &self,
-        opcode: crate::mir::GenericOpcode,
+        opcode: crate::lir::GenericOpcode,
         index: usize,
         ty: Type,
     ) -> Option<RegisterBank> {
@@ -76,7 +76,7 @@ impl RegisterBankSelector {
     ) -> bool {
         let mut changed = false;
         for i in 0..mfunc.vregs.len() {
-            let vreg = crate::mir::VReg::from_u32(i as u32);
+            let vreg = crate::lir::VReg::from_u32(i as u32);
             let data = &mut mfunc.vregs[vreg];
             if data.bank.is_none() {
                 data.bank = Some(rb_select.default_bank_for_type(data.ty));
@@ -95,7 +95,7 @@ impl RegisterBankSelector {
         for block in &mfunc.blocks {
             for &inst_id in &block.insts {
                 let inst = &mfunc.dfg[inst_id];
-                if let crate::mir::MachineOpcode::Generic(opcode) = inst.opcode {
+                if let crate::lir::MachineOpcode::Generic(opcode) = inst.opcode {
                     for (op_idx, op) in inst.operands.iter().enumerate() {
                         let reg = match op {
                             MachineOperand::Use(r) => Some(*r),
@@ -127,7 +127,7 @@ impl RegisterBankSelector {
             for block in &mfunc.blocks {
                 for &inst_id in &block.insts {
                     let inst = &mfunc.dfg[inst_id];
-                    if let crate::mir::MachineOpcode::Generic(crate::mir::GenericOpcode::G_COPY) =
+                    if let crate::lir::MachineOpcode::Generic(crate::lir::GenericOpcode::G_COPY) =
                         inst.opcode
                     {
                         let dst = inst.defs().next();
@@ -155,7 +155,7 @@ impl RegisterBankSelector {
         }
 
         for i in 0..mfunc.vregs.len() {
-            let vreg = crate::mir::VReg::from_u32(i as u32);
+            let vreg = crate::lir::VReg::from_u32(i as u32);
             let data = &mut mfunc.vregs[vreg];
             if data.bank.is_none() {
                 data.bank = Some(rb_select.default_bank_for_type(data.ty));
@@ -169,7 +169,7 @@ impl RegisterBankSelector {
 
 fn assign_bank<S>(
     mfunc: &mut MachineFunction<S>,
-    reg: crate::mir::Reg,
+    reg: crate::lir::Reg,
     bank: RegisterBank,
 ) -> bool {
     let data = mfunc.vreg_data_mut(reg);

@@ -3,7 +3,7 @@
 //! x86_64 后端只保留发射时机和 fixup 收尾逻辑。
 //! 具体编码字节序列由 ISLE DSL 生成的 `TargetInst::emit()` 负责。
 
-use crate::mir::{MachineBlock, MachineFunction, MachineInst, MachineOpcode};
+use crate::lir::{MachineBlock, MachineFunction, MachineInst, MachineOpcode};
 use crate::pipeline::stages::PrologueEpilogueInserted;
 use crate::target::arch::TargetEmitter;
 

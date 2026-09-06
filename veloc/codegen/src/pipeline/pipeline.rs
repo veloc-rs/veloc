@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::mir::MachineFunction;
+use crate::lir::MachineFunction;
 use crate::pipeline::{
     ChangeSet, CompiledModule, FunctionPass, FunctionPassContext, ModuleCodegenPass,
     ModulePassContext, PassEffect,

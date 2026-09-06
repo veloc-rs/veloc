@@ -1,8 +1,8 @@
 use crate::error::Result;
-use crate::mir::{
+use crate::lir::{
     GenericOpcode, MachineFunction, MachineInst, MachineOpcode, Reg, StackSlot, Writable,
 };
-use crate::pipeline::stages::LegalizedMir;
+use crate::pipeline::stages::LegalizedLir;
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
 use alloc::vec::Vec;
@@ -100,7 +100,7 @@ fn build_store_to_assignment<S>(
 
 fn lower_formal_arguments(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction<LegalizedMir>,
+    mfunc: &mut MachineFunction<LegalizedLir>,
     plan: &CallConvPlan,
 ) {
     if mfunc.blocks.is_empty() {
@@ -140,9 +140,9 @@ fn lower_formal_arguments(
 
 fn lower_callsite<S>(
     target: &dyn TargetMachine,
-    cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+    cursor: &mut crate::lir::BlockRewriteCursor<'_, S>,
     plan: &CallConvPlan,
-    inst_id: crate::mir::InstId,
+    inst_id: crate::lir::InstId,
 ) {
     let shape = {
         let call = cursor.mfunc().as_call(inst_id);
@@ -150,14 +150,14 @@ fn lower_callsite<S>(
     };
     if shape.args.len() != plan.args.len() {
         panic!(
-            "call argument count mismatch: MIR has {}, ABI plan has {}",
+            "call argument count mismatch: LIR has {}, ABI plan has {}",
             shape.args.len(),
             plan.args.len()
         );
     }
     if shape.defs.len() != plan.returns.len() {
         panic!(
-            "call result count mismatch: MIR has {}, ABI plan has {}",
+            "call result count mismatch: LIR has {}, ABI plan has {}",
             shape.defs.len(),
             plan.returns.len()
         );
@@ -184,7 +184,7 @@ fn lower_return<S>(
     mfunc: &mut MachineFunction<S>,
     sig: &veloc_ir::Signature,
     plan: &CallConvPlan,
-    inst_id: crate::mir::InstId,
+    inst_id: crate::lir::InstId,
 ) -> Vec<MachineInst> {
     let values = mfunc.dfg[inst_id]
         .as_ret()
@@ -192,14 +192,14 @@ fn lower_return<S>(
         .values;
     if values.len() != plan.returns.len() {
         panic!(
-            "return value count mismatch: MIR has {}, ABI plan has {}",
+            "return value count mismatch: LIR has {}, ABI plan has {}",
             values.len(),
             plan.returns.len()
         );
     }
     if values.len() != sig.returns.len() {
         panic!(
-            "return value count mismatch: MIR has {}, signature expects {}",
+            "return value count mismatch: LIR has {}, signature expects {}",
             values.len(),
             sig.returns.len()
         );
@@ -219,16 +219,16 @@ fn lower_return<S>(
     pre
 }
 
-impl StageTransformPass<LegalizedMir, LegalizedMir> for AbiLoweringPass {
+impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
     fn name(&self) -> &'static str {
         "abi-lowered"
     }
 
     fn run(
         &self,
-        mut mfunc: MachineFunction<LegalizedMir>,
-        ctx: &mut FunctionPassContext<'_, LegalizedMir>,
-    ) -> Result<(MachineFunction<LegalizedMir>, PassEffect)> {
+        mut mfunc: MachineFunction<LegalizedLir>,
+        ctx: &mut FunctionPassContext<'_, LegalizedLir>,
+    ) -> Result<(MachineFunction<LegalizedLir>, PassEffect)> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
         mfunc.stack_frame.arg_size = plan.stack_arg_bytes;
         lower_formal_arguments(ctx.target, &mut mfunc, &plan);

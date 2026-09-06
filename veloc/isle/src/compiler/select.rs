@@ -465,7 +465,7 @@ fn emit_schema_value_bindings_for_group(
                     writeln!(
                         output,
                         r#"                let {} = match &{}.shape.callee {{
-                    crate::mir::CallCallee::Direct(value) => *value,
+                    crate::lir::CallCallee::Direct(value) => *value,
                     _ => unreachable!("expected direct call callee"),
                 }};"#,
                         rust_var, schema_var
@@ -476,7 +476,7 @@ fn emit_schema_value_bindings_for_group(
                     writeln!(
                         output,
                         r#"                let {} = match &{}.shape.callee {{
-                    crate::mir::CallCallee::Indirect(value) => *value,
+                    crate::lir::CallCallee::Indirect(value) => *value,
                     _ => unreachable!("expected indirect call callee"),
                 }};"#,
                         rust_var, schema_var
@@ -783,7 +783,7 @@ fn emit_single_inst(
                         MachineOperand::TiedDefUse(w) => w.to_reg() == reg,
                         _ => false,
                     }}) {{
-                        ops_{index}.push(MachineOperand::Def(crate::mir::Writable(reg)));
+                        ops_{index}.push(MachineOperand::Def(crate::lir::Writable(reg)));
                     }}
                 }}"#,
                     index = request.index
@@ -947,7 +947,7 @@ fn emit_source_def_operand(output: &mut String, index: usize, operand: &OperandC
                         .get(source_def_cursor_{index})
                         .ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from("Source def mapping failed")))?;
                     source_def_cursor_{index} += 1;
-                    ops_{index}.push(MachineOperand::{op_ctor}(crate::mir::Writable(reg)));
+                    ops_{index}.push(MachineOperand::{op_ctor}(crate::lir::Writable(reg)));
                 }}"#
     )
     .unwrap();
@@ -967,7 +967,7 @@ fn emit_schema_source_def_operand(
     };
     writeln!(
         output,
-        r#"                ops_{index}.push(MachineOperand::{op_ctor}(crate::mir::Writable(reg_value({schema_var}.{field}.clone()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from("Schema reg mapping failed")))?)));"#
+        r#"                ops_{index}.push(MachineOperand::{op_ctor}(crate::lir::Writable(reg_value({schema_var}.{field}.clone()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from("Schema reg mapping failed")))?)));"#
     )
     .unwrap();
 }
@@ -1021,10 +1021,10 @@ fn emit_constructor_operand(
                     format!("MachineOperand::Use(Reg::new_preg({enc}))")
                 }
                 OperandConstraint::Def(_) => {
-                    format!("MachineOperand::Def(crate::mir::Writable(Reg::new_preg({enc})))")
+                    format!("MachineOperand::Def(crate::lir::Writable(Reg::new_preg({enc})))")
                 }
                 OperandConstraint::TiedDef { .. } => format!(
-                    "MachineOperand::TiedDefUse(crate::mir::Writable(Reg::new_preg({enc})))"
+                    "MachineOperand::TiedDefUse(crate::lir::Writable(Reg::new_preg({enc})))"
                 ),
                 OperandConstraint::StackSlot(_) => {
                     panic!("physical register constructor cannot satisfy a stackslot operand")
@@ -1046,10 +1046,10 @@ fn schema_value_operand_expr(name: &str, operand: &OperandConstraint) -> String 
             "MachineOperand::Use(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?)"
         ),
         OperandConstraint::Def(_) => format!(
-            "MachineOperand::Def(crate::mir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
+            "MachineOperand::Def(crate::lir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
         ),
         OperandConstraint::TiedDef { .. } => format!(
-            "MachineOperand::TiedDefUse(crate::mir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
+            "MachineOperand::TiedDefUse(crate::lir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
         ),
         OperandConstraint::Imm(_) => format!("MachineOperand::Imm({rust_name}.into())"),
         OperandConstraint::Block(_) => format!("MachineOperand::Block({rust_name})"),
@@ -1076,10 +1076,10 @@ fn operand_index_expr(op_index: usize, operand: &OperandConstraint) -> String {
             "MachineOperand::Use(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?)"
         ),
         OperandConstraint::Def(_) => format!(
-            "MachineOperand::Def(crate::mir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
+            "MachineOperand::Def(crate::lir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
         ),
         OperandConstraint::TiedDef { .. } => format!(
-            "MachineOperand::TiedDefUse(crate::mir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
+            "MachineOperand::TiedDefUse(crate::lir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
         ),
         OperandConstraint::Imm(_) => format!(
             "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Imm(v)) => MachineOperand::Imm(v), _ => return Err(crate::error::Error::select(inst.opcode.clone(), alloc::string::String::from(\"Operand immediate mapping failed\"))), }}"
@@ -1106,7 +1106,7 @@ pub(crate) fn generate_generic_inst_metadata(
     if metadata_map.is_empty() {
         writeln!(
             output,
-            "\npub fn generic_inst_metadata(_opcode: crate::mir::GenericOpcode) -> &'static GenericInstMetadata {{\n    &GenericInstMetadata::EMPTY\n}}"
+            "\npub fn generic_inst_metadata(_opcode: crate::lir::GenericOpcode) -> &'static GenericInstMetadata {{\n    &GenericInstMetadata::EMPTY\n}}"
         )
         .unwrap();
         return;
@@ -1167,7 +1167,7 @@ pub(crate) fn generate_generic_inst_metadata(
 
     writeln!(
         output,
-        "\npub fn generic_inst_metadata(opcode: crate::mir::GenericOpcode) -> &'static GenericInstMetadata {{"
+        "\npub fn generic_inst_metadata(opcode: crate::lir::GenericOpcode) -> &'static GenericInstMetadata {{"
     )
     .unwrap();
     writeln!(output, "    match opcode {{").unwrap();
@@ -1178,7 +1178,7 @@ pub(crate) fn generate_generic_inst_metadata(
         );
         writeln!(
             output,
-            "        crate::mir::GenericOpcode::{opcode} => &{const_name},",
+            "        crate::lir::GenericOpcode::{opcode} => &{const_name},",
             opcode = opcode,
             const_name = const_name
         )
@@ -1414,7 +1414,7 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
     inst: &MachineInst,
     out: &mut alloc::vec::Vec<MachineInst>,
 ) -> Result<SelectResult, crate::error::Error> {{
-    use crate::mir::{{GenericOpcode, MachineOpcode, VReg}};
+    use crate::lir::{{GenericOpcode, MachineOpcode, VReg}};
     use crate::target::arch::SelectResult;
     use crate::target::{arch}::isle::TargetInst;
 
@@ -1502,7 +1502,7 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
                     };
                 writeln!(
                     output,
-                    "            if let Some(crate::mir::DecodedGenericInst::{}({})) = decoded.as_ref() {{",
+                    "            if let Some(crate::lir::DecodedGenericInst::{}({})) = decoded.as_ref() {{",
                     schema_name, schema_var
                 )
                 .unwrap();

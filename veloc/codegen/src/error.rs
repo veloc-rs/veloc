@@ -1,7 +1,7 @@
 use alloc::string::String;
 use core::fmt;
 
-use crate::mir::MachineOpcode;
+use crate::lir::MachineOpcode;
 use crate::target::arch::TargetArch;
 use veloc_ir::Opcode;
 

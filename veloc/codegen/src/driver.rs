@@ -3,15 +3,15 @@
 //! 提供从 SSA IR 到机器码/目标文件的编译驱动。
 
 use crate::error::{Error, Result};
-use crate::mir::{MachineFunction, MachineModule};
+use crate::lir::{MachineFunction, MachineModule};
 use crate::object::ObjectFileBuilder;
 use crate::passes::{
     BlockParamLoweringPass, FrameFinalizePass, InstructionSelectionPass, LegalizePass,
     PostIselOptimizePass, PreIselPass, RegisterAllocationPass,
 };
 use crate::pipeline::stages::{
-    LegalizedMir, PostIselOptimized, PreIselPrepared, PrologueEpilogueInserted, RawMir,
-    RegAllocated, SelectedMir,
+    LegalizedLir, PostIselOptimized, PreIselPrepared, PrologueEpilogueInserted, RawLir,
+    RegAllocated, SelectedLir,
 };
 use crate::pipeline::{
     CompiledFunction, CompiledModule, FunctionAnalysisCtx, FunctionPassContext, ModuleAnalysisCtx,
@@ -52,7 +52,7 @@ pub struct CodegenOptions {
     /// 是否启用优化
     pub optimize: bool,
     /// 是否打印中间结果（调试用）
-    pub dump_mir: bool,
+    pub dump_lir: bool,
     /// 目标优化级别
     pub opt_level: u8,
 }
@@ -61,7 +61,7 @@ impl Default for CodegenOptions {
     fn default() -> Self {
         Self {
             optimize: true,
-            dump_mir: false,
+            dump_lir: false,
             opt_level: 2,
         }
     }
@@ -69,7 +69,7 @@ impl Default for CodegenOptions {
 
 /// 代码生成驱动
 ///
-/// 负责组织 typed MIR pipeline、target 相关扩展和最终发射。
+/// 负责组织 typed LIR pipeline、target 相关扩展和最终发射。
 ///
 /// # 示例
 ///
@@ -92,10 +92,10 @@ impl<'a> CodegenPipeline<'a> {
     fn maybe_dump_mfunc<S>(&self, stage: &str, mfunc: &MachineFunction<S>) {
         use std::env;
 
-        let filter = if self.options.dump_mir {
+        let filter = if self.options.dump_lir {
             Some(alloc::string::String::from("*"))
         } else {
-            env::var("VELOC_DUMP_MIR").ok()
+            env::var("VELOC_DUMP_LIR").ok()
         };
         let Some(filter) = filter else {
             return;
@@ -105,7 +105,7 @@ impl<'a> CodegenPipeline<'a> {
             return;
         }
 
-        std::eprintln!("===== MIR {}: {} =====", stage, mfunc.name);
+        std::eprintln!("===== LIR {}: {} =====", stage, mfunc.name);
         std::eprintln!("{}", mfunc.format_for_dump());
     }
 
@@ -245,7 +245,7 @@ impl<'a> CodegenPipeline<'a> {
 
     fn run_function_pipeline(
         &self,
-        mfunc: MachineFunction<RawMir>,
+        mfunc: MachineFunction<RawLir>,
         func_sig: &veloc_ir::Signature,
         stats: &mut CodegenStats,
         function_analyses: &mut FunctionAnalysisCtx,
@@ -258,7 +258,7 @@ impl<'a> CodegenPipeline<'a> {
         let frame_lowering = self.target.target_frame_lowering();
         let pass_config = self.target.target_pass_config();
 
-        let mut ctx = FunctionPassContext::<RawMir>::new(
+        let mut ctx = FunctionPassContext::<RawLir>::new(
             self.target,
             func_sig,
             &self.options,
@@ -268,7 +268,7 @@ impl<'a> CodegenPipeline<'a> {
         );
         let mfunc = self.apply_stage_transform(&BlockParamLoweringPass, mfunc, &mut ctx)?;
 
-        let mut ctx = ctx.into_stage::<LegalizedMir>();
+        let mut ctx = ctx.into_stage::<LegalizedLir>();
         let mfunc = self.apply_stage_transform(
             &LegalizePass::new(legalizer, pass_config),
             mfunc,
@@ -283,11 +283,11 @@ impl<'a> CodegenPipeline<'a> {
 
         let mfunc =
             self.apply_stage_transform(&InstructionSelectionPass::new(selector), mfunc, &mut ctx)?;
-        let mut post_isel_pipeline = StagePassPipeline::<SelectedMir>::new();
+        let mut post_isel_pipeline = StagePassPipeline::<SelectedLir>::new();
         for pass in pass_config.post_isel_passes() {
             post_isel_pipeline.add_boxed_pass(pass);
         }
-        let mut ctx = ctx.into_stage::<SelectedMir>();
+        let mut ctx = ctx.into_stage::<SelectedLir>();
         let mut mfunc = mfunc;
         self.run_stage_pipeline(
             "post-isel-target",

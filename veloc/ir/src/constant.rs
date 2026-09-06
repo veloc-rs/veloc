@@ -63,10 +63,15 @@ impl Constant {
             return None;
         }
 
+        if let Some(semantics) = op.spec().semantics {
+            let width = crate::semantics::Width::new(bits as u16).ok()?;
+            let result = semantics
+                .eval(width, &[l_val as u128, r_val as u128])
+                .ok()?;
+            return Some(Self::from_i64(result as i64, bits));
+        }
+
         let result = match op {
-            Opcode::IAdd => l_val.wrapping_add(r_val),
-            Opcode::ISub => l_val.wrapping_sub(r_val),
-            Opcode::IMul => l_val.wrapping_mul(r_val),
             Opcode::IDivS => {
                 if r_val == 0 || (l_val == i64::MIN && r_val == -1) {
                     return None;
@@ -81,9 +86,6 @@ impl Constant {
                 let r = truncate_u64(r_val as u64, bits);
                 l.wrapping_div(r) as i64
             }
-            Opcode::IAnd => l_val & r_val,
-            Opcode::IOr => l_val | r_val,
-            Opcode::IXor => l_val ^ r_val,
             Opcode::IShl => l_val.wrapping_shl((r_val as u32) % bits),
             Opcode::IShrS => {
                 if bits == 32 {
@@ -106,8 +108,13 @@ impl Constant {
         let v = self.as_i64()?;
         let bits = self.bits();
 
+        if let Some(semantics) = op.spec().semantics {
+            let width = crate::semantics::Width::new(bits as u16).ok()?;
+            let result = semantics.eval(width, &[v as u128]).ok()?;
+            return Some(Self::from_i64(result as i64, bits));
+        }
+
         let result = match op {
-            Opcode::INeg => v.wrapping_neg(),
             Opcode::IClz => {
                 let v_u = truncate_u64(v as u64, bits);
                 v_u.leading_zeros().saturating_sub(64 - bits) as i64
@@ -214,5 +221,56 @@ impl From<Constant> for InstructionData {
             Constant::F64(v) => InstructionData::Fconst { value: v.to_bits() },
             Constant::Bool(v) => InstructionData::Bconst { value: v },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folds_modular_operations_from_specs() {
+        assert_eq!(
+            Constant::I8(127).binary_op(Constant::I8(1), Opcode::IAdd),
+            Some(Constant::I8(-128))
+        );
+        assert_eq!(
+            Constant::I16(-32768).binary_op(Constant::I16(1), Opcode::ISub),
+            Some(Constant::I16(32767))
+        );
+        assert_eq!(
+            Constant::I32(i32::MAX).binary_op(Constant::I32(2), Opcode::IMul),
+            Some(Constant::I32(-2))
+        );
+        assert_eq!(
+            Constant::I64(i64::MIN).unary_op(Opcode::INeg),
+            Some(Constant::I64(i64::MIN))
+        );
+        assert_eq!(
+            Constant::I8(-1).binary_op(Constant::I8(15), Opcode::IAnd),
+            Some(Constant::I8(15))
+        );
+        assert_eq!(
+            Constant::I8(-128).binary_op(Constant::I8(15), Opcode::IOr),
+            Some(Constant::I8(-113))
+        );
+        assert_eq!(
+            Constant::I8(-1).binary_op(Constant::I8(15), Opcode::IXor),
+            Some(Constant::I8(-16))
+        );
+    }
+
+    #[test]
+    fn folding_rejects_mismatched_types_and_arities() {
+        assert_eq!(
+            Constant::I8(1).binary_op(Constant::I16(2), Opcode::IAdd),
+            None
+        );
+        assert_eq!(
+            Constant::I8(1).binary_op(Constant::I8(2), Opcode::INeg),
+            None
+        );
+        assert_eq!(Constant::I8(1).unary_op(Opcode::IAdd), None);
+        assert_eq!(Constant::F32(1.0).unary_op(Opcode::INeg), None);
     }
 }

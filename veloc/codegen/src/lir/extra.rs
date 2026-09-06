@@ -1,4 +1,4 @@
-//! Machine IR (MIR) 指令附加信息定义
+//! Low-level IR (LIR) 指令附加信息定义
 
 use alloc::vec::Vec;
 use cranelift_entity::entity_impl;
@@ -55,7 +55,7 @@ pub enum AMode {
     PostIndex,
 }
 
-/// 少数复杂 MIR 指令的附加 payload。
+/// 少数复杂 LIR 指令的附加 payload。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstExtra {
     Call(CallInfo),

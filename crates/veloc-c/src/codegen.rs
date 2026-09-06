@@ -56,7 +56,7 @@ impl CodeGenContext {
         // Generate a zero value for the temporary function body.
         if let Some(ty) = return_type {
             let zero = match ty {
-                Type::I8 | Type::I16 | Type::I32 | Type::I64 => func_builder.ins().iconst(ty, 0),
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 => func_builder.ins().iconst(0, ty),
                 Type::F32 => func_builder.ins().f32const(0.0),
                 Type::F64 => func_builder.ins().f64const(0.0),
                 _ => return Err(Error::semantic("unsupported return type", 0, 0)),

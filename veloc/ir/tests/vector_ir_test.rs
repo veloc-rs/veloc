@@ -149,7 +149,7 @@ fn test_gather_load() {
     let v4i64 = Type::new_vector(ScalarType::I64, 4, false).unwrap();
 
     let ptr_val = builder.ins().i64const(0x1000);
-    let base_ptr = builder.ins().int_to_ptr(ptr_val);
+    let base_ptr = builder.ins().inttoptr(ptr_val);
     let idx_val = builder.ins().i64const(0);
     let indices = builder.ins().splat(idx_val, v4i64);
 
@@ -174,7 +174,7 @@ fn test_strided_load_store() {
     let v8f32 = Type::new_vector(ScalarType::F32, 8, false).unwrap();
 
     let ptr_val = builder.ins().i64const(0x1000);
-    let base_ptr = builder.ins().int_to_ptr(ptr_val);
+    let base_ptr = builder.ins().inttoptr(ptr_val);
     let stride = builder.ins().i64const(2);
 
     let loaded = builder

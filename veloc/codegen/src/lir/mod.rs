@@ -1,11 +1,11 @@
-//! Machine IR (MIR) - 机器无关的中间表示
+//! Low-level IR (LIR) - 面向机器的中间表示
 //!
 //! 这是 GlobalISel 流程中的核心数据结构，
 //! 在 IRTranslator 生成后，经过 Legalizer、RegBankSelect、InstructionSelect 等阶段处理
 
-// Machine IR (MIR) - 机器相关的中间表示
+// Machine IR (LIR) - 机器相关的中间表示
 //
-// 此目录仅包含 MIR 本身的定义（指令、基本块、函数）。
+// 此目录仅包含 LIR 本身的定义（指令、基本块、函数）。
 
 pub mod extra;
 pub mod function;

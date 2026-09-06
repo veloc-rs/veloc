@@ -183,16 +183,7 @@ impl Function {
                 let callee = &module.functions[*func_id];
                 self.validate_signature(module, inst, callee.signature, *args, &callee.name)?;
             }
-            InstructionData::CallIndirect { ptr, args, sig_id } => {
-                let ptr_ty = self.dfg.value_type(*ptr);
-                if ptr_ty != Type::PTR {
-                    return Err(ValidationError::TypeMismatch {
-                        opcode,
-                        expected: Type::PTR,
-                        got: ptr_ty,
-                    }
-                    .into());
-                }
+            InstructionData::CallIndirect { args, sig_id, .. } => {
                 self.validate_signature(module, inst, *sig_id, *args, "indirect call")?;
             }
             InstructionData::CallIntrinsic { args, sig_id, .. } => {
@@ -202,27 +193,14 @@ impl Function {
                 self.validate_block_call(*dest, "jump")?;
             }
             InstructionData::Br {
-                condition,
                 then_dest,
                 else_dest,
+                ..
             } => {
-                let condition_ty = self.dfg.value_type(*condition);
-                if condition_ty != Type::BOOL {
-                    return Err(ValidationError::ConditionNotBool(inst, condition_ty).into());
-                }
                 self.validate_block_call(*then_dest, "branch")?;
                 self.validate_block_call(*else_dest, "branch")?;
             }
-            InstructionData::BrTable { index, table } => {
-                let index_ty = self.dfg.value_type(*index);
-                if index_ty != Type::I32 {
-                    return Err(ValidationError::TypeMismatch {
-                        opcode,
-                        expected: Type::I32,
-                        got: index_ty,
-                    }
-                    .into());
-                }
+            InstructionData::BrTable { table, .. } => {
                 for &target in &self.dfg.jump_tables[*table].targets {
                     self.validate_block_call(target, "branch table")?;
                 }

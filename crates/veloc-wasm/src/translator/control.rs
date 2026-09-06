@@ -291,16 +291,16 @@ impl<'a> WasmTranslator<'a> {
                     let entry_offset = self.offsets.function_offset(function_index as u32);
                     let vmptr = self.vmctx.expect("vmctx not set");
                     let func_ptr = self.builder.ins().load(
-                        VelocType::PTR,
                         vmptr,
                         entry_offset + VMFuncRef::func_ptr_offset(),
                         MemFlags::new().with_alignment(16),
+                        VelocType::PTR,
                     );
                     let target_vmctx = self.builder.ins().load(
-                        VelocType::PTR,
                         vmptr,
                         entry_offset + VMFuncRef::vmctx_offset(),
                         MemFlags::new().with_alignment(8),
+                        VelocType::PTR,
                     );
                     args.insert(0, target_vmctx);
                     let func_id = self.metadata.functions[function_index as usize].func_id;
@@ -311,7 +311,7 @@ impl<'a> WasmTranslator<'a> {
                             let bits =
                                 self.builder
                                     .ins()
-                                    .stack_load(VelocType::I64, slot, (i * 8) as u32);
+                                    .stack_load(slot, (i * 8) as u32, VelocType::I64);
                             let res_val = self.decode_result_bits(bits, self.val_type_to_veloc(ty));
                             self.stack.push(res_val);
                         }
@@ -330,7 +330,7 @@ impl<'a> WasmTranslator<'a> {
                             let bits =
                                 self.builder
                                     .ins()
-                                    .stack_load(VelocType::I64, slot, (i * 8) as u32);
+                                    .stack_load(slot, (i * 8) as u32, VelocType::I64);
                             let res_val = self.decode_result_bits(bits, self.val_type_to_veloc(ty));
                             self.stack.push(res_val);
                         }
@@ -358,7 +358,7 @@ impl<'a> WasmTranslator<'a> {
                 let table_base = self.get_table_base(table_index);
                 let (_, len_var) = self.table_vars[table_index as usize];
                 let table_len = self.builder.use_var(len_var);
-                let index_i64 = self.builder.ins().extend_u(index, VelocType::I64);
+                let index_i64 = self.builder.ins().extendu(index, VelocType::I64);
                 let is_lt = self.builder.ins().icmp(IntCC::LtU, index_i64, table_len);
                 let trap_table_block = self.builder.create_block();
                 let check_null_block = self.builder.create_block();
@@ -375,9 +375,9 @@ impl<'a> WasmTranslator<'a> {
                 let entry_ptr =
                     self.builder
                         .ins()
-                        .load(VelocType::PTR, entry_ptr_addr, 0, MemFlags::default());
-                let zero = self.builder.ins().iconst(VelocType::I64, 0);
-                let zero_ptr = self.builder.ins().int_to_ptr(zero);
+                        .load(entry_ptr_addr, 0, MemFlags::default(), VelocType::PTR);
+                let zero = self.builder.ins().iconst(0, VelocType::I64);
+                let zero_ptr = self.builder.ins().inttoptr(zero);
                 let is_not_null = self.builder.ins().icmp(IntCC::Ne, entry_ptr, zero_ptr);
                 let trap_null_block = self.builder.create_block();
                 let actual_call_block = self.builder.create_block();
@@ -391,15 +391,15 @@ impl<'a> WasmTranslator<'a> {
                 self.builder.switch_to_block(actual_call_block);
                 self.terminated = false;
                 let actual_sig_id = self.builder.ins().load(
-                    VelocType::I32,
                     entry_ptr,
                     VMFuncRef::type_index_offset(),
                     MemFlags::new().with_alignment(16),
+                    VelocType::I32,
                 );
                 let expected_sig_id = self
                     .builder
                     .ins()
-                    .iconst(VelocType::I32, (sig.hash_u64() as u32) as i64);
+                    .iconst((sig.hash_u64() as u32) as u64, VelocType::I32);
                 let sig_matches =
                     self.builder
                         .ins()
@@ -416,16 +416,16 @@ impl<'a> WasmTranslator<'a> {
                 self.builder.switch_to_block(sig_ok_block);
                 self.terminated = false;
                 let func_ptr = self.builder.ins().load(
-                    VelocType::PTR,
                     entry_ptr,
                     VMFuncRef::func_ptr_offset(),
                     MemFlags::new().with_alignment(16),
+                    VelocType::PTR,
                 );
                 let target_vmctx = self.builder.ins().load(
-                    VelocType::PTR,
                     entry_ptr,
                     VMFuncRef::vmctx_offset(),
                     MemFlags::new().with_alignment(8),
+                    VelocType::PTR,
                 );
                 args.insert(0, target_vmctx);
                 let results = &sig.results;
@@ -444,7 +444,7 @@ impl<'a> WasmTranslator<'a> {
                         let bits =
                             self.builder
                                 .ins()
-                                .stack_load(VelocType::I64, slot, (i * 8) as u32);
+                                .stack_load(slot, (i * 8) as u32, VelocType::I64);
                         let res_val = self.decode_result_bits(bits, self.val_type_to_veloc(ty));
                         self.stack.push(res_val);
                     }
@@ -464,16 +464,16 @@ impl<'a> WasmTranslator<'a> {
                 }
                 args.reverse();
                 let func_ptr = self.builder.ins().load(
-                    VelocType::PTR,
                     func_ref,
                     VMFuncRef::func_ptr_offset(),
                     MemFlags::new().with_alignment(16),
+                    VelocType::PTR,
                 );
                 let target_vmctx = self.builder.ins().load(
-                    VelocType::PTR,
                     func_ref,
                     VMFuncRef::vmctx_offset(),
                     MemFlags::new().with_alignment(8),
+                    VelocType::PTR,
                 );
                 args.insert(0, target_vmctx);
                 let results = &sig.results;
@@ -492,7 +492,7 @@ impl<'a> WasmTranslator<'a> {
                         let bits =
                             self.builder
                                 .ins()
-                                .stack_load(VelocType::I64, slot, (i * 8) as u32);
+                                .stack_load(slot, (i * 8) as u32, VelocType::I64);
                         let res_val = self.decode_result_bits(bits, self.val_type_to_veloc(ty));
                         self.stack.push(res_val);
                     }

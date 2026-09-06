@@ -1,4 +1,4 @@
-use crate::mir::{MachineFunction, Reg, UseDefChain};
+use crate::lir::{MachineFunction, Reg, UseDefChain};
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use hashbrown::{HashMap, HashSet};
@@ -442,7 +442,7 @@ fn compute_cfg<S>(mfunc: &MachineFunction<S>) -> CfgInfo {
             } else if let Ok(br) = inst.as_branch_cond() {
                 block_succs.push(br.then_blk);
                 block_succs.push(br.else_blk);
-            } else if let Some(crate::mir::InstExtra::BrTable(info)) =
+            } else if let Some(crate::lir::InstExtra::BrTable(info)) =
                 mfunc.inst_extra(last_inst_id)
             {
                 for target in &info.targets {
@@ -450,7 +450,7 @@ fn compute_cfg<S>(mfunc: &MachineFunction<S>) -> CfgInfo {
                 }
             } else if !matches!(
                 inst.generic_opcode(),
-                Some(crate::mir::GenericOpcode::G_RET)
+                Some(crate::lir::GenericOpcode::G_RET)
             ) {
                 if let Some(next) = block_order.get(index + 1).copied() {
                     block_succs.push(next);
@@ -650,8 +650,8 @@ fn compute_register_pressure<S>(
 #[cfg(test)]
 mod tests {
     use super::{ChangeSet, FunctionAnalysisCtx};
-    use crate::mir::{MachineBlock, MachineFunction, MachineInst, Writable};
-    use crate::pipeline::stages::RawMir;
+    use crate::lir::{MachineBlock, MachineFunction, MachineInst, Writable};
+    use crate::pipeline::stages::RawLir;
     use veloc_ir::{Block, Type};
 
     #[test]
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn use_def_change_does_not_invalidate_cfg() {
-        let mut mfunc = MachineFunction::<RawMir>::new("test".into());
+        let mut mfunc = MachineFunction::<RawLir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         let a = mfunc.alloc_vreg(Type::I64);
         let b = mfunc.alloc_vreg(Type::I64);
@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn cfg_change_invalidates_cfg_and_dependents() {
-        let mut mfunc = MachineFunction::<RawMir>::new("test".into());
+        let mut mfunc = MachineFunction::<RawLir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(1)));
         let mut analyses = FunctionAnalysisCtx::default();
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn stack_frame_change_does_not_invalidate_cfg() {
-        let mut mfunc = MachineFunction::<RawMir>::new("test".into());
+        let mut mfunc = MachineFunction::<RawLir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg_before = analyses.cfg(&mfunc) as *const _;

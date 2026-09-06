@@ -1,19 +1,22 @@
-//! IR to Machine IR Translator
+//! Middle-level IR (MIR) to low-level IR (LIR) translator.
 //!
-//! 将 SSA IR 转换为机器无关的中间表示 (MIR)
+//! 将 SSA MIR 转换为面向机器的 LIR。
 //! 这是 GlobalISel 流程的第一步
 
 use crate::error::{Error, Result};
-use crate::mir::{
+use crate::lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
     MachineBlock, MachineFunction, MachineInst, MachineModule, MachineOpcode, MachineOperand, Reg,
 };
-use crate::pipeline::stages::RawMir;
+use crate::pipeline::stages::RawLir;
 use alloc::format;
 use hashbrown::HashMap;
 use veloc_ir::{Function, InstructionData, Module, Opcode, Value};
 
-/// IR 到 MIR 的翻译器
+#[cfg(test)]
+mod tests;
+
+/// IR 到 LIR 的翻译器
 pub struct IRTranslator<'a> {
     module: &'a Module,
 }
@@ -22,7 +25,7 @@ pub struct IRTranslator<'a> {
 struct TranslationContext<'a> {
     func: &'a Function,
     mmodule: &'a mut MachineModule,
-    mfunc: MachineFunction<RawMir>,
+    mfunc: MachineFunction<RawLir>,
     value_map: HashMap<Value, Reg>,
 }
 
@@ -53,7 +56,7 @@ impl<'a> IRTranslator<'a> {
 
     /// 为函数参数生成 G_ARG 指令
     fn lower_arguments(&self, ctx: &mut TranslationContext, mblock: &mut MachineBlock) {
-        use crate::mir::Writable;
+        use crate::lir::Writable;
         for (idx, &param_val) in ctx.func.params().iter().enumerate() {
             let vreg = ctx.value_map[&param_val];
             let arg_inst = MachineInst::build_arg(Writable(vreg), idx as i64);
@@ -65,7 +68,7 @@ impl<'a> IRTranslator<'a> {
         ctx: &mut TranslationContext,
         mblock: &mut MachineBlock,
         inst: MachineInst,
-    ) -> crate::mir::InstId {
+    ) -> crate::lir::InstId {
         let inst_id = ctx.mfunc.alloc_inst(inst);
         mblock.append_inst_id(inst_id);
         inst_id
@@ -89,11 +92,11 @@ impl<'a> IRTranslator<'a> {
         &self,
         func: &Function,
         mmodule: &mut MachineModule,
-    ) -> Result<MachineFunction<RawMir>> {
+    ) -> Result<MachineFunction<RawLir>> {
         let mut ctx = TranslationContext {
             func,
             mmodule,
-            mfunc: MachineFunction::<RawMir>::new(func.name.clone()),
+            mfunc: MachineFunction::<RawLir>::new(func.name.clone()),
             value_map: HashMap::new(),
         };
 
@@ -145,17 +148,63 @@ impl<'a> IRTranslator<'a> {
         ctx: &mut TranslationContext,
         mblock: &mut MachineBlock,
     ) -> Result<TranslatedInst> {
-        use crate::mir::Writable;
+        use crate::lir::Writable;
         use smallvec::SmallVec;
 
         let inst_data = &ctx.func.dfg.instructions[inst_id];
 
         // 获取结果寄存器 (Defs)
         let results = ctx.func.dfg.inst_results(inst_id);
-        let mut defs = SmallVec::<[MachineOperand; 1]>::new();
+        let mut defs = SmallVec::<[MachineOperand; 4]>::new();
         for &res in results {
             let vreg = ctx.value_map[&res];
             defs.push(MachineOperand::Def(Writable(vreg)));
+        }
+
+        let spec = inst_data.opcode().spec();
+        if matches!(
+            inst_data,
+            InstructionData::Unary { .. } | InstructionData::Binary { .. }
+        ) && let Some(semantics) = spec.semantics
+        {
+            let mut args = SmallVec::<[Value; 2]>::new();
+            inst_data.visit_operands(&ctx.func.dfg, |value| args.push(value));
+            let operand_types: SmallVec<[_; 2]> = args
+                .iter()
+                .map(|&value| ctx.func.dfg.value_type(value))
+                .collect();
+            let result_types: SmallVec<[_; 1]> = results
+                .iter()
+                .map(|&value| ctx.func.dfg.value_type(value))
+                .collect();
+            spec.type_scheme
+                .validate(&operand_types, &result_types)
+                .map_err(|error| {
+                    Error::translate(format!(
+                        "invalid types for {} semantic lowering: {error:?}",
+                        spec.mnemonic
+                    ))
+                })?;
+            if args.len() != semantics.arity() || results.len() != 1 {
+                return Err(Error::translate(format!(
+                    "invalid arity for {} semantic lowering",
+                    spec.mnemonic
+                )));
+            }
+
+            if let Some(opcode) = semantics
+                .primitive()
+                .and_then(GenericOpcode::from_semantics)
+            {
+                // The shared binding describes the scalar/per-lane operation.
+                // Preserve source types here; target legalization still decides
+                // which widths and vector shapes the backend can implement.
+                defs.extend(
+                    args.into_iter()
+                        .map(|arg| MachineOperand::Use(ctx.value_map[&arg])),
+                );
+                return Ok(MachineInst::build_generic(MachineOpcode::Generic(opcode), defs).into());
+            }
         }
 
         match inst_data {
@@ -164,14 +213,8 @@ impl<'a> IRTranslator<'a> {
                 let src1 = ctx.value_map[&args[1]];
 
                 let m_opcode = match opcode {
-                    Opcode::IAdd => MachineOpcode::Generic(GenericOpcode::G_ADD),
-                    Opcode::ISub => MachineOpcode::Generic(GenericOpcode::G_SUB),
-                    Opcode::IMul => MachineOpcode::Generic(GenericOpcode::G_MUL),
                     Opcode::IDivS => MachineOpcode::Generic(GenericOpcode::G_SDIV),
                     Opcode::IDivU => MachineOpcode::Generic(GenericOpcode::G_UDIV),
-                    Opcode::IAnd => MachineOpcode::Generic(GenericOpcode::G_AND),
-                    Opcode::IOr => MachineOpcode::Generic(GenericOpcode::G_OR),
-                    Opcode::IXor => MachineOpcode::Generic(GenericOpcode::G_XOR),
                     Opcode::IShl => MachineOpcode::Generic(GenericOpcode::G_SHL),
                     Opcode::IShrS => MachineOpcode::Generic(GenericOpcode::G_ASHR),
                     Opcode::IShrU => MachineOpcode::Generic(GenericOpcode::G_LSHR),
@@ -194,6 +237,9 @@ impl<'a> IRTranslator<'a> {
                 let src = ctx.value_map[arg];
 
                 let m_opcode = match opcode {
+                    // The MIR contract spells negation as `0 - arg`. This
+                    // explicit target rule retains G_NEG until compositional
+                    // selection can match complete semantic programs.
                     Opcode::INeg => MachineOpcode::Generic(GenericOpcode::G_NEG),
                     Opcode::IClz => MachineOpcode::Generic(GenericOpcode::G_CTLZ),
                     Opcode::ICtz => MachineOpcode::Generic(GenericOpcode::G_CTTZ),
@@ -463,7 +509,7 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionData::PtrOffset { ptr, offset } => {
-                use crate::mir::Writable;
+                use crate::lir::Writable;
 
                 let addr = ctx.value_map[ptr];
                 if *offset == 0 {

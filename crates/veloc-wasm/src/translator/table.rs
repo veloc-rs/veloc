@@ -13,10 +13,10 @@ impl<'a> WasmTranslator<'a> {
                 let index_i64 = self.addr_to_i64(index);
                 let addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
                 let res = self.builder.ins().load(
-                    VelocType::PTR,
                     addr,
                     0,
                     MemFlags::new().with_alignment(8),
+                    VelocType::PTR,
                 );
                 self.stack.push(res);
             }
@@ -28,8 +28,8 @@ impl<'a> WasmTranslator<'a> {
                 let index_i64 = self.addr_to_i64(index);
                 let entry_addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
                 self.builder.ins().store(
-                    func_ref,
                     entry_addr,
+                    func_ref,
                     0,
                     MemFlags::new().with_alignment(8),
                 );
@@ -39,8 +39,8 @@ impl<'a> WasmTranslator<'a> {
                 let src = self.pop_i32();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let table_idx = self.builder.ins().iconst(VelocType::I32, table as i64);
-                let elem_idx = self.builder.ins().iconst(VelocType::I32, elem_index as i64);
+                let table_idx = self.builder.ins().iconst(table as u64, VelocType::I32);
+                let elem_idx = self.builder.ins().iconst(elem_index as u64, VelocType::I32);
                 self.builder.ins().call(
                     self.runtime.table_init,
                     &[vmctx, table_idx, elem_idx, dst, src, len],
@@ -54,8 +54,8 @@ impl<'a> WasmTranslator<'a> {
                 let src = self.pop_i32();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let dst_table_val = self.builder.ins().iconst(VelocType::I32, dst_table as i64);
-                let src_table_val = self.builder.ins().iconst(VelocType::I32, src_table as i64);
+                let dst_table_val = self.builder.ins().iconst(dst_table as u64, VelocType::I32);
+                let src_table_val = self.builder.ins().iconst(src_table as u64, VelocType::I32);
                 self.builder.ins().call(
                     self.runtime.table_copy,
                     &[vmctx, dst_table_val, src_table_val, dst, src, len],
@@ -65,7 +65,7 @@ impl<'a> WasmTranslator<'a> {
                 let delta = self.pop_i32();
                 let init_val = self.pop();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let table_idx = self.builder.ins().iconst(VelocType::I32, table as i64);
+                let table_idx = self.builder.ins().iconst(table as u64, VelocType::I32);
                 let call_inst = self.builder.ins().call(
                     self.runtime.table_grow,
                     &[vmctx, table_idx, init_val, delta],
@@ -85,14 +85,14 @@ impl<'a> WasmTranslator<'a> {
                 let val = self.pop();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let table_idx = self.builder.ins().iconst(VelocType::I32, table as i64);
+                let table_idx = self.builder.ins().iconst(table as u64, VelocType::I32);
                 self.builder
                     .ins()
                     .call(self.runtime.table_fill, &[vmctx, table_idx, dst, val, len]);
             }
             Operator::ElemDrop { elem_index } => {
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let elem_idx = self.builder.ins().iconst(VelocType::I32, elem_index as i64);
+                let elem_idx = self.builder.ins().iconst(elem_index as u64, VelocType::I32);
                 self.builder
                     .ins()
                     .call(self.runtime.elem_drop, &[vmctx, elem_idx]);
@@ -110,37 +110,37 @@ impl<'a> WasmTranslator<'a> {
             // 导入的 table：先加载指针，再通过指针访问
             let alignment = if offset % 16 == 0 { 16 } else { 8 };
             let def_ptr = self.builder.ins().load(
-                VelocType::PTR,
                 vmctx,
                 offset,
                 MemFlags::new().with_alignment(alignment),
+                VelocType::PTR,
             );
             let base = self.builder.ins().load(
-                VelocType::PTR,
                 def_ptr,
                 VMTable::base_offset(),
                 MemFlags::new().with_alignment(8),
+                VelocType::PTR,
             );
             let length = self.builder.ins().load(
-                VelocType::I64,
                 def_ptr,
                 VMTable::current_elements_offset(),
                 MemFlags::new().with_alignment(8),
+                VelocType::I64,
             );
             (base, length)
         } else {
             // 本地 table：直接通过 VMContext 偏移访问
             let base = self.builder.ins().load(
-                VelocType::PTR,
                 vmctx,
                 offset + VMTable::base_offset(),
                 MemFlags::new().with_alignment(8),
+                VelocType::PTR,
             );
             let length = self.builder.ins().load(
-                VelocType::I64,
                 vmctx,
                 offset + VMTable::current_elements_offset(),
                 MemFlags::new().with_alignment(8),
+                VelocType::I64,
             );
             (base, length)
         };

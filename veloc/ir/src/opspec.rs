@@ -1,84 +1,10 @@
-//! Declarative semantic metadata for core IR operations.
+//! Runtime contracts for MIR operations.
 //!
-//! `OpSpec` is intentionally compile-time and closed. It centralizes facts used
-//! by generic IR infrastructure without turning the core IR into a dynamic
-//! dialect system.
+//! Layouts, type schemes and operation tables are compiled from `defs/*.ops`.
+//! This module implements their shared type/effect machinery; it does not
+//! contain individual operation definitions.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpFormat {
-    Unary,
-    Binary,
-    Ternary,
-    Iconst,
-    Fconst,
-    Bconst,
-    Vconst,
-    Load,
-    Store,
-    StackLoad,
-    StackStore,
-    StackAddr,
-    PtrOffset,
-    PtrIndex,
-    IntToPtr,
-    PtrToInt,
-    Call,
-    CallIndirect,
-    CallIntrinsic,
-    Jump,
-    Br,
-    BrTable,
-    Return,
-    IntCompare,
-    FloatCompare,
-    VectorLoadStrided,
-    VectorStoreStrided,
-    VectorGather,
-    VectorScatter,
-    Shuffle,
-    Unreachable,
-    Nop,
-}
-
-impl OpFormat {
-    /// Number of core SSA operands when it is determined by the physical
-    /// format. `None` means the operands are carried by a signature, block
-    /// destination, or another variadic container.
-    pub const fn fixed_value_arity(self) -> Option<usize> {
-        match self {
-            Self::Iconst
-            | Self::Fconst
-            | Self::Bconst
-            | Self::Vconst
-            | Self::StackLoad
-            | Self::StackAddr
-            | Self::Unreachable
-            | Self::Nop => Some(0),
-            Self::Unary
-            | Self::Load
-            | Self::StackStore
-            | Self::IntToPtr
-            | Self::PtrToInt
-            | Self::PtrOffset => Some(1),
-            Self::Binary
-            | Self::PtrIndex
-            | Self::IntCompare
-            | Self::FloatCompare
-            | Self::VectorLoadStrided
-            | Self::VectorGather
-            | Self::Shuffle => Some(2),
-            Self::Ternary | Self::VectorStoreStrided | Self::VectorScatter => Some(3),
-            Self::Store => Some(2),
-            Self::Call
-            | Self::CallIndirect
-            | Self::CallIntrinsic
-            | Self::Jump
-            | Self::Br
-            | Self::BrTable
-            | Self::Return => None,
-        }
-    }
-}
+include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
 /// A set of value types accepted by a type pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,8 +41,8 @@ pub enum TypePattern {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeList {
     Fixed(&'static [TypePattern]),
-    /// Types are supplied by external structure such as a signature or block.
-    External,
+    /// A checked prefix followed by values from a signature or CFG structure.
+    Variadic(&'static [TypePattern]),
     /// Results are supplied by the instruction's function signature.
     Signature,
 }
@@ -129,8 +55,12 @@ pub enum TypeSlot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeRelation {
+    /// The destination has more logical bits per lane. Shape constraints are
+    /// specified separately in the operand and result patterns.
     Wider { from: TypeSlot, to: TypeSlot },
+    /// The destination has fewer logical bits per lane.
     Narrower { from: TypeSlot, to: TypeSlot },
+    /// Distinct types with equal whole-value logical sizes, including vscale.
     SameWidthDistinct { lhs: TypeSlot, rhs: TypeSlot },
 }
 
@@ -165,6 +95,8 @@ pub enum TypeSchemeError {
     Relation(TypeRelation),
 }
 
+type TypeBindings = smallvec::SmallVec<[Option<crate::Type>; 4]>;
+
 impl TypeScheme {
     pub const fn fixed(operands: &'static [TypePattern], results: &'static [TypePattern]) -> Self {
         Self {
@@ -182,23 +114,29 @@ impl TypeScheme {
     /// Infer result types when the scheme determines them completely.
     /// Operations with caller-selected types report `Explicit`; calls report
     /// `Signature` so the consumer can consult the module.
-    pub fn infer_results(self, operands: &[crate::Type]) -> ResultTypes {
+    /// Operand constraints and inferred results use the same checks as
+    /// [`Self::validate`]; invalid inputs are not incomplete type information.
+    pub fn infer_results(
+        self,
+        operands: &[crate::Type],
+    ) -> core::result::Result<ResultTypes, TypeSchemeError> {
+        let bindings = self.bind_operands(operands)?;
         let TypeList::Fixed(results) = self.results else {
-            return match self.results {
+            return Ok(match self.results {
                 TypeList::Signature => ResultTypes::Signature,
-                TypeList::External => ResultTypes::Explicit,
+                TypeList::Variadic(_) => ResultTypes::Explicit,
                 TypeList::Fixed(_) => unreachable!(),
-            };
+            });
         };
-        let bindings = self.bindings(operands);
         let mut inferred = smallvec::SmallVec::new();
         for pattern in results {
             let Some(ty) = infer_pattern(*pattern, &bindings) else {
-                return ResultTypes::Explicit;
+                return Ok(ResultTypes::Explicit);
             };
             inferred.push(ty);
         }
-        ResultTypes::Inferred(inferred)
+        self.validate_results(operands, &inferred, bindings)?;
+        Ok(ResultTypes::Inferred(inferred))
     }
 
     pub fn validate(
@@ -206,8 +144,16 @@ impl TypeScheme {
         operands: &[crate::Type],
         results: &[crate::Type],
     ) -> core::result::Result<(), TypeSchemeError> {
-        let mut bindings = [None; 4];
-        validate_list(self.operands, operands, false, &mut bindings)?;
+        let bindings = self.bind_operands(operands)?;
+        self.validate_results(operands, results, bindings)
+    }
+
+    fn validate_results(
+        self,
+        operands: &[crate::Type],
+        results: &[crate::Type],
+        mut bindings: TypeBindings,
+    ) -> core::result::Result<(), TypeSchemeError> {
         validate_list(self.results, results, true, &mut bindings)?;
 
         for &relation in self.relations {
@@ -221,21 +167,20 @@ impl TypeScheme {
                     .expect("OpSpec type relation refers to a missing type slot")
             };
             let valid = match relation {
-                TypeRelation::Wider { from, to } => logical_width(resolve(from))
-                    .zip(logical_width(resolve(to)))
+                TypeRelation::Wider { from, to } => resolve(from)
+                    .element_bits()
+                    .zip(resolve(to).element_bits())
                     .is_some_and(|(from, to)| to > from),
-                TypeRelation::Narrower { from, to } => logical_width(resolve(from))
-                    .zip(logical_width(resolve(to)))
+                TypeRelation::Narrower { from, to } => resolve(from)
+                    .element_bits()
+                    .zip(resolve(to).element_bits())
                     .is_some_and(|(from, to)| to < from),
                 TypeRelation::SameWidthDistinct { lhs, rhs } => {
                     let lhs = resolve(lhs);
                     let rhs = resolve(rhs);
-                    logical_width(lhs)
-                        .zip(logical_width(rhs))
-                        .map(|widths| (lhs, rhs, widths))
-                        .is_some_and(|(lhs, rhs, (lhs_width, rhs_width))| {
-                            lhs != rhs && lhs_width == rhs_width
-                        })
+                    lhs.bit_size()
+                        .zip(rhs.bit_size())
+                        .is_some_and(|(lhs_width, rhs_width)| lhs != rhs && lhs_width == rhs_width)
                 }
             };
             if !valid {
@@ -245,18 +190,32 @@ impl TypeScheme {
         Ok(())
     }
 
-    fn bindings(self, operands: &[crate::Type]) -> [Option<crate::Type>; 4] {
-        let mut bindings = [None; 4];
-        if let TypeList::Fixed(patterns) = self.operands {
-            for (&pattern, &ty) in patterns.iter().zip(operands) {
-                if let TypePattern::Bind(variable, _) = pattern {
-                    *bindings
-                        .get_mut(variable as usize)
-                        .expect("OpSpec type variable exceeds binding capacity") = Some(ty);
-                }
-            }
-        }
-        bindings
+    fn bind_operands(
+        self,
+        operands: &[crate::Type],
+    ) -> core::result::Result<TypeBindings, TypeSchemeError> {
+        let mut bindings = smallvec::smallvec![None; self.binding_count()];
+        validate_list(self.operands, operands, false, &mut bindings)?;
+        Ok(bindings)
+    }
+
+    fn binding_count(self) -> usize {
+        [self.operands, self.results]
+            .into_iter()
+            .flat_map(|list| match list {
+                TypeList::Fixed(patterns) | TypeList::Variadic(patterns) => patterns,
+                TypeList::Signature => &[],
+            })
+            .filter_map(|pattern| match *pattern {
+                TypePattern::Bind(slot, _)
+                | TypePattern::Same(slot)
+                | TypePattern::ElementOf(slot)
+                | TypePattern::VectorOf(slot)
+                | TypePattern::ShapeOf(slot, _) => Some(usize::from(slot) + 1),
+                TypePattern::Class(_) | TypePattern::Exact(_) => None,
+            })
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -264,12 +223,14 @@ fn validate_list(
     spec: TypeList,
     types: &[crate::Type],
     results: bool,
-    bindings: &mut [Option<crate::Type>; 4],
+    bindings: &mut [Option<crate::Type>],
 ) -> core::result::Result<(), TypeSchemeError> {
-    let TypeList::Fixed(patterns) = spec else {
-        return Ok(());
+    let (patterns, exact) = match spec {
+        TypeList::Fixed(patterns) => (patterns, true),
+        TypeList::Variadic(prefix) => (prefix, false),
+        TypeList::Signature => return Ok(()),
     };
-    if patterns.len() != types.len() {
+    if (exact && patterns.len() != types.len()) || (!exact && types.len() < patterns.len()) {
         return Err(TypeSchemeError::Arity {
             results,
             expected: patterns.len(),
@@ -292,7 +253,7 @@ fn validate_list(
 fn matches_pattern(
     pattern: TypePattern,
     ty: crate::Type,
-    bindings: &mut [Option<crate::Type>; 4],
+    bindings: &mut [Option<crate::Type>],
 ) -> bool {
     match pattern {
         TypePattern::Class(class) => class_accepts(class, ty),
@@ -301,9 +262,7 @@ fn matches_pattern(
             if !class_accepts(class, ty) {
                 return false;
             }
-            let binding = bindings
-                .get_mut(variable as usize)
-                .expect("OpSpec type variable exceeds binding capacity");
+            let binding = &mut bindings[variable as usize];
             match *binding {
                 Some(expected) => ty == expected,
                 None => {
@@ -330,24 +289,19 @@ fn matches_pattern(
     }
 }
 
-fn infer_pattern(pattern: TypePattern, bindings: &[Option<crate::Type>; 4]) -> Option<crate::Type> {
+fn infer_pattern(pattern: TypePattern, bindings: &[Option<crate::Type>]) -> Option<crate::Type> {
     match pattern {
         TypePattern::Exact(ty) => Some(ty),
-        TypePattern::Same(variable) => binding(bindings, variable),
+        TypePattern::Same(variable) | TypePattern::Bind(variable, _) => binding(bindings, variable),
         TypePattern::ElementOf(variable) => binding(bindings, variable)
             .filter(|ty| ty.is_vector())
             .map(crate::Type::element_type),
-        TypePattern::Class(_)
-        | TypePattern::Bind(_, _)
-        | TypePattern::VectorOf(_)
-        | TypePattern::ShapeOf(_, _) => None,
+        TypePattern::Class(_) | TypePattern::VectorOf(_) | TypePattern::ShapeOf(_, _) => None,
     }
 }
 
-fn binding(bindings: &[Option<crate::Type>; 4], variable: u8) -> Option<crate::Type> {
-    *bindings
-        .get(variable as usize)
-        .expect("OpSpec type variable exceeds binding capacity")
+fn binding(bindings: &[Option<crate::Type>], variable: u8) -> Option<crate::Type> {
+    bindings[variable as usize]
 }
 
 fn class_accepts(class: TypeClass, ty: crate::Type) -> bool {
@@ -366,130 +320,11 @@ fn class_accepts(class: TypeClass, ty: crate::Type) -> bool {
     }
 }
 
-fn logical_width(ty: crate::Type) -> Option<u32> {
-    if ty == crate::Type::BOOL {
-        Some(1)
-    } else {
-        ty.min_bit_width()
-    }
-}
-
 /// Reusable type schemes. They are built from generic patterns rather than
 /// opcode-specific validator code, so new operations can compose existing
 /// constraints or add a new scheme without changing the validator.
 pub mod type_schemes {
-    use super::{TypeClass as C, TypeList as L, TypePattern as P, TypeRelation as R};
-    use super::{TypeScheme as S, TypeSlot as Slot};
-    use crate::Type;
-
-    const EMPTY: &[P] = &[];
-    const BOOL: P = P::Exact(Type::BOOL);
-    const PTR: P = P::Exact(Type::PTR);
-    const I32: P = P::Exact(Type::I32);
-
-    pub const NONE: S = S::fixed(EMPTY, EMPTY);
-    pub const EXTERNAL_OPERANDS: S = S {
-        operands: L::External,
-        results: L::Fixed(EMPTY),
-        relations: &[],
-    };
-    pub const SIGNATURE: S = S {
-        operands: L::External,
-        results: L::Signature,
-        relations: &[],
-    };
-
-    pub const INTEGER_RESULT: S = S::fixed(EMPTY, &[P::Class(C::ScalarInteger)]);
-    pub const FLOAT_RESULT: S = S::fixed(EMPTY, &[P::Class(C::ScalarFloat)]);
-    pub const BOOL_RESULT: S = S::fixed(EMPTY, &[BOOL]);
-    pub const VECTOR_RESULT: S = S::fixed(EMPTY, &[P::Class(C::Vector)]);
-
-    pub const INTEGER_UNARY: S = S::fixed(&[P::Bind(0, C::Integer)], &[P::Same(0)]);
-    pub const INTEGER_BINARY: S = S::fixed(&[P::Bind(0, C::Integer), P::Same(0)], &[P::Same(0)]);
-    pub const INTEGER_OVERFLOW: S = S::fixed(
-        &[P::Bind(0, C::ScalarInteger), P::Same(0)],
-        &[P::Same(0), BOOL],
-    );
-    pub const INTEGER_OR_BOOL_BINARY: S =
-        S::fixed(&[P::Bind(0, C::IntegerOrBool), P::Same(0)], &[P::Same(0)]);
-    pub const FLOAT_UNARY: S = S::fixed(&[P::Bind(0, C::Float)], &[P::Same(0)]);
-    pub const FLOAT_BINARY: S = S::fixed(&[P::Bind(0, C::Float), P::Same(0)], &[P::Same(0)]);
-    pub const INTEGER_TO_BOOL: S = S::fixed(&[P::Class(C::ScalarInteger)], &[BOOL]);
-    pub const INTEGER_COMPARE: S = S::fixed(
-        &[P::Bind(0, C::ScalarIntegerOrPointer), P::Same(0)],
-        &[BOOL],
-    );
-    pub const FLOAT_COMPARE: S = S::fixed(&[P::Bind(0, C::ScalarFloat), P::Same(0)], &[BOOL]);
-
-    pub const EXTEND_SIGNED: S = S::fixed(&[P::Bind(0, C::Integer)], &[P::ShapeOf(0, C::Integer)])
-        .with_relations(&[R::Wider {
-            from: Slot::Operand(0),
-            to: Slot::Result(0),
-        }]);
-    pub const EXTEND_UNSIGNED: S = S::fixed(
-        &[P::Bind(0, C::IntegerOrBool)],
-        &[P::ShapeOf(0, C::Integer)],
-    )
-    .with_relations(&[R::Wider {
-        from: Slot::Operand(0),
-        to: Slot::Result(0),
-    }]);
-    pub const NARROW_INTEGER: S = S::fixed(&[P::Bind(0, C::Integer)], &[P::ShapeOf(0, C::Integer)])
-        .with_relations(&[R::Narrower {
-            from: Slot::Operand(0),
-            to: Slot::Result(0),
-        }]);
-    pub const FLOAT_TO_INTEGER: S = S::fixed(&[P::Bind(0, C::Float)], &[P::ShapeOf(0, C::Integer)]);
-    pub const INTEGER_TO_FLOAT: S = S::fixed(&[P::Bind(0, C::Integer)], &[P::ShapeOf(0, C::Float)]);
-    pub const FLOAT_PROMOTE: S = S::fixed(&[P::Exact(Type::F32)], &[P::Exact(Type::F64)]);
-    pub const FLOAT_DEMOTE: S = S::fixed(&[P::Exact(Type::F64)], &[P::Exact(Type::F32)]);
-    pub const REINTERPRET: S = S::fixed(&[P::Class(C::Number)], &[P::Class(C::Number)])
-        .with_relations(&[R::SameWidthDistinct {
-            lhs: Slot::Operand(0),
-            rhs: Slot::Result(0),
-        }]);
-
-    pub const INT_TO_PTR: S = S::fixed(&[P::Class(C::ScalarInteger)], &[PTR]);
-    pub const PTR_TO_INT: S = S::fixed(&[PTR], &[P::Class(C::ScalarInteger)]);
-    pub const LOAD: S = S::fixed(&[PTR], &[P::Class(C::Any)]);
-    pub const STORE: S = S::fixed(&[PTR, P::Class(C::Any)], EMPTY);
-    pub const STACK_LOAD: S = S::fixed(EMPTY, &[P::Class(C::Any)]);
-    pub const STACK_STORE: S = S::fixed(&[P::Class(C::Any)], EMPTY);
-    pub const STACK_ADDR: S = S::fixed(EMPTY, &[PTR]);
-    pub const PTR_OFFSET: S = S::fixed(&[PTR], &[PTR]);
-    pub const PTR_INDEX: S = S::fixed(&[PTR, P::Class(C::ScalarInteger)], &[PTR]);
-
-    pub const SELECT: S = S::fixed(&[BOOL, P::Bind(0, C::Any), P::Same(0)], &[P::Same(0)]);
-    pub const SPLAT: S = S::fixed(&[P::Bind(0, C::Scalar)], &[P::VectorOf(0)]);
-    pub const SHUFFLE: S = S::fixed(&[P::Bind(0, C::Vector), P::Same(0)], &[P::Same(0)]);
-    pub const INSERT_ELEMENT: S = S::fixed(
-        &[
-            P::Bind(0, C::Vector),
-            P::ElementOf(0),
-            P::Class(C::ScalarInteger),
-        ],
-        &[P::Same(0)],
-    );
-    pub const EXTRACT_ELEMENT: S = S::fixed(
-        &[P::Bind(0, C::Vector), P::Class(C::ScalarInteger)],
-        &[P::ElementOf(0)],
-    );
-    pub const REDUCTION: S = S::fixed(&[P::Bind(0, C::Vector)], &[P::ElementOf(0)]);
-    pub const VECTOR_LOAD_STRIDED: S =
-        S::fixed(&[PTR, P::Class(C::ScalarInteger)], &[P::Class(C::Vector)]);
-    pub const VECTOR_STORE_STRIDED: S = S::fixed(
-        &[PTR, P::Class(C::ScalarInteger), P::Class(C::Vector)],
-        EMPTY,
-    );
-    pub const GATHER: S = S::fixed(
-        &[PTR, P::Bind(0, C::IntegerVector)],
-        &[P::ShapeOf(0, C::Vector)],
-    );
-    pub const SCATTER: S = S::fixed(
-        &[PTR, P::Bind(0, C::IntegerVector), P::ShapeOf(0, C::Vector)],
-        EMPTY,
-    );
-    pub const SET_VECTOR_LENGTH: S = S::fixed(&[P::Class(C::ScalarInteger)], &[I32]);
+    include!(concat!(env!("OUT_DIR"), "/type_schemes.rs"));
 }
 
 /// Abstract memory regions used by generic scheduling, DCE, and alias queries.
@@ -680,12 +515,7 @@ impl core::fmt::Display for OpTraits {
 
 /// Type-independent constants used by canonicalization. Consumers materialize
 /// the value according to the operation's concrete operand type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlgebraicConstant {
-    Zero,
-    One,
-    AllOnes,
-}
+pub use veloc_semantics::BvConst as AlgebraicConstant;
 
 /// Structural constraints that are not expressible as relationships between
 /// SSA value types. The validator interprets these uniformly from `OpSpec`.
@@ -707,6 +537,9 @@ pub struct OpSpec {
     pub constraints: &'static [OpConstraint],
     pub identity: Option<AlgebraicConstant>,
     pub absorbing: Option<AlgebraicConstant>,
+    /// Scalar bitvector program, applied independently to vector lanes.
+    /// This does not describe predication, memory, or machine state effects.
+    pub semantics: Option<crate::semantics::Program>,
 }
 
 impl OpSpec {
@@ -764,174 +597,10 @@ pub fn write_opcode_markdown(output: &mut dyn core::fmt::Write) -> core::fmt::Re
     Ok(())
 }
 
-macro_rules! define_opcodes {
-    ($(
-        $name:ident {
-            mnemonic: $mnemonic:literal,
-            format: $format:ident,
-            types: $types:ident,
-            $(builder: $builder_kind:ident($builder_name:ident),)?
-            traits: [$($trait:ident),* $(,)?],
-            memory: $memory:ident
-            $(, constraints: [$($constraint:ident),* $(,)?])?
-            $(, identity: $identity:ident)?
-            $(, absorbing: $absorbing:ident)?
-            $(,)?
-        }
-    )*) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub enum Opcode {
-            $($name,)*
-        }
-
-        impl Opcode {
-            pub const ALL: &'static [Self] = &[$(Self::$name,)*];
-
-            pub const fn spec(self) -> $crate::opspec::OpSpec {
-                match self {
-                    $(Self::$name => $crate::opspec::OpSpec {
-                        mnemonic: $mnemonic,
-                        format: $crate::opspec::OpFormat::$format,
-                        type_scheme: &$crate::opspec::type_schemes::$types,
-                        traits: $crate::opspec::OpTraits::empty()
-                            $(.union($crate::opspec::OpTraits::$trait))*,
-                        memory_effect: $crate::opspec::MemoryEffect::$memory,
-                        constraints: &[$($($crate::opspec::OpConstraint::$constraint),*)?],
-                        identity: define_opcodes!(@algebraic $($identity)?),
-                        absorbing: define_opcodes!(@algebraic $($absorbing)?),
-                    },)*
-                }
-            }
-
-            pub fn from_mnemonic(mnemonic: &str) -> Option<Self> {
-                match mnemonic {
-                    $($mnemonic => Some(Self::$name),)*
-                    _ => None,
-                }
-            }
-        }
-
-
-        impl<'b, 'a> $crate::builder::InstBuilder<'b, 'a> {
-            $(define_opcodes!(@builder_method $name, $format $(, $builder_kind($builder_name))?);)*
-        }
-    };
-
-    (@builder_method $opcode:ident, $format:ident) => {};
-    (@builder_method $opcode:ident, Unary, unary($method:ident)) => {
-        pub fn $method(&mut self, arg: $crate::Value) -> $crate::Value {
-            self.push_unary($crate::Opcode::$opcode, arg)
-        }
-    };
-    (@builder_method $opcode:ident, Binary, binary($method:ident)) => {
-        pub fn $method(&mut self, lhs: $crate::Value, rhs: $crate::Value) -> $crate::Value {
-            self.push_binary($crate::Opcode::$opcode, lhs, rhs)
-        }
-    };
-    (@builder_method $opcode:ident, Binary, binary_pair($method:ident)) => {
-        pub fn $method(
-            &mut self,
-            lhs: $crate::Value,
-            rhs: $crate::Value,
-        ) -> ($crate::Value, $crate::Value) {
-            let inst = self.push_raw($crate::InstructionData::Binary {
-                opcode: $crate::Opcode::$opcode,
-                args: [lhs, rhs],
-            });
-            self.result_pair(inst)
-        }
-    };
-    (@builder_method $opcode:ident, Unary, unary_typed($method:ident)) => {
-        pub fn $method(&mut self, arg: $crate::Value, ty: $crate::Type) -> $crate::Value {
-            self.push_with_type(
-                $crate::InstructionData::Unary {
-                    opcode: $crate::Opcode::$opcode,
-                    arg,
-                },
-                ty,
-            )
-        }
-    };
-    (@builder_method IntToPtr, IntToPtr, unary_inst($method:ident)) => {
-        pub fn $method(&mut self, arg: $crate::Value) -> $crate::Value {
-            self.push($crate::InstructionData::IntToPtr { arg }).unwrap()
-        }
-    };
-    (@builder_method PtrToInt, PtrToInt, unary_inst_typed($method:ident)) => {
-        pub fn $method(&mut self, arg: $crate::Value, ty: $crate::Type) -> $crate::Value {
-            self.push_with_type($crate::InstructionData::PtrToInt { arg }, ty)
-        }
-    };
-    (@builder_method Unreachable, Unreachable, nullary($method:ident)) => {
-        pub fn $method(&mut self) {
-            self.push($crate::InstructionData::Unreachable);
-        }
-    };
-    (@builder_method Nop, Nop, nullary($method:ident)) => {
-        pub fn $method(&mut self) {
-            self.push($crate::InstructionData::Nop);
-        }
-    };
-    (@builder_method Icmp, IntCompare, int_compare($method:ident)) => {
-        pub fn $method(
-            &mut self,
-            kind: $crate::IntCC,
-            lhs: $crate::Value,
-            rhs: $crate::Value,
-        ) -> $crate::Value {
-            self.push($crate::InstructionData::IntCompare {
-                kind,
-                args: [lhs, rhs],
-            })
-            .unwrap()
-        }
-    };
-    (@builder_method Fcmp, FloatCompare, float_compare($method:ident)) => {
-        pub fn $method(
-            &mut self,
-            kind: $crate::FloatCC,
-            lhs: $crate::Value,
-            rhs: $crate::Value,
-        ) -> $crate::Value {
-            self.push($crate::InstructionData::FloatCompare {
-                kind,
-                args: [lhs, rhs],
-            })
-            .unwrap()
-        }
-    };
-    (@builder_method $opcode:ident, Ternary, ternary($method:ident)) => {
-        pub fn $method(
-            &mut self,
-            first: $crate::Value,
-            second: $crate::Value,
-            third: $crate::Value,
-        ) -> $crate::Value {
-            self.push($crate::InstructionData::Ternary {
-                opcode: $crate::Opcode::$opcode,
-                args: [first, second, third],
-            })
-            .unwrap()
-        }
-    };
-
-    (@algebraic) => {
-        None
-    };
-    (@algebraic $constant:ident) => {
-        Some($crate::opspec::AlgebraicConstant::$constant)
-    };
-
-}
-
-pub(crate) use define_opcodes;
-
 #[cfg(test)]
 mod tests {
     use super::ResultTypes;
-    use super::{
-        MemoryEffect, OpConstraint, OpFormat, TypeClass, TypeList, TypePattern, TypeScheme,
-    };
+    use super::{MemoryEffect, OpConstraint, OpFormat, TypeList};
     use crate::{FloatCC, IntCC, Opcode, Type};
 
     #[test]
@@ -959,17 +628,78 @@ mod tests {
             Opcode::Icmp
                 .spec()
                 .type_scheme
-                .infer_results(&[Type::I32, Type::I32]),
+                .infer_results(&[Type::I32, Type::I32])
+                .unwrap(),
             ResultTypes::Inferred(smallvec::smallvec![Type::BOOL])
         );
     }
 
     #[test]
-    #[should_panic(expected = "OpSpec type variable exceeds binding capacity")]
-    fn malformed_type_variable_is_an_internal_error() {
-        const OPERANDS: &[TypePattern] = &[TypePattern::Bind(4, TypeClass::Integer)];
-        const RESULTS: &[TypePattern] = &[TypePattern::Same(4)];
-        TypeScheme::fixed(OPERANDS, RESULTS).infer_results(&[Type::I32]);
+    fn variadic_operands_validate_the_known_prefix() {
+        use super::{TypeClass, TypePattern, TypeScheme, TypeSchemeError};
+
+        let scheme = TypeScheme {
+            operands: TypeList::Variadic(&[TypePattern::Bind(0, TypeClass::Integer)]),
+            results: TypeList::Fixed(&[TypePattern::Same(0)]),
+            relations: &[],
+        };
+        assert_eq!(
+            scheme.infer_results(&[Type::I32, Type::F64]).unwrap(),
+            ResultTypes::Inferred(smallvec::smallvec![Type::I32])
+        );
+        assert!(scheme.validate(&[Type::I32], &[Type::I32]).is_ok());
+        assert!(matches!(
+            scheme.validate(&[], &[Type::I32]),
+            Err(TypeSchemeError::Arity { .. })
+        ));
+        assert!(matches!(
+            scheme.validate(&[Type::F64], &[Type::F64]),
+            Err(TypeSchemeError::Pattern { .. })
+        ));
+        assert!(scheme.validate(&[Type::I32], &[Type::I64]).is_err());
+
+        let branch = Opcode::Br.spec().type_scheme;
+        assert!(branch.validate(&[Type::BOOL, Type::I64], &[]).is_ok());
+        assert!(branch.validate(&[Type::I32, Type::I64], &[]).is_err());
+        assert!(branch.validate(&[], &[]).is_err());
+        let call = Opcode::CallIndirect.spec().type_scheme;
+        assert!(call.validate(&[Type::PTR, Type::I32], &[Type::I64]).is_ok());
+        assert!(
+            call.validate(&[Type::I64, Type::I32], &[Type::I64])
+                .is_err()
+        );
+        assert!(call.validate(&[], &[]).is_err());
+    }
+
+    #[test]
+    fn composed_negation_contract_drives_execution_and_smt_export() {
+        use crate::semantics::{BvOp, Expr, Function, Sort, Value, Width, equivalence_query};
+
+        let program = Opcode::INeg.spec().semantics.unwrap();
+        assert_eq!(program.primitive(), None);
+        assert_eq!(program.arity(), 1);
+        for bits in [8, 16, 32, 64, 128] {
+            let width = Width::new(bits).unwrap();
+            let function = program.instantiate(width).unwrap();
+            let primitive = Function::new(
+                alloc::vec![Sort::Bv(width)],
+                Expr::apply(BvOp::Neg, &[Expr::input(0, Sort::Bv(width))]).unwrap(),
+            )
+            .unwrap();
+            for input in [0, 1, width.mask(), 1u128 << (bits - 1)] {
+                let expected = BvOp::Neg.eval(bits, &[input]).unwrap();
+                assert_eq!(program.eval(width, &[input]).unwrap(), expected);
+                assert_eq!(
+                    function.eval(&[Value::Bv(input)]).unwrap(),
+                    Value::Bv(expected)
+                );
+            }
+            // Emission is tested here; proving the query unsatisfiable remains
+            // the optional solver consumer's responsibility.
+            let query = equivalence_query(&function, &primitive).unwrap();
+            assert!(query.contains("bvsub"));
+            assert!(query.contains("bvneg"));
+        }
     }
 
     #[test]

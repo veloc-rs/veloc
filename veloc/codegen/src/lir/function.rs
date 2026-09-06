@@ -1,4 +1,4 @@
-//! 机器函数与基本块定义
+//! LIR 机器函数与基本块定义
 
 use super::{
     CallInfo, CallInst, InstExtra, InstExtraId, InstId, MachineInst, Reg, StackSlot, VReg, VRegData,
@@ -290,7 +290,7 @@ impl<S> MachineFunction<S> {
         &self.blocks[block_idx]
     }
 
-    /// 按 MIR block id 查找块下标。
+    /// 按 LIR block id 查找块下标。
     pub fn find_block_index(&self, block: Block) -> Option<usize> {
         self.blocks.iter().position(|mblock| mblock.id == block)
     }
@@ -493,7 +493,7 @@ impl<S> MachineFunction<S> {
         }
     }
 
-    /// 生成便于调试的文本格式 MIR。
+    /// 生成便于调试的文本格式 LIR。
     pub fn format_for_dump(&self) -> String {
         let mut out = String::new();
         let _ = writeln!(

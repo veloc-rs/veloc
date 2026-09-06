@@ -2,7 +2,7 @@ pub mod select;
 
 pub use self::select::*;
 use crate::error::Result;
-use crate::pipeline::stages::{PreIselPrepared, SelectedMir};
+use crate::pipeline::stages::{PreIselPrepared, SelectedLir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::TargetInstructionSelector;
 
@@ -16,16 +16,16 @@ impl<'a> InstructionSelectionPass<'a> {
     }
 }
 
-impl<'a> StageTransformPass<PreIselPrepared, SelectedMir> for InstructionSelectionPass<'a> {
+impl<'a> StageTransformPass<PreIselPrepared, SelectedLir> for InstructionSelectionPass<'a> {
     fn name(&self) -> &'static str {
         "selected"
     }
 
     fn run(
         &self,
-        mut mfunc: crate::mir::MachineFunction<PreIselPrepared>,
+        mut mfunc: crate::lir::MachineFunction<PreIselPrepared>,
         ctx: &mut FunctionPassContext<'_, PreIselPrepared>,
-    ) -> Result<(crate::mir::MachineFunction<SelectedMir>, PassEffect)> {
+    ) -> Result<(crate::lir::MachineFunction<SelectedLir>, PassEffect)> {
         select::InstructionSelector::new(self.selector).select(&mut mfunc)?;
         ctx.stats.selected_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
         Ok((

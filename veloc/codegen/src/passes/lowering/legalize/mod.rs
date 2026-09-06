@@ -3,8 +3,8 @@ pub mod info;
 pub use info::*;
 
 use crate::error::{Error, Result};
-use crate::mir::{GenericOpcode, MachineFunction, MachineInst};
-use crate::pipeline::stages::LegalizedMir;
+use crate::lir::{GenericOpcode, MachineFunction, MachineInst};
+use crate::pipeline::stages::LegalizedLir;
 use crate::target::arch::TargetLegalizer;
 
 pub struct Legalizer<'a> {
@@ -16,7 +16,7 @@ impl<'a> Legalizer<'a> {
         Self { target }
     }
 
-    pub fn legalize(&self, mfunc: &mut MachineFunction<LegalizedMir>) -> Result<()> {
+    pub fn legalize(&self, mfunc: &mut MachineFunction<LegalizedLir>) -> Result<()> {
         let num_blocks = mfunc.blocks.len();
         for i in 0..num_blocks {
             mfunc
@@ -78,7 +78,7 @@ impl<'a> Legalizer<'a> {
     fn inst_signature_context(
         &self,
         inst: &MachineInst,
-        mfunc: &MachineFunction<LegalizedMir>,
+        mfunc: &MachineFunction<LegalizedLir>,
     ) -> Result<(GenericOpcode, alloc::string::String)> {
         let opcode = inst
             .generic_opcode()

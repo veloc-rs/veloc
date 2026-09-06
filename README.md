@@ -72,13 +72,13 @@ Run `cargo run -p veloc-wasm -- --help` for all CLI options.
                     ▼
           ┌─────────┴──────────────┐
           ▼                        ▼
- register-bytecode interpreter    MIR and x86-64 backend
+ register-bytecode interpreter    LIR and x86-64 backend
           │                        │
           ▼                        ▼
       execution              ELF object / JIT
 ```
 
-WebAssembly and C source are translated into the same Veloc IR. From there, the runtime can compile the IR into compact bytecode or lower it through MIR to native x86-64 code.
+WebAssembly and C source are translated into the same Veloc middle-level IR (MIR). From there, the runtime can compile MIR into compact bytecode or lower it through low-level IR (LIR) to native x86-64 code.
 
 ## Repository layout
 
@@ -89,7 +89,7 @@ WebAssembly and C source are translated into the same Veloc IR. From there, the 
 | `veloc-analyzer` | Use-def and liveness analyses. |
 | `veloc-optimizer` | Pass management, metrics, constant folding, and dead-code elimination. |
 | `veloc-interpreter` | IR-to-bytecode compiler and register-bytecode runtime. |
-| `veloc-codegen` | Target-independent MIR pipeline and x86-64 backend. |
+| `veloc-codegen` | Target-independent LIR pipeline and x86-64 backend. |
 | `veloc-isle` | Rule compiler used by target lowering and instruction selection. |
 | `veloc-wasm` | WebAssembly translator, runtime, CLI, linker, JIT, and WASI support. |
 | `veloc-c` | Experimental C parser and IR frontend. |

@@ -72,13 +72,13 @@ cargo run -p veloc-wasm -- path/to/module.wasm \
                     ▼
           ┌─────────┴──────────────┐
           ▼                        ▼
-     寄存器字节码解释器           MIR 与 x86-64 后端
+     寄存器字节码解释器           LIR 与 x86-64 后端
           │                        │
           ▼                        ▼
          执行                 ELF 对象 / JIT
 ```
 
-WebAssembly 和 C 源码都会转换为同一种 Veloc IR。运行时可以将 IR 编译为紧凑字节码，也可以经过 MIR lowering 生成 x86-64 原生代码。
+WebAssembly 和 C 源码都会转换为同一种 Veloc 中层 IR（MIR）。运行时可以将 MIR 编译为紧凑字节码，也可以经过低层 IR（LIR）生成 x86-64 原生代码。
 
 ## 仓库结构
 
@@ -89,7 +89,7 @@ WebAssembly 和 C 源码都会转换为同一种 Veloc IR。运行时可以将 I
 | `veloc-analyzer` | Use-def 与活跃变量分析。 |
 | `veloc-optimizer` | Pass 管理、指标统计、常量折叠和死代码消除。 |
 | `veloc-interpreter` | IR 到字节码的编译器及寄存器字节码运行时。 |
-| `veloc-codegen` | 与目标无关的 MIR 流水线及 x86-64 后端。 |
+| `veloc-codegen` | 与目标无关的 LIR 流水线及 x86-64 后端。 |
 | `veloc-isle` | 用于目标 lowering 和指令选择的规则编译器。 |
 | `veloc-wasm` | WebAssembly 翻译器、运行时、CLI、链接器、JIT 和 WASI 支持。 |
 | `veloc-c` | 实验性 C 解析器和 IR 前端。 |

@@ -20,9 +20,9 @@ impl<'a> StageTransformPass<PostIselOptimized, RegAllocated> for RegisterAllocat
 
     fn run(
         &self,
-        mut mfunc: crate::mir::MachineFunction<PostIselOptimized>,
+        mut mfunc: crate::lir::MachineFunction<PostIselOptimized>,
         ctx: &mut FunctionPassContext<'_, PostIselOptimized>,
-    ) -> Result<(crate::mir::MachineFunction<RegAllocated>, PassEffect)> {
+    ) -> Result<(crate::lir::MachineFunction<RegAllocated>, PassEffect)> {
         RegisterAllocator::new(self.target).allocate(&mut mfunc, ctx.func_sig.call_conv);
         ctx.stats.final_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
         ctx.stats.stack_slot_count = mfunc.stack_frame.slots.len();

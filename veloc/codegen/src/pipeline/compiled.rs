@@ -1,4 +1,4 @@
-use crate::mir::{MachineFunction, SymbolTable};
+use crate::lir::{MachineFunction, SymbolTable};
 use crate::pipeline::stages::PrologueEpilogueInserted;
 use alloc::string::String;
 use alloc::vec::Vec;

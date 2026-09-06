@@ -17,7 +17,7 @@ impl TargetLegalizer for X86_64Legalizer {
     fn legalize_action(
         &self,
         inst: &MachineInst,
-        mfunc: &MachineFunction<LegalizedMir>,
+        mfunc: &MachineFunction<LegalizedLir>,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
         crate::legalize_matcher!(inst, mfunc, {
             G_ARG => {
@@ -115,8 +115,8 @@ impl TargetLegalizer for X86_64Legalizer {
 
     fn legalize_instruction(
         &self,
-        inst_id: crate::mir::InstId,
-        mfunc: &mut crate::mir::MachineFunction<LegalizedMir>,
+        inst_id: crate::lir::InstId,
+        mfunc: &mut crate::lir::MachineFunction<LegalizedLir>,
     ) -> Result<LegalizeResult, crate::error::Error> {
         let mut output = Vec::new();
         let opcode = mfunc.dfg[inst_id].generic_opcode();
@@ -176,7 +176,7 @@ impl TargetLegalizer for X86_64Legalizer {
 
         if matches!(
             mfunc.dfg[inst_id].opcode,
-            MachineOpcode::Generic(crate::mir::GenericOpcode::G_BRJT)
+            MachineOpcode::Generic(crate::lir::GenericOpcode::G_BRJT)
         ) {
             let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).cloned() else {
                 panic!("missing br_table extra during x86_64 br_table legalization");

@@ -385,19 +385,19 @@ fn generate_init_expr(
     let mut stack = Vec::new();
     for op in expr {
         match op {
-            GlobalInit::I32Const(v) => stack.push(ins.iconst(VelocType::I32, *v as i64)),
-            GlobalInit::I64Const(v) => stack.push(ins.iconst(VelocType::I64, *v)),
+            GlobalInit::I32Const(v) => stack.push(ins.iconst(*v as u64, VelocType::I32)),
+            GlobalInit::I64Const(v) => stack.push(ins.iconst(*v as u64, VelocType::I64)),
             GlobalInit::F32Const(v) => {
-                let b = ins.iconst(VelocType::I32, *v as i64);
+                let b = ins.iconst(*v as u64, VelocType::I32);
                 stack.push(ins.reinterpret(b, VelocType::F32))
             }
             GlobalInit::F64Const(v) => {
-                let b = ins.iconst(VelocType::I64, *v as i64);
+                let b = ins.iconst(*v as u64, VelocType::I64);
                 stack.push(ins.reinterpret(b, VelocType::F64))
             }
             GlobalInit::RefNull => {
-                let null_ptr = ins.iconst(VelocType::I64, 0);
-                stack.push(ins.int_to_ptr(null_ptr))
+                let null_ptr = ins.iconst(0, VelocType::I64);
+                stack.push(ins.inttoptr(null_ptr))
             }
             GlobalInit::RefFunc(idx) => {
                 let offset = offsets.function_offset(*idx);
@@ -411,16 +411,16 @@ fn generate_init_expr(
                     // 导入的全局变量：先加载指针，再通过指针加载值
                     let align = if offset % 16 == 0 { 16 } else { 8 };
                     let src_ptr = ins.load(
-                        VelocType::PTR,
                         vmctx,
                         offset,
                         MemFlags::new().with_alignment(align),
+                        VelocType::PTR,
                     );
-                    stack.push(ins.load(ty, src_ptr, 0, MemFlags::new().with_alignment(8)))
+                    stack.push(ins.load(src_ptr, 0, MemFlags::new().with_alignment(8), ty))
                 } else {
                     // 本地全局变量：直接从 VMContext 加载
                     let align = if offset % 16 == 0 { 16 } else { 8 };
-                    stack.push(ins.load(ty, vmctx, offset, MemFlags::new().with_alignment(align)))
+                    stack.push(ins.load(vmctx, offset, MemFlags::new().with_alignment(align), ty))
                 }
             }
             GlobalInit::I32Add | GlobalInit::I64Add => {
@@ -440,7 +440,7 @@ fn generate_init_expr(
             }
         }
     }
-    stack.pop().unwrap_or_else(|| ins.iconst(VelocType::I64, 0))
+    stack.pop().unwrap_or_else(|| ins.iconst(0, VelocType::I64))
 }
 
 fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMetadata) {
@@ -493,10 +493,10 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
             call_args.push(vmctx);
             for j in 0..sig.params.len() {
                 let val_i64 = ins.load(
-                    VelocType::I64,
                     args_ptr,
                     (j * 8) as u32,
                     MemFlags::default(),
+                    VelocType::I64,
                 );
                 let w_ty = sig.params[j];
                 let v_ty = valtype_to_veloc(w_ty);
@@ -507,7 +507,7 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
                         ins.reinterpret(b, VelocType::F32)
                     }
                     VelocType::F64 => ins.reinterpret(val_i64, VelocType::F64),
-                    VelocType::PTR => ins.int_to_ptr(val_i64),
+                    VelocType::PTR => ins.inttoptr(val_i64),
                     _ => val_i64,
                 };
                 call_args.push(val);
@@ -521,17 +521,17 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
             let ret_bits = if let Some(&res_val) = res_vals.first() {
                 let res_ty = ins.builder().value_type(res_val);
                 match res_ty {
-                    VelocType::I32 => ins.extend_u(res_val, VelocType::I64),
+                    VelocType::I32 => ins.extendu(res_val, VelocType::I64),
                     VelocType::F32 => {
                         let i32_val = ins.reinterpret(res_val, VelocType::I32);
-                        ins.extend_u(i32_val, VelocType::I64)
+                        ins.extendu(i32_val, VelocType::I64)
                     }
                     VelocType::F64 => ins.reinterpret(res_val, VelocType::I64),
-                    VelocType::PTR => ins.ptr_to_int(res_val, VelocType::I64),
+                    VelocType::PTR => ins.ptrtoint(res_val, VelocType::I64),
                     _ => res_val,
                 }
             } else {
-                ins.iconst(VelocType::I64, 0)
+                ins.iconst(0, VelocType::I64)
             };
             ins.ret(&[ret_bits]);
             builder.seal_all_blocks();
@@ -561,14 +561,14 @@ fn generate_veloc_init(
         let offset = offsets.local_global_offset(local_idx);
         let align = if offset % 16 == 0 { 16 } else { 8 };
         let val = generate_init_expr(&mut ins, &global.init, vmctx, offsets, metadata);
-        ins.store(val, vmctx, offset, MemFlags::new().with_alignment(align));
+        ins.store(vmctx, val, offset, MemFlags::new().with_alignment(align));
     }
 
     // 1b. Initialize tables with their default initializers
     for i in 0..metadata.tables.len() {
         if let Some(init_ops) = &metadata.tables[i].init {
             let val = generate_init_expr(&mut ins, init_ops, vmctx, offsets, metadata);
-            let table_idx = ins.iconst(VelocType::I32, i as i64);
+            let table_idx = ins.iconst(i as u64, VelocType::I32);
             ins.call(runtime.init_table, &[vmctx, table_idx, val]);
         }
     }
@@ -584,7 +584,7 @@ fn generate_veloc_init(
         } else {
             offset
         };
-        let element_idx = ins.iconst(VelocType::I32, i as i64);
+        let element_idx = ins.iconst(i as u64, VelocType::I32);
         ins.call(
             runtime.init_table_element,
             &[vmctx, element_idx, offset_i32],
@@ -604,7 +604,7 @@ fn generate_veloc_init(
         } else {
             offset
         };
-        let data_idx = ins.iconst(VelocType::I32, i as i64);
+        let data_idx = ins.iconst(i as u64, VelocType::I32);
         ins.call(runtime.init_memory_data, &[vmctx, data_idx, offset_i32]);
 
         ins.call(runtime.data_drop, &[vmctx, data_idx]);
@@ -613,7 +613,7 @@ fn generate_veloc_init(
     // 4. Drop declarative segments
     for (i, element) in metadata.elements.iter().enumerate() {
         if element.is_declared {
-            let element_idx = ins.iconst(VelocType::I32, i as i64);
+            let element_idx = ins.iconst(i as u64, VelocType::I32);
             ins.call(runtime.elem_drop, &[vmctx, element_idx]);
         }
     }

@@ -42,7 +42,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
     }
 
     fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>) {
-        use crate::mir::MachineOpcode;
+        use crate::lir::MachineOpcode;
         use crate::target::x86_64::isle::{REG_RBP, REG_RSP, TargetInst};
 
         let stack_size = mfunc.stack_frame.total_size;
@@ -68,8 +68,8 @@ impl TargetFrameLowering for X86_64FrameLowering {
                 let sub_inst = MachineInst::build_generic(
                     MachineOpcode::Target(TargetInst::X86Sub64ri.as_u32()),
                     smallvec::smallvec![
-                        crate::mir::MachineOperand::TiedDefUse(crate::mir::Writable(REG_RSP)),
-                        crate::mir::MachineOperand::Imm(stack_size as i64),
+                        crate::lir::MachineOperand::TiedDefUse(crate::lir::Writable(REG_RSP)),
+                        crate::lir::MachineOperand::Imm(stack_size as i64),
                     ],
                 );
                 pending_prologue.push(mfunc.alloc_inst(sub_inst));
@@ -80,9 +80,9 @@ impl TargetFrameLowering for X86_64FrameLowering {
                 let save_inst = MachineInst::build_generic(
                     MachineOpcode::Target(TargetInst::X86Store64.as_u32()),
                     smallvec::smallvec![
-                        crate::mir::MachineOperand::Use(reg),
-                        crate::mir::MachineOperand::Use(REG_RBP),
-                        crate::mir::MachineOperand::Imm(offset as i64),
+                        crate::lir::MachineOperand::Use(reg),
+                        crate::lir::MachineOperand::Use(REG_RBP),
+                        crate::lir::MachineOperand::Imm(offset as i64),
                     ],
                 );
                 pending_prologue.push(mfunc.alloc_inst(save_inst));
@@ -117,9 +117,9 @@ impl TargetFrameLowering for X86_64FrameLowering {
                             let restore_inst = MachineInst::build_generic(
                                 MachineOpcode::Target(TargetInst::X86Load64.as_u32()),
                                 smallvec::smallvec![
-                                    crate::mir::MachineOperand::Def(crate::mir::Writable(reg)),
-                                    crate::mir::MachineOperand::Use(REG_RBP),
-                                    crate::mir::MachineOperand::Imm(offset as i64),
+                                    crate::lir::MachineOperand::Def(crate::lir::Writable(reg)),
+                                    crate::lir::MachineOperand::Use(REG_RBP),
+                                    crate::lir::MachineOperand::Imm(offset as i64),
                                 ],
                             );
                             cursor.emit_before(restore_inst);
@@ -129,10 +129,10 @@ impl TargetFrameLowering for X86_64FrameLowering {
                             let add_inst = MachineInst::build_generic(
                                 MachineOpcode::Target(TargetInst::X86Add64ri.as_u32()),
                                 smallvec::smallvec![
-                                    crate::mir::MachineOperand::TiedDefUse(crate::mir::Writable(
+                                    crate::lir::MachineOperand::TiedDefUse(crate::lir::Writable(
                                         REG_RSP
                                     )),
-                                    crate::mir::MachineOperand::Imm(stack_size as i64),
+                                    crate::lir::MachineOperand::Imm(stack_size as i64),
                                 ],
                             );
                             cursor.emit_before(add_inst);

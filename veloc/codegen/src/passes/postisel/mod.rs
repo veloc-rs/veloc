@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::pipeline::stages::{PostIselOptimized, SelectedMir};
+use crate::pipeline::stages::{PostIselOptimized, SelectedLir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{TargetOperandLowering, TargetPostIsel};
 
@@ -20,16 +20,16 @@ impl<'a> PostIselOptimizePass<'a> {
     }
 }
 
-impl<'a> StageTransformPass<SelectedMir, PostIselOptimized> for PostIselOptimizePass<'a> {
+impl<'a> StageTransformPass<SelectedLir, PostIselOptimized> for PostIselOptimizePass<'a> {
     fn name(&self) -> &'static str {
         "post-isel-optimized"
     }
 
     fn run(
         &self,
-        mut mfunc: crate::mir::MachineFunction<SelectedMir>,
-        ctx: &mut FunctionPassContext<'_, SelectedMir>,
-    ) -> Result<(crate::mir::MachineFunction<PostIselOptimized>, PassEffect)> {
+        mut mfunc: crate::lir::MachineFunction<SelectedLir>,
+        ctx: &mut FunctionPassContext<'_, SelectedLir>,
+    ) -> Result<(crate::lir::MachineFunction<PostIselOptimized>, PassEffect)> {
         self.post_isel.combine_instructions(&mut mfunc);
         ctx.stats.combined_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
         crate::passes::constraints::PostSelectOperandConstraintPass::new(self.operand_lowering)

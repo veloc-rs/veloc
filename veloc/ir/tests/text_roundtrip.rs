@@ -1,4 +1,4 @@
-use veloc_ir::{InstructionData, ModuleParser};
+use veloc_ir::{CallConv, InstructionData, Linkage, ModuleBuilder, ModuleParser};
 
 const MODULE: &str = r#"
 global counter: i32 (local)
@@ -16,7 +16,7 @@ block0(v0: ptr, v1: i32, v2: f32, v3: i32<4>, v4: mask<4>):
   v11 = select.i32 v7, v9, v10
   v12 = icmp.bool lts v9, v10
   v13 = fcmp.bool eq v2, v6
-  v14 = load.i32.trusted.align4 v0, offset=4
+  v14 = load.i32.align4 v0, offset=4
   store.volatile v14, v0, offset=8
   v15 = stack-load.i32 ss0, offset=4
   stack-store v15, ss0, offset=8
@@ -115,4 +115,75 @@ fn global_only_modules_round_trip() {
         .unwrap();
     let text = module.to_string();
     assert_eq!(ModuleParser::new().parse(&text).unwrap().to_string(), text);
+}
+
+#[test]
+fn fixed_prefixes_allow_forward_instruction_values_in_valid_cfg_order() {
+    let mut module = ModuleBuilder::new();
+    let signature = module.make_signature(vec![], vec![], CallConv::SystemV);
+    let function = module.declare_function("forward_values".into(), signature, Linkage::Export);
+    let mut builder = module.builder(function);
+    let entry = builder.init_entry_block();
+    let call_block = builder.create_block();
+    let table_block = builder.create_block();
+    let definitions = builder.create_block();
+    let exit = builder.create_block();
+    builder.ins().jump(definitions, &[]);
+
+    // Definitions dominate their uses in the CFG, but follow them in layout order.
+    builder.switch_to_block(definitions);
+    let condition = builder.ins().bconst(true);
+    let index = builder.ins().i32const(0);
+    let address = builder.ins().i64const(0);
+    let callee = builder.ins().inttoptr(address);
+    builder.ins().jump(call_block, &[]);
+
+    builder.switch_to_block(call_block);
+    builder.ins().call_indirect(signature, callee, &[]);
+    builder.ins().br(condition, table_block, &[], exit, &[]);
+    builder.switch_to_block(table_block);
+    let default = builder.make_block_call(exit, &[]);
+    builder.ins().br_table(index, default, &[]);
+    builder.switch_to_block(exit);
+    builder.ins().ret(&[]);
+    builder.seal_all_blocks();
+    builder.func_mut().layout.block_order = vec![entry, call_block, table_block, definitions, exit];
+    module.validate().unwrap();
+
+    let text = module.build().to_string();
+    let parsed = ModuleParser::new().parse(&text).unwrap();
+    parsed.validate().unwrap();
+    assert_eq!(parsed.to_string(), text);
+}
+
+#[test]
+fn deferred_prefix_checks_reject_wrong_types_and_undefined_values() {
+    for instruction in [
+        "br v0, block3(), block3()",
+        "br-table v0, [], block3()",
+        "call-indirect v0() : () -> void\n  jump block3()",
+    ] {
+        let definitions = "block2():\n  v0 = fconst.f32 0x00000000\n  jump block1()\n";
+        let uses = format!("block1():\n  {instruction}\n");
+        for forward in [false, true] {
+            let blocks = if forward {
+                format!("{uses}{definitions}")
+            } else {
+                format!("{definitions}{uses}")
+            };
+            let source = format!(
+                "local function bad() -> void\nblock0():\n  jump block2()\n{blocks}block3():\n  return\n"
+            );
+            let error = ModuleParser::new().parse(&source).unwrap_err().to_string();
+            assert!(error.contains("invalid operand types"), "{error}");
+            assert!(error.contains("got: F32"), "{error}");
+
+            let undefined = source.replace("  v0 = fconst.f32 0x00000000\n", "");
+            let error = ModuleParser::new()
+                .parse(&undefined)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("undefined SSA value `v0`"), "{error}");
+        }
+    }
 }

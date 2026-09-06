@@ -1,13 +1,14 @@
-//! Machine IR (MIR) 指令和操作数定义
+//! Low-level IR (LIR) 指令和操作数定义
 
 use alloc::string::String;
 use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
+use veloc_ir::semantics::BvOp;
 use veloc_ir::{Block, FloatCC, IntCC, Type};
 
-pub use crate::mir::RegisterBank;
-use crate::mir::extra::CallInfo;
-use crate::mir::symbol::SymbolId;
+pub use crate::lir::RegisterBank;
+use crate::lir::extra::CallInfo;
+use crate::lir::symbol::SymbolId;
 
 /// 机器指令索引
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -102,21 +103,52 @@ pub struct VRegData {
     pub stack_slot: Option<StackSlot>, // 如果溢出到栈
 }
 
-/// 通用机器指令操作码
-///
-/// 这些是与目标架构无关的操作码，在指令选择阶段会被转换为目标架构特定指令
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[allow(non_camel_case_types)]
-pub enum GenericOpcode {
+macro_rules! define_generic_opcodes {
+    ($($opcode:ident $(=> $semantic:ident)?),* $(,)?) => {
+        /// Target-independent machine operations, selected into target instructions.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[allow(non_camel_case_types)]
+        pub enum GenericOpcode {
+            $($opcode,)*
+        }
+
+        impl GenericOpcode {
+            /// Declared scalar or per-lane bitvector operation. This does not
+            /// describe register effects or prove a complete LIR lowering.
+            /// Consumers must check the instruction's types and predication;
+            /// this binding gives no pointer or memory semantics.
+            pub const fn semantics(self) -> Option<BvOp> {
+                match self {
+                    $(Self::$opcode => define_generic_opcodes!(@semantic $($semantic)?),)*
+                }
+            }
+
+            /// Find a generic instruction implementing this declared operation.
+            /// Operations without a binding remain outside this lowering path.
+            pub fn from_semantics(semantics: BvOp) -> Option<Self> {
+                const BINDINGS: &[(BvOp, GenericOpcode)] = &[
+                    $($( (BvOp::$semantic, GenericOpcode::$opcode), )?)*
+                ];
+                BINDINGS.iter().find_map(|&(semantic, opcode)| {
+                    (semantic == semantics).then_some(opcode)
+                })
+            }
+        }
+    };
+    (@semantic $semantic:ident) => { Some(BvOp::$semantic) };
+    (@semantic) => { None };
+}
+
+define_generic_opcodes! {
     // ==================== 整数算术 ====================
-    G_ADD,  // 加法
-    G_SUB,  // 减法
-    G_MUL,  // 乘法
+    G_ADD => Add,  // 加法
+    G_SUB => Sub,  // 减法
+    G_MUL => Mul,  // 乘法
     G_SDIV, // 有符号除法
     G_UDIV, // 无符号除法
     G_SREM, // 有符号取余
     G_UREM, // 无符号取余
-    G_NEG,  // 取负
+    G_NEG => Neg,  // 取负
 
     // ==================== 浮点算术 ====================
     G_FADD,  // 浮点加法
@@ -128,9 +160,9 @@ pub enum GenericOpcode {
     G_FSQRT, // 浮点开方
 
     // ==================== 位运算 ====================
-    G_AND,   // 按位与
-    G_OR,    // 按位或
-    G_XOR,   // 按位异或
+    G_AND => And,   // 按位与
+    G_OR => Or,    // 按位或
+    G_XOR => Xor,   // 按位异或
     G_CTPOP, // 统计置位位数
     G_CTLZ,  // 统计前导零
     G_CTTZ,  // 统计尾随零
@@ -322,7 +354,7 @@ macro_rules! define_mir_ops {
             }
         )*
 
-        /// 通用 MIR 指令的 schema 分类。
+        /// 通用 LIR 指令的 schema 分类。
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum GenericInstSchema {
             $(
@@ -1053,7 +1085,7 @@ impl MachineInst {
         matches!(self.opcode, MachineOpcode::Target(_))
     }
 
-    /// 如果该指令是通用 MIR 指令，返回其 GenericOpcode。
+    /// 如果该指令是通用 LIR 指令，返回其 GenericOpcode。
     pub fn generic_opcode(&self) -> Option<GenericOpcode> {
         match self.opcode {
             MachineOpcode::Generic(opcode) => Some(opcode),
@@ -1061,13 +1093,13 @@ impl MachineInst {
         }
     }
 
-    /// 返回该通用 MIR 指令对应的 schema。
+    /// 返回该通用 LIR 指令对应的 schema。
     pub fn generic_schema(&self) -> Option<GenericInstSchema> {
         self.generic_opcode()
             .and_then(GenericInstSchema::for_opcode)
     }
 
-    /// 按 schema 解码通用 MIR 指令。
+    /// 按 schema 解码通用 LIR 指令。
     pub fn decode_generic(&self) -> crate::error::Result<DecodedGenericInst> {
         match self.generic_schema() {
             Some(schema) => decode_simple_generic(self, schema),

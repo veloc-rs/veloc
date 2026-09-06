@@ -1,9 +1,9 @@
 use crate::error::Result;
-use crate::mir::{
+use crate::lir::{
     BrTableInfo, BrTableTarget, GenericOpcode, InstExtra, MachineFunction, MachineInst, Reg,
     Writable,
 };
-use crate::pipeline::stages::{AllowsUnbankedVRegAlloc, LegalizedMir, RawMir};
+use crate::pipeline::stages::{AllowsUnbankedVRegAlloc, LegalizedLir, RawLir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use alloc::vec::Vec;
 use hashbrown::HashMap;
@@ -65,7 +65,7 @@ impl BlockParamLoweringPass {
     }
 
     fn lower_branch<S: AllowsUnbankedVRegAlloc>(
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
         inst: &MachineInst,
     ) -> Result<()> {
@@ -77,7 +77,7 @@ impl BlockParamLoweringPass {
     }
 
     fn lower_cond_branch<S: AllowsUnbankedVRegAlloc>(
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
         inst: &MachineInst,
     ) -> Result<()> {
@@ -99,7 +99,7 @@ impl BlockParamLoweringPass {
     }
 
     fn lower_jump_table<S: AllowsUnbankedVRegAlloc>(
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
     ) -> Result<()> {
         let info = Self::jump_table_info(cursor);
@@ -126,7 +126,7 @@ impl BlockParamLoweringPass {
         Ok(())
     }
 
-    fn branch_args<S>(cursor: &crate::mir::BlockRewriteCursor<'_, S>) -> SmallVec<[Reg; 2]> {
+    fn branch_args<S>(cursor: &crate::lir::BlockRewriteCursor<'_, S>) -> SmallVec<[Reg; 2]> {
         match cursor.current_extra() {
             Some(InstExtra::Branch(info)) => info.args.clone(),
             None => SmallVec::new(),
@@ -135,7 +135,7 @@ impl BlockParamLoweringPass {
     }
 
     fn cond_branch_args<S>(
-        cursor: &'_ crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &'_ crate::lir::BlockRewriteCursor<'_, S>,
     ) -> (SmallVec<[Reg; 2]>, SmallVec<[Reg; 2]>) {
         match cursor.current_extra() {
             Some(InstExtra::BranchCond(info)) => (info.then_args.clone(), info.else_args.clone()),
@@ -144,7 +144,7 @@ impl BlockParamLoweringPass {
         }
     }
 
-    fn jump_table_info<S>(cursor: &crate::mir::BlockRewriteCursor<'_, S>) -> BrTableInfo {
+    fn jump_table_info<S>(cursor: &crate::lir::BlockRewriteCursor<'_, S>) -> BrTableInfo {
         match cursor.current_extra() {
             Some(InstExtra::BrTable(info)) => info.clone(),
             Some(_) => panic!("expected br_table extra on G_BRJT instruction"),
@@ -153,7 +153,7 @@ impl BlockParamLoweringPass {
     }
 
     fn emit_branch_arg_copies<S: AllowsUnbankedVRegAlloc>(
-        cursor: &mut crate::mir::BlockRewriteCursor<'_, S>,
+        cursor: &mut crate::lir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
         target: Block,
         args: &[Reg],
@@ -189,7 +189,7 @@ impl BlockParamLoweringPass {
     ) -> Result<&'a [MachineInst]> {
         let params: SmallVec<[Reg; 4]> = mfunc
             .block_params(target)
-            .unwrap_or_else(|| panic!("branch target {:?} not found in MIR", target))
+            .unwrap_or_else(|| panic!("branch target {:?} not found in LIR", target))
             .iter()
             .copied()
             .collect();
@@ -338,16 +338,16 @@ impl BlockParamLoweringPass {
     }
 }
 
-impl StageTransformPass<RawMir, LegalizedMir> for BlockParamLoweringPass {
+impl StageTransformPass<RawLir, LegalizedLir> for BlockParamLoweringPass {
     fn name(&self) -> &'static str {
         "edge-args-lowered"
     }
 
     fn run(
         &self,
-        mut mfunc: MachineFunction<RawMir>,
-        _ctx: &mut FunctionPassContext<'_, RawMir>,
-    ) -> Result<(MachineFunction<LegalizedMir>, PassEffect)> {
+        mut mfunc: MachineFunction<RawLir>,
+        _ctx: &mut FunctionPassContext<'_, RawLir>,
+    ) -> Result<(MachineFunction<LegalizedLir>, PassEffect)> {
         Self::run(&mut mfunc)?;
         Ok((
             mfunc.into_stage(),
@@ -359,19 +359,19 @@ impl StageTransformPass<RawMir, LegalizedMir> for BlockParamLoweringPass {
 #[cfg(test)]
 mod tests {
     use super::BlockParamLoweringPass;
-    use crate::mir::{
+    use crate::lir::{
         BrTableInfo, BrTableTarget, InstExtra, MachineBlock, MachineFunction, MachineInst,
     };
-    use crate::pipeline::stages::RawMir;
+    use crate::pipeline::stages::RawLir;
     use alloc::vec;
     use smallvec::smallvec;
     use veloc_ir::{Block, Type};
 
-    fn make_function() -> MachineFunction<RawMir> {
-        MachineFunction::<RawMir>::new("test".into())
+    fn make_function() -> MachineFunction<RawLir> {
+        MachineFunction::<RawLir>::new("test".into())
     }
 
-    fn push_block(mfunc: &mut MachineFunction<RawMir>, block: Block, params: &[crate::mir::Reg]) {
+    fn push_block(mfunc: &mut MachineFunction<RawLir>, block: Block, params: &[crate::lir::Reg]) {
         let mut mblock = MachineBlock::new(block);
         mblock.params = params.to_vec();
         mfunc.blocks.push(mblock);
@@ -407,7 +407,7 @@ mod tests {
         let br = mfunc.alloc_inst(MachineInst::build_br(target));
         mfunc.set_inst_extra(
             br,
-            InstExtra::Branch(crate::mir::BranchInfo {
+            InstExtra::Branch(crate::lir::BranchInfo {
                 args: smallvec![src],
             }),
         );
@@ -440,7 +440,7 @@ mod tests {
         let br = mfunc.alloc_inst(MachineInst::build_br_cond(cond, then_blk, else_blk));
         mfunc.set_inst_extra(
             br,
-            InstExtra::BranchCond(crate::mir::BranchCondInfo {
+            InstExtra::BranchCond(crate::lir::BranchCondInfo {
                 then_args: smallvec![arg],
                 else_args: smallvec![],
             }),
@@ -523,7 +523,7 @@ mod tests {
         let br = mfunc.alloc_inst(MachineInst::build_br(target));
         mfunc.set_inst_extra(
             br,
-            InstExtra::Branch(crate::mir::BranchInfo {
+            InstExtra::Branch(crate::lir::BranchInfo {
                 args: smallvec![b, a],
             }),
         );

@@ -1,12 +1,12 @@
-//! 机器 IR (MIR) 层的 Use-Def 链分析与增量更新实现
+//! LIR 层的 Use-Def 链分析与增量更新实现
 
-use crate::mir::instr::{InstId, MachineInst, Reg};
+use crate::lir::instr::{InstId, MachineInst, Reg};
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
-/// MIR 层的 Use-Def 链信息。
+/// LIR 层的 Use-Def 链信息。
 ///
-/// 该结构体用于在前向指令选择、寄存器分配等各个 MIR 变换阶段，
+/// 该结构体用于在前向指令选择、寄存器分配等各个 LIR 变换阶段，
 /// 维护寄存器 (Reg) 与其定义指令 (Def) 或是使用指令 (Use) 之间的双向映射关系。
 #[derive(Debug, Clone, Default)]
 pub struct UseDefChain {

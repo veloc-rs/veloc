@@ -1,16 +1,15 @@
-//! Veloc IR Type System
+//! Veloc MIR type system.
 
 use alloc::vec::Vec;
-use core::fmt;
+use core::fmt::{self, Display};
 use cranelift_entity::{EntityList, ListPool, entity_impl};
-use std::fmt::Display;
 
 /// Value 列表的内存池
 pub type ValueListPool = ListPool<Value>;
 /// Value 列表（使用 cranelift-entity 的紧凑表示）
 pub type ValueList = EntityList<Value>;
 
-/// Scalar lane types supported by the core IR.
+/// Scalar lane types supported by the MIR.
 ///
 /// Signedness is carried by operations rather than types. Discriminant zero is
 /// deliberately unused so that [`Type::INVALID`] cannot be mistaken for a real
@@ -61,7 +60,20 @@ impl ScalarType {
         }
     }
 
-    /// Size of a non-pointer lane in bytes.
+    /// Number of logical bits in one lane, independent of its storage.
+    pub const fn bits(self) -> Option<u32> {
+        match self {
+            Self::Bool => Some(1),
+            Self::I8 => Some(8),
+            Self::I16 => Some(16),
+            Self::I32 | Self::F32 => Some(32),
+            Self::I64 | Self::F64 => Some(64),
+            Self::Ptr => None,
+        }
+    }
+
+    /// Size of a non-pointer lane in the MIR's byte representation.
+    /// A boolean occupies one byte even though it has one logical bit.
     pub const fn fixed_size_bytes(self) -> Option<u32> {
         match self {
             Self::I8 | Self::Bool => Some(1),
@@ -86,7 +98,8 @@ impl ScalarType {
     }
 }
 
-/// Target-independent size information for an SSA value type.
+/// Storage size in bytes in the MIR's byte representation.
+/// This is separate from logical bit width and target register layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeSize {
     Fixed(u32),
@@ -108,6 +121,32 @@ impl TypeSize {
         match self {
             Self::Fixed(bytes) | Self::Scalable { min_bytes: bytes } => Some(bytes),
             Self::TargetDependent => None,
+        }
+    }
+}
+
+/// Logical size in bits, preserving a vector's runtime scale factor.
+///
+/// `Scalable { min_bits: n }` denotes `vscale * n` bits, where the same positive
+/// runtime `vscale` applies throughout an execution. It is not equal to
+/// `Fixed(n)`, even though both have the same minimum size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeBits {
+    Fixed(u32),
+    Scalable { min_bits: u32 },
+}
+
+impl TypeBits {
+    pub const fn fixed_bits(self) -> Option<u32> {
+        match self {
+            Self::Fixed(bits) => Some(bits),
+            Self::Scalable { .. } => None,
+        }
+    }
+
+    pub const fn min_bits(self) -> u32 {
+        match self {
+            Self::Fixed(bits) | Self::Scalable { min_bits: bits } => bits,
         }
     }
 }
@@ -140,7 +179,7 @@ impl Type {
         Self(scalar as u16)
     }
 
-    /// Create a vector type. The compact core encoding supports power-of-two
+    /// Create a vector type. The compact MIR encoding supports power-of-two
     /// lane counts from 2 through 32768.
     pub const fn new_vector(element: ScalarType, lanes: u16, scalable: bool) -> Option<Self> {
         if lanes < 2 || !lanes.is_power_of_two() || element as u8 == ScalarType::Ptr as u8 {
@@ -190,7 +229,7 @@ impl Type {
     /// 获取标量类型 ID
     pub fn scalar_type(self) -> ScalarType {
         ScalarType::from_code((self.0 & SCALAR_MASK) as u8)
-            .expect("invalid core IR type has no scalar lane type")
+            .expect("invalid MIR type has no scalar lane type")
     }
 
     /// 获取通道数的 log2 值
@@ -262,7 +301,25 @@ impl Type {
         self.is_valid() && self.scalar_type().is_float()
     }
 
-    pub fn size(self) -> TypeSize {
+    /// Logical bits in each scalar lane; pointers require a target layout.
+    pub fn element_bits(self) -> Option<u32> {
+        self.scalar_type().bits()
+    }
+
+    /// Logical size of the whole value, including its runtime scale factor.
+    /// Pointers have no target-independent bit size.
+    pub fn bit_size(self) -> Option<TypeBits> {
+        let min_bits = self.element_bits()? * u32::from(self.lane_count());
+        Some(if self.is_scalable() {
+            TypeBits::Scalable { min_bits }
+        } else {
+            TypeBits::Fixed(min_bits)
+        })
+    }
+
+    /// Storage size of the value in the MIR's byte representation.
+    /// Boolean vectors use one byte per lane, not packed logical bits.
+    pub fn storage_size(self) -> TypeSize {
         let Some(lane_bytes) = self.scalar_type().fixed_size_bytes() else {
             return TypeSize::TargetDependent;
         };
@@ -275,15 +332,17 @@ impl Type {
     }
 
     pub fn fixed_size_bytes(self) -> Option<u32> {
-        self.size().fixed_bytes()
+        self.storage_size().fixed_bytes()
     }
 
     pub fn min_size_bytes(self) -> Option<u32> {
-        self.size().min_bytes()
+        self.storage_size().min_bytes()
     }
 
+    /// Minimum logical bit width. Equal minima do not imply equal sizes;
+    /// use [`Self::bit_size`] when checking bitcast compatibility.
     pub fn min_bit_width(self) -> Option<u32> {
-        self.min_size_bytes().map(|bytes| bytes * 8)
+        self.bit_size().map(TypeBits::min_bits)
     }
 
     /// Decode a raw value after validating all currently defined fields.
@@ -468,7 +527,7 @@ mod tests {
         assert!(Type::I32.is_scalar());
         assert!(!Type::I32.is_vector());
         assert_eq!(Type::I32.scalar_type(), ScalarType::I32);
-        assert_eq!(Type::I32.size(), TypeSize::Fixed(4));
+        assert_eq!(Type::I32.storage_size(), TypeSize::Fixed(4));
         assert!(Type::I32.is_integer());
         assert!(!Type::I32.is_float());
     }
@@ -481,7 +540,7 @@ mod tests {
         assert!(!v4i32.is_scalable());
         assert_eq!(v4i32.lane_count(), 4);
         assert_eq!(v4i32.element_type(), Type::I32);
-        assert_eq!(v4i32.size(), TypeSize::Fixed(16));
+        assert_eq!(v4i32.storage_size(), TypeSize::Fixed(16));
     }
 
     #[test]
@@ -490,7 +549,10 @@ mod tests {
         assert!(scalable.is_vector());
         assert!(scalable.is_scalable());
         assert_eq!(scalable.lane_count(), 4);
-        assert_eq!(scalable.size(), TypeSize::Scalable { min_bytes: 16 });
+        assert_eq!(
+            scalable.storage_size(),
+            TypeSize::Scalable { min_bytes: 16 }
+        );
     }
 
     #[test]

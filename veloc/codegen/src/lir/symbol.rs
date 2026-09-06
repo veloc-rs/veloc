@@ -1,4 +1,4 @@
-//! 机器 IR 中的符号定义与管理
+//! LIR 中的符号定义与管理
 
 use alloc::string::{String, ToString};
 use cranelift_entity::PrimaryMap;

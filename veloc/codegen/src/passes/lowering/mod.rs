@@ -5,8 +5,8 @@ pub mod legalize;
 pub mod regbank;
 
 use crate::error::Result;
-use crate::mir::MachineFunction;
-use crate::pipeline::stages::{LegalizedMir, PreIselPrepared};
+use crate::lir::MachineFunction;
+use crate::pipeline::stages::{LegalizedLir, PreIselPrepared};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{TargetLegalizer, TargetPassConfig};
 
@@ -30,22 +30,22 @@ impl<'a> LegalizePass<'a> {
         }
     }
 
-    fn apply_effect(effect: PassEffect, ctx: &mut FunctionPassContext<'_, LegalizedMir>) {
+    fn apply_effect(effect: PassEffect, ctx: &mut FunctionPassContext<'_, LegalizedLir>) {
         if !effect.change_set.is_empty() {
             ctx.function_analyses.apply(effect.change_set);
         }
     }
 }
 
-impl<'a> StageTransformPass<LegalizedMir, PreIselPrepared> for LegalizePass<'a> {
+impl<'a> StageTransformPass<LegalizedLir, PreIselPrepared> for LegalizePass<'a> {
     fn name(&self) -> &'static str {
         "legalize"
     }
 
     fn run(
         &self,
-        mut mfunc: MachineFunction<LegalizedMir>,
-        ctx: &mut FunctionPassContext<'_, LegalizedMir>,
+        mut mfunc: MachineFunction<LegalizedLir>,
+        ctx: &mut FunctionPassContext<'_, LegalizedLir>,
     ) -> Result<(MachineFunction<PreIselPrepared>, PassEffect)> {
         let legalizer = Legalizer::new(self.legalizer);
         legalizer.legalize(&mut mfunc)?;

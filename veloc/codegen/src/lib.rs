@@ -9,7 +9,7 @@ pub mod error;
 pub mod isle {
     pub use crate::target::x86_64::isle::*;
 }
-pub mod mir;
+pub mod lir;
 pub mod object;
 pub mod passes;
 pub mod pipeline;
@@ -40,7 +40,7 @@ pub fn create_target_machine(config: TargetConfig) -> Option<alloc::boxed::Box<d
 
 pub use error::{Error, Result};
 
-pub use crate::mir::SymbolId;
+pub use crate::lir::SymbolId;
 pub use alloc::format;
 pub use alloc::string::String;
 pub use alloc::vec::Vec;

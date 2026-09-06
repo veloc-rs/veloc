@@ -1765,6 +1765,8 @@ dependencies = [
  "hashbrown 0.14.5",
  "smallvec",
  "thiserror 2.0.18",
+ "veloc-opgen",
+ "veloc-semantics",
 ]
 
 [[package]]
@@ -1777,6 +1779,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "veloc-opgen"
+version = "0.1.0"
+dependencies = [
+ "veloc-semantics",
+]
+
+[[package]]
 name = "veloc-optimizer"
 version = "0.1.0"
 dependencies = [
@@ -1785,6 +1794,10 @@ dependencies = [
  "veloc-analyzer",
  "veloc-ir",
 ]
+
+[[package]]
+name = "veloc-semantics"
+version = "0.1.0"
 
 [[package]]
 name = "veloc-spec"

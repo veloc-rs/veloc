@@ -1,14 +1,14 @@
 #[derive(Debug, Clone, Copy, Default)]
-pub struct RawMir;
+pub struct RawLir;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct LegalizedMir;
+pub struct LegalizedLir;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PreIselPrepared;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SelectedMir;
+pub struct SelectedLir;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PostIselOptimized;
@@ -22,5 +22,5 @@ pub struct PrologueEpilogueInserted;
 /// 允许创建“尚未显式绑定 bank”的 vreg 的阶段。
 pub trait AllowsUnbankedVRegAlloc {}
 
-impl AllowsUnbankedVRegAlloc for RawMir {}
-impl AllowsUnbankedVRegAlloc for LegalizedMir {}
+impl AllowsUnbankedVRegAlloc for RawLir {}
+impl AllowsUnbankedVRegAlloc for LegalizedLir {}
