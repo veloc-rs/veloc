@@ -7,10 +7,193 @@ for a future structured representation. The machine-facing IR is LIR, in
 
 The MIR definitions live in `veloc/mir/defs/`:
 
+- `types.ops`: compact type encoding, scalar definitions, named vectors and type sets.
+- `builtins.ops`: trait bits, memory-region bits and named memory effects.
 - `formats.ops`: compact storage layouts, structured property records and
   alternate-layout projections.
 - `mir.ops`: logical operation signatures, storage mappings, effects, constraints
   semantic expressions and bidirectional text projections.
+
+Callers supply these files as one definition unit; the compiler does not inject
+an implicit MIR vocabulary. `build.rs` tracks each file and maps diagnostics back
+to its original location.
+
+## Type encoding
+
+```text
+encoding Type {
+    storage: u16,
+    fields: [scalar(4), lanes_log2(4), scalable(1)],
+    codes: [I8(1), I16(2), I32(3), I64(4), F32(5), F64(6), BOOL(7), PTR(8)]
+}
+```
+
+Fields are packed in declaration order, from low to high bits. Unused high bits
+are reserved. This generates the `Type` storage declaration, layout documentation,
+masks, shifts, used-bit mask and lane-exponent limit. Scalar code validation uses
+the same field width; it does not independently assume codes fit in four bits.
+Type construction and decoding consume these generated values, including a
+nonzero scalar offset and narrower lane-count fields. Named vectors are checked
+against this layout before generation and use the checked runtime constructor.
+Field accessors (`element_code`, `lanes_log2`, `is_scalable`, `element_type`) and
+raw encoding access are generated with the layout. Raw decoding uses those
+accessors rather than repeating the unpacking expressions. Vector construction,
+legality checks and target-independent size calculations remain shared Rust code.
+
+The current MIR adapter requires `u16` storage, scalar codes fitting `u8`, lane
+counts fitting `u16`, and a one-bit scalable flag. Unknown, missing, duplicate,
+zero-width and overflowing fields are definition errors. Changing the layout
+changes raw encodings; the checked-in layout preserves the existing representation.
+Vector legality and type semantics remain Rust algorithms, separate from this
+MIR-specific physical representation. HIR and LIR need not share this layout.
+
+The `codes` table assigns each primitive scalar its stable backend code separately
+from its type expression. Codes must be nonzero, unique and fit the scalar field.
+Each entry must reference a declared scalar under its canonical MIR adapter name;
+unknown types, vectors, duplicate entries and missing primitive codes are errors.
+Aliases reuse the canonical type's encoding instead of acquiring a second code.
+
+## Types and type sets
+
+```text
+type I32 = int(32);
+type BOOL = bool();
+type PTR = ptr();
+type I32X4 = vector(I32, 4);
+type SV4 = vector(I32, scalable(4));
+type WORD = I32;
+type WORDS = vector(WORD, 4);
+class WideInteger { members: [I32, I64] }
+class WideVectors { members: [vectors(WideInteger)] }
+class ChosenShapes { members: [I32X4, SV4] }
+```
+
+`type Name = expression;` is the only type declaration syntax. Constructors are
+interpreted by the semantic checker, not special cases in the grammar. Supported
+constructors are `int(bits)`, `float(bits)`, `bool()`, `ptr()` and
+`vector(element, lanes)`; `scalable(lanes)` is a vector shape expression. Type
+names must be uppercase Rust constant names. Expressions support aliases, forward
+references and nested construction, such as `vector(int(32), 4)`. Cyclic aliases,
+unknown constructors, wrong arity and vector-of-vector types are rejected.
+`vector(...)` constructs one type; `vectors(set)` constructs a type set.
+
+Type expressions generate compact-code decoding, text names, element widths
+and exact `Type` constants. IR storage and interpreter metadata use a single
+`Type` representation. Codes remain stable; this
+change does not widen the 16-bit `Type` representation. The MIR codec adapter
+currently supports integer lanes of 8/16/32/64 bits, float lanes of 32/64 bits,
+`Bool` (one logical bit, one storage byte), and target-sized `Ptr`. It checks
+canonical names against kind/width so changing a declaration cannot silently
+contradict typed codec/target adapters. New primitive kinds or widths still need
+those adapters to be extended.
+
+Construct vectors through a checked scalar view:
+`Type::I32.as_scalar()?.vector(4, false)?.as_type()`. Obtain a vector's scalar
+view with `vector.element_type()`. Existing vectors and INVALID cannot become
+scalar views; vector construction rejects pointers and invalid lane counts.
+The scalar name lookup is
+`Type::from_name`; the MIR text parser additionally handles vector-shape syntax.
+
+`Type::as_scalar` and `Type::as_vector` return checked `ScalarType` / `VectorType`
+views, rejecting INVALID and mismatched shapes. These transparent wrappers share
+the same encoding; their fields are private. Vector-only `shape()` is available
+only on `VectorType`, whose `element_type()` returns a `ScalarType`. Both views
+convert back losslessly via `as_type()` or `Into<Type>`. No trait object or second
+type hierarchy is involved. Generic `Type::lane_count()` treats valid scalars as
+one lane and rejects INVALID. Vector construction is available only on
+`ScalarType`, not on the generic `Type`.
+
+`to_raw` / `from_raw` encode the full type in a checked 16-bit representation.
+`ScalarType::code` / `Type::from_scalar_code` are the separate, layout-independent
+8-bit scalar encoding boundary: a vector or INVALID cannot become a scalar view. This lets
+the interpreter retain its packed 16-bit conversion type pairs without retaining
+a second semantic type. Stack type slots hold the complete 16-bit encoding.
+The current interpreter rejects non-scalar values before bytecode emission.
+
+Classes are exact type sets: members can be scalar/vector type constants, other
+classes, or `vectors(S)`, which includes every legal fixed and scalable vector
+shape over the non-pointer scalar set S. Named vector constants are conveniences,
+not an exhaustive enumeration of legal vectors. Numeric lane counts are fixed;
+`scalable(lanes)` explicitly selects a scalable shape.
+Forward references work; cycles, unknown names and empty classes are errors.
+Passing pointers or vector types to `vectors()` is an error, not silent filtering.
+
+Sets preserve both scalar identity and vector shape. `{I32, I64}` does not include
+I8/I16 or any vectors; `{I32X4}` does not include I32X8 or scalable I32 vectors.
+The build-time model maps scalar codes to shape bitsets; generated runtime checks
+use integer masks and matches, not heap-allocated sets. These exact sets also drive
+definition-time shape constraints, bitvector semantic compatibility and floating
+text checks. There is no separate seven-domain vocabulary or name allowlist.
+
+Type-set expressions also work directly in operation signatures; a named class
+is just a reusable alias, not a required declaration for every combination:
+
+```text
+op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T { ... }
+op Gather<T: Integer & Vector>(ptr: PTR, index: T) -> shape(T, Vector) { ... }
+op Convert<T: I32 | I64>(arg: T) -> shape(T, F32 | F64) { ... }
+```
+
+`|` means union and `&` means intersection; `&` binds more tightly. Parentheses
+group expressions, for example `(I32 | F32) & Scalar`. Both operators also work
+inside `vectors(...)` and class member lists. Empty intermediate sets are allowed,
+but an empty final class or signature constraint is an error. Unknown names and
+invalid vector inputs are checked even in branches whose intersection is empty.
+
+`T: I32 | I64` selects one concrete type for `T`; all occurrences of `T` must match.
+By contrast, `lhs: I32 | I64, rhs: I32 | I64` allows the operands to independently
+select their types. Set expressions contain concrete types and class aliases, not
+type variables; dependent constraints still use `element(T)`, `vector(T)` and
+`shape(T, set)`.
+
+Generation evaluates and interns equal sets, including anonymous expressions.
+Named aliases and inline constraints share the same compact runtime membership
+checks; runtime code neither evaluates expressions nor constructs sets. Builder
+inference, semantic checks and text codecs inspect resolved sets, not class names.
+
+## Type predicates
+
+```text
+predicate is_integer = Integer;
+predicate is_scalar = Scalar | PTR;
+predicate is_predicate = vectors(BOOL);
+predicate is_wide = (I32 | I64) & Scalar;
+```
+
+Predicates generate public `const fn` methods on `Type`. They use the same exact
+set-expression compiler and membership projection as operation constraints, but
+emit direct checks instead of calling another predicate or a runtime set object.
+All invalid encodings return false, including reserved bits and illegal shapes.
+In particular, `Type::is_scalar()` includes pointers; the `Scalar` class does not.
+
+Predicate names must be snake_case starting with `is_`. `is_valid`, `is_scalable`
+and `is_fixed` are reserved validity/physical-shape APIs, not set aliases.
+Predicates may forward-reference classes and exact types, but are not themselves
+type-set names. Empty sets, unknown references and duplicate names are definition
+errors. Defining a predicate does not change type construction or layout legality.
+
+## Traits and effects
+
+```text
+trait COMMUTATIVE { bit: 1 }
+region GLOBAL { bit: 2 }
+effect GLOBAL_READ { reads: [GLOBAL], writes: [] }
+```
+
+Trait/region declarations generate constants and display metadata. Explicit bit
+positions preserve the representation independently of declaration/display order.
+`MemoryRegions::NONE` and `ALL` are derived; effects refer to region sets, with
+`[ALL]` denoting all declared regions. The reserved effect `NONE` must be empty;
+`UNKNOWN` must read and write every region. Purity checks inspect the sets, not
+the effect's name. Duplicate bits and unknown references fail before emission.
+
+This is a vocabulary, not an arbitrary executable extension language. Generic
+type inference, memory-conflict algorithms, primitive bitvector meanings and
+reviewed algebraic laws remain Rust. Declaring a new trait does not invent an
+optimization or prove a law. Trusted laws use `BvConst` directly, rather than
+copying their constant names into a second definition whitelist.
+
+## Operation signatures
 
 ```text
 format Binary {
@@ -18,20 +201,20 @@ format Binary {
     opcode: dynamic(opcode)
 }
 
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+op IAdd<T: Integer>(lhs: T, rhs: T) -> T {
     mnemonic: "iadd",
     storage: Binary { args: [lhs, rhs] },
     semantics: bv.add(lhs, rhs)
 }
 
-op ExtendU<T: IntegerOrBool>(arg: T) -> (result: shape(T, Integer)) {
+op ExtendU<T: Integer | BOOL | vectors(BOOL)>(arg: T) -> (result: shape(T, Integer)) {
     mnemonic: "extendu",
     storage: Unary { arg: arg },
     where: [wider(arg, result)],
     memory: NONE
 }
 
-op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
+op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
@@ -39,7 +222,13 @@ op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
 }
 ```
 
-SSA operands and results have names and types in the operation signature.
+SSA operands have names and types in the operation signature. Result names are
+optional: a single result is `-> T`, multiple results are `-> (T, BOOL)`, and
+zero results are `-> ()`. Parenthesized results may be named when a constraint
+needs to reference them, as in `-> (result: shape(T, Integer))`. Otherwise the
+MIR definitions omit result names, including overflow operations (`-> (T, BOOL)`).
+Names do not affect the
+generated representation; anonymous results have no implicit names or aliases.
 Generic variables such as `T` are scoped to that operation; their first direct
 occurrence binds the type. Derived types use `element(T)`, `vector(T)` or
 `shape(T, Integer)`. Relations refer to operand/result names, not numeric slots.
@@ -103,13 +292,14 @@ return nothing, inferred single results return `Value`, and supported inferred
 two-result operations return a pair. Construction comes directly from the field
 mapping, independently of the text projection.
 
-Context is needed when construction allocates pooled values or extensions,
-maintains CFG edges, or resolves call signatures and external result types.
-Those operations retain contextual helper algorithms; the generator recognizes
-the need from field and result types, not a per-opcode name list. In particular,
-a branch is never automatically implemented as a bare instruction push that
-forgets predecessor bookkeeping. Context helpers can provide higher-level inputs
-such as slices and blocks while the storage schema retains compact IDs.
+Pool-backed and fixed-length-list operations use the same generated builders:
+`vconst(bytes: Vec<u8>, ty: Type)`, `ptr_index(ptr, index, imm: PtrIndexImm)` and
+`gather(ptr, index, mem: VectorMemOptions, ty: Type)`. Packing inserts properties
+through `PoolKey` before pushing the completed instruction. Contextual helpers
+remain for variadic groups, CFG destinations and signature-selected results.
+They provide higher-level slices and blocks while storage retains compact IDs.
+All insertion paths check the format and resolve/check the type scheme once;
+inferred results are not redundantly revalidated before insertion.
 
 ## Bidirectional text projections
 
@@ -174,8 +364,9 @@ resolution algorithms; this does not require a trait for every syntax helper.
 
 Interned property handles implement `dfg::PoolKey`, with associated insertion
 input and borrowed view types. Generated `pool(...)` mappings call only `insert`
-and `get`; concrete DFG pool names and byte-storage wrappers stay in the runtime
-implementation. Existing convenience methods delegate to the same pools. Value
+and `get`; hand-written consumers use that same API rather than parallel DFG
+getters/interners. Byte constants are stored as shared `Arc<[u8]>` buffers: the
+pool and deduplication index share one payload, while reads borrow `[u8]`. Value
 lists and jump-table construction retain their shared, non-interning algorithms.
 Both contracts use static dispatch and do not add a codec registry or trait-object
 dispatch. Rust checks the implementations and generated calls; round-trip tests

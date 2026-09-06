@@ -1,26 +1,35 @@
-use veloc_mir::ScalarType;
+use veloc_mir::Type;
 
-/// Packed type pair for Extend/Convert operations: (to_ty, from_ty)
+/// Logical types for Extend/Convert operations. Encoding uses two scalar codes,
+/// not two raw Type values, so a pair still occupies one u16 bytecode slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TypePair {
-    pub from: ScalarType,
-    pub to: ScalarType,
+    pub from: Type,
+    pub to: Type,
 }
 
 impl TypePair {
-    /// Pack two types into u16: (to_ty << 8) | from_ty
+    /// Pack two scalar codes into u16: (to_code << 8) | from_code.
     #[inline(always)]
-    pub const fn pack(from: ScalarType, to: ScalarType) -> u16 {
-        ((to as u16) << 8) | (from as u16)
+    pub const fn pack(from: Type, to: Type) -> u16 {
+        let from = from
+            .as_scalar()
+            .expect("bytecode type pair requires a scalar source")
+            .code();
+        let to = to
+            .as_scalar()
+            .expect("bytecode type pair requires a scalar destination")
+            .code();
+        ((to as u16) << 8) | from as u16
     }
 
     /// Unpack u16 into TypePair
     #[inline(always)]
     pub const fn unpack(raw: u16) -> Self {
-        let Some(from) = ScalarType::from_code((raw & 0xFF) as u8) else {
+        let Some(from) = Type::from_scalar_code((raw & 0xFF) as u8) else {
             panic!("invalid source scalar type in bytecode")
         };
-        let Some(to) = ScalarType::from_code((raw >> 8) as u8) else {
+        let Some(to) = Type::from_scalar_code((raw >> 8) as u8) else {
             panic!("invalid destination scalar type in bytecode")
         };
         Self { from, to }
@@ -260,17 +269,18 @@ impl IntoSlot for TypePair {
     }
 }
 
-impl FromSlot for ScalarType {
+impl FromSlot for Type {
     #[inline(always)]
     fn from_slot(v: u16) -> Self {
-        Self::from_code(v as u8).expect("invalid scalar type in bytecode")
+        Self::from_raw(v).expect("invalid type in bytecode")
     }
 }
 
-impl IntoSlot for ScalarType {
+impl IntoSlot for Type {
     #[inline(always)]
     fn into_slot(self) -> u16 {
-        self as u16
+        assert!(self.is_valid(), "invalid type in bytecode");
+        self.to_raw()
     }
 }
 
@@ -916,8 +926,8 @@ define_opcodes! {
 
     // === Stack ===
     StackAddr [Payload32] { dst: Reg, offset: u32 };
-    StackLoad [Payload32] { dst: Reg, ty: ScalarType, offset: u32 };
-    StackStore [Payload32] { val: Reg, ty: ScalarType, offset: u32 };
+    StackLoad [Payload32] { dst: Reg, ty: Type, offset: u32 };
+    StackStore [Payload32] { val: Reg, ty: Type, offset: u32 };
 
     PtrIndex [Payload32x2] { dst: Reg, ptr: Reg, index: Reg, scale: u32, offset: u32 };
 
@@ -987,6 +997,90 @@ pub(crate) mod emit_auto {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type_pair_retains_one_slot_and_rejects_shape_loss() {
+        for from in [
+            Type::I8,
+            Type::I16,
+            Type::I32,
+            Type::I64,
+            Type::F32,
+            Type::F64,
+            Type::BOOL,
+            Type::PTR,
+        ] {
+            for to in [
+                Type::I8,
+                Type::I16,
+                Type::I32,
+                Type::I64,
+                Type::F32,
+                Type::F64,
+                Type::BOOL,
+                Type::PTR,
+            ] {
+                assert_eq!(
+                    TypePair::unpack(TypePair::pack(from, to)),
+                    TypePair { from, to }
+                );
+            }
+        }
+        assert_eq!(TypePair::pack(Type::I32, Type::I64), 0x0403);
+        for ty in [Type::INVALID, Type::I32X4, Type::new_mask(4, true).unwrap()] {
+            assert!(std::panic::catch_unwind(|| TypePair::pack(ty, Type::I32)).is_err());
+            assert!(std::panic::catch_unwind(|| TypePair::pack(Type::I32, ty)).is_err());
+        }
+        for raw in [0, 0xff03, 0x0300] {
+            assert!(std::panic::catch_unwind(|| TypePair::unpack(raw)).is_err());
+        }
+        let mut code = Vec::new();
+        emit::ExtendS(
+            &mut code,
+            Reg(1),
+            Reg(2),
+            TypePair {
+                from: Type::I32,
+                to: Type::I64,
+            },
+        );
+        assert_eq!(code.len(), 1);
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr()) },
+            DecodedInstruction::ExtendS {
+                ty: TypePair {
+                    from: Type::I32,
+                    to: Type::I64
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn type_slots_preserve_full_types_and_reject_invalid_raw_encodings() {
+        for raw in 0..=u16::MAX {
+            if let Some(ty) = Type::from_raw(raw) {
+                assert_eq!(Type::from_slot(ty.into_slot()), ty);
+            }
+        }
+        for raw in [0, 0xffff] {
+            assert!(std::panic::catch_unwind(|| Type::from_slot(raw)).is_err());
+        }
+        assert!(std::panic::catch_unwind(|| Type::INVALID.into_slot()).is_err());
+        let mut code = Vec::new();
+        emit::StackLoad(&mut code, Reg(1), Type::F64, 32);
+        // Unchanged: one header word plus the existing offset payload word.
+        assert_eq!(code.len(), 2);
+        assert!(matches!(
+            unsafe { DecodedInstruction::read(code.as_ptr()) },
+            DecodedInstruction::StackLoad {
+                ty: Type::F64,
+                offset: 32,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn register_only_instruction_uses_one_word() {

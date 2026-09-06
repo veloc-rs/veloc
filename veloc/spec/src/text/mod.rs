@@ -24,7 +24,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<(String, Stri
             .iter()
             .find(|f| f.name == op.format)
             .expect("checked format");
-        let schema = schema::compile(op, &defs.storage.records, source)?;
+        let schema = schema::compile(op, &defs.storage.records, source, &defs.types)?;
         let alternatives = defs
             .storage
             .alternatives
@@ -44,7 +44,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<(String, Stri
         writeln!(printer, "crate::Opcode::{} => match data {{", op.name).unwrap();
         for alt in alternatives {
             let (alt_op, alt_format) = alternate(op, alt, defs, source)?;
-            let alt_schema = schema::compile(&alt_op, &defs.storage.records, source)?;
+            let alt_schema = schema::compile(&alt_op, &defs.storage.records, source, &defs.types)?;
             if !schema.named.is_empty()
                 || alt_schema.named.is_empty()
                 || !alt_schema

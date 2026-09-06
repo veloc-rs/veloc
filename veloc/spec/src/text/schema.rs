@@ -71,7 +71,12 @@ struct Checker<'a> {
     float: bool,
 }
 
-pub(super) fn compile(op: &Op, records: &[RecordDef], source: &str) -> Result<Schema, Error> {
+pub(super) fn compile(
+    op: &Op,
+    records: &[RecordDef],
+    source: &str,
+    types: &crate::types::Types,
+) -> Result<Schema, Error> {
     let mut checker = Checker {
         source,
         leaves: BTreeMap::new(),
@@ -185,7 +190,7 @@ pub(super) fn compile(op: &Op, records: &[RecordDef], source: &str) -> Result<Sc
             "top-level values must be the only positional item",
         ));
     }
-    if checker.float && !float_result(&op.signature) {
+    if checker.float && !float_result(&op.signature, types) {
         return Err(checker.error(
             op.offset,
             "float text atoms require a scalar float first result",
@@ -412,7 +417,7 @@ fn simple_scalar(ty: &str) -> bool {
     )
 }
 
-fn float_result(signature: &TypeDef) -> bool {
+fn float_result(signature: &TypeDef, types: &crate::types::Types) -> bool {
     let Some(result) = signature
         .results
         .patterns()
@@ -420,16 +425,17 @@ fn float_result(signature: &TypeDef) -> bool {
     else {
         return false;
     };
+    let scalar_float = |set: &crate::type_set::TypeSet| set.subset_of(&types.scalar_floats);
     match result {
-        Pattern::Exact(ty) => matches!(ty.as_str(), "F32" | "F64"),
-        Pattern::Class(class) | Pattern::Bind(_, class) => class == "ScalarFloat",
+        Pattern::Exact(ty) => types.exact[ty].subset_of(&types.scalar_floats),
+        Pattern::Class(class) | Pattern::Bind(_, class) => scalar_float(class),
         Pattern::Same(slot) => {
             let operands = match &signature.operands {
                 TypeList::Fixed(operands) | TypeList::Variadic(operands) => operands.as_slice(),
                 TypeList::Signature => &[],
             };
             operands.iter().any(|pattern| {
-                matches!(pattern, Pattern::Bind(other, class) if slot == other && class == "ScalarFloat")
+                matches!(pattern, Pattern::Bind(other, class) if slot == other && scalar_float(class))
             })
         }
         _ => false,
@@ -448,6 +454,10 @@ mod tests {
     use super::*;
     use crate::model::Param;
     use crate::records::RecordField;
+
+    fn compile(op: &Op, records: &[RecordDef], source: &str) -> Result<Schema, Error> {
+        super::compile(op, records, source, &crate::fixtures::types())
+    }
 
     fn op(params: &[(&str, &str)], text: Option<&str>) -> Op {
         let text = text.map(|text| {
@@ -554,7 +564,7 @@ mod tests {
             let text = format!("Text {{ args: [{codec}(arg)] }}");
             let mut operation = op(&[("arg", ty)], Some(&text));
             operation.signature.results =
-                TypeList::Fixed(vec![Pattern::Class("ScalarFloat".into())]);
+                TypeList::Fixed(vec![Pattern::Class(crate::fixtures::set("ScalarFloat"))]);
             let schema = compile(&operation, &[], "").unwrap();
             assert!(matches!(&schema.args[0], Item::Atom(atom) if atom.kind == expected));
             assert!(compile(&op(&[("arg", "value")], Some(&text)), &[], "").is_err());
@@ -592,10 +602,10 @@ mod tests {
     fn floating_atoms_require_a_statically_scalar_float_first_result() {
         let mut operation = op(&[("arg", "u64")], Some("Text { args: [float(arg)] }"));
         for result in [
-            Pattern::Class("ScalarFloat".into()),
+            Pattern::Class(crate::fixtures::set("ScalarFloat")),
             Pattern::Exact("F32".into()),
             Pattern::Exact("F64".into()),
-            Pattern::Bind(0, "ScalarFloat".into()),
+            Pattern::Bind(0, crate::fixtures::set("ScalarFloat")),
         ] {
             operation.signature.results = TypeList::Fixed(vec![result]);
             compile(&operation, &[], "").unwrap();
@@ -603,8 +613,8 @@ mod tests {
         for results in [
             TypeList::Fixed(vec![]),
             TypeList::Signature,
-            TypeList::Fixed(vec![Pattern::Class("Float".into())]),
-            TypeList::Fixed(vec![Pattern::Class("ScalarInteger".into())]),
+            TypeList::Fixed(vec![Pattern::Class(crate::fixtures::set("Float"))]),
+            TypeList::Fixed(vec![Pattern::Class(crate::fixtures::set("ScalarInteger"))]),
             TypeList::Fixed(vec![Pattern::Exact("I32".into())]),
             TypeList::Fixed(vec![Pattern::Same(0)]),
         ] {
@@ -613,9 +623,10 @@ mod tests {
         }
         operation.signature.results = TypeList::Fixed(vec![Pattern::Same(0)]);
         operation.signature.operands =
-            TypeList::Fixed(vec![Pattern::Bind(0, "ScalarFloat".into())]);
+            TypeList::Fixed(vec![Pattern::Bind(0, crate::fixtures::set("ScalarFloat"))]);
         compile(&operation, &[], "").unwrap();
-        operation.signature.operands = TypeList::Fixed(vec![Pattern::Bind(0, "Float".into())]);
+        operation.signature.operands =
+            TypeList::Fixed(vec![Pattern::Bind(0, crate::fixtures::set("Float"))]);
         assert!(compile(&operation, &[], "").is_err());
 
         let definitions = [
@@ -624,12 +635,12 @@ mod tests {
         ]
         .join("\n");
         let bad = definitions.replacen(
-            "op Fconst(@value: u64) -> (result: ScalarFloat)",
-            "op Fconst(@value: u64) -> (result: ScalarInteger)",
+            "op Fconst(@value: u64) -> ScalarFloat",
+            "op Fconst(@value: u64) -> ScalarInteger",
             1,
         );
         assert_ne!(bad, definitions);
-        let error = crate::compile_mir(&bad)
+        let error = crate::fixtures::compile_mir(&bad)
             .err()
             .expect("unparseable float projection");
         assert!(

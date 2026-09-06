@@ -11,7 +11,14 @@ impl<'a> WasmTranslator<'a> {
                 self.table_bounds_check(table, index);
                 let table_base = self.get_table_base(table);
                 let index_i64 = self.addr_to_i64(index);
-                let addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
+                let addr = self.builder.ins().ptr_index(
+                    table_base,
+                    index_i64,
+                    veloc::mir::inst::PtrIndexImm {
+                        scale: 8,
+                        offset: 0,
+                    },
+                );
                 let res = self.builder.ins().load(
                     addr,
                     0,
@@ -26,7 +33,14 @@ impl<'a> WasmTranslator<'a> {
                 self.table_bounds_check(table, index);
                 let table_base = self.get_table_base(table);
                 let index_i64 = self.addr_to_i64(index);
-                let entry_addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
+                let entry_addr = self.builder.ins().ptr_index(
+                    table_base,
+                    index_i64,
+                    veloc::mir::inst::PtrIndexImm {
+                        scale: 8,
+                        offset: 0,
+                    },
+                );
                 self.builder.ins().store(
                     entry_addr,
                     func_ref,

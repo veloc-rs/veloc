@@ -1,4 +1,5 @@
-use veloc_mir::dfg::DataFlowGraph;
+use veloc_mir::dfg::{DataFlowGraph, PoolKey};
+use veloc_mir::inst::{VectorExtData, VectorExtId, VectorMemExtId};
 use veloc_mir::opspec::OpFormat;
 use veloc_mir::types::{BlockCallData, JumpTableData};
 use veloc_mir::{
@@ -23,7 +24,13 @@ fn rewriting_predicated_operands_preserves_interned_original() {
     let evl = Value(1);
     let new = Value(2);
     let args = dfg.make_value_list(&[old, old]);
-    let ext = dfg.make_vector_ext(old, Some(evl));
+    let ext = VectorExtId::insert(
+        &mut dfg,
+        VectorExtData {
+            mask: old,
+            evl: Some(evl),
+        },
+    );
     let original = InstructionData::VectorOpWithExt {
         opcode: Opcode::IAdd,
         args,
@@ -70,12 +77,15 @@ fn pooled_memory_layout_checks_arity_and_keeps_auxiliary_operands_separate() {
     let mut dfg = DataFlowGraph::new();
     let values = [Value(0), Value(1), Value(2)];
     let flags = MemFlags::VOLATILE.with_alignment(8);
-    let ext = dfg.make_vector_mem_ext(VectorMemOptions {
-        flags,
-        mask: Some(Value(3)),
-        evl: Some(Value(4)),
-        ..VectorMemOptions::default()
-    });
+    let ext = VectorMemExtId::insert(
+        &mut dfg,
+        VectorMemOptions {
+            flags,
+            mask: Some(Value(3)),
+            evl: Some(Value(4)),
+            ..VectorMemOptions::default()
+        },
+    );
     let args = dfg.make_value_list(&values);
     let scatter = InstructionData::VectorScatter { args, ext };
     assert!(scatter.matches_format(&dfg, OpFormat::VectorScatter));

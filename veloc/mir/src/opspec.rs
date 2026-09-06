@@ -6,21 +6,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
-/// A set of value types accepted by a type pattern.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeClass {
-    Any,
-    Scalar,
-    ScalarInteger,
-    ScalarIntegerOrPointer,
-    ScalarFloat,
-    Integer,
-    IntegerOrBool,
-    Float,
-    Number,
-    Vector,
-    IntegerVector,
-}
+include!(concat!(env!("OUT_DIR"), "/builtins.rs"));
 
 /// One operand or result in a declarative type scheme.
 ///
@@ -256,10 +242,10 @@ fn matches_pattern(
     bindings: &mut [Option<crate::Type>],
 ) -> bool {
     match pattern {
-        TypePattern::Class(class) => class_accepts(class, ty),
+        TypePattern::Class(class) => class.accepts(ty),
         TypePattern::Exact(expected) => ty == expected,
         TypePattern::Bind(variable, class) => {
-            if !class_accepts(class, ty) {
+            if !class.accepts(ty) {
                 return false;
             }
             let binding = &mut bindings[variable as usize];
@@ -273,17 +259,21 @@ fn matches_pattern(
         }
         TypePattern::Same(variable) => binding(bindings, variable) == Some(ty),
         TypePattern::ElementOf(variable) => binding(bindings, variable)
-            .filter(|bound| bound.is_vector())
-            .is_some_and(|bound| ty == bound.element_type()),
+            .and_then(crate::Type::as_vector)
+            .is_some_and(|bound| ty == bound.element_type().as_type()),
         TypePattern::VectorOf(variable) => binding(bindings, variable)
-            .filter(|bound| bound.is_scalar() && !bound.is_ptr())
-            .is_some_and(|bound| ty.is_vector() && ty.element_type() == bound),
+            .and_then(crate::Type::as_scalar)
+            .is_some_and(|bound| {
+                ty.as_vector()
+                    .is_some_and(|vector| vector.element_type() == bound)
+            }),
         TypePattern::ShapeOf(variable, class) => binding(bindings, variable).is_some_and(|bound| {
-            class_accepts(class, ty)
-                && if bound.is_vector() {
-                    ty.is_vector() && ty.vector_shape() == bound.vector_shape()
+            class.accepts(ty)
+                && if let Some(bound) = bound.as_vector() {
+                    ty.as_vector()
+                        .is_some_and(|vector| vector.shape() == bound.shape())
                 } else {
-                    ty.is_scalar()
+                    ty.as_scalar().is_some()
                 }
         }),
     }
@@ -294,30 +284,14 @@ fn infer_pattern(pattern: TypePattern, bindings: &[Option<crate::Type>]) -> Opti
         TypePattern::Exact(ty) => Some(ty),
         TypePattern::Same(variable) | TypePattern::Bind(variable, _) => binding(bindings, variable),
         TypePattern::ElementOf(variable) => binding(bindings, variable)
-            .filter(|ty| ty.is_vector())
-            .map(crate::Type::element_type),
+            .and_then(crate::Type::as_vector)
+            .map(|vector| vector.element_type().as_type()),
         TypePattern::Class(_) | TypePattern::VectorOf(_) | TypePattern::ShapeOf(_, _) => None,
     }
 }
 
 fn binding(bindings: &[Option<crate::Type>], variable: u8) -> Option<crate::Type> {
     bindings[variable as usize]
-}
-
-fn class_accepts(class: TypeClass, ty: crate::Type) -> bool {
-    match class {
-        TypeClass::Any => ty.is_valid(),
-        TypeClass::Scalar => ty.is_scalar() && !ty.is_ptr(),
-        TypeClass::ScalarInteger => ty.is_scalar() && ty.is_integer(),
-        TypeClass::ScalarIntegerOrPointer => ty.is_scalar() && (ty.is_integer() || ty.is_ptr()),
-        TypeClass::ScalarFloat => ty.is_scalar() && ty.is_float(),
-        TypeClass::Integer => ty.is_integer(),
-        TypeClass::IntegerOrBool => ty.is_integer() || ty == crate::Type::BOOL || ty.is_predicate(),
-        TypeClass::Float => ty.is_float(),
-        TypeClass::Number => ty.is_integer() || ty.is_float(),
-        TypeClass::Vector => ty.is_vector(),
-        TypeClass::IntegerVector => ty.is_vector() && ty.is_integer(),
-    }
 }
 
 /// Reusable type schemes. They are built from generic patterns rather than
@@ -333,15 +307,6 @@ pub mod type_schemes {
 pub struct MemoryRegions(u8);
 
 impl MemoryRegions {
-    pub const NONE: Self = Self(0);
-    pub const HEAP: Self = Self(1 << 0);
-    pub const STACK: Self = Self(1 << 1);
-    pub const GLOBAL: Self = Self(1 << 2);
-    pub const TABLE: Self = Self(1 << 3);
-    pub const EXTERNAL: Self = Self(1 << 4);
-    pub const ALL: Self =
-        Self(Self::HEAP.0 | Self::STACK.0 | Self::GLOBAL.0 | Self::TABLE.0 | Self::EXTERNAL.0);
-
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -361,13 +326,7 @@ impl core::fmt::Display for MemoryRegions {
             return f.write_str("none");
         }
         let mut separator = "";
-        for (region, name) in [
-            (Self::HEAP, "heap"),
-            (Self::STACK, "stack"),
-            (Self::GLOBAL, "global"),
-            (Self::TABLE, "table"),
-            (Self::EXTERNAL, "external"),
-        ] {
+        for &(region, name) in Self::NAMES {
             if self.intersects(region) {
                 f.write_str(separator)?;
                 f.write_str(name)?;
@@ -389,13 +348,6 @@ pub struct MemoryEffect {
 }
 
 impl MemoryEffect {
-    pub const NONE: Self = Self::new(MemoryRegions::NONE, MemoryRegions::NONE);
-    pub const HEAP_READ: Self = Self::new(MemoryRegions::HEAP, MemoryRegions::NONE);
-    pub const HEAP_WRITE: Self = Self::new(MemoryRegions::NONE, MemoryRegions::HEAP);
-    pub const STACK_READ: Self = Self::new(MemoryRegions::STACK, MemoryRegions::NONE);
-    pub const STACK_WRITE: Self = Self::new(MemoryRegions::NONE, MemoryRegions::STACK);
-    pub const UNKNOWN: Self = Self::new(MemoryRegions::ALL, MemoryRegions::ALL);
-
     pub const fn new(reads: MemoryRegions, writes: MemoryRegions) -> Self {
         Self {
             reads,
@@ -471,12 +423,6 @@ impl core::fmt::Display for MemoryEffect {
 pub struct OpTraits(u16);
 
 impl OpTraits {
-    pub const TERMINATOR: Self = Self(1 << 0);
-    pub const COMMUTATIVE: Self = Self(1 << 1);
-    pub const MAY_TRAP: Self = Self(1 << 2);
-    pub const ASSOCIATIVE: Self = Self(1 << 3);
-    pub const IDEMPOTENT: Self = Self(1 << 4);
-
     pub const fn empty() -> Self {
         Self(0)
     }
@@ -493,13 +439,7 @@ impl OpTraits {
 impl core::fmt::Display for OpTraits {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut separator = "";
-        for (property, name) in [
-            (Self::TERMINATOR, "terminator"),
-            (Self::COMMUTATIVE, "commutative"),
-            (Self::ASSOCIATIVE, "associative"),
-            (Self::IDEMPOTENT, "idempotent"),
-            (Self::MAY_TRAP, "may-trap"),
-        ] {
+        for &(property, name) in Self::NAMES {
             if self.contains(property) {
                 f.write_str(separator)?;
                 f.write_str(name)?;
@@ -752,6 +692,130 @@ mod tests {
         assert!(!MemoryEffect::STACK_READ.conflicts_with(MemoryEffect::HEAP_WRITE));
         assert!(MemoryEffect::HEAP_READ.with_volatile().has_side_effects());
         assert!(MemoryEffect::UNKNOWN.conflicts_with(MemoryEffect::STACK_READ));
+        assert!(MemoryEffect::GLOBAL_READ.conflicts_with(MemoryEffect::GLOBAL_WRITE));
+        assert!(MemoryEffect::TABLE_READ.conflicts_with(MemoryEffect::TABLE_WRITE));
+        assert!(!MemoryEffect::GLOBAL_READ.conflicts_with(MemoryEffect::TABLE_WRITE));
+        assert!(MemoryEffect::UNKNOWN.conflicts_with(MemoryEffect::GLOBAL_READ));
+        assert!(MemoryEffect::UNKNOWN.conflicts_with(MemoryEffect::TABLE_READ));
+        assert_eq!(
+            MemoryEffect::GLOBAL_READ.reads,
+            super::MemoryRegions::GLOBAL
+        );
+        assert_eq!(
+            MemoryEffect::TABLE_WRITE.writes,
+            super::MemoryRegions::TABLE
+        );
+    }
+
+    #[test]
+    fn inline_type_sets_preserve_membership_and_shared_bindings() {
+        use super::{TypeList, TypePattern};
+
+        let class = |opcode: Opcode, index: usize| {
+            let TypeList::Fixed(operands) = opcode.spec().type_scheme.operands else {
+                panic!("expected fixed operands");
+            };
+            let TypePattern::Bind(_, class) = operands[index] else {
+                panic!("expected a type binding");
+            };
+            class
+        };
+        let bits = class(Opcode::IAnd, 0);
+        let comparable = class(Opcode::Icmp, 0);
+        let indices = class(Opcode::Gather, 1);
+        assert_eq!(bits, class(Opcode::IOr, 0));
+        assert_eq!(bits, class(Opcode::IXor, 0));
+        assert_eq!(bits, class(Opcode::ExtendU, 0));
+        for raw in 0..=u16::MAX {
+            let Some(ty) = Type::from_raw(raw) else {
+                continue;
+            };
+            assert_eq!(
+                bits.accepts(ty),
+                ty.is_integer() || ty == Type::BOOL || ty.is_predicate(),
+                "{ty}"
+            );
+            assert_eq!(
+                comparable.accepts(ty),
+                ty.is_scalar() && (ty.is_integer() || ty.is_ptr()),
+                "{ty}"
+            );
+            assert_eq!(
+                indices.accepts(ty),
+                ty.is_integer() && ty.is_vector(),
+                "{ty}"
+            );
+        }
+        for class in [bits, comparable, indices] {
+            assert!(!class.accepts(Type::INVALID));
+        }
+        let scheme = Opcode::IAnd.spec().type_scheme;
+        assert!(
+            scheme
+                .validate(&[Type::I32, Type::I32], &[Type::I32])
+                .is_ok()
+        );
+        assert!(
+            scheme
+                .validate(&[Type::BOOL, Type::BOOL], &[Type::BOOL])
+                .is_ok()
+        );
+        assert!(
+            scheme
+                .validate(&[Type::I32, Type::I64], &[Type::I32])
+                .is_err()
+        );
+        assert!(
+            scheme
+                .validate(&[Type::I32, Type::I32], &[Type::BOOL])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn generated_classes_preserve_membership_for_every_valid_encoding() {
+        use super::TypeClass;
+
+        for raw in 0..=u16::MAX {
+            let Some(ty) = Type::from_raw(raw) else {
+                continue;
+            };
+            for (class, expected) in [
+                (TypeClass::Any, true),
+                (TypeClass::Scalar, ty.is_scalar() && !ty.is_ptr()),
+                (TypeClass::ScalarInteger, ty.is_scalar() && ty.is_integer()),
+                (TypeClass::ScalarFloat, ty.is_scalar() && ty.is_float()),
+                (TypeClass::Integer, ty.is_integer()),
+                (TypeClass::Float, ty.is_float()),
+                (TypeClass::Number, ty.is_integer() || ty.is_float()),
+                (TypeClass::Vector, ty.is_vector()),
+            ] {
+                assert_eq!(class.accepts(ty), expected, "{class:?}: {ty}");
+                assert!(!class.accepts(Type::INVALID), "{class:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn generated_flag_names_preserve_display_order() {
+        use super::{MemoryRegions, OpTraits};
+        use alloc::string::ToString;
+
+        assert_eq!(
+            MemoryRegions::ALL.to_string(),
+            "heap,stack,global,table,external"
+        );
+        assert_eq!(MemoryRegions::NONE.to_string(), "none");
+        let traits = OpTraits::TERMINATOR
+            .union(OpTraits::COMMUTATIVE)
+            .union(OpTraits::MAY_TRAP)
+            .union(OpTraits::ASSOCIATIVE)
+            .union(OpTraits::IDEMPOTENT);
+        assert_eq!(
+            traits.to_string(),
+            "terminator, commutative, associative, idempotent, may-trap"
+        );
+        assert_eq!(OpTraits::empty().to_string(), "none");
     }
 
     #[test]

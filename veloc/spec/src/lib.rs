@@ -3,6 +3,9 @@
 //! Definitions are checked before Rust generation. This crate does not depend
 //! on a runtime IR; the MIR emitter is one consumer of its definition model.
 
+mod builtin_gen;
+mod builtins;
+mod encoding;
 mod mir;
 mod model;
 mod packing;
@@ -11,6 +14,10 @@ mod semantic;
 mod storage;
 mod syntax;
 mod text;
+mod type_expr;
+mod type_gen;
+mod type_set;
+mod types;
 
 pub use model::Definitions;
 
@@ -43,6 +50,9 @@ impl std::error::Error for Error {}
 
 /// Generated MIR infrastructure; callers decide where to write each artifact.
 pub struct Generated {
+    pub encoding: String,
+    pub builtins: String,
+    pub scalars: String,
     pub formats: String,
     pub types: String,
     pub opcodes: String,
@@ -60,4 +70,42 @@ pub fn parse(source: &str) -> Result<Definitions, Error> {
 pub fn compile_mir(source: &str) -> Result<Generated, Error> {
     let definitions = parse(source)?;
     mir::generate(&definitions, source)
+}
+
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    const BUILTINS: &str = concat!(
+        include_str!("../../mir/defs/types.ops"),
+        "\n",
+        include_str!("../../mir/defs/builtins.ops")
+    );
+
+    pub fn builtins() -> builtins::Builtins {
+        super::parse(BUILTINS).unwrap().builtins
+    }
+
+    pub fn types() -> types::Types {
+        super::parse(BUILTINS).unwrap().types
+    }
+
+    pub fn set(expression: &str) -> type_set::TypeSet {
+        super::parse(&format!(
+            "{BUILTINS}\nclass TestSet {{ members: [{expression}] }}"
+        ))
+        .unwrap()
+        .types
+        .classes
+        .remove("TestSet")
+        .unwrap()
+    }
+
+    pub fn parse(source: &str) -> Result<Definitions, Error> {
+        super::parse(&format!("{BUILTINS}\n{source}"))
+    }
+
+    pub fn compile_mir(source: &str) -> Result<Generated, Error> {
+        super::compile_mir(&format!("{BUILTINS}\n{source}"))
+    }
 }

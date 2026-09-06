@@ -802,7 +802,7 @@ fn generate_instructions(layouts: &[Layout]) -> String {
             if f.ty.named("MemFlags") {
                 Some(format!("Some(*_field{i})"))
             } else if f.ty.named("VectorMemExtId") {
-                Some(format!("Some(dfg.vector_mem_ext(*_field{i}).expect(\"instruction refers to a missing vector memory extension\").flags)"))
+                Some(format!("Some(crate::dfg::PoolKey::get(*_field{i}, dfg).expect(\"instruction refers to a missing vector memory extension\").flags)"))
             } else {
                 None
             }

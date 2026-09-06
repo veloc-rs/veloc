@@ -1,5 +1,18 @@
-use veloc_opgen::compile_mir;
-use veloc_semantics::BvOp;
+mod common;
+use common::compile_mir;
+use veloc_semantics::{BvConst, BvOp};
+
+#[test]
+fn algebraic_constants_are_typed_and_names_round_trip() {
+    for constant in BvConst::ALL {
+        assert_eq!(BvConst::from_name(constant.name()), Some(*constant));
+    }
+    assert_eq!(BvConst::from_name("Two"), None);
+    let error = compile_mir(&definition(BvOp::Add, "identity: Two"))
+        .err()
+        .unwrap();
+    assert!(error.message.contains("unknown algebraic constant `Two`"));
+}
 
 fn definition(op: BvOp, properties: &str) -> String {
     let (operands, args) = if op.arity() == 1 {

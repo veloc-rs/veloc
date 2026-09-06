@@ -1,6 +1,6 @@
 use super::inst::{
-    ConstantPoolData, ConstantPoolId, Inst, InstructionData, PtrIndexImm, PtrIndexImmId,
-    VectorExtData, VectorExtId, VectorMemExtId, VectorMemOptions,
+    ConstantPoolId, Inst, InstructionData, PtrIndexImm, PtrIndexImmId, VectorExtData, VectorExtId,
+    VectorMemExtId, VectorMemOptions,
 };
 use crate::constant::Constant;
 use crate::types::{
@@ -8,6 +8,7 @@ use crate::types::{
     ValueList, ValueListPool,
 };
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
@@ -33,8 +34,8 @@ pub struct DataFlowGraph {
     vector_mem_ext_pool: PrimaryMap<VectorMemExtId, VectorMemOptions>,
     vector_mem_ext_map: HashMap<VectorMemOptions, VectorMemExtId>,
     /// 常量数据池
-    constant_pool: PrimaryMap<ConstantPoolId, ConstantPoolData>,
-    constant_pool_map: HashMap<ConstantPoolData, ConstantPoolId>,
+    constant_pool: PrimaryMap<ConstantPoolId, Arc<[u8]>>,
+    constant_pool_map: HashMap<Arc<[u8]>, ConstantPoolId>,
 }
 
 impl DataFlowGraph {
@@ -56,30 +57,6 @@ impl DataFlowGraph {
             constant_pool: PrimaryMap::new(),
             constant_pool_map: HashMap::new(),
         }
-    }
-
-    // ======================================
-    // 向量操作辅助方法
-    // ======================================
-
-    /// 创建向量操作扩展信息
-    pub fn make_vector_ext(&mut self, mask: Value, evl: Option<Value>) -> VectorExtId {
-        self.intern_vector_ext(VectorExtData { mask, evl })
-    }
-
-    pub fn intern_vector_ext(&mut self, data: VectorExtData) -> VectorExtId {
-        VectorExtId::insert(self, data)
-    }
-
-    /// 创建向量内存操作扩展配置
-    pub fn make_vector_mem_ext(&mut self, data: VectorMemOptions) -> VectorMemExtId {
-        VectorMemExtId::insert(self, data)
-    }
-
-    /// 向常量池添加数据
-    pub fn make_constant_pool_data(&mut self, data: ConstantPoolData) -> ConstantPoolId {
-        let ConstantPoolData::Bytes(bytes) = data;
-        ConstantPoolId::insert(self, bytes)
     }
 
     /// 为指令添加多个结果值（支持多返回值）
@@ -107,30 +84,6 @@ impl DataFlowGraph {
     /// 获取指令的第一个结果值（如果存在）
     pub fn first_result(&self, inst: Inst) -> Option<Value> {
         self.inst_results(inst).first().copied()
-    }
-
-    pub fn make_ptr_imm(&mut self, offset: i32, scale: u32) -> PtrIndexImmId {
-        self.intern_ptr_imm(PtrIndexImm { offset, scale })
-    }
-
-    pub fn intern_ptr_imm(&mut self, key: PtrIndexImm) -> PtrIndexImmId {
-        PtrIndexImmId::insert(self, key)
-    }
-
-    pub fn ptr_imm(&self, id: PtrIndexImmId) -> Option<&PtrIndexImm> {
-        id.get(self)
-    }
-
-    pub fn vector_ext(&self, id: VectorExtId) -> Option<&VectorExtData> {
-        id.get(self)
-    }
-
-    pub fn vector_mem_ext(&self, id: VectorMemExtId) -> Option<&VectorMemOptions> {
-        id.get(self)
-    }
-
-    pub fn constant_pool_data(&self, id: ConstantPoolId) -> Option<&ConstantPoolData> {
-        self.constant_pool.get(id)
     }
 
     /// 从切片创建 ValueList
@@ -317,8 +270,8 @@ impl DataFlowGraph {
     where
         F: FnMut(Value),
     {
-        let data = self
-            .vector_ext(ext)
+        let data = ext
+            .get(self)
             .expect("instruction refers to a missing vector extension");
         f(data.mask);
         if let Some(evl) = data.evl {
@@ -328,8 +281,8 @@ impl DataFlowGraph {
 
     /// 替换向量扩展信息中的值 (并处理 interning)
     pub fn replace_vector_ext(&mut self, ext: &mut VectorExtId, old: Value, new: Value) {
-        let mut data = *self
-            .vector_ext(*ext)
+        let mut data = *ext
+            .get(self)
             .expect("instruction refers to a missing vector extension");
         let mut changed = false;
         if data.mask == old {
@@ -343,7 +296,7 @@ impl DataFlowGraph {
             changed = true;
         }
         if changed {
-            *ext = self.make_vector_ext(data.mask, data.evl);
+            *ext = VectorExtId::insert(self, data);
         }
     }
 
@@ -352,8 +305,8 @@ impl DataFlowGraph {
     where
         F: FnMut(Value),
     {
-        let data = self
-            .vector_mem_ext(ext)
+        let data = ext
+            .get(self)
             .expect("instruction refers to a missing vector memory extension");
         if let Some(mask) = data.mask {
             f(mask);
@@ -365,8 +318,8 @@ impl DataFlowGraph {
 
     /// 替换向量内存扩展配置中的值 (并处理 interning)
     pub fn replace_vector_mem_ext(&mut self, ext: &mut VectorMemExtId, old: Value, new: Value) {
-        let mut data = *self
-            .vector_mem_ext(*ext)
+        let mut data = *ext
+            .get(self)
             .expect("instruction refers to a missing vector memory extension");
         let mut changed = false;
         if let Some(ref mut mask) = data.mask
@@ -382,7 +335,7 @@ impl DataFlowGraph {
             changed = true;
         }
         if changed {
-            *ext = self.make_vector_mem_ext(data);
+            *ext = VectorMemExtId::insert(self, data);
         }
     }
 }

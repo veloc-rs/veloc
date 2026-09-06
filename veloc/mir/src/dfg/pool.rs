@@ -1,9 +1,10 @@
 //! Typed access to interned instruction properties.
 use super::DataFlowGraph;
 use crate::inst::{
-    ConstantPoolData, ConstantPoolId, PtrIndexImm, PtrIndexImmId, VectorExtData, VectorExtId,
-    VectorMemExtId, VectorMemOptions,
+    ConstantPoolId, PtrIndexImm, PtrIndexImmId, VectorExtData, VectorExtId, VectorMemExtId,
+    VectorMemOptions,
 };
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::hash::Hash;
 use cranelift_entity::{EntityRef, PrimaryMap};
@@ -12,7 +13,7 @@ use hashbrown::HashMap;
 /// A handle's storage contract, independent of the DFG's concrete pool names.
 ///
 /// Insertion consumes owned data; reads borrow a view without cloning. For byte
-/// constants the input is `Vec<u8>` and the view is `[u8]`, hiding the pool's enum.
+/// constants the input is `Vec<u8>` and the view is `[u8]`.
 pub trait PoolKey: Copy {
     type Input;
     type View: ?Sized;
@@ -82,16 +83,17 @@ impl PoolKey for ConstantPoolId {
     type View = [u8];
 
     fn insert(dfg: &mut DataFlowGraph, value: Self::Input) -> Self {
-        intern(
-            &mut dfg.constant_pool,
-            &mut dfg.constant_pool_map,
-            ConstantPoolData::Bytes(value),
-        )
+        if let Some(&id) = dfg.constant_pool_map.get(value.as_slice()) {
+            return id;
+        }
+        let bytes: Arc<[u8]> = value.into();
+        let id = dfg.constant_pool.push(Arc::clone(&bytes));
+        dfg.constant_pool_map.insert(bytes, id);
+        id
     }
 
     fn get(self, dfg: &DataFlowGraph) -> Option<&Self::View> {
-        let ConstantPoolData::Bytes(bytes) = dfg.constant_pool.get(self)?;
-        Some(bytes)
+        dfg.constant_pool.get(self).map(AsRef::as_ref)
     }
 }
 
@@ -140,22 +142,18 @@ mod tests {
     }
 
     #[test]
-    fn existing_helpers_and_typed_handles_use_the_same_pools() {
+    fn constant_pool_shares_backing_storage_with_its_index() {
         let mut dfg = DataFlowGraph::new();
-        let imm = PtrIndexImm {
-            offset: 3,
-            scale: 2,
-        };
-        let id = PtrIndexImmId::insert(&mut dfg, imm);
-        assert_eq!(id, dfg.make_ptr_imm(3, 2));
-        assert_eq!(id.get(&dfg), dfg.ptr_imm(id));
-        let bytes = vec![1, 2, 3];
-        let id = ConstantPoolId::insert(&mut dfg, bytes.clone());
-        assert_eq!(
-            id,
-            dfg.make_constant_pool_data(ConstantPoolData::Bytes(bytes))
-        );
-        let ConstantPoolData::Bytes(stored) = dfg.constant_pool_data(id).unwrap();
-        assert!(core::ptr::eq(id.get(&dfg).unwrap(), stored.as_slice()));
+        let id = ConstantPoolId::insert(&mut dfg, vec![1, 2, 3]);
+        assert_eq!(id, ConstantPoolId::insert(&mut dfg, vec![1, 2, 3]));
+        let (key, &indexed_id) = dfg.constant_pool_map.get_key_value(&[1, 2, 3][..]).unwrap();
+        assert_eq!(indexed_id, id);
+        assert!(Arc::ptr_eq(key, &dfg.constant_pool[id]));
+        let cloned = dfg.clone();
+        assert!(Arc::ptr_eq(
+            &dfg.constant_pool[id],
+            &cloned.constant_pool[id]
+        ));
+        assert_eq!(id.get(&cloned), Some(&[1, 2, 3][..]));
     }
 }

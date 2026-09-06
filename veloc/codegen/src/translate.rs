@@ -11,6 +11,7 @@ use crate::lir::{
 use crate::pipeline::stages::RawLir;
 use alloc::format;
 use hashbrown::HashMap;
+use veloc_mir::dfg::PoolKey;
 use veloc_mir::{Function, InstructionData, Module, Opcode, Value};
 
 #[cfg(test)]
@@ -541,10 +542,8 @@ impl<'a> IRTranslator<'a> {
             InstructionData::PtrIndex { ptr, index, imm_id } => {
                 let base_ptr = ctx.value_map[ptr];
                 let idx = ctx.value_map[index];
-                let imm = *ctx
-                    .func
-                    .dfg
-                    .ptr_imm(*imm_id)
+                let imm = *imm_id
+                    .get(&ctx.func.dfg)
                     .expect("validated ptr-index must have an immediate");
 
                 // 1. scale index: idx * scale

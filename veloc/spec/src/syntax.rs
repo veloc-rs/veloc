@@ -16,9 +16,11 @@ pub(crate) enum Kind {
     List(Vec<Node>),
     Call(String, Vec<Node>),
     Object(String, BTreeMap<String, Node>),
+    Union(Vec<Node>),
+    Intersection(Vec<Node>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Parameter {
     pub offset: usize,
     pub name: String,
@@ -26,20 +28,27 @@ pub(crate) struct Parameter {
     pub ty: Node,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub(crate) struct ResultType {
+    pub offset: usize,
+    pub name: Option<String>,
+    pub ty: Node,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum Results {
-    Fixed(Vec<Parameter>),
+    Fixed(Vec<ResultType>),
     Signature,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Signature {
     pub generics: Vec<Parameter>,
     pub params: Vec<Parameter>,
     pub results: Results,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Record {
     pub offset: usize,
     pub kind: String,
@@ -60,7 +69,14 @@ pub(crate) fn parse(source: &str) -> Result<Vec<Record>, Error> {
         } else {
             None
         };
-        let fields = parser.fields(0)?;
+        let fields = if matches!(kind.as_str(), "predicate" | "type") {
+            parser.expect(b'=')?;
+            let set = parser.type_node()?;
+            parser.expect(b';')?;
+            BTreeMap::from([(if kind == "type" { "expr" } else { "set" }.into(), set)])
+        } else {
+            parser.fields(0)?
+        };
         records.push(Record {
             offset,
             kind,
@@ -91,17 +107,56 @@ impl Parser<'_> {
         self.expect(b'>')?;
         let results = if self.peek() == Some(b'(') {
             self.offset += 1;
-            Results::Fixed(self.parameters(b')')?)
-        } else if self.name()? == "signature" {
-            Results::Signature
+            let mut results = Vec::new();
+            while self.peek() != Some(b')') {
+                results.push(self.result()?);
+                if self.peek() != Some(b')') {
+                    self.expect(b',')?;
+                }
+            }
+            self.expect(b')')?;
+            Results::Fixed(results)
         } else {
-            return Err(self.error(self.offset, "expected named results or signature"));
+            let ty = self.type_node()?;
+            if matches!(&ty.kind, Kind::Name(name) if name == "signature") {
+                Results::Signature
+            } else {
+                Results::Fixed(vec![ResultType {
+                    offset: ty.offset,
+                    name: None,
+                    ty,
+                }])
+            }
         };
         Ok(Signature {
             generics,
             params,
             results,
         })
+    }
+
+    fn result(&mut self) -> Result<ResultType, Error> {
+        if self.peek() == Some(b'@') {
+            return Err(self.error(self.offset, "results cannot be properties"));
+        }
+        let first = self.type_node()?;
+        let offset = first.offset;
+        let (name, ty) = if self.peek() == Some(b':') {
+            let Kind::Name(name) = first.kind else {
+                return Err(self.error(offset, "expected a result name before ':'"));
+            };
+            self.offset += 1;
+            (Some(name), self.type_node()?)
+        } else {
+            (None, first)
+        };
+        Ok(ResultType { offset, name, ty })
+    }
+
+    // Unlike a general field value, a type cannot consume the following `{`:
+    // in `-> T { ... }` it starts the operation body, not a named object.
+    fn type_node(&mut self) -> Result<Node, Error> {
+        self.expression(0, false, false)
     }
 
     fn parameters(&mut self, end: u8) -> Result<Vec<Parameter>, Error> {
@@ -198,12 +253,50 @@ impl Parser<'_> {
     }
 
     fn value(&mut self, depth: u8) -> Result<Node, Error> {
+        self.expression(depth, true, false)
+    }
+
+    // Intersection binds more tightly than union. N-ary nodes avoid recursive
+    // ASTs for long flat expressions; only explicit nesting consumes depth.
+    fn expression(&mut self, depth: u8, objects: bool, intersection: bool) -> Result<Node, Error> {
+        let mut parts = Vec::new();
+        loop {
+            parts.push(if intersection {
+                self.atom(depth, objects)?
+            } else {
+                self.expression(depth, objects, true)?
+            });
+            if self.peek() != Some(if intersection { b'&' } else { b'|' }) {
+                break;
+            }
+            self.offset += 1;
+        }
+        if parts.len() == 1 {
+            return Ok(parts.pop().unwrap());
+        }
+        Ok(Node {
+            offset: parts[0].offset,
+            kind: if intersection {
+                Kind::Intersection(parts)
+            } else {
+                Kind::Union(parts)
+            },
+        })
+    }
+
+    fn atom(&mut self, depth: u8, objects: bool) -> Result<Node, Error> {
         if depth >= 64 {
             return Err(self.error(self.offset, "definition nesting exceeds 64 levels"));
         }
         let token = self.peek();
         let offset = self.offset;
         let kind = match token {
+            Some(b'(') => {
+                self.offset += 1;
+                let node = self.expression(depth + 1, objects, false)?;
+                self.expect(b')')?;
+                return Ok(node);
+            }
             Some(b'[') => {
                 self.offset += 1;
                 Kind::List(self.sequence(b']', depth + 1)?)
@@ -257,7 +350,7 @@ impl Parser<'_> {
                 if self.peek() == Some(b'(') {
                     self.offset += 1;
                     Kind::Call(name, self.sequence(b')', depth + 1)?)
-                } else if self.peek() == Some(b'{') {
+                } else if objects && self.peek() == Some(b'{') {
                     Kind::Object(name, self.fields(depth + 1)?)
                 } else {
                     Kind::Name(name)

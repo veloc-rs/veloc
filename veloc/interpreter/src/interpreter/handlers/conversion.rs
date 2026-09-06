@@ -5,14 +5,14 @@ define_register_handlers! {
     ExtendS { dst, src, ty } => {
         let val = get!(src).unwrap_i64();
         let res = match ty.from {
-            ScalarType::I8 => val as i8 as i64,
-            ScalarType::I16 => val as i16 as i64,
-            ScalarType::I32 => val as i32 as i64,
+            Type::I8 => val as i8 as i64,
+            Type::I16 => val as i16 as i64,
+            Type::I32 => val as i32 as i64,
             _ => panic!("Unsupported ExtendS from_ty: {:?}", ty.from),
         };
         set!(
             dst,
-            if ty.to == ScalarType::I32 {
+            if ty.to == Type::I32 {
                 InterpreterValue::i32(res as i32)
             } else {
                 InterpreterValue::i64(res)
@@ -22,14 +22,14 @@ define_register_handlers! {
     ExtendU { dst, src, ty } => {
         let val = get!(src).unwrap_i64();
         let res = match ty.from {
-            ScalarType::I8 => (val as u8) as u64 as i64,
-            ScalarType::I16 => (val as u16) as u64 as i64,
-            ScalarType::I32 => (val as u32) as u64 as i64,
+            Type::I8 => (val as u8) as u64 as i64,
+            Type::I16 => (val as u16) as u64 as i64,
+            Type::I32 => (val as u32) as u64 as i64,
             _ => panic!("Unsupported ExtendU from_ty: {:?}", ty.from),
         };
         set!(
             dst,
-            if ty.to == ScalarType::I32 {
+            if ty.to == Type::I32 {
                 InterpreterValue::i32(res as i32)
             } else {
                 InterpreterValue::i64(res)
@@ -39,14 +39,14 @@ define_register_handlers! {
     Wrap { dst, src, ty } => {
         let val = get!(src).unwrap_i64();
         let res = match ty.to {
-            ScalarType::I8 => val as i8 as i64,
-            ScalarType::I16 => val as i16 as i64,
-            ScalarType::I32 => val as i32 as i64,
+            Type::I8 => val as i8 as i64,
+            Type::I16 => val as i16 as i64,
+            Type::I32 => val as i32 as i64,
             _ => val,
         };
         set!(
             dst,
-            if ty.to == ScalarType::I32 {
+            if ty.to == Type::I32 {
                 InterpreterValue::i32(res as i32)
             } else {
                 InterpreterValue::i64(res)

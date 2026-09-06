@@ -2,7 +2,7 @@ use veloc_mir::opspec::{
     ResultTypes, TypeClass, TypePattern, TypeRelation, TypeScheme, TypeSchemeError, TypeSlot,
 };
 use veloc_mir::types::TypeBits;
-use veloc_mir::{Opcode, ScalarType, Type, TypeSize};
+use veloc_mir::{Opcode, Type, TypeSize};
 
 #[test]
 fn logical_bits_are_independent_of_byte_storage() {
@@ -12,7 +12,12 @@ fn logical_bits_are_independent_of_byte_storage() {
 
     for scalable in [false, true] {
         let mask = Type::new_mask(4, scalable).unwrap();
-        let vector = Type::new_vector(ScalarType::I8, 4, scalable).unwrap();
+        let vector = Type::I8
+            .as_scalar()
+            .unwrap()
+            .vector(4, scalable)
+            .unwrap()
+            .as_type();
         assert_eq!(mask.element_bits(), Some(1));
         assert_eq!(vector.element_bits(), Some(8));
         assert_eq!(mask.min_bit_width(), Some(4));
@@ -33,9 +38,24 @@ fn mask_widening_uses_element_bits_and_preserves_shape() {
 
     for scalable in [false, true] {
         let mask = Type::new_mask(4, scalable).unwrap();
-        let widened = Type::new_vector(ScalarType::I8, 4, scalable).unwrap();
-        let wrong_lanes = Type::new_vector(ScalarType::I8, 8, scalable).unwrap();
-        let wrong_scale = Type::new_vector(ScalarType::I8, 4, !scalable).unwrap();
+        let widened = Type::I8
+            .as_scalar()
+            .unwrap()
+            .vector(4, scalable)
+            .unwrap()
+            .as_type();
+        let wrong_lanes = Type::I8
+            .as_scalar()
+            .unwrap()
+            .vector(8, scalable)
+            .unwrap()
+            .as_type();
+        let wrong_scale = Type::I8
+            .as_scalar()
+            .unwrap()
+            .vector(4, !scalable)
+            .unwrap()
+            .as_type();
         assert!(extend.validate(&[mask], &[widened]).is_ok());
         assert!(extend.validate(&[mask], &[wrong_lanes]).is_err());
         assert!(extend.validate(&[mask], &[wrong_scale]).is_err());
@@ -45,8 +65,18 @@ fn mask_widening_uses_element_bits_and_preserves_shape() {
 #[test]
 fn integer_conversions_compare_lane_widths() {
     for scalable in [false, true] {
-        let narrow = Type::new_vector(ScalarType::I8, 4, scalable).unwrap();
-        let wide = Type::new_vector(ScalarType::I32, 4, scalable).unwrap();
+        let narrow = Type::I8
+            .as_scalar()
+            .unwrap()
+            .vector(4, scalable)
+            .unwrap()
+            .as_type();
+        let wide = Type::I32
+            .as_scalar()
+            .unwrap()
+            .vector(4, scalable)
+            .unwrap()
+            .as_type();
         for opcode in [Opcode::ExtendS, Opcode::ExtendU] {
             let scheme = opcode.spec().type_scheme;
             assert!(scheme.validate(&[narrow], &[wide]).is_ok());
@@ -63,7 +93,12 @@ fn integer_conversions_compare_lane_widths() {
 fn bitcasts_require_equal_size_expressions() {
     let bitcast = Opcode::Reinterpret.spec().type_scheme;
     let fixed = Type::I32X4;
-    let scalable = Type::new_vector(ScalarType::I32, 4, true).unwrap();
+    let scalable = Type::I32
+        .as_scalar()
+        .unwrap()
+        .vector(4, true)
+        .unwrap()
+        .as_type();
     assert_eq!(fixed.min_bit_width(), scalable.min_bit_width());
     assert_ne!(fixed.bit_size(), scalable.bit_size());
     assert_eq!(fixed.bit_size().and_then(TypeBits::fixed_bits), Some(128));
@@ -72,9 +107,24 @@ fn bitcasts_require_equal_size_expressions() {
     assert!(bitcast.validate(&[scalable], &[fixed]).is_err());
 
     for scalable in [false, true] {
-        let from = Type::new_vector(ScalarType::I32, 4, scalable).unwrap();
-        let same_bits = Type::new_vector(ScalarType::I64, 2, scalable).unwrap();
-        let more_bits = Type::new_vector(ScalarType::I64, 4, scalable).unwrap();
+        let from = Type::I32
+            .as_scalar()
+            .unwrap()
+            .vector(4, scalable)
+            .unwrap()
+            .as_type();
+        let same_bits = Type::I64
+            .as_scalar()
+            .unwrap()
+            .vector(2, scalable)
+            .unwrap()
+            .as_type();
+        let more_bits = Type::I64
+            .as_scalar()
+            .unwrap()
+            .vector(4, scalable)
+            .unwrap()
+            .as_type();
         assert!(bitcast.validate(&[from], &[same_bits]).is_ok());
         assert!(bitcast.validate(&[from], &[more_bits]).is_err());
         assert!(bitcast.validate(&[from], &[from]).is_err());

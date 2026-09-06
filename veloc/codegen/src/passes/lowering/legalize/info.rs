@@ -104,11 +104,11 @@ impl VectorPattern {
     }
 
     pub fn matches(self, ty: Type) -> bool {
-        if !ty.is_vector() {
+        let Some(ty) = ty.as_vector() else {
             return false;
-        }
+        };
 
-        if ty.element_type() != self.element {
+        if ty.element_type().as_type() != self.element {
             return false;
         }
 
@@ -1255,7 +1255,7 @@ mod tests {
     use crate::pipeline::stages::RawLir;
     use alloc::string::ToString;
     use smallvec::smallvec;
-    use veloc_mir::{Block, ScalarType, Type};
+    use veloc_mir::{Block, Type};
 
     fn make_function() -> MachineFunction<RawLir> {
         let mut mfunc = MachineFunction::<RawLir>::new("test".to_string());
@@ -1373,7 +1373,12 @@ mod tests {
     #[test]
     fn matcher_supports_fixed_vector_element_pattern() {
         let mut mfunc = make_function();
-        let vector_ty = Type::new_vector(ScalarType::I32, 4, false).unwrap();
+        let vector_ty = Type::I32
+            .as_scalar()
+            .unwrap()
+            .vector(4, false)
+            .unwrap()
+            .as_type();
         let dst = mfunc.alloc_vreg(vector_ty);
         let lhs = mfunc.alloc_vreg(vector_ty);
         let rhs = mfunc.alloc_vreg(vector_ty);
@@ -1402,7 +1407,12 @@ mod tests {
     #[test]
     fn matcher_supports_scalable_vector_element_pattern() {
         let mut mfunc = make_function();
-        let vector_ty = Type::new_vector(ScalarType::F32, 4, true).unwrap();
+        let vector_ty = Type::F32
+            .as_scalar()
+            .unwrap()
+            .vector(4, true)
+            .unwrap()
+            .as_type();
         let dst = mfunc.alloc_vreg(vector_ty);
         let lhs = mfunc.alloc_vreg(vector_ty);
         let rhs = mfunc.alloc_vreg(vector_ty);

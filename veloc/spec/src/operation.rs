@@ -5,14 +5,10 @@ use crate::storage::{FieldType, Format};
 use crate::syntax::{Results, Signature};
 
 const PROPERTIES: &[&str] = &[
-    "VectorExtId",
-    "VectorMemExtId",
     "MemFlags",
     "FuncId",
     "SigId",
     "StackSlot",
-    "PtrIndexImmId",
-    "ConstantPoolId",
     "Intrinsic",
     "IntCC",
     "FloatCC",
@@ -26,6 +22,8 @@ pub(super) fn parse(
     source: &str,
     mut record: Record,
     storage_defs: &storage::Storage,
+    types: &Types,
+    builtins: &Builtins,
 ) -> Result<Op, Error> {
     let sig = record
         .signature
@@ -35,7 +33,7 @@ pub(super) fn parse(
         params,
         mut types,
         slots,
-    } = signature(source, record.offset, sig, storage_defs)?;
+    } = signature(source, record.offset, sig, storage_defs, types)?;
     let mut fields = Fields::new(source, record);
     let mnemonic_node = fields.take("mnemonic")?;
     let Kind::Text(mnemonic) = mnemonic_node.kind else {
@@ -103,7 +101,7 @@ pub(super) fn parse(
     }
     let mut traits = fields
         .optional("traits")
-        .map(|n| choices(source, n, TRAITS, "trait"))
+        .map(|n| builtins.traits(source, n))
         .transpose()?
         .unwrap_or_default();
     let constraints = fields
@@ -118,19 +116,25 @@ pub(super) fn parse(
         .unwrap_or_default();
     let mut identity = fields
         .optional("identity")
-        .map(|n| choice(source, n, CONSTANTS, "algebraic constant"))
+        .map(|n| algebraic_constant(source, n))
         .transpose()?;
     let mut absorbing = fields
         .optional("absorbing")
-        .map(|n| choice(source, n, CONSTANTS, "algebraic constant"))
+        .map(|n| algebraic_constant(source, n))
         .transpose()?;
     let semantics = fields
         .optional("semantics")
         .map(|node| crate::semantic::parse(source, node, &params))
         .transpose()?;
     let memory = match fields.optional("memory") {
-        Some(node) => choice(source, node, MEMORY, "memory effect")?,
-        None if semantics.is_some() => "NONE".into(),
+        Some(node) => builtins.effect(source, node)?,
+        None if semantics.is_some() => builtins.effect(
+            source,
+            Node {
+                offset: fields.offset,
+                kind: Kind::Name("NONE".into()),
+            },
+        )?,
         None => return Err(fields.error("unmodeled operations must declare their memory effect")),
     };
     if let Some(semantics) = &semantics {
@@ -142,6 +146,13 @@ pub(super) fn parse(
             &mut identity,
             &mut absorbing,
         )?;
+        for name in &traits {
+            if !builtins.traits.iter().any(|t| &t.name == name) {
+                return Err(
+                    fields.error(format!("semantic law requires undeclared trait `{name}`"))
+                );
+            }
+        }
     }
     fields.finish()?;
     Ok(Op {
@@ -174,13 +185,14 @@ fn signature(
     offset: usize,
     sig: Signature,
     storage: &storage::Storage,
+    types: &Types,
 ) -> Result<CheckedSignature, Error> {
     let mut variables = BTreeMap::new();
     for generic in sig.generics {
         identifier(source, generic.offset, &generic.name)?;
         if generic.property
-            || CLASSES.contains(&generic.name.as_str())
-            || EXACT.contains(&generic.name.as_str())
+            || types.classes.contains_key(&generic.name)
+            || types.exact.contains_key(&generic.name)
         {
             return Err(Error::at(
                 source,
@@ -188,7 +200,7 @@ fn signature(
                 "invalid type variable declaration",
             ));
         }
-        let class = choice(source, generic.ty, CLASSES, "type class")?;
+        let class = types.set(source, &generic.ty)?;
         let slot = u8::try_from(variables.len())
             .map_err(|_| Error::at(source, generic.offset, "more than 256 type variables"))?;
         if variables
@@ -196,7 +208,7 @@ fn signature(
                 generic.name.clone(),
                 Variable {
                     slot,
-                    domain: class_domain(&class),
+                    possible: class.clone(),
                     class,
                     bound: false,
                 },
@@ -265,7 +277,7 @@ fn signature(
                     index,
                 },
             );
-            patterns.push(pattern(source, param.ty, &mut variables)?);
+            patterns.push(pattern(source, param.ty, &mut variables, types)?);
             ParamKind::Value
         };
         params.push(Param {
@@ -283,31 +295,26 @@ fn signature(
         Results::Fixed(results) => {
             let mut patterns = Vec::new();
             for result in results {
-                identifier(source, result.offset, &result.name)?;
-                if result.property {
-                    return Err(Error::at(
-                        source,
-                        result.offset,
-                        "results cannot be properties",
-                    ));
-                }
-                if !names.insert(result.name.clone()) {
-                    return Err(Error::at(
-                        source,
-                        result.offset,
-                        format!("duplicate parameter or result `{}`", result.name),
-                    ));
-                }
                 let index = u8::try_from(patterns.len())
                     .map_err(|_| Error::at(source, result.offset, "more than 256 results"))?;
-                slots.insert(
-                    result.name,
-                    Slot {
-                        result: true,
-                        index,
-                    },
-                );
-                patterns.push(pattern(source, result.ty, &mut variables)?);
+                if let Some(name) = result.name {
+                    identifier(source, result.offset, &name)?;
+                    if !names.insert(name.clone()) {
+                        return Err(Error::at(
+                            source,
+                            result.offset,
+                            format!("duplicate parameter or result `{name}`"),
+                        ));
+                    }
+                    slots.insert(
+                        name,
+                        Slot {
+                            result: true,
+                            index,
+                        },
+                    );
+                }
+                patterns.push(pattern(source, result.ty, &mut variables, types)?);
             }
             TypeList::Fixed(patterns)
         }

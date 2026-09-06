@@ -5,7 +5,7 @@ use crate::value::InterpreterValue;
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use veloc_mir::{ModuleId, ScalarType};
+use veloc_mir::{ModuleId, Type};
 
 pub trait VirtualMemory {
     fn translate_addr(&self, logical_addr: usize, size: usize) -> Option<*mut u8>;

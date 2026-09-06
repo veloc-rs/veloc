@@ -1,4 +1,5 @@
-use veloc_opgen::compile_mir;
+mod common;
+use common::compile_mir;
 
 const BINARY: &str = r#"
 format Pair {
@@ -48,8 +49,9 @@ fn caller_selected_result_type_is_the_last_parameter() {
         "pub fn pair_add(&mut self, lhs: crate::Value, rhs: crate::Value, ty: crate::Type) -> crate::Value"
     ));
     assert!(output.opcodes.contains(
-        "self.push_with_type(crate::InstructionData::Pair { op: crate::Opcode::Add, args: [lhs, rhs] }, ty)"
+        "let data = crate::InstructionData::Pair { op: crate::Opcode::Add, args: [lhs, rhs] };"
     ));
+    assert!(output.opcodes.contains("self.push_with_type(data, ty)"));
 }
 
 #[test]
@@ -113,7 +115,7 @@ fn fixed_formats_generate_property_builders_without_codec_special_cases() {
     assert!(
         output
             .opcodes
-            .contains("self.push_with_type(crate::InstructionData::Iconst { value }, ty)")
+            .contains("let data = crate::InstructionData::Iconst { value };")
     );
     assert!(
         output
@@ -123,7 +125,7 @@ fn fixed_formats_generate_property_builders_without_codec_special_cases() {
     assert!(
         output
             .opcodes
-            .contains("self.push(crate::InstructionData::Bconst { value })")
+            .contains("let data = crate::InstructionData::Bconst { value };")
     );
 }
 
@@ -176,7 +178,7 @@ fn impossible_type_variable_constraints_are_definition_errors() {
 }
 
 #[test]
-fn cfg_pool_and_signature_operations_keep_contextual_builders() {
+fn only_cfg_and_signature_operations_keep_contextual_builders() {
     let source = [
         include_str!("../../mir/defs/formats.ops"),
         include_str!("../../mir/defs/mir.ops"),
@@ -191,6 +193,15 @@ fn cfg_pool_and_signature_operations_keep_contextual_builders() {
         "call",
         "call_indirect",
         "call_intrinsic",
+    ] {
+        assert!(
+            !output.opcodes.contains(&format!("pub fn {method}(")),
+            "unexpected bare builder for {method}"
+        );
+    }
+    assert!(output.opcodes.contains("pub fn nop(&mut self)"));
+    assert!(output.opcodes.contains("pub fn unreachable(&mut self)"));
+    for method in [
         "vconst",
         "ptr_index",
         "shuffle",
@@ -200,12 +211,18 @@ fn cfg_pool_and_signature_operations_keep_contextual_builders() {
         "scatter",
     ] {
         assert!(
-            !output.opcodes.contains(&format!("pub fn {method}(")),
-            "unexpected bare builder for {method}"
+            output.opcodes.contains(&format!("pub fn {method}(")),
+            "missing pool builder: {method}"
         );
     }
-    assert!(output.opcodes.contains("pub fn nop(&mut self)"));
-    assert!(output.opcodes.contains("pub fn unreachable(&mut self)"));
+    assert!(
+        output
+            .opcodes
+            .contains("pub fn vconst(&mut self, bytes: alloc::vec::Vec<u8>, ty: crate::Type)")
+    );
+    assert!(output.opcodes.contains("pub fn ptr_index(&mut self, ptr: crate::Value, index: crate::Value, imm: crate::inst::PtrIndexImm)"));
+    assert!(output.opcodes.contains("pub fn store_stride(&mut self, ptr: crate::Value, stride: crate::Value, value: crate::Value, mem: crate::inst::VectorMemOptions)"));
+    assert!(output.opcodes.contains("<crate::inst::ConstantPoolId as crate::dfg::PoolKey>::insert(&mut self.builder().func_mut().dfg, bytes)"));
 }
 
 #[test]

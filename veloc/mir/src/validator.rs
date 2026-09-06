@@ -1,4 +1,5 @@
-use crate::inst::{ConstantPoolData, Inst, VectorExtId, VectorMemExtId};
+use crate::dfg::PoolKey;
+use crate::inst::{Inst, VectorExtId, VectorMemExtId};
 use crate::opspec::OpConstraint;
 use crate::{
     Block, BlockCall, Function, InstructionData, IntCC, ModuleData, Opcode, Result, SigId, Type,
@@ -11,35 +12,6 @@ use core::fmt;
 pub enum ValidationError {
     EmptyBlock(Block),
     NoTerminator(Block),
-    TypeMismatch {
-        opcode: Opcode,
-        expected: Type,
-        got: Type,
-    },
-    ReturnMismatch {
-        index: usize,
-        expected: Type,
-        got: Type,
-    },
-    OperandTypeMismatch {
-        inst: Inst,
-        lhs: Type,
-        rhs: Type,
-    },
-    ConditionNotBool(Inst, Type),
-    SelectMismatch {
-        inst: Inst,
-        expected: Type,
-        then_val: Type,
-        else_val: Type,
-    },
-    InvalidConversion {
-        inst: Inst,
-        opcode: Opcode,
-        from: Type,
-        to: Type,
-    },
-    PointerArithmetic(Inst, Opcode),
     UnsealedBlock(Block),
     Other(String),
 }
@@ -51,59 +23,8 @@ impl fmt::Display for ValidationError {
             Self::NoTerminator(block) => {
                 write!(f, "Block {:?} does not end with a terminator", block)
             }
-            Self::TypeMismatch {
-                opcode,
-                expected,
-                got,
-            } => write!(
-                f,
-                "Instruction {:?} type mismatch: expected {:?}, got {:?}",
-                opcode, expected, got
-            ),
-            Self::ReturnMismatch {
-                index,
-                expected,
-                got,
-            } => write!(
-                f,
-                "Return type mismatch at index {}: expected {:?}, got {:?}",
-                index, expected, got
-            ),
-            Self::OperandTypeMismatch { inst, lhs, rhs } => write!(
-                f,
-                "Operand type mismatch for {:?}: lhs {:?}, rhs {:?}",
-                inst, lhs, rhs
-            ),
-            Self::ConditionNotBool(inst, got) => {
-                write!(f, "Condition for {:?} must be Bool, got {:?}", inst, got)
-            }
-            Self::SelectMismatch {
-                inst,
-                expected,
-                then_val,
-                else_val,
-            } => write!(
-                f,
-                "Select {:?} type mismatch: expected {:?}, got {:?} and {:?}",
-                inst, expected, then_val, else_val
-            ),
-            Self::InvalidConversion {
-                inst,
-                opcode,
-                from,
-                to,
-            } => write!(
-                f,
-                "Invalid conversion in {:?} for {:?}: from {:?} to {:?}",
-                inst, opcode, from, to
-            ),
-            Self::PointerArithmetic(inst, opcode) => write!(
-                f,
-                "Pointer arithmetic not allowed for instruction {:?} ({:?})",
-                inst, opcode
-            ),
             Self::UnsealedBlock(block) => write!(f, "Block {:?} is not sealed", block),
-            Self::Other(message) => write!(f, "{}", message),
+            Self::Other(message) => f.write_str(message),
         }
     }
 }
@@ -259,7 +180,7 @@ impl Function {
                 }
             }
             (OpConstraint::NonZeroScale, InstructionData::PtrIndex { imm_id, .. }) => {
-                let imm = self.dfg.ptr_imm(*imm_id).ok_or_else(|| {
+                let imm = imm_id.get(&self.dfg).ok_or_else(|| {
                     crate::Error::from(ValidationError::Other(alloc::format!(
                         "ptr-index at {:?} refers to missing immediate {:?}",
                         inst,
@@ -283,14 +204,13 @@ impl Function {
                             inst
                         )))
                     })? as usize;
-                let data = self.dfg.constant_pool_data(*pool_id).ok_or_else(|| {
+                let bytes = pool_id.get(&self.dfg).ok_or_else(|| {
                     crate::Error::from(ValidationError::Other(alloc::format!(
                         "vconst at {:?} refers to missing constant {:?}",
                         inst,
                         pool_id
                     )))
                 })?;
-                let ConstantPoolData::Bytes(bytes) = data;
                 if bytes.len() != expected {
                     return self.fail(alloc::format!(
                         "vconst at {:?} requires {} bytes, got {}",
@@ -301,21 +221,19 @@ impl Function {
                 }
             }
             (OpConstraint::ShuffleMask, InstructionData::Shuffle { mask, .. }) => {
-                let result_ty = results[0];
-                if !result_ty.is_fixed() {
+                let Some(result_ty) = results[0].as_vector().filter(|ty| ty.is_fixed()) else {
                     return self.fail(alloc::format!(
                         "shuffle at {:?} requires a fixed-width vector",
                         inst
                     ));
-                }
-                let data = self.dfg.constant_pool_data(*mask).ok_or_else(|| {
+                };
+                let bytes = mask.get(&self.dfg).ok_or_else(|| {
                     crate::Error::from(ValidationError::Other(alloc::format!(
                         "shuffle at {:?} refers to missing mask {:?}",
                         inst,
                         mask
                     )))
                 })?;
-                let ConstantPoolData::Bytes(bytes) = data;
                 let lanes = usize::from(result_ty.lane_count());
                 if bytes.len() != lanes || bytes.iter().any(|&lane| usize::from(lane) >= 2 * lanes)
                 {
@@ -420,7 +338,7 @@ impl Function {
         ext: VectorExtId,
         vector_ty: Type,
     ) -> Result<()> {
-        let ext = self.dfg.vector_ext(ext).ok_or_else(|| {
+        let ext = ext.get(&self.dfg).ok_or_else(|| {
             crate::Error::from(ValidationError::Other(alloc::format!(
                 "vector operation at {:?} refers to missing extension {:?}",
                 inst,
@@ -441,7 +359,7 @@ impl Function {
         ext: VectorMemExtId,
         vector_ty: Type,
     ) -> Result<()> {
-        let ext = self.dfg.vector_mem_ext(ext).ok_or_else(|| {
+        let ext = ext.get(&self.dfg).ok_or_else(|| {
             crate::Error::from(ValidationError::Other(alloc::format!(
                 "vector memory operation at {:?} refers to missing extension {:?}",
                 inst,
@@ -465,12 +383,24 @@ impl Function {
         vector_ty: Type,
     ) -> Result<()> {
         let mask_ty = self.dfg.value_type(mask);
-        if !mask_ty.is_predicate() || mask_ty.vector_shape() != vector_ty.vector_shape() {
+        let Some(vector) = vector_ty.as_vector() else {
+            return self.fail(alloc::format!(
+                "{} mask at {:?} requires a vector type, got {}",
+                opcode.spec().mnemonic,
+                inst,
+                vector_ty
+            ));
+        };
+        if !mask_ty.is_predicate()
+            || mask_ty
+                .as_vector()
+                .is_none_or(|mask| mask.shape() != vector.shape())
+        {
             return self.fail(alloc::format!(
                 "{} mask at {:?} must match vector shape {:?}, got {}",
                 opcode.spec().mnemonic,
                 inst,
-                vector_ty.vector_shape(),
+                vector.shape(),
                 mask_ty
             ));
         }
@@ -580,7 +510,7 @@ mod tests {
             module.declare_function("bad-vconst".to_string(), signature, Linkage::Export);
         let mut builder = module.builder(function);
         builder.init_entry_block();
-        builder.ins().vconst(Type::I32X4, vec![0; 4]);
+        builder.ins().vconst(vec![0; 4], Type::I32X4);
         builder.ins().ret(&[]);
         drop(builder);
 
@@ -601,7 +531,14 @@ mod tests {
         builder.init_entry_block();
         let ptr = builder.func_param(0);
         let index = builder.func_param(1);
-        builder.ins().ptr_index(ptr, index, 0, 0);
+        builder.ins().ptr_index(
+            ptr,
+            index,
+            crate::inst::PtrIndexImm {
+                scale: 0,
+                offset: 0,
+            },
+        );
         builder.ins().ret(&[]);
         drop(builder);
 

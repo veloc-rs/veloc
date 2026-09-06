@@ -99,8 +99,6 @@ entity_impl!(StackSlot, "stackslot");
 pub struct VRegData {
     pub ty: Type,
     pub bank: Option<RegisterBank>, // 寄存器库，在合法化/指令选择阶段确定
-    pub assigned_reg: Option<Reg>,  // 寄存器分配后填充，通常为 PReg
-    pub stack_slot: Option<StackSlot>, // 如果溢出到栈
 }
 
 macro_rules! define_generic_opcodes {

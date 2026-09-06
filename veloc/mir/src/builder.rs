@@ -1,9 +1,10 @@
 use super::function::{Function, StackSlotData};
-use super::inst::{ConstantPoolData, Inst, InstructionData, VectorMemOptions};
+use super::inst::{Inst, InstructionData, VectorExtData, VectorExtId};
 use super::opcode::Opcode;
 use super::types::{
     Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
+use crate::dfg::PoolKey;
 use crate::opspec::ResultTypes;
 use crate::types::JumpTableData;
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
@@ -130,45 +131,8 @@ impl<'a> FunctionBuilder<'a> {
         &self.module.signatures[sig_id]
     }
 
-    /// Compute the result types of an instruction.
-    /// Uses SmallVec to avoid heap allocation for most instructions (0-2 results).
-    fn inst_result_types(&self, data: &InstructionData) -> SmallVec<[Type; 2]> {
-        let spec = data.opcode().spec();
-        let mut operands = SmallVec::<[Type; 4]>::new();
-        data.visit_type_operands(&self.func().dfg, |value| {
-            operands.push(self.value_type(value));
-        });
-
-        match spec
-            .type_scheme
-            .infer_results(&operands)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{} constructed with invalid operand types: {error:?}",
-                    spec.mnemonic
-                )
-            }) {
-            ResultTypes::Inferred(types) => types,
-            ResultTypes::Explicit => {
-                panic!("{} requires an explicit result type", spec.mnemonic)
-            }
-            ResultTypes::Signature => {
-                let sig_id = data
-                    .call_info()
-                    .expect("signature results require call metadata")
-                    .signature
-                    .resolve(self.module)
-                    .expect("call refers to a missing function or signature");
-                self.module.signatures[sig_id]
-                    .returns
-                    .iter()
-                    .copied()
-                    .collect()
-            }
-        }
-    }
-
-    fn assert_inst_matches_spec(&self, data: &InstructionData, results: &[Type]) {
+    /// Check the format and type scheme once, resolving inferred or explicit results.
+    fn inst_result_types(&self, data: &InstructionData, ty: Option<Type>) -> SmallVec<[Type; 2]> {
         let spec = data.opcode().spec();
         assert!(
             data.matches_format(&self.func().dfg, spec.format),
@@ -179,11 +143,47 @@ impl<'a> FunctionBuilder<'a> {
         data.visit_type_operands(&self.func().dfg, |value| {
             operands.push(self.value_type(value));
         });
-        assert!(
-            spec.type_scheme.validate(&operands, results).is_ok(),
-            "{} constructed with types outside its type scheme",
-            spec.mnemonic
-        );
+
+        let types = if let Some(ty) = ty {
+            smallvec::smallvec![ty]
+        } else if matches!(spec.type_scheme.results, crate::opspec::TypeList::Signature) {
+            let sig_id = data
+                .call_info()
+                .expect("signature results require call metadata")
+                .signature
+                .resolve(self.module)
+                .expect("call refers to a missing function or signature");
+            self.module.signatures[sig_id]
+                .returns
+                .iter()
+                .copied()
+                .collect()
+        } else {
+            return match spec
+                .type_scheme
+                .infer_results(&operands)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{} constructed with invalid operand types: {error:?}",
+                        spec.mnemonic
+                    )
+                }) {
+                ResultTypes::Inferred(types) => types,
+                ResultTypes::Explicit => {
+                    panic!("{} requires an explicit result type", spec.mnemonic)
+                }
+                ResultTypes::Signature => unreachable!("signature results were resolved above"),
+            };
+        };
+        spec.type_scheme
+            .validate(&operands, &types)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} constructed with types outside its type scheme: {error:?}",
+                    spec.mnemonic
+                )
+            });
+        types
     }
 
     fn push_inst(&mut self, block: Block, data: InstructionData) -> Option<Value> {
@@ -192,12 +192,11 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     fn push_inst_raw(&mut self, block: Block, data: InstructionData) -> Inst {
-        let types = self.inst_result_types(&data);
-        self.append_inst(block, data, &types)
+        self.append_inst(block, data, None)
     }
 
-    fn append_inst(&mut self, block: Block, data: InstructionData, types: &[Type]) -> Inst {
-        self.assert_inst_matches_spec(&data, types);
+    fn append_inst(&mut self, block: Block, data: InstructionData, ty: Option<Type>) -> Inst {
+        let types = self.inst_result_types(&data, ty);
         let func = self.func_mut();
         let (dfg, layout) = (&func.dfg, &mut func.layout);
         data.visit_successors(dfg, |call| {
@@ -206,14 +205,14 @@ impl<'a> FunctionBuilder<'a> {
         let inst = self.func_mut().dfg.instructions.push(data);
         self.func_mut().layout.append_inst(block, inst);
         if !types.is_empty() {
-            self.func_mut().dfg.append_results(inst, types);
+            self.func_mut().dfg.append_results(inst, &types);
         }
         inst
     }
 
     /// Push an instruction whose result type is selected by the caller.
     fn push_inst_with_type(&mut self, block: Block, data: InstructionData, ty: Type) -> Value {
-        let inst = self.append_inst(block, data, &[ty]);
+        let inst = self.append_inst(block, data, Some(ty));
         self.func()
             .dfg
             .first_result(inst)
@@ -608,18 +607,9 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.fconst(val.to_bits(), Type::F64)
     }
 
-    pub fn vconst(&mut self, ty: Type, data: Vec<u8>) -> Value {
-        let pool_id = self
-            .builder
-            .func_mut()
-            .dfg
-            .make_constant_pool_data(ConstantPoolData::Bytes(data));
-        self.push_with_type(InstructionData::Vconst { pool_id }, ty)
-    }
-
     pub fn i8x16const(&mut self, values: [i8; 16]) -> Value {
         let data = values.iter().map(|&v| v as u8).collect();
-        self.vconst(Type::I8X16, data)
+        self.vconst(data, Type::I8X16)
     }
 
     pub fn i16x8const(&mut self, values: [i16; 8]) -> Value {
@@ -627,7 +617,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.vconst(Type::I16X8, data)
+        self.vconst(data, Type::I16X8)
     }
 
     pub fn i32x4const(&mut self, values: [i32; 4]) -> Value {
@@ -635,7 +625,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.vconst(Type::I32X4, data)
+        self.vconst(data, Type::I32X4)
     }
 
     pub fn i64x2const(&mut self, values: [i64; 2]) -> Value {
@@ -643,7 +633,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.vconst(Type::I64X2, data)
+        self.vconst(data, Type::I64X2)
     }
 
     pub fn f32x4const(&mut self, values: [f32; 4]) -> Value {
@@ -651,7 +641,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_bits().to_le_bytes());
         }
-        self.vconst(Type::F32X4, data)
+        self.vconst(data, Type::F32X4)
     }
 
     pub fn f64x2const(&mut self, values: [f64; 2]) -> Value {
@@ -659,13 +649,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_bits().to_le_bytes());
         }
-        self.vconst(Type::F64X2, data)
-    }
-
-    pub fn ptr_index(&mut self, ptr: Value, index: Value, scale: u32, offset: i32) -> Value {
-        let imm_id = self.builder.func_mut().dfg.make_ptr_imm(offset, scale);
-        self.push(InstructionData::PtrIndex { ptr, index, imm_id })
-            .unwrap()
+        self.vconst(data, Type::F64X2)
     }
 
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Inst {
@@ -739,16 +723,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     // 向量操作构建方法
     // ======================================
 
-    /// 向量重排/混洗 (Shuffle)
-    /// 根据掩码从两个输入向量中选择元素
-    pub fn shuffle(&mut self, v1: Value, v2: Value, mask_id: crate::inst::ConstantPoolId) -> Value {
-        self.push(InstructionData::Shuffle {
-            args: [v1, v2],
-            mask: mask_id,
-        })
-        .unwrap()
-    }
-
     /// 插入标量到向量的指定通道
     pub fn insert_element(&mut self, vector: Value, scalar: Value, lane_index: u32) -> Value {
         let lane_val = self.i32const(lane_index as i32);
@@ -778,7 +752,10 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         result_ty: Type,
     ) -> Value {
         let args_list = self.builder.make_value_list(args);
-        let ext_id = self.builder.func_mut().dfg.make_vector_ext(mask, evl);
+        let ext_id = VectorExtId::insert(
+            &mut self.builder.func_mut().dfg,
+            VectorExtData { mask, evl },
+        );
 
         self.push_with_type(
             InstructionData::VectorOpWithExt {
@@ -788,62 +765,5 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             },
             result_ty,
         )
-    }
-
-    /// 固定步长向量加载 (Strided Load)
-    pub fn load_stride(
-        &mut self,
-        ty: Type,
-        ptr: Value,
-        stride: Value,
-        options: VectorMemOptions,
-    ) -> Value {
-        let ext = self.builder.func_mut().dfg.make_vector_mem_ext(options);
-
-        self.push_with_type(InstructionData::VectorLoadStrided { ptr, stride, ext }, ty)
-    }
-
-    /// 固定步长向量存储 (Strided Store)
-    pub fn store_stride(
-        &mut self,
-        value: Value,
-        ptr: Value,
-        stride: Value,
-        options: VectorMemOptions,
-    ) {
-        let ext = self.builder.func_mut().dfg.make_vector_mem_ext(options);
-        let args = self
-            .builder
-            .func_mut()
-            .dfg
-            .make_value_list(&[ptr, stride, value]);
-
-        self.push(InstructionData::VectorStoreStrided { args, ext });
-    }
-
-    /// 离散向量加载 (Gather)
-    /// base_ptr + index[i] * scale
-    pub fn gather(
-        &mut self,
-        ty: Type,
-        ptr: Value,
-        index: Value,
-        options: VectorMemOptions,
-    ) -> Value {
-        let ext = self.builder.func_mut().dfg.make_vector_mem_ext(options);
-
-        self.push_with_type(InstructionData::VectorGather { ptr, index, ext }, ty)
-    }
-
-    /// 离散向量存储 (Scatter)
-    pub fn scatter(&mut self, value: Value, ptr: Value, index: Value, options: VectorMemOptions) {
-        let ext = self.builder.func_mut().dfg.make_vector_mem_ext(options);
-        let args = self
-            .builder
-            .func_mut()
-            .dfg
-            .make_value_list(&[ptr, index, value]);
-
-        self.push(InstructionData::VectorScatter { args, ext });
     }
 }

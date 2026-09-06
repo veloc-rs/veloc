@@ -237,7 +237,14 @@ impl<'a> WasmTranslator<'a> {
         );
         let mem_base = self.get_memory_base(mem_idx);
         let addr_i64 = self.addr_to_i64(addr);
-        let actual_ptr = self.builder.ins().ptr_index(mem_base, addr_i64, 1, 0);
+        let actual_ptr = self.builder.ins().ptr_index(
+            mem_base,
+            addr_i64,
+            veloc::mir::inst::PtrIndexImm {
+                scale: 1,
+                offset: 0,
+            },
+        );
         let flags = MemFlags::new().with_alignment(1 << memarg.align);
         let res = self
             .builder
@@ -259,7 +266,14 @@ impl<'a> WasmTranslator<'a> {
         );
         let mem_base = self.get_memory_base(mem_idx);
         let addr_i64 = self.addr_to_i64(addr);
-        let actual_ptr = self.builder.ins().ptr_index(mem_base, addr_i64, 1, 0);
+        let actual_ptr = self.builder.ins().ptr_index(
+            mem_base,
+            addr_i64,
+            veloc::mir::inst::PtrIndexImm {
+                scale: 1,
+                offset: 0,
+            },
+        );
         let flags = MemFlags::new().with_alignment(1 << memarg.align);
         self.builder
             .ins()

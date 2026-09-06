@@ -375,12 +375,7 @@ impl<S> MachineFunction<S> {
     }
 
     fn alloc_vreg_with_bank_opt(&mut self, ty: Type, bank: Option<RegisterBank>) -> Reg {
-        let vreg = self.vregs.push(VRegData {
-            ty,
-            bank,
-            assigned_reg: None,
-            stack_slot: None,
-        });
+        let vreg = self.vregs.push(VRegData { ty, bank });
         Reg::new_vreg(vreg.as_u32())
     }
 

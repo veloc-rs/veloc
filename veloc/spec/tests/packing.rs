@@ -1,4 +1,5 @@
-use veloc_opgen::parse;
+mod common;
+use common::parse;
 
 const INDEXED: &str = r#"
 record PtrIndexImm {
@@ -61,6 +62,17 @@ fn pool_bindings_are_typed_and_consume_the_complete_record() {
         )
         .replace("imm_id: pool(imm)", "imm_id: pool(imm), other: pool(imm)");
     rejected(&duplicated, "stored more than once");
+    for ty in [
+        "PtrIndexImmId",
+        "ConstantPoolId",
+        "VectorExtId",
+        "VectorMemExtId",
+    ] {
+        rejected(
+            &INDEXED.replace("@imm: PtrIndexImm", &format!("@imm: {ty}")),
+            "unknown property type",
+        );
+    }
 }
 
 #[test]

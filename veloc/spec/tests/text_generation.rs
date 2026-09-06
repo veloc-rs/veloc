@@ -1,4 +1,6 @@
-use veloc_opgen::{Generated, compile_mir};
+mod common;
+use common::compile_mir;
+use veloc_opgen::Generated;
 
 const PAIR: &str = r#"
 format Pair {

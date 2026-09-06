@@ -11,23 +11,6 @@ use crate::bytecode::{
 use core::fmt::{Display, Formatter, Result, Write};
 use cranelift_entity::EntityRef;
 
-/// Format a scalar type (encoded as u8) to human-readable name
-fn scalar_ty_name(ty: u8) -> &'static str {
-    match ty {
-        0 => "i8",
-        1 => "i16",
-        2 => "i32",
-        3 => "i64",
-        4 => "f32",
-        5 => "f64",
-        8 => "bool",
-        9 => "ptr",
-        10 => "void",
-        11 => "evl",
-        _ => "?",
-    }
-}
-
 /// Formats a register list from data section
 fn fmt_reg_list(
     f: &mut dyn Write,
@@ -304,26 +287,12 @@ impl<'a> InstPrinter<'a> {
             // Extend operations
             DecodedInstruction::ExtendS { dst, src, ty }
             | DecodedInstruction::ExtendU { dst, src, ty } => {
-                write!(
-                    f,
-                    " {}, {}, {}->{}",
-                    dst,
-                    src,
-                    scalar_ty_name(ty.from as u8),
-                    scalar_ty_name(ty.to as u8)
-                )
+                write!(f, " {}, {}, {}->{}", dst, src, ty.from, ty.to)
             }
 
             // Wrap operation
             DecodedInstruction::Wrap { dst, src, ty } => {
-                write!(
-                    f,
-                    " {}, {}, {}->{}",
-                    dst,
-                    src,
-                    scalar_ty_name(ty.from as u8),
-                    scalar_ty_name(ty.to as u8)
-                )
+                write!(f, " {}, {}, {}->{}", dst, src, ty.from, ty.to)
             }
 
             // Memory operations
@@ -359,23 +328,11 @@ impl<'a> InstPrinter<'a> {
             }
 
             DecodedInstruction::StackLoad { dst, ty, offset } => {
-                write!(
-                    f,
-                    " {}, ty={}, offset={}",
-                    dst,
-                    scalar_ty_name(ty as u8),
-                    offset
-                )
+                write!(f, " {}, ty={}, offset={}", dst, ty, offset)
             }
 
             DecodedInstruction::StackStore { val, ty, offset } => {
-                write!(
-                    f,
-                    " {}, ty={}, offset={}",
-                    val,
-                    scalar_ty_name(ty as u8),
-                    offset
-                )
+                write!(f, " {}, ty={}, offset={}", val, ty, offset)
             }
 
             // Pointer indexing

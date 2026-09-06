@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use veloc_semantics::{BvConst, BvOp};
 
+use crate::builtins::Builtins;
 use crate::syntax::{Kind, Node, Record};
+use crate::type_set::TypeSet;
+use crate::types::Types;
 use crate::{Error, storage};
 
 #[path = "operation.rs"]
@@ -10,6 +13,9 @@ mod operation;
 
 /// Checked operation definitions, independent of the runtime MIR.
 pub struct Definitions {
+    pub(crate) encoding: crate::encoding::TypeEncoding,
+    pub(crate) builtins: Builtins,
+    pub(crate) types: Types,
     pub(crate) storage: storage::Storage,
     pub(crate) ops: Vec<Op>,
 }
@@ -46,13 +52,13 @@ impl TypeList {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Pattern {
-    Class(String),
+    Class(TypeSet),
     Exact(String),
-    Bind(u8, String),
+    Bind(u8, TypeSet),
     Same(u8),
     ElementOf(u8),
     VectorOf(u8),
-    ShapeOf(u8, String),
+    ShapeOf(u8, TypeSet),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -80,8 +86,8 @@ pub(crate) struct Op {
     pub traits: Vec<String>,
     pub memory: String,
     pub constraints: Vec<String>,
-    pub identity: Option<String>,
-    pub absorbing: Option<String>,
+    pub identity: Option<BvConst>,
+    pub absorbing: Option<BvConst>,
     pub semantics: Option<Semantic>,
 }
 
@@ -143,73 +149,17 @@ impl Op {
     }
 }
 
-const CLASSES: &[&str] = &[
-    "Any",
-    "Scalar",
-    "ScalarInteger",
-    "ScalarIntegerOrPointer",
-    "ScalarFloat",
-    "Integer",
-    "IntegerOrBool",
-    "Float",
-    "Number",
-    "Vector",
-    "IntegerVector",
-];
-const EXACT: &[&str] = &["I8", "I16", "I32", "I64", "F32", "F64", "BOOL", "PTR"];
-const TRAITS: &[&str] = &[
-    "TERMINATOR",
-    "COMMUTATIVE",
-    "MAY_TRAP",
-    "ASSOCIATIVE",
-    "IDEMPOTENT",
-];
-const MEMORY: &[&str] = &[
-    "NONE",
-    "UNKNOWN",
-    "HEAP_READ",
-    "HEAP_WRITE",
-    "STACK_READ",
-    "STACK_WRITE",
-    "GLOBAL_READ",
-    "GLOBAL_WRITE",
-    "TABLE_READ",
-    "TABLE_WRITE",
-];
-const CONSTANTS: &[&str] = &["Zero", "One", "AllOnes"];
-
 struct Variable {
     slot: u8,
-    class: String,
-    domain: u8,
+    class: TypeSet,
+    possible: TypeSet,
     bound: bool,
-}
-
-// Scalar integer/float/bool/pointer and vector integer/float/bool domains.
-// This checks impossible schemes, not concrete widths or target legality.
-fn class_domain(class: &str) -> u8 {
-    match class {
-        "Any" => 0b111_1111,
-        "Scalar" => 0b000_0111,
-        "ScalarInteger" => 0b000_0001,
-        "ScalarIntegerOrPointer" => 0b000_1001,
-        "ScalarFloat" => 0b000_0010,
-        "Integer" => 0b001_0001,
-        "IntegerOrBool" => 0b101_0101,
-        "Float" => 0b010_0010,
-        "Number" => 0b011_0011,
-        "Vector" => 0b111_0000,
-        "IntegerVector" => 0b001_0000,
-        _ => unreachable!("type classes have been checked"),
-    }
 }
 
 pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
     let records = crate::syntax::parse(source)?;
-    let storage = storage::compile(&records, source)?;
-    let mut ops = Vec::new();
     let mut names = BTreeSet::new();
-    for record in records {
+    for record in &records {
         if !names.insert((record.kind.clone(), record.name.clone())) {
             return Err(Error::at(
                 source,
@@ -218,9 +168,20 @@ pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
             ));
         }
         identifier(source, record.offset, &record.name)?;
+    }
+    let encoding = crate::encoding::TypeEncoding::compile(&records, source)?;
+    let types = Types::compile(&records, source, &encoding)?;
+    let builtins = Builtins::compile(&records, source)?;
+    let storage = storage::compile(&records, source)?;
+    let mut ops = Vec::new();
+    for record in records {
         match record.kind.as_str() {
-            "op" => ops.push(operation::parse(source, record, &storage)?),
-            "format" | "layout" | "record" => {}
+            "op" => ops.push(operation::parse(
+                source, record, &storage, &types, &builtins,
+            )?),
+            "format" | "layout" | "record" | "encoding" => {}
+            kind if Builtins::is_definition(kind) => {}
+            kind if Types::is_definition(kind) => {}
             _ => {
                 return Err(Error::at(
                     source,
@@ -230,7 +191,13 @@ pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
             }
         }
     }
-    let definitions = Definitions { storage, ops };
+    let definitions = Definitions {
+        encoding,
+        builtins,
+        types,
+        storage,
+        ops,
+    };
     definitions.validate(source)?;
     Ok(definitions)
 }
@@ -309,7 +276,7 @@ impl Definitions {
                     "algebraic shortcuts require associative and commutative operations".into(),
                 ));
             }
-            crate::semantic::validate(source, op)?;
+            crate::semantic::validate(source, op, &self.types, &self.builtins)?;
         }
         Ok(())
     }
@@ -319,10 +286,17 @@ fn pattern(
     source: &str,
     node: Node,
     variables: &mut BTreeMap<String, Variable>,
+    types: &Types,
 ) -> Result<Pattern, Error> {
     match node.kind {
-        Kind::Name(name) if EXACT.contains(&name.as_str()) => Ok(Pattern::Exact(name)),
-        Kind::Name(name) if CLASSES.contains(&name.as_str()) => Ok(Pattern::Class(name)),
+        Kind::Name(name) if types.exact.contains_key(&name) => Ok(Pattern::Exact(name)),
+        Kind::Name(ref name) if types.classes.contains_key(name) => {
+            Ok(Pattern::Class(types.set(source, &node)?))
+        }
+        Kind::Union(_) | Kind::Intersection(_) => Ok(Pattern::Class(types.set(source, &node)?)),
+        Kind::Call(ref kind, _) if kind == "vectors" => {
+            Ok(Pattern::Class(types.set(source, &node)?))
+        }
         Kind::Name(name) => {
             let var = variables.get_mut(&name).ok_or_else(|| {
                 Error::at(
@@ -360,7 +334,7 @@ fn pattern(
             let mut args = args.into_iter();
             let variable = name(source, args.next().unwrap())?;
             let class = if expected == 2 {
-                Some(choice(source, args.next().unwrap(), CLASSES, "type class")?)
+                Some(types.set(source, &args.next().unwrap())?)
             } else {
                 None
             };
@@ -374,27 +348,15 @@ fn pattern(
                         format!("unbound type variable `{variable}`"),
                     )
                 })?;
-            let domain = match kind.as_str() {
-                "element" => class_domain("Vector"),
-                "vector" => class_domain("Scalar"),
-                "shape" => {
-                    let class = class_domain(class.as_deref().unwrap());
-                    let scalars = if class & 0b000_1111 != 0 {
-                        0b000_1111
-                    } else {
-                        0
-                    };
-                    let vectors = if class & 0b111_0000 != 0 {
-                        0b111_0000
-                    } else {
-                        0
-                    };
-                    scalars | vectors
-                }
-                _ => class_domain("Any"),
-            };
-            binding.domain &= domain;
-            if binding.domain == 0 {
+            match kind.as_str() {
+                "element" => binding.possible.retain_shapes(!1),
+                "vector" => binding.possible.intersect(&types.lanes),
+                "shape" => binding
+                    .possible
+                    .retain_shapes(class.as_ref().unwrap().shapes()),
+                _ => unreachable!("type pattern kind has been checked"),
+            }
+            if binding.possible.is_empty() {
                 return Err(Error::at(
                     source,
                     node.offset,
@@ -413,7 +375,7 @@ fn pattern(
     }
 }
 
-struct Fields<'a> {
+pub(crate) struct Fields<'a> {
     source: &'a str,
     offset: usize,
     name: String,
@@ -421,7 +383,7 @@ struct Fields<'a> {
 }
 
 impl<'a> Fields<'a> {
-    fn new(source: &'a str, record: Record) -> Self {
+    pub(crate) fn new(source: &'a str, record: Record) -> Self {
         Self {
             source,
             offset: record.offset,
@@ -429,18 +391,18 @@ impl<'a> Fields<'a> {
             fields: record.fields,
         }
     }
-    fn error(&self, message: impl Into<String>) -> Error {
+    pub(crate) fn error(&self, message: impl Into<String>) -> Error {
         Error::at(self.source, self.offset, message)
     }
-    fn take(&mut self, name: &str) -> Result<Node, Error> {
+    pub(crate) fn take(&mut self, name: &str) -> Result<Node, Error> {
         self.fields
             .remove(name)
             .ok_or_else(|| self.error(format!("{} is missing `{name}`", self.name)))
     }
-    fn optional(&mut self, name: &str) -> Option<Node> {
+    pub(crate) fn optional(&mut self, name: &str) -> Option<Node> {
         self.fields.remove(name)
     }
-    fn finish(&self) -> Result<(), Error> {
+    pub(crate) fn finish(&self) -> Result<(), Error> {
         if let Some((field, node)) = self.fields.first_key_value() {
             Err(Error::at(
                 self.source,
@@ -453,44 +415,30 @@ impl<'a> Fields<'a> {
     }
 }
 
-fn name(source: &str, node: Node) -> Result<String, Error> {
+pub(crate) fn name(source: &str, node: Node) -> Result<String, Error> {
     match node.kind {
         Kind::Name(name) => Ok(name),
         _ => Err(Error::at(source, node.offset, "expected a name")),
     }
 }
 
-fn list(source: &str, node: Node) -> Result<Vec<Node>, Error> {
+pub(crate) fn list(source: &str, node: Node) -> Result<Vec<Node>, Error> {
     match node.kind {
         Kind::List(values) => Ok(values),
         _ => Err(Error::at(source, node.offset, "expected a list")),
     }
 }
 
-fn choice(source: &str, node: Node, choices: &[&str], what: &str) -> Result<String, Error> {
+fn algebraic_constant(source: &str, node: Node) -> Result<BvConst, Error> {
     let offset = node.offset;
     let name = name(source, node)?;
-    if choices.contains(&name.as_str()) {
-        Ok(name)
-    } else {
-        Err(Error::at(
+    BvConst::from_name(&name).ok_or_else(|| {
+        Error::at(
             source,
             offset,
-            format!("unknown {what} `{name}`"),
-        ))
-    }
-}
-
-fn choices(source: &str, node: Node, choices: &[&str], what: &str) -> Result<Vec<String>, Error> {
-    let offset = node.offset;
-    let values = list(source, node)?
-        .into_iter()
-        .map(|n| choice(source, n, choices, what))
-        .collect::<Result<Vec<_>, _>>()?;
-    if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
-        return Err(Error::at(source, offset, format!("duplicate {what}")));
-    }
-    Ok(values)
+            format!("unknown algebraic constant `{name}`"),
+        )
+    })
 }
 
 pub(crate) fn identifier(source: &str, offset: usize, name: &str) -> Result<(), Error> {
@@ -523,7 +471,7 @@ pub(crate) fn identifier(source: &str, offset: usize, name: &str) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use crate::fixtures::parse;
 
     const SOURCE: &str = r#"
         format Binary {

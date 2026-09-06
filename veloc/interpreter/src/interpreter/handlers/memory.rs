@@ -96,17 +96,17 @@ define_memory_handlers! {
         set!(
             dst,
             match ty {
-                ScalarType::I8 =>
+                Type::I8 =>
                     InterpreterValue::i32((ptr as *const i8).read_unaligned() as i32),
-                ScalarType::I16 =>
+                Type::I16 =>
                     InterpreterValue::i32((ptr as *const i16).read_unaligned() as i32),
-                ScalarType::I32 =>
+                Type::I32 =>
                     InterpreterValue::i32((ptr as *const i32).read_unaligned()),
-                ScalarType::I64 | ScalarType::Ptr =>
+                Type::I64 | Type::PTR =>
                     InterpreterValue::i64((ptr as *const i64).read_unaligned()),
-                ScalarType::F32 =>
+                Type::F32 =>
                     InterpreterValue::f32((ptr as *const f32).read_unaligned()),
-                ScalarType::F64 =>
+                Type::F64 =>
                     InterpreterValue::f64((ptr as *const f64).read_unaligned()),
                 _ => panic!("Unknown type {:?} in StackLoad", ty),
             }
@@ -117,14 +117,14 @@ define_memory_handlers! {
         let ptr = interpreter.stack_memory.as_mut_ptr().add(addr);
         let v = get!(val);
         match ty {
-            ScalarType::I8 => (ptr as *mut i8).write_unaligned(v.unwrap_i32() as i8),
-            ScalarType::I16 => (ptr as *mut i16).write_unaligned(v.unwrap_i32() as i16),
-            ScalarType::I32 => (ptr as *mut i32).write_unaligned(v.unwrap_i32()),
-            ScalarType::I64 | ScalarType::Ptr => {
+            Type::I8 => (ptr as *mut i8).write_unaligned(v.unwrap_i32() as i8),
+            Type::I16 => (ptr as *mut i16).write_unaligned(v.unwrap_i32() as i16),
+            Type::I32 => (ptr as *mut i32).write_unaligned(v.unwrap_i32()),
+            Type::I64 | Type::PTR => {
                 (ptr as *mut i64).write_unaligned(v.unwrap_i64())
             }
-            ScalarType::F32 => (ptr as *mut f32).write_unaligned(v.unwrap_f32()),
-            ScalarType::F64 => (ptr as *mut f64).write_unaligned(v.unwrap_f64()),
+            Type::F32 => (ptr as *mut f32).write_unaligned(v.unwrap_f32()),
+            Type::F64 => (ptr as *mut f64).write_unaligned(v.unwrap_f64()),
             _ => panic!("Unknown type {:?} in StackStore", ty),
         }
     }

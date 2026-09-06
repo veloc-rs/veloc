@@ -371,7 +371,14 @@ impl<'a> WasmTranslator<'a> {
                 self.trap(TrapCode::TableOutOfBounds);
                 self.builder.switch_to_block(check_null_block);
                 self.terminated = false;
-                let entry_ptr_addr = self.builder.ins().ptr_index(table_base, index_i64, 8, 0);
+                let entry_ptr_addr = self.builder.ins().ptr_index(
+                    table_base,
+                    index_i64,
+                    veloc::mir::inst::PtrIndexImm {
+                        scale: 8,
+                        offset: 0,
+                    },
+                );
                 let entry_ptr =
                     self.builder
                         .ins()

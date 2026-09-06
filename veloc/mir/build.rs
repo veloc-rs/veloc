@@ -4,7 +4,12 @@ fn main() {
     let mut source = String::new();
     let mut locations = Vec::new();
     let mut line = 1;
-    for path in ["defs/formats.ops", "defs/mir.ops"] {
+    for path in [
+        "defs/types.ops",
+        "defs/builtins.ops",
+        "defs/formats.ops",
+        "defs/mir.ops",
+    ] {
         println!("cargo:rerun-if-changed={path}");
         let input = fs::read_to_string(path).unwrap_or_else(|err| panic!("{path}: {err}"));
         let end = line + input.bytes().filter(|&b| b == b'\n').count() + 1;
@@ -28,6 +33,9 @@ fn main() {
     });
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
     for (name, text) in [
+        ("encoding.rs", output.encoding),
+        ("builtins.rs", output.builtins),
+        ("scalars.rs", output.scalars),
         ("formats.rs", output.formats),
         ("type_schemes.rs", output.types),
         ("opcodes.rs", output.opcodes),

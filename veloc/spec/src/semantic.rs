@@ -130,7 +130,12 @@ fn push(
     Ok(index)
 }
 
-pub(crate) fn validate(source: &str, op: &Op) -> Result<(), Error> {
+pub(crate) fn validate(
+    source: &str,
+    op: &Op,
+    types: &crate::types::Types,
+    builtins: &crate::builtins::Builtins,
+) -> Result<(), Error> {
     let Some(semantics) = &op.semantics else {
         return Ok(());
     };
@@ -142,7 +147,7 @@ pub(crate) fn validate(source: &str, op: &Op) -> Result<(), Error> {
             "bitvector semantics require pure, same-width integer inputs and one integer result",
         )
     };
-    if op.memory != "NONE"
+    if !builtins.effects[&op.memory].is_none()
         || op
             .traits
             .iter()
@@ -157,6 +162,8 @@ pub(crate) fn validate(source: &str, op: &Op) -> Result<(), Error> {
     if args.len() != usize::from(semantics.inputs) {
         return Err(fail());
     }
+    let integer_class = |set: &crate::type_set::TypeSet| set.subset_of(&types.integers);
+    let integer_type = |name: &str| types.exact[name].subset_of(&types.integers);
     let compatible = match args.first() {
         Some(Pattern::Bind(var, class)) if integer_class(class) => {
             args[1..].iter().chain([result]).all(|pattern| {
@@ -176,17 +183,6 @@ pub(crate) fn validate(source: &str, op: &Op) -> Result<(), Error> {
     if compatible { Ok(()) } else { Err(fail()) }
 }
 
-fn integer_class(class: &str) -> bool {
-    matches!(
-        class,
-        "Integer" | "ScalarInteger" | "IntegerOrBool" | "IntegerVector"
-    )
-}
-
-fn integer_type(name: &str) -> bool {
-    matches!(name, "I8" | "I16" | "I32" | "I64" | "BOOL")
-}
-
 /// Only direct primitive applications inherit reviewed algebraic facts. A
 /// composed expression needs a separate proof before algebraic rewrites can use
 /// it; structural resemblance alone does not establish those facts.
@@ -195,8 +191,8 @@ pub(crate) fn derive(
     offset: usize,
     semantics: &Semantic,
     traits: &mut Vec<String>,
-    identity: &mut Option<String>,
-    absorbing: &mut Option<String>,
+    identity: &mut Option<BvConst>,
+    absorbing: &mut Option<BvConst>,
 ) -> Result<(), Error> {
     const ALGEBRAIC: [&str; 3] = ["COMMUTATIVE", "ASSOCIATIVE", "IDEMPOTENT"];
     let Some(primitive) = semantics.primitive() else {
@@ -237,19 +233,19 @@ pub(crate) fn derive(
         ("identity", identity, facts.identity),
         ("absorbing", absorbing, facts.absorbing),
     ] {
-        if let Some(value) = declared.as_deref()
-            && expected.map(|constant| constant.name()) != Some(value)
+        if let Some(value) = *declared
+            && expected != Some(value)
         {
             return Err(Error::at(
                 source,
                 offset,
                 format!(
-                    "{} does not support {name} `{value}` at every supported width",
+                    "{} does not support {name} `{value:?}` at every supported width",
                     primitive.name()
                 ),
             ));
         }
-        *declared = expected.map(|constant| constant.name().to_owned());
+        *declared = expected;
     }
     Ok(())
 }
@@ -364,15 +360,15 @@ mod tests {
         let (mut traits, mut identity, mut absorbing) = (vec![], None, None);
         derive("", 0, &sem, &mut traits, &mut identity, &mut absorbing).unwrap();
         assert_eq!(traits, ["COMMUTATIVE", "ASSOCIATIVE", "IDEMPOTENT"]);
-        assert_eq!(identity.as_deref(), Some("AllOnes"));
-        assert_eq!(absorbing.as_deref(), Some("Zero"));
+        assert_eq!(identity, Some(BvConst::AllOnes));
+        assert_eq!(absorbing, Some(BvConst::Zero));
         derive("", 0, &sem, &mut traits, &mut identity, &mut absorbing).unwrap();
         assert_eq!(traits.len(), 3);
     }
 
     #[test]
     fn contradictory_and_unproved_facts_are_rejected() {
-        let mut identity = Some("One".into());
+        let mut identity = Some(BvConst::One);
         assert!(
             derive(
                 "",
@@ -448,24 +444,55 @@ mod tests {
 
     #[test]
     fn same_width_integer_schemes_include_vectors_and_exact_types() {
-        for class in ["Integer", "ScalarInteger", "IntegerOrBool", "IntegerVector"] {
-            let op = unary(Pattern::Bind(0, class.into()), Pattern::Same(0));
-            validate("", &op).unwrap();
+        for class in [
+            "Integer",
+            "ScalarInteger",
+            "Integer | BOOL | vectors(BOOL)",
+            "Integer & Vector",
+        ] {
+            let op = unary(
+                Pattern::Bind(0, crate::fixtures::set(class)),
+                Pattern::Same(0),
+            );
+            validate(
+                "",
+                &op,
+                &crate::fixtures::types(),
+                &crate::fixtures::builtins(),
+            )
+            .unwrap();
         }
         for name in ["I8", "I16", "I32", "I64", "BOOL"] {
             let op = unary(Pattern::Exact(name.into()), Pattern::Exact(name.into()));
-            validate("", &op).unwrap();
+            validate(
+                "",
+                &op,
+                &crate::fixtures::types(),
+                &crate::fixtures::builtins(),
+            )
+            .unwrap();
         }
         for (operand, result) in [
             (Pattern::Exact("I32".into()), Pattern::Exact("I64".into())),
-            (Pattern::Bind(0, "Float".into()), Pattern::Same(0)),
             (
-                Pattern::Class("ScalarInteger".into()),
-                Pattern::Class("ScalarInteger".into()),
+                Pattern::Bind(0, crate::fixtures::set("Float")),
+                Pattern::Same(0),
+            ),
+            (
+                Pattern::Class(crate::fixtures::set("ScalarInteger")),
+                Pattern::Class(crate::fixtures::set("ScalarInteger")),
             ),
         ] {
             let op = unary(operand, result);
-            assert!(validate("", &op).is_err());
+            assert!(
+                validate(
+                    "",
+                    &op,
+                    &crate::fixtures::types(),
+                    &crate::fixtures::builtins()
+                )
+                .is_err()
+            );
         }
     }
 
@@ -473,16 +500,46 @@ mod tests {
     fn executable_bitvector_semantics_do_not_claim_effects_or_traps() {
         let mut op = unary(Pattern::Exact("I32".into()), Pattern::Exact("I32".into()));
         op.memory = "UNKNOWN".into();
-        assert!(validate("", &op).is_err());
+        assert!(
+            validate(
+                "",
+                &op,
+                &crate::fixtures::types(),
+                &crate::fixtures::builtins()
+            )
+            .is_err()
+        );
         op.memory = "NONE".into();
         for flag in ["MAY_TRAP", "TERMINATOR"] {
             op.traits = vec![flag.into()];
-            assert!(validate("", &op).is_err());
+            assert!(
+                validate(
+                    "",
+                    &op,
+                    &crate::fixtures::types(),
+                    &crate::fixtures::builtins()
+                )
+                .is_err()
+            );
         }
         op.traits.clear();
         op.signature.results = TypeList::Signature;
-        assert!(validate("", &op).is_err());
+        assert!(
+            validate(
+                "",
+                &op,
+                &crate::fixtures::types(),
+                &crate::fixtures::builtins()
+            )
+            .is_err()
+        );
         op.semantics = None;
-        validate("", &op).unwrap();
+        validate(
+            "",
+            &op,
+            &crate::fixtures::types(),
+            &crate::fixtures::builtins(),
+        )
+        .unwrap();
     }
 }

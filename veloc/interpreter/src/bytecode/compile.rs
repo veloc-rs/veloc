@@ -2,23 +2,24 @@ use crate::bytecode::inst::{CodeWord, Reg, TypePair, emit, emit_auto};
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, UseDefAnalysis, analyze_liveness};
+use veloc_mir::dfg::PoolKey;
 use veloc_mir::{
     Block, BlockCall, FuncId, Function, Inst, InstructionData, Intrinsic, ModuleId,
-    Opcode as IrOpcode, ScalarType, StackSlot, Type, Value, ValueList,
+    Opcode as IrOpcode, StackSlot, Type, Value, ValueList,
 };
 
 macro_rules! unary_dispatch_op {
     ($arg_reg:expr, $dst:expr, $ty:expr, $code:expr, $f32_op:ident, $f64_op:ident) => {
         match $ty {
-            ScalarType::F32 => emit::$f32_op($code, $dst, $arg_reg),
-            ScalarType::F64 => emit::$f64_op($code, $dst, $arg_reg),
+            Type::F32 => emit::$f32_op($code, $dst, $arg_reg),
+            Type::F64 => emit::$f64_op($code, $dst, $arg_reg),
             _ => panic!("Unsupported op for type {:?}", $ty),
         }
     };
     ($arg_reg:expr, $dst:expr, $ty:expr, $code:expr, $i32_op:ident, $i64_op:ident, int) => {
         match $ty {
-            ScalarType::I32 => emit::$i32_op($code, $dst, $arg_reg),
-            ScalarType::I64 => emit::$i64_op($code, $dst, $arg_reg),
+            Type::I32 => emit::$i32_op($code, $dst, $arg_reg),
+            Type::I64 => emit::$i64_op($code, $dst, $arg_reg),
             _ => panic!("Unsupported op for type {:?}", $ty),
         }
     };
@@ -28,10 +29,10 @@ macro_rules! convert_op {
     ($arg:expr, $dst:expr, $code:expr, $from_ty:expr, $to_ty:expr,
      $f32_i32:ident, $f64_i32:ident, $f32_i64:ident, $f64_i64:ident) => {
         match ($from_ty, $to_ty) {
-            (ScalarType::F32, ScalarType::I32) => emit::$f32_i32($code, $dst, $arg),
-            (ScalarType::F64, ScalarType::I32) => emit::$f64_i32($code, $dst, $arg),
-            (ScalarType::F32, ScalarType::I64) => emit::$f32_i64($code, $dst, $arg),
-            (ScalarType::F64, ScalarType::I64) => emit::$f64_i64($code, $dst, $arg),
+            (Type::F32, Type::I32) => emit::$f32_i32($code, $dst, $arg),
+            (Type::F64, Type::I32) => emit::$f64_i32($code, $dst, $arg),
+            (Type::F32, Type::I64) => emit::$f32_i64($code, $dst, $arg),
+            (Type::F64, Type::I64) => emit::$f64_i64($code, $dst, $arg),
             _ => panic!("Unsupported conversion: {:?} -> {:?}", $from_ty, $to_ty),
         }
     };
@@ -41,10 +42,10 @@ macro_rules! convert_int_to_float_op {
     ($arg:expr, $dst:expr, $code:expr, $from_ty:expr, $to_ty:expr,
      $i32_f32:ident, $i64_f32:ident, $i32_f64:ident, $i64_f64:ident) => {
         match ($from_ty, $to_ty) {
-            (ScalarType::I32, ScalarType::F32) => emit::$i32_f32($code, $dst, $arg),
-            (ScalarType::I64, ScalarType::F32) => emit::$i64_f32($code, $dst, $arg),
-            (ScalarType::I32, ScalarType::F64) => emit::$i32_f64($code, $dst, $arg),
-            (ScalarType::I64, ScalarType::F64) => emit::$i64_f64($code, $dst, $arg),
+            (Type::I32, Type::F32) => emit::$i32_f32($code, $dst, $arg),
+            (Type::I64, Type::F32) => emit::$i64_f32($code, $dst, $arg),
+            (Type::I32, Type::F64) => emit::$i32_f64($code, $dst, $arg),
+            (Type::I64, Type::F64) => emit::$i64_f64($code, $dst, $arg),
             _ => panic!("Unsupported conversion: {:?} -> {:?}", $from_ty, $to_ty),
         }
     };
@@ -710,14 +711,12 @@ impl<'a> Compiler<'a> {
         let ty = self.val_ty(res);
 
         match ty {
-            ScalarType::I32 => emit::I32Load(&mut self.code, dst, ptr_reg, offset),
-            ScalarType::I64 | ScalarType::Ptr => {
-                emit::I64Load(&mut self.code, dst, ptr_reg, offset)
-            }
-            ScalarType::F32 => emit::F32Load(&mut self.code, dst, ptr_reg, offset),
-            ScalarType::F64 => emit::F64Load(&mut self.code, dst, ptr_reg, offset),
-            ScalarType::I8 => emit::I8Load(&mut self.code, dst, ptr_reg, offset),
-            ScalarType::I16 => emit::I16Load(&mut self.code, dst, ptr_reg, offset),
+            Type::I32 => emit::I32Load(&mut self.code, dst, ptr_reg, offset),
+            Type::I64 | Type::PTR => emit::I64Load(&mut self.code, dst, ptr_reg, offset),
+            Type::F32 => emit::F32Load(&mut self.code, dst, ptr_reg, offset),
+            Type::F64 => emit::F64Load(&mut self.code, dst, ptr_reg, offset),
+            Type::I8 => emit::I8Load(&mut self.code, dst, ptr_reg, offset),
+            Type::I16 => emit::I16Load(&mut self.code, dst, ptr_reg, offset),
             _ => panic!("Unsupported load type {:?}", ty),
         }
     }
@@ -872,9 +871,9 @@ impl<'a> Compiler<'a> {
                 match opcode {
                     IrOpcode::ExtendS => {
                         let res_val = match from_ty {
-                            ScalarType::I8 => val as i8 as i64,
-                            ScalarType::I16 => val as i16 as i64,
-                            ScalarType::I32 => val as i32 as i64,
+                            Type::I8 => val as i8 as i64,
+                            Type::I16 => val as i16 as i64,
+                            Type::I32 => val as i32 as i64,
                             _ => panic!("Unsupported ExtendS from_ty: {:?}", from_ty),
                         };
                         let dst = self.mapper.reg(res);
@@ -883,9 +882,9 @@ impl<'a> Compiler<'a> {
                     }
                     IrOpcode::ExtendU => {
                         let res_val = match from_ty {
-                            ScalarType::I8 => (val as u8) as u64 as i64,
-                            ScalarType::I16 => (val as u16) as u64 as i64,
-                            ScalarType::I32 => (val as u32) as u64 as i64,
+                            Type::I8 => (val as u8) as u64 as i64,
+                            Type::I16 => (val as u16) as u64 as i64,
+                            Type::I32 => (val as u32) as u64 as i64,
                             _ => panic!("Unsupported ExtendU from_ty: {:?}", from_ty),
                         };
                         let dst = self.mapper.reg(res);
@@ -1082,8 +1081,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn val_ty(&self, v: Value) -> ScalarType {
-        self.func.dfg.value_type(v).scalar_type()
+    fn val_ty(&self, v: Value) -> Type {
+        self.func.dfg.value_type(v)
     }
 
     fn emit_store(&mut self, ptr: Value, value: Value, offset: u32) {
@@ -1092,14 +1091,12 @@ impl<'a> Compiler<'a> {
         let ty = self.val_ty(value);
 
         match ty {
-            ScalarType::I8 => emit::I8Store(&mut self.code, val_reg, ptr_reg, offset),
-            ScalarType::I16 => emit::I16Store(&mut self.code, val_reg, ptr_reg, offset),
-            ScalarType::I32 => emit::I32Store(&mut self.code, val_reg, ptr_reg, offset),
-            ScalarType::I64 | ScalarType::Ptr => {
-                emit::I64Store(&mut self.code, val_reg, ptr_reg, offset)
-            }
-            ScalarType::F32 => emit::F32Store(&mut self.code, val_reg, ptr_reg, offset),
-            ScalarType::F64 => emit::F64Store(&mut self.code, val_reg, ptr_reg, offset),
+            Type::I8 => emit::I8Store(&mut self.code, val_reg, ptr_reg, offset),
+            Type::I16 => emit::I16Store(&mut self.code, val_reg, ptr_reg, offset),
+            Type::I32 => emit::I32Store(&mut self.code, val_reg, ptr_reg, offset),
+            Type::I64 | Type::PTR => emit::I64Store(&mut self.code, val_reg, ptr_reg, offset),
+            Type::F32 => emit::F32Store(&mut self.code, val_reg, ptr_reg, offset),
+            Type::F64 => emit::F64Store(&mut self.code, val_reg, ptr_reg, offset),
             _ => panic!("Unsupported store type {:?}", ty),
         }
     }
@@ -1156,6 +1153,16 @@ pub(crate) fn compile_function(
     func_id: FuncId,
     func: &Function,
 ) -> CompiledFunction {
+    // The register representation and opcode handlers currently support scalar
+    // values only. Check before fusion/emission, including block parameters and
+    // values moved or returned without going through a typed opcode dispatch.
+    for value in func.dfg.values.keys() {
+        let ty = func.dfg.value_type(value);
+        assert!(
+            ty.is_scalar(),
+            "interpreter does not support value type {ty}"
+        );
+    }
     let entry = func.entry_block.expect("Function must have entry block");
     let rpo = func.layout.compute_rpo(entry);
 
@@ -1274,10 +1281,8 @@ impl<'a> Compiler<'a> {
                 let index_reg = self.mapper.reg(*index);
                 let res = self.func.dfg.first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
-                let imm = self
-                    .func
-                    .dfg
-                    .ptr_imm(*imm_id)
+                let imm = imm_id
+                    .get(&self.func.dfg)
                     .expect("validated ptr-index must have an immediate");
                 emit::PtrIndex(
                     &mut self.code,
@@ -1380,6 +1385,23 @@ fn calculate_moves(
 mod tests {
     use super::*;
     use veloc_mir::{CallConv, Linkage, ModuleBuilder};
+
+    #[test]
+    #[should_panic(expected = "interpreter does not support value type i32<4>")]
+    fn rejects_vector_parameters_even_when_only_returned() {
+        let mut module = ModuleBuilder::new();
+        let sig = module.make_signature(vec![Type::I32X4], vec![Type::I32X4], CallConv::SystemV);
+        let func = module.declare_function("vector_identity".into(), sig, Linkage::Local);
+        {
+            let mut builder = module.builder(func);
+            let entry = builder.init_entry_block();
+            let param = builder.block_params(entry)[0];
+            builder.ins().ret(&[param]);
+        }
+        module.validate().unwrap();
+        let module = module.build();
+        compile_function(ModuleId::from_u32(0), func, module.get_function(func));
+    }
 
     #[test]
     fn block_parameters_reuse_registers() {

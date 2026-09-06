@@ -25,6 +25,12 @@ pub enum BvConst {
 }
 
 impl BvConst {
+    pub const ALL: &'static [Self] = &[Self::Zero, Self::One, Self::AllOnes];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|value| value.name() == name)
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
             Self::Zero => "Zero",

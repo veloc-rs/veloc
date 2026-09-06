@@ -4,14 +4,13 @@
 //! A delimiter-aware scanner and typed atoms handle nested lists, signatures,
 //! and forward SSA references independently of the instruction set.
 
-use super::format;
 use crate::{
     Block, BlockCall, CallConv, FuncId, Function, InstructionData, Linkage, MemFlags, Module,
     ModuleData, Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
     function::StackSlotData,
     inst::Inst,
     opspec::{ResultTypes, TypeList, TypeSchemeError},
-    types::ValueData,
+    types::{ValueData, parse_type},
 };
 use alloc::{
     format,
@@ -495,7 +494,7 @@ fn parse_instruction_header(
         let suffix = &rest[1..end];
         rest = &rest[end..];
         for part in split_top_level(suffix, '.') {
-            if let Some(parsed) = format::parse_type(part) {
+            if let Some(parsed) = parse_type(part) {
                 if ty.replace(parsed).is_some() {
                     return Err(ParseError("multiple result type suffixes".into()));
                 }
@@ -590,9 +589,7 @@ fn parse_type_list(text: &str) -> core::result::Result<Vec<Type>, ParseError> {
     }
     split_top_level(text, ',')
         .into_iter()
-        .map(|field| {
-            format::parse_type(field).ok_or_else(|| ParseError(format!("unknown type `{field}`")))
-        })
+        .map(|field| parse_type(field).ok_or_else(|| ParseError(format!("unknown type `{field}`"))))
         .collect()
 }
 
@@ -619,7 +616,7 @@ fn parse_global(text: &str) -> core::result::Result<(String, Type, Linkage), Par
         .rfind('(')
         .ok_or_else(|| ParseError("global is missing linkage".into()))?;
     let ty_text = rest[..open].trim();
-    let ty = format::parse_type(ty_text)
+    let ty = parse_type(ty_text)
         .ok_or_else(|| ParseError(format!("unknown global type `{ty_text}`")))?;
     let linkage_text = rest[open + 1..]
         .trim()
@@ -665,7 +662,7 @@ fn parse_block_header(text: &str) -> core::result::Result<(u32, Vec<(String, Typ
                 let (name, ty) = field.split_once(':').ok_or_else(|| {
                     ParseError(format!("block parameter `{field}` is missing `:`"))
                 })?;
-                let ty = format::parse_type(ty.trim())
+                let ty = parse_type(ty.trim())
                     .ok_or_else(|| ParseError(format!("unknown type `{}`", ty.trim())))?;
                 Ok((name.trim().to_string(), ty))
             })
@@ -1078,7 +1075,14 @@ mod tests {
         let (opcode, ty, _, args) =
             parse_instruction_header("iadd.i32<scalable 4> v0, v1").unwrap();
         assert_eq!(opcode, Opcode::IAdd);
-        assert_eq!(ty, Type::new_vector(crate::ScalarType::I32, 4, true));
+        assert_eq!(
+            ty,
+            crate::Type::I32
+                .as_scalar()
+                .unwrap()
+                .vector(4, true)
+                .map(crate::VectorType::as_type)
+        );
         assert_eq!(args, "v0, v1");
     }
 

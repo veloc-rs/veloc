@@ -121,39 +121,120 @@ fn generate_stack_slot_expr(var_name: &str, operands: &[OperandConstraint], fiel
     }
 }
 
+/// Keep literal information while expanding encoding macros, so constant
+/// bit operations are folded before emitting Rust instead of reparsing strings.
+enum EncodingExpr {
+    Constant(i64),
+    Code(String),
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    #[test]
+    fn folds_literal_bit_operations_after_macro_expansion() {
+        let mut macros = HashMap::new();
+        macros.insert(
+            "mask".into(),
+            MacroDef {
+                name: "mask".into(),
+                args: vec!["x".into()],
+                body: Expr::BitAnd(Box::new(Expr::Variable("x".into())), Box::new(Expr::Int(7))),
+            },
+        );
+        let expr = Expr::Shl(
+            Box::new(Expr::Call("mask".into(), vec![Expr::Int(7)])),
+            Box::new(Expr::Int(3)),
+        );
+        assert!(matches!(
+            generate_expr(&expr, &[], &macros),
+            EncodingExpr::Constant(56)
+        ));
+        let expr = Expr::Call("bit-and".into(), vec![Expr::Int(0), Expr::Int(7)]);
+        assert!(matches!(
+            generate_expr(&expr, &[], &macros),
+            EncodingExpr::Constant(0)
+        ));
+    }
+
+    #[test]
+    fn folding_does_not_discard_dynamic_evaluation_or_guess_shift_semantics() {
+        let macros = HashMap::new();
+        let dynamic = Expr::BitAnd(
+            Box::new(Expr::Int(0)),
+            Box::new(Expr::Call("read-next".into(), vec![])),
+        );
+        assert_eq!(
+            generate_expr(&dynamic, &[], &macros).to_string(),
+            "(0 & ctx.read_next())"
+        );
+        for (lhs, rhs) in [(-1, 3), (1, 31), (1, 64)] {
+            let expr = Expr::Shl(Box::new(Expr::Int(lhs)), Box::new(Expr::Int(rhs)));
+            assert!(matches!(
+                generate_expr(&expr, &[], &macros),
+                EncodingExpr::Code(_)
+            ));
+        }
+    }
+}
+
+impl std::fmt::Display for EncodingExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constant(value) => write!(f, "{value}"),
+            Self::Code(code) => f.write_str(code),
+        }
+    }
+}
+
+fn binary_expr(op: &str, lhs: EncodingExpr, rhs: EncodingExpr) -> EncodingExpr {
+    if let (EncodingExpr::Constant(a), EncodingExpr::Constant(b)) = (&lhs, &rhs) {
+        // Unsuffixed Rust literals inherit their context. Stay within the
+        // nonnegative i32 range and leave negative/overflowing shifts to Rust.
+        if (0..=i64::from(i32::MAX)).contains(a) && (0..=i64::from(i32::MAX)).contains(b) {
+            let value = match op {
+                "|" => Some(a | b),
+                "&" => Some(a & b),
+                "<<" if *b < 32 => a.checked_shl(*b as u32),
+                ">>" if *b < 32 => a.checked_shr(*b as u32),
+                "<<" | ">>" => None,
+                _ => unreachable!("known encoding bit operator"),
+            };
+            if let Some(value) = value.filter(|value| *value <= i64::from(i32::MAX)) {
+                return EncodingExpr::Constant(value);
+            }
+        }
+    }
+    EncodingExpr::Code(format!("({lhs} {op} {rhs})"))
+}
+
 fn generate_expr(
     expr: &Expr,
     operands: &[OperandConstraint],
     macros: &HashMap<String, MacroDef>,
-) -> String {
+) -> EncodingExpr {
+    let binary = |op, a, b| {
+        binary_expr(
+            op,
+            generate_expr(a, operands, macros),
+            generate_expr(b, operands, macros),
+        )
+    };
     match expr {
-        Expr::Int(i) => i.to_string(),
-        Expr::Variable(v) => generate_variable(v, operands),
-        Expr::HwEnc(v) => generate_hw_enc(v, operands),
-        Expr::SlotBaseHwEnc(v) => generate_stack_slot_expr(v, operands, "base_hw_enc"),
-        Expr::SlotOffset(v) => generate_stack_slot_expr(v, operands, "offset"),
-        Expr::SlotSize(v) => generate_stack_slot_expr(v, operands, "size"),
-        Expr::SlotAlign(v) => generate_stack_slot_expr(v, operands, "align"),
-        Expr::BitOr(a, b) => format!(
-            "({} | {})",
-            generate_expr(a, operands, macros),
-            generate_expr(b, operands, macros)
-        ),
-        Expr::BitAnd(a, b) => format!(
-            "({} & {})",
-            generate_expr(a, operands, macros),
-            generate_expr(b, operands, macros)
-        ),
-        Expr::Shl(a, b) => format!(
-            "({} << {})",
-            generate_expr(a, operands, macros),
-            generate_expr(b, operands, macros)
-        ),
-        Expr::Shr(a, b) => format!(
-            "({} >> {})",
-            generate_expr(a, operands, macros),
-            generate_expr(b, operands, macros)
-        ),
+        Expr::Int(i) => EncodingExpr::Constant(*i),
+        Expr::Variable(v) => EncodingExpr::Code(generate_variable(v, operands)),
+        Expr::HwEnc(v) => EncodingExpr::Code(generate_hw_enc(v, operands)),
+        Expr::SlotBaseHwEnc(v) => {
+            EncodingExpr::Code(generate_stack_slot_expr(v, operands, "base_hw_enc"))
+        }
+        Expr::SlotOffset(v) => EncodingExpr::Code(generate_stack_slot_expr(v, operands, "offset")),
+        Expr::SlotSize(v) => EncodingExpr::Code(generate_stack_slot_expr(v, operands, "size")),
+        Expr::SlotAlign(v) => EncodingExpr::Code(generate_stack_slot_expr(v, operands, "align")),
+        Expr::BitOr(a, b) => binary("|", a, b),
+        Expr::BitAnd(a, b) => binary("&", a, b),
+        Expr::Shl(a, b) => binary("<<", a, b),
+        Expr::Shr(a, b) => binary(">>", a, b),
         Expr::Call(name, args) => {
             if let Some(m) = macros.get(name) {
                 let args_map: HashMap<_, _> = m
@@ -162,22 +243,26 @@ fn generate_expr(
                     .enumerate()
                     .filter_map(|(i, name)| args.get(i).map(|val| (name.clone(), val.clone())))
                     .collect();
-                let expanded = subst_expr(&m.body, &args_map);
-                return generate_expr(&expanded, operands, macros);
+                return generate_expr(&subst_expr(&m.body, &args_map), operands, macros);
             }
-
-            let gen_args: Vec<String> = args
+            if let [a, b] = args.as_slice() {
+                let op = match name.as_str() {
+                    "bit-or" => Some("|"),
+                    "bit-and" => Some("&"),
+                    "shl" => Some("<<"),
+                    "shr" => Some(">>"),
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    return binary(op, a, b);
+                }
+            }
+            let args = args
                 .iter()
-                .map(|a| generate_expr(a, operands, macros))
-                .collect();
-
-            match (name.as_str(), gen_args.len()) {
-                ("bit-or", 2) => format!("({} | {})", gen_args[0], gen_args[1]),
-                ("bit-and", 2) => format!("({} & {})", gen_args[0], gen_args[1]),
-                ("shl", 2) => format!("({} << {})", gen_args[0], gen_args[1]),
-                ("shr", 2) => format!("({} >> {})", gen_args[0], gen_args[1]),
-                _ => format!("ctx.{}({})", name.replace("-", "_"), gen_args.join(", ")),
-            }
+                .map(|a| generate_expr(a, operands, macros).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            EncodingExpr::Code(format!("ctx.{}({args})", name.replace("-", "_")))
         }
     }
 }
@@ -249,12 +334,14 @@ fn generate_emit_expr(
                     generate_emit_expr(e, operands, macros)
                 ));
             }
-            s.push_str("            } else {\n");
-            for e in else_p {
-                s.push_str(&format!(
-                    "                {}\n",
-                    generate_emit_expr(e, operands, macros)
-                ));
+            if !else_p.is_empty() {
+                s.push_str("            } else {\n");
+                for e in else_p {
+                    s.push_str(&format!(
+                        "                {}\n",
+                        generate_emit_expr(e, operands, macros)
+                    ));
+                }
             }
             s.push_str("            }");
             s

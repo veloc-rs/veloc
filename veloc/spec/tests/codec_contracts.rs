@@ -1,4 +1,5 @@
-use veloc_opgen::compile_mir;
+mod common;
+use common::compile_mir;
 
 const FORMATS: &str = include_str!("../../mir/defs/formats.ops");
 

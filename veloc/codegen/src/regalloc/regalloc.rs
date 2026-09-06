@@ -60,10 +60,6 @@ impl<'a> RegisterAllocator<'a> {
             if let Some(preg) = self.try_allocate(&interval, &preserved_regs, &call_positions) {
                 self.allocation.insert(interval.vreg, preg);
                 self.active_regs.insert(preg, interval.end);
-
-                // 更新 MachineFunction 中的 VRegData
-                let data = mfunc.vreg_data_mut(interval.vreg);
-                data.assigned_reg = Some(preg);
             } else {
                 // 需要溢出
                 self.spill_vreg(interval.vreg, mfunc);
@@ -206,9 +202,6 @@ impl<'a> RegisterAllocator<'a> {
             .expect("register spilling requires a frame pointer");
         let slot = mfunc.alloc_stack_slot(base_reg, size, align);
         self.spilled.insert(vreg, slot);
-
-        let data = mfunc.vreg_data_mut(vreg);
-        data.stack_slot = Some(slot);
     }
 
     /// 重写指令，替换虚拟寄存器

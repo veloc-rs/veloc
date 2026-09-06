@@ -137,7 +137,7 @@ mod tests {
             include_str!("../../mir/defs/mir.ops"),
         ]
         .join("\n");
-        let defs = crate::model::parse(&source).unwrap();
+        let defs = crate::fixtures::parse(&source).unwrap();
         for (name, logical, key) in [
             ("PtrIndex", "imm", "PtrIndexImmId"),
             ("LoadStride", "mem", "VectorMemExtId"),
@@ -178,7 +178,7 @@ mod tests {
             include_str!("../../mir/defs/mir.ops"),
         ]
         .join("\n");
-        let defs = crate::model::parse(&source).unwrap();
+        let defs = crate::fixtures::parse(&source).unwrap();
         let op = defs.ops.iter().find(|op| op.name == "BrTable").unwrap();
         let format = defs
             .storage

@@ -1,0 +1,47 @@
+// Compact MIR Type representation, packed from least to most significant bit.
+// Unused high bits are reserved. Scalar code zero is invalid; lanes_log2 zero
+// denotes a scalar. Changing this layout changes the raw encoding.
+encoding Type {
+    storage: u16,
+    fields: [scalar(4), lanes_log2(4), scalable(1)],
+    codes: [I8(1), I16(2), I32(3), I64(4), F32(5), F64(6), BOOL(7), PTR(8)]
+}
+
+// Type meanings are independent of their scalar codes above.
+// Pointer width is supplied by the target.
+type I8 = int(8);
+type I16 = int(16);
+type I32 = int(32);
+type I64 = int(64);
+type F32 = float(32);
+type F64 = float(64);
+type BOOL = bool();
+type PTR = ptr();
+
+// Named conveniences, not an exhaustive list of legal vector types.
+type I32X4 = vector(I32, 4);
+type I64X2 = vector(I64, 2);
+type F32X4 = vector(F32, 4);
+type F64X2 = vector(F64, 2);
+type I8X16 = vector(I8, 16);
+type I16X8 = vector(I16, 8);
+
+// Members are exact types, other classes, or vectors(set). The latter includes
+// every legal fixed and scalable shape over a set of non-pointer scalar types.
+class Any { members: [Scalar, PTR, Vector] }
+class Scalar { members: [ScalarInteger, ScalarFloat, BOOL] }
+class ScalarInteger { members: [I8, I16, I32, I64] }
+class ScalarFloat { members: [F32, F64] }
+class Integer { members: [ScalarInteger, vectors(ScalarInteger)] }
+class Float { members: [ScalarFloat, vectors(ScalarFloat)] }
+class Number { members: [Integer, Float] }
+class Vector { members: [vectors(Scalar)] }
+
+// Public Type predicates. Unlike the Scalar class, is_scalar includes pointers.
+// These are evaluated as exact type sets, not executable Rust expressions.
+predicate is_scalar = Scalar | PTR;
+predicate is_vector = Vector;
+predicate is_integer = Integer;
+predicate is_float = Float;
+predicate is_ptr = PTR;
+predicate is_predicate = vectors(BOOL);

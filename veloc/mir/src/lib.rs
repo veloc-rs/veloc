@@ -45,7 +45,7 @@ pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 pub use text::{ModuleParser, ParseError};
 pub use types::{
     Block, BlockCall, FuncId, JumpTable, ModuleId, ScalarType, SigId, Signature, StackSlot, Type,
-    TypeBits, TypeSize, Value, ValueDef, ValueList, Variable,
+    TypeBits, TypeSize, Value, ValueDef, ValueList, Variable, VectorType,
 };
 
 pub use inst::{Inst, InstructionData, VectorMemOptions};

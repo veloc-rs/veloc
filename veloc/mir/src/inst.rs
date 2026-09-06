@@ -51,13 +51,6 @@ entity_impl!(VectorExtId, "vext");
 pub struct ConstantPoolId(pub u32);
 entity_impl!(ConstantPoolId, "const");
 
-/// 常量池中的数据
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ConstantPoolData {
-    /// 原始字节数据 (用于向量常量、掩码等)
-    Bytes(alloc::vec::Vec<u8>),
-}
-
 // =============================================================================
 // 向量操作辅助数据结构 (存储在 DFG 的 Arena 中)
 // =============================================================================
@@ -196,25 +189,6 @@ mod tests {
         calls.clear();
         InstructionData::Iconst { value: 0 }.visit_successors(&dfg, |call| calls.push(call));
         assert!(calls.is_empty());
-    }
-
-    #[test]
-    fn whole_record_interning_matches_the_convenience_constructors() {
-        let mut dfg = DataFlowGraph::new();
-        let imm = PtrIndexImm {
-            offset: -17,
-            scale: 8,
-        };
-        let id = dfg.intern_ptr_imm(imm);
-        assert_eq!(id, dfg.make_ptr_imm(-17, 8));
-        assert_eq!(dfg.ptr_imm(id), Some(&imm));
-        let ext = VectorExtData {
-            mask: Value(1),
-            evl: Some(Value(2)),
-        };
-        let id = dfg.intern_vector_ext(ext);
-        assert_eq!(id, dfg.make_vector_ext(Value(1), Some(Value(2))));
-        assert_eq!(dfg.vector_ext(id), Some(&ext));
     }
 
     #[test]

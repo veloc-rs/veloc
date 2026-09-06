@@ -1,4 +1,6 @@
-use veloc_opgen::{Error, compile_mir};
+mod common;
+use common::compile_mir;
+use veloc_opgen::Error;
 
 const PAIR: &str = r#"
 format Pair {
@@ -46,6 +48,136 @@ fn rejected(source: &str) -> Error {
     };
     assert!(error.line > 0 && error.column > 0, "{error}");
     error
+}
+
+fn artifacts(output: veloc_opgen::Generated) -> [String; 9] {
+    [
+        output.encoding,
+        output.builtins,
+        output.scalars,
+        output.formats,
+        output.types,
+        output.opcodes,
+        output.instructions,
+        output.text_parser,
+        output.text_printer,
+    ]
+}
+
+#[test]
+fn result_names_do_not_change_generated_artifacts() {
+    for (named, alternatives) in [
+        ("(result: T)", vec!["T", "(T)", "(answer: T)"]),
+        (
+            "(result: T, overflow: BOOL)",
+            vec!["(T, BOOL)", "(T, overflow: BOOL)", "(result: T, BOOL)"],
+        ),
+        (
+            "(result: shape(T, Integer))",
+            vec!["shape(T, Integer)", "(shape(T, Integer))"],
+        ),
+    ] {
+        let reference = artifacts(compile_mir(&PAIR.replace("(result: T)", named)).unwrap());
+        for results in alternatives {
+            let source = PAIR.replace("(result: T)", results);
+            assert_eq!(
+                artifacts(compile_mir(&source).unwrap()),
+                reference,
+                "{results}"
+            );
+        }
+    }
+    let reference = artifacts(compile_mir(LOAD).unwrap());
+    assert_eq!(
+        artifacts(compile_mir(&LOAD.replace("(result: Any)", "Any")).unwrap()),
+        reference
+    );
+}
+
+#[test]
+fn named_results_keep_their_position_among_anonymous_results() {
+    let source = PAIR
+        .replace("(result: T)", "(T, wider: I64)")
+        .replace("memory: NONE", "where: [wider(left, wider)], memory: NONE");
+    let output = compile_mir(&source).unwrap();
+    assert!(
+        output
+            .types
+            .contains("R::Wider { from: Slot::Operand(0), to: Slot::Result(1) }")
+    );
+    let both_named = source.replace("(T, wider: I64)", "(result: T, wider: I64)");
+    assert_eq!(
+        artifacts(output),
+        artifacts(compile_mir(&both_named).unwrap())
+    );
+}
+
+#[test]
+fn anonymous_results_have_no_synthetic_names() {
+    for reference in ["result", "result0"] {
+        let source = PAIR.replace("(result: T)", "Integer").replace(
+            "memory: NONE",
+            &format!("where: [wider(left, {reference})], memory: NONE"),
+        );
+        assert!(
+            rejected(&source)
+                .message
+                .contains("missing operand or result")
+        );
+    }
+    // An operand may use `result`; anonymous returns do not reserve that name.
+    let source = PAIR.replace("(result: T)", "T").replace("left", "result");
+    assert!(compile_mir(&source).is_ok());
+}
+
+#[test]
+fn result_only_type_variables_and_nested_type_patterns_still_bind() {
+    let source = r#"
+        format Empty { fields: [opcode(Opcode)], opcode: dynamic(opcode) }
+        op Pair<T: Integer>() -> T {
+            mnemonic: "pair", storage: Empty {}, memory: NONE
+        }
+    "#;
+    let output = compile_mir(source).unwrap();
+    assert!(
+        output
+            .types
+            .contains("results: L::Fixed(&[P::Bind(0, C::Integer)])")
+    );
+    // Multiple explicit results are valid signatures, but not supported by the
+    // current field-builder projection. Check their binding at the model layer.
+    common::parse(&source.replace("-> T", "-> (T, T)")).unwrap();
+    let vector = PAIR
+        .replace("T: Integer", "T: Vector")
+        .replace("(result: T)", "element(T)");
+    assert_eq!(
+        artifacts(compile_mir(&vector).unwrap()),
+        artifacts(
+            compile_mir(&vector.replace("-> element(T)", "-> (result: element(T))")).unwrap()
+        )
+    );
+}
+
+#[test]
+fn bare_result_types_leave_the_operation_body_unconsumed() {
+    for result in ["T", "BOOL", "shape(T, Integer)"] {
+        let source = PAIR.replace("(result: T)", &format!("{result} // result type\n"));
+        assert!(compile_mir(&source).is_ok(), "{result}");
+    }
+    for result in [
+        "",
+        "(T",
+        "T, BOOL",
+        "(T BOOL)",
+        "(result:)",
+        "(shape(T, Integer): T)",
+        "(@result: T)",
+        "([T])",
+        "result: T",
+    ] {
+        let source = PAIR.replace("(result: T)", result);
+        rejected(&source);
+    }
 }
 
 #[test]
