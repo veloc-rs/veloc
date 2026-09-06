@@ -12,7 +12,7 @@ use object::{
     Architecture, BinaryFormat, Endianness, RelocationEncoding, RelocationFlags, RelocationKind,
     SymbolFlags, SymbolKind, SymbolScope,
 };
-use veloc_ir::{Function, Linkage};
+use veloc_mir::{Function, Linkage};
 
 const TEXT_ALIGN: u64 = 16;
 
@@ -161,7 +161,7 @@ mod tests {
     use alloc::vec::Vec;
     use object::read::{Object as _, ObjectSection as _, ObjectSymbol as _};
     use object::{BinaryFormat, RelocationEncoding, RelocationKind, RelocationTarget, SymbolScope};
-    use veloc_ir::{CallConv, Linkage, ModuleBuilder};
+    use veloc_mir::{CallConv, Linkage, ModuleBuilder};
 
     fn parse_symbol<'a>(
         file: &'a object::File<'a>,

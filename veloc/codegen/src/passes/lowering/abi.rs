@@ -15,11 +15,11 @@ impl AbiLoweringPass {
     }
 }
 
-fn plan_signature(target: &dyn TargetMachine, sig: &veloc_ir::Signature) -> Result<CallConvPlan> {
+fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<CallConvPlan> {
     CallConv::from(sig.call_conv).plan_signature(target.desc().arch, sig)
 }
 
-fn plan_callsite(target: &dyn TargetMachine, sig: &veloc_ir::Signature) -> Result<CallConvPlan> {
+fn plan_callsite(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<CallConvPlan> {
     CallConv::from(sig.call_conv).plan_callsite(target.desc().arch, &sig.params, &sig.returns)
 }
 
@@ -182,7 +182,7 @@ fn lower_callsite<S>(
 fn lower_return<S>(
     target: &dyn TargetMachine,
     mfunc: &mut MachineFunction<S>,
-    sig: &veloc_ir::Signature,
+    sig: &veloc_mir::Signature,
     plan: &CallConvPlan,
     inst_id: crate::lir::InstId,
 ) -> Vec<MachineInst> {

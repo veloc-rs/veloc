@@ -4,12 +4,14 @@
 op Iconst(@value: u64) -> (result: ScalarInteger) {
     mnemonic: "iconst",
     storage: Iconst { value: value },
+    text: Text { args: [integer(value)] },
     memory: NONE
 }
 
 op Fconst(@value: u64) -> (result: ScalarFloat) {
     mnemonic: "fconst",
     storage: Fconst { value: value },
+    text: Text { args: [float(value)] },
     memory: NONE
 }
 
@@ -19,9 +21,10 @@ op Bconst(@value: bool) -> (result: BOOL) {
     memory: NONE
 }
 
-op Vconst(@pool_id: ConstantPoolId) -> (result: Vector) {
+op Vconst(@bytes: Bytes) -> (result: Vector) {
     mnemonic: "vconst",
-    storage: Vconst { pool_id: pool_id },
+    storage: Vconst { pool_id: pool(bytes) },
+    text: Text { args: [bytes(bytes)] },
     memory: NONE, constraints: [VectorConstant]
 }
 
@@ -262,12 +265,14 @@ op IEqz(arg: ScalarInteger) -> (result: BOOL) {
 op Icmp<T: ScalarIntegerOrPointer>(@kind: IntCC, lhs: T, rhs: T) -> (result: BOOL) {
     mnemonic: "icmp",
     storage: IntCompare { kind: kind, args: [lhs, rhs] },
+    text: Text { args: [space(kind, lhs), rhs] },
     memory: NONE, constraints: [PointerComparison]
 }
 
 op Fcmp<T: ScalarFloat>(@kind: FloatCC, lhs: T, rhs: T) -> (result: BOOL) {
     mnemonic: "fcmp",
     storage: FloatCompare { kind: kind, args: [lhs, rhs] },
+    text: Text { args: [space(kind, lhs), rhs] },
     memory: NONE
 }
 
@@ -362,30 +367,35 @@ op PtrToInt(arg: PTR) -> (result: ScalarInteger) {
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
+    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
 op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
     mnemonic: "store",
     storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
+    text: Text { args: [value, ptr], named: [default(offset, 0)], flags: flags },
     traits: [MAY_TRAP], memory: HEAP_WRITE
 }
 
 op StackLoad(@slot: StackSlot, @offset: u32) -> (result: Any) {
     mnemonic: "stack-load",
     storage: StackLoad { slot: slot, offset: offset },
+    text: Text { args: [slot], named: [default(offset, 0)] },
     memory: STACK_READ
 }
 
 op StackStore(@slot: StackSlot, value: Any, @offset: u32) -> () {
     mnemonic: "stack-store",
     storage: StackStore { slot: slot, value: value, offset: offset },
+    text: Text { args: [value, slot], named: [default(offset, 0)] },
     memory: STACK_WRITE
 }
 
 op StackAddr(@slot: StackSlot, @offset: u32) -> (result: PTR) {
     mnemonic: "stack-addr",
     storage: StackAddr { slot: slot, offset: offset },
+    text: Text { args: [slot], named: [default(offset, 0)] },
     memory: NONE
 }
 
@@ -395,27 +405,34 @@ op PtrOffset(ptr: PTR, @offset: i32) -> (result: PTR) {
     memory: NONE
 }
 
-op PtrIndex(ptr: PTR, index: ScalarInteger, @imm_id: PtrIndexImmId) -> (result: PTR) {
+op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> (result: PTR) {
     mnemonic: "ptr-index",
-    storage: PtrIndex { ptr: ptr, index: index, imm_id: imm_id },
+    storage: PtrIndex { ptr: ptr, index: index, imm_id: pool(imm) },
+    text: Text { args: [ptr, index], named: [default(imm.scale, 1), default(imm.offset, 0)] },
     memory: NONE, constraints: [NonZeroScale]
 }
 
 op Call(@func_id: FuncId, args: values) -> signature {
     mnemonic: "call",
     storage: Call { func_id: func_id, args: args },
+    signature: function(func_id),
+    text: Text { args: [invoke(func_id, args)] },
     traits: [MAY_TRAP], memory: UNKNOWN
 }
 
 op CallIndirect(@sig_id: SigId, ptr: PTR, args: values) -> signature {
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
+    signature: sig_id,
+    text: Text { args: [invoke(ptr, args, sig_id)] },
     traits: [MAY_TRAP], memory: UNKNOWN
 }
 
 op CallIntrinsic(@intrinsic: Intrinsic, @sig_id: SigId, args: values) -> signature {
     mnemonic: "call-intrinsic",
     storage: CallIntrinsic { intrinsic: intrinsic, args: args, sig_id: sig_id },
+    signature: sig_id,
+    text: Text { args: [invoke(intrinsic, args, sig_id)] },
     traits: [MAY_TRAP], memory: UNKNOWN
 }
 
@@ -431,9 +448,9 @@ op Br(condition: BOOL, then_dest: successor, else_dest: successor) -> () {
     traits: [TERMINATOR], memory: NONE
 }
 
-op BrTable(index: I32, table: successors) -> () {
+op BrTable(index: I32, cases: successors, default: successor) -> () {
     mnemonic: "br-table",
-    storage: BrTable { index: index, table: table },
+    storage: BrTable { index: index, table: table(cases, default) },
     traits: [TERMINATOR], memory: NONE
 }
 
@@ -451,13 +468,13 @@ op Select<T: Any>(condition: BOOL, if_true: T, if_false: T) -> (result: T) {
 
 op Unreachable() -> () {
     mnemonic: "unreachable",
-    storage: Unreachable {  },
+    storage: Unreachable {},
     traits: [TERMINATOR, MAY_TRAP], memory: NONE
 }
 
 op Nop() -> () {
     mnemonic: "nop",
-    storage: Nop {  },
+    storage: Nop {},
     memory: NONE
 }
 
@@ -467,9 +484,10 @@ op Splat<T: Scalar>(arg: T) -> (result: vector(T)) {
     memory: NONE
 }
 
-op Shuffle<T: Vector>(lhs: T, rhs: T, @mask: ConstantPoolId) -> (result: T) {
+op Shuffle<T: Vector>(lhs: T, rhs: T, @mask: Bytes) -> (result: T) {
     mnemonic: "shuffle",
-    storage: Shuffle { args: [lhs, rhs], mask: mask },
+    storage: Shuffle { args: [lhs, rhs], mask: pool(mask) },
+    text: Text { args: [lhs, rhs], named: [bytes(mask)] },
     memory: NONE, constraints: [ShuffleMask]
 }
 
@@ -527,27 +545,31 @@ op ReduceXor<T: Vector>(arg: T) -> (result: element(T)) {
     memory: NONE
 }
 
-op LoadStride(ptr: PTR, stride: ScalarInteger, @ext: VectorMemExtId) -> (result: Vector) {
+op LoadStride(ptr: PTR, stride: ScalarInteger, @mem: VectorMemOptions) -> (result: Vector) {
     mnemonic: "load-stride",
-    storage: VectorLoadStrided { ptr: ptr, stride: stride, ext: ext },
+    storage: VectorLoadStrided { ptr: ptr, stride: stride, ext: pool(mem) },
+    text: Text { args: [ptr], named: [stride, default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
-op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, @ext: VectorMemExtId) -> () {
+op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, @mem: VectorMemOptions) -> () {
     mnemonic: "store-stride",
-    storage: VectorStoreStrided { args: [ptr, stride, value], ext: ext },
+    storage: VectorStoreStrided { args: [ptr, stride, value], ext: pool(mem) },
+    text: Text { args: [value, ptr], named: [stride, default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
     traits: [MAY_TRAP], memory: HEAP_WRITE
 }
 
-op Gather<T: IntegerVector>(ptr: PTR, index: T, @ext: VectorMemExtId) -> (result: shape(T, Vector)) {
+op Gather<T: IntegerVector>(ptr: PTR, index: T, @mem: VectorMemOptions) -> (result: shape(T, Vector)) {
     mnemonic: "gather",
-    storage: VectorGather { ptr: ptr, index: index, ext: ext },
+    storage: VectorGather { ptr: ptr, index: index, ext: pool(mem) },
+    text: Text { args: [ptr], named: [index, default(mem.scale, 1), default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
-op Scatter<T: IntegerVector>(ptr: PTR, index: T, value: shape(T, Vector), @ext: VectorMemExtId) -> () {
+op Scatter<T: IntegerVector>(ptr: PTR, index: T, value: shape(T, Vector), @mem: VectorMemOptions) -> () {
     mnemonic: "scatter",
-    storage: VectorScatter { args: [ptr, index, value], ext: ext },
+    storage: VectorScatter { args: [ptr, index, value], ext: pool(mem) },
+    text: Text { args: [value, ptr], named: [index, default(mem.scale, 1), default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
     traits: [MAY_TRAP], memory: HEAP_WRITE
 }
 

@@ -5,6 +5,6 @@ extern crate std;
 
 pub use veloc_codegen as codegen;
 pub use veloc_interpreter as interpreter;
-pub use veloc_ir as ir;
+pub use veloc_mir as mir;
 
-pub use ir::{Error, Result};
+pub use mir::{Error, Result};

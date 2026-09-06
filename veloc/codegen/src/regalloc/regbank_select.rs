@@ -1,7 +1,7 @@
 use crate::lir::{MachineFunction, MachineOperand};
 use crate::target::arch::TargetMachine;
 use alloc::vec::Vec;
-use veloc_ir::Type;
+use veloc_mir::Type;
 
 /// 寄存器库 (Register Bank)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

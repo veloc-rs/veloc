@@ -1,6 +1,6 @@
 use bitvec::prelude::*;
 use cranelift_entity::{EntityRef, SecondaryMap};
-use veloc_ir::{Block, Function, Inst, Value};
+use veloc_mir::{Block, Function, Inst, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveRange {

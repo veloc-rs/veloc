@@ -9,7 +9,7 @@ use crate::lir::{
 use crate::target::arch::{CallConv, RegClass, TargetMachine};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use veloc_ir::Type;
+use veloc_mir::Type;
 
 /// 活跃区间
 #[derive(Debug, Clone)]
@@ -45,7 +45,7 @@ impl<'a> RegisterAllocator<'a> {
     }
 
     /// 执行寄存器分配
-    pub fn allocate<S>(&mut self, mfunc: &mut MachineFunction<S>, call_conv: veloc_ir::CallConv) {
+    pub fn allocate<S>(&mut self, mfunc: &mut MachineFunction<S>, call_conv: veloc_mir::CallConv) {
         // 1. 计算活跃区间
         let intervals = self.compute_live_intervals(mfunc);
         let preserved_regs = CallConv::from(call_conv).preserved_regs(self.target.desc().arch);

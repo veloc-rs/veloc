@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 use core::any::TypeId;
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
-use veloc_ir::{ModuleData, function::Function};
+use veloc_mir::{ModuleData, function::Function};
 
 /// 声明在 Pass 执行后保留的分析结果。
 pub struct PreservedAnalyses {

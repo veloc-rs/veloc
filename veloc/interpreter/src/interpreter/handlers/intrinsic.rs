@@ -1,8 +1,8 @@
 use crate::value::InterpreterValue;
-use veloc_ir::Intrinsic;
+use veloc_mir::Intrinsic;
 
 pub(super) fn execute_intrinsic(id: u16, args: &[InterpreterValue]) -> InterpreterValue {
-    use veloc_ir::intrinsic_ids::*;
+    use veloc_mir::intrinsic_ids::*;
 
     let f = |i: usize| args[i].unwrap_f32();
     let d = |i: usize| args[i].unwrap_f64();

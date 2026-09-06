@@ -13,7 +13,7 @@ use crate::Result;
 use crate::engine::{Engine, Strategy};
 use crate::translator::WasmTranslator;
 use crate::vm::VMOffsets;
-use veloc_ir::{CallConv, FuncId, Linkage, MemFlags, Type as VelocType};
+use veloc_mir::{CallConv, FuncId, Linkage, MemFlags, Type as VelocType};
 use veloc_optimizer::{OptConfig, PassManager};
 use wasmparser::{Parser, Payload, Validator};
 
@@ -21,7 +21,7 @@ pub use self::runtime::*;
 pub use self::types::*;
 
 pub enum ModuleArtifact {
-    Interpreter(veloc::ir::Module),
+    Interpreter(veloc::mir::Module),
     Jit(LoadedObject<()>),
 }
 
@@ -55,12 +55,12 @@ pub struct RuntimeFunctions {
 }
 
 impl RuntimeFunctions {
-    pub fn declare(ir: &mut veloc::ir::ModuleBuilder) -> Self {
+    pub fn declare(ir: &mut veloc::mir::ModuleBuilder) -> Self {
         let p = VelocType::PTR;
         let i = VelocType::I32;
 
         let sig =
-            |ir: &mut veloc::ir::ModuleBuilder, params: Vec<VelocType>, ret: Vec<VelocType>| {
+            |ir: &mut veloc::mir::ModuleBuilder, params: Vec<VelocType>, ret: Vec<VelocType>| {
                 ir.make_signature(params, ret, CallConv::SystemV)
             };
 
@@ -164,7 +164,7 @@ pub struct Module {
 }
 
 impl Module {
-    pub fn ir(&self) -> &veloc::ir::Module {
+    pub fn ir(&self) -> &veloc::mir::Module {
         match &self.inner.artifact {
             ModuleArtifact::Interpreter(ir) => ir,
             ModuleArtifact::Jit(_loaded) => {
@@ -191,7 +191,7 @@ impl Module {
     pub fn new(engine: &Engine, wasm_bin: &[u8]) -> Result<Self> {
         Validator::new().validate_all(wasm_bin)?;
         let mut metadata = WasmMetadata::collect(wasm_bin)?;
-        let mut ir = veloc::ir::ModuleBuilder::new();
+        let mut ir = veloc::mir::ModuleBuilder::new();
 
         let mut ir_sig_ids = Vec::with_capacity(metadata.signatures.len());
         for i in 0..metadata.signatures.len() {
@@ -298,7 +298,7 @@ impl Module {
             }
         }
 
-        let ir = veloc_ir::Module::new(ir_data);
+        let ir = veloc_mir::Module::new(ir_data);
 
         if engine.config().dump_ir {
             println!("Generated IR for module:");
@@ -376,12 +376,12 @@ impl Module {
 }
 
 fn generate_init_expr(
-    ins: &mut veloc::ir::builder::InstBuilder,
+    ins: &mut veloc::mir::builder::InstBuilder,
     expr: &[GlobalInit],
-    vmctx: veloc::ir::Value,
+    vmctx: veloc::mir::Value,
     offsets: &VMOffsets,
     metadata: &WasmMetadata,
-) -> veloc::ir::Value {
+) -> veloc::mir::Value {
     let mut stack = Vec::new();
     for op in expr {
         match op {
@@ -443,7 +443,7 @@ fn generate_init_expr(
     stack.pop().unwrap_or_else(|| ins.iconst(0, VelocType::I64))
 }
 
-fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMetadata) {
+fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmMetadata) {
     for i in 0..metadata.functions.len() {
         let func_name = metadata.functions[i].name.clone();
         let is_import = i < metadata.num_imported_funcs;
@@ -540,12 +540,12 @@ fn generate_trampolines(ir: &mut veloc::ir::ModuleBuilder, metadata: &mut WasmMe
 }
 
 fn generate_veloc_init(
-    ir: &mut veloc::ir::ModuleBuilder,
+    ir: &mut veloc::mir::ModuleBuilder,
     metadata: &WasmMetadata,
     offsets: &VMOffsets,
     runtime: &RuntimeFunctions,
-) -> veloc::ir::FuncId {
-    let init_sig_id = ir.make_signature(vec![veloc::ir::Type::PTR], vec![], CallConv::SystemV);
+) -> veloc::mir::FuncId {
+    let init_sig_id = ir.make_signature(vec![veloc::mir::Type::PTR], vec![], CallConv::SystemV);
     let init_func_id =
         ir.declare_function("__veloc_init".to_string(), init_sig_id, Linkage::Export);
 

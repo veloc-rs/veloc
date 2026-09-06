@@ -3,8 +3,7 @@ use veloc_opgen::{compile_mir, parse};
 const ADD: &str = r#"
 format Binary {
     fields: [opcode(Opcode), args(values(2))],
-    opcode: dynamic(opcode),
-    text: values(2)
+    opcode: dynamic(opcode)
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
@@ -34,14 +33,15 @@ fn one_definition_drives_all_mir_views() {
     assert!(output.instructions.contains("visit_operands"));
     assert!(output.instructions.contains("replace_value"));
     assert!(output.instructions.contains("from_values"));
-    assert!(output.codecs.contains("for_format"));
+    assert!(output.text_parser.contains("Opcode::IAdd"));
+    assert!(output.text_printer.contains("Opcode::IAdd"));
 }
 
 #[test]
 fn the_actual_mir_definitions_compile_deterministically() {
     let source = [
-        include_str!("../../ir/defs/formats.ops"),
-        include_str!("../../ir/defs/mir.ops"),
+        include_str!("../../mir/defs/formats.ops"),
+        include_str!("../../mir/defs/mir.ops"),
     ]
     .join("\n");
     let first = compile_mir(&source).unwrap();
@@ -50,7 +50,8 @@ fn the_actual_mir_definitions_compile_deterministically() {
     assert_eq!(first.types, second.types);
     assert_eq!(first.opcodes, second.opcodes);
     assert_eq!(first.instructions, second.instructions);
-    assert_eq!(first.codecs, second.codecs);
+    assert_eq!(first.text_parser, second.text_parser);
+    assert_eq!(first.text_printer, second.text_printer);
 }
 
 #[test]

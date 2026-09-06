@@ -21,4 +21,4 @@ pub use instr::*;
 pub use module::*;
 pub use symbol::*;
 pub use use_def::UseDefChain;
-pub use veloc_ir::Value as ValueId;
+pub use veloc_mir::Value as ValueId;

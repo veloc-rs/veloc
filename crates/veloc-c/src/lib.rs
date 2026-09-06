@@ -18,7 +18,7 @@ pub use codegen::{CodeGenContext, compile_to_ir};
 pub use error::{Error, Result};
 pub use lexer::{Lexer, Token, TokenKind};
 pub use parser::Parser;
-pub use veloc_ir::Module;
+pub use veloc_mir::Module;
 
 /// Parse C source code and return the AST
 pub fn parse(source: &str) -> Result<TranslationUnit> {

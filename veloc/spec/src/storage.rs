@@ -2,13 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::Error;
+use crate::records::RecordDef;
 use crate::syntax::{Kind, Node, Record};
 
 #[derive(Debug)]
 pub(crate) struct Format {
     pub name: String,
     pub arity: Option<usize>,
-    pub codec: String,
     pub fixed_opcode: Option<String>,
     pub fields: Vec<Field>,
 }
@@ -18,7 +18,16 @@ pub(crate) struct Storage {
     pub formats: Vec<Format>,
     pub instructions: String,
     pub formats_code: String,
-    pub codecs: String,
+    pub records: Vec<RecordDef>,
+    pub alternatives: Vec<Alternative>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Alternative {
+    pub name: String,
+    pub fields: Vec<Field>,
+    pub formats: Vec<String>,
+    pub text: Node,
 }
 
 #[derive(Debug)]
@@ -28,7 +37,8 @@ struct Layout {
     fields: Vec<Field>,
     opcode: OpcodeSource,
     format: FormatSource,
-    text: Option<Text>,
+    canonical: bool,
+    text: Option<Node>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,28 +64,6 @@ enum OpcodeSource {
 enum FormatSource {
     Fixed(String),
     Arity { field: usize, formats: Vec<String> },
-}
-
-#[derive(Debug)]
-enum Text {
-    Values(usize),
-    Codec(String),
-}
-
-impl Text {
-    fn name(&self) -> &str {
-        match self {
-            Self::Values(_) => "Values",
-            Self::Codec(name) => name,
-        }
-    }
-
-    fn expression(&self) -> String {
-        match self {
-            Self::Values(arity) => format!("Self::Values {{ arity: {arity} }}"),
-            Self::Codec(name) => format!("Self::{name}"),
-        }
-    }
 }
 
 impl FieldType {
@@ -152,12 +140,6 @@ impl Layout {
             .try_fold(0usize, |n, field| n.checked_add(field.ty.arity()?))
     }
 
-    fn has_flags(&self) -> bool {
-        self.fields
-            .iter()
-            .any(|f| f.ty.named("MemFlags") || f.ty.named("VectorMemExtId"))
-    }
-
     fn pattern(&self) -> String {
         if self.fields.is_empty() {
             return format!("Self::{}", self.name);
@@ -176,6 +158,7 @@ impl Layout {
 /// Compile physical layouts and their logical format/text projections from one
 /// field schema. Opcode/type declarations are checked by the enclosing model.
 pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error> {
+    let properties = crate::records::compile(records, source)?;
     let mut layouts = Vec::new();
     let mut names = BTreeSet::new();
     for record in records {
@@ -190,34 +173,48 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
     }
     let formats = layouts
         .iter()
-        .filter_map(|layout| {
-            layout.text.as_ref().map(|text| Format {
-                name: layout.name.clone(),
-                arity: layout.arity(),
-                codec: text.name().to_owned(),
-                fixed_opcode: match &layout.opcode {
-                    OpcodeSource::Fixed(name) => Some(name.clone()),
-                    OpcodeSource::Dynamic(_) => None,
-                },
-                fields: layout.fields.clone(),
-            })
+        .filter(|layout| layout.canonical)
+        .map(|layout| Format {
+            name: layout.name.clone(),
+            arity: layout.arity(),
+            fixed_opcode: match &layout.opcode {
+                OpcodeSource::Fixed(name) => Some(name.clone()),
+                OpcodeSource::Dynamic(_) => None,
+            },
+            fields: layout.fields.clone(),
         })
         .collect::<Vec<_>>();
     validate_links(&layouts, &formats, records, source)?;
     Ok(Storage {
-        instructions: generate_instructions(&layouts),
+        instructions: crate::records::generate(&properties) + &generate_instructions(&layouts),
         formats_code: generate_formats(&formats),
-        codecs: generate_codecs(&layouts),
+        records: properties,
+        alternatives: layouts
+            .iter()
+            .filter(|layout| !layout.canonical)
+            .map(|layout| Alternative {
+                name: layout.name.clone(),
+                fields: layout.fields.clone(),
+                formats: match &layout.format {
+                    FormatSource::Fixed(name) => vec![name.clone()],
+                    FormatSource::Arity { formats, .. } => formats.clone(),
+                },
+                text: layout
+                    .text
+                    .clone()
+                    .expect("alternate layouts require a text adapter"),
+            })
+            .collect(),
         formats,
     })
 }
 
 fn parse_layout(record: &Record, source: &str) -> Result<Layout, Error> {
     let is_format = record.kind == "format";
-    let allowed = if is_format {
-        ["fields", "opcode", "text"]
+    let allowed: &[&str] = if is_format {
+        &["fields", "opcode"]
     } else {
-        ["fields", "opcode", "format"]
+        &["fields", "opcode", "format", "text"]
     };
     for (name, value) in &record.fields {
         if !allowed.contains(&name.as_str()) {
@@ -309,10 +306,7 @@ fn parse_layout(record: &Record, source: &str) -> Result<Layout, Error> {
     }
 
     let (format, text) = if is_format {
-        (
-            FormatSource::Fixed(record.name.clone()),
-            Some(parse_text(required(record, "text", source)?, source)?),
-        )
+        (FormatSource::Fixed(record.name.clone()), None)
     } else {
         let node = required(record, "format", source)?;
         let (kind, args) = call(node, source)?;
@@ -371,7 +365,14 @@ fn parse_layout(record: &Record, source: &str) -> Result<Layout, Error> {
                 ));
             }
         };
-        (format, None)
+        let text = record.fields.get("text").cloned().ok_or_else(|| {
+            Error::at(
+                source,
+                record.offset,
+                "alternate layout has no text adapter",
+            )
+        })?;
+        (format, Some(text))
     };
     let layout = Layout {
         offset: record.offset,
@@ -379,56 +380,10 @@ fn parse_layout(record: &Record, source: &str) -> Result<Layout, Error> {
         fields,
         opcode,
         format,
+        canonical: is_format,
         text,
     };
-    if let Some(text) = &layout.text {
-        let value_only = layout.fields.iter().all(|f| {
-            f.ty.named("Value") || f.ty.named("Opcode") || matches!(f.ty, FieldType::Values(_))
-        });
-        match text {
-            Text::Values(n) if layout.arity() != Some(*n) || !value_only => {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "values codec requires only inline value fields and matching arity",
-                ));
-            }
-            Text::Codec(name)
-                if name == "Nullary" && (layout.arity() != Some(0) || !value_only) =>
-            {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "nullary codec requires no properties or operands",
-                ));
-            }
-            Text::Codec(codec) if codec != "Nullary" => {
-                // Specialized syntax hooks destructure a particular layout.
-                // An alternate encoding must provide its own hook, not borrow
-                // one whose constructor produces a different instruction.
-                let expected = match codec.as_str() {
-                    "IntegerConstant" => "Iconst",
-                    "FloatConstant" => "Fconst",
-                    "BoolConstant" => "Bconst",
-                    "VectorConstant" => "Vconst",
-                    "DirectCall" => "Call",
-                    "IndirectCall" => "CallIndirect",
-                    "IntrinsicCall" => "CallIntrinsic",
-                    "Branch" => "Br",
-                    "BranchTable" => "BrTable",
-                    other => other,
-                };
-                if layout.name != expected {
-                    return Err(Error::at(
-                        source,
-                        record.offset,
-                        format!("text codec `{codec}` requires layout `{expected}`"),
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
+
     validate_runtime_contract(&layout, source)?;
     Ok(layout)
 }
@@ -644,56 +599,6 @@ fn field_type(node: &Node, source: &str) -> Result<FieldType, Error> {
     }
 }
 
-fn parse_text(node: &Node, source: &str) -> Result<Text, Error> {
-    match &node.kind {
-        Kind::Call(kind, args) if kind == "values" && args.len() == 1 => {
-            let n = number(&args[0], source)?;
-            if n == 0 || n > u8::MAX as usize {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "text value arity must be in 1..=255",
-                ));
-            }
-            Ok(Text::Values(n))
-        }
-        Kind::Name(name) if name == "nullary" => Ok(Text::Codec("Nullary".to_owned())),
-        Kind::Name(name)
-            if [
-                "IntegerConstant",
-                "FloatConstant",
-                "BoolConstant",
-                "VectorConstant",
-                "Load",
-                "Store",
-                "StackLoad",
-                "StackStore",
-                "StackAddr",
-                "PtrOffset",
-                "PtrIndex",
-                "DirectCall",
-                "IndirectCall",
-                "IntrinsicCall",
-                "Jump",
-                "Branch",
-                "BranchTable",
-                "Return",
-                "IntCompare",
-                "FloatCompare",
-                "VectorLoadStrided",
-                "VectorStoreStrided",
-                "VectorGather",
-                "VectorScatter",
-                "Shuffle",
-            ]
-            .contains(&name.as_str()) =>
-        {
-            Ok(Text::Codec(name.clone()))
-        }
-        _ => Err(Error::at(source, node.offset, "unknown text codec")),
-    }
-}
-
 fn validate_links(
     layouts: &[Layout],
     formats: &[Format],
@@ -709,7 +614,6 @@ fn validate_links(
         .iter()
         .map(|f| (f.name.as_str(), f))
         .collect::<BTreeMap<_, _>>();
-    let mut codec_flags = BTreeMap::new();
     for layout in layouts {
         if let OpcodeSource::Fixed(opcode) = &layout.opcode {
             let Some(record) = opcodes.get(opcode.as_str()) else {
@@ -767,56 +671,24 @@ fn validate_links(
                             format!("unknown format `{target}`"),
                         ));
                     };
-                    if format.arity.is_none() || format.codec != "Values" {
+                    if format.arity.is_none() || !value_only(&format.fields) {
                         return Err(Error::at(
                             source,
                             layout.offset,
-                            "arity targets must use fixed-arity values codecs",
+                            "arity targets must use fixed-arity value layouts",
                         ));
                     }
                 }
             }
         }
-        if layout.text.is_none() && layout.name != "VectorOpWithExt" {
-            let targets = match &layout.format {
-                FormatSource::Fixed(name) => vec![name],
-                FormatSource::Arity { formats, .. } => formats.iter().collect(),
-            };
-            if targets
-                .iter()
-                .any(|name| !matches!(formats[name.as_str()].codec.as_str(), "Values" | "Nullary"))
-            {
-                return Err(Error::at(
-                    source,
-                    layout.offset,
-                    "alternate layout has no text adapter for its specialized codec",
-                ));
-            }
-            if layout.fields.iter().any(|field| {
-                !field.ty.named("Opcode")
-                    && (field.ty.auxiliary() || field.ty.traversal().is_none())
-            }) {
-                return Err(Error::at(
-                    source,
-                    layout.offset,
-                    "alternate layout has no text adapter for properties or auxiliary operands",
-                ));
-            }
-        }
-        if let Some(text) = &layout.text {
-            let flags = layout.has_flags();
-            if let Some(previous) = codec_flags.insert(text.name(), flags)
-                && previous != flags
-            {
-                return Err(Error::at(
-                    source,
-                    layout.offset,
-                    "formats sharing a text codec must agree on memory flags",
-                ));
-            }
-        }
     }
     Ok(())
+}
+
+fn value_only(fields: &[Field]) -> bool {
+    fields.iter().all(|f| {
+        f.ty.named("Value") || f.ty.named("Opcode") || matches!(f.ty, FieldType::Values(_))
+    })
 }
 
 fn generate_formats(formats: &[Format]) -> String {
@@ -834,33 +706,6 @@ fn generate_formats(formats: &[Format]) -> String {
         writeln!(out, "            Self::{} => {arity},", format.name).unwrap();
     }
     out.push_str("        }\n    }\n}\n");
-    out
-}
-
-fn generate_codecs(layouts: &[Layout]) -> String {
-    let mut out = String::from(
-        "// @generated from operation storage definitions.\nimpl TextCodec {\n    pub const fn for_format(format: OpFormat) -> Self {\n        match format {\n",
-    );
-    let mut flags = BTreeSet::new();
-    for layout in layouts {
-        if let Some(text) = &layout.text {
-            writeln!(
-                out,
-                "            OpFormat::{} => {},",
-                layout.name,
-                text.expression()
-            )
-            .unwrap();
-            if layout.has_flags() {
-                flags.insert(text.name());
-            }
-        }
-    }
-    out.push_str("        }\n    }\n    pub const fn accepts_memory_flags(self) -> bool {\n        match self {\n");
-    for codec in flags {
-        writeln!(out, "            Self::{codec} => true,").unwrap();
-    }
-    out.push_str("            _ => false,\n        }\n    }\n}\n");
     out
 }
 
@@ -966,11 +811,10 @@ fn generate_instructions(layouts: &[Layout]) -> String {
     }
     out.push_str("        }\n    }\n    /// Construct a values-only or nullary instruction in its canonical layout.\n    pub fn from_values(opcode: Opcode, values: &[Value]) -> Option<Self> {\n        match opcode.spec().format {\n");
     for layout in layouts {
-        let arity = match &layout.text {
-            Some(Text::Values(n)) => *n,
-            Some(Text::Codec(name)) if name == "Nullary" => 0,
-            _ => continue,
-        };
+        if !layout.canonical || !value_only(&layout.fields) {
+            continue;
+        }
+        let arity = layout.arity().expect("inline values have a fixed arity");
         let mut index = 0;
         let mut fields = Vec::new();
         for field in &layout.fields {
@@ -991,16 +835,25 @@ fn generate_instructions(layouts: &[Layout]) -> String {
                 FieldType::Named(name) if name == "Opcode" => "opcode".to_owned(),
                 _ => unreachable!("validated values-only format"),
             };
-            fields.push(format!("{}: {value}", field.name));
+            fields.push(if field.name == value {
+                value
+            } else {
+                format!("{}: {value}", field.name)
+            });
         }
         let construct = if fields.is_empty() {
             format!("Self::{}", layout.name)
         } else {
             format!("Self::{} {{ {} }}", layout.name, fields.join(", "))
         };
+        let arity_check = if arity == 0 {
+            "values.is_empty()".into()
+        } else {
+            format!("values.len() == {arity}")
+        };
         writeln!(
             out,
-            "            OpFormat::{} if values.len() == {arity} => Some({construct}),",
+            "            OpFormat::{} if {arity_check} => Some({construct}),",
             layout.name
         )
         .unwrap();
@@ -1088,25 +941,23 @@ mod tests {
     use crate::syntax;
 
     #[test]
-    fn rejects_inconsistent_value_codec() {
-        let source = "format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode), text: values(1) }";
+    fn rejects_format_level_text_definitions() {
+        let source = "format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode), text: Text { args: [args] } }";
         let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
-        assert!(error.message.contains("matching arity"));
+        assert!(error.message.contains("text"));
     }
 
     #[test]
     fn rejects_missing_or_mistyped_opcode_field() {
         for fields in ["[arg(Value)]", "[opcode(Value)]"] {
-            let source = format!(
-                "format Unary {{ fields: {fields}, opcode: dynamic(opcode), text: values(1) }}"
-            );
+            let source = format!("format Unary {{ fields: {fields}, opcode: dynamic(opcode) }}");
             assert!(compile(&syntax::parse(&source).unwrap(), &source).is_err());
         }
     }
 
     #[test]
     fn rejects_unknown_layout_target() {
-        let source = "layout Extended { fields: [opcode(Opcode), args(ValueList)], opcode: dynamic(opcode), format: arity(args, [Missing]) }";
+        let source = "layout Extended { fields: [opcode(Opcode), args(ValueList)], opcode: dynamic(opcode), format: arity(args, [Missing]), text: Text { args: [args] } }";
         let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
         assert!(error.message.contains("unknown format"));
     }
@@ -1114,29 +965,32 @@ mod tests {
     #[test]
     fn rejects_unknown_fields_and_storage_types() {
         for source in [
-            "format Unary { fields: [arg(Unrecognized)], opcode: dynamic(arg), text: values(1) }",
-            "format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode), text: values(1), typo: true }",
-            "format Unary { fields: [opcode(Opcode), arg(Value), arg(Value)], opcode: dynamic(opcode), text: values(2) }",
+            "format Unary { fields: [arg(Unrecognized)], opcode: dynamic(arg) }",
+            "format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode), typo: true }",
+            "format Unary { fields: [opcode(Opcode), arg(Value), arg(Value)], opcode: dynamic(opcode) }",
         ] {
             assert!(compile(&syntax::parse(source).unwrap(), source).is_err());
         }
     }
 
     #[test]
-    fn rejects_a_codec_that_constructs_a_different_layout() {
-        let source =
-            "format Iconst { fields: [value(u64)], opcode: fixed(Iconst), text: FloatConstant }";
+    fn rejects_an_opcode_that_violates_an_existing_layout_contract() {
+        let source = "format Iconst { fields: [value(u64)], opcode: fixed(Fconst) }";
         let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
-        assert!(error.message.contains("requires layout `Fconst`"));
+        assert!(
+            error
+                .message
+                .contains("opcode contract requires fixed(Iconst)")
+        );
     }
 
     #[test]
     fn rejects_alternate_layout_with_wrong_fixed_opcode() {
         let source = r#"
-            format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode), text: values(1) }
-            format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode), text: values(2) }
+            format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+            format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
             op Neg(arg: I32) -> (result: I32) { storage: Unary { arg: arg } }
-            layout Pair { fields: [args(values(2))], opcode: fixed(Neg), format: fixed(Binary) }
+            layout Pair { fields: [args(values(2))], opcode: fixed(Neg), format: fixed(Binary), text: Text { args: [args] } }
         "#;
         let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
         assert!(error.message.contains("requires format `Unary`"));

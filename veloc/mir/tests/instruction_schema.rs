@@ -1,7 +1,7 @@
-use veloc_ir::dfg::DataFlowGraph;
-use veloc_ir::opspec::OpFormat;
-use veloc_ir::types::{BlockCallData, JumpTableData};
-use veloc_ir::{
+use veloc_mir::dfg::DataFlowGraph;
+use veloc_mir::opspec::OpFormat;
+use veloc_mir::types::{BlockCallData, JumpTableData};
+use veloc_mir::{
     Block, CallConv, InstructionData, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value,
     VectorMemOptions,
 };

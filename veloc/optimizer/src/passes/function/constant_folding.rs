@@ -5,9 +5,9 @@
 
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
 use veloc_analyzer::AnalysisManager;
-use veloc_ir::constant::Constant;
-use veloc_ir::function::Function;
-use veloc_ir::inst::{Inst, InstructionData};
+use veloc_mir::constant::Constant;
+use veloc_mir::function::Function;
+use veloc_mir::inst::{Inst, InstructionData};
 
 const CONSTANT_FOLDING: &str = "constant_folding";
 

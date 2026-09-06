@@ -5,7 +5,7 @@ use super::types::{
     Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
 use crate::opspec::ResultTypes;
-use crate::types::{BlockCallData, JumpTableData};
+use crate::types::JumpTableData;
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
 use alloc::vec::Vec;
 use hashbrown::HashMap;
@@ -153,14 +153,12 @@ impl<'a> FunctionBuilder<'a> {
                 panic!("{} requires an explicit result type", spec.mnemonic)
             }
             ResultTypes::Signature => {
-                let sig_id = match data {
-                    InstructionData::Call { func_id, .. } => {
-                        self.module.functions[*func_id].signature
-                    }
-                    InstructionData::CallIndirect { sig_id, .. }
-                    | InstructionData::CallIntrinsic { sig_id, .. } => *sig_id,
-                    _ => unreachable!("{} must carry a signature", spec.mnemonic),
-                };
+                let sig_id = data
+                    .call_info()
+                    .expect("signature results require call metadata")
+                    .signature
+                    .resolve(self.module)
+                    .expect("call refers to a missing function or signature");
                 self.module.signatures[sig_id]
                     .returns
                     .iter()
@@ -200,6 +198,11 @@ impl<'a> FunctionBuilder<'a> {
 
     fn append_inst(&mut self, block: Block, data: InstructionData, types: &[Type]) -> Inst {
         self.assert_inst_matches_spec(&data, types);
+        let func = self.func_mut();
+        let (dfg, layout) = (&func.dfg, &mut func.layout);
+        data.visit_successors(dfg, |call| {
+            layout.add_edge(block, dfg.block_call_block(call))
+        });
         let inst = self.func_mut().dfg.instructions.push(data);
         self.func_mut().layout.append_inst(block, inst);
         if !types.is_empty() {
@@ -222,11 +225,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn make_block_call(&mut self, block: Block, args: &[Value]) -> BlockCall {
-        let args_list = self.make_value_list(args);
-        self.func_mut().dfg.block_calls.push(BlockCallData {
-            block,
-            args: args_list,
-        })
+        self.func_mut().dfg.make_block_call(block, args)
     }
 
     pub fn create_block(&mut self) -> Block {
@@ -681,9 +680,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn jump(&mut self, destination: Block, args: &[Value]) {
         let dest = self.builder.make_block_call(destination, args);
-        let block = self.block();
         self.push(InstructionData::Jump { dest });
-        self.builder.func_mut().layout.add_edge(block, destination);
     }
 
     pub fn br(
@@ -701,14 +698,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         );
         let then_dest = self.builder.make_block_call(then_block, then_args);
         let else_dest = self.builder.make_block_call(else_block, else_args);
-        let block = self.block();
         self.push(InstructionData::Br {
             condition,
             then_dest,
             else_dest,
         });
-        self.builder.func_mut().layout.add_edge(block, then_block);
-        self.builder.func_mut().layout.add_edge(block, else_block);
     }
 
     pub fn br_table(&mut self, index: Value, default_call: BlockCall, targets: &[BlockCall]) {
@@ -717,19 +711,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             Type::I32,
             "Index for br_table must be an i32"
         );
-        let block = self.block();
-        let mut target_calls = Vec::with_capacity(targets.len() + 1);
-        target_calls.extend_from_slice(targets);
-        target_calls.push(default_call);
-
-        for &call in &target_calls {
-            let target_block = self.builder.func().dfg.block_call_block(call);
-            self.builder.func_mut().layout.add_edge(block, target_block);
-        }
-
-        let table = self.builder.func_mut().dfg.jump_tables.push(JumpTableData {
-            targets: target_calls,
-        });
+        let table = self
+            .builder
+            .func_mut()
+            .dfg
+            .make_jump_table(targets, default_call);
         self.push(InstructionData::BrTable { index, table });
     }
 

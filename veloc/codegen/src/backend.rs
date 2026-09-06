@@ -7,7 +7,7 @@ use crate::driver::CodegenPipeline;
 use crate::error::{Error, Result};
 use crate::target::arch::{TargetConfig, TargetMachine};
 use alloc::boxed::Box;
-use veloc_ir::Module;
+use veloc_mir::Module;
 
 pub struct Backend {
     target: Box<dyn TargetMachine>,

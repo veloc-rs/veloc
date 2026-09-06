@@ -12,7 +12,7 @@ use core::fmt::Write;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use cranelift_entity::{PrimaryMap, SecondaryMap};
-use veloc_ir::{Block, Type};
+use veloc_mir::{Block, Type};
 
 /// 机器基本块
 #[derive(Debug, Clone)]

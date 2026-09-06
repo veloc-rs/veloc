@@ -45,7 +45,7 @@ pub use alloc::format;
 pub use alloc::string::String;
 pub use alloc::vec::Vec;
 use hashbrown::HashMap;
-use veloc_ir::Block;
+use veloc_mir::Block;
 
 #[derive(Debug, Clone)]
 enum Fixup {

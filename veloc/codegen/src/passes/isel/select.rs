@@ -65,7 +65,7 @@ pub struct SelectionContext<'a, S> {
 }
 
 impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
-    fn get_type(&self, vreg: crate::lir::VReg) -> veloc_ir::Type {
+    fn get_type(&self, vreg: crate::lir::VReg) -> veloc_mir::Type {
         self.mfunc.vregs[vreg].ty
     }
 

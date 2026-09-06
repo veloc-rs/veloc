@@ -8,7 +8,7 @@ fn definition(op: BvOp, properties: &str) -> String {
         ("lhs: T, rhs: T", "lhs, rhs")
     };
     format!(
-        "format Args {{ fields: [opcode(Opcode), args(values({arity}))], opcode: dynamic(opcode), text: values({arity}) }}\n\
+        "format Args {{ fields: [opcode(Opcode), args(values({arity}))], opcode: dynamic(opcode) }}\n\
          op Test<T: Integer>({operands}) -> (result: T) {{
              mnemonic: \"test\", storage: Args {{ args: [{args}] }}, memory: NONE,
              semantics: {semantics}({args}), {properties}

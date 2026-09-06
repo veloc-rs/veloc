@@ -1,7 +1,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
-use veloc::ir::{CallConv, FuncId, SigId, Type as VelocType};
+use veloc::mir::{CallConv, FuncId, SigId, Type as VelocType};
 use wasmparser::{ExternalKind, RefType, ValType};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -34,7 +34,7 @@ impl WasmSignature {
         self.hash as u64
     }
 
-    pub fn intern_veloc_sig(&self, ir: &mut veloc::ir::ModuleBuilder) -> SigId {
+    pub fn intern_veloc_sig(&self, ir: &mut veloc::mir::ModuleBuilder) -> SigId {
         let mut params = Vec::with_capacity(self.params.len() + 1);
         params.push(VelocType::PTR); // vmctx
         params.extend(self.params.iter().map(|&t| valtype_to_veloc(t)));

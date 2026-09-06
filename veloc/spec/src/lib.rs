@@ -5,9 +5,12 @@
 
 mod mir;
 mod model;
+mod packing;
+mod records;
 mod semantic;
 mod storage;
 mod syntax;
+mod text;
 
 pub use model::Definitions;
 
@@ -44,7 +47,8 @@ pub struct Generated {
     pub types: String,
     pub opcodes: String,
     pub instructions: String,
-    pub codecs: String,
+    pub text_parser: String,
+    pub text_printer: String,
 }
 
 /// Parse and check a definition unit, including cross-record references.

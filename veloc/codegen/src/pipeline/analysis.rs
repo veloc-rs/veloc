@@ -2,7 +2,7 @@ use crate::lir::{MachineFunction, Reg, UseDefChain};
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use hashbrown::{HashMap, HashSet};
-use veloc_ir::Block;
+use veloc_mir::Block;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -652,7 +652,7 @@ mod tests {
     use super::{ChangeSet, FunctionAnalysisCtx};
     use crate::lir::{MachineBlock, MachineFunction, MachineInst, Writable};
     use crate::pipeline::stages::RawLir;
-    use veloc_ir::{Block, Type};
+    use veloc_mir::{Block, Type};
 
     #[test]
     fn changeset_cfg_implies_block_layout() {

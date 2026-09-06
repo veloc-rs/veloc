@@ -11,7 +11,7 @@ use alloc::sync::Arc;
 use cranelift_entity::PrimaryMap;
 pub use func_ref::{CallTarget, FunctionRef};
 pub use program::{Program, ProgramBuilder};
-use veloc_ir::{FuncId, Module};
+use veloc_mir::{FuncId, Module};
 
 /// Runtime representation of a compiled module
 pub(crate) struct RuntimeModule {

@@ -43,7 +43,7 @@ cargo run -p veloc-wasm -- path/to/module.wat --dump-ir
 
 # Write Veloc IR to a file
 cargo run -p veloc-wasm -- path/to/module.wasm \
-  --output-ir module.veloc-ir
+  --output-ir module.veloc-mir
 
 # Print interpreter bytecode
 cargo run -p veloc-wasm -- path/to/module.wasm \
@@ -85,7 +85,7 @@ WebAssembly and C source are translated into the same Veloc middle-level IR (MIR
 | Crate | Purpose |
 | --- | --- |
 | `veloc` | Top-level facade for the IR, interpreter, and code generator. |
-| `veloc-ir` | Typed SSA IR, builders, data-flow graph, text format, and validator. |
+| `veloc-mir` | Typed SSA IR, builders, data-flow graph, text format, and validator. |
 | `veloc-analyzer` | Use-def and liveness analyses. |
 | `veloc-optimizer` | Pass management, metrics, constant folding, and dead-code elimination. |
 | `veloc-interpreter` | IR-to-bytecode compiler and register-bytecode runtime. |
@@ -125,8 +125,8 @@ Replace `interp` with `jit` to exercise the native backend.
 
 ## Documentation
 
-- [Veloc IR instruction reference](veloc/ir/docs/en/instructions.md)
-- [Veloc IR 指令参考（中文）](veloc/ir/docs/zh/instructions.md)
+- [Veloc IR instruction reference](veloc/mir/docs/en/instructions.md)
+- [Veloc IR 指令参考（中文）](veloc/mir/docs/zh/instructions.md)
 
 ## Project status
 

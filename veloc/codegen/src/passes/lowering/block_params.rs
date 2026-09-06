@@ -8,7 +8,7 @@ use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransform
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
-use veloc_ir::{Block, Type};
+use veloc_mir::{Block, Type};
 
 /// 将分支边上的 block 参数显式化为 copy/中间块。
 pub struct BlockParamLoweringPass;
@@ -365,7 +365,7 @@ mod tests {
     use crate::pipeline::stages::RawLir;
     use alloc::vec;
     use smallvec::smallvec;
-    use veloc_ir::{Block, Type};
+    use veloc_mir::{Block, Type};
 
     fn make_function() -> MachineFunction<RawLir> {
         MachineFunction::<RawLir>::new("test".into())

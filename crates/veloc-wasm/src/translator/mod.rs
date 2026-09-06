@@ -1,7 +1,7 @@
 use crate::module::{RuntimeFunctions, WasmMetadata};
 use crate::vm::VMOffsets;
 use alloc::vec::Vec;
-use veloc::ir::{Block, FunctionBuilder, MemFlags, SigId, Type as VelocType, Value, Variable};
+use veloc::mir::{Block, FunctionBuilder, MemFlags, SigId, Type as VelocType, Value, Variable};
 use wasmparser::{BinaryReaderError, Operator, ValType};
 
 mod control;
@@ -307,14 +307,14 @@ impl<'a> WasmTranslator<'a> {
                 let v = self.pop();
                 let v_ty = self.builder.value_type(v);
                 let zero = self.zero_const(v_ty);
-                let res = self.builder.ins().icmp(veloc::ir::IntCC::Eq, v, zero);
+                let res = self.builder.ins().icmp(veloc::mir::IntCC::Eq, v, zero);
                 self.stack.push(res);
             }
             Operator::RefAsNonNull => {
                 let v = self.pop();
                 let v_ty = self.builder.value_type(v);
                 let zero = self.zero_const(v_ty);
-                let is_null = self.builder.ins().icmp(veloc::ir::IntCC::Eq, v, zero);
+                let is_null = self.builder.ins().icmp(veloc::mir::IntCC::Eq, v, zero);
                 self.trap_if(is_null, crate::vm::TrapCode::NullReference);
                 self.stack.push(v);
             }
@@ -465,7 +465,7 @@ impl<'a> WasmTranslator<'a> {
             val
         } else {
             let zero = self.zero_const(ty);
-            self.builder.ins().icmp(veloc::ir::IntCC::Ne, val, zero)
+            self.builder.ins().icmp(veloc::mir::IntCC::Ne, val, zero)
         }
     }
 

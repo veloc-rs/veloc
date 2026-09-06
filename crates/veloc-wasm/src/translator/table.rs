@@ -1,6 +1,6 @@
 use super::WasmTranslator;
 use crate::vm::VMTable;
-use veloc::ir::{IntCC, MemFlags, Type as VelocType, Value};
+use veloc::mir::{IntCC, MemFlags, Type as VelocType, Value};
 use wasmparser::{BinaryReaderError, Operator};
 
 impl<'a> WasmTranslator<'a> {

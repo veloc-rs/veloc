@@ -3,7 +3,7 @@ use veloc_opgen::compile_mir;
 const BINARY: &str = r#"
 format Pair {
     fields: [op(Opcode), args(values(2))],
-    opcode: dynamic(op), text: values(2)
+    opcode: dynamic(op)
 }
 op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
@@ -94,10 +94,11 @@ fn logical_names_are_independent_of_physical_field_names() {
 #[test]
 fn fixed_formats_generate_property_builders_without_codec_special_cases() {
     let source = r#"
-        format Iconst { fields: [value(u64)], opcode: fixed(Iconst), text: IntegerConstant }
-        format Bconst { fields: [value(bool)], opcode: fixed(Bconst), text: BoolConstant }
+        format Iconst { fields: [value(u64)], opcode: fixed(Iconst) }
+        format Bconst { fields: [value(bool)], opcode: fixed(Bconst) }
         op Iconst(@value: u64) -> (result: ScalarInteger) {
-            mnemonic: "iconst", storage: Iconst { value: value }, traits: [], memory: NONE
+            mnemonic: "iconst", storage: Iconst { value: value },
+            text: Text { args: [integer(value)] }, traits: [], memory: NONE
         }
         op Bconst(@value: bool) -> (result: BOOL) {
             mnemonic: "bconst", storage: Bconst { value: value }, traits: [], memory: NONE
@@ -130,17 +131,19 @@ fn fixed_formats_generate_property_builders_without_codec_special_cases() {
 fn property_order_follows_the_logical_signature_not_storage() {
     let source = r#"
         format Load {
-            fields: [ptr(Value), offset(u32), flags(MemFlags)], opcode: fixed(Load), text: Load
+            fields: [ptr(Value), offset(u32), flags(MemFlags)], opcode: fixed(Load)
         }
         format Store {
-            fields: [ptr(Value), value(Value), offset(u32), flags(MemFlags)], opcode: fixed(Store), text: Store
+            fields: [ptr(Value), value(Value), offset(u32), flags(MemFlags)], opcode: fixed(Store)
         }
         op Load(@flags: MemFlags, address: PTR, @displacement: u32) -> (result: Any) {
             mnemonic: "load", storage: Load { ptr: address, offset: displacement, flags: flags },
+            text: Text { args: [address], named: [default(displacement, 0)], flags: flags },
             traits: [MAY_TRAP], memory: HEAP_READ
         }
         op Store(ptr: PTR, @flags: MemFlags, value: Any, @offset: u32) -> () {
             mnemonic: "store", storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
+            text: Text { args: [value, ptr], named: [default(offset, 0)], flags: flags },
             traits: [MAY_TRAP], memory: HEAP_WRITE
         }
     "#;
@@ -175,8 +178,8 @@ fn impossible_type_variable_constraints_are_definition_errors() {
 #[test]
 fn cfg_pool_and_signature_operations_keep_contextual_builders() {
     let source = [
-        include_str!("../../ir/defs/formats.ops"),
-        include_str!("../../ir/defs/mir.ops"),
+        include_str!("../../mir/defs/formats.ops"),
+        include_str!("../../mir/defs/mir.ops"),
     ]
     .join("\n");
     let output = compile_mir(&source).unwrap();
@@ -208,7 +211,7 @@ fn cfg_pool_and_signature_operations_keep_contextual_builders() {
 #[test]
 fn contextual_selection_does_not_depend_on_the_method_name() {
     let source = r#"
-        format Jump { fields: [dest(BlockCall)], opcode: fixed(Jump), text: Jump }
+        format Jump { fields: [dest(BlockCall)], opcode: fixed(Jump) }
         op Jump(dest: successor) -> () {
             mnemonic: "connect-edge", storage: Jump { dest: dest }, traits: [TERMINATOR], memory: NONE
         }

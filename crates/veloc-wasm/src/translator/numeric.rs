@@ -1,6 +1,6 @@
 use super::WasmTranslator;
 use crate::vm::TrapCode;
-use veloc::ir::{FloatCC, IntCC, Type as VelocType, Value};
+use veloc::mir::{FloatCC, IntCC, Type as VelocType, Value};
 use wasmparser::{BinaryReaderError, Operator};
 
 impl<'a> WasmTranslator<'a> {
@@ -187,7 +187,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn bin_i32<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut veloc::ir::InstBuilder, Value, Value) -> Value,
+        F: FnOnce(&mut veloc::mir::InstBuilder, Value, Value) -> Value,
     {
         let r = self.pop_i32();
         let l = self.pop_i32();
@@ -197,7 +197,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn bin_i64<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut veloc::ir::InstBuilder, Value, Value) -> Value,
+        F: FnOnce(&mut veloc::mir::InstBuilder, Value, Value) -> Value,
     {
         let r = self.pop_i64();
         let l = self.pop_i64();
@@ -207,7 +207,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn bin_f32<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut veloc::ir::InstBuilder, Value, Value) -> Value,
+        F: FnOnce(&mut veloc::mir::InstBuilder, Value, Value) -> Value,
     {
         let r = self.pop_typed(VelocType::F32);
         let l = self.pop_typed(VelocType::F32);
@@ -217,7 +217,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn bin_f64<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut veloc::ir::InstBuilder, Value, Value) -> Value,
+        F: FnOnce(&mut veloc::mir::InstBuilder, Value, Value) -> Value,
     {
         let r = self.pop_typed(VelocType::F64);
         let l = self.pop_typed(VelocType::F64);
@@ -227,7 +227,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn un_i32<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut veloc::ir::InstBuilder, Value) -> Value,
+        F: FnOnce(&mut veloc::mir::InstBuilder, Value) -> Value,
     {
         let v = self.pop_i32();
         let res = f(&mut self.builder.ins(), v);
@@ -236,7 +236,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn un_i64<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut veloc::ir::InstBuilder, Value) -> Value,
+        F: FnOnce(&mut veloc::mir::InstBuilder, Value) -> Value,
     {
         let v = self.pop_i64();
         let res = f(&mut self.builder.ins(), v);
@@ -245,7 +245,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn un_f32<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut veloc::ir::InstBuilder, Value) -> Value,
+        F: FnOnce(&mut veloc::mir::InstBuilder, Value) -> Value,
     {
         let v = self.pop_typed(VelocType::F32);
         let res = f(&mut self.builder.ins(), v);
@@ -254,7 +254,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn un_f64<F>(&mut self, f: F)
     where
-        F: FnOnce(&mut veloc::ir::InstBuilder, Value) -> Value,
+        F: FnOnce(&mut veloc::mir::InstBuilder, Value) -> Value,
     {
         let v = self.pop_typed(VelocType::F64);
         let res = f(&mut self.builder.ins(), v);

@@ -1,6 +1,6 @@
 use veloc_analyzer::{AnalysisManager, UseDefAnalysis};
-use veloc_ir::constant::Constant;
-use veloc_ir::{CallConv, InstructionData, Linkage, ModuleBuilder, Opcode, Type};
+use veloc_mir::constant::Constant;
+use veloc_mir::{CallConv, InstructionData, Linkage, ModuleBuilder, Opcode, Type};
 use veloc_optimizer::Metrics;
 use veloc_optimizer::passes::function::constant_folding::run_constant_folding;
 

@@ -1707,7 +1707,7 @@ version = "0.1.0"
 dependencies = [
  "veloc-codegen",
  "veloc-interpreter",
- "veloc-ir",
+ "veloc-mir",
 ]
 
 [[package]]
@@ -1717,7 +1717,7 @@ dependencies = [
  "bitvec",
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
- "veloc-ir",
+ "veloc-mir",
 ]
 
 [[package]]
@@ -1728,7 +1728,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "log",
  "thiserror 2.0.18",
- "veloc-ir",
+ "veloc-mir",
 ]
 
 [[package]]
@@ -1740,8 +1740,8 @@ dependencies = [
  "hashbrown 0.14.5",
  "object 0.36.7",
  "smallvec",
- "veloc-ir",
  "veloc-isle",
+ "veloc-mir",
 ]
 
 [[package]]
@@ -1753,20 +1753,7 @@ dependencies = [
  "libm",
  "smallvec",
  "veloc-analyzer",
- "veloc-ir",
-]
-
-[[package]]
-name = "veloc-ir"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "cranelift-entity 0.128.3",
- "hashbrown 0.14.5",
- "smallvec",
- "thiserror 2.0.18",
- "veloc-opgen",
- "veloc-semantics",
+ "veloc-mir",
 ]
 
 [[package]]
@@ -1776,6 +1763,19 @@ dependencies = [
  "logos",
  "miette",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "veloc-mir"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "cranelift-entity 0.128.3",
+ "hashbrown 0.14.5",
+ "smallvec",
+ "thiserror 2.0.18",
+ "veloc-opgen",
+ "veloc-semantics",
 ]
 
 [[package]]
@@ -1792,7 +1792,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "log",
  "veloc-analyzer",
- "veloc-ir",
+ "veloc-mir",
 ]
 
 [[package]]
@@ -1828,7 +1828,7 @@ dependencies = [
  "mmap-rs",
  "veloc",
  "veloc-analyzer",
- "veloc-ir",
+ "veloc-mir",
  "veloc-optimizer",
  "wasi-cap-std-sync",
  "wasi-common",

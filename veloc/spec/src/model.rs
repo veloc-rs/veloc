@@ -74,13 +74,28 @@ pub(crate) struct Op {
     pub format: String,
     pub signature: TypeDef,
     pub params: Vec<Param>,
-    pub packing: BTreeMap<String, Vec<String>>,
+    pub packing: BTreeMap<String, Binding>,
+    pub signature_source: Option<SignatureSource>,
+    pub text: Option<Node>,
     pub traits: Vec<String>,
     pub memory: String,
     pub constraints: Vec<String>,
     pub identity: Option<String>,
     pub absorbing: Option<String>,
     pub semantics: Option<Semantic>,
+}
+
+#[derive(Debug)]
+pub(crate) enum Binding {
+    Name(String),
+    Array(Vec<Binding>),
+    Pool(String),
+    Table { cases: String, default: String },
+}
+
+pub(crate) enum SignatureSource {
+    Function(String),
+    Signature(String),
 }
 
 pub(crate) struct Param {
@@ -204,8 +219,8 @@ pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
         }
         identifier(source, record.offset, &record.name)?;
         match record.kind.as_str() {
-            "op" => ops.push(operation::parse(source, record)?),
-            "format" | "layout" => {}
+            "op" => ops.push(operation::parse(source, record, &storage)?),
+            "format" | "layout" | "record" => {}
             _ => {
                 return Err(Error::at(
                     source,
@@ -259,7 +274,7 @@ impl Definitions {
                 )));
             }
             let ty = &op.signature;
-            operation::validate_packing(source, op, format)?;
+            operation::validate_packing(source, op, format, &self.storage)?;
             match (format.arity, &ty.operands) {
                 (Some(arity), TypeList::Fixed(patterns)) if arity == patterns.len() => {}
                 (None, TypeList::Variadic(_)) => {}
@@ -513,7 +528,7 @@ mod tests {
     const SOURCE: &str = r#"
         format Binary {
             fields: [opcode(Opcode), args(values(2))],
-            opcode: dynamic(opcode), text: values(2)
+            opcode: dynamic(opcode)
         }
         op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {
             mnemonic: "i-add", storage: Binary { args: [lhs, rhs] },

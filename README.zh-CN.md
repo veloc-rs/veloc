@@ -43,7 +43,7 @@ cargo run -p veloc-wasm -- path/to/module.wat --dump-ir
 
 # 将 Veloc IR 写入文件
 cargo run -p veloc-wasm -- path/to/module.wasm \
-  --output-ir module.veloc-ir
+  --output-ir module.veloc-mir
 
 # 打印解释器字节码
 cargo run -p veloc-wasm -- path/to/module.wasm \
@@ -85,7 +85,7 @@ WebAssembly 和 C 源码都会转换为同一种 Veloc 中层 IR（MIR）。运�
 | Crate | 职责 |
 | --- | --- |
 | `veloc` | IR、解释器和代码生成器的顶层门面。 |
-| `veloc-ir` | 类型化 SSA IR、构建器、数据流图、文本格式和验证器。 |
+| `veloc-mir` | 类型化 SSA IR、构建器、数据流图、文本格式和验证器。 |
 | `veloc-analyzer` | Use-def 与活跃变量分析。 |
 | `veloc-optimizer` | Pass 管理、指标统计、常量折叠和死代码消除。 |
 | `veloc-interpreter` | IR 到字节码的编译器及寄存器字节码运行时。 |
@@ -125,8 +125,8 @@ cargo run --release -p veloc-spec -- \
 
 ## 文档
 
-- [Veloc IR 指令参考](veloc/ir/docs/zh/instructions.md)
-- [Veloc IR instruction reference (English)](veloc/ir/docs/en/instructions.md)
+- [Veloc IR 指令参考](veloc/mir/docs/zh/instructions.md)
+- [Veloc IR instruction reference (English)](veloc/mir/docs/en/instructions.md)
 
 ## 项目状态
 

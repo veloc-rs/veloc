@@ -5,7 +5,7 @@ use crate::lir::{MachineFunction, MachineInst, MachineOperand, Reg};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use veloc_ir::Type;
+use veloc_mir::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegalizeAction {
@@ -1214,28 +1214,28 @@ macro_rules! legalize_matcher {
         )
     };
     (@type I8) => {
-        veloc_ir::Type::I8
+        veloc_mir::Type::I8
     };
     (@type I16) => {
-        veloc_ir::Type::I16
+        veloc_mir::Type::I16
     };
     (@type I32) => {
-        veloc_ir::Type::I32
+        veloc_mir::Type::I32
     };
     (@type I64) => {
-        veloc_ir::Type::I64
+        veloc_mir::Type::I64
     };
     (@type F32) => {
-        veloc_ir::Type::F32
+        veloc_mir::Type::F32
     };
     (@type F64) => {
-        veloc_ir::Type::F64
+        veloc_mir::Type::F64
     };
     (@type BOOL) => {
-        veloc_ir::Type::BOOL
+        veloc_mir::Type::BOOL
     };
     (@type PTR) => {
-        veloc_ir::Type::PTR
+        veloc_mir::Type::PTR
     };
     (@type $($ty:tt)+) => {
         $($ty)+
@@ -1255,7 +1255,7 @@ mod tests {
     use crate::pipeline::stages::RawLir;
     use alloc::string::ToString;
     use smallvec::smallvec;
-    use veloc_ir::{Block, ScalarType, Type};
+    use veloc_mir::{Block, ScalarType, Type};
 
     fn make_function() -> MachineFunction<RawLir> {
         let mut mfunc = MachineFunction::<RawLir>::new("test".to_string());

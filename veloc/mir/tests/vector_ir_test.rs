@@ -1,6 +1,6 @@
 //! Vector IR Integration Tests
 
-use veloc_ir::{
+use veloc_mir::{
     CallConv, Linkage, Opcode, VectorMemOptions,
     builder::ModuleBuilder,
     types::{ScalarType, Type},

@@ -11,7 +11,7 @@ use crate::lir::{
 use crate::pipeline::stages::RawLir;
 use alloc::format;
 use hashbrown::HashMap;
-use veloc_ir::{Function, InstructionData, Module, Opcode, Value};
+use veloc_mir::{Function, InstructionData, Module, Opcode, Value};
 
 #[cfg(test)]
 mod tests;
@@ -144,7 +144,7 @@ impl<'a> IRTranslator<'a> {
     /// 翻译单条指令
     fn translate_instruction(
         &self,
-        inst_id: veloc_ir::Inst,
+        inst_id: veloc_mir::Inst,
         ctx: &mut TranslationContext,
         mblock: &mut MachineBlock,
     ) -> Result<TranslatedInst> {
@@ -310,10 +310,10 @@ impl<'a> IRTranslator<'a> {
                 let dst = defs[0].as_writable().unwrap();
                 let dst_ty = ctx.mfunc.vreg_data(dst.to_reg()).ty;
 
-                let (bits_ty, bits_imm) = if dst_ty == veloc_ir::Type::F32 {
-                    (veloc_ir::Type::I32, (*value as u32) as i64)
-                } else if dst_ty == veloc_ir::Type::F64 {
-                    (veloc_ir::Type::I64, *value as i64)
+                let (bits_ty, bits_imm) = if dst_ty == veloc_mir::Type::F32 {
+                    (veloc_mir::Type::I32, (*value as u32) as i64)
+                } else if dst_ty == veloc_mir::Type::F64 {
+                    (veloc_mir::Type::I64, *value as i64)
                 } else {
                     return Err(Error::translate(format!(
                         "Unsupported float constant type: {:?}",
@@ -515,14 +515,14 @@ impl<'a> IRTranslator<'a> {
                 if *offset == 0 {
                     Ok(MachineInst::build_copy(defs[0].as_writable().unwrap(), addr).into())
                 } else {
-                    let off_reg = ctx.mfunc.alloc_vreg(veloc_ir::Type::I64);
+                    let off_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
                     Self::emit_inst(
                         ctx,
                         mblock,
                         MachineInst::build_constant(Writable(off_reg), *offset as i64),
                     );
 
-                    let ptr_reg = ctx.mfunc.alloc_vreg(veloc_ir::Type::I64);
+                    let ptr_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
                     Self::emit_inst(
                         ctx,
                         mblock,
@@ -549,12 +549,12 @@ impl<'a> IRTranslator<'a> {
 
                 // 1. scale index: idx * scale
                 let scaled_idx = if imm.scale != 1 {
-                    let scale_reg = ctx.mfunc.alloc_vreg(veloc_ir::Type::I64);
+                    let scale_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
                     let scale_inst =
                         MachineInst::build_constant(Writable(scale_reg), imm.scale as i64);
                     Self::emit_inst(ctx, mblock, scale_inst);
 
-                    let res_reg = ctx.mfunc.alloc_vreg(veloc_ir::Type::I64);
+                    let res_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
                     let mul_inst = MachineInst::build_binary(
                         MachineOpcode::Generic(GenericOpcode::G_MUL),
                         Writable(res_reg),
@@ -569,12 +569,12 @@ impl<'a> IRTranslator<'a> {
 
                 // 2. add offset if any: base_idx = (idx * scale) + offset
                 let base_idx = if imm.offset != 0 {
-                    let off_reg = ctx.mfunc.alloc_vreg(veloc_ir::Type::I64);
+                    let off_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
                     let off_inst =
                         MachineInst::build_constant(Writable(off_reg), imm.offset as i64);
                     Self::emit_inst(ctx, mblock, off_inst);
 
-                    let res_reg = ctx.mfunc.alloc_vreg(veloc_ir::Type::I64);
+                    let res_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
                     let add_inst = MachineInst::build_binary(
                         MachineOpcode::Generic(GenericOpcode::G_ADD),
                         Writable(res_reg),

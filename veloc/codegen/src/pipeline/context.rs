@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 
 pub struct FunctionPassContext<'a, S> {
     pub target: &'a dyn TargetMachine,
-    pub func_sig: &'a veloc_ir::Signature,
+    pub func_sig: &'a veloc_mir::Signature,
     pub options: &'a CodegenOptions,
     pub stats: &'a mut CodegenStats,
     pub function_analyses: &'a mut FunctionAnalysisCtx,
@@ -16,7 +16,7 @@ pub struct FunctionPassContext<'a, S> {
 impl<'a, S> FunctionPassContext<'a, S> {
     pub fn new(
         target: &'a dyn TargetMachine,
-        func_sig: &'a veloc_ir::Signature,
+        func_sig: &'a veloc_mir::Signature,
         options: &'a CodegenOptions,
         stats: &'a mut CodegenStats,
         function_analyses: &'a mut FunctionAnalysisCtx,

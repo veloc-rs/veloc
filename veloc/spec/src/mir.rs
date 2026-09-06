@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use crate::model::{
-    Definitions, Op, ParamKind, Pattern, Semantic, SemanticStep, Slot, TypeDef, TypeList,
+    Binding, Definitions, Op, ParamKind, Pattern, Semantic, SemanticStep, SignatureSource, Slot,
+    TypeDef, TypeList,
 };
 use crate::storage::FieldType;
 use crate::{Error, Generated};
@@ -133,10 +134,13 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         }
     }
     ops.push_str("}\n");
+    ops.push_str(&accessors(defs));
+    let (text_parser, text_printer) = crate::text::generate(defs, source)?;
     Ok(Generated {
         formats: defs.storage.formats_code.clone(),
         instructions: defs.storage.instructions.clone(),
-        codecs: defs.storage.codecs.clone(),
+        text_parser,
+        text_printer,
         types,
         opcodes: ops,
     })
@@ -180,6 +184,69 @@ fn algebraic(constant: Option<&str>) -> String {
     constant
         .map(|c| format!("Some(crate::opspec::AlgebraicConstant::{c})"))
         .unwrap_or_else(|| "None".into())
+}
+
+fn accessors(defs: &Definitions) -> String {
+    let mut output = String::from(
+        "impl crate::InstructionData {\n    pub fn call_info(&self) -> Option<crate::inst::CallInfo> {\n        match (self.opcode(), self) {\n",
+    );
+    for op in &defs.ops {
+        let Some(source) = &op.signature_source else {
+            continue;
+        };
+        let (source, variant) = match source {
+            SignatureSource::Function(name) => (name, "Function"),
+            SignatureSource::Signature(name) => (name, "Signature"),
+        };
+        let args = &op
+            .params
+            .iter()
+            .find(|p| p.kind == ParamKind::Values)
+            .unwrap()
+            .name;
+        let field = |name: &str| {
+            op.packing
+                .iter()
+                .find_map(|(field, binding)| {
+                    matches!(binding, Binding::Name(param) if param == name).then_some(field)
+                })
+                .expect("checked call parameter storage")
+        };
+        writeln!(output,
+            "            (crate::Opcode::{}, crate::InstructionData::{} {{ {}: call_signature, {}: call_args, .. }}) => Some(crate::inst::CallInfo {{ signature: crate::inst::SignatureRef::{variant}(*call_signature), args: *call_args }}),",
+            op.name, op.format, field(source), field(args)).unwrap();
+    }
+    output.push_str("            _ => None,\n        }\n    }\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, dfg: &crate::dfg::DataFlowGraph, mut f: impl FnMut(crate::BlockCall)) {\n        match self {\n");
+    for format in &defs.storage.formats {
+        let edges: Vec<_> = format.fields.iter().filter(|field| {
+            matches!(&field.ty, FieldType::Named(ty) if matches!(ty.as_str(), "BlockCall" | "JumpTable"))
+        }).collect();
+        if edges.is_empty() {
+            continue;
+        }
+        let bindings = edges
+            .iter()
+            .enumerate()
+            .map(|(index, field)| format!("{}: edge{index}", field.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            output,
+            "            crate::InstructionData::{} {{ {bindings}, .. }} => {{",
+            format.name
+        )
+        .unwrap();
+        for (index, field) in edges.iter().enumerate() {
+            if matches!(&field.ty, FieldType::Named(ty) if ty == "JumpTable") {
+                writeln!(output, "                for &call in dfg.jump_table_targets(*edge{index}) {{ f(call); }}").unwrap();
+            } else {
+                writeln!(output, "                f(*edge{index});").unwrap();
+            }
+        }
+        output.push_str("            },\n");
+    }
+    output.push_str("            _ => {},\n        }\n    }\n}\n");
+    output
 }
 
 fn semantics(semantics: Option<&Semantic>) -> String {
@@ -229,6 +296,13 @@ fn builder(
 ) -> Result<Option<String>, Error> {
     let fail = |message| Error::at(source, op.offset, message);
     let ty = &op.signature;
+    if op
+        .packing
+        .values()
+        .any(|binding| matches!(binding, Binding::Pool(_) | Binding::Table { .. }))
+    {
+        return Ok(None);
+    }
     let Some(results) = ty.results.patterns() else {
         // Signature- and context-selected results need the module's help.
         return Ok(None);
@@ -300,38 +374,11 @@ fn builder(
         };
         add_param(param.name.clone(), &ty)?;
     }
-    let mut values = Vec::new();
-    for field in &format.fields {
-        match &field.ty {
-            FieldType::Named(ty) if ty == "Opcode" => {
-                values.push(format!("{}: crate::Opcode::{}", field.name, op.name));
-            }
-            FieldType::Values(_) => {
-                let args = &op.packing[&field.name];
-                values.push(format!("{}: [{}]", field.name, args.join(", ")));
-            }
-            _ => {
-                let arg = &op.packing[&field.name][0];
-                values.push(if arg == &field.name {
-                    field.name.clone()
-                } else {
-                    format!("{}: {arg}", field.name)
-                });
-            }
-        }
-    }
     if typed {
         params.push_str(", ty: crate::Type");
     }
-    let constructor = if values.is_empty() {
-        format!("crate::InstructionData::{}", format.name)
-    } else {
-        format!(
-            "crate::InstructionData::{} {{ {} }}",
-            format.name,
-            values.join(", ")
-        )
-    };
+    let constructor =
+        crate::packing::constructor(op, format, "self.builder.func_mut().dfg", str::to_owned);
     let (ret, body) = match (results.len(), typed) {
         (0, false) => ("", format!("self.push({constructor});")),
         (1, false) => (

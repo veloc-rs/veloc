@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
-use veloc_ir::{Block, Signature};
+use veloc_mir::{Block, Signature};
 
 use super::Reg;
 

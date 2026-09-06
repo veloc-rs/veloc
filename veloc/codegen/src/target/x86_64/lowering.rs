@@ -32,7 +32,7 @@ pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
 pub use regbank::X86_64RegBankSelect;
 pub use select::X86_64Selector;
 use smallvec::smallvec;
-use veloc_ir::{FloatCC, IntCC, Type};
+use veloc_mir::{FloatCC, IntCC, Type};
 
 /// x86_64 专属的 Context 扩展 (架构私有)
 pub trait X86LoweringContext: LoweringContext {

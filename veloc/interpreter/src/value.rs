@@ -1,4 +1,4 @@
-use veloc_ir::Type;
+use veloc_mir::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(transparent)]

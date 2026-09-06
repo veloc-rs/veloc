@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use cranelift_entity::{PrimaryMap, entity_impl};
 use std::sync::Mutex;
 use veloc::interpreter::{InterpreterValue, Program, host::HostFunction};
-use veloc::ir::{CallConv, Signature, Type};
+use veloc::mir::{CallConv, Signature, Type};
 use wasi_common::WasiCtx;
 use wasmparser::ValType;
 

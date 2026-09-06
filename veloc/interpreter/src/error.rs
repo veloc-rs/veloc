@@ -1,6 +1,6 @@
 use crate::host::HostFuncId;
 use alloc::string::String;
-use veloc_ir::{FuncId, ModuleId};
+use veloc_mir::{FuncId, ModuleId};
 
 pub type Result<T> = core::result::Result<T, Error>;
 

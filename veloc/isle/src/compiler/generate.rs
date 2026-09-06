@@ -284,7 +284,7 @@ use crate::target::arch::{{
     CpuDescription, FixedUseConstraint, GenericInstMetadata, LoweringContext, RegInfo,
     SelectResult, TargetArch, TargetInstMetadata, TargetTiedOperandMetadata, TiedOperandConstraint,
 }};
-pub use veloc_ir::Type;
+pub use veloc_mir::Type;
 
 trait IntoOptReg {{
     fn into_opt_reg(self) -> Option<Reg>;

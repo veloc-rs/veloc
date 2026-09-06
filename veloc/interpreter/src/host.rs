@@ -6,7 +6,7 @@
 use crate::value::InterpreterValue;
 use alloc::sync::Arc;
 use cranelift_entity::entity_impl;
-use veloc_ir::Signature;
+use veloc_mir::Signature;
 
 /// A host callback and the exact signature it accepts.
 #[derive(Clone)]

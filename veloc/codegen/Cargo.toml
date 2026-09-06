@@ -5,7 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-veloc-ir = { path = "../ir" }
+veloc-mir = { path = "../mir" }
 cranelift-entity = { workspace = true }
 object = { version = "0.36", features = ["write"] }
 hashbrown = { workspace = true }
@@ -18,4 +18,4 @@ veloc-isle = { path = "../isle" }
 
 [features]
 default = ["std"]
-std = ["veloc-ir/std"]
+std = ["veloc-mir/std"]

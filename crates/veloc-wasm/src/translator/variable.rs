@@ -1,5 +1,5 @@
 use super::WasmTranslator;
-use veloc::ir::{MemFlags, Value};
+use veloc::mir::{MemFlags, Value};
 use wasmparser::{BinaryReaderError, Operator};
 
 impl<'a> WasmTranslator<'a> {

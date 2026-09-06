@@ -7,7 +7,7 @@ use super::types::TargetArch;
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
-use veloc_ir::{Signature, Type};
+use veloc_mir::{Signature, Type};
 
 /// 调用约定
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,10 +24,10 @@ pub enum CallConv {
     WasmC,
 }
 
-impl From<veloc_ir::CallConv> for CallConv {
-    fn from(value: veloc_ir::CallConv) -> Self {
+impl From<veloc_mir::CallConv> for CallConv {
+    fn from(value: veloc_mir::CallConv) -> Self {
         match value {
-            veloc_ir::CallConv::SystemV => CallConv::SystemV,
+            veloc_mir::CallConv::SystemV => CallConv::SystemV,
         }
     }
 }
@@ -397,7 +397,7 @@ mod tests {
     use super::{CallConv, Reg, TargetArch, x86_64_rax, x86_64_rdx};
     use crate::target::arch::{AbiLocation, AbiStackBase};
     use alloc::vec;
-    use veloc_ir::Type;
+    use veloc_mir::Type;
 
     #[test]
     fn test_x86_64_systemv_callee_plan_uses_registers_then_stack() {

@@ -22,4 +22,4 @@ pub use host::{HostFuncId, HostFunction};
 pub use interpreter::{Interpreter, VirtualMemory};
 pub use runtime::{CallTarget, FunctionRef, Program, ProgramBuilder};
 pub use value::InterpreterValue;
-pub use veloc_ir::ModuleId;
+pub use veloc_mir::ModuleId;

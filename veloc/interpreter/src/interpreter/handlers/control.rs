@@ -113,7 +113,7 @@ define_control_handlers! {
             num_rets,
             num_args,
         );
-        let func = veloc_ir::FuncId::from_u32(func_id);
+        let func = veloc_mir::FuncId::from_u32(func_id);
         let return_pc = next_ip.offset_from(frame.func.code.as_ptr()) as usize;
 
         match program.call_target(frame.module, func) {

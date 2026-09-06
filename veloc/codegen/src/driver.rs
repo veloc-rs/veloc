@@ -21,7 +21,7 @@ use crate::target::arch::TargetMachine;
 use crate::translate::IRTranslator;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use veloc_ir::{FuncId, Function, Module};
+use veloc_mir::{FuncId, Function, Module};
 
 /// 代码生成统计信息
 #[derive(Debug, Clone, Default)]
@@ -126,7 +126,7 @@ impl<'a> CodegenPipeline<'a> {
     }
 
     /// 编译整个模块并生成单个 relocatable object 文件。
-    pub fn compile_object(&self, module: &veloc_ir::Module) -> Result<Vec<u8>> {
+    pub fn compile_object(&self, module: &veloc_mir::Module) -> Result<Vec<u8>> {
         let mut object = ObjectFileBuilder::new(self.target)?;
         let mut stats = CodegenStats::default();
         let mut module_analyses = ModuleAnalysisCtx::default();
@@ -140,7 +140,7 @@ impl<'a> CodegenPipeline<'a> {
         }
 
         for (_, func) in &module.functions {
-            if func.linkage == veloc_ir::Linkage::Import {
+            if func.linkage == veloc_mir::Linkage::Import {
                 object.add_undefined_function(func);
             }
         }
@@ -151,8 +151,8 @@ impl<'a> CodegenPipeline<'a> {
     /// 编译模块中的所有已定义函数并返回裸机器码。
     pub fn compile_functions(
         &self,
-        module: &veloc_ir::Module,
-    ) -> Result<BTreeMap<veloc_ir::FuncId, Vec<u8>>> {
+        module: &veloc_mir::Module,
+    ) -> Result<BTreeMap<veloc_mir::FuncId, Vec<u8>>> {
         let mut stats = CodegenStats::default();
         let mut module_analyses = ModuleAnalysisCtx::default();
         let CompiledModule {
@@ -246,7 +246,7 @@ impl<'a> CodegenPipeline<'a> {
     fn run_function_pipeline(
         &self,
         mfunc: MachineFunction<RawLir>,
-        func_sig: &veloc_ir::Signature,
+        func_sig: &veloc_mir::Signature,
         stats: &mut CodegenStats,
         function_analyses: &mut FunctionAnalysisCtx,
         module_analyses: &mut ModuleAnalysisCtx,

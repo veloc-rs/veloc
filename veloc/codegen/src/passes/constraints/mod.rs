@@ -422,7 +422,7 @@ mod tests {
         let mut mfunc = MachineFunction::<PreIselPrepared>::new("test".into());
         mfunc
             .blocks
-            .push(MachineBlock::new(veloc_ir::Block::from_u32(0)));
+            .push(MachineBlock::new(veloc_mir::Block::from_u32(0)));
         let inst_id = mfunc.alloc_inst(inst);
         mfunc.append_inst_id_to_block(0, inst_id);
         (mfunc, inst_id)

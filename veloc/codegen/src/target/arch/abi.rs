@@ -2,7 +2,7 @@ use super::Reg;
 use super::callconv::CallConv;
 use super::types::TargetArch;
 use alloc::vec::Vec;
-use veloc_ir::Type;
+use veloc_mir::Type;
 
 /// ABI 值分类
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

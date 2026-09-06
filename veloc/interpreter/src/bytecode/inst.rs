@@ -1,4 +1,4 @@
-use veloc_ir::ScalarType;
+use veloc_mir::ScalarType;
 
 /// Packed type pair for Extend/Convert operations: (to_ty, from_ty)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

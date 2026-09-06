@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 
 use crate::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Node {
     pub offset: usize,
     pub kind: Kind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Kind {
     Name(String),
     Text(String),

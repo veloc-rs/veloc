@@ -2,7 +2,7 @@ use crate::bytecode::inst::{CodeWord, Reg, TypePair, emit, emit_auto};
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, UseDefAnalysis, analyze_liveness};
-use veloc_ir::{
+use veloc_mir::{
     Block, BlockCall, FuncId, Function, Inst, InstructionData, Intrinsic, ModuleId,
     Opcode as IrOpcode, ScalarType, StackSlot, Type, Value, ValueList,
 };
@@ -639,13 +639,13 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_icmp(&mut self, inst: Inst, kind: veloc_ir::IntCC, args: &[Value; 2]) {
+    fn emit_icmp(&mut self, inst: Inst, kind: veloc_mir::IntCC, args: &[Value; 2]) {
         let lhs = self.mapper.reg(args[0]);
         let rhs = self.mapper.reg(args[1]);
         let dst = self.mapper.reg(self.func.dfg.first_result(inst).unwrap());
         let ty = self.func.dfg.value_type(args[0]);
 
-        use veloc_ir::IntCC::*;
+        use veloc_mir::IntCC::*;
         match (ty, kind) {
             (Type::I32, Eq) => emit::I32Eq(&mut self.code, dst, lhs, rhs),
             (Type::I32, Ne) => emit::I32Ne(&mut self.code, dst, lhs, rhs),
@@ -679,13 +679,13 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_fcmp(&mut self, inst: Inst, kind: veloc_ir::FloatCC, args: &[Value; 2]) {
+    fn emit_fcmp(&mut self, inst: Inst, kind: veloc_mir::FloatCC, args: &[Value; 2]) {
         let lhs = self.mapper.reg(args[0]);
         let rhs = self.mapper.reg(args[1]);
         let dst = self.mapper.reg(self.func.dfg.first_result(inst).unwrap());
         let ty = self.func.dfg.value_type(args[0]);
 
-        use veloc_ir::FloatCC::*;
+        use veloc_mir::FloatCC::*;
         match (ty, kind) {
             (Type::F32, Eq) => emit::F32Eq(&mut self.code, dst, lhs, rhs),
             (Type::F32, Ne) => emit::F32Ne(&mut self.code, dst, lhs, rhs),
@@ -754,7 +754,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_br_table(&mut self, index: Value, table: veloc_ir::JumpTable) {
+    fn emit_br_table(&mut self, index: Value, table: veloc_mir::JumpTable) {
         let table_data = self.func.dfg.jump_tables[table].targets.clone();
         let num_targets = table_data.len() as u32;
         let source_pc = self.code.len();
@@ -773,7 +773,7 @@ impl<'a> Compiler<'a> {
         emit::BrTable(&mut self.code, index_reg, br_offset, num_targets);
     }
 
-    fn emit_return(&mut self, values: veloc_ir::ValueList) {
+    fn emit_return(&mut self, values: veloc_mir::ValueList) {
         let ret_vals = self.func.dfg.get_value_list(values);
         let ret_regs: SmallVec<[Reg; 2]> = ret_vals.iter().map(|&v| self.mapper.reg(v)).collect();
         let num_vals = ret_regs.len() as u32;
@@ -781,7 +781,7 @@ impl<'a> Compiler<'a> {
         emit::Return(&mut self.code, data_offset, num_vals);
     }
 
-    fn emit_call(&mut self, inst: Inst, func_id: FuncId, args: veloc_ir::ValueList) {
+    fn emit_call(&mut self, inst: Inst, func_id: FuncId, args: veloc_mir::ValueList) {
         let args_regs: SmallVec<[Reg; 4]> = self
             .func
             .dfg
@@ -1317,7 +1317,7 @@ impl<'a> Compiler<'a> {
 /// the moves in the order they are stored.
 fn calculate_moves(
     func: &Function,
-    call: veloc_ir::types::BlockCall,
+    call: veloc_mir::types::BlockCall,
     mapper: &mut ValueMapper,
 ) -> Vec<(Reg, Reg)> {
     fn find_non_conflicting_move_index(pending: &[(Reg, Reg)]) -> Option<usize> {
@@ -1379,7 +1379,7 @@ fn calculate_moves(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use veloc_ir::{CallConv, Linkage, ModuleBuilder};
+    use veloc_mir::{CallConv, Linkage, ModuleBuilder};
 
     #[test]
     fn block_parameters_reuse_registers() {

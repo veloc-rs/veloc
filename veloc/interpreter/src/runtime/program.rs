@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use cranelift_entity::PrimaryMap;
 use hashbrown::HashMap;
-use veloc_ir::{FuncId, Module, ModuleId};
+use veloc_mir::{FuncId, Module, ModuleId};
 
 /// Main program structure managing all modules and host functions
 pub struct Program {
@@ -310,7 +310,7 @@ impl<'a> ProgramBuilder<'a> {
                 module: self.id,
                 func: import,
             })?;
-        if func.linkage != veloc_ir::Linkage::Import {
+        if func.linkage != veloc_mir::Linkage::Import {
             return Err(Error::ExpectedImport {
                 module: self.id,
                 func: import,
@@ -330,7 +330,7 @@ impl Default for Program {
 mod tests {
     use super::*;
     use crate::value::InterpreterValue;
-    use veloc_ir::{CallConv, Linkage, ModuleBuilder, Signature, Type};
+    use veloc_mir::{CallConv, Linkage, ModuleBuilder, Signature, Type};
 
     fn module_with_func(
         name: &str,

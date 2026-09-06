@@ -5,11 +5,11 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
-veloc-ir = { workspace = true }
+veloc-mir = { workspace = true }
 veloc-analyzer = { workspace = true }
 hashbrown = { workspace = true }
 log = { workspace = true }
 
 [features]
 default = ["std"]
-std = ["veloc-ir/std"]
+std = ["veloc-mir/std"]

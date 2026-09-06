@@ -412,7 +412,7 @@ mod tests {
     };
     use crate::pipeline::FunctionAnalysisCtx;
     use crate::pipeline::stages::RawLir;
-    use veloc_ir::{Block, Type};
+    use veloc_mir::{Block, Type};
 
     fn new_test_function() -> MachineFunction<RawLir> {
         let mut mfunc = MachineFunction::<RawLir>::new("test".into());

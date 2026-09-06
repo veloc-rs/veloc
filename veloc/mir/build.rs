@@ -32,7 +32,8 @@ fn main() {
         ("type_schemes.rs", output.types),
         ("opcodes.rs", output.opcodes),
         ("instructions.rs", output.instructions),
-        ("codecs.rs", output.codecs),
+        ("text_parser.rs", output.text_parser),
+        ("text_printer.rs", output.text_printer),
     ] {
         fs::write(dir.join(name), text).expect("write generated MIR definitions");
     }

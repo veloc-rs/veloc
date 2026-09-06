@@ -178,32 +178,29 @@ impl Function {
             self.validate_constraint(inst, data, constraint, &results)?;
         }
 
+        if let Some(call) = data.call_info() {
+            let Some(signature) = call.signature.resolve(module) else {
+                return self.fail(alloc::format!(
+                    "{} at {:?} refers to a missing function or signature",
+                    spec.mnemonic,
+                    inst
+                ));
+            };
+            self.validate_signature(module, inst, signature, call.args, spec.mnemonic)?;
+        }
+        let mut successors = Ok(());
+        data.visit_successors(&self.dfg, |call| {
+            if successors.is_ok() {
+                successors = self.validate_block_call(call, spec.mnemonic);
+            }
+        });
+        successors?;
+
         match data {
-            InstructionData::Call { func_id, args } => {
-                let callee = &module.functions[*func_id];
-                self.validate_signature(module, inst, callee.signature, *args, &callee.name)?;
-            }
-            InstructionData::CallIndirect { args, sig_id, .. } => {
-                self.validate_signature(module, inst, *sig_id, *args, "indirect call")?;
-            }
-            InstructionData::CallIntrinsic { args, sig_id, .. } => {
-                self.validate_signature(module, inst, *sig_id, *args, "intrinsic call")?;
-            }
-            InstructionData::Jump { dest } => {
-                self.validate_block_call(*dest, "jump")?;
-            }
-            InstructionData::Br {
-                then_dest,
-                else_dest,
-                ..
-            } => {
-                self.validate_block_call(*then_dest, "branch")?;
-                self.validate_block_call(*else_dest, "branch")?;
-            }
-            InstructionData::BrTable { table, .. } => {
-                for &target in &self.dfg.jump_tables[*table].targets {
-                    self.validate_block_call(target, "branch table")?;
-                }
+            InstructionData::BrTable { table, .. }
+                if self.dfg.jump_table_targets(*table).is_empty() =>
+            {
+                return self.fail("branch table must contain a default destination".into());
             }
             InstructionData::Return { values } => {
                 self.validate_values(
@@ -502,6 +499,38 @@ impl Function {
 mod tests {
     use crate::builder::ModuleBuilder;
     use crate::{CallConv, IntCC, Linkage, Type};
+
+    #[test]
+    fn branch_tables_require_a_default_destination() {
+        let mut module = ModuleBuilder::new();
+        let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+        let func = module.declare_function("empty-table".into(), sig, Linkage::Local);
+        {
+            let mut builder = module.builder(func);
+            let entry = builder.init_entry_block();
+            let default = builder.make_block_call(entry, &[]);
+            let index = builder.ins().i32const(0);
+            builder.ins().br_table(index, default, &[]);
+        }
+        module.validate().unwrap();
+        let mut module = module.build_data();
+        let func = &mut module.functions[func];
+        let inst = *func.layout.blocks[func.entry_block.unwrap()]
+            .insts
+            .last()
+            .unwrap();
+        let crate::InstructionData::BrTable { table, .. } = func.dfg.instructions[inst] else {
+            unreachable!()
+        };
+        func.dfg.jump_tables[table].targets.clear();
+        assert!(
+            module
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("default destination")
+        );
+    }
 
     #[test]
     fn test_unsealed_block_validation() {

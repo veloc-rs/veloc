@@ -1,8 +1,8 @@
-use veloc_ir::opspec::{
+use veloc_mir::opspec::{
     ResultTypes, TypeClass, TypePattern, TypeRelation, TypeScheme, TypeSchemeError, TypeSlot,
 };
-use veloc_ir::types::TypeBits;
-use veloc_ir::{Opcode, ScalarType, Type, TypeSize};
+use veloc_mir::types::TypeBits;
+use veloc_mir::{Opcode, ScalarType, Type, TypeSize};
 
 #[test]
 fn logical_bits_are_independent_of_byte_storage() {

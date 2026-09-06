@@ -3,7 +3,7 @@ use veloc_opgen::{Error, compile_mir};
 const PAIR: &str = r#"
 format Pair {
     fields: [op(Opcode), args(values(2))],
-    opcode: dynamic(op), text: values(2)
+    opcode: dynamic(op)
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
     mnemonic: "pair-add",
@@ -15,11 +15,12 @@ op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
 const LOAD: &str = r#"
 format Load {
     fields: [ptr(Value), offset(u32), flags(MemFlags)],
-    opcode: fixed(Load), text: Load
+    opcode: fixed(Load)
 }
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
+    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 "#;
@@ -27,11 +28,13 @@ op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
 const INDIRECT_CALL: &str = r#"
 format CallIndirect {
     fields: [ptr(Value), args(ValueList), sig_id(SigId)],
-    opcode: fixed(CallIndirect), text: IndirectCall
+    opcode: fixed(CallIndirect)
 }
 op CallIndirect(@sig_id: SigId, ptr: PTR, args: values) -> signature {
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
+    text: Text { args: [invoke(ptr, args, sig_id)] },
+    signature: sig_id,
     traits: [MAY_TRAP], memory: UNKNOWN
 }
 "#;
@@ -78,7 +81,7 @@ fn successors_preserve_the_statically_checked_branch_condition() {
     let source = r#"
         format Br {
             fields: [condition(Value), then_dest(BlockCall), else_dest(BlockCall)],
-            opcode: fixed(Br), text: Branch
+            opcode: fixed(Br)
         }
         op Br(condition: BOOL, then_dest: successor, else_dest: successor) -> () {
             mnemonic: "br",

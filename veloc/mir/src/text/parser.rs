@@ -1,18 +1,17 @@
 //! Parser for the canonical textual IR.
 //!
-//! Instruction dispatch is selected from [`TextCodec`], which is an exhaustive
-//! projection of [`crate::OpFormat`]. A small delimiter-aware scanner handles
-//! vector types, variadic calls, and nested block calls without duplicating one
-//! parser-combinator tree per opcode.
+//! Instruction syntax and storage construction are generated from OpSpec.
+//! A delimiter-aware scanner and typed atoms handle nested lists, signatures,
+//! and forward SSA references independently of the instruction set.
 
-use super::{TextCodec, format};
+use super::format;
 use crate::{
-    Block, BlockCall, CallConv, FuncId, Function, InstructionData, Intrinsic, Linkage, MemFlags,
-    Module, ModuleData, Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
+    Block, BlockCall, CallConv, FuncId, Function, InstructionData, Linkage, MemFlags, Module,
+    ModuleData, Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
     function::StackSlotData,
-    inst::{ConstantPoolData, Inst, VectorMemOptions},
+    inst::Inst,
     opspec::{ResultTypes, TypeList, TypeSchemeError},
-    types::{BlockCallData, JumpTableData, ValueData},
+    types::ValueData,
 };
 use alloc::{
     format,
@@ -353,20 +352,15 @@ fn instruction_signature<'a>(
     data: &InstructionData,
     module: &'a ModuleData,
 ) -> core::result::Result<&'a Signature, ParseError> {
-    let sig = match data {
-        InstructionData::Call { func_id, .. } => module
-            .functions
-            .get(*func_id)
-            .map(|func| func.signature)
-            .ok_or_else(|| ParseError(format!("unknown function id {}", func_id.0)))?,
-        InstructionData::CallIndirect { sig_id, .. }
-        | InstructionData::CallIntrinsic { sig_id, .. } => *sig_id,
-        _ => {
-            return Err(ParseError(
-                "signature result on non-call instruction".into(),
-            ));
-        }
-    };
+    let call = data
+        .call_info()
+        .ok_or_else(|| ParseError("signature result on non-call instruction".into()))?;
+    let sig = call.signature.resolve(module).ok_or_else(|| {
+        ParseError(format!(
+            "unknown function or signature {:?}",
+            call.signature
+        ))
+    })?;
     module
         .signatures
         .get(sig)
@@ -374,27 +368,14 @@ fn instruction_signature<'a>(
 }
 
 fn instruction_successors(data: &InstructionData, func: &Function) -> Vec<Block> {
-    match data {
-        InstructionData::Jump { dest } => vec![func.dfg.block_call_block(*dest)],
-        InstructionData::Br {
-            then_dest,
-            else_dest,
-            ..
-        } => vec![
-            func.dfg.block_call_block(*then_dest),
-            func.dfg.block_call_block(*else_dest),
-        ],
-        InstructionData::BrTable { table, .. } => func
-            .dfg
-            .jump_table_targets(*table)
-            .iter()
-            .map(|&call| func.dfg.block_call_block(call))
-            .collect(),
-        _ => Vec::new(),
-    }
+    let mut blocks = Vec::new();
+    data.visit_successors(&func.dfg, |call| {
+        blocks.push(func.dfg.block_call_block(call));
+    });
+    blocks
 }
 
-struct OperandParser<'a> {
+pub(super) struct OperandParser<'a> {
     func: &'a mut Function,
     ctx: &'a mut ParseContext,
     func_ids: &'a HashMap<String, FuncId>,
@@ -402,342 +383,7 @@ struct OperandParser<'a> {
 }
 
 impl OperandParser<'_> {
-    fn parse(
-        &mut self,
-        opcode: Opcode,
-        ty: Option<Type>,
-        flags: MemFlags,
-        text: &str,
-    ) -> core::result::Result<InstructionData, ParseError> {
-        let codec = TextCodec::for_opcode(opcode);
-        if !flags.is_empty() && !codec.accepts_memory_flags() {
-            return Err(ParseError(format!(
-                "memory flags are not valid on `{}`",
-                opcode.spec().mnemonic
-            )));
-        }
-        match codec {
-            TextCodec::Values { arity } => self.parse_values(opcode, arity as usize, text),
-            TextCodec::Nullary => {
-                require_empty(text)?;
-                InstructionData::from_values(opcode, &[])
-                    .ok_or_else(|| codec_mismatch(opcode, codec))
-            }
-            TextCodec::IntegerConstant => Ok(InstructionData::Iconst {
-                value: parse_integer_bits(text)?,
-            }),
-            TextCodec::FloatConstant => Ok(InstructionData::Fconst {
-                value: parse_float_bits(text, ty)?,
-            }),
-            TextCodec::BoolConstant => Ok(InstructionData::Bconst {
-                value: match text.trim() {
-                    "true" => true,
-                    "false" => false,
-                    other => {
-                        return Err(ParseError(format!(
-                            "expected `true` or `false`, found `{other}`"
-                        )));
-                    }
-                },
-            }),
-            TextCodec::VectorConstant => {
-                let bytes = parse_hex_bytes(text)?;
-                let pool_id = self
-                    .func
-                    .dfg
-                    .make_constant_pool_data(ConstantPoolData::Bytes(bytes));
-                Ok(InstructionData::Vconst { pool_id })
-            }
-            TextCodec::Load => {
-                let (core, named) = split_core_and_named(text, 1)?;
-                reject_unknown_named(&named, &["offset"])?;
-                Ok(InstructionData::Load {
-                    ptr: self.value(core[0])?,
-                    offset: parse_named_u32(&named, "offset", 0)?,
-                    flags,
-                })
-            }
-            TextCodec::Store => {
-                let (core, named) = split_core_and_named(text, 2)?;
-                reject_unknown_named(&named, &["offset"])?;
-                Ok(InstructionData::Store {
-                    value: self.value(core[0])?,
-                    ptr: self.value(core[1])?,
-                    offset: parse_named_u32(&named, "offset", 0)?,
-                    flags,
-                })
-            }
-            TextCodec::StackLoad => {
-                let (core, named) = split_core_and_named(text, 1)?;
-                reject_unknown_named(&named, &["offset"])?;
-                Ok(InstructionData::StackLoad {
-                    slot: parse_stack_slot_ref(core[0])?,
-                    offset: parse_named_u32(&named, "offset", 0)?,
-                })
-            }
-            TextCodec::StackStore => {
-                let (core, named) = split_core_and_named(text, 2)?;
-                reject_unknown_named(&named, &["offset"])?;
-                Ok(InstructionData::StackStore {
-                    value: self.value(core[0])?,
-                    slot: parse_stack_slot_ref(core[1])?,
-                    offset: parse_named_u32(&named, "offset", 0)?,
-                })
-            }
-            TextCodec::StackAddr => {
-                let (core, named) = split_core_and_named(text, 1)?;
-                reject_unknown_named(&named, &["offset"])?;
-                Ok(InstructionData::StackAddr {
-                    slot: parse_stack_slot_ref(core[0])?,
-                    offset: parse_named_u32(&named, "offset", 0)?,
-                })
-            }
-            TextCodec::PtrOffset => {
-                let fields = exact_fields(text, 2)?;
-                Ok(InstructionData::PtrOffset {
-                    ptr: self.value(fields[0])?,
-                    offset: parse_i32(fields[1], "pointer offset")?,
-                })
-            }
-            TextCodec::PtrIndex => {
-                let (core, named) = split_core_and_named(text, 2)?;
-                reject_unknown_named(&named, &["scale", "offset"])?;
-                let imm_id = self.func.dfg.make_ptr_imm(
-                    parse_named_i32(&named, "offset", 0)?,
-                    parse_named_u32(&named, "scale", 1)?,
-                );
-                Ok(InstructionData::PtrIndex {
-                    ptr: self.value(core[0])?,
-                    index: self.value(core[1])?,
-                    imm_id,
-                })
-            }
-            TextCodec::DirectCall => self.parse_direct_call(text),
-            TextCodec::IndirectCall => self.parse_indirect_call(text),
-            TextCodec::IntrinsicCall => self.parse_intrinsic_call(text),
-            TextCodec::Jump => Ok(InstructionData::Jump {
-                dest: self.block_call(text)?,
-            }),
-            TextCodec::Branch => {
-                let fields = exact_fields(text, 3)?;
-                Ok(InstructionData::Br {
-                    condition: self.value(fields[0])?,
-                    then_dest: self.block_call(fields[1])?,
-                    else_dest: self.block_call(fields[2])?,
-                })
-            }
-            TextCodec::BranchTable => self.parse_branch_table(text),
-            TextCodec::Return => {
-                let values = if text.trim().is_empty() {
-                    Vec::new()
-                } else {
-                    split_top_level(text, ',')
-                        .into_iter()
-                        .map(|field| self.value(field))
-                        .collect::<core::result::Result<Vec<_>, _>>()?
-                };
-                Ok(InstructionData::Return {
-                    values: self.func.dfg.make_value_list(&values),
-                })
-            }
-            TextCodec::IntCompare => {
-                let (cc, values) = split_condition(text)?;
-                Ok(InstructionData::IntCompare {
-                    kind: crate::IntCC::from_mnemonic(cc)
-                        .ok_or_else(|| ParseError(format!("unknown integer condition `{cc}`")))?,
-                    args: [self.value(values[0])?, self.value(values[1])?],
-                })
-            }
-            TextCodec::FloatCompare => {
-                let (cc, values) = split_condition(text)?;
-                Ok(InstructionData::FloatCompare {
-                    kind: crate::FloatCC::from_mnemonic(cc)
-                        .ok_or_else(|| ParseError(format!("unknown float condition `{cc}`")))?,
-                    args: [self.value(values[0])?, self.value(values[1])?],
-                })
-            }
-            TextCodec::VectorLoadStrided
-            | TextCodec::VectorStoreStrided
-            | TextCodec::VectorGather
-            | TextCodec::VectorScatter => self.parse_vector_memory(codec, flags, text),
-            TextCodec::Shuffle => {
-                let (core, named) = split_core_and_named(text, 2)?;
-                reject_unknown_named(&named, &["mask"])?;
-                let bytes = parse_hex_bytes(named_value(&named, "mask")?)?;
-                let mask = self
-                    .func
-                    .dfg
-                    .make_constant_pool_data(ConstantPoolData::Bytes(bytes));
-                Ok(InstructionData::Shuffle {
-                    args: [self.value(core[0])?, self.value(core[1])?],
-                    mask,
-                })
-            }
-        }
-    }
-
-    fn parse_values(
-        &mut self,
-        opcode: Opcode,
-        arity: usize,
-        text: &str,
-    ) -> core::result::Result<InstructionData, ParseError> {
-        let (core, named) = split_core_and_named(text, arity)?;
-        let args = core
-            .iter()
-            .map(|field| self.value(field))
-            .collect::<core::result::Result<Vec<_>, _>>()?;
-        if !named.is_empty() {
-            reject_unknown_named(&named, &["mask", "evl"])?;
-            let mask = self.value(named_value(&named, "mask")?)?;
-            let evl = self.optional_named_value(&named, "evl")?;
-            let ext = self.func.dfg.make_vector_ext(mask, evl);
-            let args = self.func.dfg.make_value_list(&args);
-            return Ok(InstructionData::VectorOpWithExt { opcode, args, ext });
-        }
-
-        InstructionData::from_values(opcode, &args)
-            .ok_or_else(|| codec_mismatch(opcode, TextCodec::Values { arity: arity as u8 }))
-    }
-
-    fn parse_direct_call(
-        &mut self,
-        text: &str,
-    ) -> core::result::Result<InstructionData, ParseError> {
-        let (callee, args, trailing) = parse_invocation(text)?;
-        if !trailing.trim().is_empty() {
-            return Err(ParseError(format!(
-                "unexpected text after direct call: `{trailing}`"
-            )));
-        }
-        let func_id = self
-            .func_ids
-            .get(callee)
-            .copied()
-            .or_else(|| parse_func_ref(callee))
-            .ok_or_else(|| ParseError(format!("unknown function `{callee}`")))?;
-        let args = self.values(args)?;
-        Ok(InstructionData::Call {
-            func_id,
-            args: self.func.dfg.make_value_list(&args),
-        })
-    }
-
-    fn parse_indirect_call(
-        &mut self,
-        text: &str,
-    ) -> core::result::Result<InstructionData, ParseError> {
-        let (ptr, args, trailing) = parse_invocation(text)?;
-        let sig_id = self
-            .module
-            .intern_signature(parse_signature_suffix(trailing)?);
-        let args = self.values(args)?;
-        Ok(InstructionData::CallIndirect {
-            ptr: self.value(ptr)?,
-            args: self.func.dfg.make_value_list(&args),
-            sig_id,
-        })
-    }
-
-    fn parse_intrinsic_call(
-        &mut self,
-        text: &str,
-    ) -> core::result::Result<InstructionData, ParseError> {
-        let (name, args, trailing) = parse_invocation(text)?;
-        let intrinsic = Intrinsic::from_name(name)
-            .ok_or_else(|| ParseError(format!("unknown intrinsic `{name}`")))?;
-        let sig_id = self
-            .module
-            .intern_signature(parse_signature_suffix(trailing)?);
-        let args = self.values(args)?;
-        Ok(InstructionData::CallIntrinsic {
-            intrinsic,
-            args: self.func.dfg.make_value_list(&args),
-            sig_id,
-        })
-    }
-
-    fn parse_branch_table(
-        &mut self,
-        text: &str,
-    ) -> core::result::Result<InstructionData, ParseError> {
-        let fields = exact_fields(text, 3)?;
-        let index = self.value(fields[0])?;
-        let cases = fields[1]
-            .strip_prefix('[')
-            .and_then(|value| value.strip_suffix(']'))
-            .ok_or_else(|| ParseError("branch-table cases must be enclosed in `[]`".into()))?;
-        let mut targets = if cases.trim().is_empty() {
-            Vec::new()
-        } else {
-            split_top_level(cases, ',')
-                .into_iter()
-                .map(|field| self.block_call(field))
-                .collect::<core::result::Result<Vec<_>, _>>()?
-        };
-        // Physical order is case zero through case N, followed by default.
-        targets.push(self.block_call(fields[2])?);
-        let table = self.func.dfg.jump_tables.push(JumpTableData { targets });
-        Ok(InstructionData::BrTable { index, table })
-    }
-
-    fn parse_vector_memory(
-        &mut self,
-        codec: TextCodec,
-        flags: MemFlags,
-        text: &str,
-    ) -> core::result::Result<InstructionData, ParseError> {
-        let core_count = match codec {
-            TextCodec::VectorLoadStrided | TextCodec::VectorGather => 1,
-            TextCodec::VectorStoreStrided | TextCodec::VectorScatter => 2,
-            _ => unreachable!(),
-        };
-        let (core, named) = split_core_and_named(text, core_count)?;
-        reject_unknown_named(
-            &named,
-            &["stride", "index", "scale", "offset", "mask", "evl"],
-        )?;
-        let scale = u8::try_from(parse_named_u32(&named, "scale", 1)?)
-            .map_err(|_| ParseError("vector index scale must fit in u8".into()))?;
-        let mask = self.optional_named_value(&named, "mask")?;
-        let evl = self.optional_named_value(&named, "evl")?;
-        let ext = self.func.dfg.make_vector_mem_ext(VectorMemOptions {
-            offset: parse_named_i32(&named, "offset", 0)?,
-            flags,
-            scale,
-            mask,
-            evl,
-        });
-        let ptr = self.value(core[core_count - 1])?;
-
-        match codec {
-            TextCodec::VectorLoadStrided => Ok(InstructionData::VectorLoadStrided {
-                ptr,
-                stride: self.value(named_value(&named, "stride")?)?,
-                ext,
-            }),
-            TextCodec::VectorStoreStrided => {
-                let value = self.value(core[0])?;
-                let stride = self.value(named_value(&named, "stride")?)?;
-                let args = self.func.dfg.make_value_list(&[ptr, stride, value]);
-                Ok(InstructionData::VectorStoreStrided { args, ext })
-            }
-            TextCodec::VectorGather => Ok(InstructionData::VectorGather {
-                ptr,
-                index: self.value(named_value(&named, "index")?)?,
-                ext,
-            }),
-            TextCodec::VectorScatter => {
-                let value = self.value(core[0])?;
-                let index = self.value(named_value(&named, "index")?)?;
-                let args = self.func.dfg.make_value_list(&[ptr, index, value]);
-                Ok(InstructionData::VectorScatter { args, ext })
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    fn value(&mut self, name: &str) -> core::result::Result<Value, ParseError> {
+    pub(super) fn value(&mut self, name: &str) -> core::result::Result<Value, ParseError> {
         let name = name.trim();
         if name.is_empty() || name.chars().any(char::is_whitespace) {
             return Err(ParseError(format!("invalid SSA value `{name}`")));
@@ -745,7 +391,7 @@ impl OperandParser<'_> {
         Ok(get_or_create_value(name, self.func, self.ctx))
     }
 
-    fn values(&mut self, fields: &str) -> core::result::Result<Vec<Value>, ParseError> {
+    pub(super) fn values(&mut self, fields: &str) -> core::result::Result<Vec<Value>, ParseError> {
         if fields.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -755,7 +401,7 @@ impl OperandParser<'_> {
             .collect()
     }
 
-    fn block_call(&mut self, text: &str) -> core::result::Result<BlockCall, ParseError> {
+    pub(super) fn block_call(&mut self, text: &str) -> core::result::Result<BlockCall, ParseError> {
         let (name, args, trailing) = parse_invocation(text)?;
         if !trailing.trim().is_empty() {
             return Err(ParseError(format!(
@@ -769,24 +415,38 @@ impl OperandParser<'_> {
             .copied()
             .ok_or_else(|| ParseError(format!("unknown block `{name}`")))?;
         let values = self.values(args)?;
-        let args = self.func.dfg.make_value_list(&values);
-        Ok(self
-            .func
-            .dfg
-            .block_calls
-            .push(BlockCallData { block, args }))
+        Ok(self.func.dfg.make_block_call(block, &values))
     }
 
-    fn optional_named_value(
+    pub(super) fn block_calls(
         &mut self,
-        named: &[(&str, &str)],
-        key: &str,
-    ) -> core::result::Result<Option<Value>, ParseError> {
-        named
-            .iter()
-            .find(|(candidate, _)| *candidate == key)
-            .map(|(_, value)| self.value(value))
-            .transpose()
+        text: &str,
+    ) -> core::result::Result<Vec<BlockCall>, ParseError> {
+        let inner = text
+            .trim()
+            .strip_prefix('[')
+            .and_then(|text| text.strip_suffix(']'))
+            .ok_or_else(|| ParseError("block-call list must be enclosed in `[]`".into()))?;
+        if inner.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        split_top_level(inner, ',')
+            .into_iter()
+            .map(|text| self.block_call(text))
+            .collect()
+    }
+
+    pub(super) fn func_ref(&self, text: &str) -> core::result::Result<FuncId, ParseError> {
+        let name = text.trim();
+        self.func_ids
+            .get(name)
+            .copied()
+            .or_else(|| parse_func_ref(name))
+            .ok_or_else(|| ParseError(format!("unknown function `{name}`")))
+    }
+
+    pub(super) fn signature(&mut self, text: &str) -> core::result::Result<SigId, ParseError> {
+        Ok(self.module.intern_signature(parse_signature(text)?))
     }
 }
 
@@ -902,20 +562,23 @@ fn parse_function_header(text: &str) -> core::result::Result<FunctionHeader, Par
     })
 }
 
-fn parse_signature_suffix(text: &str) -> core::result::Result<Signature, ParseError> {
-    let text = text
-        .trim()
-        .strip_prefix(':')
-        .ok_or_else(|| ParseError("call signature must follow `:`".into()))?
-        .trim();
-    let signature_text = format!("sig{text}");
-    let (_, params, trailing) = parse_invocation(&signature_text)?;
-    let returns = trailing
+fn parse_signature(text: &str) -> core::result::Result<Signature, ParseError> {
+    let text = text.trim();
+    if !text.starts_with('(') {
+        return Err(ParseError(
+            "signature parameters must start with `(`".into(),
+        ));
+    }
+    let close = matching_delimiter(text, 0, '(', ')')?;
+    let returns = text[close + 1..]
         .trim()
         .strip_prefix("->")
-        .ok_or_else(|| ParseError("call signature is missing `->`".into()))?;
+        .ok_or_else(|| ParseError("signature is missing `->`".into()))?;
+    if returns.trim().is_empty() {
+        return Err(ParseError("signature is missing return types".into()));
+    }
     Ok(Signature::new(
-        parse_type_list(params)?,
+        parse_type_list(&text[1..close])?,
         parse_return_types(returns.trim())?,
         CallConv::SystemV,
     ))
@@ -1029,7 +692,7 @@ fn parse_stack_slot(text: &str, func: &mut Function) -> core::result::Result<(),
     Ok(())
 }
 
-fn parse_invocation(text: &str) -> core::result::Result<(&str, &str, &str), ParseError> {
+pub(crate) fn parse_invocation(text: &str) -> core::result::Result<(&str, &str, &str), ParseError> {
     let open = text
         .find('(')
         .ok_or_else(|| ParseError(format!("expected `(` in `{text}`")))?;
@@ -1061,7 +724,7 @@ fn matching_delimiter(
     Err(ParseError(format!("unclosed `{open_char}` in `{text}`")))
 }
 
-fn split_top_level(text: &str, separator: char) -> Vec<&str> {
+pub(crate) fn split_top_level(text: &str, separator: char) -> Vec<&str> {
     let mut result = Vec::new();
     let mut start = 0;
     let (mut parens, mut brackets, mut angles) = (0u32, 0u32, 0u32);
@@ -1084,7 +747,10 @@ fn split_top_level(text: &str, separator: char) -> Vec<&str> {
     result
 }
 
-fn exact_fields(text: &str, count: usize) -> core::result::Result<Vec<&str>, ParseError> {
+pub(crate) fn exact_fields(
+    text: &str,
+    count: usize,
+) -> core::result::Result<Vec<&str>, ParseError> {
     let fields = if text.trim().is_empty() {
         Vec::new()
     } else {
@@ -1101,15 +767,21 @@ fn exact_fields(text: &str, count: usize) -> core::result::Result<Vec<&str>, Par
 
 type NamedFields<'a> = Vec<(&'a str, &'a str)>;
 
-fn split_core_and_named(
+pub(crate) fn split_core_and_named(
     text: &str,
-    core_count: usize,
+    core_count: Option<usize>,
 ) -> core::result::Result<(Vec<&str>, NamedFields<'_>), ParseError> {
     let fields = if text.trim().is_empty() {
         Vec::new()
     } else {
         split_top_level(text, ',')
     };
+    let core_count = core_count.unwrap_or_else(|| {
+        fields
+            .iter()
+            .position(|field| field.contains('='))
+            .unwrap_or(fields.len())
+    });
     if fields.len() < core_count {
         return Err(ParseError(format!(
             "expected at least {core_count} operand(s), found {}",
@@ -1122,21 +794,38 @@ fn split_core_and_named(
             .split_once('=')
             .ok_or_else(|| ParseError(format!("expected named field, found `{field}`")))?;
         let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            return Err(ParseError(format!(
+                "empty name or value in named field `{field}`"
+            )));
+        }
         if named.iter().any(|(existing, _)| *existing == key) {
             return Err(ParseError(format!("duplicate `{key}` field")));
         }
-        named.push((key, value.trim()));
+        named.push((key, value));
     }
     Ok((fields[..core_count].to_vec(), named))
 }
 
-fn split_condition(text: &str) -> core::result::Result<(&str, Vec<&str>), ParseError> {
+pub(crate) fn split_space(text: &str) -> core::result::Result<(&str, &str), ParseError> {
+    let text = text.trim();
     let split = text
         .find(char::is_whitespace)
-        .ok_or_else(|| ParseError("comparison is missing operands".into()))?;
-    let cc = text[..split].trim();
-    let values = exact_fields(text[split..].trim(), 2)?;
-    Ok((cc, values))
+        .ok_or_else(|| ParseError("expected whitespace-separated fields".into()))?;
+    Ok((&text[..split], text[split..].trim_start()))
+}
+
+pub(crate) fn signature_suffix(text: &str) -> core::result::Result<&str, ParseError> {
+    let signature = text
+        .trim()
+        .strip_prefix(':')
+        .ok_or_else(|| ParseError("signature must follow `:`".into()))?
+        .trim();
+    if signature.is_empty() {
+        return Err(ParseError("missing signature after `:`".into()));
+    }
+    Ok(signature)
 }
 
 fn named_value<'a>(
@@ -1161,88 +850,7 @@ fn reject_unknown_named(
     }
 }
 
-fn parse_named_u32(
-    named: &[(&str, &str)],
-    key: &str,
-    default: u32,
-) -> core::result::Result<u32, ParseError> {
-    match named.iter().find(|(candidate, _)| *candidate == key) {
-        Some((_, value)) => value
-            .parse()
-            .map_err(|_| ParseError(format!("invalid `{key}` value `{value}`"))),
-        None => Ok(default),
-    }
-}
-
-fn parse_named_i32(
-    named: &[(&str, &str)],
-    key: &str,
-    default: i32,
-) -> core::result::Result<i32, ParseError> {
-    match named.iter().find(|(candidate, _)| *candidate == key) {
-        Some((_, value)) => parse_i32(value, key),
-        None => Ok(default),
-    }
-}
-
-fn parse_i32(text: &str, what: &str) -> core::result::Result<i32, ParseError> {
-    text.trim()
-        .parse()
-        .map_err(|_| ParseError(format!("invalid {what} `{text}`")))
-}
-
-fn parse_integer_bits(text: &str) -> core::result::Result<u64, ParseError> {
-    let text = text.trim();
-    if let Some(hex) = text.strip_prefix("0x") {
-        u64::from_str_radix(hex, 16)
-            .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
-    } else {
-        text.parse::<i64>()
-            .map(|value| value as u64)
-            .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
-    }
-}
-
-fn parse_float_bits(text: &str, ty: Option<Type>) -> core::result::Result<u64, ParseError> {
-    if !matches!(ty, Some(Type::F32 | Type::F64)) {
-        return Err(ParseError(
-            "floating constants require an `f32` or `f64` result suffix".into(),
-        ));
-    }
-    let text = text.trim();
-    let hex = text.strip_prefix("0x").ok_or_else(|| {
-        ParseError("floating constants use an exact hexadecimal bit pattern".into())
-    })?;
-    let bits = u64::from_str_radix(hex, 16)
-        .map_err(|_| ParseError(format!("invalid floating bit pattern `{text}`")))?;
-    if ty == Some(Type::F32) && bits > u64::from(u32::MAX) {
-        return Err(ParseError(format!(
-            "f32 bit pattern does not fit in 32 bits: `{text}`"
-        )));
-    }
-    Ok(bits)
-}
-
-fn parse_hex_bytes(text: &str) -> core::result::Result<Vec<u8>, ParseError> {
-    let text = text.trim();
-    let hex = text
-        .strip_prefix("0x")
-        .ok_or_else(|| ParseError(format!("expected hexadecimal bytes, found `{text}`")))?;
-    if hex.len() % 2 != 0 {
-        return Err(ParseError(
-            "hex byte strings must contain an even number of digits".into(),
-        ));
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|index| {
-            u8::from_str_radix(&hex[index..index + 2], 16)
-                .map_err(|_| ParseError(format!("invalid hexadecimal bytes `{text}`")))
-        })
-        .collect()
-}
-
-fn parse_stack_slot_ref(text: &str) -> core::result::Result<StackSlot, ParseError> {
+pub(super) fn parse_stack_slot_ref(text: &str) -> core::result::Result<StackSlot, ParseError> {
     let id = text
         .trim()
         .strip_prefix("ss")
@@ -1259,19 +867,12 @@ fn parse_func_ref(text: &str) -> Option<FuncId> {
     id.parse().ok().map(FuncId)
 }
 
-fn require_empty(text: &str) -> core::result::Result<(), ParseError> {
+pub(crate) fn require_empty(text: &str) -> core::result::Result<(), ParseError> {
     if text.trim().is_empty() {
         Ok(())
     } else {
         Err(ParseError(format!("unexpected operands `{text}`")))
     }
-}
-
-fn codec_mismatch(opcode: Opcode, codec: TextCodec) -> ParseError {
-    ParseError(format!(
-        "internal text codec mismatch for `{}`: {codec:?}",
-        opcode.spec().mnemonic
-    ))
 }
 
 fn parse_value_idx(name: &str) -> Option<u32> {
@@ -1352,9 +953,117 @@ fn parse_err<T>(message: impl Into<String>) -> Result<T> {
     Err(ParseError(message.into()).into())
 }
 
+include!(concat!(env!("OUT_DIR"), "/text_parser.rs"));
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::atom::{AtomCodec, Bytes, Decimal, FloatBits, IntegerBits};
+    use crate::text::printer::InstPrinter;
+    use core::{borrow::Borrow, fmt::Debug};
+
+    fn with_parser(test: impl FnOnce(&mut OperandParser<'_>)) {
+        let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
+        let mut ctx = ParseContext::default();
+        let mut module = ModuleData::default();
+        let func_ids = HashMap::new();
+        test(&mut OperandParser {
+            func: &mut func,
+            ctx: &mut ctx,
+            func_ids: &func_ids,
+            module: &mut module,
+        });
+    }
+
+    fn round_trip<C: AtomCodec>(cx: &mut OperandParser<'_>, text: &str, ty: Option<Type>) -> String
+    where
+        C::Owned: Debug + PartialEq,
+    {
+        let value = C::parse(cx, text, ty).unwrap();
+        let mut printed = String::new();
+        C::print(
+            &InstPrinter::new(&cx.func.dfg, None),
+            &mut printed,
+            value.borrow(),
+            ty,
+        )
+        .unwrap();
+        assert_eq!(C::parse(cx, &printed, ty).unwrap(), value);
+        printed
+    }
+
+    #[test]
+    fn atom_codecs_pair_parsing_and_printing_without_erasing_types() {
+        with_parser(|cx| {
+            assert_eq!(
+                round_trip::<IntegerBits>(cx, "0xffffffffffffffff", None),
+                "-1"
+            );
+            assert_eq!(
+                round_trip::<Decimal<u64>>(cx, "18446744073709551615", None),
+                "18446744073709551615"
+            );
+            assert!(Decimal::<u64>::parse(cx, "-1", None).is_err());
+            assert_eq!(
+                round_trip::<Decimal<i32>>(cx, "-2147483648", None),
+                "-2147483648"
+            );
+            assert_eq!(round_trip::<Decimal<u8>>(cx, "255", None), "255");
+            assert!(Decimal::<u8>::parse(cx, "256", None).is_err());
+            assert_eq!(round_trip::<bool>(cx, "true", None), "true");
+            assert!(bool::parse(cx, "1", None).is_err());
+            assert_eq!(round_trip::<crate::IntCC>(cx, "eq", None), "eq");
+            assert_eq!(round_trip::<crate::FloatCC>(cx, "eq", None), "eq");
+            assert_eq!(round_trip::<StackSlot>(cx, "ss7", None), "ss7");
+            assert_eq!(round_trip::<Value>(cx, "v0", None), "v0");
+        });
+    }
+
+    #[test]
+    fn float_codec_preserves_bits_and_checks_width_in_both_directions() {
+        with_parser(|cx| {
+            for (ty, bits) in [
+                (Type::F32, "0x7fc00001"),
+                (Type::F32, "0x80000000"),
+                (Type::F64, "0x7ff8000000000042"),
+            ] {
+                assert_eq!(round_trip::<FloatBits>(cx, bits, Some(ty)), bits);
+            }
+            for ty in [None, Some(Type::I32)] {
+                assert!(FloatBits::parse(cx, "0x0", ty).is_err());
+                assert!(
+                    FloatBits::print(
+                        &InstPrinter::new(&cx.func.dfg, None),
+                        &mut String::new(),
+                        &0,
+                        ty
+                    )
+                    .is_err()
+                );
+            }
+            assert!(FloatBits::parse(cx, "0x100000000", Some(Type::F32)).is_err());
+            assert!(
+                FloatBits::print(
+                    &InstPrinter::new(&cx.func.dfg, None),
+                    &mut String::new(),
+                    &0x100000000,
+                    Some(Type::F32)
+                )
+                .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn byte_codec_borrows_views_and_rejects_invalid_utf8_boundaries() {
+        with_parser(|cx| {
+            assert_eq!(round_trip::<Bytes>(cx, "0x00FF", None), "0x00ff");
+            assert_eq!(round_trip::<Bytes>(cx, "0x", None), "0x");
+            for text in ["0x🦀", "0x界a", "0xé", "0x0", "0xgg"] {
+                assert!(Bytes::parse(cx, text, None).is_err(), "{text}");
+            }
+        });
+    }
 
     #[test]
     fn delimiter_split_ignores_vectors_and_nested_calls() {
@@ -1371,5 +1080,95 @@ mod tests {
         assert_eq!(opcode, Opcode::IAdd);
         assert_eq!(ty, Type::new_vector(crate::ScalarType::I32, 4, true));
         assert_eq!(args, "v0, v1");
+    }
+
+    #[test]
+    fn generic_fields_preserve_nested_arguments_and_reject_duplicates() {
+        let (core, named) = split_core_and_named(
+            "block1(v0, v1), [block2(), block3(v2)], mask=v3, evl=v4",
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(core, ["block1(v0, v1)", "[block2(), block3(v2)]"]);
+        assert_eq!(named, [("mask", "v3"), ("evl", "v4")]);
+        for text in ["v0, mask=v1, mask=v2", "v0, mask=", "v0, =v1"] {
+            assert!(split_core_and_named(text, Some(1)).is_err(), "{text}");
+        }
+        assert_eq!(split_space(" eq  v0, v1 ").unwrap(), ("eq", "v0, v1"));
+        assert!(split_space("eq").is_err());
+    }
+
+    #[test]
+    fn variadic_named_tail_preserves_boundaries_and_rejects_bad_fields() {
+        let (core, named) = split_core_and_named("v0, v1, mask=v2, evl=v3", None).unwrap();
+        assert_eq!(core, ["v0", "v1"]);
+        assert_eq!(named, [("mask", "v2"), ("evl", "v3")]);
+        let (core, named) = split_core_and_named("mask=v2", None).unwrap();
+        assert!(core.is_empty());
+        assert_eq!(named, [("mask", "v2")]);
+        let (core, named) = split_core_and_named("v0, v1", None).unwrap();
+        assert_eq!(core, ["v0", "v1"]);
+        assert!(named.is_empty());
+        let (core, named) = split_core_and_named("", None).unwrap();
+        assert!(core.is_empty() && named.is_empty());
+        let (core, named) = split_core_and_named("block0(v0, v1), mask=v2", None).unwrap();
+        assert_eq!(core, ["block0(v0, v1)"]);
+        assert_eq!(named, [("mask", "v2")]);
+        for text in [
+            "v0, mask=v1, mask=v2",
+            "v0, mask=",
+            "v0, =v1",
+            "v0, mask=v1, v2",
+        ] {
+            assert!(split_core_and_named(text, None).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn invocation_and_signature_atoms_handle_nested_types_and_utf8() {
+        assert_eq!(
+            parse_invocation("目标(v0, block1(v1)) : (i32) -> i32").unwrap(),
+            ("目标", "v0, block1(v1)", " : (i32) -> i32")
+        );
+        let text = signature_suffix(" : (i32<scalable 4>, ptr) -> (i32, f64) ").unwrap();
+        let signature = parse_signature(text).unwrap();
+        assert_eq!(signature.params.len(), 2);
+        assert_eq!(signature.returns, [Type::I32, Type::F64]);
+        for text in ["(i32) -> i32", ":", ""] {
+            assert!(signature_suffix(text).is_err(), "{text}");
+        }
+        for text in ["bad(i32) -> i32", "(i32)", "(i32) ->", "(i32 -> i32"] {
+            assert!(parse_signature(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn context_atoms_share_ssa_values_and_intern_signatures() {
+        let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
+        let block = func.layout.create_block();
+        let mut ctx = ParseContext::default();
+        ctx.block_map.insert("block0".into(), block);
+        let mut module = ModuleData::default();
+        let func_ids = HashMap::new();
+        let mut parser = OperandParser {
+            func: &mut func,
+            ctx: &mut ctx,
+            func_ids: &func_ids,
+            module: &mut module,
+        };
+        let value = parser.value("v0").unwrap();
+        let calls = parser.block_calls("[block0(v0), block0()]").unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(parser.func.dfg.block_call_args(calls[0]), &[value]);
+        assert!(parser.func.dfg.block_call_args(calls[1]).is_empty());
+        assert!(parser.block_calls("[]").unwrap().is_empty());
+        assert!(parser.block_calls("block0()").is_err());
+        assert!(parser.block_calls("[block0(),]").is_err());
+        assert!(parser.block_call("block0() extra").is_err());
+        let sig = parser.signature("(i32) -> i32").unwrap();
+        assert_eq!(parser.signature(" (i32)->i32 ").unwrap(), sig);
+        assert_eq!(parser.module.signatures[sig].params, [Type::I32]);
+        assert_eq!(parser.module.signatures[sig].returns, [Type::I32]);
+        assert!(parser.signature(": (i32) -> i32").is_err());
     }
 }

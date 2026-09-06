@@ -3,7 +3,7 @@ use core::fmt;
 
 use crate::lir::MachineOpcode;
 use crate::target::arch::TargetArch;
-use veloc_ir::Opcode;
+use veloc_mir::Opcode;
 
 pub type Result<T> = core::result::Result<T, Error>;
 

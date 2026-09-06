@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use std::time::Instant;
 use veloc_analyzer::AnalysisManager;
-use veloc_ir::{ModuleData, function::Function};
+use veloc_mir::{ModuleData, function::Function};
 
 /// 优化流程管理器。
 pub struct PassManager {

@@ -7,7 +7,7 @@
 
 use crate::host::HostFuncId;
 use core::num::NonZeroUsize;
-use veloc_ir::{FuncId, ModuleId};
+use veloc_mir::{FuncId, ModuleId};
 
 /// Fully classified target of a guest call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

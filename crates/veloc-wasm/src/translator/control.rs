@@ -1,7 +1,7 @@
 use super::{ControlFrame, WasmTranslator};
 use crate::vm::{TrapCode, VMFuncRef};
 use alloc::vec::Vec;
-use veloc::ir::{IntCC, MemFlags, Type as VelocType};
+use veloc::mir::{IntCC, MemFlags, Type as VelocType};
 use wasmparser::{BinaryReaderError, Operator};
 
 impl<'a> WasmTranslator<'a> {

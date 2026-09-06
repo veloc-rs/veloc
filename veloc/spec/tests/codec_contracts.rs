@@ -1,14 +1,19 @@
 use veloc_opgen::compile_mir;
 
-const FORMATS: &str = include_str!("../../ir/defs/formats.ops");
+const FORMATS: &str = include_str!("../../mir/defs/formats.ops");
 
 fn definitions() -> String {
-    [FORMATS, include_str!("../../ir/defs/mir.ops")].join("\n")
+    [FORMATS, include_str!("../../mir/defs/mir.ops")].join("\n")
 }
 
 fn changed_record(kind: &str, name: &str, from: &str, to: &str) -> String {
     let source = definitions();
-    let start = source.find(&format!("{kind} {name} {{")).unwrap();
+    let prefix = if kind == "op" {
+        format!("op {name}")
+    } else {
+        format!("{kind} {name} {{")
+    };
+    let start = source.find(&prefix).unwrap();
     let end = start + source[start..].find("\n}").unwrap() + 2;
     let record = &source[start..end];
     assert!(record.contains(from), "{kind} {name} has no `{from}`");
@@ -17,7 +22,7 @@ fn changed_record(kind: &str, name: &str, from: &str, to: &str) -> String {
 
 fn rejected(source: &str, expected: &str) {
     let error = match compile_mir(source) {
-        Ok(_) => panic!("invalid storage contract was accepted"),
+        Ok(_) => panic!("invalid definition was accepted:\n{source}"),
         Err(error) => error,
     };
     assert!(error.message.contains(expected), "{error}");
@@ -25,12 +30,9 @@ fn rejected(source: &str, expected: &str) {
 }
 
 #[test]
-fn every_specialized_codec_checks_all_field_names() {
+fn existing_runtime_layouts_keep_their_public_field_names() {
     for record in FORMATS.split("\nformat ").skip(1) {
         let body = record.split("\n}").next().unwrap();
-        if body.contains("text: values(") || body.contains("text: nullary") {
-            continue;
-        }
         let layout = body.split_whitespace().next().unwrap();
         let fields = body
             .split("fields: [")
@@ -40,6 +42,9 @@ fn every_specialized_codec_checks_all_field_names() {
             .next()
             .unwrap();
         for field in fields.split(", ") {
+            if field.is_empty() {
+                continue;
+            }
             let name = field.split('(').next().unwrap();
             let source = changed_record(
                 "format",
@@ -47,13 +52,18 @@ fn every_specialized_codec_checks_all_field_names() {
                 &format!("{name}("),
                 &format!("wrong_{name}("),
             );
-            rejected(&source, "field contract");
+            let expected = if name == "opcode" {
+                "unknown storage field `opcode`"
+            } else {
+                "field contract"
+            };
+            rejected(&source, expected);
         }
     }
 }
 
 #[test]
-fn codec_contracts_check_property_types_and_operand_order() {
+fn runtime_layout_contracts_check_property_types_and_operand_order() {
     for (layout, from, to) in [
         ("Iconst", "value(u64)", "value(u32)"),
         ("Bconst", "value(bool)", "value(u64)"),
@@ -74,7 +84,7 @@ fn codec_contracts_check_property_types_and_operand_order() {
 }
 
 #[test]
-fn codec_contracts_distinguish_arrays_from_fixed_and_variadic_lists() {
+fn runtime_layout_contracts_distinguish_arrays_from_fixed_and_variadic_lists() {
     for (layout, from, to) in [
         ("IntCompare", "args(values(2))", "args(list(2))"),
         ("VectorStoreStrided", "args(list(3))", "args(values(3))"),
@@ -89,7 +99,7 @@ fn codec_contracts_distinguish_arrays_from_fixed_and_variadic_lists() {
 }
 
 #[test]
-fn codec_contracts_reject_missing_and_unprinted_properties() {
+fn runtime_layout_contracts_reject_missing_and_extra_properties() {
     for (layout, from, to) in [
         ("Iconst", "fields: [value(u64)]", "fields: []"),
         ("Iconst", "value(u64)", "value(u64), unused(u32)"),
@@ -104,27 +114,68 @@ fn codec_contracts_reject_missing_and_unprinted_properties() {
 }
 
 #[test]
-fn specialized_codecs_reject_unadapted_alternate_layouts() {
-    for fields in ["[ptr(Value)]", "[ptr(Value), offset(u32), flags(MemFlags)]"] {
-        let source = format!(
-            "{}\nlayout Other {{ fields: {fields}, opcode: fixed(Load), format: fixed(Load) }}",
-            definitions()
+fn text_projections_cover_every_logical_parameter_once() {
+    for args in ["[lhs]", "[lhs, lhs]", "[lhs, missing]"] {
+        rejected(
+            &changed_record(
+                "op",
+                "IAdd",
+                "storage: Binary { args: [lhs, rhs] },",
+                &format!("storage: Binary {{ args: [lhs, rhs] }}, text: Text {{ args: {args} }},"),
+            ),
+            "",
         );
-        rejected(&source, "no text adapter");
+    }
+    rejected(
+        &changed_record("op", "Load", "args: [ptr]", "args: [ptr, offset]"),
+        "offset",
+    );
+}
+
+#[test]
+fn typed_text_atoms_do_not_accept_incompatible_fields() {
+    for atom in ["integer(ptr)", "float(ptr)", "bytes(ptr)"] {
+        rejected(
+            &changed_record("op", "Load", "args: [ptr]", &format!("args: [{atom}]")),
+            "",
+        );
+    }
+    for named in [
+        "optional(offset)",
+        "default(offset, -1)",
+        "default(offset, true)",
+    ] {
+        rejected(
+            &changed_record("op", "Load", "default(offset, 0)", named),
+            "",
+        );
     }
 }
 
 #[test]
-fn generic_alternates_cannot_silently_drop_auxiliary_state() {
-    for fields in [
-        "[opcode(Opcode), args(ValueList), ext(VectorExtId)]",
-        "[opcode(Opcode), args(ValueList), hidden(u32)]",
+fn compound_property_paths_and_optional_values_are_checked() {
+    for (from, to) in [
+        ("optional(mem.mask)", "optional(mem.unknown)"),
+        ("optional(mem.evl)", "optional(mem.offset)"),
+        ("flags: mem.flags", "flags: mem.offset"),
+        (
+            "default(mem.offset, 0)",
+            "default(mem.offset, 0), optional(mem.mask)",
+        ),
     ] {
-        let source = format!(
-            "{}\nlayout Other {{ fields: {fields}, opcode: dynamic(opcode), format: arity(args, [Unary, Binary, Ternary]) }}",
-            definitions()
-        );
-        rejected(&source, "no text adapter");
+        rejected(&changed_record("op", "Gather", from, to), "");
+    }
+}
+
+#[test]
+fn signature_results_require_a_typed_signature_source() {
+    for (op, from, to) in [
+        ("Call", "signature: function(func_id),", ""),
+        ("CallIndirect", "signature: sig_id,", ""),
+        ("CallIndirect", "signature: sig_id", "signature: ptr"),
+        ("Call", "signature: function(func_id)", "signature: func_id"),
+    ] {
+        rejected(&changed_record("op", op, from, to), "signature");
     }
 }
 
@@ -163,7 +214,7 @@ fn custom_value_formats_allow_custom_field_names() {
     let source = r#"
         format Pair {
             fields: [op(Opcode), left(Value), right(Value)],
-            opcode: dynamic(op), text: values(2)
+            opcode: dynamic(op)
         }
         op Add<T: Integer>(left: T, right: T) -> (result: T) {
             mnemonic: "add", storage: Pair { left: left, right: right },
@@ -171,4 +222,17 @@ fn custom_value_formats_allow_custom_field_names() {
         }
     "#;
     assert!(compile_mir(source).is_ok());
+}
+
+#[test]
+fn format_level_codec_names_are_not_a_second_text_definition() {
+    rejected(
+        &changed_record(
+            "format",
+            "Iconst",
+            "opcode: fixed(Iconst)",
+            "opcode: fixed(Iconst), text: IntegerConstant",
+        ),
+        "text",
+    );
 }

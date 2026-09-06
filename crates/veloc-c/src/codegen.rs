@@ -1,10 +1,10 @@
 //! C Language to IR Code Generator
 //!
-//! This module converts C language AST into veloc_ir intermediate representation.
+//! This module converts C language AST into veloc_mir intermediate representation.
 
 use crate::ast::*;
 use crate::error::{Error, Result};
-use veloc_ir::{CallConv, Linkage, Module, ModuleBuilder, Signature, Type};
+use veloc_mir::{CallConv, Linkage, Module, ModuleBuilder, Signature, Type};
 
 /// Code generator context
 pub struct CodeGenContext {

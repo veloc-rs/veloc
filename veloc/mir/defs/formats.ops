@@ -1,3 +1,20 @@
+// Logical properties are independent of the pool handles used in storage.
+record PtrIndexImm {
+    storage: PtrIndexImmId,
+    fields: [offset(i32, 0), scale(u32, 1)]
+}
+record VectorMemOptions {
+    storage: VectorMemExtId,
+    fields: [
+        offset(i32, 0), flags(MemFlags, empty), scale(u8, 1),
+        mask(optional(Value), none), evl(optional(Value), none)
+    ]
+}
+record VectorExtData {
+    storage: VectorExtId,
+    fields: [mask(Value), evl(optional(Value), none)]
+}
+
 // Field types determine storage and operand traversal. Value, values(N),
 // ValueList, list(N), BlockCall and JumpTable carry primary operands;
 // VectorExtId and VectorMemExtId carry auxiliary mask/EVL operands.
@@ -5,163 +22,131 @@
 
 format Unary {
     fields: [opcode(Opcode), arg(Value)],
-    opcode: dynamic(opcode),
-    text: values(1)
+    opcode: dynamic(opcode)
 }
 format Binary {
     fields: [opcode(Opcode), args(values(2))],
-    opcode: dynamic(opcode),
-    text: values(2)
+    opcode: dynamic(opcode)
 }
 format Ternary {
     fields: [opcode(Opcode), args(values(3))],
-    opcode: dynamic(opcode),
-    text: values(3)
+    opcode: dynamic(opcode)
 }
 format Iconst {
     fields: [value(u64)],
-    opcode: fixed(Iconst),
-    text: IntegerConstant
+    opcode: fixed(Iconst)
 }
 format Fconst {
     fields: [value(u64)],
-    opcode: fixed(Fconst),
-    text: FloatConstant
+    opcode: fixed(Fconst)
 }
 format Bconst {
     fields: [value(bool)],
-    opcode: fixed(Bconst),
-    text: BoolConstant
+    opcode: fixed(Bconst)
 }
 format Vconst {
     fields: [pool_id(ConstantPoolId)],
-    opcode: fixed(Vconst),
-    text: VectorConstant
+    opcode: fixed(Vconst)
 }
 format Load {
     fields: [ptr(Value), offset(u32), flags(MemFlags)],
-    opcode: fixed(Load),
-    text: Load
+    opcode: fixed(Load)
 }
 format Store {
     fields: [ptr(Value), value(Value), offset(u32), flags(MemFlags)],
-    opcode: fixed(Store),
-    text: Store
+    opcode: fixed(Store)
 }
 format StackLoad {
     fields: [slot(StackSlot), offset(u32)],
-    opcode: fixed(StackLoad),
-    text: StackLoad
+    opcode: fixed(StackLoad)
 }
 format StackStore {
     fields: [slot(StackSlot), value(Value), offset(u32)],
-    opcode: fixed(StackStore),
-    text: StackStore
+    opcode: fixed(StackStore)
 }
 format StackAddr {
     fields: [slot(StackSlot), offset(u32)],
-    opcode: fixed(StackAddr),
-    text: StackAddr
+    opcode: fixed(StackAddr)
 }
 format PtrOffset {
     fields: [ptr(Value), offset(i32)],
-    opcode: fixed(PtrOffset),
-    text: PtrOffset
+    opcode: fixed(PtrOffset)
 }
 format PtrIndex {
     fields: [ptr(Value), index(Value), imm_id(PtrIndexImmId)],
-    opcode: fixed(PtrIndex),
-    text: PtrIndex
+    opcode: fixed(PtrIndex)
 }
 format IntToPtr {
     fields: [arg(Value)],
-    opcode: fixed(IntToPtr),
-    text: values(1)
+    opcode: fixed(IntToPtr)
 }
 format PtrToInt {
     fields: [arg(Value)],
-    opcode: fixed(PtrToInt),
-    text: values(1)
+    opcode: fixed(PtrToInt)
 }
 format Call {
     fields: [func_id(FuncId), args(ValueList)],
-    opcode: fixed(Call),
-    text: DirectCall
+    opcode: fixed(Call)
 }
 format CallIndirect {
     fields: [ptr(Value), args(ValueList), sig_id(SigId)],
-    opcode: fixed(CallIndirect),
-    text: IndirectCall
+    opcode: fixed(CallIndirect)
 }
 format CallIntrinsic {
     fields: [intrinsic(Intrinsic), args(ValueList), sig_id(SigId)],
-    opcode: fixed(CallIntrinsic),
-    text: IntrinsicCall
+    opcode: fixed(CallIntrinsic)
 }
 format Jump {
     fields: [dest(BlockCall)],
-    opcode: fixed(Jump),
-    text: Jump
+    opcode: fixed(Jump)
 }
 format Br {
     fields: [condition(Value), then_dest(BlockCall), else_dest(BlockCall)],
-    opcode: fixed(Br),
-    text: Branch
+    opcode: fixed(Br)
 }
 format BrTable {
     fields: [index(Value), table(JumpTable)],
-    opcode: fixed(BrTable),
-    text: BranchTable
+    opcode: fixed(BrTable)
 }
 format Return {
     fields: [values(ValueList)],
-    opcode: fixed(Return),
-    text: Return
+    opcode: fixed(Return)
 }
 format IntCompare {
     fields: [kind(IntCC), args(values(2))],
-    opcode: fixed(Icmp),
-    text: IntCompare
+    opcode: fixed(Icmp)
 }
 format FloatCompare {
     fields: [kind(FloatCC), args(values(2))],
-    opcode: fixed(Fcmp),
-    text: FloatCompare
+    opcode: fixed(Fcmp)
 }
 format VectorLoadStrided {
     fields: [ptr(Value), stride(Value), ext(VectorMemExtId)],
-    opcode: fixed(LoadStride),
-    text: VectorLoadStrided
+    opcode: fixed(LoadStride)
 }
 format VectorStoreStrided {
     fields: [args(list(3)), ext(VectorMemExtId)],
-    opcode: fixed(StoreStride),
-    text: VectorStoreStrided
+    opcode: fixed(StoreStride)
 }
 format VectorGather {
     fields: [ptr(Value), index(Value), ext(VectorMemExtId)],
-    opcode: fixed(Gather),
-    text: VectorGather
+    opcode: fixed(Gather)
 }
 format VectorScatter {
     fields: [args(list(3)), ext(VectorMemExtId)],
-    opcode: fixed(Scatter),
-    text: VectorScatter
+    opcode: fixed(Scatter)
 }
 format Shuffle {
     fields: [args(values(2)), mask(ConstantPoolId)],
-    opcode: fixed(Shuffle),
-    text: Shuffle
+    opcode: fixed(Shuffle)
 }
 format Unreachable {
     fields: [],
-    opcode: fixed(Unreachable),
-    text: nullary
+    opcode: fixed(Unreachable)
 }
 format Nop {
     fields: [],
-    opcode: fixed(Nop),
-    text: nullary
+    opcode: fixed(Nop)
 }
 
 // Predication uses alternate physical storage while keeping the operation's
@@ -169,5 +154,6 @@ format Nop {
 layout VectorOpWithExt {
     fields: [opcode(Opcode), args(ValueList), ext(VectorExtId)],
     opcode: dynamic(opcode),
-    format: arity(args, [Unary, Binary, Ternary])
+    format: arity(args, [Unary, Binary, Ternary]),
+    text: Text { args: [args], named: [ext.mask, optional(ext.evl)] }
 }

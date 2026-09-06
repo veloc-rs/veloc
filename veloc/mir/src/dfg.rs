@@ -12,6 +12,9 @@ use alloc::vec::Vec;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
 
+mod pool;
+pub use pool::PoolKey;
+
 #[derive(Debug, Clone)]
 pub struct DataFlowGraph {
     pub instructions: PrimaryMap<Inst, InstructionData>,
@@ -61,34 +64,22 @@ impl DataFlowGraph {
 
     /// 创建向量操作扩展信息
     pub fn make_vector_ext(&mut self, mask: Value, evl: Option<Value>) -> VectorExtId {
-        let data = VectorExtData { mask, evl };
-        if let Some(&id) = self.vector_ext_map.get(&data) {
-            return id;
-        }
-        let id = self.vector_ext_pool.push(data.clone());
-        self.vector_ext_map.insert(data, id);
-        id
+        self.intern_vector_ext(VectorExtData { mask, evl })
+    }
+
+    pub fn intern_vector_ext(&mut self, data: VectorExtData) -> VectorExtId {
+        VectorExtId::insert(self, data)
     }
 
     /// 创建向量内存操作扩展配置
     pub fn make_vector_mem_ext(&mut self, data: VectorMemOptions) -> VectorMemExtId {
-        if let Some(&id) = self.vector_mem_ext_map.get(&data) {
-            return id;
-        }
-        let id = self.vector_mem_ext_pool.push(data);
-        self.vector_mem_ext_map.insert(data, id);
-        id
+        VectorMemExtId::insert(self, data)
     }
 
     /// 向常量池添加数据
     pub fn make_constant_pool_data(&mut self, data: ConstantPoolData) -> ConstantPoolId {
-        if let Some(&id) = self.constant_pool_map.get(&data) {
-            return id;
-        }
-
-        let id = self.constant_pool.push(data.clone());
-        self.constant_pool_map.insert(data, id);
-        id
+        let ConstantPoolData::Bytes(bytes) = data;
+        ConstantPoolId::insert(self, bytes)
     }
 
     /// 为指令添加多个结果值（支持多返回值）
@@ -119,27 +110,23 @@ impl DataFlowGraph {
     }
 
     pub fn make_ptr_imm(&mut self, offset: i32, scale: u32) -> PtrIndexImmId {
-        let key = PtrIndexImm { offset, scale };
+        self.intern_ptr_imm(PtrIndexImm { offset, scale })
+    }
 
-        if let Some(&id) = self.ptr_imm_map.get(&key) {
-            return id;
-        }
-
-        let id = self.ptr_imm_pool.push(key);
-        self.ptr_imm_map.insert(key, id);
-        id
+    pub fn intern_ptr_imm(&mut self, key: PtrIndexImm) -> PtrIndexImmId {
+        PtrIndexImmId::insert(self, key)
     }
 
     pub fn ptr_imm(&self, id: PtrIndexImmId) -> Option<&PtrIndexImm> {
-        self.ptr_imm_pool.get(id)
+        id.get(self)
     }
 
     pub fn vector_ext(&self, id: VectorExtId) -> Option<&VectorExtData> {
-        self.vector_ext_pool.get(id)
+        id.get(self)
     }
 
     pub fn vector_mem_ext(&self, id: VectorMemExtId) -> Option<&VectorMemOptions> {
-        self.vector_mem_ext_pool.get(id)
+        id.get(self)
     }
 
     pub fn constant_pool_data(&self, id: ConstantPoolId) -> Option<&ConstantPoolData> {
@@ -223,6 +210,19 @@ impl DataFlowGraph {
 
     pub fn block_call_block(&self, call: BlockCall) -> Block {
         self.block_calls[call].block
+    }
+
+    pub fn make_block_call(&mut self, block: Block, args: &[Value]) -> BlockCall {
+        let args = self.make_value_list(args);
+        self.block_calls.push(BlockCallData { block, args })
+    }
+
+    /// Store case destinations followed by the required default destination.
+    pub fn make_jump_table(&mut self, cases: &[BlockCall], default: BlockCall) -> JumpTable {
+        let mut targets = Vec::with_capacity(cases.len() + 1);
+        targets.extend_from_slice(cases);
+        targets.push(default);
+        self.jump_tables.push(JumpTableData { targets })
     }
 
     pub fn block_call_args(&self, call: BlockCall) -> &[Value] {
@@ -328,10 +328,9 @@ impl DataFlowGraph {
 
     /// 替换向量扩展信息中的值 (并处理 interning)
     pub fn replace_vector_ext(&mut self, ext: &mut VectorExtId, old: Value, new: Value) {
-        let mut data = self
+        let mut data = *self
             .vector_ext(*ext)
-            .expect("instruction refers to a missing vector extension")
-            .clone();
+            .expect("instruction refers to a missing vector extension");
         let mut changed = false;
         if data.mask == old {
             data.mask = new;

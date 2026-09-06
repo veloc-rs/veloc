@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 veloc = { workspace = true }
-veloc-ir = { workspace = true }
+veloc-mir = { workspace = true }
 veloc-optimizer = { workspace = true }
 veloc-analyzer = { workspace = true }
 cranelift-entity = { workspace = true }

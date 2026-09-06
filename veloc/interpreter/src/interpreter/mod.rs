@@ -5,7 +5,7 @@ use crate::value::InterpreterValue;
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use veloc_ir::{ModuleId, ScalarType};
+use veloc_mir::{ModuleId, ScalarType};
 
 pub trait VirtualMemory {
     fn translate_addr(&self, logical_addr: usize, size: usize) -> Option<*mut u8>;
@@ -47,7 +47,7 @@ pub(crate) enum DispatchExit {
     OutOfBounds,
     StackOverflow,
     Unreachable,
-    InvalidFunction(ModuleId, veloc_ir::FuncId),
+    InvalidFunction(ModuleId, veloc_mir::FuncId),
     InvalidFunctionReference,
     InvalidHostCall,
 }
@@ -297,7 +297,7 @@ impl Interpreter {
         program: &Program,
         mem: &M,
         module: ModuleId,
-        func: veloc_ir::FuncId,
+        func: veloc_mir::FuncId,
         args: &[InterpreterValue],
     ) -> Result<&[InterpreterValue]>
     where
@@ -349,7 +349,7 @@ impl Interpreter {
         &mut self,
         program: &Program,
         target_module: ModuleId,
-        target_func: veloc_ir::FuncId,
+        target_func: veloc_mir::FuncId,
         dst_regs_start: usize,
         dst_regs_count: usize,
         return_pc: usize,

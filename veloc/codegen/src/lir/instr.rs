@@ -3,8 +3,8 @@
 use alloc::string::String;
 use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
-use veloc_ir::semantics::BvOp;
-use veloc_ir::{Block, FloatCC, IntCC, Type};
+use veloc_mir::semantics::BvOp;
+use veloc_mir::{Block, FloatCC, IntCC, Type};
 
 pub use crate::lir::RegisterBank;
 use crate::lir::extra::CallInfo;

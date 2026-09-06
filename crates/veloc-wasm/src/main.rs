@@ -54,7 +54,7 @@ struct Args {
 /// Print all compiled bytecode for interpreter
 fn print_interpreter_bytecode(store: &veloc_wasm::Store) {
     use cranelift_entity::EntityRef;
-    use veloc_wasm::veloc::ir::ModuleId;
+    use veloc_wasm::veloc::mir::ModuleId;
 
     // Access the program through store
     let program = store.program();

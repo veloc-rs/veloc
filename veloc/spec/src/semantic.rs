@@ -433,6 +433,8 @@ mod tests {
                 results: TypeList::Fixed(vec![result]),
                 relations: vec![],
             },
+            signature_source: None,
+            text: None,
             params,
             packing: Default::default(),
             traits: vec![],

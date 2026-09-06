@@ -11,7 +11,7 @@ use core::ops::{Deref, DerefMut};
 use hashbrown::HashMap;
 use std::mem;
 use veloc::interpreter::{CallTarget, Interpreter, InterpreterValue, Program, VirtualMemory};
-use veloc::ir::FuncId;
+use veloc::mir::FuncId;
 use wasmparser::{ExternalKind, ValType};
 
 pub type ExternMap = HashMap<String, Extern>;

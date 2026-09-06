@@ -16,7 +16,7 @@ use crate::pipeline::stages::{
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use veloc_ir::Type;
+use veloc_mir::Type;
 
 pub use abi::{
     AbiAssignment, AbiClassifierEntry, AbiClassifierFn, AbiDescriptor, AbiLocation, AbiPart,

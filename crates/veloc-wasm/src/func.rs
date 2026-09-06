@@ -1,7 +1,7 @@
 use crate::vm::VMContext;
 use alloc::vec::Vec;
 use veloc::interpreter::{InterpreterValue, host::HostFunction};
-use veloc::ir::{CallConv, Signature, Type};
+use veloc::mir::{CallConv, Signature, Type};
 use wasmparser::ValType;
 
 pub struct Caller<'a> {

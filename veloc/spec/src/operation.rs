@@ -22,7 +22,11 @@ const PROPERTIES: &[&str] = &[
     "bool",
 ];
 
-pub(super) fn parse(source: &str, mut record: Record) -> Result<Op, Error> {
+pub(super) fn parse(
+    source: &str,
+    mut record: Record,
+    storage_defs: &storage::Storage,
+) -> Result<Op, Error> {
     let sig = record
         .signature
         .take()
@@ -31,7 +35,7 @@ pub(super) fn parse(source: &str, mut record: Record) -> Result<Op, Error> {
         params,
         mut types,
         slots,
-    } = signature(source, record.offset, sig)?;
+    } = signature(source, record.offset, sig, storage_defs)?;
     let mut fields = Fields::new(source, record);
     let mnemonic_node = fields.take("mnemonic")?;
     let Kind::Text(mnemonic) = mnemonic_node.kind else {
@@ -47,15 +51,23 @@ pub(super) fn parse(source: &str, mut record: Record) -> Result<Op, Error> {
     };
     let mut packing = BTreeMap::new();
     for (field, node) in mappings {
-        let values = match node.kind {
-            Kind::List(nodes) => nodes
-                .into_iter()
-                .map(|n| name(source, n))
-                .collect::<Result<Vec<_>, _>>()?,
-            _ => vec![name(source, node)?],
-        };
-        packing.insert(field, values);
+        packing.insert(field, binding(source, node)?);
     }
+    let signature_source = fields
+        .optional("signature")
+        .map(|node| match node.kind {
+            Kind::Name(name) => Ok(SignatureSource::Signature(name)),
+            Kind::Call(kind, mut args) if kind == "function" && args.len() == 1 => {
+                Ok(SignatureSource::Function(name(source, args.remove(0))?))
+            }
+            _ => Err(Error::at(
+                source,
+                node.offset,
+                "expected signature parameter or function(parameter)",
+            )),
+        })
+        .transpose()?;
+    let text = fields.optional("text");
     if let Some(node) = fields.optional("where") {
         for node in list(source, node)? {
             let Kind::Call(kind, args) = node.kind else {
@@ -140,6 +152,8 @@ pub(super) fn parse(source: &str, mut record: Record) -> Result<Op, Error> {
         signature: types,
         params,
         packing,
+        signature_source,
+        text,
         traits,
         memory,
         constraints,
@@ -155,7 +169,12 @@ struct CheckedSignature {
     slots: BTreeMap<String, Slot>,
 }
 
-fn signature(source: &str, offset: usize, sig: Signature) -> Result<CheckedSignature, Error> {
+fn signature(
+    source: &str,
+    offset: usize,
+    sig: Signature,
+    storage: &storage::Storage,
+) -> Result<CheckedSignature, Error> {
     let mut variables = BTreeMap::new();
     for generic in sig.generics {
         identifier(source, generic.offset, &generic.name)?;
@@ -206,7 +225,19 @@ fn signature(source: &str, offset: usize, sig: Signature) -> Result<CheckedSigna
             ));
         }
         let kind = if param.property {
-            ParamKind::Property(choice(source, param.ty, PROPERTIES, "property type")?)
+            let offset = param.ty.offset;
+            let ty = name(source, param.ty)?;
+            if !PROPERTIES.contains(&ty.as_str())
+                && ty != "Bytes"
+                && !storage.records.iter().any(|record| record.name == ty)
+            {
+                return Err(Error::at(
+                    source,
+                    offset,
+                    format!("unknown property type `{ty}`"),
+                ));
+            }
+            ParamKind::Property(ty)
         } else if let Kind::Name(kind) = &param.ty.kind
             && matches!(kind.as_str(), "values" | "successor" | "successors")
         {
@@ -301,7 +332,36 @@ fn signature(source: &str, offset: usize, sig: Signature) -> Result<CheckedSigna
     })
 }
 
-pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result<(), Error> {
+fn binding(source: &str, node: Node) -> Result<Binding, Error> {
+    match node.kind {
+        Kind::Name(name) => Ok(Binding::Name(name)),
+        Kind::List(nodes) => nodes
+            .into_iter()
+            .map(|node| binding(source, node))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Binding::Array),
+        Kind::Call(kind, mut args) if kind == "pool" && args.len() == 1 => {
+            Ok(Binding::Pool(name(source, args.remove(0))?))
+        }
+        Kind::Call(kind, mut args) if kind == "table" && args.len() == 2 => {
+            let cases = name(source, args.remove(0))?;
+            let default = name(source, args.remove(0))?;
+            Ok(Binding::Table { cases, default })
+        }
+        _ => Err(Error::at(
+            source,
+            node.offset,
+            "expected parameter, array, pool(parameter) or table(cases, default)",
+        )),
+    }
+}
+
+pub(super) fn validate_packing(
+    source: &str,
+    op: &Op,
+    format: &Format,
+    storage: &storage::Storage,
+) -> Result<(), Error> {
     let fail = |message| Error::at(source, op.offset, message);
     let params: BTreeMap<_, _> = op
         .params
@@ -324,71 +384,146 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
             )));
         }
     }
+    let mut use_param =
+        |arg: &str, compatible: &dyn Fn(&ParamKind) -> bool, field: &str| -> Result<(), Error> {
+            let kind = params
+                .get(arg)
+                .ok_or_else(|| fail(format!("unknown parameter `{arg}` in storage mapping")))?;
+            if !used.insert(arg.to_owned()) {
+                return Err(fail(format!("parameter `{arg}` is stored more than once")));
+            }
+            if !compatible(kind) {
+                return Err(fail(format!(
+                    "parameter `{arg}` is incompatible with storage field `{field}`"
+                )));
+            }
+            if !matches!(kind, ParamKind::Property(_)) {
+                operands.push(arg.to_owned());
+            }
+            Ok(())
+        };
     for field in &format.fields {
         if matches!(&field.ty, FieldType::Named(ty) if ty == "Opcode") {
             continue;
         }
-        let args = op
+        let binding = op
             .packing
             .get(&field.name)
             .ok_or_else(|| fail(format!("missing storage field `{}`", field.name)))?;
-        let expected = match field.ty {
-            FieldType::Values(n) | FieldType::List(n) => n,
-            _ => 1,
-        };
-        if args.len() != expected {
-            return Err(fail(format!(
-                "storage field `{}` requires {expected} arguments",
-                field.name
-            )));
-        }
-        for arg in args {
-            let kind = params
-                .get(arg.as_str())
-                .ok_or_else(|| fail(format!("unknown parameter `{arg}` in storage mapping")))?;
-            if !used.insert(arg.as_str()) {
-                return Err(fail(format!("parameter `{arg}` is stored more than once")));
+        match (binding, &field.ty) {
+            (Binding::Array(args), FieldType::Values(n) | FieldType::List(n)) => {
+                if args.len() != *n {
+                    return Err(fail(format!(
+                        "storage field `{}` requires {n} arguments",
+                        field.name
+                    )));
+                }
+                for arg in args {
+                    let Binding::Name(arg) = arg else {
+                        return Err(fail("array storage accepts only value parameters".into()));
+                    };
+                    use_param(arg, &|kind| matches!(kind, ParamKind::Value), &field.name)?;
+                }
             }
-            let compatible = match (&field.ty, kind) {
-                (FieldType::Values(_) | FieldType::List(_), ParamKind::Value) => true,
-                (FieldType::Named(ty), ParamKind::Value) => ty == "Value",
-                (FieldType::Named(ty), ParamKind::Values) => ty == "ValueList",
-                (FieldType::Named(ty), ParamKind::Successor) => ty == "BlockCall",
-                (FieldType::Named(ty), ParamKind::Successors) => ty == "JumpTable",
-                (FieldType::Named(ty), ParamKind::Property(prop)) => ty == prop,
-                _ => false,
-            };
-            if !compatible {
+            (Binding::Name(arg), FieldType::Named(ty)) => {
+                use_param(
+                    arg,
+                    &|kind| match kind {
+                        ParamKind::Value => ty == "Value",
+                        ParamKind::Values => ty == "ValueList",
+                        ParamKind::Successor => ty == "BlockCall",
+                        ParamKind::Successors => false,
+                        ParamKind::Property(prop) => ty == prop,
+                    },
+                    &field.name,
+                )?;
+            }
+            (Binding::Pool(arg), FieldType::Named(ty)) => {
+                use_param(
+                    arg,
+                    &|kind| match kind {
+                        ParamKind::Property(prop) => {
+                            (ty == "ConstantPoolId" && prop == "Bytes")
+                                || storage
+                                    .records
+                                    .iter()
+                                    .any(|record| record.storage == *ty && record.name == *prop)
+                        }
+                        _ => false,
+                    },
+                    &field.name,
+                )?;
+            }
+            (Binding::Table { cases, default }, FieldType::Named(ty)) if ty == "JumpTable" => {
+                use_param(
+                    cases,
+                    &|kind| matches!(kind, ParamKind::Successors),
+                    &field.name,
+                )?;
+                use_param(
+                    default,
+                    &|kind| matches!(kind, ParamKind::Successor),
+                    &field.name,
+                )?;
+            }
+            _ => {
                 return Err(fail(format!(
-                    "parameter `{arg}` is incompatible with storage field `{}`",
+                    "binding is incompatible with storage field `{}`",
                     field.name
                 )));
-            }
-            if !matches!(kind, ParamKind::Property(_)) {
-                operands.push(arg.as_str());
             }
         }
     }
     for param in &op.params {
-        if !used.contains(param.name.as_str()) {
+        if !used.contains(&param.name) {
             return Err(fail(format!(
                 "parameter `{}` has no storage mapping",
                 param.name
             )));
         }
     }
-    // Custom MIR consumers currently share a flat operand ABI. Properties
-    // can be reordered independently, but operand permutations need adapters.
     let logical: Vec<_> = op
         .params
         .iter()
         .filter(|p| !matches!(p.kind, ParamKind::Property(_)))
-        .map(|p| p.name.as_str())
+        .map(|p| p.name.clone())
         .collect();
     if logical != operands {
         return Err(fail(
             "storage mapping changes logical operand order; an operand adapter is required".into(),
         ));
+    }
+    match (&op.signature_source, &op.signature.results) {
+        (None, TypeList::Signature) => {
+            return Err(fail(
+                "signature results require an explicit signature source".into(),
+            ));
+        }
+        (Some(source), TypeList::Signature) => {
+            let (param, expected) = match source {
+                SignatureSource::Function(param) => (param, "FuncId"),
+                SignatureSource::Signature(param) => (param, "SigId"),
+            };
+            if !matches!(params.get(param.as_str()), Some(ParamKind::Property(ty)) if ty == expected)
+            {
+                return Err(fail(format!(
+                    "signature source `{param}` must be a {expected} property"
+                )));
+            }
+            if op
+                .params
+                .iter()
+                .filter(|p| p.kind == ParamKind::Values)
+                .count()
+                != 1
+            {
+                return Err(fail(
+                    "signature operation requires exactly one values parameter".into(),
+                ));
+            }
+        }
+        (Some(_), _) => return Err(fail("signature source requires signature results".into())),
+        (None, _) => {}
     }
     Ok(())
 }

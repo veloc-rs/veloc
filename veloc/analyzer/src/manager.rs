@@ -1,7 +1,7 @@
 use crate::liveness::{Liveness, analyze_liveness};
 use crate::use_def::UseDefAnalysis;
 use core::any::TypeId;
-use veloc_ir::function::Function;
+use veloc_mir::function::Function;
 
 /// 分析管理器：负责计算和缓存分析结果。
 #[derive(Default)]

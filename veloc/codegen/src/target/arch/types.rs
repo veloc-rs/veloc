@@ -3,7 +3,7 @@ use crate::regalloc::regbank_select::RegisterBank;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use veloc_ir::Type;
+use veloc_mir::Type;
 
 /// 目标架构标识
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

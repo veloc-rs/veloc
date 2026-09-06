@@ -42,7 +42,7 @@ impl WasmMetadata {
                                 functions.push(WasmFunction {
                                     name: format!("func_{}", func_idx),
                                     type_index: idx,
-                                    func_id: veloc::ir::FuncId(0),
+                                    func_id: veloc::mir::FuncId(0),
                                 });
                                 ExternalKind::Func
                             }
@@ -117,7 +117,7 @@ impl WasmMetadata {
                         functions.push(WasmFunction {
                             name: format!("func_{}", func_idx),
                             type_index: ty_idx?,
-                            func_id: veloc::ir::FuncId(0),
+                            func_id: veloc::mir::FuncId(0),
                         });
                     }
                 }

@@ -3,7 +3,7 @@
 use alloc::string::{String, ToString};
 use cranelift_entity::PrimaryMap;
 use cranelift_entity::entity_impl;
-use veloc_ir::Linkage;
+use veloc_mir::Linkage;
 
 /// 符号标识符
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -50,8 +50,8 @@ impl SymbolTable {
     /// 从 IR 函数创建符号，并保留 Linkage 信息
     pub fn get_or_create_func(
         &mut self,
-        func_id: veloc_ir::FuncId,
-        module: &veloc_ir::Module,
+        func_id: veloc_mir::FuncId,
+        module: &veloc_mir::Module,
     ) -> SymbolId {
         let name = module.get_function_name(func_id);
         if let Some((id, _)) = self

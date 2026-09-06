@@ -1,5 +1,5 @@
 use cranelift_entity::SecondaryMap;
-use veloc_ir::{Function, Inst, Value};
+use veloc_mir::{Function, Inst, Value};
 
 /// 侧表分析：Use-Def (Def-Use) 链分析。
 /// 记录了每个 Value 被哪些指令使用。
