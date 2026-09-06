@@ -1,0 +1,438 @@
+// ----- a-fixed-operand-after-a-variadic-group-is-an-explicit-definition-error-1
+// run: opgen-error
+// check: fixed operands must precede variadic operands and successors
+format CallIndirect {
+    fields: [ptr(Value), args(ValueList), sig_id(SigId)],
+    opcode: fixed(CallIndirect)
+}
+op CallIndirect(@sig_id: SigId, args: values, ptr: PTR) -> signature {
+    mnemonic: "call-indirect",
+    storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
+    text: Text { args: [invoke(ptr, args, sig_id)] },
+    signature: sig_id,
+    traits: [MAY_TRAP], memory: UNKNOWN
+}
+
+// ----- anonymous-results-have-no-synthetic-names-1
+// run: opgen-error
+// check: type relation references missing operand or result `result`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> Integer {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    where: [wider(left, result)], memory: NONE
+}
+
+// ----- anonymous-results-have-no-synthetic-names-2
+// run: opgen-error
+// check: type relation references missing operand or result `result0`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> Integer {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    where: [wider(left, result0)], memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-1
+// run: opgen-error
+// check: expected a name
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) ->  {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-2
+// run: opgen-error
+// check: expected `,`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (T {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-3
+// run: opgen-error
+// check: expected `{`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> T, BOOL {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-4
+// run: opgen-error
+// check: expected `,`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (T BOOL) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-5
+// run: opgen-error
+// check: expected a name
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (result:) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-6
+// run: opgen-error
+// check: expected a result name before ':'
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (shape(T, Integer): T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-7
+// run: opgen-error
+// check: results cannot be properties
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (@result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-8
+// run: opgen-error
+// check: unknown type pattern
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> ([T]) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- bare-result-types-leave-the-operation-body-unconsumed-9
+// run: opgen-error
+// check: expected `{`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> result: T {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- generic-declarations-and-type-domains-are-checked-1
+// run: opgen-error
+// check: duplicate type variable `T`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer, T: Float>(left: T, right: T) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- generic-declarations-and-type-domains-are-checked-2
+// run: opgen-error
+// check: unknown type or class `Missing`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Missing>(left: T, right: T) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- generic-declarations-and-type-domains-are-checked-3
+// run: opgen-error
+// check: unbound type variable `Undeclared`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: Undeclared) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- generic-declarations-and-type-domains-are-checked-4
+// run: opgen-error
+// check: impossible element constraint on type variable `T`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: ScalarInteger>(left: T, right: element(T)) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- generic-declarations-and-type-domains-are-checked-5
+// run: opgen-error
+// check: impossible vector constraint on type variable `T`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Vector>(left: T, right: vector(T)) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- generic-declarations-and-type-domains-are-checked-6
+// run: opgen-error
+// check: impossible shape constraint on type variable `T`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: ScalarInteger>(left: T, right: shape(T, Vector)) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- operand-and-result-names-must-be-unique-1
+// run: opgen-error
+// check: duplicate parameter `left`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, left: T) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- operand-and-result-names-must-be-unique-2
+// run: opgen-error
+// check: duplicate parameter or result `left`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (left: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- operand-and-result-names-must-be-unique-3
+// run: opgen-error
+// check: duplicate parameter or result `result`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (result: T, result: BOOL) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- operand-and-result-names-must-be-unique-4
+// run: opgen-error
+// check: duplicate parameter `ptr`
+format Load {
+    fields: [ptr(Value), offset(u32), flags(MemFlags)],
+    opcode: fixed(Load)
+}
+op Load(ptr: PTR, @ptr: u32, @flags: MemFlags) -> (result: Any) {
+    mnemonic: "load",
+    storage: Load { ptr: ptr, offset: offset, flags: flags },
+    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}
+
+// ----- properties-must-match-their-declared-storage-type-and-role-1
+// run: opgen-error
+// check: parameter `offset` is incompatible with storage field `offset`
+format Load {
+    fields: [ptr(Value), offset(u32), flags(MemFlags)],
+    opcode: fixed(Load)
+}
+op Load(ptr: PTR, @offset: i32, @flags: MemFlags) -> (result: Any) {
+    mnemonic: "load",
+    storage: Load { ptr: ptr, offset: offset, flags: flags },
+    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}
+
+// ----- properties-must-match-their-declared-storage-type-and-role-2
+// run: opgen-error
+// check: parameter `flags` is incompatible with storage field `flags`
+format Load {
+    fields: [ptr(Value), offset(u32), flags(MemFlags)],
+    opcode: fixed(Load)
+}
+op Load(ptr: PTR, @offset: u32, @flags: bool) -> (result: Any) {
+    mnemonic: "load",
+    storage: Load { ptr: ptr, offset: offset, flags: flags },
+    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}
+
+// ----- properties-must-match-their-declared-storage-type-and-role-3
+// run: opgen-error
+// check: parameter `offset` is incompatible with storage field `offset`
+format Load {
+    fields: [ptr(Value), offset(u32), flags(MemFlags)],
+    opcode: fixed(Load)
+}
+op Load(ptr: PTR, offset: I32, @flags: MemFlags) -> (result: Any) {
+    mnemonic: "load",
+    storage: Load { ptr: ptr, offset: offset, flags: flags },
+    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}
+
+// ----- properties-must-match-their-declared-storage-type-and-role-4
+// run: opgen-error
+// check: parameter `ptr` is incompatible with storage field `ptr`
+format Load {
+    fields: [ptr(Value), offset(u32), flags(MemFlags)],
+    opcode: fixed(Load)
+}
+op Load(@ptr: u32, @offset: u32, @flags: MemFlags) -> (result: Any) {
+    mnemonic: "load",
+    storage: Load { ptr: ptr, offset: offset, flags: flags },
+    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}
+
+// ----- properties-must-match-their-declared-storage-type-and-role-5
+// run: opgen-error
+// check: parameter `args` is incompatible with storage field `args`
+format CallIndirect {
+    fields: [ptr(Value), args(ValueList), sig_id(SigId)],
+    opcode: fixed(CallIndirect)
+}
+op CallIndirect(@sig_id: SigId, ptr: PTR, args: successor) -> signature {
+    mnemonic: "call-indirect",
+    storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
+    text: Text { args: [invoke(ptr, args, sig_id)] },
+    signature: sig_id,
+    traits: [MAY_TRAP], memory: UNKNOWN
+}
+
+// ----- storage-packing-covers-every-field-and-logical-parameter-once-1
+// run: opgen-error
+// check: missing storage field `args`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair {  },
+    memory: NONE
+}
+
+// ----- storage-packing-covers-every-field-and-logical-parameter-once-2
+// run: opgen-error
+// check: parameter `left` is stored more than once
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, left] },
+    memory: NONE
+}
+
+// ----- storage-packing-covers-every-field-and-logical-parameter-once-3
+// run: opgen-error
+// check: unknown parameter `unknown` in storage mapping
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, unknown] },
+    memory: NONE
+}
+
+// ----- storage-packing-covers-every-field-and-logical-parameter-once-4
+// run: opgen-error
+// check: unknown storage field `extra` in `Pair`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right], extra: left },
+    memory: NONE
+}
+
+// ----- storage-packing-covers-every-field-and-logical-parameter-once-5
+// run: opgen-error
+// check: parameter `unused` has no storage mapping
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op PairAdd<T: Integer>(left: T, right: T, unused: T) -> (result: T) {
+    mnemonic: "pair-add",
+    storage: Pair { args: [left, right] },
+    memory: NONE
+}
+
+// ----- storage-packing-covers-every-field-and-logical-parameter-once-6
+// run: opgen-error
+// check: missing storage field `flags`
+format Load {
+    fields: [ptr(Value), offset(u32), flags(MemFlags)],
+    opcode: fixed(Load)
+}
+op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
+    mnemonic: "load",
+    storage: Load { ptr: ptr, offset: offset },
+    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    traits: [MAY_TRAP], memory: HEAP_READ
+}

@@ -1,0 +1,19 @@
+// run: roundtrip
+// check: call sink()
+// check: call-indirect v0() : () -> void
+// check: br-table v1, [], block1()
+// check: br-table v1, [block2(), block3()], block4()
+export function empty(ptr, i32) -> void
+block0(v0: ptr, v1: i32):
+  call sink()
+  call-indirect v0() : () -> void
+  br-table v1, [], block1()
+block1():
+  br-table v1, [block2(), block3()], block4()
+block2():
+  return
+block3():
+  return
+block4():
+  return
+import function sink() -> void

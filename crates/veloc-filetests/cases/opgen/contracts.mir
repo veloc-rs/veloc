@@ -1,0 +1,70 @@
+// ----- many-variables-and-reordered-results
+// run: fixture
+// check: (v5, v6) = many.f32 v0, v1, v2, v3, v4
+// check: return v5, v6
+local function many_types(i8, i16, i32, i64, f32) -> (f32, i8)
+block0(v0: i8, v1: i16, v2: i32, v3: i64, v4: f32):
+  (v5, v6) = many v0, v1, v2, v3, v4
+  return v5, v6
+
+// ----- many-wrong-arity
+// run: fixture-error
+// check: operand
+local function many_types(i8, i16, i32, i64) -> void
+block0(v0: i8, v1: i16, v2: i32, v3: i64):
+  (v5, v6) = many v0, v1, v2, v3
+  return
+
+// ----- result-only-variable
+// run: fixture
+// check: v0 = output.i32
+// check: return v0
+local function output_type() -> i32
+block0():
+  v0 = output.i32
+  return v0
+
+// ----- result-only-wrong-class
+// run: fixture-validate-error
+// check: Pattern { results: true, index: 0
+// check: got: F32
+local function output_type() -> f32
+block0():
+  v0 = output.f32
+  return v0
+
+// ----- infer-known-result-relation
+// run: fixture
+// check: v1 = sized.i8 v0
+// check: return v1
+local function sized_type(bool) -> i8
+block0(v0: bool):
+  v1 = sized v0
+  return v1
+
+// ----- reject-known-result-relation
+// run: fixture-error
+// check: results[0] must have more bits per lane than operands[0]
+local function sized_type(i32) -> i8
+block0(v0: i32):
+  v1 = sized v0
+  return v1
+
+// ----- shared-contracts
+// run: fixture
+// check: v2 = first.i32 v0, v1
+// check: v3 = second.i32 v2, v1
+// check: return v3
+local function shared(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = first v0, v1
+  v3 = second v2, v1
+  return v3
+
+// ----- distinct-contract
+// run: fixture-error
+// check: invalid operand types
+local function distinct(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = float-only v0, v1
+  return v2

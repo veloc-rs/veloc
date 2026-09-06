@@ -1,0 +1,439 @@
+// ----- iadd-i8
+// run: lower
+// check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
+// check: G_ADD), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i8
+local function op(i8, i8) -> i8
+block0(v0: i8, v1: i8):
+  v2 = iadd v0, v1
+  return v2
+
+// ----- isub-i8
+// run: lower
+// check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
+// check: G_SUB), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i8
+local function op(i8, i8) -> i8
+block0(v0: i8, v1: i8):
+  v2 = isub v0, v1
+  return v2
+
+// ----- imul-i8
+// run: lower
+// check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
+// check: G_MUL), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i8
+local function op(i8, i8) -> i8
+block0(v0: i8, v1: i8):
+  v2 = imul v0, v1
+  return v2
+
+// ----- ineg-i8
+// run: lower
+// check: params: $(lhs=v\d+):i8
+// check: G_NEG), operands: [Def(def($(result=v\d+))), Use($lhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i8
+local function op(i8) -> i8
+block0(v0: i8):
+  v2 = ineg v0
+  return v2
+
+// ----- iand-i8
+// run: lower
+// check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
+// check: G_AND), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i8
+local function op(i8, i8) -> i8
+block0(v0: i8, v1: i8):
+  v2 = iand v0, v1
+  return v2
+
+// ----- ior-i8
+// run: lower
+// check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
+// check: G_OR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i8
+local function op(i8, i8) -> i8
+block0(v0: i8, v1: i8):
+  v2 = ior v0, v1
+  return v2
+
+// ----- ixor-i8
+// run: lower
+// check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
+// check: G_XOR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i8
+local function op(i8, i8) -> i8
+block0(v0: i8, v1: i8):
+  v2 = ixor v0, v1
+  return v2
+
+// ----- iadd-i16
+// run: lower
+// check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
+// check: G_ADD), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i16
+local function op(i16, i16) -> i16
+block0(v0: i16, v1: i16):
+  v2 = iadd v0, v1
+  return v2
+
+// ----- isub-i16
+// run: lower
+// check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
+// check: G_SUB), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i16
+local function op(i16, i16) -> i16
+block0(v0: i16, v1: i16):
+  v2 = isub v0, v1
+  return v2
+
+// ----- imul-i16
+// run: lower
+// check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
+// check: G_MUL), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i16
+local function op(i16, i16) -> i16
+block0(v0: i16, v1: i16):
+  v2 = imul v0, v1
+  return v2
+
+// ----- ineg-i16
+// run: lower
+// check: params: $(lhs=v\d+):i16
+// check: G_NEG), operands: [Def(def($(result=v\d+))), Use($lhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i16
+local function op(i16) -> i16
+block0(v0: i16):
+  v2 = ineg v0
+  return v2
+
+// ----- iand-i16
+// run: lower
+// check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
+// check: G_AND), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i16
+local function op(i16, i16) -> i16
+block0(v0: i16, v1: i16):
+  v2 = iand v0, v1
+  return v2
+
+// ----- ior-i16
+// run: lower
+// check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
+// check: G_OR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i16
+local function op(i16, i16) -> i16
+block0(v0: i16, v1: i16):
+  v2 = ior v0, v1
+  return v2
+
+// ----- ixor-i16
+// run: lower
+// check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
+// check: G_XOR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i16
+local function op(i16, i16) -> i16
+block0(v0: i16, v1: i16):
+  v2 = ixor v0, v1
+  return v2
+
+// ----- iadd-i32
+// run: lower
+// check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
+// check: G_ADD), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32
+local function op(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = iadd v0, v1
+  return v2
+
+// ----- isub-i32
+// run: lower
+// check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
+// check: G_SUB), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32
+local function op(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = isub v0, v1
+  return v2
+
+// ----- imul-i32
+// run: lower
+// check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
+// check: G_MUL), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32
+local function op(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = imul v0, v1
+  return v2
+
+// ----- ineg-i32
+// run: lower
+// check: params: $(lhs=v\d+):i32
+// check: G_NEG), operands: [Def(def($(result=v\d+))), Use($lhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32
+local function op(i32) -> i32
+block0(v0: i32):
+  v2 = ineg v0
+  return v2
+
+// ----- iand-i32
+// run: lower
+// check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
+// check: G_AND), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32
+local function op(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = iand v0, v1
+  return v2
+
+// ----- ior-i32
+// run: lower
+// check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
+// check: G_OR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32
+local function op(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = ior v0, v1
+  return v2
+
+// ----- ixor-i32
+// run: lower
+// check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
+// check: G_XOR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32
+local function op(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = ixor v0, v1
+  return v2
+
+// ----- idiv-s-i32
+// run: lower
+// check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
+// check: G_SDIV), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32
+local function op(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2 = idiv-s v0, v1
+  return v2
+
+// ----- iadd-i64
+// run: lower
+// check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
+// check: G_ADD), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i64
+local function op(i64, i64) -> i64
+block0(v0: i64, v1: i64):
+  v2 = iadd v0, v1
+  return v2
+
+// ----- isub-i64
+// run: lower
+// check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
+// check: G_SUB), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i64
+local function op(i64, i64) -> i64
+block0(v0: i64, v1: i64):
+  v2 = isub v0, v1
+  return v2
+
+// ----- imul-i64
+// run: lower
+// check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
+// check: G_MUL), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i64
+local function op(i64, i64) -> i64
+block0(v0: i64, v1: i64):
+  v2 = imul v0, v1
+  return v2
+
+// ----- ineg-i64
+// run: lower
+// check: params: $(lhs=v\d+):i64
+// check: G_NEG), operands: [Def(def($(result=v\d+))), Use($lhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i64
+local function op(i64) -> i64
+block0(v0: i64):
+  v2 = ineg v0
+  return v2
+
+// ----- iand-i64
+// run: lower
+// check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
+// check: G_AND), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i64
+local function op(i64, i64) -> i64
+block0(v0: i64, v1: i64):
+  v2 = iand v0, v1
+  return v2
+
+// ----- ior-i64
+// run: lower
+// check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
+// check: G_OR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i64
+local function op(i64, i64) -> i64
+block0(v0: i64, v1: i64):
+  v2 = ior v0, v1
+  return v2
+
+// ----- ixor-i64
+// run: lower
+// check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
+// check: G_XOR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i64
+local function op(i64, i64) -> i64
+block0(v0: i64, v1: i64):
+  v2 = ixor v0, v1
+  return v2
+
+// ----- iand-bool
+// run: lower
+// check: params: $(lhs=v\d+):bool, $(rhs=v\d+):bool
+// check: G_AND), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: bool
+local function op(bool, bool) -> bool
+block0(v0: bool, v1: bool):
+  v2 = iand v0, v1
+  return v2
+
+// ----- ior-bool
+// run: lower
+// check: params: $(lhs=v\d+):bool, $(rhs=v\d+):bool
+// check: G_OR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: bool
+local function op(bool, bool) -> bool
+block0(v0: bool, v1: bool):
+  v2 = ior v0, v1
+  return v2
+
+// ----- ixor-bool
+// run: lower
+// check: params: $(lhs=v\d+):bool, $(rhs=v\d+):bool
+// check: G_XOR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: bool
+local function op(bool, bool) -> bool
+block0(v0: bool, v1: bool):
+  v2 = ixor v0, v1
+  return v2
+
+// ----- iadd-i32<4>
+// run: lower
+// check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
+// check: G_ADD), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32<4>
+local function op(i32<4>, i32<4>) -> i32<4>
+block0(v0: i32<4>, v1: i32<4>):
+  v2 = iadd v0, v1
+  return v2
+
+// ----- isub-i32<4>
+// run: lower
+// check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
+// check: G_SUB), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32<4>
+local function op(i32<4>, i32<4>) -> i32<4>
+block0(v0: i32<4>, v1: i32<4>):
+  v2 = isub v0, v1
+  return v2
+
+// ----- imul-i32<4>
+// run: lower
+// check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
+// check: G_MUL), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32<4>
+local function op(i32<4>, i32<4>) -> i32<4>
+block0(v0: i32<4>, v1: i32<4>):
+  v2 = imul v0, v1
+  return v2
+
+// ----- ineg-i32<4>
+// run: lower
+// check: params: $(lhs=v\d+):i32<4>
+// check: G_NEG), operands: [Def(def($(result=v\d+))), Use($lhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32<4>
+local function op(i32<4>) -> i32<4>
+block0(v0: i32<4>):
+  v2 = ineg v0
+  return v2
+
+// ----- iand-i32<4>
+// run: lower
+// check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
+// check: G_AND), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32<4>
+local function op(i32<4>, i32<4>) -> i32<4>
+block0(v0: i32<4>, v1: i32<4>):
+  v2 = iand v0, v1
+  return v2
+
+// ----- ior-i32<4>
+// run: lower
+// check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
+// check: G_OR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32<4>
+local function op(i32<4>, i32<4>) -> i32<4>
+block0(v0: i32<4>, v1: i32<4>):
+  v2 = ior v0, v1
+  return v2
+
+// ----- ixor-i32<4>
+// run: lower
+// check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
+// check: G_XOR), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: i32<4>
+local function op(i32<4>, i32<4>) -> i32<4>
+block0(v0: i32<4>, v1: i32<4>):
+  v2 = ixor v0, v1
+  return v2
+
+// ----- fadd-f64
+// run: lower
+// check: params: $(lhs=v\d+):f64, $(rhs=v\d+):f64
+// check: G_FADD), operands: [Def(def($(result=v\d+))), Use($lhs), Use($rhs)]
+// check: G_RET), operands: [Use($result)]
+// check: type $result: f64
+local function op(f64, f64) -> f64
+block0(v0: f64, v1: f64):
+  v2 = fadd v0, v1
+  return v2

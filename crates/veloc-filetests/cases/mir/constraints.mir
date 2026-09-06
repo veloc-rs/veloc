@@ -1,0 +1,55 @@
+// ----- arithmetic-family
+// run: parse-error
+// check: invalid operand types
+local function bad(f32, f32) -> void
+block0(v0: f32, v1: f32):
+  v2 = iadd v0, v1
+  return
+
+// ----- vector-constant-size
+// run: validate-error
+// check: vector constant byte count must match its type
+local function bad() -> void
+block0():
+  v0 = vconst.i32<4> 0x00000000
+  return
+
+// ----- pointer-scale
+// run: validate-error
+// check: non-zero
+local function bad(ptr, i32) -> void
+block0(v0: ptr, v1: i32):
+  v2 = ptr-index v0, v1, scale=0
+  return
+
+// ----- pointer-ordering
+// run: validate-error
+// check: only supports eq and ne
+local function bad(ptr, ptr) -> void
+block0(v0: ptr, v1: ptr):
+  v2 = icmp ltu v0, v1
+  return
+
+// ----- shuffle-length
+// run: validate-error
+// check: mask length
+local function bad(i32<4>, i32<4>) -> void
+block0(v0: i32<4>, v1: i32<4>):
+  v2 = shuffle v0, v1, mask=0x000102
+  return
+
+// ----- shuffle-selector
+// run: validate-error
+// check: selector is out of range
+local function bad(i32<4>, i32<4>) -> void
+block0(v0: i32<4>, v1: i32<4>):
+  v2 = shuffle v0, v1, mask=0x00010208
+  return
+
+// ----- shuffle-scalable
+// run: validate-error
+// check: fixed-width vector
+local function bad(i32<scalable 4>, i32<scalable 4>) -> void
+block0(v0: i32<scalable 4>, v1: i32<scalable 4>):
+  v2 = shuffle v0, v1, mask=0x00010203
+  return

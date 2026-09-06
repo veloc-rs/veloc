@@ -1,0 +1,219 @@
+// ----- unknown-field
+// run: opgen-error
+// check: unknown field
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, memroy: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- duplicate-field
+// run: opgen-error
+// check: duplicate field
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- unknown-format
+// run: opgen-error
+// check: unknown
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Missing { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-identifier
+// run: opgen-error
+// check: invalid generated identifier
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "type", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- unbound-variable
+// run: opgen-error
+// check: unbound type variable `U`
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: U) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- unbound-storage
+// run: opgen-error
+// check: missing
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, missing] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- unbound-semantics
+// run: opgen-error
+// check: missing
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, missing)
+}
+
+// ----- storage-arity
+// run: opgen-error
+// check: storage field `args` requires 2 arguments
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- unknown-primitive
+// run: opgen-error
+// check: unknown
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.unknown(lhs, rhs)
+}
+
+// ----- wrong-primitive-type
+// run: opgen-error
+// check: floating-point
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Float>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- primitive-arity
+// run: opgen-error
+// check: bv.neg expects 1 arguments, got 2
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.neg(lhs, rhs)
+}
+
+// ----- unknown-memory
+// run: opgen-error
+// check: no memory effects
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: UNKNOWN, semantics: bv.add(lhs, rhs)
+}
+
+// ----- relation-operand
+// run: opgen-error
+// check: missing
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", where: [wider(missing, result)], storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- unknown-relation
+// run: opgen-error
+// check: type relation
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", where: [unknown(lhs, result)], storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- missing-colon
+// run: opgen-error
+// check: expected `:`
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- string-newline
+// run: opgen-error
+// check: newline in string
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd, storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- out-of-range
+// run: opgen-error
+// check: out of range
+format Binary {
+    fields: [opcode(Opcode), args(values(99999999999999))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+
+// ----- duplicate-mnemonic
+// run: opgen-error
+// check: duplicate mnemonic
+format Binary {
+    fields: [opcode(Opcode), args(values(2))],
+    opcode: dynamic(opcode)
+}
+op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}
+op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
+    memory: NONE, semantics: bv.add(lhs, rhs)
+}

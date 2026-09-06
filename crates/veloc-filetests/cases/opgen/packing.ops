@@ -1,0 +1,223 @@
+// ----- pool-bindings-are-typed-and-consume-the-complete-record-1
+// run: opgen-error
+// check: expected parameter, array, pool(parameter) or table(cases, default)
+record PtrIndexImm {
+    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+}
+format Indexed {
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    opcode: dynamic(opcode)
+}
+op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm) -> (result: PTR) {
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool() },
+    memory: NONE
+}
+
+// ----- pool-bindings-are-typed-and-consume-the-complete-record-2
+// run: opgen-error
+// check: parameter `imm` is incompatible with storage field `imm_id`
+record PtrIndexImm {
+    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+}
+format Indexed {
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    opcode: dynamic(opcode)
+}
+op Indexed(ptr: PTR, index: I32, @imm: Bytes) -> (result: PTR) {
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    memory: NONE
+}
+
+// ----- pool-bindings-are-typed-and-consume-the-complete-record-3
+// run: opgen-error
+// check: parameter `unused` has no storage mapping
+record PtrIndexImm {
+    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+}
+format Indexed {
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    opcode: dynamic(opcode)
+}
+op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm, @unused: PtrIndexImm) -> (result: PTR) {
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    memory: NONE
+}
+
+// ----- pool-bindings-are-typed-and-consume-the-complete-record-4
+// run: opgen-error
+// check: parameter `imm` is stored more than once
+record PtrIndexImm {
+    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+}
+format Indexed {
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId), other(PtrIndexImmId)],
+    opcode: dynamic(opcode)
+}
+op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm) -> (result: PTR) {
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm), other: pool(imm) },
+    memory: NONE
+}
+
+// ----- pool-bindings-are-typed-and-consume-the-complete-record-5
+// run: opgen-error
+// check: unknown property type `PtrIndexImmId`
+record PtrIndexImm {
+    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+}
+format Indexed {
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    opcode: dynamic(opcode)
+}
+op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImmId) -> (result: PTR) {
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    memory: NONE
+}
+
+// ----- pool-bindings-are-typed-and-consume-the-complete-record-6
+// run: opgen-error
+// check: unknown property type `ConstantPoolId`
+record PtrIndexImm {
+    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+}
+format Indexed {
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    opcode: dynamic(opcode)
+}
+op Indexed(ptr: PTR, index: I32, @imm: ConstantPoolId) -> (result: PTR) {
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    memory: NONE
+}
+
+// ----- pool-bindings-are-typed-and-consume-the-complete-record-7
+// run: opgen-error
+// check: unknown property type `VectorExtId`
+record PtrIndexImm {
+    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+}
+format Indexed {
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    opcode: dynamic(opcode)
+}
+op Indexed(ptr: PTR, index: I32, @imm: VectorExtId) -> (result: PTR) {
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    memory: NONE
+}
+
+// ----- pool-bindings-are-typed-and-consume-the-complete-record-8
+// run: opgen-error
+// check: unknown property type `VectorMemExtId`
+record PtrIndexImm {
+    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+}
+format Indexed {
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    opcode: dynamic(opcode)
+}
+op Indexed(ptr: PTR, index: I32, @imm: VectorMemExtId) -> (result: PTR) {
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    memory: NONE
+}
+
+// ----- pooled-value-lists-and-inline-arrays-keep-distinct-bindings-1
+// run: opgen-error
+// check: storage field `args` requires 3 arguments
+format Triple { fields: [opcode(Opcode), args(list(3))], opcode: dynamic(opcode) }
+op Triple<T: Integer>(a: T, b: T, c: T) -> (result: T) {
+    mnemonic: "triple", storage: Triple { args: [a, b] }, memory: NONE
+}
+
+// ----- pooled-value-lists-and-inline-arrays-keep-distinct-bindings-2
+// run: opgen-error
+// check: parameter `a` is stored more than once
+format Triple { fields: [opcode(Opcode), args(list(3))], opcode: dynamic(opcode) }
+op Triple<T: Integer>(a: T, b: T, c: T) -> (result: T) {
+    mnemonic: "triple", storage: Triple { args: [a, a, c] }, memory: NONE
+}
+
+// ----- signature-sources-are-explicit-and-match-their-parameter-types-1
+// run: opgen-error
+// check: signature results require an explicit signature source
+format Invoke {
+    fields: [opcode(Opcode), callee(FuncId), args(ValueList)], opcode: dynamic(opcode)
+}
+op Invoke(@callee: FuncId, args: values) -> signature {
+    mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
+     memory: UNKNOWN
+}
+
+// ----- signature-sources-are-explicit-and-match-their-parameter-types-2
+// run: opgen-error
+// check: signature source `callee` must be a SigId property
+format Invoke {
+    fields: [opcode(Opcode), callee(FuncId), args(ValueList)], opcode: dynamic(opcode)
+}
+op Invoke(@callee: FuncId, args: values) -> signature {
+    mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
+    signature: callee, memory: UNKNOWN
+}
+
+// ----- signature-sources-are-explicit-and-match-their-parameter-types-3
+// run: opgen-error
+// check: signature source `missing` must be a FuncId property
+format Invoke {
+    fields: [opcode(Opcode), callee(FuncId), args(ValueList)], opcode: dynamic(opcode)
+}
+op Invoke(@callee: FuncId, args: values) -> signature {
+    mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
+    signature: function(missing), memory: UNKNOWN
+}
+
+// ----- signature-sources-are-explicit-and-match-their-parameter-types-4
+// run: opgen-error
+// check: signature source requires signature results
+format Invoke {
+    fields: [opcode(Opcode), callee(FuncId), args(ValueList)], opcode: dynamic(opcode)
+}
+op Invoke(@callee: FuncId, args: values) -> () {
+    mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
+    signature: function(callee), memory: UNKNOWN
+}
+
+// ----- tables-require-distinct-case-and-default-roles-1
+// run: opgen-error
+// check: expected parameter, array, pool(parameter) or table(cases, default)
+format Table {
+    fields: [opcode(Opcode), index(Value), table(JumpTable)], opcode: dynamic(opcode)
+}
+op Table(index: I32, cases: successors, default: successor) -> () {
+    mnemonic: "table", storage: Table { index: index, table: table(cases) },
+    traits: [TERMINATOR], memory: NONE
+}
+
+// ----- tables-require-distinct-case-and-default-roles-2
+// run: opgen-error
+// check: parameter `cases` is stored more than once
+format Table {
+    fields: [opcode(Opcode), index(Value), table(JumpTable)], opcode: dynamic(opcode)
+}
+op Table(index: I32, cases: successors, default: successor) -> () {
+    mnemonic: "table", storage: Table { index: index, table: table(cases, cases) },
+    traits: [TERMINATOR], memory: NONE
+}
+
+// ----- tables-require-distinct-case-and-default-roles-3
+// run: opgen-error
+// check: parameter `default` is incompatible with storage field `table`
+format Table {
+    fields: [opcode(Opcode), index(Value), table(JumpTable)], opcode: dynamic(opcode)
+}
+op Table(index: I32, cases: successors, default: successors) -> () {
+    mnemonic: "table", storage: Table { index: index, table: table(cases, default) },
+    traits: [TERMINATOR], memory: NONE
+}
+
+// ----- tables-require-distinct-case-and-default-roles-4
+// run: opgen-error
+// check: parameter `cases` is incompatible with storage field `table`
+format Table {
+    fields: [opcode(Opcode), index(Value), table(JumpTable)], opcode: dynamic(opcode)
+}
+op Table(index: I32, cases: successors, default: successor) -> () {
+    mnemonic: "table", storage: Table { index: index, table: cases },
+    traits: [TERMINATOR], memory: NONE
+}

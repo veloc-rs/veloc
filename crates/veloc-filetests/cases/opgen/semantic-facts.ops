@@ -1,0 +1,107 @@
+// ----- algebraic-constants-are-typed-and-names-round-trip-1
+// run: opgen-error
+// check: unknown algebraic constant `Two`
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.add(lhs, rhs), identity: Two
+         }
+
+// ----- rejects-incorrect-identity-and-absorbing-constants-1
+// run: opgen-error
+// check: bv.add does not support identity `One` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.add(lhs, rhs), traits: [COMMUTATIVE, ASSOCIATIVE], identity: One
+         }
+
+// ----- rejects-incorrect-identity-and-absorbing-constants-2
+// run: opgen-error
+// check: bv.and does not support identity `Zero` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.and(lhs, rhs), traits: [COMMUTATIVE, ASSOCIATIVE], identity: Zero
+         }
+
+// ----- rejects-incorrect-identity-and-absorbing-constants-3
+// run: opgen-error
+// check: bv.mul does not support absorbing `One` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.mul(lhs, rhs), traits: [COMMUTATIVE, ASSOCIATIVE], absorbing: One
+         }
+
+// ----- rejects-incorrect-identity-and-absorbing-constants-4
+// run: opgen-error
+// check: bv.or does not support absorbing `Zero` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.or(lhs, rhs), traits: [COMMUTATIVE, ASSOCIATIVE], absorbing: Zero
+         }
+
+// ----- rejects-incorrect-identity-and-absorbing-constants-5
+// run: opgen-error
+// check: bv.xor does not support absorbing `Zero` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.xor(lhs, rhs), traits: [COMMUTATIVE, ASSOCIATIVE], absorbing: Zero
+         }
+
+// ----- rejects-traits-not-supported-by-the-semantic-primitive-1
+// run: opgen-error
+// check: bv.sub does not support trait `COMMUTATIVE` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.sub(lhs, rhs), traits: [COMMUTATIVE]
+         }
+
+// ----- rejects-traits-not-supported-by-the-semantic-primitive-2
+// run: opgen-error
+// check: bv.sub does not support trait `ASSOCIATIVE` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.sub(lhs, rhs), traits: [ASSOCIATIVE]
+         }
+
+// ----- rejects-traits-not-supported-by-the-semantic-primitive-3
+// run: opgen-error
+// check: bv.neg does not support trait `COMMUTATIVE` at every supported width
+format Args { fields: [opcode(Opcode), args(values(1))], opcode: dynamic(opcode) }
+op Test<T: Integer>(arg: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [arg] }, memory: NONE,
+             semantics: bv.neg(arg), traits: [COMMUTATIVE]
+         }
+
+// ----- rejects-traits-not-supported-by-the-semantic-primitive-4
+// run: opgen-error
+// check: bv.add does not support trait `IDEMPOTENT` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.add(lhs, rhs), traits: [COMMUTATIVE, ASSOCIATIVE, IDEMPOTENT]
+         }
+
+// ----- rejects-traits-not-supported-by-the-semantic-primitive-5
+// run: opgen-error
+// check: bv.mul does not support trait `IDEMPOTENT` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.mul(lhs, rhs), traits: [COMMUTATIVE, ASSOCIATIVE, IDEMPOTENT]
+         }
+
+// ----- rejects-traits-not-supported-by-the-semantic-primitive-6
+// run: opgen-error
+// check: bv.xor does not support trait `IDEMPOTENT` at every supported width
+format Args { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+             mnemonic: "test", storage: Args { args: [lhs, rhs] }, memory: NONE,
+             semantics: bv.xor(lhs, rhs), traits: [COMMUTATIVE, ASSOCIATIVE, IDEMPOTENT]
+         }

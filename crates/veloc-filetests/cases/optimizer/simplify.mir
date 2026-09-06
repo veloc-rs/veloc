@@ -1,0 +1,92 @@
+// ----- algebra
+// run: simplify
+// check: block0($(arg=v\d+): i32):
+// check: iconst.i32 -1
+// check: $(ones=v\d+) = iconst.i32 -1
+// check: $(zero=v\d+) = iconst.i32 0
+// check: $(sum=v\d+) = iadd.i32 $arg, $arg
+// check: return $arg, $arg, $arg, $ones, $zero, $sum
+local function algebra(i32) -> (i32, i32, i32, i32, i32, i32)
+block0(v0: i32):
+  v1 = iconst.i32 0
+  v2 = iconst.i32 -1
+  v3 = iadd v0, v1
+  v4 = iadd v1, v3
+  v5 = iand v4, v4
+  v6 = ior v0, v2
+  v7 = imul v0, v1
+  v8 = iadd v3, v4
+  return v3, v4, v5, v6, v7, v8
+
+// ----- nonconstant-operands
+// run: simplify
+// check: $(one=v\d+) = iconst.i32 1
+// check: $(left=v\d+) = iadd.i32 v0, $one
+// check: $(right=v\d+) = iadd.i32 $one, v0
+// check: return $left, $right
+local function partial(i32) -> (i32, i32)
+block0(v0: i32):
+  v1 = iconst.i32 1
+  v2 = iadd v0, v1
+  v3 = iadd v1, v0
+  return v2, v3
+
+// ----- division-and-traps
+// run: simplify
+// check: $(overflow=v\d+) = idiv-s.i32
+// check: $(zero_divisor=v\d+) = idiv-u.i32
+// check: $(quotient=v\d+) = iconst.i32 -1073741824
+// check: $(remainder=v\d+) = iconst.i32 0
+// check: return $overflow, $zero_divisor, $quotient, $remainder
+local function division() -> (i32, i32, i32, i32)
+block0():
+  v0 = iconst.i32 -2147483648
+  v1 = iconst.i32 0
+  v2 = iconst.i32 -1
+  v3 = iconst.i32 2
+  v4 = idiv-s v0, v2
+  v5 = idiv-u v3, v1
+  v6 = idiv-s v0, v3
+  v7 = irem-s v0, v2
+  return v4, v5, v6, v7
+
+// ----- wrapping-chain
+// run: simplify
+// check: $(sum=v\d+) = iconst.i32 -2147483648
+// check: $(flipped=v\d+) = iconst.i32 2147483647
+// check: $(negated=v\d+) = iconst.i32 -2147483647
+// check: $(difference=v\d+) = iconst.i32 -2147483648
+// check: $(product=v\d+) = iconst.i32 -2147483648
+// check: $(masked=v\d+) = iconst.i32 -2147483648
+// check: $(merged=v\d+) = iconst.i32 -2147483647
+// check: return $sum, $flipped, $negated, $difference, $product, $masked, $merged
+local function wrapping() -> (i32, i32, i32, i32, i32, i32, i32)
+block0():
+  v0 = iconst.i32 2147483647
+  v1 = iconst.i32 1
+  v2 = iconst.i32 -1
+  v3 = iadd v0, v1
+  v4 = ixor v3, v2
+  v5 = ineg v4
+  v6 = isub v5, v1
+  v7 = imul v6, v2
+  v8 = iand v7, v2
+  v9 = ior v8, v1
+  return v3, v4, v5, v6, v7, v8, v9
+
+// ----- multiple-results
+// run: simplify
+// check: $(overflow=v\d+) = bconst.bool true
+// check: $(wide=v\d+) = iconst.i64 -128
+// check: $(negative=v\d+) = bconst.bool true
+// check: $(narrow=v\d+) = iconst.i8 -128
+// check: return $wide, $overflow, $negative, $narrow
+local function typed() -> (i64, bool, bool, i8)
+block0():
+  v0 = iconst.i8 127
+  v1 = iconst.i8 1
+  (v2, v3) = iadd-with-overflow v0, v1
+  v4 = extends.i64 v2
+  v5 = icmp lts v2, v1
+  v6 = wrap.i8 v4
+  return v4, v3, v5, v6

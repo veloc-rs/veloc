@@ -1,0 +1,461 @@
+// ----- unknown-field
+// run: parse-error
+// check: unknown named field `mystery`
+local function bad(ptr) -> i32
+block0(v0: ptr):
+  v1 = load.i32 v0, mystery=4
+  return v1
+
+// ----- duplicate-value
+// run: parse-error
+// check: already-defined
+local function bad() -> i32
+block0():
+  value = iconst.i32 1
+  value = iconst.i32 2
+  return value
+
+// ----- address-mode-1
+// run: parse-error
+// check: index
+local function bad(ptr, i32, i32<4>, mask<4>) -> void
+block0(v0: ptr, v1: i32, v8: i32<4>, v4: mask<4>):
+  v26 = load-stride.i32<4>.align4 v0, stride=v1, index=v8, offset=-16, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- address-mode-2
+// run: parse-error
+// check: index
+local function bad(i32<4>, ptr, i32, i32<4>, mask<4>) -> void
+block0(v26: i32<4>, v0: ptr, v1: i32, v8: i32<4>, v4: mask<4>):
+  store-stride v26, v0, stride=v1, index=v8, offset=16, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- address-mode-3
+// run: parse-error
+// check: scale
+local function bad(ptr, i32, mask<4>) -> void
+block0(v0: ptr, v1: i32, v4: mask<4>):
+  v26 = load-stride.i32<4>.align4 v0, stride=v1, scale=2, offset=-16, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- address-mode-4
+// run: parse-error
+// check: scale
+local function bad(i32<4>, ptr, i32, mask<4>) -> void
+block0(v26: i32<4>, v0: ptr, v1: i32, v4: mask<4>):
+  store-stride v26, v0, stride=v1, scale=2, offset=16, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- address-mode-5
+// run: parse-error
+// check: stride
+local function bad(ptr, i32, i32<4>, mask<4>) -> void
+block0(v0: ptr, v1: i32, v8: i32<4>, v4: mask<4>):
+  v27 = gather.i32<4> v0, stride=v1, index=v8, scale=4, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- address-mode-6
+// run: parse-error
+// check: stride
+local function bad(i32<4>, ptr, i32, i32<4>, mask<4>) -> void
+block0(v27: i32<4>, v0: ptr, v1: i32, v8: i32<4>, v4: mask<4>):
+  scatter v27, v0, stride=v1, index=v8, scale=4, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-1
+// run: parse-error
+// check: duplicate
+local function bad(ptr) -> void
+block0(v0: ptr):
+  v14 = load.i32.align4 v0, offset=4, offset=8
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-2
+// run: parse-error
+// check: duplicate
+local function bad(i32, ptr) -> void
+block0(v14: i32, v0: ptr):
+  store.volatile v14, v0, offset=8, offset=4
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-3
+// run: parse-error
+// check: duplicate
+local function bad() -> void
+  ss0: size 32
+block0():
+  v15 = stack-load.i32 ss0, offset=4, offset=8
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-4
+// run: parse-error
+// check: duplicate
+local function bad() -> void
+  ss0: size 32
+block0(v15: i32):
+  stack-store v15, ss0, offset=8, offset=4
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-5
+// run: parse-error
+// check: duplicate
+local function bad() -> void
+  ss0: size 32
+block0():
+  v16 = stack-addr.ptr ss0, offset=0, offset=4
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-6
+// run: parse-error
+// check: duplicate
+local function bad(ptr, i32) -> void
+block0(v0: ptr, v1: i32):
+  v18 = ptr-index.ptr v0, v1, scale=4, scale=2, offset=-8
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-7
+// run: parse-error
+// check: duplicate
+local function bad(i32<4>, i32<4>) -> void
+block0(v3: i32<4>, v8: i32<4>):
+  v24 = shuffle.i32<4> v3, v8, mask=0x00010203, mask=0x00010203
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-8
+// run: parse-error
+// check: duplicate
+local function bad(i32<4>, i32<4>, mask<4>) -> void
+block0(v3: i32<4>, v8: i32<4>, v4: mask<4>):
+  v25 = iadd.i32<4> v3, v8, mask=v4, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-9
+// run: parse-error
+// check: duplicate
+local function bad(i32<4>, i32<4>, mask<4>, i32) -> void
+block0(v3: i32<4>, v8: i32<4>, v4: mask<4>, v1: i32):
+  v25 = iadd.i32<4> v3, v8, mask=v4, evl=v1, evl=v1
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-10
+// run: parse-error
+// check: duplicate
+local function bad(ptr, i32, mask<4>) -> void
+block0(v0: ptr, v1: i32, v4: mask<4>):
+  v26 = load-stride.i32<4>.align4 v0, stride=v1, stride=v1, offset=-16, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-11
+// run: parse-error
+// check: duplicate
+local function bad(i32<4>, ptr, i32, mask<4>) -> void
+block0(v26: i32<4>, v0: ptr, v1: i32, v4: mask<4>):
+  store-stride v26, v0, stride=v1, stride=v1, offset=16, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-12
+// run: parse-error
+// check: duplicate
+local function bad(ptr, i32<4>, mask<4>) -> void
+block0(v0: ptr, v8: i32<4>, v4: mask<4>):
+  v27 = gather.i32<4> v0, index=v8, index=v8, scale=4, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- duplicate-13
+// run: parse-error
+// check: duplicate
+local function bad(i32<4>, ptr, i32<4>, mask<4>) -> void
+block0(v27: i32<4>, v0: ptr, v8: i32<4>, v4: mask<4>):
+  scatter v27, v0, index=v8, index=v8, scale=4, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- payload-1
+// run: parse-error
+// check: operand
+local function bad(i32) -> void
+block0(v1: i32):
+  v9 = iadd.i32 v1
+  return
+import function callee(i32) -> i32
+
+// ----- payload-2
+// run: parse-error
+// check: operand
+local function bad(i32) -> void
+block0(v1: i32):
+  nop v1
+  return
+import function callee(i32) -> i32
+
+// ----- payload-3
+// run: parse-error
+// check: integer
+local function bad() -> void
+block0():
+  v5 = iconst.i32 nonsense
+  return
+import function callee(i32) -> i32
+
+// ----- payload-4
+// run: parse-error
+// check: 32 bits
+local function bad() -> void
+block0():
+  v6 = fconst.f32 0x100000000
+  return
+import function callee(i32) -> i32
+
+// ----- payload-5
+// run: parse-error
+// check: true
+local function bad() -> void
+block0():
+  v7 = bconst.bool maybe
+  return
+import function callee(i32) -> i32
+
+// ----- payload-6
+// run: parse-error
+// check: even
+local function bad() -> void
+block0():
+  v8 = vconst.i32<4> 0x123
+  return
+import function callee(i32) -> i32
+
+// ----- payload-7
+// run: parse-error
+// check: offset
+local function bad(ptr) -> void
+block0(v0: ptr):
+  v14 = load.i32.align4 v0, offset=-1
+  return
+import function callee(i32) -> i32
+
+// ----- payload-8
+// run: parse-error
+// check: operand
+local function bad(i32) -> void
+block0(v14: i32):
+  store.volatile v14
+  return
+import function callee(i32) -> i32
+
+// ----- payload-9
+// run: parse-error
+// check: stack slot
+local function bad() -> void
+block0():
+  v15 = stack-load.i32 slot0, offset=4
+  return
+import function callee(i32) -> i32
+
+// ----- payload-10
+// run: parse-error
+// check: stack slot
+local function bad(i32, ptr) -> void
+block0(v15: i32, v0: ptr):
+  stack-store v15, v0, offset=8
+  return
+import function callee(i32) -> i32
+
+// ----- payload-11
+// run: parse-error
+// check: named field
+local function bad(i32) -> void
+  ss0: size 32
+block0(v1: i32):
+  v16 = stack-addr.ptr ss0, v1
+  return
+import function callee(i32) -> i32
+
+// ----- payload-12
+// run: parse-error
+// check: offset
+local function bad(ptr) -> void
+block0(v0: ptr):
+  v17 = ptr-offset.ptr v0, invalid
+  return
+import function callee(i32) -> i32
+
+// ----- payload-13
+// run: parse-error
+// check: scale
+local function bad(ptr, i32) -> void
+block0(v0: ptr, v1: i32):
+  v18 = ptr-index.ptr v0, v1, scale=invalid, offset=-8
+  return
+import function callee(i32) -> i32
+
+// ----- payload-14
+// run: parse-error
+// check: function
+local function bad(i32) -> void
+block0(v11: i32):
+  v21 = call.i32 missing(v11)
+  return
+import function callee(i32) -> i32
+
+// ----- payload-15
+// run: parse-error
+// check: signature
+local function bad(ptr, i32) -> void
+block0(v0: ptr, v11: i32):
+  v22 = call-indirect.i32 v0(v11)
+  return
+import function callee(i32) -> i32
+
+// ----- payload-16
+// run: parse-error
+// check: intrinsic
+local function bad(f32) -> void
+block0(v2: f32):
+  v23 = call-intrinsic.f32 veloc.missing(v2) : (f32) -> f32
+  return
+import function callee(i32) -> i32
+
+// ----- payload-17
+// run: parse-error
+// check: block
+local function bad(i32) -> void
+block0(v21: i32):
+  jump block99(v21)
+  return
+block1():
+  return
+block2():
+  return
+block3(end: i32):
+  return
+import function callee(i32) -> i32
+
+// ----- payload-18
+// run: parse-error
+// check: operand
+local function bad(bool) -> void
+block0(v12: bool):
+  br v12, block1()
+  return
+block1():
+  return
+block2():
+  return
+block3(end: i32):
+  return
+import function callee(i32) -> i32
+
+// ----- payload-19
+// run: parse-error
+// check: []
+local function bad(i32, i32, i32) -> void
+block0(v1: i32, v22: i32, v11: i32):
+  br-table v1, block3(v22), block3(v11)
+  return
+block1():
+  return
+block2():
+  return
+block3(end: i32):
+  return
+import function callee(i32) -> i32
+
+// ----- payload-20
+// run: parse-error
+// check: SSA value
+local function bad(i32) -> void
+block0(v28: i32):
+  return v28,
+  return
+import function callee(i32) -> i32
+
+// ----- payload-21
+// run: parse-error
+// check: condition
+local function bad(i32, i32) -> void
+block0(v9: i32, v10: i32):
+  v12 = icmp.bool invalid v9, v10
+  return
+import function callee(i32) -> i32
+
+// ----- payload-22
+// run: parse-error
+// check: condition
+local function bad(f32, f32) -> void
+block0(v2: f32, v6: f32):
+  v13 = fcmp.bool invalid v2, v6
+  return
+import function callee(i32) -> i32
+
+// ----- payload-23
+// run: parse-error
+// check: stride
+local function bad(ptr, mask<4>) -> void
+block0(v0: ptr, v4: mask<4>):
+  v26 = load-stride.i32<4>.align4 v0, offset=-16, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- payload-24
+// run: parse-error
+// check: stride
+local function bad(i32<4>, ptr, mask<4>) -> void
+block0(v26: i32<4>, v0: ptr, v4: mask<4>):
+  store-stride v26, v0, offset=16, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- payload-25
+// run: parse-error
+// check: index
+local function bad(ptr, mask<4>) -> void
+block0(v0: ptr, v4: mask<4>):
+  v27 = gather.i32<4> v0, scale=4, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- payload-26
+// run: parse-error
+// check: index
+local function bad(i32<4>, ptr, mask<4>) -> void
+block0(v27: i32<4>, v0: ptr, v4: mask<4>):
+  scatter v27, v0, scale=4, mask=v4
+  return
+import function callee(i32) -> i32
+
+// ----- payload-27
+// run: parse-error
+// check: mask
+local function bad(i32<4>, i32<4>) -> void
+block0(v3: i32<4>, v8: i32<4>):
+  v24 = shuffle.i32<4> v3, v8
+  return
+import function callee(i32) -> i32
+
+// ----- payload-28
+// run: parse-error
+// check: memory flags
+local function bad(i32, i32) -> void
+block0(v1: i32, v5: i32):
+  v9 = iadd.i32.volatile v1, v5
+  return
+import function callee(i32) -> i32

@@ -1,0 +1,31 @@
+// ----- f32-0x7fa12345
+// run: roundtrip
+// check: fconst.f32 0x7fa12345
+local function bits() -> f32
+block0():
+  v0 = fconst.f32 0x7fa12345
+  return v0
+
+// ----- f32-0xffc01234
+// run: roundtrip
+// check: fconst.f32 0xffc01234
+local function bits() -> f32
+block0():
+  v0 = fconst.f32 0xffc01234
+  return v0
+
+// ----- f64-0x7ff0000000000001
+// run: roundtrip
+// check: fconst.f64 0x7ff0000000000001
+local function bits() -> f64
+block0():
+  v0 = fconst.f64 0x7ff0000000000001
+  return v0
+
+// ----- f32-0x80000000
+// run: roundtrip
+// check: fconst.f32 0x80000000
+local function bits() -> f32
+block0():
+  v0 = fconst.f32 0x80000000
+  return v0

@@ -1,0 +1,64 @@
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-1
+// run: opgen-error
+// check: type constraint must not be empty
+predicate is_empty = Integer & Float;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-2
+// run: opgen-error
+// check: unknown type or class `Missing`
+predicate is_missing = Missing;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-3
+// run: opgen-error
+// check: vectors() requires a set of non-pointer scalar types
+predicate is_bad = vectors(PTR);
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-4
+// run: opgen-error
+// check: duplicate predicate `is_scalar`
+predicate is_scalar = Scalar;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-5
+// run: opgen-error
+// check: predicate name conflicts with a built-in Type method
+predicate is_valid = Any;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-6
+// run: opgen-error
+// check: predicate name conflicts with a built-in Type method
+predicate is_scalable = Vector;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-7
+// run: opgen-error
+// check: predicate name must be snake_case and start with is_
+predicate scalar_type = Any;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-8
+// run: opgen-error
+// check: predicate name must be snake_case and start with is_
+predicate I32 = Any;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-9
+// run: opgen-error
+// check: predicate name must be snake_case and start with is_
+predicate is_Float = Float;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-10
+// run: opgen-error
+// check: predicate name must be snake_case and start with is_
+predicate is_ = Float;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-11
+// run: opgen-error
+// check: unknown type or class `is_integer`
+predicate is_other = is_integer;
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-12
+// run: opgen-error
+// check: expected `;`
+predicate is_other = Any
+
+// ----- invalid-sets-names-and-method-collisions-are-diagnosed-13
+// run: opgen-error
+// check: expected `=`
+predicate is_other { set: Any }

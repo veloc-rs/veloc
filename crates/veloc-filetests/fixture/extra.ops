@@ -1,0 +1,108 @@
+// Exercise contracts not represented by production MIR instructions.
+format Quinary { fields: [opcode(Opcode), args(values(5))], opcode: dynamic(opcode) }
+format Empty { fields: [opcode(Opcode)], opcode: dynamic(opcode) }
+
+op Many<A: Any, B: Any, C: Any, D: Any, E: Any>(a: A, b: B, c: C, d: D, e: E) -> (E, A) {
+    mnemonic: "many", storage: Quinary { args: [a, b, c, d, e] }, memory: NONE
+}
+op Output<T: Integer>() -> T {
+    mnemonic: "output", storage: Empty {}, memory: NONE
+}
+op Sized<T: Scalar>(arg: T) -> (result: I8) {
+    mnemonic: "sized", storage: Unary { arg: arg },
+    where: [wider(arg, result)], memory: NONE
+}
+op First<T: Integer>(lhs: T, rhs: T) -> T {
+    mnemonic: "first", storage: Binary { args: [lhs, rhs] }, memory: NONE
+}
+op Second<U: Integer>(a: U, b: U) -> U {
+    mnemonic: "second", storage: Binary { args: [a, b] }, memory: NONE
+}
+op FloatOnly<U: Float>(a: U, b: U) -> U {
+    mnemonic: "float-only", storage: Binary { args: [a, b] }, memory: NONE
+}
+
+format Pair { fields: [op(Opcode), inputs(values(2))], opcode: dynamic(op) }
+format FieldPair { fields: [op(Opcode), right(Value), left(Value)], opcode: dynamic(op) }
+format Triple { fields: [op(Opcode), args(list(3))], opcode: dynamic(op) }
+format Immediate { fields: [op(Opcode), value(Value), displacement(i32)], opcode: dynamic(op) }
+format Compare { fields: [op(Opcode), cc(IntCC), args(values(2))], opcode: dynamic(op) }
+
+op Difference<T: Integer>(left: T, right: T) -> T {
+    mnemonic: "difference", storage: Pair { inputs: [left, right] }, memory: NONE
+}
+op ReverseText<T: Integer>(left: T, right: T) -> T {
+    mnemonic: "reverse-text", storage: FieldPair { right: left, left: right },
+    text: Text { args: [right, left] }, memory: NONE
+}
+op SelectType<T: Integer>(lhs: T, rhs: T) -> Integer {
+    mnemonic: "select-type", storage: Pair { inputs: [lhs, rhs] }, memory: NONE
+}
+op WidePair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, wide: I64) {
+    mnemonic: "wide-pair", storage: Pair { inputs: [lhs, rhs] },
+    where: [wider(lhs, wide)], memory: NONE
+}
+op Triple<T: Integer>(base: T, index: T, increment: T) -> T {
+    mnemonic: "triple", storage: Triple { args: [base, index, increment] }, memory: NONE
+}
+op Offset(arg: PTR, @amount: i32) -> PTR {
+    mnemonic: "offset", storage: Immediate { value: arg, displacement: amount },
+    text: Text { args: [arg], named: [default(amount, 7)] }, memory: NONE
+}
+layout Extended {
+    fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
+    format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [tag] }
+}
+
+predicate is_wide = Scalar & (I32 | I64);
+predicate is_chosen = Chosen;
+class Chosen { members: [I32X4 | SV4] }
+type SV4 = vector(I32, scalable(4));
+class Wide { members: [I32 | I64] }
+op Named<T: Wide>(lhs: T, rhs: T) -> T {
+    mnemonic: "named", storage: Binary { args: [lhs, rhs] }, memory: NONE
+}
+op Inline<T: (I64 | I32) & Scalar>(lhs: T, rhs: T) -> T {
+    mnemonic: "inline", storage: Binary { args: [lhs, rhs] }, memory: NONE
+}
+op Lane<T: vectors(I32 | I64)>(arg: T) -> element(T) {
+    mnemonic: "lane", storage: Unary { arg: arg }, memory: NONE
+}
+op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Scalar) {
+    mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
+}
+
+op Direct<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    mnemonic: "direct", storage: Binary { args: [lhs, rhs] }, semantics: bv.sub(lhs, rhs)
+}
+op Reversed<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    mnemonic: "reversed", storage: Binary { args: [lhs, rhs] }, semantics: bv.sub(rhs, lhs)
+}
+op Composed<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    mnemonic: "composed", storage: Binary { args: [lhs, rhs] }, semantics: bv.add(lhs, bv.sub(rhs, bv.one()))
+}
+op Trapping<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    mnemonic: "trapping", storage: Binary { args: [lhs, rhs] }, semantics: bv.udiv(lhs, rhs),
+    traps: [DivisionByZero(bv.eq(rhs, bv.zero()))]
+}
+op Multiple<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    mnemonic: "multiple", storage: Binary { args: [lhs, rhs] }, semantics: [bv.add(lhs, rhs), bv.eq(lhs, rhs)]
+}
+op CompareValue<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
+    mnemonic: "compare-value", storage: Compare { cc: condition, args: [lhs, rhs] },
+    semantics: bv.cmp(condition, lhs, rhs)
+}
+op VectorOnly<T: vectors(ScalarInteger)>(arg: T) -> T {
+    mnemonic: "vector-only", storage: Unary { arg: arg }, semantics: bv.sub(bv.zero(), arg)
+}
+
+comparison OrderCC {
+    domain: integer,
+    predicates: [Before(signed, [less]), After(signed, [greater]),
+                 NotBefore(signed, [equal, greater]), NotAfter(signed, [less, equal])]
+}
+comparison FloatOrderCC {
+    domain: float,
+    predicates: [Before([less]), After([greater]),
+                 NotBefore([equal, greater, unordered]), NotAfter([less, equal, unordered])]
+}

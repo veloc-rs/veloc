@@ -1,0 +1,79 @@
+// ----- ambiguous-predicates-are-rejected-1
+// run: opgen-error
+// check: duplicate comparison mnemonic
+comparison TestCC { domain: float, predicates: [Eq([equal]), EQ([less])] }
+
+// ----- ambiguous-predicates-are-rejected-2
+// run: opgen-error
+// check: duplicate comparison semantics
+comparison TestCC { domain: float, predicates: [Eq([equal]), Same([equal])] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-1
+// run: opgen-error
+// check: integer ordering requires signedness; equality predicates must omit it
+comparison TestCC { domain: integer, predicates: [Lt([less])] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-2
+// run: opgen-error
+// check: integer ordering requires signedness; equality predicates must omit it
+comparison TestCC { domain: integer, predicates: [Eq(signed, [equal])] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-3
+// run: opgen-error
+// check: expected signed or unsigned order
+comparison TestCC { domain: integer, predicates: [Lt(other, [less])] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-4
+// run: opgen-error
+// check: invalid comparison outcome for this domain
+comparison TestCC { domain: integer, predicates: [Eq([unordered])] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-5
+// run: opgen-error
+// check: expected an outcome list, optionally preceded by integer signedness
+comparison TestCC { domain: float, predicates: [Lt(signed, [less])] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-6
+// run: opgen-error
+// check: invalid comparison outcome for this domain
+comparison TestCC { domain: float, predicates: [Eq([unknown])] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-7
+// run: opgen-error
+// check: duplicate comparison outcome
+comparison TestCC { domain: float, predicates: [Eq([equal, equal])] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-8
+// run: opgen-error
+// check: expected integer or float domain
+comparison TestCC { domain: other, predicates: [] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-9
+// run: opgen-error
+// check: comparison must declare at least one predicate
+comparison TestCC { domain: float, predicates: [] }
+
+// ----- invalid-outcomes-and-signedness-are-rejected-10
+// run: opgen-error
+// check: invalid generated identifier `Self`
+comparison TestCC { domain: float, predicates: [Self([equal])] }
+
+// ----- required-transforms-must-be-represented-in-the-same-domain-1
+// run: opgen-error
+// check: predicate `Lt` has no swap in `TestCC`
+comparison TestCC { domain: integer, predicates: [Lt(signed, [less]), Gt(unsigned, [greater])] }
+
+// ----- required-transforms-must-be-represented-in-the-same-domain-2
+// run: opgen-error
+// check: predicate `Eq` has no complement in `TestCC`
+comparison TestCC { domain: integer, predicates: [Eq([equal])] }
+
+// ----- required-transforms-must-be-represented-in-the-same-domain-3
+// run: opgen-error
+// check: predicate `Lt` has no swap in `TestCC`
+comparison TestCC { domain: float, predicates: [Lt([less])] }
+
+// ----- required-transforms-must-be-represented-in-the-same-domain-4
+// run: opgen-error
+// check: predicate `Eq` has no ordered complement in `TestCC`
+comparison TestCC { domain: float, predicates: [Eq([equal])] }

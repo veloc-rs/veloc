@@ -1,0 +1,12 @@
+// run: o1
+// check: $(zero=v\d+) = iconst.i32 0
+// check: idiv-s.i32 v0, $zero
+// check: $(result=v\d+) = iconst.i32 0
+// not: imul
+// check: return $result
+local function trap(i32) -> i32
+block0(v0: i32):
+  v1 = iconst.i32 0
+  v2 = idiv-s v0, v1
+  v3 = imul v2, v1
+  return v3

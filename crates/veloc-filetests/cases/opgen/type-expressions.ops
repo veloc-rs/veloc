@@ -1,0 +1,158 @@
+// ----- direct-patterns-and-shape-constraints-accept-expressions-1
+// run: opgen-error
+// check: impossible shape constraint on type variable `T`
+format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+op Copy(arg: I32 | I64) -> I32 | I64 {
+    mnemonic: "copy", storage: Unary { arg: arg }, memory: NONE
+}
+op Lane<T: vectors(I32 | I64)>(arg: T) -> element(T) {
+    mnemonic: "lane", storage: Unary { arg: arg }, memory: NONE
+}
+op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Vector) {
+    mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
+}
+
+// ----- direct-patterns-and-shape-constraints-accept-expressions-2
+// run: opgen-error
+// check: unknown type or class `T`
+format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+op Copy(arg: I32 | I64) -> I32 | I64 {
+    mnemonic: "copy", storage: Unary { arg: arg }, memory: NONE
+}
+op Lane<T: vectors(T)>(arg: T) -> element(T) {
+    mnemonic: "lane", storage: Unary { arg: arg }, memory: NONE
+}
+op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Scalar) {
+    mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
+}
+
+// ----- expression-nesting-is-bounded-but-flat-unions-are-not-recursive-1
+// run: opgen-error
+// check: definition nesting exceeds 64 levels
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((I32))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-1
+// run: opgen-error
+// check: type constraint must not be empty
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: Integer & Float>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-2
+// run: opgen-error
+// check: type constraint must not be empty
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: vectors(I32) & I32>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-3
+// run: opgen-error
+// check: unknown type or class `Missing`
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: Integer | Missing>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-4
+// run: opgen-error
+// check: unknown type or class `Missing`
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: (I32 & F32) & Missing>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-5
+// run: opgen-error
+// check: vectors() requires a set of non-pointer scalar types
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: vectors(I32 | PTR)>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-6
+// run: opgen-error
+// check: expected a name
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: Integer |>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-7
+// run: opgen-error
+// check: expected a name
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: Integer || BOOL>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-8
+// run: opgen-error
+// check: expected a name
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: Integer && Vector>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-9
+// run: opgen-error
+// check: expected `,`
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: Integer + BOOL>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-10
+// run: opgen-error
+// check: expected `)`
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: (Integer | BOOL>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-11
+// run: opgen-error
+// check: expected a name
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: ()>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-12
+// run: opgen-error
+// check: type class must not be empty
+class Empty { members: [Integer & Float] }
+
+// ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-13
+// run: opgen-error
+// check: cyclic type class `A`
+class A { members: [I32 | vectors(B)] } class B { members: [A & Scalar] }
+
+// ----- semantics-and-text-codecs-use-resolved-inline-constraints-1
+// run: opgen-error
+// check: invalid semantic types [Bool, Bool] -> [Bool]: expected a bitvector, got bool
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- semantics-and-text-codecs-use-resolved-inline-constraints-2
+// run: opgen-error
+// check: floating-point execution semantics are not modeled
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: I32 | F64>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- semantics-and-text-codecs-use-resolved-inline-constraints-3
+// run: opgen-error
+// check: float text atoms require a scalar float first result
+format Literal { fields: [opcode(Opcode), value(u64)], opcode: dynamic(opcode) }
+op Literal<T: Float & Vector>(@value: u64) -> T {
+    mnemonic: "literal", storage: Literal { value: value },
+    text: Text { args: [float(value)] }, memory: NONE
+}

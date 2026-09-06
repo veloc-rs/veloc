@@ -1,0 +1,94 @@
+// ----- incomplete-or-ambiguous-alternates-return-definition-errors-1
+// run: opgen-error
+// check: text projection does not consume `tag`
+format Pair {
+    fields: [op(Opcode), inputs(values(2))],
+    opcode: dynamic(op)
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+    memory: NONE
+}
+
+layout Extended {
+            fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
+            format: arity(inputs, [Pair]), text: Text { args: [inputs] }
+        }
+
+// ----- incomplete-or-ambiguous-alternates-return-definition-errors-2
+// run: opgen-error
+// check: text alternative requires distinct, required named fields
+format Pair {
+    fields: [op(Opcode), inputs(values(2))],
+    opcode: dynamic(op)
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+    memory: NONE
+}
+
+layout Extended {
+            fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
+            format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [default(tag, 0)] }
+        }
+
+// ----- incomplete-or-ambiguous-alternates-return-definition-errors-3
+// run: opgen-error
+// check: optional named fields require optional(Value)
+format Pair {
+    fields: [op(Opcode), inputs(values(2))],
+    opcode: dynamic(op)
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+    memory: NONE
+}
+
+layout Extended {
+            fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
+            format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [optional(tag)] }
+        }
+
+// ----- incomplete-or-ambiguous-alternates-return-definition-errors-4
+// run: opgen-error
+// check: multiple text alternatives need an explicit discriminator
+format Pair {
+    fields: [op(Opcode), inputs(values(2))],
+    opcode: dynamic(op)
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+    memory: NONE
+}
+
+layout Extended {
+            fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
+            format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [tag] }
+        }
+layout Another {
+            fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
+            format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [tag] }
+        }
+
+// ----- unsupported-alternate-storage-groups-fail-before-rust-emission-1
+// run: opgen-error
+// check: alternate text fields must use named storage types
+format Pair {
+    fields: [op(Opcode), inputs(values(2))],
+    opcode: dynamic(op)
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+    memory: NONE
+}
+
+layout Extended {
+            fields: [op(Opcode), inputs(values(2)), tag(u32)],
+            opcode: dynamic(op), format: fixed(Pair),
+            text: Text { args: [inputs], named: [tag] }
+        }

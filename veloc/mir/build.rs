@@ -56,23 +56,6 @@ fn main() {
         }
     }
 
-    // Only the type-contract code is included by unit tests; these operations
-    // never become production opcodes or part of the MIR text vocabulary.
-    let mut fixtures = String::new();
-    for path in [
-        "defs/types.ops",
-        "defs/builtins.ops",
-        "defs/comparisons.ops",
-        "tests/defs/type_rules.ops",
-    ] {
-        println!("cargo:rerun-if-changed={path}");
-        fixtures.push_str(&fs::read_to_string(path).unwrap());
-        fixtures.push('\n');
-    }
-    let fixtures = veloc_opgen::compile_mir(&fixtures).expect("compile test type contracts");
-    let path = dir.join("test_type_rules.rs");
-    fs::write(&path, fixtures.types).expect("write test type contracts");
-    rust_files.push(path);
     veloc_opgen::format_rust(&rust_files, std::path::Path::new("../../rustfmt.toml"))
         .expect("format generated MIR definitions");
 }

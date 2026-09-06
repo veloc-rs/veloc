@@ -1,0 +1,51 @@
+// ----- impossible-type-variable-constraints-are-definition-errors-1
+// run: opgen-error
+// check: impossible element constraint on type variable `T`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op Add<T: ScalarInteger>(lhs: T, rhs: T) -> (result: element(T)) {
+    mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
+    traits: [], memory: NONE
+}
+
+// ----- impossible-type-variable-constraints-are-definition-errors-2
+// run: opgen-error
+// check: impossible vector constraint on type variable `T`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op Add<T: Vector>(lhs: T, rhs: T) -> (result: vector(T)) {
+    mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
+    traits: [], memory: NONE
+}
+
+// ----- impossible-type-variable-constraints-are-definition-errors-3
+// run: opgen-error
+// check: impossible shape constraint on type variable `T`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op Add<T: ScalarInteger>(lhs: T, rhs: T) -> (result: shape(T, Vector)) {
+    mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
+    traits: [], memory: NONE
+}
+
+// ----- normalizing-mnemonics-cannot-create-duplicate-methods-1
+// run: opgen-error
+// check: mnemonics `pair-add` and `pair_add` produce the same method name `pair_add`
+format Pair {
+    fields: [op(Opcode), args(values(2))],
+    opcode: dynamic(op)
+}
+op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
+    traits: [], memory: NONE
+}
+
+op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+            mnemonic: "pair_add", storage: Pair { args: [lhs, rhs] }, traits: [], memory: NONE
+        }

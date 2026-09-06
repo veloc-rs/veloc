@@ -1,0 +1,3 @@
+// run: roundtrip
+// check: global lanes: i32<scalable 4> (export)
+global lanes: i32<scalable 4> (export)

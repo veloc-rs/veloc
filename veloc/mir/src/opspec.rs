@@ -46,12 +46,6 @@ pub(crate) mod type_rules {
     include!(concat!(env!("OUT_DIR"), "/type_rules.rs"));
 }
 
-#[cfg(test)]
-#[allow(dead_code, unused_imports)]
-mod test_type_rules {
-    include!(concat!(env!("OUT_DIR"), "/test_type_rules.rs"));
-}
-
 /// Abstract memory regions used by generic scheduling, DCE, and alias queries.
 /// The set is deliberately target-independent; a backend may refine it later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,41 +243,6 @@ mod tests {
     use crate::{FloatCC, IntCC, Opcode, Type};
 
     #[test]
-    fn generated_contracts_cover_many_variables_and_result_only_bindings() {
-        use super::test_type_rules::{
-            infer_0 as infer_many, infer_1 as infer_output, validate_0 as validate_many,
-            validate_1 as validate_output,
-        };
-        let operands = [Type::I8, Type::I16, Type::I32, Type::I64, Type::F32];
-        assert_eq!(
-            infer_many(&operands),
-            Ok(ResultTypes::Inferred(smallvec::smallvec![
-                Type::F32,
-                Type::I8
-            ]))
-        );
-        assert!(validate_many(&operands, &[Type::F32, Type::I8]).is_ok());
-        assert!(validate_many(&operands, &[Type::I8, Type::F32]).is_err());
-        assert!(infer_many(&operands[..4]).is_err());
-        assert_eq!(infer_output(&[]), Ok(ResultTypes::Explicit));
-        assert!(validate_output(&[], &[Type::I32]).is_ok());
-        assert!(validate_output(&[], &[Type::F32]).is_err());
-    }
-
-    #[test]
-    fn generated_inference_checks_relations_on_known_results() {
-        use super::test_type_rules::{infer_2, validate_2};
-        let expected =
-            super::TypeError::Relation("results[0] must have more bits per lane than operands[0]");
-        assert_eq!(infer_2(&[Type::I32]), Err(expected));
-        assert_eq!(validate_2(&[Type::I32], &[Type::I8]), Err(expected));
-        assert_eq!(
-            infer_2(&[Type::BOOL]),
-            Ok(ResultTypes::Inferred(smallvec::smallvec![Type::I8]))
-        );
-    }
-
-    #[test]
     fn opcode_mnemonics_are_unique_and_round_trip() {
         for (index, &opcode) in Opcode::ALL.iter().enumerate() {
             let spec: &'static super::OpSpec = opcode.spec();
@@ -331,32 +290,6 @@ mod tests {
                 .is_err()
         );
         assert!(call.validate_types(&[], &[]).is_err());
-    }
-
-    #[test]
-    fn text_inference_defers_only_unresolved_independent_prefixes() {
-        assert_eq!(
-            Opcode::Br.infer_text_result_types(&[Type::INVALID]),
-            Ok((ResultTypes::Inferred(Default::default()), true))
-        );
-        assert_eq!(
-            Opcode::CallIndirect.infer_text_result_types(&[Type::INVALID]),
-            Ok((ResultTypes::Signature, true))
-        );
-        assert_eq!(
-            Opcode::CallIndirect.infer_text_result_types(&[Type::PTR]),
-            Ok((ResultTypes::Signature, false))
-        );
-        for op in [Opcode::Br, Opcode::BrTable, Opcode::CallIndirect] {
-            assert!(op.infer_text_result_types(&[]).is_err());
-            assert!(op.infer_text_result_types(&[Type::F32]).is_err());
-        }
-        for op in [Opcode::IAdd, Opcode::Icmp] {
-            assert!(
-                op.infer_text_result_types(&[Type::INVALID, Type::INVALID])
-                    .is_err()
-            );
-        }
     }
 
     #[test]

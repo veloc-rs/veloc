@@ -1,0 +1,138 @@
+// ----- exact-class-members-drive-codegen-and-bitvector-semantics-1
+// run: opgen-error
+// check: floating-point execution semantics are not modeled
+class Wide { members: [I32, F64] }
+format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+op Add<T: Wide>(lhs: T, rhs: T) -> T {
+    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
+}
+
+// ----- exact-shapes-detect-impossible-relations-at-definition-time-1
+// run: opgen-error
+// check: impossible shape constraint on type variable `T`
+class V4 { members: [I32X4] }
+class V2 { members: [I64X2] }
+format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+op Convert<T: V4>(arg: T) -> shape(T, V2) {
+    mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
+}
+
+// ----- exact-shapes-detect-impossible-relations-at-definition-time-2
+// run: opgen-error
+// check: impossible shape constraint on type variable `T`
+class V4 { members: [I32X4] }
+class V2 { members: [I64] }
+format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+op Convert<T: V4>(arg: T) -> shape(T, V2) {
+    mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
+}
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-1
+// run: opgen-error
+// check: pointer vectors are not supported
+type V = vector(PTR, 4);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-2
+// run: opgen-error
+// check: vector element must be a scalar type
+type V = vector(I32X4, 4);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-3
+// run: opgen-error
+// check: unknown type `Missing`
+type V = vector(Missing, 4);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-4
+// run: opgen-error
+// check: vector lanes must be a power of two and at least two
+type V = vector(I32, 0);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-5
+// run: opgen-error
+// check: vector lanes must be a power of two and at least two
+type V = vector(I32, 1);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-6
+// run: opgen-error
+// check: vector lanes must be a power of two and at least two
+type V = vector(I32, 3);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-7
+// run: opgen-error
+// check: vector lanes must fit Type encoding
+type V = vector(I32, 65536);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-8
+// run: opgen-error
+// check: vector shape must be a lane count or scalable(lanes)
+type V = vector(I32, maybe);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-9
+// run: opgen-error
+// check: duplicate type `I32`
+type I32 = vector(I32, 4);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-10
+// run: opgen-error
+// check: type name must be uppercase and not INVALID
+type INVALID = vector(I32, 4);
+
+// ----- vector-constants-reject-unrepresentable-or-invalid-types-11
+// run: opgen-error
+// check: duplicate type `I32X4`
+type I32X4 = vector(I32, 4);
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-1
+// run: opgen-error
+// check: vectors() requires a set of non-pointer scalar types
+class Bad { members: [vectors(PTR)] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-2
+// run: opgen-error
+// check: vectors() requires a set of non-pointer scalar types
+class Bad { members: [vectors(I32X4)] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-3
+// run: opgen-error
+// check: vectors() requires a set of non-pointer scalar types
+class Bad { members: [vectors(Any)] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-4
+// run: opgen-error
+// check: vectors() requires a set of non-pointer scalar types
+class Bad { members: [vectors(vectors(I32))] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-5
+// run: opgen-error
+// check: unknown type or class `Missing`
+class Bad { members: [vectors(Missing)] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-6
+// run: opgen-error
+// check: expected a type, class or vectors(set)
+class Bad { members: [vectors()] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-7
+// run: opgen-error
+// check: expected a type, class or vectors(set)
+class Bad { members: [vectors(I32, I64)] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-8
+// run: opgen-error
+// check: duplicate class member
+class Bad { members: [vectors(I32), vectors(I32)] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-9
+// run: opgen-error
+// check: cyclic type class `A`
+class A { members: [vectors(B)] } class B { members: [A] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-10
+// run: opgen-error
+// check: class name shadows an exact type
+class I32X4 { members: [I32] }
+
+// ----- vector-families-require-scalar-sets-and-preserve-definition-checks-11
+// run: opgen-error
+// check: unknown type or class `vector_integer`
+class Bad { members: [vector_integer] }

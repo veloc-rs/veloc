@@ -1,0 +1,21 @@
+[package]
+name = "veloc-filetests"
+version = "0.1.0"
+edition = { workspace = true }
+publish = false
+
+[[test]]
+name = "files"
+path = "runner.rs"
+harness = false
+
+[dev-dependencies]
+filecheck = "0.5"
+libtest-mimic = "0.8"
+veloc-mir = { workspace = true }
+veloc-analyzer = { workspace = true }
+veloc-optimizer = { workspace = true }
+veloc-codegen = { workspace = true }
+veloc-interpreter = { workspace = true }
+veloc-opgen = { workspace = true }
+veloc-test-mir = { path = "fixture" }

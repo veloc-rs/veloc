@@ -1,0 +1,171 @@
+// ----- branch-backward-undefined
+// run: parse-error
+// check: undefined SSA value `v0`
+local function bad() -> void
+block0():
+  jump block2()
+block2():
+  jump block1()
+block1():
+  br v0, block3(), block3()
+block3():
+  return
+
+// ----- branch-backward-wrong-type
+// run: parse-error
+// check: invalid operand types
+// check: got: F32
+local function bad() -> void
+block0():
+  jump block2()
+block2():
+  v0 = fconst.f32 0x00000000
+  jump block1()
+block1():
+  br v0, block3(), block3()
+block3():
+  return
+
+// ----- branch-forward-undefined
+// run: parse-error
+// check: undefined SSA value `v0`
+local function bad() -> void
+block0():
+  jump block2()
+block1():
+  br v0, block3(), block3()
+block2():
+  jump block1()
+block3():
+  return
+
+// ----- branch-forward-wrong-type
+// run: parse-error
+// check: invalid operand types
+// check: got: F32
+local function bad() -> void
+block0():
+  jump block2()
+block1():
+  br v0, block3(), block3()
+block2():
+  v0 = fconst.f32 0x00000000
+  jump block1()
+block3():
+  return
+
+// ----- table-backward-undefined
+// run: parse-error
+// check: undefined SSA value `v0`
+local function bad() -> void
+block0():
+  jump block2()
+block2():
+  jump block1()
+block1():
+  br-table v0, [], block3()
+block3():
+  return
+
+// ----- table-backward-wrong-type
+// run: parse-error
+// check: invalid operand types
+// check: got: F32
+local function bad() -> void
+block0():
+  jump block2()
+block2():
+  v0 = fconst.f32 0x00000000
+  jump block1()
+block1():
+  br-table v0, [], block3()
+block3():
+  return
+
+// ----- table-forward-undefined
+// run: parse-error
+// check: undefined SSA value `v0`
+local function bad() -> void
+block0():
+  jump block2()
+block1():
+  br-table v0, [], block3()
+block2():
+  jump block1()
+block3():
+  return
+
+// ----- table-forward-wrong-type
+// run: parse-error
+// check: invalid operand types
+// check: got: F32
+local function bad() -> void
+block0():
+  jump block2()
+block1():
+  br-table v0, [], block3()
+block2():
+  v0 = fconst.f32 0x00000000
+  jump block1()
+block3():
+  return
+
+// ----- indirect-call-backward-undefined
+// run: parse-error
+// check: undefined SSA value `v0`
+local function bad() -> void
+block0():
+  jump block2()
+block2():
+  jump block1()
+block1():
+  call-indirect v0() : () -> void
+  jump block3()
+block3():
+  return
+
+// ----- indirect-call-backward-wrong-type
+// run: parse-error
+// check: invalid operand types
+// check: got: F32
+local function bad() -> void
+block0():
+  jump block2()
+block2():
+  v0 = fconst.f32 0x00000000
+  jump block1()
+block1():
+  call-indirect v0() : () -> void
+  jump block3()
+block3():
+  return
+
+// ----- indirect-call-forward-undefined
+// run: parse-error
+// check: undefined SSA value `v0`
+local function bad() -> void
+block0():
+  jump block2()
+block1():
+  call-indirect v0() : () -> void
+  jump block3()
+block2():
+  jump block1()
+block3():
+  return
+
+// ----- indirect-call-forward-wrong-type
+// run: parse-error
+// check: invalid operand types
+// check: got: F32
+local function bad() -> void
+block0():
+  jump block2()
+block1():
+  call-indirect v0() : () -> void
+  jump block3()
+block2():
+  v0 = fconst.f32 0x00000000
+  jump block1()
+block3():
+  return

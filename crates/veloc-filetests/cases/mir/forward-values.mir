@@ -1,0 +1,21 @@
+// run: roundtrip
+// check: call-indirect v3() : () -> void
+// check: br v0, block2(), block4()
+// check: br-table v1, [], block4()
+// check: v3 = inttoptr.ptr v2
+local function forward_values() -> void
+block0():
+  jump block3()
+block1():
+  call-indirect v3() : () -> void
+  br v0, block2(), block4()
+block2():
+  br-table v1, [], block4()
+block3():
+  v0 = bconst.bool true
+  v1 = iconst.i32 0
+  v2 = iconst.i64 0
+  v3 = inttoptr v2
+  jump block1()
+block4():
+  return

@@ -13,17 +13,6 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {{
 }
 
 #[test]
-fn typed_arithmetic_and_boolean_expressions_generate_direct_checks() {
-    let output = checked("require(number * 2 + 1 > 3 && !flag, \"bad properties\")").unwrap();
-    assert!(output.validation.contains("checked_mul"));
-    assert!(output.validation.contains("checked_add"));
-    assert!(output.validation.contains("bad properties"));
-    assert!(output.validation.contains("bits: _f1"));
-    assert!(!output.validation.contains("spec.constraints"));
-    assert!(!output.validation.contains("OpConstraint"));
-}
-
-#[test]
 fn constant_folding_preserves_precedence_and_short_circuiting() {
     for predicate in [
         "1 + 2 * 3 == 7",
@@ -43,76 +32,6 @@ fn constant_folding_preserves_precedence_and_short_circuiting() {
             .message
             .contains("always false")
     );
-}
-
-#[test]
-fn ill_typed_or_unbounded_expressions_are_definition_errors() {
-    for predicate in [
-        "number && flag",
-        "number == flag",
-        "unknown != 0",
-        "number.field != 0",
-        "all(number, |x| true)",
-        "all(number, flag)",
-        "len(flag) == 0",
-        "type(number) == result_type(0)",
-        "result_type(1) == result_type(0)",
-        "IntCC.Unknown == IntCC.Eq",
-        "IntCC.Eq == FloatCC.Eq",
-        "recurse(number)",
-        "flag + flag",
-        "require(flag)",
-        "VectorConstant",
-        "nonzero(number)",
-        "170141183460469231731687303715884105727 + 1 == 0",
-    ] {
-        assert!(checked(predicate).is_err(), "accepted {predicate}");
-    }
-    // Even an unreachable expression must be well typed.
-    assert!(checked("true || missing > 0").is_err());
-}
-
-#[test]
-fn type_queries_use_static_signatures_and_operand_positions() {
-    let source = r#"
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
-op Example<T: Integer>(input: T) -> T {
-    mnemonic: "example", storage: Unary { arg: input }, memory: NONE,
-    constraints: [!is_ptr(type(input)), lanes(type(input)) > 0]
-}
-"#;
-    let output = common::compile_mir(source).unwrap();
-    assert!(!output.validation.contains(".is_ptr()"));
-    assert!(output.validation.contains("_operands[0]"));
-    assert!(!output.validation.contains("InstructionData::Unary"));
-    assert!(common::compile_mir(&source.replace("!is_ptr", "is_ptr")).is_err());
-}
-
-#[test]
-fn pool_properties_and_lexical_binders_are_generic() {
-    let source = r#"
-format Vconst { fields: [pool_id(ConstantPoolId)], opcode: fixed(Vconst) }
-op Vconst(@data: Bytes) -> Vector {
-    mnemonic: "vconst", storage: Vconst { pool_id: pool(data) },
-    text: Text { args: [bytes(data)] }, memory: NONE,
-    constraints: [len(data) == min_bytes(result_type(0)), all(data, |i| i < 2 * lanes(result_type(0)))]
-}
-"#;
-    let output = common::compile_mir(source).unwrap();
-    assert!(output.validation.contains("as crate::dfg::PoolKey>::get"));
-    assert!(output.validation.contains("for &_v0"));
-    assert!(output.validation.contains("break;"));
-    assert!(common::compile_mir(&source.replace("i < 2 * lanes(result_type(0))", "true")).is_ok());
-    assert!(common::compile_mir(&source.replace("i < 2 * lanes(result_type(0))", "i")).is_err());
-    let nested = common::compile_mir(&source.replace(
-        "i < 2 * lanes(result_type(0))",
-        "all(data, |i| i < 255) && i < 255",
-    ))
-    .unwrap();
-    assert!(nested.validation.contains("for &_v1"));
-    assert!(nested.validation.contains("i128::from(_v0)"));
-    assert!(nested.validation.contains("i128::from(_v1)"));
-    assert!(common::compile_mir(&source.replace("-> Vector", "-> ()")).is_err());
 }
 
 #[test]
