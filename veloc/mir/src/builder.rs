@@ -146,18 +146,6 @@ impl<'a> FunctionBuilder<'a> {
 
         let types = if let Some(ty) = ty {
             smallvec::smallvec![ty]
-        } else if matches!(spec.type_scheme.results, crate::opspec::TypeList::Signature) {
-            let sig_id = data
-                .call_info()
-                .expect("signature results require call metadata")
-                .signature
-                .resolve(self.module)
-                .expect("call refers to a missing function or signature");
-            self.module.signatures[sig_id]
-                .returns
-                .iter()
-                .copied()
-                .collect()
         } else {
             return match data
                 .opcode()
@@ -172,7 +160,19 @@ impl<'a> FunctionBuilder<'a> {
                 ResultTypes::Explicit => {
                     panic!("{} requires an explicit result type", spec.mnemonic)
                 }
-                ResultTypes::Signature => unreachable!("signature results were resolved above"),
+                ResultTypes::Signature => {
+                    let signature = data
+                        .call_info()
+                        .expect("signature results require call metadata")
+                        .signature
+                        .resolve(self.module)
+                        .expect("call refers to a missing function or signature");
+                    self.module.signatures[signature]
+                        .returns
+                        .iter()
+                        .copied()
+                        .collect()
+                }
             };
         };
         data.opcode()

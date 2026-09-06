@@ -3,9 +3,9 @@ pub mod info;
 pub use info::*;
 
 use crate::error::{Error, Result};
-use crate::lir::{GenericOpcode, MachineFunction, MachineInst};
-use crate::pipeline::stages::LegalizedLir;
 use crate::target::arch::TargetLegalizer;
+use veloc_lir::stages::LegalizedLir;
+use veloc_lir::{GenericOpcode, MachineFunction, MachineInst};
 
 pub struct Legalizer<'a> {
     target: &'a dyn TargetLegalizer,

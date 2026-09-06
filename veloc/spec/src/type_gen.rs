@@ -88,6 +88,7 @@ pub(crate) fn scalars(types: &Types) -> String {
 pub(crate) struct Classes {
     sets: BTreeMap<TypeSet, usize>,
     names: BTreeMap<TypeSet, String>,
+    descriptions: BTreeMap<TypeSet, String>,
 }
 
 impl Classes {
@@ -114,7 +115,19 @@ impl Classes {
                 }
             }
         }
-        Self { sets, names }
+        let descriptions = sets
+            .keys()
+            .map(|set| (set.clone(), describe(set, &defs.types)))
+            .collect();
+        Self {
+            sets,
+            names,
+            descriptions,
+        }
+    }
+
+    pub fn describe(&self, set: &TypeSet) -> &str {
+        &self.descriptions[set]
     }
 
     pub fn reference(&self, set: &TypeSet) -> String {
@@ -145,6 +158,44 @@ impl Classes {
         out.push_str("_ => unreachable!(\"invalid generated type class\"),\n};\nshapes & (1 << shape) != 0\n} }\n");
         out
     }
+}
+
+/// Describe exact sets using named subsets, then explicit remaining shapes.
+/// This runs only in the generator; diagnostics carry the resulting string.
+fn describe(set: &TypeSet, types: &Types) -> String {
+    let mut rest = set.clone();
+    let mut parts = Vec::new();
+    while let Some((name, subset)) = types
+        .classes
+        .iter()
+        .filter(|(_, subset)| subset.subset_of(&rest))
+        .max_by_key(|(_, subset)| subset.0.values().map(|mask| mask.count_ones()).sum::<u32>())
+    {
+        parts.push(name.clone());
+        rest.0.retain(|code, mask| {
+            *mask &= !subset.0.get(code).copied().unwrap_or(0);
+            *mask != 0
+        });
+    }
+    for (code, shapes) in rest.0 {
+        let scalar = types
+            .scalars
+            .iter()
+            .find(|s| s.code == code)
+            .expect("checked scalar code")
+            .exact();
+        for shape in 0..32 {
+            if shapes & (1 << shape) == 0 {
+                continue;
+            }
+            parts.push(match shape {
+                0 => scalar.clone(),
+                1..=15 => format!("vector({scalar}, {})", 1u32 << shape),
+                _ => format!("vector({scalar}, scalable({}))", 1u32 << (shape - 16)),
+            });
+        }
+    }
+    parts.join(" | ")
 }
 
 fn membership(set: &TypeSet) -> String {

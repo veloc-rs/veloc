@@ -2,13 +2,13 @@
 //!
 //! 提供目标无关的通用寄存器分配算法（如线性扫描）
 
-use crate::lir::{
-    InstExtra, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg, StackSlot,
-    Writable,
-};
 use crate::target::arch::{CallConv, RegClass, TargetMachine};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use veloc_lir::{
+    InstExtra, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg, StackSlot,
+    Writable,
+};
 use veloc_mir::Type;
 
 /// 活跃区间

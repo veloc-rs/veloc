@@ -5,7 +5,7 @@ use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
 use veloc_mir::{Block, Signature};
 
-use super::Reg;
+use crate::Reg;
 
 /// 指令额外信息索引
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

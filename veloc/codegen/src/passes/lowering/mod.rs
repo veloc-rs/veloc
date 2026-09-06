@@ -5,10 +5,10 @@ pub mod legalize;
 pub mod regbank;
 
 use crate::error::Result;
-use crate::lir::MachineFunction;
-use crate::pipeline::stages::{LegalizedLir, PreIselPrepared};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{TargetLegalizer, TargetPassConfig};
+use veloc_lir::MachineFunction;
+use veloc_lir::stages::{LegalizedLir, PreIselPrepared};
 
 use self::generic_egraph::run_generic_pre_isel_egraph_combine;
 

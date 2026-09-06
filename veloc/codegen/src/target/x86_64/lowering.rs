@@ -11,13 +11,7 @@ mod regbank;
 mod select;
 
 pub use crate::isel::SelectResult;
-use crate::lir::{
-    GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
-    Reg, VReg, Writable,
-};
 use crate::passes::lowering::{LegalizeAction, LegalizeResult};
-use crate::pipeline::stages::{LegalizedLir, PreIselPrepared, RegAllocated, SelectedLir};
-use crate::regalloc::regbank_select::RegisterBank;
 use crate::target::arch::{
     CallConv as TargetCallConv, CpuDescription, LoweringContext, OperandConstraintSet,
     SelectionContext, TargetArch, TargetFrameLowering, TargetInstructionSelector, TargetLegalizer,
@@ -32,6 +26,12 @@ pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
 pub use regbank::X86_64RegBankSelect;
 pub use select::X86_64Selector;
 use smallvec::smallvec;
+use veloc_lir::RegisterBank;
+use veloc_lir::stages::{LegalizedLir, PreIselPrepared, RegAllocated, SelectedLir};
+use veloc_lir::{
+    GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
+    Reg, VReg, Writable,
+};
 use veloc_mir::{FloatCC, IntCC, Type};
 
 /// x86_64 专属的 Context 扩展 (架构私有)

@@ -9,6 +9,7 @@ members = [
 	"crates/*",
 	"crates/veloc-wasm/tests/spec_test",
 	"veloc/mir",
+	"veloc/lir",
 	"veloc/interpreter",
 	"veloc/codegen",
 	"veloc/analyzer",
@@ -26,6 +27,7 @@ rust-version = "1.93.0"
 # --- Internal Crates ---
 veloc = { path = "." }
 veloc-mir = { path = "veloc/mir" }
+veloc-lir = { path = "veloc/lir" }
 veloc-optimizer = { path = "veloc/optimizer" }
 veloc-interpreter = { path = "veloc/interpreter" }
 veloc-codegen = { path = "veloc/codegen" }
@@ -75,6 +77,7 @@ elf_loader = { version = "0.14.1" }
 
 [dependencies]
 veloc-mir = { workspace = true }
+veloc-lir = { workspace = true }
 veloc-interpreter = { workspace = true }
 veloc-codegen = { workspace = true }
 

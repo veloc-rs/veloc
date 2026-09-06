@@ -1,7 +1,7 @@
-use crate::lir::{GenericOpcode, MachineFunction, MachineInst};
-use crate::pipeline::stages::RawLir;
 use crate::translate::IRTranslator;
 use alloc::{format, vec::Vec};
+use veloc_lir::stages::RawLir;
+use veloc_lir::{GenericOpcode, MachineFunction, MachineInst};
 use veloc_mir::{InstructionData, Module, ModuleParser, Opcode, Type, ValueList};
 
 const OPS: &[(Opcode, usize, GenericOpcode)] = &[

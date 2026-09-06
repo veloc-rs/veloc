@@ -5,10 +5,10 @@
 //! 这是一个通用的指令选择驱动器，实际的架构特定选择逻辑
 //! 通过 TargetInstructionSelector trait 委托给具体的目标后端实现。
 
-use crate::lir::{BlockRewriteCursor, InstId, MachineFunction, MachineInst};
-use crate::pipeline::stages::PreIselPrepared;
 use crate::target::arch::TargetInstructionSelector;
 use alloc::vec::Vec;
+use veloc_lir::stages::PreIselPrepared;
+use veloc_lir::{BlockRewriteCursor, InstId, MachineFunction, MachineInst};
 
 fn format_select_failure_inst<S>(
     mfunc: &MachineFunction<S>,
@@ -22,9 +22,9 @@ fn format_select_failure_inst<S>(
         .iter()
         .filter_map(|operand| {
             let reg = match operand {
-                crate::lir::MachineOperand::Def(w) => Some(w.to_reg()),
-                crate::lir::MachineOperand::Use(reg) => Some(*reg),
-                crate::lir::MachineOperand::TiedDefUse(w) => Some(w.to_reg()),
+                veloc_lir::MachineOperand::Def(w) => Some(w.to_reg()),
+                veloc_lir::MachineOperand::Use(reg) => Some(*reg),
+                veloc_lir::MachineOperand::TiedDefUse(w) => Some(w.to_reg()),
                 _ => None,
             }?;
 
@@ -65,31 +65,28 @@ pub struct SelectionContext<'a, S> {
 }
 
 impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
-    fn get_type(&self, vreg: crate::lir::VReg) -> veloc_mir::Type {
+    fn get_type(&self, vreg: veloc_lir::VReg) -> veloc_mir::Type {
         self.mfunc.vregs[vreg].ty
     }
 
-    fn get_bank(
-        &self,
-        vreg: crate::lir::VReg,
-    ) -> Option<crate::regalloc::regbank_select::RegisterBank> {
+    fn get_bank(&self, vreg: veloc_lir::VReg) -> Option<veloc_lir::RegisterBank> {
         self.mfunc.vregs[vreg].bank
     }
 
-    fn get_vreg(&self, inst: &MachineInst, index: usize) -> Option<crate::lir::VReg> {
+    fn get_vreg(&self, inst: &MachineInst, index: usize) -> Option<veloc_lir::VReg> {
         let mut current = 0;
         for op in &inst.operands {
             let reg = match op {
-                crate::lir::MachineOperand::Def(reg) => Some(reg.to_reg()),
-                crate::lir::MachineOperand::Use(reg) => Some(*reg),
-                crate::lir::MachineOperand::TiedDefUse(reg) => Some(reg.to_reg()),
+                veloc_lir::MachineOperand::Def(reg) => Some(reg.to_reg()),
+                veloc_lir::MachineOperand::Use(reg) => Some(*reg),
+                veloc_lir::MachineOperand::TiedDefUse(reg) => Some(reg.to_reg()),
                 _ => None,
             };
             if let Some(r) = reg {
                 if current == index {
                     if r.is_vreg() {
                         use cranelift_entity::EntityRef;
-                        return Some(crate::lir::VReg::new(r.index() as usize));
+                        return Some(veloc_lir::VReg::new(r.index() as usize));
                     } else {
                         return None;
                     }

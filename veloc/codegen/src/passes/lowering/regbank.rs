@@ -1,7 +1,7 @@
 use crate::error::Result;
-use crate::pipeline::stages::{LegalizedLir, PreIselPrepared};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::regalloc::RegisterBankSelector;
+use veloc_lir::stages::{LegalizedLir, PreIselPrepared};
 
 pub struct RegisterBankSelectionPass;
 
@@ -12,9 +12,9 @@ impl StageTransformPass<LegalizedLir, PreIselPrepared> for RegisterBankSelection
 
     fn run(
         &self,
-        mut mfunc: crate::lir::MachineFunction<LegalizedLir>,
+        mut mfunc: veloc_lir::MachineFunction<LegalizedLir>,
         ctx: &mut FunctionPassContext<'_, LegalizedLir>,
-    ) -> Result<(crate::lir::MachineFunction<PreIselPrepared>, PassEffect)> {
+    ) -> Result<(veloc_lir::MachineFunction<PreIselPrepared>, PassEffect)> {
         let changed = RegisterBankSelector::new().select(&mut mfunc, ctx.target);
         let effect = if changed {
             PassEffect::new(ChangeSet::VREG_BANKS)

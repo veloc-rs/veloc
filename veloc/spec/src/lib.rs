@@ -7,8 +7,10 @@ mod builtin_gen;
 mod builtins;
 mod comparisons;
 mod constraints;
+mod documentation;
 mod encoding;
 mod evaluate;
+mod format;
 mod lowering;
 mod mir;
 mod model;
@@ -24,6 +26,7 @@ mod type_rules;
 mod type_set;
 mod types;
 
+pub use format::format_rust;
 pub use lowering::generate_lowering;
 pub use model::Definitions;
 
@@ -68,6 +71,7 @@ pub struct Generated {
     pub instructions: String,
     pub text_parser: String,
     pub text_printer: String,
+    pub documentation: String,
 }
 
 /// Parse and check a definition unit, including cross-record references.

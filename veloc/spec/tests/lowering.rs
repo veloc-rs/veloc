@@ -35,7 +35,7 @@ fn direct_mapping_excludes_traps_reordering_compositions_and_extra_results() {
         ],
     )
     .unwrap();
-    assert!(code.contains("Opcode::Direct => Some(crate::lir::GenericOpcode::G_SUB)"));
+    assert!(code.contains("Opcode::Direct => Some(veloc_lir::GenericOpcode::G_SUB)"));
     for name in ["Reversed", "Composed", "Trapping", "Multiple"] {
         assert!(!code.contains(&format!("Opcode::{name} =>")));
     }

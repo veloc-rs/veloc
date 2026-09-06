@@ -1,7 +1,7 @@
 use crate::error::Result;
-use crate::pipeline::stages::{PostIselOptimized, SelectedLir};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{TargetOperandLowering, TargetPostIsel};
+use veloc_lir::stages::{PostIselOptimized, SelectedLir};
 
 pub struct PostIselOptimizePass<'a> {
     post_isel: &'a dyn TargetPostIsel,
@@ -27,9 +27,9 @@ impl<'a> StageTransformPass<SelectedLir, PostIselOptimized> for PostIselOptimize
 
     fn run(
         &self,
-        mut mfunc: crate::lir::MachineFunction<SelectedLir>,
+        mut mfunc: veloc_lir::MachineFunction<SelectedLir>,
         ctx: &mut FunctionPassContext<'_, SelectedLir>,
-    ) -> Result<(crate::lir::MachineFunction<PostIselOptimized>, PassEffect)> {
+    ) -> Result<(veloc_lir::MachineFunction<PostIselOptimized>, PassEffect)> {
         self.post_isel.combine_instructions(&mut mfunc);
         ctx.stats.combined_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
         crate::passes::constraints::PostSelectOperandConstraintPass::new(self.operand_lowering)

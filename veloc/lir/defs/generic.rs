@@ -1,4 +1,4 @@
-// Shared by the runtime enum generator and build-time primitive binding generator.
+// LIR opcodes and reviewed primitive contracts, also consumed by codegen at build time.
 define_generic_opcodes! {
     // ==================== 整数算术 ====================
     G_ADD => Add,  // 加法

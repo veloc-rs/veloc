@@ -29,7 +29,7 @@ fn one_definition_drives_all_mir_views() {
     let output = compile_mir(ADD).unwrap();
     assert!(output.opcodes.contains("pub enum Opcode"));
     assert!(output.opcodes.contains("pub fn iadd("));
-    assert!(output.types.contains("P::Bind(0, C::Integer)"));
+    assert!(output.types.contains("C::Integer.accepts(operands[0])"));
     assert!(output.instructions.contains("pub enum InstructionData"));
     assert!(output.instructions.contains("visit_operands"));
     assert!(output.instructions.contains("replace_value"));

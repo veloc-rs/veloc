@@ -86,6 +86,7 @@ WebAssembly and C source are translated into the same Veloc middle-level IR (MIR
 | --- | --- |
 | `veloc` | Top-level facade for the IR, interpreter, and code generator. |
 | `veloc-mir` | Typed SSA IR, builders, data-flow graph, text format, and validator. |
+| `veloc-lir` | Machine-facing IR, operand schemas, register identities, and stage markers. |
 | `veloc-analyzer` | Use-def and liveness analyses. |
 | `veloc-optimizer` | Pass management, metrics, constant folding, and dead-code elimination. |
 | `veloc-interpreter` | IR-to-bytecode compiler and register-bytecode runtime. |

@@ -30,12 +30,14 @@ impl Definitions {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct TypeDef {
     pub operands: TypeList,
     pub results: TypeList,
     pub relations: Vec<Relation>,
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum TypeList {
     Fixed(Vec<Pattern>),
     Variadic(Vec<Pattern>),
@@ -51,7 +53,7 @@ impl TypeList {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Pattern {
     Class(TypeSet),
     Exact(String),
@@ -62,12 +64,13 @@ pub(crate) enum Pattern {
     ShapeOf(u8, TypeSet),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Slot {
     pub result: bool,
     pub index: u8,
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Relation {
     pub kind: String,
     pub lhs: Slot,

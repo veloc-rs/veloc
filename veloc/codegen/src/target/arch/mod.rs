@@ -7,15 +7,15 @@ mod callconv;
 mod types;
 
 use crate::Emitter;
-pub use crate::lir::ValueId;
-pub use crate::lir::{InstId, MachineFunction, MachineInst, Reg, VReg};
 pub use crate::passes::lowering::{LegalizeAction, LegalizeResult};
-use crate::pipeline::stages::{
-    LegalizedLir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedLir,
-};
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+pub use veloc_lir::ValueId;
+use veloc_lir::stages::{
+    LegalizedLir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedLir,
+};
+pub use veloc_lir::{InstId, MachineFunction, MachineInst, Reg, VReg};
 use veloc_mir::Type;
 
 pub use abi::{
@@ -87,14 +87,11 @@ pub trait LoweringContext {
     }
 
     /// 获取寄存器库
-    fn get_bank(&self, val: VReg) -> Option<crate::regalloc::regbank_select::RegisterBank>;
+    fn get_bank(&self, val: VReg) -> Option<veloc_lir::RegisterBank>;
 
     /// 谓词：检查是否在 FPR (浮点寄存器库)
     fn is_fpr(&self, val: VReg) -> bool {
-        matches!(
-            self.get_bank(val),
-            Some(crate::regalloc::regbank_select::RegisterBank::FPR)
-        )
+        matches!(self.get_bank(val), Some(veloc_lir::RegisterBank::FPR))
     }
 
     /// 获取指定的寄存器操作数
@@ -141,7 +138,7 @@ pub trait TargetEmitter: Send + Sync {
     fn begin_block(
         &self,
         _emitter: &mut Emitter,
-        _block: &crate::lir::MachineBlock,
+        _block: &veloc_lir::MachineBlock,
         _mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {
         Ok(())
@@ -207,7 +204,7 @@ pub enum PreIselRewriteExpr {
     Var(u32),
     Imm(i64),
     Op {
-        opcode: crate::lir::GenericOpcode,
+        opcode: veloc_lir::GenericOpcode,
         args: &'static [PreIselRewriteExpr],
     },
 }
@@ -296,8 +293,8 @@ pub trait TargetLegalizer: Send + Sync {
     /// 需要目标私有重写的动作时，driver 才会调用这个 hook。
     fn legalize_instruction(
         &self,
-        inst_id: crate::lir::InstId,
-        mfunc: &mut crate::lir::MachineFunction<LegalizedLir>,
+        inst_id: veloc_lir::InstId,
+        mfunc: &mut veloc_lir::MachineFunction<LegalizedLir>,
     ) -> Result<LegalizeResult, crate::error::Error>;
 }
 
@@ -386,28 +383,22 @@ pub trait TargetFrameLowering: Send + Sync {
 
 pub trait TargetPassConfig: Send + Sync {
     /// 在合法化之后追加 target 自定义 function passes。
-    fn post_legalize_passes(
-        &self,
-    ) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::LegalizedLir>>> {
+    fn post_legalize_passes(&self) -> Vec<Box<dyn FunctionPass<veloc_lir::stages::LegalizedLir>>> {
         Vec::new()
     }
 
     /// 在 generic combine 之后追加 target 自定义 function passes。
-    fn pre_isel_passes(
-        &self,
-    ) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::PreIselPrepared>>> {
+    fn pre_isel_passes(&self) -> Vec<Box<dyn FunctionPass<veloc_lir::stages::PreIselPrepared>>> {
         Vec::new()
     }
 
     /// 在指令选择之后追加 target 自定义 function passes。
-    fn post_isel_passes(&self) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::SelectedLir>>> {
+    fn post_isel_passes(&self) -> Vec<Box<dyn FunctionPass<veloc_lir::stages::SelectedLir>>> {
         Vec::new()
     }
 
     /// 在寄存器分配之后追加 target 自定义 function passes。
-    fn post_regalloc_passes(
-        &self,
-    ) -> Vec<Box<dyn FunctionPass<crate::pipeline::stages::RegAllocated>>> {
+    fn post_regalloc_passes(&self) -> Vec<Box<dyn FunctionPass<veloc_lir::stages::RegAllocated>>> {
         Vec::new()
     }
 

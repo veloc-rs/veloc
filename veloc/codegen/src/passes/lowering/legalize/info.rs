@@ -1,10 +1,10 @@
 extern crate alloc;
 
 use crate::error::{Error, Result};
-use crate::lir::{MachineFunction, MachineInst, MachineOperand, Reg};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use veloc_lir::{MachineFunction, MachineInst, MachineOperand, Reg};
 use veloc_mir::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +16,7 @@ pub enum LegalizeAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LegalizeResult {
-    Replace(Vec<crate::lir::InstId>),
+    Replace(Vec<veloc_lir::InstId>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -443,7 +443,7 @@ macro_rules! legalize_matcher {
     }};
     (@dispatch $inst:expr, $mfunc:expr, { $($opcode:ident)|+ => { $($rules:tt)* }; $($rest:tt)* }) => {{
         match $inst.generic_opcode() {
-            $(Some($crate::lir::GenericOpcode::$opcode))|+ => {
+            $(Some($crate::veloc_lir::GenericOpcode::$opcode))|+ => {
                 $crate::legalize_matcher!(@rules $inst, $mfunc, $($rules)*)
             }
             _ => $crate::legalize_matcher!(@dispatch $inst, $mfunc, { $($rest)* }),
@@ -1248,13 +1248,13 @@ mod tests {
         LegalizeAction, operand_bit_width_at, operand_type_at, same_operand_types,
         same_operand_widths, type_width_is_one_of,
     };
-    use crate::lir::{
+    use alloc::string::ToString;
+    use smallvec::smallvec;
+    use veloc_lir::stages::RawLir;
+    use veloc_lir::{
         GenericOpcode, MachineBlock, MachineFunction, MachineInst, MachineOpcode, SymbolId,
         Writable,
     };
-    use crate::pipeline::stages::RawLir;
-    use alloc::string::ToString;
-    use smallvec::smallvec;
     use veloc_mir::{Block, Type};
 
     fn make_function() -> MachineFunction<RawLir> {

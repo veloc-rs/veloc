@@ -3,8 +3,8 @@
 use super::{
     CallInfo, CallInst, InstExtra, InstExtraId, InstId, MachineInst, Reg, StackSlot, VReg, VRegData,
 };
-use crate::pipeline::stages::AllowsUnbankedVRegAlloc;
-use crate::regalloc::regbank_select::RegisterBank;
+use crate::RegisterBank;
+use crate::stages::AllowsUnbankedVRegAlloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -39,47 +39,45 @@ impl MachineBlock {
 /// 栈槽数据
 #[derive(Debug, Clone)]
 pub struct StackSlotData {
-    pub(crate) base_reg: Reg,
-    #[allow(dead_code)]
-    pub(crate) size: u32,
-    #[allow(dead_code)]
-    pub(crate) align: u32,
-    pub(crate) offset: i32,
+    pub base_reg: Reg,
+    pub size: u32,
+    pub align: u32,
+    pub offset: i32,
 }
 
 /// 栈帧信息
 #[derive(Debug, Clone)]
 pub struct StackFrame {
     /// 局部变量占用的栈空间
-    pub(crate) local_size: u32,
+    pub local_size: u32,
     /// 传入参数占用的栈空间
-    pub(crate) arg_size: u32,
+    pub arg_size: u32,
     /// 被调用者保存寄存器占用的空间
-    pub(crate) callee_saved_size: u32,
+    pub callee_saved_size: u32,
     /// 当前函数实际使用到、需要保存恢复的 callee-saved 物理寄存器
-    pub(crate) used_callee_saved: Vec<Reg>,
+    pub used_callee_saved: Vec<Reg>,
     /// 对齐后的总栈大小
-    pub(crate) total_size: u32,
+    pub total_size: u32,
     /// 已分配的栈槽
-    pub(crate) slots: cranelift_entity::PrimaryMap<StackSlot, StackSlotData>,
+    pub slots: cranelift_entity::PrimaryMap<StackSlot, StackSlotData>,
 }
 
 /// 机器函数主体数据。
 #[derive(Debug, Clone)]
 pub struct MachineFunctionData {
     pub name: String,
-    pub(crate) blocks: Vec<MachineBlock>,
-    pub(crate) dfg: PrimaryMap<InstId, MachineInst>,
-    pub(crate) inst_extra: SecondaryMap<InstId, Option<InstExtraId>>,
-    pub(crate) extras: PrimaryMap<InstExtraId, InstExtra>,
-    pub(crate) vregs: PrimaryMap<VReg, VRegData>,
-    pub(crate) stack_frame: StackFrame,
+    pub blocks: Vec<MachineBlock>,
+    pub dfg: PrimaryMap<InstId, MachineInst>,
+    inst_extra: SecondaryMap<InstId, Option<InstExtraId>>,
+    extras: PrimaryMap<InstExtraId, InstExtra>,
+    pub vregs: PrimaryMap<VReg, VRegData>,
+    pub stack_frame: StackFrame,
     /// 函数参数对应的虚拟寄存器
-    pub(crate) params: Vec<Reg>,
+    pub params: Vec<Reg>,
     /// 是否已指令选择
-    pub(crate) is_selected: bool,
+    pub is_selected: bool,
     /// 是否已寄存器分配
-    pub(crate) is_regallocated: bool,
+    pub is_regallocated: bool,
 }
 
 /// 机器函数。

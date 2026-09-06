@@ -14,8 +14,8 @@ impl crate::regalloc::regbank_select::TargetRegBankSelect for X86_64RegBankSelec
         crate::regalloc::regbank_select::RegisterBankSelectMode::TypeDerived
     }
 
-    fn default_bank_for_type(&self, ty: Type) -> crate::regalloc::regbank_select::RegisterBank {
-        use crate::regalloc::regbank_select::RegisterBank;
+    fn default_bank_for_type(&self, ty: Type) -> veloc_lir::RegisterBank {
+        use veloc_lir::RegisterBank;
 
         if ty.is_float() || ty.is_vector() {
             RegisterBank::FPR

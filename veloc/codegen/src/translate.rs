@@ -4,13 +4,13 @@
 //! 这是 GlobalISel 流程的第一步
 
 use crate::error::{Error, Result};
-use crate::lir::{
+use alloc::format;
+use hashbrown::HashMap;
+use veloc_lir::stages::RawLir;
+use veloc_lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
     MachineBlock, MachineFunction, MachineInst, MachineModule, MachineOpcode, MachineOperand, Reg,
 };
-use crate::pipeline::stages::RawLir;
-use alloc::format;
-use hashbrown::HashMap;
 use veloc_mir::dfg::PoolKey;
 use veloc_mir::{Function, InstructionData, Module, Opcode, Value};
 
@@ -59,7 +59,7 @@ impl<'a> IRTranslator<'a> {
 
     /// 为函数参数生成 G_ARG 指令
     fn lower_arguments(&self, ctx: &mut TranslationContext, mblock: &mut MachineBlock) {
-        use crate::lir::Writable;
+        use veloc_lir::Writable;
         for (idx, &param_val) in ctx.func.params().iter().enumerate() {
             let vreg = ctx.value_map[&param_val];
             let arg_inst = MachineInst::build_arg(Writable(vreg), idx as i64);
@@ -71,7 +71,7 @@ impl<'a> IRTranslator<'a> {
         ctx: &mut TranslationContext,
         mblock: &mut MachineBlock,
         inst: MachineInst,
-    ) -> crate::lir::InstId {
+    ) -> veloc_lir::InstId {
         let inst_id = ctx.mfunc.alloc_inst(inst);
         mblock.append_inst_id(inst_id);
         inst_id
@@ -151,8 +151,8 @@ impl<'a> IRTranslator<'a> {
         ctx: &mut TranslationContext,
         mblock: &mut MachineBlock,
     ) -> Result<TranslatedInst> {
-        use crate::lir::Writable;
         use smallvec::SmallVec;
+        use veloc_lir::Writable;
 
         let inst_data = &ctx.func.dfg.instructions[inst_id];
 
@@ -425,16 +425,17 @@ impl<'a> IRTranslator<'a> {
 
             InstructionData::Call { func_id, args } => {
                 let call_args = ctx.func.dfg.get_value_list(*args);
-                let sym_id = ctx
-                    .mmodule
-                    .symbols_mut()
-                    .get_or_create_func(*func_id, self.module);
+                let callee = self.module.get_function(*func_id);
+                let sym_id = ctx.mmodule.symbols_mut().get_or_create_function(
+                    self.module.get_function_name(*func_id),
+                    callee.linkage,
+                );
                 let call_inst = MachineInst::build_call(
                     defs.iter().map(|operand| operand.as_writable().unwrap()),
                     sym_id,
                     call_args.iter().map(|value| ctx.value_map[value]),
                 );
-                let sig_id = self.module.get_function(*func_id).signature;
+                let sig_id = callee.signature;
                 let call_info = CallInfo {
                     sig: self.module.get_signature(sig_id).clone(),
                 };
@@ -502,7 +503,7 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionData::PtrOffset { ptr, offset } => {
-                use crate::lir::Writable;
+                use veloc_lir::Writable;
 
                 let addr = ctx.value_map[ptr];
                 if *offset == 0 {

@@ -1,6 +1,6 @@
 //! LIR 层的 Use-Def 链分析与增量更新实现
 
-use crate::lir::instr::{InstId, MachineInst, Reg};
+use crate::instr::{InstId, MachineInst, Reg};
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 

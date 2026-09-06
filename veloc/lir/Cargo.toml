@@ -1,0 +1,15 @@
+[package]
+name = "veloc-lir"
+version = "0.1.0"
+edition = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+veloc-mir = { path = "../mir", default-features = false }
+cranelift-entity = { workspace = true }
+hashbrown = { workspace = true }
+smallvec = { workspace = true }
+
+[features]
+default = ["std"]
+std = ["veloc-mir/std"]

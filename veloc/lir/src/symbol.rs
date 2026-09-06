@@ -35,25 +35,18 @@ pub struct Symbol {
 }
 
 /// 符号名存储方案
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SymbolTable {
     pub symbols: PrimaryMap<SymbolId, Symbol>,
 }
 
 impl SymbolTable {
     pub fn new() -> Self {
-        Self {
-            symbols: PrimaryMap::new(),
-        }
+        Self::default()
     }
 
-    /// 从 IR 函数创建符号，并保留 Linkage 信息
-    pub fn get_or_create_func(
-        &mut self,
-        func_id: veloc_mir::FuncId,
-        module: &veloc_mir::Module,
-    ) -> SymbolId {
-        let name = module.get_function_name(func_id);
+    /// Intern a function symbol without depending on a source IR module.
+    pub fn get_or_create_function(&mut self, name: &str, linkage: Linkage) -> SymbolId {
         if let Some((id, _)) = self
             .symbols
             .iter()
@@ -62,11 +55,10 @@ impl SymbolTable {
             return id;
         }
 
-        let func = module.get_function(func_id);
         self.symbols.push(Symbol {
             name: name.to_string(),
             kind: SymbolKind::Function,
-            linkage: func.linkage,
+            linkage,
             visibility: Visibility::Default,
         })
     }

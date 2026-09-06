@@ -9,7 +9,7 @@ use crate::{
     ModuleData, Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
     function::StackSlotData,
     inst::Inst,
-    opspec::{ResultTypes, TypeList, TypeSchemeError},
+    opspec::ResultTypes,
     types::{ValueData, parse_type},
 };
 use alloc::{
@@ -296,31 +296,17 @@ fn resolve_result_types(
     data.visit_type_operands(&func.dfg, |value| {
         operands.push(func.dfg.value_type(value));
     });
-    let (inferred, deferred) = match data.opcode().infer_result_types(&operands) {
-        Ok(inferred) => (inferred, false),
-        Err(error) => {
-            // A later textual block may define an SSA value that dominates this
-            // instruction. Defer only unresolved variadic prefixes whose result
-            // types are independent of that value; check them after all definitions.
-            let unresolved_prefix = matches!(spec.type_scheme.operands, TypeList::Variadic(_))
-                && matches!(error, TypeSchemeError::Pattern { results: false, got, .. }
-                    if got == Type::INVALID);
-            let independent = match (unresolved_prefix, spec.type_scheme.results) {
-                (true, TypeList::Signature) => Some(ResultTypes::Signature),
-                (true, TypeList::Fixed([])) => Some(ResultTypes::Inferred(Default::default())),
-                _ => None,
-            };
-            match independent {
-                Some(inferred) => (inferred, true),
-                None => {
-                    return Err(ParseError(format!(
-                        "invalid operand types for `{}`: {error:?}",
-                        spec.mnemonic
-                    )));
-                }
-            }
-        }
-    };
+    // The generated entry point decides whether unresolved inputs can be
+    // deferred. Deferred contracts are rechecked after all value definitions.
+    let (inferred, deferred) =
+        data.opcode()
+            .infer_text_result_types(&operands)
+            .map_err(|error| {
+                ParseError(format!(
+                    "invalid operand types for `{}`: {error:?}",
+                    spec.mnemonic
+                ))
+            })?;
     let mut results = match &inferred {
         ResultTypes::Inferred(types) => types.clone().into_vec(),
         ResultTypes::Explicit => hint.into_iter().collect(),

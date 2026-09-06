@@ -86,6 +86,7 @@ WebAssembly 和 C 源码都会转换为同一种 Veloc 中层 IR（MIR）。运�
 | --- | --- |
 | `veloc` | IR、解释器和代码生成器的顶层门面。 |
 | `veloc-mir` | 类型化 SSA IR、构建器、数据流图、文本格式和验证器。 |
+| `veloc-lir` | 面向机器的 IR、操作数格式、寄存器标识和阶段标记。 |
 | `veloc-analyzer` | Use-def 与活跃变量分析。 |
 | `veloc-optimizer` | Pass 管理、指标统计、常量折叠和死代码消除。 |
 | `veloc-interpreter` | IR 到字节码的编译器及寄存器字节码运行时。 |

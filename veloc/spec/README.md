@@ -3,7 +3,7 @@
 `veloc-opgen` is the build-time definition compiler. It is independent of runtime
 IR containers; `veloc-mir/build.rs` currently uses its MIR emitter. HIR is reserved
 for a future structured representation. The machine-facing IR is LIR, in
-`veloc-codegen::lir`; bytecode is a separate execution format.
+`veloc-lir`; bytecode is a separate execution format.
 
 The MIR definitions live in `veloc/mir/defs/`:
 
@@ -310,12 +310,13 @@ operation-specific parsing/printing and ordinary builders.
 
 Every type contract is compiled into validation and inference code.
 `Opcode::validate_types` and `Opcode::infer_result_types` exhaustively dispatch
-to shared generated handlers. The builder, validator, text parser, constant
-evaluator and codegen use this boundary; there is no runtime type-scheme
+to shared generated handlers. The builder, validator, text parser and codegen
+use this boundary; there is no runtime type-scheme
 interpreter, optional specialization feature or fallback.
 
 Selection uses signature structure, not opcode names. Equal operand/result
-patterns, type sets and relations share both handlers and static descriptors.
+patterns, type sets and relations share handlers, using structural equality of
+the checked definition model rather than serialized runtime descriptors.
 Exact pattern slots are retained so sharing preserves error diagnostics.
 
 The definition compiler resolves type variables to concrete operand/result
@@ -327,10 +328,23 @@ or come from a function signature. For inferred results, arity and
 Same/Exact/ElementOf checks follow from the generated expressions and are
 omitted; additional class constraints and relations are still checked.
 
-`TypeScheme`, `TypeList`, `TypePattern` and `TypeRelation` remain descriptive
-metadata for inspection and diagnostics, not an executable second path.
-Descriptors expose immutable data through the opcode's static specification;
-there is no binding-count cache or constructor/accessor compatibility layer.
+Type schemes, patterns and relations exist only in the definition compiler.
+MIR contains no runtime `TypeScheme`, `TypeList`, `TypePattern`, relation table,
+or per-opcode type descriptor. Generated checks return `TypeError` with static
+diagnostic strings and relevant operand/result positions. Interned `TypeClass`
+membership checks remain executable helpers, not a second type-rule interpreter.
+
+Builders consume generated inference results and resolve signature-supplied
+results from call metadata; explicit type hints are validated directly.
+Text parsing uses a generated entry point that
+can defer unresolved variadic prefixes only when their results are independent;
+deferred instructions are fully checked after all SSA definitions are available.
+Ordinary inference and validation do not apply the parser's deferral policy.
+
+MIR's build script writes `opcodes.md` alongside generated Rust in `OUT_DIR`.
+The reference is generated directly from checked definitions and includes type
+signatures, relations and structural constraints. No runtime reflection table
+or `write_opcode_markdown` adapter is needed.
 
 Structural `constraints` are typed, pure expressions, compiled directly into
 Rust checks. For example:
@@ -374,8 +388,8 @@ Statically true checks disappear; an always-false top-level constraint is a
 definition error. Even dead branches must be well typed. Type validation runs
 first, allowing generated checks to use operand/result positions directly,
 including for alternative physical layouts. Actual property checks remain
-dynamic. `OpSpec::constraints` retains descriptive text only; there is no runtime
-rule interpreter or predefined constraint-name registry.
+dynamic. Descriptive constraint text is emitted into `opcodes.md`, not `OpSpec`;
+there is no runtime rule interpreter or predefined constraint-name registry.
 
 These predicates specify IR legality, not instruction execution or traps.
 For example, a division instruction with a zero divisor can be valid IR with
@@ -598,7 +612,7 @@ simplification before dead-code elimination. Removing a use of a trapping
 instruction does not authorize deleting that instruction.
 
 Codegen joins checked direct MIR primitive applications with the reviewed LIR
-bindings in `codegen/defs/generic.rs` at build time. The same declaration supplies
+bindings in `lir/defs/generic.rs` at build time. The same declaration supplies
 the generic opcode enum and build-only bindings. The result is a direct
 `Opcode -> Option<GenericOpcode>` match, not an `OpSpec` semantic lookup. Composed,
 reordered, property-dependent, trapping and multi-result recipes do not qualify;
@@ -651,5 +665,11 @@ cargo run -q -p veloc-optimizer --example semantic_check -- overflow | z3 -in
 cargo run -q -p veloc-optimizer --example semantic_check -- overflow --broken | z3 -in
 ```
 
-Generated Rust lives in Cargo's `OUT_DIR`, not in the source tree. Building the
-compiler does not require a solver or a model service.
+Generated Rust lives in Cargo's `OUT_DIR`, not in the source tree. MIR, optimizer
+and codegen build scripts format their emitted Rust files in one rustfmt batch
+per crate, using the workspace's `rustfmt.toml`. This includes offline recipes
+and ISLE output; Markdown is left untouched. Formatting does not follow module
+declarations into other files. The pinned toolchain includes rustfmt, and the
+`RUSTFMT` environment variable can override its executable. Missing rustfmt or
+invalid generated syntax fails the build rather than silently skipping formatting.
+Building the compiler does not require a solver or a model service.

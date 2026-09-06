@@ -12,14 +12,15 @@ pub use lowering::{
     X86_64RegBankSelect, X86_64Selector,
 };
 
-use crate::regalloc::regbank_select::{RegisterBank, TargetRegBankSelect};
+use crate::regalloc::regbank_select::TargetRegBankSelect;
 use crate::target::arch::{
     CpuDescription, DataLayout, RegClass, RegClassInfo, RegisterFile, SpecialRegs, TargetConfig,
     TargetDescription, TargetEmitter, TargetFrameLowering, TargetInstructionSelector,
     TargetLegalizer, TargetMachine, TargetOperandLowering, TargetPassConfig, TargetPostIsel,
 };
+use veloc_lir::RegisterBank;
 
-const X86_64_GPR_ALLOCATABLE: &[crate::lir::Reg] = &[
+const X86_64_GPR_ALLOCATABLE: &[veloc_lir::Reg] = &[
     isle::REG_RAX,
     isle::REG_RDX,
     isle::REG_RBX,
@@ -32,7 +33,7 @@ const X86_64_GPR_ALLOCATABLE: &[crate::lir::Reg] = &[
     isle::REG_R14,
     isle::REG_R15,
 ];
-const X86_64_FPR_ALLOCATABLE: &[crate::lir::Reg] = &[
+const X86_64_FPR_ALLOCATABLE: &[veloc_lir::Reg] = &[
     isle::REG_XMM0,
     isle::REG_XMM1,
     isle::REG_XMM2,

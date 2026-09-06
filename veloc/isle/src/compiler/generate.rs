@@ -364,7 +364,7 @@ pub(crate) fn generate_header(
     writeln!(output).unwrap();
     writeln!(
         output,
-        r#"use crate::lir::{{MachineInst, MachineOperand, Reg}};
+        r#"use veloc_lir::{{MachineInst, MachineOperand, Reg}};
 use smallvec::SmallVec;
 use crate::target::arch::{{
     AbiDescriptor, AbiPreservedSet, AbiRegisterPool, AbiStackDescriptor, AbiValueClass,
@@ -393,10 +393,10 @@ fn reg_value<R: IntoOptReg>(value: R) -> Option<Reg> {{
     value.into_opt_reg()
 }}
 
-fn reg_value_to_vreg<R: IntoOptReg>(value: R) -> Option<crate::lir::VReg> {{
+fn reg_value_to_vreg<R: IntoOptReg>(value: R) -> Option<veloc_lir::VReg> {{
     value
         .into_opt_reg()
-        .and_then(|reg| reg.is_vreg().then(|| crate::lir::VReg::from_u32(reg.index())))
+        .and_then(|reg| reg.is_vreg().then(|| veloc_lir::VReg::from_u32(reg.index())))
 }}
 
 "#
@@ -428,9 +428,9 @@ fn operand_by_index(inst: &MachineInst, index: usize) -> Option<MachineOperand> 
     inst.operands.get(index).cloned()
 }}
 
-fn vreg_by_index(inst: &MachineInst, index: usize) -> Option<crate::lir::VReg> {{
+fn vreg_by_index(inst: &MachineInst, index: usize) -> Option<veloc_lir::VReg> {{
     let reg = inst.operands.get(index)?.as_reg()?;
-    reg.is_vreg().then(|| crate::lir::VReg::from_u32(reg.index()))
+    reg.is_vreg().then(|| veloc_lir::VReg::from_u32(reg.index()))
 }}
 "#
         )
@@ -676,7 +676,7 @@ impl TargetInst {{
         &self,
         emitter: &mut crate::Emitter,
         inst: &MachineInst,
-        mfunc: &crate::lir::MachineFunction<crate::pipeline::stages::PrologueEpilogueInserted>,
+        mfunc: &veloc_lir::MachineFunction<veloc_lir::stages::PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {{
         match self {{"#
     )

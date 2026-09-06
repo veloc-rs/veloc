@@ -1,6 +1,6 @@
 //! Compile type contracts into shared, straight-line checks and inference.
 //! Bindings exist only here: runtime code refers directly to operand/result slots.
-use crate::mir::{pattern, type_list};
+use crate::documentation::pattern;
 use crate::model::{Definitions, Pattern, Relation, Slot, TypeDef, TypeList};
 use crate::type_gen::Classes;
 use std::collections::BTreeMap;
@@ -13,32 +13,19 @@ pub(crate) fn generate(
     classes: &Classes,
     types: &mut String,
     ops: &mut String,
-) -> Vec<usize> {
+) {
     let mut ids = BTreeMap::new();
     let mut groups: Vec<Vec<&str>> = Vec::new();
-    let mut schemes = Vec::new();
     for op in &defs.ops {
         let ty = &op.signature;
-        let relations = ty
-            .relations
-            .iter()
-            .map(relation)
-            .collect::<Vec<_>>()
-            .join(", ");
-        // Exact patterns preserve diagnostic slot IDs as well as semantics.
-        let key = format!(
-            "{};{};{relations}",
-            type_list(&ty.operands, classes),
-            type_list(&ty.results, classes)
-        );
+        // Structural equality preserves all checks and diagnostic positions.
         let next = groups.len();
-        let id = *ids.entry(key).or_insert(next);
+        let id = *ids.entry(ty).or_insert(next);
         if id == next {
             emit_rule(id, ty, classes, types);
             groups.push(Vec::new());
         }
         groups[id].push(&op.name);
-        schemes.push(id);
     }
     ops.push_str("impl Opcode {\n");
     for (method, extra, result, handler) in [
@@ -55,7 +42,7 @@ pub(crate) fn generate(
             "infer",
         ),
     ] {
-        writeln!(ops, "/// Execute the shared type contract generated from this opcode's definition.\n#[inline]\npub fn {method}(self, operands: &[crate::Type]{extra}) -> core::result::Result<{result}, crate::opspec::TypeSchemeError> {{\n    match self {{").unwrap();
+        writeln!(ops, "/// Execute the shared type contract generated from this opcode's definition.\n#[inline]\npub fn {method}(self, operands: &[crate::Type]{extra}) -> core::result::Result<{result}, crate::opspec::TypeError> {{\n    match self {{").unwrap();
         for (id, names) in groups.iter().enumerate() {
             let arms = names
                 .iter()
@@ -69,14 +56,34 @@ pub(crate) fn generate(
             };
             writeln!(
                 ops,
-                "        {arms} => crate::opspec::type_schemes::{handler}_{id}({args}),"
+                "        {arms} => crate::opspec::type_rules::{handler}_{id}({args}),"
             )
             .unwrap();
         }
         ops.push_str("    }\n}\n");
     }
-    ops.push_str("}\n");
-    schemes
+    // Text may reference values defined in later blocks. Only the contracts
+    // whose results are independent of an unresolved variadic prefix may defer.
+    ops.push_str("pub(crate) fn infer_text_result_types(self, operands: &[crate::Type]) -> core::result::Result<(crate::opspec::ResultTypes, bool), crate::opspec::TypeError> {\nlet inferred = self.infer_result_types(operands);\nmatch self {\n");
+    for (signature, id) in &ids {
+        if !matches!(&signature.operands, TypeList::Variadic(prefix) if !prefix.is_empty()) {
+            continue;
+        }
+        let result = match &signature.results {
+            TypeList::Signature => "crate::opspec::ResultTypes::Signature",
+            TypeList::Fixed(patterns) if patterns.is_empty() => {
+                "crate::opspec::ResultTypes::Inferred(Default::default())"
+            }
+            _ => continue,
+        };
+        let arms = groups[*id]
+            .iter()
+            .map(|name| format!("Self::{name}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        writeln!(ops, "{arms} => match inferred {{\nErr(crate::opspec::TypeError::Pattern {{ results: false, got: crate::Type::INVALID, .. }}) => Ok(({result}, true)),\nother => other.map(|types| (types, false)),\n}},").unwrap();
+    }
+    ops.push_str("_ => inferred.map(|types| (types, false)),\n}\n}\n}\n");
 }
 
 fn slot(slot: Slot) -> String {
@@ -87,25 +94,16 @@ fn slot(slot: Slot) -> String {
     )
 }
 
-pub(crate) fn relation(r: &Relation) -> String {
-    let (variant, lhs, rhs) = match r.kind.as_str() {
-        "wider" => ("Wider", "from", "to"),
-        "narrower" => ("Narrower", "from", "to"),
-        "same_width_distinct" => ("SameWidthDistinct", "lhs", "rhs"),
+fn relation(r: &Relation) -> String {
+    let (lhs, rhs) = (slot(r.lhs), slot(r.rhs));
+    match r.kind.as_str() {
+        "wider" => format!("{rhs} must have more bits per lane than {lhs}"),
+        "narrower" => format!("{rhs} must have fewer bits per lane than {lhs}"),
+        "same_width_distinct" => {
+            format!("{lhs} and {rhs} must be distinct types with equal whole-value bit sizes")
+        }
         _ => unreachable!("checked type relation"),
-    };
-    let descriptor = |s: Slot| {
-        format!(
-            "Slot::{}({})",
-            if s.result { "Result" } else { "Operand" },
-            s.index
-        )
-    };
-    format!(
-        "R::{variant} {{ {lhs}: {}, {rhs}: {} }}",
-        descriptor(r.lhs),
-        descriptor(r.rhs)
-    )
+    }
 }
 
 fn check_list(
@@ -126,7 +124,7 @@ fn check_list(
         ("<", 1) => format!("{values}.is_empty()"),
         (_, len) => format!("{values}.len() {cmp} {len}"),
     };
-    writeln!(out, "    if {arity} {{\n        return Err(super::TypeSchemeError::Arity {{ results: {results}, expected: {}, got: {values}.len() }});\n    }}", patterns.len()).unwrap();
+    writeln!(out, "    if {arity} {{\n        return Err(super::TypeError::Arity {{ results: {results}, expected: {}, got: {values}.len() }});\n    }}", patterns.len()).unwrap();
     for (index, p) in patterns.iter().enumerate() {
         let value = format!("{values}[{index}]");
         let condition = match p {
@@ -156,7 +154,7 @@ fn check_list(
                 binding(bindings, *var)
             ),
         };
-        writeln!(out, "    if !({condition}) {{\n        return Err(super::TypeSchemeError::Pattern {{\n            results: {results}, index: {index}, expected: {}, got: {value},\n        }});\n    }}", pattern(p, classes)).unwrap();
+        writeln!(out, "    if !({condition}) {{\n        return Err(super::TypeError::Pattern {{\n            results: {results}, index: {index}, expected: {:?}, got: {value},\n        }});\n    }}", pattern(p, classes)).unwrap();
     }
 }
 
@@ -184,7 +182,7 @@ fn check_results(
             .enumerate()
         {
             if let Pattern::Bind(_, class) = p {
-                writeln!(out, "    if !{}.accepts(results[{index}]) {{\n        return Err(super::TypeSchemeError::Pattern {{ results: true, index: {index}, expected: {}, got: results[{index}] }});\n    }}", classes.reference(class), pattern(p, classes)).unwrap();
+                writeln!(out, "    if !{}.accepts(results[{index}]) {{\n        return Err(super::TypeError::Pattern {{ results: true, index: {index}, expected: {:?}, got: results[{index}] }});\n    }}", classes.reference(class), pattern(p, classes)).unwrap();
             }
         }
     } else {
@@ -204,7 +202,7 @@ fn check_results(
             ),
             _ => unreachable!("checked type relation"),
         };
-        writeln!(out, "    if !({condition}) {{\n        return Err(super::TypeSchemeError::Relation({}));\n    }}", relation(r)).unwrap();
+        writeln!(out, "    if !({condition}) {{\n        return Err(super::TypeError::Relation({:?}));\n    }}", relation(r)).unwrap();
     }
 }
 
@@ -227,18 +225,10 @@ fn function(out: &mut String, name: &str, ty: &TypeDef, results: bool, body: &st
         extra
     };
     let result = if results { "()" } else { "super::ResultTypes" };
-    writeln!(out, "#[inline]\npub(crate) fn {name}({arg}: &[Type]{extra}) -> core::result::Result<{result}, super::TypeSchemeError> {{\n{body}}}\n").unwrap();
+    writeln!(out, "#[inline]\npub(crate) fn {name}({arg}: &[Type]{extra}) -> core::result::Result<{result}, super::TypeError> {{\n{body}}}\n").unwrap();
 }
 
 fn emit_rule(id: usize, ty: &TypeDef, classes: &Classes, out: &mut String) {
-    writeln!(out, "\npub(crate) static SCHEME_{id}: S = S {{\n    operands: {},\n    results: {},\n    relations: &[{}],\n}};", type_list(&ty.operands, classes), type_list(&ty.results, classes), ty.relations.iter().map(relation).collect::<Vec<_>>().join(", ")).unwrap();
-    writeln!(
-        out,
-        "\n// Shared type rule {id}: {} -> {}",
-        type_list(&ty.operands, classes),
-        type_list(&ty.results, classes)
-    )
-    .unwrap();
     let mut operands = String::new();
     let mut bindings = Bindings::new();
     check_list(&mut operands, &ty.operands, false, &mut bindings, classes);

@@ -3,15 +3,10 @@
 //! 提供从 SSA IR 到机器码/目标文件的编译驱动。
 
 use crate::error::{Error, Result};
-use crate::lir::{MachineFunction, MachineModule};
 use crate::object::ObjectFileBuilder;
 use crate::passes::{
     BlockParamLoweringPass, FrameFinalizePass, InstructionSelectionPass, LegalizePass,
     PostIselOptimizePass, PreIselPass, RegisterAllocationPass,
-};
-use crate::pipeline::stages::{
-    LegalizedLir, PostIselOptimized, PreIselPrepared, PrologueEpilogueInserted, RawLir,
-    RegAllocated, SelectedLir,
 };
 use crate::pipeline::{
     CompiledFunction, CompiledModule, FunctionAnalysisCtx, FunctionPassContext, ModuleAnalysisCtx,
@@ -21,6 +16,11 @@ use crate::target::arch::TargetMachine;
 use crate::translate::IRTranslator;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use veloc_lir::stages::{
+    LegalizedLir, PostIselOptimized, PreIselPrepared, PrologueEpilogueInserted, RawLir,
+    RegAllocated, SelectedLir,
+};
+use veloc_lir::{MachineFunction, MachineModule};
 use veloc_mir::{FuncId, Function, Module};
 
 /// 代码生成统计信息

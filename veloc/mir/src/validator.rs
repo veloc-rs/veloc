@@ -476,9 +476,46 @@ mod tests {
 
     #[test]
     fn opspec_validates_conversion_widths() {
-        let extend = crate::Opcode::ExtendS;
-        assert!(extend.validate_types(&[Type::I32], &[Type::I64]).is_ok());
-        assert!(extend.validate_types(&[Type::I64], &[Type::I32]).is_err());
+        use crate::{Opcode, opspec::TypeError};
+
+        for (op, from, to) in [
+            (Opcode::ExtendS, Type::I32, Type::I64),
+            (Opcode::Wrap, Type::I64, Type::I32),
+            (Opcode::Reinterpret, Type::I32, Type::F32),
+        ] {
+            assert!(op.validate_types(&[from], &[to]).is_ok());
+        }
+        for (op, from, to, message) in [
+            (
+                Opcode::ExtendS,
+                Type::I64,
+                Type::I32,
+                "results[0] must have more bits per lane than operands[0]",
+            ),
+            (
+                Opcode::Wrap,
+                Type::I32,
+                Type::I64,
+                "results[0] must have fewer bits per lane than operands[0]",
+            ),
+            (
+                Opcode::Reinterpret,
+                Type::I32,
+                Type::I32,
+                "operands[0] and results[0] must be distinct types with equal whole-value bit sizes",
+            ),
+            (
+                Opcode::Reinterpret,
+                Type::I32,
+                Type::F64,
+                "operands[0] and results[0] must be distinct types with equal whole-value bit sizes",
+            ),
+        ] {
+            assert_eq!(
+                op.validate_types(&[from], &[to]),
+                Err(TypeError::Relation(message))
+            );
+        }
     }
 
     #[test]

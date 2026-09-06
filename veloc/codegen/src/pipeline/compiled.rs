@@ -1,7 +1,7 @@
-use crate::lir::{MachineFunction, SymbolTable};
-use crate::pipeline::stages::PrologueEpilogueInserted;
 use alloc::string::String;
 use alloc::vec::Vec;
+use veloc_lir::stages::PrologueEpilogueInserted;
+use veloc_lir::{MachineFunction, SymbolTable};
 use veloc_mir::FuncId;
 
 #[derive(Debug, Clone)]

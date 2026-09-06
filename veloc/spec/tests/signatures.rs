@@ -103,7 +103,7 @@ fn named_results_keep_their_position_among_anonymous_results() {
     assert!(
         output
             .types
-            .contains("R::Wider { from: Slot::Operand(0), to: Slot::Result(1) }")
+            .contains("results[1] must have more bits per lane than operands[0]")
     );
     let both_named = source.replace("(T, wider: I64)", "(result: T, wider: I64)");
     assert_eq!(
@@ -139,11 +139,7 @@ fn result_only_type_variables_and_nested_type_patterns_still_bind() {
         }
     "#;
     let output = compile_mir(source).unwrap();
-    assert!(
-        output
-            .types
-            .contains("operands: L::Fixed(&[]),\n    results: L::Fixed(&[P::Bind(0, C::Integer)])")
-    );
+    assert!(output.types.contains("C::Integer.accepts(results[0])"));
     // Multiple explicit results are valid signatures, but not supported by the
     // current field-builder projection. Check their binding at the model layer.
     common::parse(&source.replace("-> T", "-> (T, T)")).unwrap();
@@ -183,12 +179,8 @@ fn bare_result_types_leave_the_operation_body_unconsumed() {
 #[test]
 fn a_generic_is_bound_once_and_shared_by_named_operands_and_results() {
     let output = compile_mir(PAIR).unwrap();
-    assert!(
-        output
-            .types
-            .contains("operands: L::Fixed(&[P::Bind(0, C::Integer), P::Same(0)])")
-    );
-    assert!(output.types.contains("results: L::Fixed(&[P::Same(0)])"));
+    assert!(output.types.contains("operands[1] == operands[0]"));
+    assert!(output.types.contains("results[0] == operands[0]"));
     assert!(output.opcodes.contains(
         "pub fn pair_add(&mut self, left: crate::Value, right: crate::Value) -> crate::Value"
     ));
@@ -198,12 +190,13 @@ fn a_generic_is_bound_once_and_shared_by_named_operands_and_results() {
 #[test]
 fn variadic_calls_preserve_the_statically_checked_pointer_prefix() {
     let output = compile_mir(INDIRECT_CALL).unwrap();
+    assert!(output.types.contains("operands[0] == Type::PTR"));
+    assert!(output.types.contains("Ok(super::ResultTypes::Signature)"));
     assert!(
         output
-            .types
-            .contains("operands: L::Variadic(&[P::Exact(Type::PTR)])")
+            .opcodes
+            .contains("Ok((crate::opspec::ResultTypes::Signature, true))")
     );
-    assert!(output.types.contains("results: L::Signature"));
     // The signature property is not an SSA operand in the type contract.
     assert!(!output.types.contains("SigId"));
 }
@@ -222,12 +215,13 @@ fn successors_preserve_the_statically_checked_branch_condition() {
         }
     "#;
     let output = compile_mir(source).unwrap();
+    assert!(output.types.contains("operands[0] == Type::BOOL"));
+    assert!(output.types.contains("if !results.is_empty()"));
     assert!(
         output
-            .types
-            .contains("operands: L::Variadic(&[P::Exact(Type::BOOL)])")
+            .opcodes
+            .contains("ResultTypes::Inferred(Default::default()), true")
     );
-    assert!(output.types.contains("results: L::Fixed(&[])"));
 }
 
 #[test]
@@ -290,11 +284,7 @@ fn storage_packing_covers_every_field_and_logical_parameter_once() {
 #[test]
 fn properties_must_match_their_declared_storage_type_and_role() {
     let output = compile_mir(LOAD).unwrap();
-    assert!(
-        output
-            .types
-            .contains("operands: L::Fixed(&[P::Exact(Type::PTR)])")
-    );
+    assert!(output.types.contains("operands[0] == Type::PTR"));
     assert!(output.opcodes.contains(
         "pub fn load(&mut self, ptr: crate::Value, offset: u32, flags: crate::MemFlags, ty: crate::Type) -> crate::Value"
     ));

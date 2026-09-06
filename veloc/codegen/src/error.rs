@@ -1,14 +1,15 @@
 use alloc::string::String;
 use core::fmt;
 
-use crate::lir::MachineOpcode;
 use crate::target::arch::TargetArch;
+use veloc_lir::MachineOpcode;
 use veloc_mir::Opcode;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Clone)]
 pub enum Error {
+    Lir(veloc_lir::DecodeError),
     Codegen(CodegenError),
     Translate(TranslateError),
     Select(InstructionError),
@@ -143,6 +144,7 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::Lir(err) => err.fmt(f),
             Error::Codegen(err) => write!(f, "Codegen error: {}", err),
             Error::Translate(err) => write!(f, "Translation error: {}", err),
             Error::Select(err) => write!(f, "Instruction selection failed for opcode: {}", err),
@@ -250,5 +252,11 @@ impl From<CodegenError> for Error {
 impl From<TranslateError> for Error {
     fn from(err: TranslateError) -> Self {
         Self::Translate(err)
+    }
+}
+
+impl From<veloc_lir::DecodeError> for Error {
+    fn from(err: veloc_lir::DecodeError) -> Self {
+        Self::Lir(err)
     }
 }

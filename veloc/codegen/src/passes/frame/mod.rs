@@ -1,7 +1,7 @@
 use crate::error::Result;
-use crate::pipeline::stages::{PrologueEpilogueInserted, RegAllocated};
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{CallConv, TargetFrameLowering};
+use veloc_lir::stages::{PrologueEpilogueInserted, RegAllocated};
 
 pub struct FrameFinalizePass<'a> {
     frame_lowering: &'a dyn TargetFrameLowering,
@@ -20,10 +20,10 @@ impl<'a> StageTransformPass<RegAllocated, PrologueEpilogueInserted> for FrameFin
 
     fn run(
         &self,
-        mut mfunc: crate::lir::MachineFunction<RegAllocated>,
+        mut mfunc: veloc_lir::MachineFunction<RegAllocated>,
         ctx: &mut FunctionPassContext<'_, RegAllocated>,
     ) -> Result<(
-        crate::lir::MachineFunction<PrologueEpilogueInserted>,
+        veloc_lir::MachineFunction<PrologueEpilogueInserted>,
         PassEffect,
     )> {
         self.frame_lowering

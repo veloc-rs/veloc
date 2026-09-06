@@ -1,6 +1,8 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    println!("cargo:rerun-if-changed=../../rustfmt.toml");
+    println!("cargo:rerun-if-env-changed=RUSTFMT");
     let mut source = String::new();
     let mut locations = Vec::new();
     let mut line = 1;
@@ -33,19 +35,25 @@ fn main() {
         );
     });
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
+    let mut rust_files = Vec::new();
     for (name, text) in [
         ("encoding.rs", output.encoding),
         ("builtins.rs", output.builtins),
         ("scalars.rs", output.scalars),
         ("formats.rs", output.formats),
-        ("type_schemes.rs", output.types),
+        ("type_rules.rs", output.types),
         ("validation.rs", output.validation),
         ("opcodes.rs", output.opcodes),
         ("instructions.rs", output.instructions),
         ("text_parser.rs", output.text_parser),
         ("text_printer.rs", output.text_printer),
+        ("opcodes.md", output.documentation),
     ] {
-        fs::write(dir.join(name), text).expect("write generated MIR definitions");
+        let path = dir.join(name);
+        fs::write(&path, text).expect("write generated MIR definitions");
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            rust_files.push(path);
+        }
     }
 
     // Only the type-contract code is included by unit tests; these operations
@@ -62,5 +70,9 @@ fn main() {
         fixtures.push('\n');
     }
     let fixtures = veloc_opgen::compile_mir(&fixtures).expect("compile test type contracts");
-    fs::write(dir.join("test_type_schemes.rs"), fixtures.types).expect("write test type contracts");
+    let path = dir.join("test_type_rules.rs");
+    fs::write(&path, fixtures.types).expect("write test type contracts");
+    rust_files.push(path);
+    veloc_opgen::format_rust(&rust_files, std::path::Path::new("../../rustfmt.toml"))
+        .expect("format generated MIR definitions");
 }

@@ -1,11 +1,11 @@
 use crate::error::Result;
-use crate::lir::{
-    GenericOpcode, MachineFunction, MachineInst, MachineOpcode, Reg, StackSlot, Writable,
-};
-use crate::pipeline::stages::LegalizedLir;
 use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
 use alloc::vec::Vec;
+use veloc_lir::stages::LegalizedLir;
+use veloc_lir::{
+    GenericOpcode, MachineFunction, MachineInst, MachineOpcode, Reg, StackSlot, Writable,
+};
 
 pub struct AbiLoweringPass;
 
@@ -140,9 +140,9 @@ fn lower_formal_arguments(
 
 fn lower_callsite<S>(
     target: &dyn TargetMachine,
-    cursor: &mut crate::lir::BlockRewriteCursor<'_, S>,
+    cursor: &mut veloc_lir::BlockRewriteCursor<'_, S>,
     plan: &CallConvPlan,
-    inst_id: crate::lir::InstId,
+    inst_id: veloc_lir::InstId,
 ) {
     let shape = {
         let call = cursor.mfunc().as_call(inst_id);
@@ -184,7 +184,7 @@ fn lower_return<S>(
     mfunc: &mut MachineFunction<S>,
     sig: &veloc_mir::Signature,
     plan: &CallConvPlan,
-    inst_id: crate::lir::InstId,
+    inst_id: veloc_lir::InstId,
 ) -> Vec<MachineInst> {
     let values = mfunc.dfg[inst_id]
         .as_ret()

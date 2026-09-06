@@ -3,12 +3,7 @@
 //! 第一版只处理“单 basic block 内、纯整数、同一 opcode 的可交换/可结合树”。
 //! 这类规范化属于 generic LIR 规范化，应该发生在指令选择之前。
 
-use crate::lir::{
-    GenericOpcode, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg,
-    UseDefChain, Writable,
-};
 use crate::pipeline::FunctionAnalysisCtx;
-use crate::pipeline::stages::AllowsUnbankedVRegAlloc;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -17,6 +12,11 @@ use egg::{
     CostFunction, Extractor, Id, RecExpr, Rewrite, Runner, Symbol, define_language, rewrite as rw,
 };
 use hashbrown::{HashMap, HashSet};
+use veloc_lir::stages::AllowsUnbankedVRegAlloc;
+use veloc_lir::{
+    GenericOpcode, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg,
+    UseDefChain, Writable,
+};
 
 #[derive(Debug, Clone)]
 struct RewritePlan {
@@ -406,12 +406,12 @@ fn rewrite_block_assoc_commutative_trees_with_use_def<S: AllowsUnbankedVRegAlloc
 #[cfg(test)]
 mod tests {
     use super::run_generic_pre_isel_egraph_combine;
-    use crate::lir::{
+    use crate::pipeline::FunctionAnalysisCtx;
+    use veloc_lir::stages::RawLir;
+    use veloc_lir::{
         GenericOpcode, MachineBlock, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
         Writable,
     };
-    use crate::pipeline::FunctionAnalysisCtx;
-    use crate::pipeline::stages::RawLir;
     use veloc_mir::{Block, Type};
 
     fn new_test_function() -> MachineFunction<RawLir> {

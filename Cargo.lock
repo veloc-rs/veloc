@@ -1707,6 +1707,7 @@ version = "0.1.0"
 dependencies = [
  "veloc-codegen",
  "veloc-interpreter",
+ "veloc-lir",
  "veloc-mir",
 ]
 
@@ -1741,6 +1742,7 @@ dependencies = [
  "object 0.36.7",
  "smallvec",
  "veloc-isle",
+ "veloc-lir",
  "veloc-mir",
  "veloc-opgen",
  "veloc-semantics",
@@ -1765,6 +1767,16 @@ dependencies = [
  "logos",
  "miette",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "veloc-lir"
+version = "0.1.0"
+dependencies = [
+ "cranelift-entity 0.128.3",
+ "hashbrown 0.14.5",
+ "smallvec",
+ "veloc-mir",
 ]
 
 [[package]]

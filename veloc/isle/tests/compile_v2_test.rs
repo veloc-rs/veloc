@@ -288,7 +288,7 @@ fn compile_select_rules_generate_generic_operand_constraint_metadata() {
     assert!(output.contains("TiedOperandConstraint { def_operand: 0, use_operand: 1 }"));
     assert!(output.contains("commute_operand_pairs: &[(1, 2)]"));
     assert!(output.contains("FixedUseConstraint { use_operand: 2, reg: REG_RCX }"));
-    assert!(output.contains("pub fn generic_inst_metadata(opcode: crate::lir::GenericOpcode)"));
+    assert!(output.contains("pub fn generic_inst_metadata(opcode: veloc_lir::GenericOpcode)"));
 }
 
 #[test]

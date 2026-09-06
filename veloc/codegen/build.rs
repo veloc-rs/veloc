@@ -11,10 +11,10 @@ macro_rules! define_generic_opcodes {
         ];
     };
 }
-include!("defs/generic.rs");
+include!("../lir/defs/generic.rs");
 
-fn generate_lowering() {
-    println!("cargo:rerun-if-changed=defs/generic.rs");
+fn generate_lowering() -> PathBuf {
+    println!("cargo:rerun-if-changed=../lir/defs/generic.rs");
     let mut source = String::new();
     for name in ["types", "builtins", "comparisons", "formats", "mir"] {
         let path = format!("../mir/defs/{name}.ops");
@@ -26,11 +26,15 @@ fn generate_lowering() {
     let code =
         veloc_opgen::generate_lowering(&defs, BINDINGS).expect("valid LIR primitive bindings");
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
-    fs::write(dir.join("mir_lowering.rs"), code).expect("write direct lowering");
+    let path = dir.join("mir_lowering.rs");
+    fs::write(&path, code).expect("write direct lowering");
+    path
 }
 
 fn main() {
-    generate_lowering();
+    println!("cargo:rerun-if-changed=../../rustfmt.toml");
+    println!("cargo:rerun-if-env-changed=RUSTFMT");
+    let mut rust_files = vec![generate_lowering()];
     let arch = "x86_64";
     let isle_dir = PathBuf::from(format!("isle/{}", arch));
 
@@ -74,5 +78,8 @@ fn main() {
         let dest_path = out_dir.join(format!("isle_{}.rs", arch));
 
         fs::write(&dest_path, output).expect("Failed to write generated file");
+        rust_files.push(dest_path);
     }
+    veloc_opgen::format_rust(&rust_files, std::path::Path::new("../../rustfmt.toml"))
+        .expect("format generated codegen definitions");
 }

@@ -1,10 +1,10 @@
 use crate::error::Result;
-use crate::lir::MachineOperand;
-use crate::lir::{MachineFunction, MachineInst, Reg, Writable};
-use crate::pipeline::stages::{PreIselPrepared, SelectedLir};
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{FixedUseConstraint, TargetOperandLowering, TiedOperandConstraint};
 use core::marker::PhantomData;
+use veloc_lir::MachineOperand;
+use veloc_lir::stages::{PreIselPrepared, SelectedLir};
+use veloc_lir::{MachineFunction, MachineInst, Reg, Writable};
 
 /// 在给定阶段应用 target/指令元数据定义的操作数约束。
 struct OperandConstraintPassImpl<'a, Stage> {
@@ -131,7 +131,7 @@ where
 
     fn rewrite_block(
         &self,
-        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
         changed: &mut usize,
     ) -> Result<()> {
         if cursor.current_inst().is_invalid() {
@@ -159,7 +159,7 @@ where
 
     fn apply_constraints(
         &self,
-        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         constraints: &crate::target::arch::OperandConstraintSet,
     ) -> Result<bool> {
@@ -186,7 +186,7 @@ where
 
     fn apply_tied_operand_constraint(
         &self,
-        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         tied: &TiedOperandConstraint,
         commute_pairs: &[(usize, usize)],
@@ -213,7 +213,7 @@ where
 
     fn apply_fixed_use_constraint(
         &self,
-        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
         inst: &mut MachineInst,
         fixed: &FixedUseConstraint,
     ) -> Result<bool> {
@@ -229,7 +229,7 @@ where
 
     fn emit_constraint_copy(
         &self,
-        cursor: &mut crate::lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
         dst: Reg,
         src: Reg,
     ) -> Result<()> {
@@ -379,13 +379,13 @@ fn try_commute_tied_use(
 #[cfg(test)]
 mod tests {
     use super::PreSelectOperandConstraintPass;
-    use crate::lir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
-    use crate::pipeline::stages::PreIselPrepared;
     use crate::target::arch::{
         FixedUseConstraint, OperandConstraintSet, TargetOperandLowering, TiedOperandConstraint,
     };
     use alloc::vec;
     use alloc::vec::Vec;
+    use veloc_lir::stages::PreIselPrepared;
+    use veloc_lir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
 
     struct DummyLowering {
         constraints: OperandConstraintSet,
@@ -418,7 +418,7 @@ mod tests {
 
     fn make_function_with_inst(
         inst: MachineInst,
-    ) -> (MachineFunction<PreIselPrepared>, crate::lir::InstId) {
+    ) -> (MachineFunction<PreIselPrepared>, veloc_lir::InstId) {
         let mut mfunc = MachineFunction::<PreIselPrepared>::new("test".into());
         mfunc
             .blocks
@@ -432,7 +432,7 @@ mod tests {
     fn tied_use_already_satisfied_inserts_no_copy() {
         let reg = Reg::new_vreg(0);
         let inst = MachineInst::build_binary(
-            crate::lir::MachineOpcode::Generic(crate::lir::GenericOpcode::G_ADD),
+            veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_ADD),
             Writable(reg),
             reg,
             Reg::new_vreg(1),
@@ -459,7 +459,7 @@ mod tests {
         let dst = Reg::new_vreg(0);
         let lhs = Reg::new_vreg(1);
         let inst = MachineInst::build_binary(
-            crate::lir::MachineOpcode::Generic(crate::lir::GenericOpcode::G_ADD),
+            veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_ADD),
             Writable(dst),
             lhs,
             dst,
@@ -490,7 +490,7 @@ mod tests {
         let src = Reg::new_vreg(1);
         let fixed = Reg::new_preg(7);
         let inst = MachineInst::build_unary(
-            crate::lir::MachineOpcode::Generic(crate::lir::GenericOpcode::G_NEG),
+            veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_NEG),
             Writable(dst),
             src,
         );

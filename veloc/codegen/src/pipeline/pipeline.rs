@@ -1,11 +1,11 @@
 use crate::error::Result;
-use crate::lir::MachineFunction;
 use crate::pipeline::{
     ChangeSet, CompiledModule, FunctionPass, FunctionPassContext, ModuleCodegenPass,
     ModulePassContext, PassEffect,
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use veloc_lir::MachineFunction;
 
 pub struct StagePassPipeline<S> {
     passes: Vec<Box<dyn FunctionPass<S>>>,

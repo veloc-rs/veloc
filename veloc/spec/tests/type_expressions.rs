@@ -56,8 +56,8 @@ fn named_aliases_and_inline_expressions_intern_to_the_same_set() {
     let inline = compile_mir(&source.replace("T: Wide", "T: I64 | I32")).unwrap();
     assert_eq!(named.types, inline.types);
     assert_eq!(named.builtins, inline.builtins);
-    assert!(inline.types.contains("P::Bind(0, C::Wide), P::Same(0)"));
-    assert!(inline.types.contains("P::Same(0)"));
+    assert!(inline.types.contains("C::Wide.accepts(operands[0])"));
+    assert!(inline.types.contains("operands[1] == operands[0]"));
 
     let aliases =
         compile_mir("class A { members: [I32 | I64] } class B { members: [I64 | I32] }").unwrap();
@@ -89,8 +89,10 @@ op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Scalar) {
 }
 "#;
     let output = compile_mir(source).unwrap();
-    assert!(output.types.contains("P::Class(C("));
-    assert!(output.types.contains("P::ShapeOf(0, C::ScalarFloat)"));
+    assert!(output.types.contains(".accepts(operands[0])"));
+    assert!(output.types.contains(
+        "C::ScalarFloat.accepts(results[0]) && super::same_shape(operands[0], results[0])"
+    ));
     assert!(
         output
             .opcodes

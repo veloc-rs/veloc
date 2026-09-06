@@ -3,7 +3,7 @@
 //! MachineModule 是 LIR 层级的顶级容器，包含模块级共享资源、符号表和函数集合。
 
 use super::{MachineFunction, SymbolTable};
-use crate::pipeline::stages::RawLir;
+use crate::stages::RawLir;
 use alloc::vec::Vec;
 use cranelift_entity::PrimaryMap;
 use cranelift_entity::entity_impl;

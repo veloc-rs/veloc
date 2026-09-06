@@ -1,7 +1,7 @@
-use crate::lir::{MachineFunction, Reg, UseDefChain};
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use hashbrown::{HashMap, HashSet};
+use veloc_lir::{MachineFunction, Reg, UseDefChain};
 use veloc_mir::Block;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -442,16 +442,12 @@ fn compute_cfg<S>(mfunc: &MachineFunction<S>) -> CfgInfo {
             } else if let Ok(br) = inst.as_branch_cond() {
                 block_succs.push(br.then_blk);
                 block_succs.push(br.else_blk);
-            } else if let Some(crate::lir::InstExtra::BrTable(info)) =
-                mfunc.inst_extra(last_inst_id)
+            } else if let Some(veloc_lir::InstExtra::BrTable(info)) = mfunc.inst_extra(last_inst_id)
             {
                 for target in &info.targets {
                     block_succs.push(target.block);
                 }
-            } else if !matches!(
-                inst.generic_opcode(),
-                Some(crate::lir::GenericOpcode::G_RET)
-            ) {
+            } else if !matches!(inst.generic_opcode(), Some(veloc_lir::GenericOpcode::G_RET)) {
                 if let Some(next) = block_order.get(index + 1).copied() {
                     block_succs.push(next);
                 }
@@ -650,8 +646,8 @@ fn compute_register_pressure<S>(
 #[cfg(test)]
 mod tests {
     use super::{ChangeSet, FunctionAnalysisCtx};
-    use crate::lir::{MachineBlock, MachineFunction, MachineInst, Writable};
-    use crate::pipeline::stages::RawLir;
+    use veloc_lir::stages::RawLir;
+    use veloc_lir::{MachineBlock, MachineFunction, MachineInst, Writable};
     use veloc_mir::{Block, Type};
 
     #[test]

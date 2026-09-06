@@ -9,7 +9,9 @@ pub mod error;
 pub mod isle {
     pub use crate::target::x86_64::isle::*;
 }
-pub mod lir;
+// Exported macros use the dependency's canonical name for hygienic paths.
+#[doc(hidden)]
+pub use veloc_lir;
 pub mod object;
 pub mod passes;
 pub mod pipeline;
@@ -40,11 +42,11 @@ pub fn create_target_machine(config: TargetConfig) -> Option<alloc::boxed::Box<d
 
 pub use error::{Error, Result};
 
-pub use crate::lir::SymbolId;
 pub use alloc::format;
 pub use alloc::string::String;
 pub use alloc::vec::Vec;
 use hashbrown::HashMap;
+pub use veloc_lir::SymbolId;
 use veloc_mir::Block;
 
 #[derive(Debug, Clone)]

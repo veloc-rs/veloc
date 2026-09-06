@@ -3,9 +3,9 @@
 //! x86_64 后端只保留发射时机和 fixup 收尾逻辑。
 //! 具体编码字节序列由 ISLE DSL 生成的 `TargetInst::emit()` 负责。
 
-use crate::lir::{MachineBlock, MachineFunction, MachineInst, MachineOpcode};
-use crate::pipeline::stages::PrologueEpilogueInserted;
 use crate::target::arch::TargetEmitter;
+use veloc_lir::stages::PrologueEpilogueInserted;
+use veloc_lir::{MachineBlock, MachineFunction, MachineInst, MachineOpcode};
 
 /// x86_64 机器码发射器实现
 pub struct X86_64CodeEmitter;

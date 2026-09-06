@@ -1,3 +1,5 @@
+//! LIR state markers. Pass scheduling and state transitions belong to codegen.
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RawLir;
 

@@ -5,9 +5,18 @@ use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
 use veloc_mir::{Block, FloatCC, IntCC, Type};
 
-pub use crate::lir::RegisterBank;
-use crate::lir::extra::CallInfo;
-use crate::lir::symbol::SymbolId;
+use crate::extra::CallInfo;
+use crate::symbol::SymbolId;
+
+/// Abstract register bank; target-specific selection belongs to codegen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RegisterBank {
+    GPR,
+    FPR,
+    VR,
+    PR,
+    Special,
+}
 
 /// 机器指令索引
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -107,7 +116,7 @@ macro_rules! define_generic_opcodes {
         pub enum GenericOpcode { $($opcode,)* }
     };
 }
-include!("../../defs/generic.rs");
+include!("../defs/generic.rs");
 
 /// 机器指令操作码
 #[derive(Debug, Clone)]
@@ -1142,12 +1151,15 @@ impl MachineInst {
         Ok(CallShape { defs, callee, args })
     }
 
-    fn decode_error(&self, message: &str) -> crate::error::Error {
+    fn decode_error(&self, message: &str) -> crate::DecodeError {
         self.decode_error_owned(message.into())
     }
 
-    fn decode_error_owned(&self, message: String) -> crate::error::Error {
-        crate::error::Error::select(self.opcode.clone(), message)
+    fn decode_error_owned(&self, message: String) -> crate::DecodeError {
+        crate::DecodeError {
+            opcode: self.opcode.clone(),
+            reason: message,
+        }
     }
 }
 

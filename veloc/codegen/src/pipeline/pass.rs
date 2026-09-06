@@ -1,6 +1,6 @@
 use crate::error::Result;
-use crate::lir::MachineFunction;
 use crate::pipeline::{CompiledModule, FunctionPassContext, ModulePassContext, PassEffect};
+use veloc_lir::MachineFunction;
 
 pub trait FunctionPass<S> {
     fn name(&self) -> &'static str;

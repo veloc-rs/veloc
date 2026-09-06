@@ -1,5 +1,5 @@
 //! Exercise compiled contracts across every opcode, including malformed types.
-use veloc_mir::opspec::{ResultTypes, TypeList, TypeSchemeError};
+use veloc_mir::opspec::{ResultTypes, TypeError};
 use veloc_mir::{Opcode, Type};
 
 #[test]
@@ -56,12 +56,14 @@ fn generated_inference_and_validation_are_consistent() {
                             "{op:?} {operands:?}"
                         ),
                         Ok(ResultTypes::Signature) => {
-                            assert_eq!(op.spec().type_scheme.results, TypeList::Signature)
+                            for result in types {
+                                assert!(op.validate_types(operands, &[result]).is_ok());
+                            }
                         }
                         Ok(ResultTypes::Explicit) => {}
                         Err(
-                            error @ (TypeSchemeError::Arity { results: false, .. }
-                            | TypeSchemeError::Pattern { results: false, .. }),
+                            error @ (TypeError::Arity { results: false, .. }
+                            | TypeError::Pattern { results: false, .. }),
                         ) => {
                             for result in types {
                                 for results in [&[][..], &[result][..], &[result, x][..]] {

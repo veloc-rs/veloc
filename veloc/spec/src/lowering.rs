@@ -29,7 +29,7 @@ pub fn generate_lowering(defs: &Definitions, bindings: &[(BvOp, &str)]) -> Resul
     }
     let mut code = String::from(
         "// @generated from MIR semantics and generic LIR bindings.\n\
-         fn direct_lowering(opcode: veloc_mir::Opcode) -> Option<crate::lir::GenericOpcode> {\n\
+         fn direct_lowering(opcode: veloc_mir::Opcode) -> Option<veloc_lir::GenericOpcode> {\n\
          match opcode {\n",
     );
     for op in &defs.ops {
@@ -39,7 +39,7 @@ pub fn generate_lowering(defs: &Definitions, bindings: &[(BvOp, &str)]) -> Resul
         if let Some((_, target)) = bindings.iter().find(|(p, _)| *p == primitive) {
             writeln!(
                 code,
-                "veloc_mir::Opcode::{} => Some(crate::lir::GenericOpcode::{target}),",
+                "veloc_mir::Opcode::{} => Some(veloc_lir::GenericOpcode::{target}),",
                 op.name
             )
             .unwrap();

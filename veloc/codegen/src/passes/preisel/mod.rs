@@ -1,7 +1,7 @@
 use crate::error::Result;
-use crate::pipeline::stages::PreIselPrepared;
 use crate::pipeline::{FunctionPass, FunctionPassContext, PassEffect, StageTransformPass};
 use crate::target::arch::{TargetOperandLowering, TargetPassConfig};
+use veloc_lir::stages::PreIselPrepared;
 
 pub struct PreIselPass<'a> {
     operand_lowering: &'a dyn TargetOperandLowering,
@@ -33,9 +33,9 @@ impl<'a> StageTransformPass<PreIselPrepared, PreIselPrepared> for PreIselPass<'a
 
     fn run(
         &self,
-        mut mfunc: crate::lir::MachineFunction<PreIselPrepared>,
+        mut mfunc: veloc_lir::MachineFunction<PreIselPrepared>,
         ctx: &mut FunctionPassContext<'_, PreIselPrepared>,
-    ) -> Result<(crate::lir::MachineFunction<PreIselPrepared>, PassEffect)> {
+    ) -> Result<(veloc_lir::MachineFunction<PreIselPrepared>, PassEffect)> {
         for pass in self.pass_config.pre_isel_passes() {
             let effect = pass.run(&mut mfunc, ctx)?;
             Self::apply_effect(effect, ctx);

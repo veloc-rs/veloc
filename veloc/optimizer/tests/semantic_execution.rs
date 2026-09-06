@@ -21,10 +21,7 @@ fn offline_table_matches_runtime_metadata_without_duplicate_opcodes() {
         assert!(!specs[..i].iter().any(|s| s.opcode == spec.opcode));
         assert_eq!(
             spec.program.inputs as usize,
-            match spec.opcode.spec().type_scheme.operands {
-                veloc_mir::opspec::TypeList::Fixed(p) => p.len(),
-                _ => unreachable!(),
-            }
+            spec.opcode.spec().format.fixed_value_arity().unwrap()
         );
         spec.program.validate().unwrap();
     }

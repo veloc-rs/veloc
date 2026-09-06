@@ -1,4 +1,4 @@
-use veloc_mir::opspec::{ResultTypes, TypeSchemeError};
+use veloc_mir::opspec::{ResultTypes, TypeError};
 use veloc_mir::types::TypeBits;
 use veloc_mir::{Opcode, Type, TypeSize};
 
@@ -138,7 +138,7 @@ fn inference_and_validation_reject_conflicting_bindings() {
     assert_eq!(inferred_error, checked_error);
     assert!(matches!(
         inferred_error,
-        TypeSchemeError::Pattern {
+        TypeError::Pattern {
             results: false,
             index: 1,
             ..

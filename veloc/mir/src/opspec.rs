@@ -1,62 +1,12 @@
 //! Runtime contracts for MIR operations.
 //!
-//! Layouts, type schemes and operation tables are compiled from `defs/*.ops`.
+//! Layouts, type checks and operation tables are compiled from `defs/*.ops`.
 //! This module implements their shared type/effect machinery; it does not
 //! contain individual operation definitions.
 
 include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
 include!(concat!(env!("OUT_DIR"), "/builtins.rs"));
-
-/// One operand or result in a declarative type scheme.
-///
-/// `Bind` introduces a type variable. Later patterns can require the exact same
-/// type, its scalar element, a vector of that element, or merely its vector
-/// shape. This small vocabulary is intentionally independent of any opcode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypePattern {
-    Class(TypeClass),
-    Exact(crate::Type),
-    Bind(u8, TypeClass),
-    Same(u8),
-    ElementOf(u8),
-    VectorOf(u8),
-    ShapeOf(u8, TypeClass),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeList {
-    Fixed(&'static [TypePattern]),
-    /// A checked prefix followed by values from a signature or CFG structure.
-    Variadic(&'static [TypePattern]),
-    /// Results are supplied by the instruction's function signature.
-    Signature,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeSlot {
-    Operand(u8),
-    Result(u8),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeRelation {
-    /// The destination has more logical bits per lane. Shape constraints are
-    /// specified separately in the operand and result patterns.
-    Wider { from: TypeSlot, to: TypeSlot },
-    /// The destination has fewer logical bits per lane.
-    Narrower { from: TypeSlot, to: TypeSlot },
-    /// Distinct types with equal whole-value logical sizes, including vscale.
-    SameWidthDistinct { lhs: TypeSlot, rhs: TypeSlot },
-}
-
-/// Read-only descriptive metadata. Executable checks are generated on Opcode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TypeScheme {
-    pub operands: TypeList,
-    pub results: TypeList,
-    pub relations: &'static [TypeRelation],
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultTypes {
@@ -66,7 +16,7 @@ pub enum ResultTypes {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeSchemeError {
+pub enum TypeError {
     Arity {
         results: bool,
         expected: usize,
@@ -75,10 +25,11 @@ pub enum TypeSchemeError {
     Pattern {
         results: bool,
         index: usize,
-        expected: TypePattern,
+        expected: &'static str,
         got: crate::Type,
     },
-    Relation(TypeRelation),
+    /// Static diagnostic emitted with the failed type-relation check.
+    Relation(&'static str),
 }
 
 fn same_shape(bound: crate::Type, ty: crate::Type) -> bool {
@@ -90,15 +41,15 @@ fn same_shape(bound: crate::Type, ty: crate::Type) -> bool {
     }
 }
 
-/// Shared metadata and executable rules generated from the definitions.
-pub(crate) mod type_schemes {
-    include!(concat!(env!("OUT_DIR"), "/type_schemes.rs"));
+/// Shared executable rules generated from the definitions.
+pub(crate) mod type_rules {
+    include!(concat!(env!("OUT_DIR"), "/type_rules.rs"));
 }
 
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
-mod test_type_schemes {
-    include!(concat!(env!("OUT_DIR"), "/test_type_schemes.rs"));
+mod test_type_rules {
+    include!(concat!(env!("OUT_DIR"), "/test_type_rules.rs"));
 }
 
 /// Abstract memory regions used by generic scheduling, DCE, and alias queries.
@@ -257,11 +208,8 @@ impl core::fmt::Display for OpTraits {
 pub struct OpSpec {
     pub mnemonic: &'static str,
     pub format: OpFormat,
-    pub type_scheme: &'static TypeScheme,
     pub traits: OpTraits,
     pub memory_effect: MemoryEffect,
-    /// Descriptive predicates/diagnostics; executable checks are generated from definitions.
-    pub constraints: &'static [&'static str],
 }
 
 impl OpSpec {
@@ -294,40 +242,15 @@ impl OpSpec {
     }
 }
 
-/// Emit a reference table from exactly the metadata used by the IR itself.
-/// This is intentionally descriptive documentation, not a stable wire format.
-pub fn write_opcode_markdown(output: &mut dyn core::fmt::Write) -> core::fmt::Result {
-    writeln!(
-        output,
-        "| Mnemonic | Format | Operands | Results | Memory | Properties | Constraints |"
-    )?;
-    writeln!(output, "|---|---|---|---|---|---|---|")?;
-    for &opcode in crate::Opcode::ALL {
-        let spec = opcode.spec();
-        writeln!(
-            output,
-            "| `{}` | `{:?}` | `{:?}` | `{:?}` | {} | {} | `{:?}` |",
-            spec.mnemonic,
-            spec.format,
-            spec.type_scheme.operands,
-            spec.type_scheme.results,
-            spec.memory_effect,
-            spec.traits,
-            spec.constraints,
-        )?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::MemoryEffect;
     use super::ResultTypes;
-    use super::{MemoryEffect, TypeList};
     use crate::{FloatCC, IntCC, Opcode, Type};
 
     #[test]
     fn generated_contracts_cover_many_variables_and_result_only_bindings() {
-        use super::test_type_schemes::{
+        use super::test_type_rules::{
             infer_0 as infer_many, infer_1 as infer_output, validate_0 as validate_many,
             validate_1 as validate_output,
         };
@@ -349,11 +272,9 @@ mod tests {
 
     #[test]
     fn generated_inference_checks_relations_on_known_results() {
-        use super::test_type_schemes::{infer_2, validate_2};
-        let expected = super::TypeSchemeError::Relation(super::TypeRelation::Wider {
-            from: super::TypeSlot::Operand(0),
-            to: super::TypeSlot::Result(0),
-        });
+        use super::test_type_rules::{infer_2, validate_2};
+        let expected =
+            super::TypeError::Relation("results[0] must have more bits per lane than operands[0]");
         assert_eq!(infer_2(&[Type::I32]), Err(expected));
         assert_eq!(validate_2(&[Type::I32], &[Type::I8]), Err(expected));
         assert_eq!(
@@ -413,24 +334,35 @@ mod tests {
     }
 
     #[test]
+    fn text_inference_defers_only_unresolved_independent_prefixes() {
+        assert_eq!(
+            Opcode::Br.infer_text_result_types(&[Type::INVALID]),
+            Ok((ResultTypes::Inferred(Default::default()), true))
+        );
+        assert_eq!(
+            Opcode::CallIndirect.infer_text_result_types(&[Type::INVALID]),
+            Ok((ResultTypes::Signature, true))
+        );
+        assert_eq!(
+            Opcode::CallIndirect.infer_text_result_types(&[Type::PTR]),
+            Ok((ResultTypes::Signature, false))
+        );
+        for op in [Opcode::Br, Opcode::BrTable, Opcode::CallIndirect] {
+            assert!(op.infer_text_result_types(&[]).is_err());
+            assert!(op.infer_text_result_types(&[Type::F32]).is_err());
+        }
+        for op in [Opcode::IAdd, Opcode::Icmp] {
+            assert!(
+                op.infer_text_result_types(&[Type::INVALID, Type::INVALID])
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn opcode_spec_invariants_hold() {
-        assert!(core::ptr::eq(
-            Opcode::IAdd.spec().type_scheme,
-            Opcode::ISub.spec().type_scheme,
-        ));
         for &opcode in Opcode::ALL {
             let spec = opcode.spec();
-            if let (Some(format_arity), TypeList::Fixed(operands)) =
-                (spec.format.fixed_value_arity(), spec.type_scheme.operands)
-            {
-                assert_eq!(
-                    format_arity,
-                    operands.len(),
-                    "{} format and type scheme disagree",
-                    spec.mnemonic
-                );
-            }
-
             if spec.is_idempotent() {
                 assert!(spec.is_commutative());
                 assert!(spec.is_associative());
@@ -461,45 +393,33 @@ mod tests {
 
     #[test]
     fn inline_type_sets_preserve_membership_and_shared_bindings() {
-        use super::{TypeList, TypePattern};
-
-        let class = |opcode: Opcode, index: usize| {
-            let TypeList::Fixed(operands) = opcode.spec().type_scheme.operands else {
-                panic!("expected fixed operands");
-            };
-            let TypePattern::Bind(_, class) = operands[index] else {
-                panic!("expected a type binding");
-            };
-            class
-        };
-        let bits = class(Opcode::IAnd, 0);
-        let comparable = class(Opcode::Icmp, 0);
-        let indices = class(Opcode::Gather, 1);
-        assert_eq!(bits, class(Opcode::IOr, 0));
-        assert_eq!(bits, class(Opcode::IXor, 0));
-        assert_eq!(bits, class(Opcode::ExtendU, 0));
         for raw in 0..=u16::MAX {
             let Some(ty) = Type::from_raw(raw) else {
                 continue;
             };
+            for op in [Opcode::IAnd, Opcode::IOr, Opcode::IXor] {
+                assert_eq!(
+                    op.validate_types(&[ty, ty], &[ty]).is_ok(),
+                    ty.is_integer() || ty == Type::BOOL || ty.is_predicate(),
+                    "{op:?}: {ty}"
+                );
+            }
             assert_eq!(
-                bits.accepts(ty),
-                ty.is_integer() || ty == Type::BOOL || ty.is_predicate(),
-                "{ty}"
-            );
-            assert_eq!(
-                comparable.accepts(ty),
+                Opcode::Icmp.infer_result_types(&[ty, ty]).is_ok(),
                 ty.is_scalar() && (ty.is_integer() || ty.is_ptr()),
                 "{ty}"
             );
             assert_eq!(
-                indices.accepts(ty),
+                Opcode::Gather.infer_result_types(&[Type::PTR, ty]).is_ok(),
                 ty.is_integer() && ty.is_vector(),
                 "{ty}"
             );
         }
-        for class in [bits, comparable, indices] {
-            assert!(!class.accepts(Type::INVALID));
+        for op in [Opcode::IAnd, Opcode::Icmp, Opcode::Gather] {
+            assert!(
+                op.infer_result_types(&[Type::INVALID, Type::INVALID])
+                    .is_err()
+            );
         }
         let scheme = Opcode::IAnd;
         assert!(
@@ -661,15 +581,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn generated_markdown_covers_every_opcode() {
-        let mut output = alloc::string::String::new();
-        super::write_opcode_markdown(&mut output).unwrap();
-        for &opcode in Opcode::ALL {
-            assert!(output.contains(opcode.spec().mnemonic));
-        }
-        assert!(output.contains("| Mnemonic | Format |"));
     }
 }
