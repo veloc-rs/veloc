@@ -1,4 +1,4 @@
-use veloc_mir::opspec::{ResultTypes, TypeError};
+use veloc_mir::opspec::TypeError;
 use veloc_mir::types::TypeBits;
 use veloc_mir::{Opcode, Type, TypeSize};
 
@@ -130,28 +130,27 @@ fn bitcasts_require_equal_size_expressions() {
 }
 
 #[test]
-fn inference_and_validation_reject_conflicting_bindings() {
+fn validation_rejects_conflicting_bindings() {
     let scheme = Opcode::IAdd;
     let operands = [Type::I32, Type::I64];
-    let inferred_error = scheme.infer_result_types(&operands).unwrap_err();
     let checked_error = scheme.validate_types(&operands, &[Type::I32]).unwrap_err();
-    assert_eq!(inferred_error, checked_error);
     assert!(matches!(
-        inferred_error,
+        checked_error,
         TypeError::Pattern {
             results: false,
             index: 1,
             ..
         }
     ));
-    assert_eq!(
-        scheme.infer_result_types(&[Type::I32, Type::I32]),
-        Ok(ResultTypes::Inferred(smallvec::smallvec![Type::I32]))
+    assert!(
+        scheme
+            .validate_types(&[Type::I32, Type::I32], &[Type::I32])
+            .is_ok()
     );
 }
 
 #[test]
-fn inference_checks_operand_arity_and_classes() {
+fn validation_checks_operand_arity_and_classes() {
     let scheme = Opcode::IAdd;
     for operands in [
         &[Type::I32][..],
@@ -159,9 +158,6 @@ fn inference_checks_operand_arity_and_classes() {
         &[Type::F32, Type::F32][..],
         &[Type::I32, Type::I64][..],
     ] {
-        assert_eq!(
-            scheme.infer_result_types(operands).unwrap_err(),
-            scheme.validate_types(operands, &[Type::I32]).unwrap_err()
-        );
+        assert!(scheme.validate_types(operands, &[Type::I32]).is_err());
     }
 }

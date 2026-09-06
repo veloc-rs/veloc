@@ -47,13 +47,10 @@ fn main() {
         ("instructions.rs", output.instructions),
         ("text_parser.rs", output.text_parser),
         ("text_printer.rs", output.text_printer),
-        ("opcodes.md", output.documentation),
     ] {
         let path = dir.join(name);
         fs::write(&path, text).expect("write generated MIR definitions");
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            rust_files.push(path);
-        }
+        rust_files.push(path);
     }
 
     veloc_opgen::format_rust(&rust_files, std::path::Path::new("../../rustfmt.toml"))

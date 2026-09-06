@@ -398,11 +398,15 @@ trait Fold {
         Self: Sized;
 }
 fn fold(op: Opcode, args: &[Constant]) -> Option<Constant> {
-    let types = args.iter().map(|c| c.ty()).collect::<Vec<_>>();
-    let veloc_mir::opspec::ResultTypes::Inferred(results) = op.infer_result_types(&types).ok()?
-    else {
-        return None;
-    };
+    let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
+    let values = args
+        .iter()
+        .map(|c| dfg.append_block_param(veloc_mir::Block(0), c.ty()))
+        .collect::<Vec<_>>();
+    let data = veloc_mir::InstructionData::from_values(op, &values)?;
+    let results = data
+        .result_types(&dfg, &veloc_mir::ModuleData::default(), &[])
+        .ok()?;
     veloc_optimizer::rewrite::evaluate(op, args, &results, &[])?
         .first()
         .copied()

@@ -73,11 +73,17 @@ fn main() {
                 .validate_types(black_box(&[Type::I64]), black_box(&[Type::I32]))
                 .unwrap();
         });
-        measure("infer_results (3 calls)", 100_000 * scale, || {
+        let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
+        let lhs = dfg.append_block_param(veloc_mir::Block(0), Type::I32);
+        let rhs = dfg.append_block_param(veloc_mir::Block(0), Type::I32);
+        let context = ModuleData::default();
+        measure("resolve_results (3 calls)", 100_000 * scale, || {
             for op in [Opcode::IAdd, Opcode::ISub, Opcode::IMul] {
+                let data =
+                    veloc_mir::InstructionData::from_values(black_box(op), &[lhs, rhs]).unwrap();
                 black_box(
-                    black_box(op)
-                        .infer_result_types(black_box(&[Type::I32, Type::I32]))
+                    black_box(data)
+                        .result_types(black_box(&dfg), black_box(&context), &[])
                         .unwrap(),
                 );
             }

@@ -1,12 +1,23 @@
-//! Compile type contracts into shared, straight-line checks and inference.
+//! Compile independent result construction and type validation from signatures.
 //! Bindings exist only here: runtime code refers directly to operand/result slots.
-use crate::documentation::pattern;
 use crate::model::{Definitions, Pattern, Relation, Slot, TypeDef, TypeList};
 use crate::type_gen::Classes;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
 type Bindings = BTreeMap<u8, String>;
+
+fn pattern(p: &Pattern, classes: &Classes) -> String {
+    match p {
+        Pattern::Class(class) => classes.describe(class).into(),
+        Pattern::Exact(ty) => ty.clone(),
+        Pattern::Bind(var, class) => format!("T{var}: {}", classes.describe(class)),
+        Pattern::Same(var) => format!("T{var}"),
+        Pattern::ElementOf(var) => format!("element(T{var})"),
+        Pattern::VectorOf(var) => format!("vector(T{var})"),
+        Pattern::ShapeOf(var, class) => format!("shape(T{var}, {})", classes.describe(class)),
+    }
+}
 
 pub(crate) fn generate(
     defs: &Definitions,
@@ -28,62 +39,89 @@ pub(crate) fn generate(
         groups[id].push(&op.name);
     }
     ops.push_str("impl Opcode {\n");
-    for (method, extra, result, handler) in [
-        (
-            "validate_types",
-            ", results: &[crate::Type]",
-            "()",
-            "validate",
-        ),
-        (
-            "infer_result_types",
-            "",
-            "crate::opspec::ResultTypes",
-            "infer",
-        ),
-    ] {
-        writeln!(ops, "/// Execute the shared type contract generated from this opcode's definition.\n#[inline]\npub fn {method}(self, operands: &[crate::Type]{extra}) -> core::result::Result<{result}, crate::opspec::TypeError> {{\n    match self {{").unwrap();
-        for (id, names) in groups.iter().enumerate() {
-            let arms = names
-                .iter()
-                .map(|name| format!("Self::{name}"))
-                .collect::<Vec<_>>()
-                .join(" | ");
-            let args = if handler == "validate" {
-                "operands, results"
-            } else {
-                "operands"
-            };
-            writeln!(
-                ops,
-                "        {arms} => crate::opspec::type_rules::{handler}_{id}({args}),"
-            )
-            .unwrap();
-        }
-        ops.push_str("    }\n}\n");
-    }
-    // Text may reference values defined in later blocks. Only the contracts
-    // whose results are independent of an unresolved variadic prefix may defer.
-    ops.push_str("pub(crate) fn infer_text_result_types(self, operands: &[crate::Type]) -> core::result::Result<(crate::opspec::ResultTypes, bool), crate::opspec::TypeError> {\nlet inferred = self.infer_result_types(operands);\nmatch self {\n");
-    for (signature, id) in &ids {
-        if !matches!(&signature.operands, TypeList::Variadic(prefix) if !prefix.is_empty()) {
-            continue;
-        }
-        let result = match &signature.results {
-            TypeList::Signature => "crate::opspec::ResultTypes::Signature",
-            TypeList::Fixed(patterns) if patterns.is_empty() => {
-                "crate::opspec::ResultTypes::Inferred(Default::default())"
-            }
-            _ => continue,
-        };
-        let arms = groups[*id]
+    ops.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), crate::opspec::TypeError> {\n    match self {\n");
+    for (id, names) in groups.iter().enumerate() {
+        let arms = names
             .iter()
             .map(|name| format!("Self::{name}"))
             .collect::<Vec<_>>()
             .join(" | ");
-        writeln!(ops, "{arms} => match inferred {{\nErr(crate::opspec::TypeError::Pattern {{ results: false, got: crate::Type::INVALID, .. }}) => Ok(({result}, true)),\nother => other.map(|types| (types, false)),\n}},").unwrap();
+        writeln!(
+            ops,
+            "        {arms} => crate::opspec::type_rules::validate_{id}(operands, results),"
+        )
+        .unwrap();
     }
-    ops.push_str("_ => inferred.map(|types| (types, false)),\n}\n}\n}\n");
+    ops.push_str("    }\n}\n}\n");
+    // Only the dynamic construction path needs opcode dispatch. Generated
+    // builders use the same result expressions directly on their arguments.
+    ops.push_str("impl crate::InstructionData {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch self.opcode() {\n");
+    for (signature, id) in &ids {
+        let arms = groups[*id]
+            .iter()
+            .map(|name| format!("crate::Opcode::{name}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        writeln!(ops, "{arms} => {{").unwrap();
+        if matches!(signature.results, TypeList::Signature) {
+            ops.push_str("let sig = self.call_info().expect(\"signature results require call metadata\").signature.resolve(module).ok_or(\"unknown function or signature\")?;\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(&sig.returns))\n");
+        } else if let Some(results) = result_exprs(signature) {
+            if results.iter().any(|r| !matches!(r, ResultExpr::Exact(_))) {
+                ops.push_str("let mut operands = smallvec::SmallVec::<[Type; 4]>::new();\nself.visit_type_operands(dfg, |value| operands.push(dfg.value_type(value)));\n");
+            }
+            let operand = |index: usize| {
+                if index == 0 {
+                    "operands.first()".to_owned()
+                } else {
+                    format!("operands.get({index})")
+                }
+            };
+            let expressions = results.iter().map(|r| match r {
+                ResultExpr::Exact(ty) => format!("Type::{ty}"),
+                ResultExpr::Operand(index) => format!("*{}.filter(|ty| ty.is_valid()).ok_or(\"result type requires a known operand type\")?", operand(*index)),
+                ResultExpr::Element(index) => format!("{}.and_then(|ty| ty.as_vector()).ok_or(\"result element type requires a known vector operand\")?.element_type().as_type()", operand(*index)),
+            }).collect::<Vec<_>>().join(", ");
+            writeln!(ops, "Ok(smallvec::smallvec![{expressions}])").unwrap();
+        } else {
+            ops.push_str("if explicit.is_empty() { return Err(\"requires an explicit result type\"); }\nOk(smallvec::SmallVec::from_slice(explicit))\n");
+        }
+        ops.push_str("},\n");
+    }
+    ops.push_str("}\n}\n}\n");
+}
+
+/// Build-time expressions, never emitted as runtime descriptors.
+pub(crate) enum ResultExpr {
+    Exact(String),
+    Operand(usize),
+    Element(usize),
+}
+
+pub(crate) fn result_exprs(ty: &TypeDef) -> Option<Vec<ResultExpr>> {
+    let mut bindings = BTreeMap::new();
+    for (index, p) in ty
+        .operands
+        .patterns()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
+        if let Pattern::Bind(var, _) = p {
+            bindings.entry(*var).or_insert(index);
+        }
+    }
+    ty.results
+        .patterns()?
+        .iter()
+        .map(|p| match p {
+            Pattern::Exact(ty) => Some(ResultExpr::Exact(ty.clone())),
+            Pattern::Same(var) | Pattern::Bind(var, _) => {
+                bindings.get(var).copied().map(ResultExpr::Operand)
+            }
+            Pattern::ElementOf(var) => bindings.get(var).copied().map(ResultExpr::Element),
+            _ => None,
+        })
+        .collect()
 }
 
 fn slot(slot: Slot) -> String {
@@ -164,30 +202,8 @@ fn binding(bindings: &Bindings, var: u8) -> &str {
         .expect("checked type variable is bound before use")
 }
 
-fn check_results(
-    out: &mut String,
-    ty: &TypeDef,
-    bindings: &Bindings,
-    classes: &Classes,
-    inferred: bool,
-) {
-    if inferred {
-        // Result count and Same/Exact/ElementOf checks follow directly from
-        // the expressions we emitted. Only a Bind's class can add a constraint.
-        for (index, p) in ty
-            .results
-            .patterns()
-            .expect("inferred fixed results")
-            .iter()
-            .enumerate()
-        {
-            if let Pattern::Bind(_, class) = p {
-                writeln!(out, "    if !{}.accepts(results[{index}]) {{\n        return Err(super::TypeError::Pattern {{ results: true, index: {index}, expected: {:?}, got: results[{index}] }});\n    }}", classes.reference(class), pattern(p, classes)).unwrap();
-            }
-        }
-    } else {
-        check_list(out, &ty.results, true, &mut bindings.clone(), classes);
-    }
+fn check_results(out: &mut String, ty: &TypeDef, bindings: &Bindings, classes: &Classes) {
+    check_list(out, &ty.results, true, &mut bindings.clone(), classes);
     for r in &ty.relations {
         let (lhs, rhs) = (slot(r.lhs), slot(r.rhs));
         let condition = match r.kind.as_str() {
@@ -206,7 +222,7 @@ fn check_results(
     }
 }
 
-fn function(out: &mut String, name: &str, ty: &TypeDef, results: bool, body: &str) {
+fn function(out: &mut String, name: &str, ty: &TypeDef, body: &str) {
     // Empty/variadic contracts may not inspect a parameter at all.
     let inspected = |list: &TypeList| match list {
         TypeList::Fixed(_) => true,
@@ -218,44 +234,20 @@ fn function(out: &mut String, name: &str, ty: &TypeDef, results: bool, body: &st
     } else {
         "_operands"
     };
-    let extra = if results { ", results: &[Type]" } else { "" };
-    let extra = if results && !inspected(&ty.results) {
+    let extra = if !inspected(&ty.results) {
         ", _results: &[Type]"
     } else {
-        extra
+        ", results: &[Type]"
     };
-    let result = if results { "()" } else { "super::ResultTypes" };
-    writeln!(out, "#[inline]\npub(crate) fn {name}({arg}: &[Type]{extra}) -> core::result::Result<{result}, super::TypeError> {{\n{body}}}\n").unwrap();
+    writeln!(out, "#[inline]\npub(crate) fn {name}({arg}: &[Type]{extra}) -> core::result::Result<(), super::TypeError> {{\n{body}}}\n").unwrap();
 }
 
 fn emit_rule(id: usize, ty: &TypeDef, classes: &Classes, out: &mut String) {
     let mut operands = String::new();
     let mut bindings = Bindings::new();
     check_list(&mut operands, &ty.operands, false, &mut bindings, classes);
-    let mut validate = operands.clone();
-    check_results(&mut validate, ty, &bindings, classes, false);
+    let mut validate = operands;
+    check_results(&mut validate, ty, &bindings, classes);
     validate.push_str("    Ok(())\n");
-    function(out, &format!("validate_{id}"), ty, true, &validate);
-
-    let mut infer = operands;
-    match &ty.results {
-        TypeList::Signature => infer.push_str("    Ok(super::ResultTypes::Signature)\n"),
-        TypeList::Variadic(_) => infer.push_str("    Ok(super::ResultTypes::Explicit)\n"),
-        TypeList::Fixed(patterns) => {
-            let expressions = patterns.iter().map(|p| match p {
-                Pattern::Exact(ty) => Some(format!("Type::{ty}")),
-                Pattern::Same(var) | Pattern::Bind(var, _) => bindings.get(var).cloned(),
-                Pattern::ElementOf(var) => bindings.get(var).map(|bound| format!("match {bound}.as_vector() {{ Some(vector) => vector.element_type().as_type(), None => return Ok(super::ResultTypes::Explicit) }}")),
-                Pattern::Class(_) | Pattern::VectorOf(_) | Pattern::ShapeOf(_, _) => None,
-            }).collect::<Option<Vec<_>>>();
-            if let Some(expressions) = expressions {
-                writeln!(infer, "    let results = [{}];", expressions.join(", ")).unwrap();
-                check_results(&mut infer, ty, &bindings, classes, true);
-                infer.push_str("    Ok(super::ResultTypes::Inferred(smallvec::SmallVec::from_slice(&results)))\n");
-            } else {
-                infer.push_str("    Ok(super::ResultTypes::Explicit)\n");
-            }
-        }
-    }
-    function(out, &format!("infer_{id}"), ty, false, &infer);
+    function(out, &format!("validate_{id}"), ty, &validate);
 }

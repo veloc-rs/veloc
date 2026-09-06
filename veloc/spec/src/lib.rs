@@ -7,7 +7,6 @@ mod builtin_gen;
 mod builtins;
 mod comparisons;
 mod constraints;
-mod documentation;
 mod encoding;
 mod evaluate;
 mod format;
@@ -71,7 +70,6 @@ pub struct Generated {
     pub instructions: String,
     pub text_parser: String,
     pub text_printer: String,
-    pub documentation: String,
 }
 
 /// Parse and check a definition unit, including cross-record references.

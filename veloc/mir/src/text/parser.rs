@@ -8,8 +8,6 @@ use crate::{
     Block, BlockCall, CallConv, FuncId, Function, InstructionData, Linkage, MemFlags, Module,
     ModuleData, Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
     function::StackSlotData,
-    inst::Inst,
-    opspec::ResultTypes,
     types::{ValueData, parse_type},
 };
 use alloc::{
@@ -57,6 +55,8 @@ impl ModuleParser {
         Self
     }
 
+    /// Parse text and resolve names/result types, without validating IR contracts.
+    /// Call `Module::validate` explicitly when validation is required.
     pub fn parse(&mut self, input: &str) -> Result<Module> {
         if input.trim().is_empty() {
             return parse_err("empty input");
@@ -133,7 +133,6 @@ struct ParseContext {
     block_map: HashMap<String, Block>,
     next_value_idx: u32,
     defined_values: HashMap<Value, String>,
-    deferred_types: Vec<(Inst, usize, String)>,
 }
 
 fn parse_function_body(
@@ -196,30 +195,6 @@ fn parse_function_body(
             return parse_err(format!("undefined SSA value `{name}`"));
         }
     }
-    for (inst, line_no, line) in &ctx.deferred_types {
-        let data = func.dfg.inst(*inst);
-        let mut operands = Vec::new();
-        data.visit_type_operands(&func.dfg, |value| operands.push(func.dfg.value_type(value)));
-        let results = func
-            .dfg
-            .inst_results(*inst)
-            .iter()
-            .map(|&value| func.dfg.value_type(value))
-            .collect::<Vec<_>>();
-        data.opcode()
-            .validate_types(&operands, &results)
-            .map_err(|error| {
-                with_line(
-                    ParseError(format!(
-                        "invalid operand types for `{}`: {error:?}",
-                        data.opcode().spec().mnemonic
-                    )),
-                    *line_no,
-                    line,
-                )
-            })?;
-    }
-
     for &block in &func.layout.block_order {
         func.layout.blocks[block].is_sealed = true;
     }
@@ -252,7 +227,7 @@ fn parse_instruction(
             .parse(opcode, ty_hint, flags, operands)
             .map_err(|error| with_line(error, line_no, line))?
     };
-    let (result_types, deferred) = resolve_result_types(&data, ty_hint, func, module)
+    let result_types = resolve_result_types(&data, ty_hint, func, module)
         .map_err(|error| with_line(error, line_no, line))?;
     if result_names.len() != result_types.len() {
         return parse_err(format!(
@@ -266,9 +241,6 @@ fn parse_instruction(
     let successors = instruction_successors(&data, func);
     let inst = func.dfg.instructions.push(data);
     func.layout.append_inst(block, inst);
-    if deferred {
-        ctx.deferred_types.push((inst, line_no, line.to_string()));
-    }
     if !result_names.is_empty() {
         let values = result_names
             .iter()
@@ -290,64 +262,29 @@ fn resolve_result_types(
     hint: Option<Type>,
     func: &Function,
     module: &ModuleData,
-) -> core::result::Result<(Vec<Type>, bool), ParseError> {
+) -> core::result::Result<smallvec::SmallVec<[Type; 2]>, ParseError> {
     let spec = data.opcode().spec();
-    let mut operands = Vec::new();
-    data.visit_type_operands(&func.dfg, |value| {
-        operands.push(func.dfg.value_type(value));
-    });
-    // The generated entry point decides whether unresolved inputs can be
-    // deferred. Deferred contracts are rechecked after all value definitions.
-    let (inferred, deferred) =
-        data.opcode()
-            .infer_text_result_types(&operands)
-            .map_err(|error| {
-                ParseError(format!(
-                    "invalid operand types for `{}`: {error:?}",
-                    spec.mnemonic
-                ))
-            })?;
-    let mut results = match &inferred {
-        ResultTypes::Inferred(types) => types.clone().into_vec(),
-        ResultTypes::Explicit => hint.into_iter().collect(),
-        ResultTypes::Signature => instruction_signature(data, module)?.returns.clone(),
-    };
+    // Resolve only information needed to create result values. Type contracts
+    // (including forward-referenced operands) belong to the validator.
+    let results = data
+        .result_types(&func.dfg, module, hint.as_slice())
+        .map_err(|error| ParseError(format!("`{}`: {error}", spec.mnemonic)))?;
 
     if let Some(hint) = hint {
-        if let Some(first) = results.first_mut() {
+        if let Some(first) = results.first() {
             if first.is_valid() && *first != hint {
                 return Err(ParseError(format!(
                     "result annotation `{hint}` conflicts with inferred type `{first}`"
                 )));
             }
-            *first = hint;
-        } else if !matches!(inferred, ResultTypes::Explicit) {
+        } else {
             return Err(ParseError(format!(
                 "`{}` does not produce an annotatable result",
                 spec.mnemonic
             )));
         }
     }
-    Ok((results, deferred))
-}
-
-fn instruction_signature<'a>(
-    data: &InstructionData,
-    module: &'a ModuleData,
-) -> core::result::Result<&'a Signature, ParseError> {
-    let call = data
-        .call_info()
-        .ok_or_else(|| ParseError("signature result on non-call instruction".into()))?;
-    let sig = call.signature.resolve(module).ok_or_else(|| {
-        ParseError(format!(
-            "unknown function or signature {:?}",
-            call.signature
-        ))
-    })?;
-    module
-        .signatures
-        .get(sig)
-        .ok_or_else(|| ParseError(format!("unknown signature id {}", sig.0)))
+    Ok(results)
 }
 
 fn instruction_successors(data: &InstructionData, func: &Function) -> Vec<Block> {

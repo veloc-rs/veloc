@@ -115,7 +115,7 @@ fn rejected<T, E: std::fmt::Display>(result: std::result::Result<T, E>) -> Resul
 
 fn execute(mode: &str, source: &str) -> Result<String> {
     match mode {
-        "opgen" | "opgen-error" => {
+        "opgen-error" => {
             let builtins = concat!(
                 include_str!("../../veloc/mir/defs/types.ops"),
                 "\n",
@@ -124,14 +124,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 include_str!("../../veloc/mir/defs/comparisons.ops"),
                 "\n",
             );
-            let result = veloc_opgen::compile_mir(&format!("{builtins}{source}"));
-            if mode == "opgen-error" {
-                rejected(result)
-            } else {
-                result
-                    .map(|generated| generated.documentation)
-                    .map_err(|error| error.to_string())
-            }
+            rejected(veloc_opgen::compile_mir(&format!("{builtins}{source}")))
         }
         "fixture" | "fixture-error" | "fixture-validate-error" => {
             let parsed = veloc_test_mir::ModuleParser::new().parse(source);

@@ -50,7 +50,6 @@ the presence of an opcode. Assertions belong in `//` comments.
 | `o1` | Run the production O1 pipeline, validate and round-trip |
 | `lower` | Translate MIR to LIR; print instructions, operands and register types |
 | `execute` | Compare interpreter results/traps before and after O1, then check the expected outcome |
-| `opgen` | Compile `.ops` and check its generated reference documentation |
 | `opgen-error` | Require a definition compiler diagnostic |
 | `fixture` | Round-trip through MIR compiled with test-only operation definitions |
 | `fixture-error` | Require a parser diagnostic from that test MIR |

@@ -1,9 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::model::{
-    Binding, Definitions, Op, ParamKind, Pattern, Semantic, SemanticStep, SignatureSource, TypeDef,
-};
+use crate::model::{Binding, Definitions, Op, ParamKind, Semantic, SemanticStep, SignatureSource};
 use crate::storage::FieldType;
 use crate::{Error, Generated};
 
@@ -97,7 +95,6 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         evaluation: crate::evaluate::generate(defs, source)?,
         semantics: semantic_specs(defs),
         opcodes: ops,
-        documentation: crate::documentation::generate(defs, &classes),
     })
 }
 
@@ -248,31 +245,6 @@ fn semantics(semantics: &Semantic) -> String {
     )
 }
 
-fn inferred_results(ty: &TypeDef) -> bool {
-    let bound: Vec<_> = ty
-        .operands
-        .patterns()
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|p| match p {
-            Pattern::Bind(var, _) => Some(*var),
-            _ => None,
-        })
-        .collect();
-    ty.results.patterns().is_some_and(|results| {
-        results.iter().all(|p| {
-            match p {
-        Pattern::Exact(_) => true,
-        Pattern::Same(var) | Pattern::Bind(var, _) => bound.contains(var),
-        Pattern::ElementOf(var) => ty.operands.patterns().unwrap_or_default().iter().any(|p| {
-            matches!(p, Pattern::Bind(bound, class) if var == bound && class.shapes() & 1 == 0)
-        }),
-        _ => false,
-    }
-        })
-    })
-}
-
 fn builder(
     op: &Op,
     format: &crate::storage::Format,
@@ -306,13 +278,15 @@ fn builder(
             | "push_raw"
             | "push_with_type"
             | "result_pair"
+            | "insert"
     ) {
         return Err(fail(format!(
             "operation `{}` conflicts with an InstBuilder method",
             op.mnemonic
         )));
     }
-    let typed = !inferred_results(ty);
+    let inferred = crate::type_rules::result_exprs(ty);
+    let typed = inferred.is_none();
     let mut names = BTreeSet::new();
     if typed {
         names.insert("ty".to_owned());
@@ -344,16 +318,29 @@ fn builder(
     }
     let constructor =
         crate::packing::constructor(op, format, "self.builder().func_mut().dfg", str::to_owned);
+    let result_types = if let Some(inferred) = inferred {
+        let operands = op
+            .params
+            .iter()
+            .filter(|p| p.kind == ParamKind::Value)
+            .collect::<Vec<_>>();
+        inferred.iter().map(|r| match r {
+            crate::type_rules::ResultExpr::Exact(ty) => format!("crate::Type::{ty}"),
+            crate::type_rules::ResultExpr::Operand(index) => format!("self.value_type({})", operands[*index].name),
+            crate::type_rules::ResultExpr::Element(index) => format!("self.value_type({}).as_vector().expect(\"result element type requires a vector operand\").element_type().as_type()", operands[*index].name),
+        }).collect::<Vec<_>>().join(", ")
+    } else {
+        "ty".into()
+    };
     let (ret, body) = match (results.len(), typed) {
-        (0, false) => ("", "self.push(data);"),
-        (1, false) => (
+        (0, false) => ("", "self.insert(data, &types);"),
+        (1, _) => (
             " -> crate::Value",
-            "self.push(data).expect(\"generated builder produces one result\")",
+            "let inst = self.insert(data, &types);\n        self.builder().func().dfg.first_result(inst).expect(\"generated builder produces one result\")",
         ),
-        (1, true) => (" -> crate::Value", "self.push_with_type(data, ty)"),
         (2, false) => (
             " -> (crate::Value, crate::Value)",
-            "let inst = self.push_raw(data);\n        self.result_pair(inst)",
+            "let inst = self.insert(data, &types);\n        self.result_pair(inst)",
         ),
         _ => {
             return Err(fail(
@@ -362,7 +349,7 @@ fn builder(
         }
     };
     Ok(Some(format!(
-        "    /// Build `{}` from its logical parameters.\n    pub fn {name}({params}){ret} {{\n        let data = {constructor};\n        {body}\n    }}\n",
+        "    /// Build `{}` without validating its type contract.\n    pub fn {name}({params}){ret} {{\n        let (data, types) = ({constructor}, [{result_types}]);\n        {body}\n    }}\n",
         op.mnemonic
     )))
 }

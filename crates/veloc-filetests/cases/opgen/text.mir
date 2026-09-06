@@ -40,7 +40,7 @@ block0(v0: i32, v1: i32):
   return v2, v3
 
 // ----- relation-on-second-result
-// run: fixture-error
+// run: fixture-validate-error
 // check: results[1] must have more bits per lane than operands[0]
 local function wide(i64, i64) -> (i64, i64)
 block0(v0: i64, v1: i64):

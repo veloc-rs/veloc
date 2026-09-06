@@ -1,8 +1,0 @@
-// run: opgen
-// check: | `widen` |
-// check: wider(operands[0], results[0])
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
-op Widen<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
-    mnemonic: "widen", storage: Unary { arg: arg },
-    where: [wider(arg, result)], semantics: bv.sext(arg, result(0))
-}

@@ -12,8 +12,8 @@ block3():
   return
 
 // ----- branch-backward-wrong-type
-// run: parse-error
-// check: invalid operand types
+// run: validate-error
+// check: Pattern { results: false, index: 0
 // check: got: F32
 local function bad() -> void
 block0():
@@ -40,8 +40,8 @@ block3():
   return
 
 // ----- branch-forward-wrong-type
-// run: parse-error
-// check: invalid operand types
+// run: validate-error
+// check: Pattern { results: false, index: 0
 // check: got: F32
 local function bad() -> void
 block0():
@@ -68,8 +68,8 @@ block3():
   return
 
 // ----- table-backward-wrong-type
-// run: parse-error
-// check: invalid operand types
+// run: validate-error
+// check: Pattern { results: false, index: 0
 // check: got: F32
 local function bad() -> void
 block0():
@@ -96,8 +96,8 @@ block3():
   return
 
 // ----- table-forward-wrong-type
-// run: parse-error
-// check: invalid operand types
+// run: validate-error
+// check: Pattern { results: false, index: 0
 // check: got: F32
 local function bad() -> void
 block0():
@@ -125,8 +125,8 @@ block3():
   return
 
 // ----- indirect-call-backward-wrong-type
-// run: parse-error
-// check: invalid operand types
+// run: validate-error
+// check: Pattern { results: false, index: 0
 // check: got: F32
 local function bad() -> void
 block0():
@@ -155,8 +155,8 @@ block3():
   return
 
 // ----- indirect-call-forward-wrong-type
-// run: parse-error
-// check: invalid operand types
+// run: validate-error
+// check: Pattern { results: false, index: 0
 // check: got: F32
 local function bad() -> void
 block0():

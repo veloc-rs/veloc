@@ -5,12 +5,10 @@ use super::types::{
     Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, ValueList, Variable,
 };
 use crate::dfg::PoolKey;
-use crate::opspec::ResultTypes;
 use crate::types::JumpTableData;
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
 use alloc::vec::Vec;
 use hashbrown::HashMap;
-use smallvec::SmallVec;
 
 pub struct ModuleBuilder {
     data: ModuleData,
@@ -131,72 +129,19 @@ impl<'a> FunctionBuilder<'a> {
         &self.module.signatures[sig_id]
     }
 
-    /// Check the format and type scheme once, resolving inferred or explicit results.
-    fn inst_result_types(&self, data: &InstructionData, ty: Option<Type>) -> SmallVec<[Type; 2]> {
-        let spec = data.opcode().spec();
-        assert!(
-            data.matches_format(&self.func().dfg, spec.format),
-            "{} constructed with the wrong instruction format",
-            spec.mnemonic
-        );
-        let mut operands = SmallVec::<[Type; 4]>::new();
-        data.visit_type_operands(&self.func().dfg, |value| {
-            operands.push(self.value_type(value));
-        });
-
-        let types = if let Some(ty) = ty {
-            smallvec::smallvec![ty]
-        } else {
-            return match data
-                .opcode()
-                .infer_result_types(&operands)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "{} constructed with invalid operand types: {error:?}",
-                        spec.mnemonic
-                    )
-                }) {
-                ResultTypes::Inferred(types) => types,
-                ResultTypes::Explicit => {
-                    panic!("{} requires an explicit result type", spec.mnemonic)
-                }
-                ResultTypes::Signature => {
-                    let signature = data
-                        .call_info()
-                        .expect("signature results require call metadata")
-                        .signature
-                        .resolve(self.module)
-                        .expect("call refers to a missing function or signature");
-                    self.module.signatures[signature]
-                        .returns
-                        .iter()
-                        .copied()
-                        .collect()
-                }
-            };
-        };
-        data.opcode()
-            .validate_types(&operands, &types)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{} constructed with types outside its type scheme: {error:?}",
-                    spec.mnemonic
-                )
-            });
-        types
-    }
-
     fn push_inst(&mut self, block: Block, data: InstructionData) -> Option<Value> {
         let inst = self.push_inst_raw(block, data);
         self.func().dfg.first_result(inst)
     }
 
     fn push_inst_raw(&mut self, block: Block, data: InstructionData) -> Inst {
-        self.append_inst(block, data, None)
+        let types = data
+            .result_types(&self.func().dfg, self.module, &[])
+            .unwrap_or_else(|error| panic!("{}: {error}", data.opcode().spec().mnemonic));
+        self.append_inst(block, data, &types)
     }
 
-    fn append_inst(&mut self, block: Block, data: InstructionData, ty: Option<Type>) -> Inst {
-        let types = self.inst_result_types(&data, ty);
+    fn append_inst(&mut self, block: Block, data: InstructionData, types: &[Type]) -> Inst {
         let func = self.func_mut();
         let (dfg, layout) = (&func.dfg, &mut func.layout);
         data.visit_successors(dfg, |call| {
@@ -205,14 +150,14 @@ impl<'a> FunctionBuilder<'a> {
         let inst = self.func_mut().dfg.instructions.push(data);
         self.func_mut().layout.append_inst(block, inst);
         if !types.is_empty() {
-            self.func_mut().dfg.append_results(inst, &types);
+            self.func_mut().dfg.append_results(inst, types);
         }
         inst
     }
 
     /// Push an instruction whose result type is selected by the caller.
     fn push_inst_with_type(&mut self, block: Block, data: InstructionData, ty: Type) -> Value {
-        let inst = self.append_inst(block, data, Some(ty));
+        let inst = self.append_inst(block, data, &[ty]);
         self.func()
             .dfg
             .first_result(inst)
@@ -571,6 +516,14 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.builder.value_type(val)
     }
 
+    /// Insert an instruction with caller-supplied result types, without validation.
+    /// Referenced storage and the current block must exist. Run the validator
+    /// before passing untrusted or potentially invalid IR to later stages.
+    pub fn insert(&mut self, data: InstructionData, types: &[Type]) -> Inst {
+        let block = self.block();
+        self.builder.append_inst(block, data, types)
+    }
+
     pub(crate) fn push(&mut self, data: InstructionData) -> Option<Value> {
         let block = self.block();
         self.builder.push_inst(block, data)
@@ -675,11 +628,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         else_block: Block,
         else_args: &[Value],
     ) {
-        debug_assert_eq!(
-            self.builder.value_type(condition),
-            Type::BOOL,
-            "Condition for br must be a bool"
-        );
         let then_dest = self.builder.make_block_call(then_block, then_args);
         let else_dest = self.builder.make_block_call(else_block, else_args);
         self.push(InstructionData::Br {
@@ -690,11 +638,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn br_table(&mut self, index: Value, default_call: BlockCall, targets: &[BlockCall]) {
-        debug_assert_eq!(
-            self.builder.value_type(index),
-            Type::I32,
-            "Index for br_table must be an i32"
-        );
         let table = self
             .builder
             .func_mut()

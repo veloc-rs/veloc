@@ -8,13 +8,6 @@ include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
 include!(concat!(env!("OUT_DIR"), "/builtins.rs"));
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResultTypes {
-    Inferred(smallvec::SmallVec<[crate::Type; 2]>),
-    Explicit,
-    Signature,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeError {
     Arity {
@@ -239,7 +232,6 @@ impl OpSpec {
 #[cfg(test)]
 mod tests {
     use super::MemoryEffect;
-    use super::ResultTypes;
     use crate::{FloatCC, IntCC, Opcode, Type};
 
     #[test]
@@ -266,12 +258,6 @@ mod tests {
         assert!(Opcode::Store.spec().has_side_effects());
         assert!(Opcode::IAdd.spec().is_commutative());
         assert!(Opcode::IAdd.spec().is_pure());
-        assert_eq!(
-            Opcode::Icmp
-                .infer_result_types(&[Type::I32, Type::I32])
-                .unwrap(),
-            ResultTypes::Inferred(smallvec::smallvec![Type::BOOL])
-        );
     }
 
     #[test]
@@ -338,19 +324,23 @@ mod tests {
                 );
             }
             assert_eq!(
-                Opcode::Icmp.infer_result_types(&[ty, ty]).is_ok(),
+                Opcode::Icmp
+                    .validate_types(&[ty, ty], &[Type::BOOL])
+                    .is_ok(),
                 ty.is_scalar() && (ty.is_integer() || ty.is_ptr()),
                 "{ty}"
             );
             assert_eq!(
-                Opcode::Gather.infer_result_types(&[Type::PTR, ty]).is_ok(),
+                Opcode::Gather
+                    .validate_types(&[Type::PTR, ty], &[ty])
+                    .is_ok(),
                 ty.is_integer() && ty.is_vector(),
                 "{ty}"
             );
         }
         for op in [Opcode::IAnd, Opcode::Icmp, Opcode::Gather] {
             assert!(
-                op.infer_result_types(&[Type::INVALID, Type::INVALID])
+                op.validate_types(&[Type::INVALID, Type::INVALID], &[Type::INVALID])
                     .is_err()
             );
         }

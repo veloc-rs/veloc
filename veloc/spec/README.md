@@ -308,11 +308,25 @@ operation-specific parsing/printing and ordinary builders.
 
 ### Compiled type contracts
 
-Every type contract is compiled into validation and inference code.
-`Opcode::validate_types` and `Opcode::infer_result_types` exhaustively dispatch
-to shared generated handlers. The builder, validator, text parser and codegen
-use this boundary; there is no runtime type-scheme
-interpreter, optional specialization feature or fallback.
+Type signatures drive two independent paths: result construction and validation.
+Generated builders compute result types directly from logical arguments and pass
+fixed-size arrays to `InstBuilder::insert`. Neither operation validates the type
+contract. The insertion API also accepts caller-supplied result types for generic
+transformations or deliberately incomplete IR.
+
+`InstructionData::result_types` is the dynamic construction entry point used by
+the text parser and contextual builders. Its generated opcode branches return
+the final types directly, using operand types, explicit types or the referenced
+signature. There is no runtime result-strategy enum. Missing explicit types,
+unknown signatures and operands whose types cannot determine the result are
+construction errors, not full contract validation.
+
+`Opcode::validate_types` dispatches to shared generated checks. Full module
+validation is an explicit pipeline/caller decision; builders and the parser do
+not invoke it implicitly. The parser still checks syntax, symbol resolution and
+conflicting result annotations, but does not maintain a deferred type-validator
+queue. Forward references that are not needed to determine results can be
+constructed and subsequently validated normally.
 
 Selection uses signature structure, not opcode names. Equal operand/result
 patterns, type sets and relations share handlers, using structural equality of
@@ -323,28 +337,16 @@ The definition compiler resolves type variables to concrete operand/result
 positions. Generated handlers check arity before indexing and retain the
 declaration's diagnostic order, without allocating bindings or interpreting
 patterns and relation slots. The number of variables is not limited to four.
-Inference knows statically whether results are fixed, require explicit types,
-or come from a function signature. For inferred results, arity and
-Same/Exact/ElementOf checks follow from the generated expressions and are
-omitted; additional class constraints and relations are still checked.
+Result construction knows statically whether results are fixed, require explicit
+types, or come from a function signature. It performs no type-class, operand
+equality or width-relation checks. Those checks run only during validation,
+including for result types computed by generated builders.
 
 Type schemes, patterns and relations exist only in the definition compiler.
 MIR contains no runtime `TypeScheme`, `TypeList`, `TypePattern`, relation table,
 or per-opcode type descriptor. Generated checks return `TypeError` with static
 diagnostic strings and relevant operand/result positions. Interned `TypeClass`
 membership checks remain executable helpers, not a second type-rule interpreter.
-
-Builders consume generated inference results and resolve signature-supplied
-results from call metadata; explicit type hints are validated directly.
-Text parsing uses a generated entry point that
-can defer unresolved variadic prefixes only when their results are independent;
-deferred instructions are fully checked after all SSA definitions are available.
-Ordinary inference and validation do not apply the parser's deferral policy.
-
-MIR's build script writes `opcodes.md` alongside generated Rust in `OUT_DIR`.
-The reference is generated directly from checked definitions and includes type
-signatures, relations and structural constraints. No runtime reflection table
-or `write_opcode_markdown` adapter is needed.
 
 Structural `constraints` are typed, pure expressions, compiled directly into
 Rust checks. For example:
@@ -388,7 +390,7 @@ Statically true checks disappear; an always-false top-level constraint is a
 definition error. Even dead branches must be well typed. Type validation runs
 first, allowing generated checks to use operand/result positions directly,
 including for alternative physical layouts. Actual property checks remain
-dynamic. Descriptive constraint text is emitted into `opcodes.md`, not `OpSpec`;
+dynamic. Constraint diagnostics are emitted directly into the generated checks;
 there is no runtime rule interpreter or predefined constraint-name registry.
 
 These predicates specify IR legality, not instruction execution or traps.

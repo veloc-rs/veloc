@@ -1,9 +1,9 @@
 //! Exercise compiled contracts across every opcode, including malformed types.
-use veloc_mir::opspec::{ResultTypes, TypeError};
+use veloc_mir::opspec::TypeError;
 use veloc_mir::{Opcode, Type};
 
 #[test]
-fn generated_inference_and_validation_are_consistent() {
+fn operand_contract_errors_are_independent_of_result_types() {
     let types = [
         Type::INVALID,
         Type::BOOL,
@@ -50,32 +50,20 @@ fn generated_inference_and_validation_are_consistent() {
                 let storage = [x, y, x];
                 for len in 0..=3 {
                     let operands = &storage[..len];
-                    match op.infer_result_types(operands) {
-                        Ok(ResultTypes::Inferred(results)) => assert!(
-                            op.validate_types(operands, &results).is_ok(),
-                            "{op:?} {operands:?}"
-                        ),
-                        Ok(ResultTypes::Signature) => {
-                            for result in types {
-                                assert!(op.validate_types(operands, &[result]).is_ok());
+                    if let Err(
+                        error @ (TypeError::Arity { results: false, .. }
+                        | TypeError::Pattern { results: false, .. }),
+                    ) = op.validate_types(operands, &[])
+                    {
+                        for result in types {
+                            for results in [&[][..], &[result][..], &[result, x][..]] {
+                                assert_eq!(
+                                    op.validate_types(operands, results),
+                                    Err(error),
+                                    "{op:?} {operands:?}"
+                                );
                             }
                         }
-                        Ok(ResultTypes::Explicit) => {}
-                        Err(
-                            error @ (TypeError::Arity { results: false, .. }
-                            | TypeError::Pattern { results: false, .. }),
-                        ) => {
-                            for result in types {
-                                for results in [&[][..], &[result][..], &[result, x][..]] {
-                                    assert_eq!(
-                                        op.validate_types(operands, results),
-                                        Err(error),
-                                        "{op:?} {operands:?}"
-                                    );
-                                }
-                            }
-                        }
-                        Err(_) => {}
                     }
                 }
             }

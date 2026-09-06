@@ -43,7 +43,7 @@ block0(v0: bool):
   return v1
 
 // ----- reject-known-result-relation
-// run: fixture-error
+// run: fixture-validate-error
 // check: results[0] must have more bits per lane than operands[0]
 local function sized_type(i32) -> i8
 block0(v0: i32):
@@ -62,8 +62,8 @@ block0(v0: i32, v1: i32):
   return v3
 
 // ----- distinct-contract
-// run: fixture-error
-// check: invalid operand types
+// run: fixture-validate-error
+// check: Pattern { results: false, index: 0
 local function distinct(i32, i32) -> i32
 block0(v0: i32, v1: i32):
   v2 = float-only v0, v1

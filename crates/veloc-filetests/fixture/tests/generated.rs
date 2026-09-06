@@ -21,6 +21,157 @@ mod offline {
 include!(concat!(env!("OUT_DIR"), "/lowering.rs"));
 
 #[test]
+fn construction_does_not_validate_type_contracts() {
+    for (case, expected) in [
+        ("binding", "Pattern { results: false, index: 1"),
+        ("class", "Pattern { results: false, index: 0"),
+        ("explicit", "Pattern { results: true, index: 0"),
+        ("relation", "results[0] must have more bits"),
+        ("fixed", "Pattern { results: false, index: 0"),
+        ("raw-results", "Pattern { results: true, index: 0"),
+        ("raw-arity", "Arity { results: true"),
+        ("call", "call value 0 type mismatch"),
+        ("indirect-call", "Pattern { results: false, index: 0"),
+        ("branch", "Pattern { results: false, index: 0"),
+        ("table", "Pattern { results: false, index: 0"),
+    ] {
+        let mut module = ModuleBuilder::new();
+        let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+        let id = module.declare_function(case.into(), sig, Linkage::Local);
+        let callee_sig = module.make_signature(
+            vec![Type::F32],
+            vec![Type::I64, Type::I32],
+            CallConv::SystemV,
+        );
+        let callee = module.declare_function("callee".into(), callee_sig, Linkage::Import);
+        let mut builder = module.builder(id);
+        builder.init_entry_block();
+        let mut ins = builder.ins();
+        let i = ins.i32const(1);
+        let f = ins.f32const(1.0);
+        match case {
+            "binding" => {
+                let result = ins.first(i, f);
+                assert_eq!(ins.value_type(result), Type::I32);
+            }
+            "class" => {
+                let result = ins.float_only(i, i);
+                assert_eq!(ins.value_type(result), Type::I32);
+            }
+            "explicit" => {
+                let result = ins.output(Type::F32);
+                assert_eq!(ins.value_type(result), Type::F32);
+            }
+            "relation" => {
+                let result = ins.sized(i);
+                assert_eq!(ins.value_type(result), Type::I8);
+            }
+            "fixed" => {
+                let result = ins.icmp(IntCC::Eq, f, i);
+                assert_eq!(ins.value_type(result), Type::BOOL);
+            }
+            "raw-results" | "raw-arity" => {
+                let data = InstructionData::from_values(Opcode::IAdd, &[i, i]).unwrap();
+                let types = if case == "raw-results" {
+                    &[Type::F32][..]
+                } else {
+                    &[]
+                };
+                let inst = ins.insert(data, types);
+                assert_eq!(
+                    ins.builder().func().dfg.inst_results(inst).len(),
+                    types.len()
+                );
+            }
+            "call" => {
+                let inst = ins.call(callee, &[i]);
+                let dfg = &ins.builder().func().dfg;
+                let types = dfg
+                    .inst_results(inst)
+                    .iter()
+                    .map(|&v| dfg.value_type(v))
+                    .collect::<Vec<_>>();
+                assert_eq!(types, [Type::I64, Type::I32]);
+            }
+            "indirect-call" => {
+                let inst = ins.call_indirect(callee_sig, i, &[f]);
+                assert_eq!(ins.builder().func().dfg.inst_results(inst).len(), 2);
+            }
+            "branch" | "table" => {
+                let dest = ins.builder().create_block();
+                if case == "branch" {
+                    ins.br(i, dest, &[], dest, &[]);
+                } else {
+                    let call = ins.builder().make_block_call(dest, &[]);
+                    ins.br_table(f, call, &[]);
+                }
+                ins.builder().switch_to_block(dest);
+            }
+            _ => unreachable!(),
+        }
+        ins.ret(&[]);
+        drop(builder);
+        let error = module.validate().unwrap_err().to_string();
+        assert!(error.contains(expected), "{case}: {error}");
+        if !case.starts_with("raw-") {
+            // The textual path constructs the same invalid IR, and only the
+            // explicit validator rejects it there as well.
+            let text = module.build().to_string();
+            let parsed = veloc_mir::ModuleParser::new().parse(&text).unwrap();
+            assert!(
+                parsed
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected),
+                "{case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn result_resolution_only_requires_construction_inputs() {
+    use veloc_mir::{Block, ModuleData, SigId};
+    let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
+    let module = ModuleData::default();
+    let i = dfg.append_block_param(Block(0), Type::I32);
+    let f = dfg.append_block_param(Block(0), Type::F32);
+    let unknown = dfg.append_block_param(Block(0), Type::INVALID);
+    let data = InstructionData::from_values(Opcode::First, &[i, f]).unwrap();
+    assert_eq!(
+        data.result_types(&dfg, &module, &[]).unwrap().as_slice(),
+        &[Type::I32]
+    );
+    let data = InstructionData::from_values(Opcode::First, &[unknown, i]).unwrap();
+    assert!(data.result_types(&dfg, &module, &[]).is_err());
+    let data = InstructionData::from_values(Opcode::Sized, &[unknown]).unwrap();
+    assert_eq!(
+        data.result_types(&dfg, &module, &[]).unwrap().as_slice(),
+        &[Type::I8]
+    );
+    let output = InstructionData::Empty {
+        opcode: Opcode::Output,
+    };
+    assert!(output.result_types(&dfg, &module, &[]).is_err());
+    assert_eq!(
+        output
+            .result_types(&dfg, &module, &[Type::F32])
+            .unwrap()
+            .as_slice(),
+        &[Type::F32]
+    );
+    let data = InstructionData::from_values(Opcode::Lane, &[i]).unwrap();
+    assert!(data.result_types(&dfg, &module, &[]).is_err());
+    let data = InstructionData::CallIndirect {
+        sig_id: SigId(123),
+        ptr: i,
+        args: dfg.make_value_list(&[]),
+    };
+    assert!(data.result_types(&dfg, &module, &[]).is_err());
+}
+
+#[test]
 fn builders_preserve_logical_order_independently_of_storage_and_text() {
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(
