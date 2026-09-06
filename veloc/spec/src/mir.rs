@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 
 use crate::model::{
-    Binding, Definitions, Op, ParamKind, Pattern, Semantic, SemanticStep, SignatureSource, Slot,
-    TypeDef, TypeList,
+    Binding, Definitions, Op, ParamKind, Pattern, Semantic, SemanticStep, SignatureSource, TypeDef,
+    TypeList,
 };
 use crate::storage::FieldType;
 use crate::{Error, Generated};
@@ -14,37 +14,13 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
     let classes = crate::type_gen::Classes::new(defs);
     let mut types = String::from(HEADER);
     types.push_str("use super::{TypeClass as C, TypeList as L, TypePattern as P, TypeRelation as R, TypeScheme as S, TypeSlot as Slot};\nuse crate::Type;\n");
-    for op in &defs.ops {
-        let ty = &op.signature;
-        types.push_str("#[allow(non_upper_case_globals)]\n");
-        writeln!(types, "pub const {}: S = S {{", op.name).unwrap();
-        writeln!(
-            types,
-            "    operands: {},",
-            type_list(&ty.operands, &classes)
-        )
-        .unwrap();
-        writeln!(types, "    results: {},", type_list(&ty.results, &classes)).unwrap();
-        types.push_str("    relations: &[\n");
-        for relation in &ty.relations {
-            let (variant, lhs, rhs) = match relation.kind.as_str() {
-                "wider" => ("Wider", "from", "to"),
-                "narrower" => ("Narrower", "from", "to"),
-                "same_width_distinct" => ("SameWidthDistinct", "lhs", "rhs"),
-                _ => unreachable!("relations have been checked"),
-            };
-            writeln!(
-                types,
-                "        R::{variant} {{ {lhs}: {}, {rhs}: {} }},",
-                slot(&relation.lhs),
-                slot(&relation.rhs)
-            )
-            .unwrap();
-        }
-        types.push_str("    ],\n};\n");
-    }
+    let mut dispatch = String::new();
+    let schemes = crate::type_rules::generate(defs, &classes, &mut types, &mut dispatch);
 
     let mut ops = String::from(HEADER);
+    for comparison in &defs.comparisons {
+        ops.push_str(&comparison.generate());
+    }
     ops.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub enum Opcode {\n");
     for op in &defs.ops {
         writeln!(ops, "    {},", op.name).unwrap();
@@ -54,63 +30,67 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         writeln!(ops, "        Self::{},", op.name).unwrap();
     }
     ops.push_str(
-        "    ];\n    pub const fn spec(self) -> crate::opspec::OpSpec {\n        match self {\n",
+        "    ];\n    pub const fn spec(self) -> &'static crate::opspec::OpSpec {\n        match self {\n",
     );
-    for op in &defs.ops {
+    for (op, scheme) in defs.ops.iter().zip(schemes) {
         writeln!(
             ops,
-            "            Self::{} => crate::opspec::OpSpec {{",
+            "            Self::{} => {{\n                static SPEC: crate::opspec::OpSpec = crate::opspec::OpSpec {{",
             op.name
         )
         .unwrap();
-        writeln!(ops, "                mnemonic: {:?},", op.mnemonic).unwrap();
+        writeln!(ops, "                    mnemonic: {:?},", op.mnemonic).unwrap();
         writeln!(
             ops,
-            "                format: crate::opspec::OpFormat::{},",
+            "                    format: crate::opspec::OpFormat::{},",
             op.format
         )
         .unwrap();
         writeln!(
             ops,
-            "                type_scheme: &crate::opspec::type_schemes::{},",
-            op.name
+            "                    type_scheme: &crate::opspec::type_schemes::SCHEME_{scheme},"
         )
         .unwrap();
-        ops.push_str("                traits: crate::opspec::OpTraits::empty()");
+        ops.push_str("                    traits: crate::opspec::OpTraits::empty()");
         for prop in &op.traits {
             write!(ops, ".union(crate::opspec::OpTraits::{prop})").unwrap();
         }
         ops.push_str(",\n");
         writeln!(
             ops,
-            "                memory_effect: crate::opspec::MemoryEffect::{},",
+            "                    memory_effect: crate::opspec::MemoryEffect::{},",
             op.memory
         )
         .unwrap();
         writeln!(
             ops,
-            "                constraints: &[{}],",
+            "                    constraints: &[{}],",
             op.constraints
                 .iter()
-                .map(|c| format!("crate::opspec::OpConstraint::{c}"))
+                .map(|c| format!("{:?}", c.text))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
         .unwrap();
-        writeln!(ops, "                identity: {},", algebraic(op.identity)).unwrap();
         writeln!(
             ops,
-            "                absorbing: {},",
+            "                    identity: {},",
+            algebraic(op.identity)
+        )
+        .unwrap();
+        writeln!(
+            ops,
+            "                    absorbing: {},",
             algebraic(op.absorbing)
         )
         .unwrap();
         writeln!(
             ops,
-            "                semantics: {},",
+            "                    semantics: {},",
             semantics(op.semantics.as_ref())
         )
         .unwrap();
-        ops.push_str("            },\n");
+        ops.push_str("                };\n                &SPEC\n            },\n");
     }
     ops.push_str("        }\n    }\n    pub fn from_mnemonic(mnemonic: &str) -> Option<Self> {\n        match mnemonic {\n");
     for op in &defs.ops {
@@ -136,6 +116,36 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
     }
     ops.push_str("}\n");
     ops.push_str(&accessors(defs));
+    ops.push_str("impl crate::InstructionData {\npub fn semantic_properties(&self) -> alloc::vec::Vec<crate::semantics::IntPredicate> { match self.opcode() {\n");
+    for op in &defs.ops {
+        let Some(sem) = &op.semantics else {
+            continue;
+        };
+        if sem.properties.is_empty() {
+            continue;
+        }
+        let mut fields = Vec::new();
+        for property in &sem.properties {
+            let field = op
+                .packing
+                .iter()
+                .find_map(|(field, binding)| match binding {
+                    Binding::Name(name) if name == property => Some(field),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    Error::at(
+                        source,
+                        op.offset,
+                        "semantic comparison properties require a direct storage field",
+                    )
+                })?;
+            fields.push(field.clone());
+        }
+        writeln!(ops, "crate::Opcode::{} => {{ let Self::{} {{ {}, .. }} = self else {{ unreachable!(\"checked semantic property layout\") }}; alloc::vec![{}] }},", op.name, op.format, fields.join(", "), fields.iter().map(|f| format!("{f}.predicate()")).collect::<Vec<_>>().join(", ")).unwrap();
+    }
+    ops.push_str("_ => alloc::vec![],\n} } }\n");
+    ops.push_str(&dispatch);
     let (text_parser, text_printer) = crate::text::generate(defs, source)?;
     Ok(Generated {
         encoding: defs.encoding.generate(),
@@ -146,11 +156,12 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         text_parser,
         text_printer,
         types,
+        validation: crate::constraints::generate(defs),
         opcodes: ops,
     })
 }
 
-fn type_list(list: &TypeList, classes: &crate::type_gen::Classes) -> String {
+pub(crate) fn type_list(list: &TypeList, classes: &crate::type_gen::Classes) -> String {
     match list {
         TypeList::Variadic(patterns) => format!(
             "L::Variadic(&[{}])",
@@ -172,7 +183,7 @@ fn type_list(list: &TypeList, classes: &crate::type_gen::Classes) -> String {
     }
 }
 
-fn pattern(p: &Pattern, classes: &crate::type_gen::Classes) -> String {
+pub(crate) fn pattern(p: &Pattern, classes: &crate::type_gen::Classes) -> String {
     match p {
         Pattern::Class(class) => format!("P::Class({})", classes.reference(class)),
         Pattern::Exact(ty) => format!("P::Exact(Type::{ty})"),
@@ -182,14 +193,6 @@ fn pattern(p: &Pattern, classes: &crate::type_gen::Classes) -> String {
         Pattern::VectorOf(var) => format!("P::VectorOf({var})"),
         Pattern::ShapeOf(var, class) => format!("P::ShapeOf({var}, {})", classes.reference(class)),
     }
-}
-
-fn slot(slot: &Slot) -> String {
-    format!(
-        "Slot::{}({})",
-        if slot.result { "Result" } else { "Operand" },
-        slot.index
-    )
 }
 
 fn algebraic(constant: Option<veloc_semantics::BvConst>) -> String {
@@ -265,18 +268,50 @@ fn semantics(semantics: Option<&Semantic>) -> String {
     let Some(semantics) = semantics else {
         return "None".into();
     };
-    let steps = semantics.steps.iter().map(|step| match step {
-        SemanticStep::Input(input) => format!("crate::semantics::Step::Input({input})"),
-        SemanticStep::Const(value) => {
-            format!("crate::semantics::Step::Const(crate::semantics::BvConst::{value:?})")
-        }
-        SemanticStep::Apply { op, args } => format!(
-            "crate::semantics::Step::Apply {{ op: crate::semantics::BvOp::{op:?}, args: &{args:?} }}"
-        ),
-    }).collect::<Vec<_>>().join(", ");
+    let steps = semantics
+        .steps
+        .iter()
+        .map(|step| match step {
+            SemanticStep::Input(input) => format!("crate::semantics::Step::Input({input})"),
+            SemanticStep::Const { value, ty } => {
+                format!("Step::Const {{ value: BvConst::{value:?}, ty: TypeRef::{ty:?} }}")
+            }
+            SemanticStep::Apply { op, args } => {
+                format!("Step::Apply {{ op: BvOp::{op:?}, args: &{args:?} }}")
+            }
+            SemanticStep::Compare { kind, lhs, rhs } => {
+                let kind = match kind {
+                    veloc_semantics::ComparisonRef::Property(i) => {
+                        format!("ComparisonRef::Property({i})")
+                    }
+                    veloc_semantics::ComparisonRef::Fixed(p) => format!(
+                        "ComparisonRef::Fixed(IntPredicate::new({}, {}))",
+                        p.signed(),
+                        p.outcomes()
+                    ),
+                };
+                format!("Step::Compare {{ kind: {kind}, lhs: {lhs}, rhs: {rhs} }}")
+            }
+            SemanticStep::Convert { kind, arg, to } => format!(
+                "Step::Convert {{ kind: Conversion::{kind:?}, arg: {arg}, to: TypeRef::{to:?} }}"
+            ),
+            SemanticStep::Select { cond, yes, no } => {
+                format!("Step::Select {{ cond: {cond}, yes: {yes}, no: {no} }}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let traps = semantics
+        .traps
+        .iter()
+        .map(|(guard, trap)| format!("({guard}, Trap::{trap:?})"))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
-        "Some(crate::semantics::Program {{ inputs: {}, steps: &[{steps}], output: {} }})",
-        semantics.inputs, semantics.output
+        "Some({{ #[allow(unused_imports)] use crate::semantics::{{Program, Step, BvConst, BvOp, TypeRef, ComparisonRef, Conversion, IntPredicate, Trap}}; const PROGRAM: Program<'static> = Program {{ inputs: {}, properties: {}, steps: &[{steps}], outputs: &{:?}, traps: &[{traps}] }}; PROGRAM }})",
+        semantics.inputs,
+        semantics.properties.len(),
+        semantics.outputs
     )
 }
 

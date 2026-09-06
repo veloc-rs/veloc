@@ -22,8 +22,9 @@ pub(super) fn parse(
     source: &str,
     mut record: Record,
     storage_defs: &storage::Storage,
-    types: &Types,
+    type_defs: &Types,
     builtins: &Builtins,
+    comparisons: &[crate::comparisons::Comparison],
 ) -> Result<Op, Error> {
     let sig = record
         .signature
@@ -33,7 +34,7 @@ pub(super) fn parse(
         params,
         mut types,
         slots,
-    } = signature(source, record.offset, sig, storage_defs, types)?;
+    } = signature(source, record.offset, sig, storage_defs, type_defs)?;
     let mut fields = Fields::new(source, record);
     let mnemonic_node = fields.take("mnemonic")?;
     let Kind::Text(mnemonic) = mnemonic_node.kind else {
@@ -106,12 +107,7 @@ pub(super) fn parse(
         .unwrap_or_default();
     let constraints = fields
         .optional("constraints")
-        .map(|node| {
-            list(source, node)?
-                .into_iter()
-                .map(|n| name(source, n))
-                .collect::<Result<Vec<_>, _>>()
-        })
+        .map(|node| list(source, node))
         .transpose()?
         .unwrap_or_default();
     let mut identity = fields
@@ -122,10 +118,16 @@ pub(super) fn parse(
         .optional("absorbing")
         .map(|n| algebraic_constant(source, n))
         .transpose()?;
-    let semantics = fields
+    let mut semantics = fields
         .optional("semantics")
         .map(|node| crate::semantic::parse(source, node, &params))
         .transpose()?;
+    if let Some(node) = fields.optional("traps") {
+        let sem = semantics
+            .as_mut()
+            .ok_or_else(|| fields.error("trap guards require executable semantics"))?;
+        crate::semantic::traps(source, node, &params, sem)?;
+    }
     let memory = match fields.optional("memory") {
         Some(node) => builtins.effect(source, node)?,
         None if semantics.is_some() => builtins.effect(
@@ -138,6 +140,9 @@ pub(super) fn parse(
         None => return Err(fields.error("unmodeled operations must declare their memory effect")),
     };
     if let Some(semantics) = &semantics {
+        if !semantics.traps.is_empty() && !traits.iter().any(|t| t == "MAY_TRAP") {
+            traits.push("MAY_TRAP".into());
+        }
         crate::semantic::derive(
             source,
             fields.offset,
@@ -155,7 +160,7 @@ pub(super) fn parse(
         }
     }
     fields.finish()?;
-    Ok(Op {
+    let mut op = Op {
         offset: fields.offset,
         name: fields.name,
         mnemonic,
@@ -167,11 +172,20 @@ pub(super) fn parse(
         text,
         traits,
         memory,
-        constraints,
+        constraints: Vec::new(),
         identity,
         absorbing,
         semantics,
-    })
+    };
+    op.constraints = crate::constraints::check(
+        source,
+        constraints,
+        &op,
+        storage_defs,
+        type_defs,
+        comparisons,
+    )?;
+    Ok(op)
 }
 
 struct CheckedSignature {

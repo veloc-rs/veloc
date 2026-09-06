@@ -23,7 +23,7 @@ fn exact_class_members_drive_codegen_and_bitvector_semantics() {
     assert!(output.types.contains("P::Bind(0, C::Wide)"));
     rejected(
         &source.replace("[I32, I64]", "[I32, F64]"),
-        "same-width integer inputs",
+        "floating-point execution semantics are not modeled",
     );
     assert!(compile_mir(&source.replace("[I32, I64]", "[I32X4]")).is_ok());
 }

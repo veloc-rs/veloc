@@ -15,6 +15,7 @@ mod operation;
 pub struct Definitions {
     pub(crate) encoding: crate::encoding::TypeEncoding,
     pub(crate) builtins: Builtins,
+    pub(crate) comparisons: Vec<crate::comparisons::Comparison>,
     pub(crate) types: Types,
     pub(crate) storage: storage::Storage,
     pub(crate) ops: Vec<Op>,
@@ -85,7 +86,7 @@ pub(crate) struct Op {
     pub text: Option<Node>,
     pub traits: Vec<String>,
     pub memory: String,
-    pub constraints: Vec<String>,
+    pub constraints: Vec<crate::constraints::Constraint>,
     pub identity: Option<BvConst>,
     pub absorbing: Option<BvConst>,
     pub semantics: Option<Semantic>,
@@ -120,26 +121,26 @@ pub(crate) enum ParamKind {
 
 pub(crate) struct Semantic {
     pub steps: Vec<SemanticStep>,
-    pub output: u16,
+    pub outputs: Vec<u16>,
     pub inputs: u8,
+    pub properties: Vec<String>,
+    pub traps: Vec<(u16, veloc_semantics::Trap)>,
 }
 
-pub(crate) enum SemanticStep {
-    Input(u8),
-    Const(BvConst),
-    Apply { op: BvOp, args: Vec<u16> },
-}
+pub(crate) type SemanticStep = veloc_semantics::Step<Vec<u16>>;
 
 impl Semantic {
+    pub fn program(&self) -> veloc_semantics::Program<'_, Vec<u16>> {
+        veloc_semantics::Program {
+            inputs: self.inputs,
+            properties: self.properties.len() as u8,
+            steps: &self.steps,
+            outputs: &self.outputs,
+            traps: &self.traps,
+        }
+    }
     pub(crate) fn primitive(&self) -> Option<BvOp> {
-        let SemanticStep::Apply { op, args } = &self.steps[self.output as usize] else {
-            return None;
-        };
-        (args.len() == self.inputs as usize
-            && args.iter().enumerate().all(|(i, &arg)| {
-                matches!(self.steps[arg as usize], SemanticStep::Input(index) if index as usize == i)
-            }))
-        .then_some(*op)
+        self.program().primitive()
     }
 }
 
@@ -172,14 +173,20 @@ pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
     let encoding = crate::encoding::TypeEncoding::compile(&records, source)?;
     let types = Types::compile(&records, source, &encoding)?;
     let builtins = Builtins::compile(&records, source)?;
+    let comparisons = crate::comparisons::compile(&records, source)?;
     let storage = storage::compile(&records, source)?;
     let mut ops = Vec::new();
     for record in records {
         match record.kind.as_str() {
             "op" => ops.push(operation::parse(
-                source, record, &storage, &types, &builtins,
+                source,
+                record,
+                &storage,
+                &types,
+                &builtins,
+                &comparisons,
             )?),
-            "format" | "layout" | "record" | "encoding" => {}
+            "format" | "layout" | "record" | "encoding" | "comparison" => {}
             kind if Builtins::is_definition(kind) => {}
             kind if Types::is_definition(kind) => {}
             _ => {
@@ -194,6 +201,7 @@ pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
     let definitions = Definitions {
         encoding,
         builtins,
+        comparisons,
         types,
         storage,
         ops,
@@ -249,20 +257,6 @@ impl Definitions {
                     return Err(fail(
                         "storage operands do not match the logical signature".into(),
                     ));
-                }
-            }
-            for constraint in &op.constraints {
-                let expected = match constraint.as_str() {
-                    "PointerComparison" => "IntCompare",
-                    "NonZeroScale" => "PtrIndex",
-                    "VectorConstant" => "Vconst",
-                    "ShuffleMask" => "Shuffle",
-                    _ => return Err(fail(format!("unknown constraint `{constraint}`"))),
-                };
-                if op.format != expected {
-                    return Err(fail(format!(
-                        "constraint `{constraint}` requires format `{expected}`"
-                    )));
                 }
             }
             if (op.identity.is_some()

@@ -1,186 +1,423 @@
-use veloc_semantics::{BvConst, BvOp};
-
 use crate::Error;
 use crate::model::{Op, Param, ParamKind, Pattern, Semantic, SemanticStep};
 use crate::syntax::{Kind, Node};
+use veloc_semantics::{
+    BvConst, BvOp, ComparisonRef, Conversion, IntPredicate, Sort, Trap, TypeRef,
+};
 
-/// Compile an expression into width-parameterized semantic steps. SSA input
-/// numbering follows logical value parameters, independent of physical packing.
 pub(crate) fn parse(source: &str, node: Node, params: &[Param]) -> Result<Semantic, Error> {
-    let offset = node.offset;
-    if params.iter().any(|param| {
+    if params.iter().any(|p| {
         matches!(
-            param.kind,
+            p.kind,
             ParamKind::Values | ParamKind::Successor | ParamKind::Successors
         )
     }) {
         return Err(Error::at(
             source,
-            offset,
-            "pure bitvector semantics cannot use variadic values or successors",
+            node.offset,
+            "pure semantics cannot use variadic values or successors",
         ));
     }
-    let inputs = u8::try_from(
-        params
-            .iter()
-            .filter(|param| param.kind == ParamKind::Value)
-            .count(),
-    )
-    .map_err(|_| Error::at(source, offset, "semantic input count exceeds 255"))?;
-    let mut steps = (0..inputs).map(SemanticStep::Input).collect::<Vec<_>>();
-    let output = expression(source, node, params, &mut steps)?;
-    Ok(Semantic {
-        steps,
-        output,
+    let inputs = u8::try_from(params.iter().filter(|p| p.kind == ParamKind::Value).count())
+        .map_err(|_| Error::at(source, node.offset, "semantic input count exceeds 255"))?;
+    let properties = params
+        .iter()
+        .filter(|p| matches!(&p.kind, ParamKind::Property(ty) if ty == "IntCC"))
+        .map(|p| p.name.clone())
+        .collect::<Vec<_>>();
+    if properties.len() > u8::MAX as usize {
+        return Err(Error::at(
+            source,
+            node.offset,
+            "semantic property count exceeds 255",
+        ));
+    }
+    let mut sem = Semantic {
         inputs,
-    })
+        properties,
+        steps: (0..inputs).map(SemanticStep::Input).collect(),
+        outputs: Vec::new(),
+        traps: Vec::new(),
+    };
+    let outputs = match node.kind {
+        Kind::List(outputs) => outputs,
+        _ => vec![node],
+    };
+    if outputs.is_empty() || outputs.len() > u8::MAX as usize {
+        return Err(Error::at(source, 0, "semantics require 1..=255 results"));
+    }
+    for output in outputs {
+        let index = expression(source, output, params, &mut sem)?;
+        sem.outputs.push(index);
+    }
+    Ok(sem)
+}
+
+pub(crate) fn traps(
+    source: &str,
+    node: Node,
+    params: &[Param],
+    sem: &mut Semantic,
+) -> Result<(), Error> {
+    for node in crate::model::list(source, node)? {
+        let Kind::Call(name, mut args) = node.kind else {
+            return Err(Error::at(
+                source,
+                node.offset,
+                "expected TrapName(condition)",
+            ));
+        };
+        let trap = match name.as_str() {
+            "DivisionByZero" => Trap::DivisionByZero,
+            "IntegerOverflow" => Trap::IntegerOverflow,
+            _ => {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    format!("unknown trap `{name}`"),
+                ));
+            }
+        };
+        if args.len() != 1 {
+            return Err(Error::at(
+                source,
+                node.offset,
+                "trap requires one boolean condition",
+            ));
+        }
+        let guard = expression(source, args.remove(0), params, sem)?;
+        sem.traps.push((guard, trap));
+    }
+    Ok(())
+}
+
+fn type_ref(source: &str, node: Node, params: &[Param]) -> Result<TypeRef, Error> {
+    match node.kind {
+        Kind::Call(name, args) if name == "result" && args.len() == 1 => {
+            if let Kind::Number(index) = args[0].kind
+                && let Ok(index) = u8::try_from(index)
+            {
+                return Ok(TypeRef::Result(index));
+            }
+        }
+        Kind::Call(name, args) if name == "type" && args.len() == 1 => {
+            let name = crate::model::name(source, args[0].clone())?;
+            if let Some(index) = params
+                .iter()
+                .filter(|p| p.kind == ParamKind::Value)
+                .position(|p| p.name == name)
+            {
+                return Ok(TypeRef::Input(index as u8));
+            }
+        }
+        _ => {}
+    }
+    Err(Error::at(
+        source,
+        node.offset,
+        "expected type(operand) or result(index)",
+    ))
 }
 
 fn expression(
     source: &str,
     node: Node,
     params: &[Param],
-    steps: &mut Vec<SemanticStep>,
+    sem: &mut Semantic,
 ) -> Result<u16, Error> {
     let offset = node.offset;
-    match node.kind {
+    let fail = |message| Error::at(source, offset, message);
+    let step = match node.kind {
         Kind::Name(name) => {
-            let mut index = 0;
-            for param in params {
-                if param.name == name {
-                    return if param.kind == ParamKind::Value {
-                        Ok(index)
-                    } else {
-                        Err(Error::at(
-                            source,
-                            offset,
-                            format!("semantic expression cannot reference property `{name}`"),
-                        ))
-                    };
-                }
-                if param.kind == ParamKind::Value {
-                    index += 1;
-                }
-            }
-            Err(Error::at(
-                source,
-                offset,
-                format!("unknown semantic input `{name}`"),
-            ))
+            return params
+                .iter()
+                .filter(|p| p.kind == ParamKind::Value)
+                .position(|p| p.name == name)
+                .map(|i| i as u16)
+                .ok_or_else(|| fail(format!("unknown semantic value `{name}`")));
         }
-        Kind::Call(name, args) => {
-            let constant = match name.as_str() {
+        Kind::Call(name, mut args) => {
+            if let Some(value) = match name.as_str() {
                 "bv.zero" => Some(BvConst::Zero),
                 "bv.one" => Some(BvConst::One),
                 "bv.ones" => Some(BvConst::AllOnes),
+                "bv.width" => Some(BvConst::Width),
+                "bv.smin" => Some(BvConst::SignedMin),
                 _ => None,
-            };
-            if let Some(constant) = constant {
-                if !args.is_empty() {
-                    return Err(Error::at(
-                        source,
-                        offset,
-                        format!("semantic constant `{name}` expects no arguments"),
-                    ));
+            } {
+                let ty = match args.len() {
+                    0 => {
+                        if sem.inputs == 0 {
+                            TypeRef::Result(0)
+                        } else {
+                            TypeRef::Input(0)
+                        }
+                    }
+                    1 => type_ref(source, args.remove(0), params)?,
+                    _ => return Err(fail("constant expects at most one type reference".into())),
+                };
+                SemanticStep::Const { value, ty }
+            } else if matches!(name.as_str(), "bv.zext" | "bv.sext" | "bv.trunc") {
+                if args.len() != 2 {
+                    return Err(fail("conversion expects a value and result type".into()));
                 }
-                return push(source, offset, steps, SemanticStep::Const(constant));
-            }
-            let op = BvOp::from_name(&name).ok_or_else(|| {
-                Error::at(
-                    source,
-                    offset,
-                    format!("unknown semantic primitive `{name}`"),
-                )
-            })?;
-            if args.len() != op.arity() {
-                return Err(Error::at(
-                    source,
-                    offset,
-                    format!(
+                let to = type_ref(source, args.pop().unwrap(), params)?;
+                let arg = expression(source, args.pop().unwrap(), params, sem)?;
+                let kind = match name.as_str() {
+                    "bv.zext" => Conversion::ZeroExtend,
+                    "bv.sext" => Conversion::SignExtend,
+                    _ => Conversion::Truncate,
+                };
+                SemanticStep::Convert { kind, arg, to }
+            } else if matches!(name.as_str(), "bv.cmp" | "bv.slt" | "bv.ult" | "bv.eq") {
+                let kind = if name == "bv.cmp" {
+                    if args.len() != 3 {
+                        return Err(fail(
+                            "bv.cmp expects a comparison property and two operands".into(),
+                        ));
+                    }
+                    let property = crate::model::name(source, args.remove(0))?;
+                    let index = sem
+                        .properties
+                        .iter()
+                        .position(|p| p == &property)
+                        .ok_or_else(|| {
+                            fail(format!("unknown integer comparison property `{property}`"))
+                        })?;
+                    ComparisonRef::Property(index as u8)
+                } else {
+                    ComparisonRef::Fixed(IntPredicate::new(
+                        name == "bv.slt",
+                        if name == "bv.eq" { 2 } else { 1 },
+                    ))
+                };
+                if args.len() != 2 {
+                    return Err(fail("comparison expects two operands".into()));
+                }
+                let lhs = expression(source, args.remove(0), params, sem)?;
+                let rhs = expression(source, args.remove(0), params, sem)?;
+                SemanticStep::Compare { kind, lhs, rhs }
+            } else if name == "select" {
+                if args.len() != 3 {
+                    return Err(fail("select expects three operands".into()));
+                }
+                let cond = expression(source, args.remove(0), params, sem)?;
+                let yes = expression(source, args.remove(0), params, sem)?;
+                let no = expression(source, args.remove(0), params, sem)?;
+                SemanticStep::Select { cond, yes, no }
+            } else {
+                let op = BvOp::from_name(&name)
+                    .ok_or_else(|| fail(format!("unknown semantic primitive `{name}`")))?;
+                if args.len() != op.arity() {
+                    return Err(fail(format!(
                         "{} expects {} arguments, got {}",
                         op.name(),
                         op.arity(),
                         args.len()
-                    ),
-                ));
+                    )));
+                }
+                let args = args
+                    .into_iter()
+                    .map(|arg| expression(source, arg, params, sem))
+                    .collect::<Result<_, _>>()?;
+                SemanticStep::Apply { op, args }
             }
-            let args = args
-                .into_iter()
-                .map(|arg| expression(source, arg, params, steps))
-                .collect::<Result<Vec<_>, _>>()?;
-            push(source, offset, steps, SemanticStep::Apply { op, args })
         }
-        _ => Err(Error::at(
-            source,
-            offset,
-            "expected a named value or bitvector semantic call",
-        )),
+        _ => return Err(fail("expected a named value or semantic call".into())),
+    };
+    // Preserve sharing in expressions such as a result also used to compute carry.
+    if let Some(index) = sem.steps.iter().position(|existing| *existing == step) {
+        return Ok(index as u16);
     }
-}
-
-fn push(
-    source: &str,
-    offset: usize,
-    steps: &mut Vec<SemanticStep>,
-    step: SemanticStep,
-) -> Result<u16, Error> {
-    let index = u16::try_from(steps.len())
-        .map_err(|_| Error::at(source, offset, "semantic program exceeds 65536 steps"))?;
-    steps.push(step);
+    let index = u16::try_from(sem.steps.len())
+        .map_err(|_| fail("semantic program exceeds 65536 steps".into()))?;
+    sem.steps.push(step);
     Ok(index)
 }
 
+/// Validate every scalar element type admitted by the signature. The compact
+/// type universe is finite; no solver or sampled-width proof is involved.
+/// Shape-changing operations are not admitted as per-lane semantic recipes.
 pub(crate) fn validate(
     source: &str,
     op: &Op,
     types: &crate::types::Types,
     builtins: &crate::builtins::Builtins,
 ) -> Result<(), Error> {
-    let Some(semantics) = &op.semantics else {
+    let Some(sem) = &op.semantics else {
         return Ok(());
     };
-    let ty = &op.signature;
-    let fail = || {
-        Error::at(
-            source,
-            op.offset,
-            "bitvector semantics require pure, same-width integer inputs and one integer result",
-        )
-    };
-    if !builtins.effects[&op.memory].is_none()
-        || op
-            .traits
-            .iter()
-            .any(|name| matches!(name.as_str(), "MAY_TRAP" | "TERMINATOR"))
-        || !ty.relations.is_empty()
-    {
-        return Err(fail());
+    let fail = |message| Error::at(source, op.offset, message);
+    if !builtins.effects[&op.memory].is_none() || op.traits.iter().any(|t| t == "TERMINATOR") {
+        return Err(fail(
+            "executable semantics require no memory effects or control flow".into(),
+        ));
     }
-    let (Some(args), Some([result])) = (ty.operands.patterns(), ty.results.patterns()) else {
-        return Err(fail());
-    };
-    if args.len() != usize::from(semantics.inputs) {
-        return Err(fail());
+    if op.traits.iter().any(|t| t == "MAY_TRAP") != !sem.traps.is_empty() {
+        return Err(fail(
+            "MAY_TRAP must agree with explicit semantic trap guards".into(),
+        ));
     }
-    let integer_class = |set: &crate::type_set::TypeSet| set.subset_of(&types.integers);
-    let integer_type = |name: &str| types.exact[name].subset_of(&types.integers);
-    let compatible = match args.first() {
-        Some(Pattern::Bind(var, class)) if integer_class(class) => {
-            args[1..].iter().chain([result]).all(|pattern| {
-                matches!(pattern, Pattern::Same(other) | Pattern::Bind(other, _) if var == other)
-            })
-        }
-        Some(Pattern::Exact(name)) if integer_type(name) => {
-            args[1..].iter().chain([result]).all(|pattern| {
-                matches!(pattern, Pattern::Exact(other) if other == name)
-            })
-        }
-        None => matches!(result,
-            Pattern::Class(class) | Pattern::Bind(_, class) if integer_class(class)
-        ) || matches!(result, Pattern::Exact(name) if integer_type(name)),
-        _ => false,
+    let (Some(inputs), Some(outputs)) = (
+        op.signature.operands.patterns(),
+        op.signature.results.patterns(),
+    ) else {
+        return Err(fail(
+            "semantics require fixed input and result signatures".into(),
+        ));
     };
-    if compatible { Ok(()) } else { Err(fail()) }
+    if outputs.len() != sem.outputs.len() {
+        return Err(fail(
+            "semantic result count does not match signature".into(),
+        ));
+    }
+    sem.program().validate().map_err(|e| fail(e.to_string()))?;
+    // A recipe describes one lane. All values must have the same lane shape;
+    // scalar broadcasts, reductions and permutations need an explicit model.
+    let mut shapes = std::collections::BTreeMap::new();
+    let mut common_shape = None;
+    for (index, pattern) in inputs.iter().chain(outputs).enumerate() {
+        let shape = match pattern {
+            Pattern::Same(var) | Pattern::ShapeOf(var, _) => *shapes
+                .get(var)
+                .ok_or_else(|| fail("unbound semantic shape".into()))?,
+            Pattern::Class(set) | Pattern::Bind(_, set) => {
+                let mask = set.shapes();
+                let shape = if mask.count_ones() == 1 {
+                    (false, mask)
+                } else {
+                    (true, index as u32)
+                };
+                if let Pattern::Bind(var, _) = pattern {
+                    shapes.insert(*var, shape);
+                }
+                shape
+            }
+            Pattern::Exact(name) => (false, types.exact[name].shapes()),
+            _ => {
+                return Err(fail(
+                    "shape-changing semantic recipes are not supported".into(),
+                ));
+            }
+        };
+        if common_shape.is_some_and(|previous| previous != shape) {
+            return Err(fail("semantic recipes require a shared lane shape".into()));
+        }
+        common_shape = Some(shape);
+    }
+    // Pointer values are only modeled for comparisons. Their target width is
+    // bound externally, never silently inferred from the build host.
+    let mut checked = 0;
+    for pointer_width in [32, 64] {
+        let mut assignments = vec![(
+            Vec::<Sort>::new(),
+            std::collections::BTreeMap::<u8, u8>::new(),
+        )];
+        for pattern in inputs.iter().chain(outputs) {
+            let mut next = Vec::new();
+            for (sorts, bindings) in assignments {
+                let set = match pattern {
+                    Pattern::Class(set) | Pattern::Bind(_, set) | Pattern::ShapeOf(_, set) => {
+                        set.clone()
+                    }
+                    Pattern::Exact(name) => types.exact[name].clone(),
+                    Pattern::Same(var) => {
+                        crate::type_set::TypeSet::singleton(bindings[var], 0, false)
+                    }
+                    _ => {
+                        return Err(fail(
+                            "shape-changing semantic recipes are not supported".into(),
+                        ));
+                    }
+                };
+                for &code in set.0.keys() {
+                    if let Pattern::Bind(var, _) = pattern
+                        && bindings.get(var).is_some_and(|&bound| bound != code)
+                    {
+                        continue;
+                    }
+                    let scalar = types.scalars.iter().find(|s| s.code == code).unwrap();
+                    let sort = match scalar.kind {
+                        crate::types::ScalarKind::Integer => {
+                            Sort::bv(scalar.bits.unwrap() as u16).unwrap()
+                        }
+                        crate::types::ScalarKind::Boolean => Sort::Bool,
+                        crate::types::ScalarKind::Pointer => {
+                            if sem.steps.iter().any(|s| {
+                                !matches!(
+                                    s,
+                                    SemanticStep::Input(_)
+                                        | SemanticStep::Compare {
+                                            kind: ComparisonRef::Property(_),
+                                            ..
+                                        }
+                                )
+                            }) {
+                                return Err(fail("pointer semantics only support comparison properties, not pointer arithmetic".into()));
+                            }
+                            Sort::bv(pointer_width).unwrap()
+                        }
+                        crate::types::ScalarKind::Float => {
+                            return Err(fail(
+                                "floating-point execution semantics are not modeled".into(),
+                            ));
+                        }
+                    };
+                    let mut bindings = bindings.clone();
+                    if let Pattern::Bind(var, _) = pattern {
+                        bindings.insert(*var, code);
+                    }
+                    let mut sorts = sorts.clone();
+                    sorts.push(sort);
+                    next.push((sorts, bindings));
+                }
+            }
+            assignments = next;
+            if assignments.len() > 65536 {
+                return Err(fail(
+                    "semantic signature has too many type combinations".into(),
+                ));
+            }
+        }
+        for (sorts, _) in assignments {
+            let (ins, outs) = sorts.split_at(inputs.len());
+            let get = |slot: &crate::model::Slot| {
+                if slot.result {
+                    outs[slot.index as usize]
+                } else {
+                    ins[slot.index as usize]
+                }
+            };
+            let width = |sort: Sort| match sort {
+                Sort::Bool => 1,
+                Sort::Bv(w) => w.bits(),
+            };
+            if !op
+                .signature
+                .relations
+                .iter()
+                .all(|r| match r.kind.as_str() {
+                    "wider" => width(get(&r.rhs)) > width(get(&r.lhs)),
+                    "narrower" => width(get(&r.rhs)) < width(get(&r.lhs)),
+                    "same_width_distinct" => {
+                        width(get(&r.rhs)) == width(get(&r.lhs)) && get(&r.rhs) != get(&r.lhs)
+                    }
+                    _ => unreachable!("checked relation"),
+                })
+            {
+                continue;
+            }
+            let properties = vec![IntPredicate::new(false, 2); sem.properties.len()];
+            sem.program()
+                .instantiate(ins, outs, &properties)
+                .map_err(|e| fail(format!("invalid semantic types {ins:?} -> {outs:?}: {e}")))?;
+            checked += 1;
+        }
+    }
+    if checked == 0 {
+        return Err(fail("no admissible semantic signature".into()));
+    }
+    Ok(())
 }
 
 /// Only direct primitive applications inherit reviewed algebraic facts. A
@@ -282,10 +519,16 @@ mod tests {
     fn named_nested_calls_use_logical_value_input_order() {
         let sem = parsed("bv.add(lhs, bv.sub(rhs, bv.one()))", &params()).unwrap();
         assert_eq!(sem.inputs, 2);
-        assert_eq!(sem.output, 4);
+        assert_eq!(sem.outputs, [4]);
         assert!(matches!(sem.steps[0], SemanticStep::Input(0)));
         assert!(matches!(sem.steps[1], SemanticStep::Input(1)));
-        assert!(matches!(sem.steps[2], SemanticStep::Const(BvConst::One)));
+        assert!(matches!(
+            sem.steps[2],
+            SemanticStep::Const {
+                value: BvConst::One,
+                ..
+            }
+        ));
         assert!(
             matches!(&sem.steps[3], SemanticStep::Apply { op: BvOp::Sub, args } if args == &[1, 2])
         );
@@ -304,7 +547,6 @@ mod tests {
             "bv.add(lhs)",
             "bv.neg(lhs, rhs)",
             "bv.zero(lhs)",
-            "[lhs]",
             "42",
         ] {
             assert!(parsed(expression, &params()).is_err(), "{expression}");
@@ -315,43 +557,8 @@ mod tests {
             ("bv.ones()", BvConst::AllOnes),
         ] {
             let sem = parsed(expression, &[]).unwrap();
-            assert!(matches!(sem.steps[0], SemanticStep::Const(value) if value == constant));
+            assert!(matches!(sem.steps[0], SemanticStep::Const { value, .. } if value == constant));
         }
-    }
-
-    #[test]
-    fn semantic_programs_reject_contextual_parameters_and_index_overflow() {
-        for kind in [
-            ParamKind::Values,
-            ParamKind::Successor,
-            ParamKind::Successors,
-        ] {
-            assert!(
-                parsed(
-                    "bv.zero()",
-                    &[Param {
-                        name: "args".into(),
-                        kind
-                    }]
-                )
-                .is_err()
-            );
-        }
-        let params = (0..256)
-            .map(|i| Param {
-                name: format!("v{i}"),
-                kind: ParamKind::Value,
-            })
-            .collect::<Vec<_>>();
-        assert!(parsed("v0", &params).is_err());
-        let mut steps = (0..65535)
-            .map(|_| SemanticStep::Const(BvConst::Zero))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            push("", 0, &mut steps, SemanticStep::Const(BvConst::One)),
-            Ok(u16::MAX)
-        );
-        assert!(push("", 0, &mut steps, SemanticStep::Const(BvConst::One)).is_err());
     }
 
     #[test]
@@ -444,12 +651,7 @@ mod tests {
 
     #[test]
     fn same_width_integer_schemes_include_vectors_and_exact_types() {
-        for class in [
-            "Integer",
-            "ScalarInteger",
-            "Integer | BOOL | vectors(BOOL)",
-            "Integer & Vector",
-        ] {
+        for class in ["Integer", "ScalarInteger", "Integer & Vector"] {
             let op = unary(
                 Pattern::Bind(0, crate::fixtures::set(class)),
                 Pattern::Same(0),
@@ -462,7 +664,7 @@ mod tests {
             )
             .unwrap();
         }
-        for name in ["I8", "I16", "I32", "I64", "BOOL"] {
+        for name in ["I8", "I16", "I32", "I64"] {
             let op = unary(Pattern::Exact(name.into()), Pattern::Exact(name.into()));
             validate(
                 "",
@@ -473,6 +675,7 @@ mod tests {
             .unwrap();
         }
         for (operand, result) in [
+            (Pattern::Exact("BOOL".into()), Pattern::Exact("BOOL".into())),
             (Pattern::Exact("I32".into()), Pattern::Exact("I64".into())),
             (
                 Pattern::Bind(0, crate::fixtures::set("Float")),

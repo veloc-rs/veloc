@@ -52,6 +52,7 @@ fn the_actual_mir_definitions_compile_deterministically() {
     assert_eq!(first.scalars, second.scalars);
     assert_eq!(first.formats, second.formats);
     assert_eq!(first.types, second.types);
+    assert_eq!(first.validation, second.validation);
     assert_eq!(first.opcodes, second.opcodes);
     assert_eq!(first.instructions, second.instructions);
     assert_eq!(first.text_parser, second.text_parser);
@@ -126,12 +127,15 @@ fn incompatible_layouts_and_semantics_are_rejected() {
         "storage field `args` requires 2 arguments",
     );
     rejected(&ADD.replace("bv.add", "bv.unknown"), "unknown");
-    rejected(&ADD.replace("T: Integer", "T: Float"), "integer");
+    rejected(&ADD.replace("T: Integer", "T: Float"), "floating-point");
     rejected(
         &ADD.replace("bv.add", "bv.neg"),
         "bv.neg expects 1 arguments, got 2",
     );
-    rejected(&ADD.replace("memory: NONE", "memory: UNKNOWN"), "pure");
+    rejected(
+        &ADD.replace("memory: NONE", "memory: UNKNOWN"),
+        "no memory effects",
+    );
 }
 
 #[test]

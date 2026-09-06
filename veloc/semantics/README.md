@@ -2,7 +2,7 @@
 
 `veloc-semantics` is independent of program IRs, instruction encodings, and solver
 libraries. Its initial model contains pure, fixed-width bitvectors (1–128 bits)
-and booleans.
+and booleans, plus explicit operation-level traps.
 
 - `BvOp` is the shared vocabulary for modular arithmetic and bitwise operations.
   `eval` normalizes inputs and results to the declared width.
@@ -10,17 +10,27 @@ and booleans.
   width. These include two-sided identity/absorbing constants and supported
   algebraic traits. The definition compiler rejects conflicting declarations;
   these facts are trusted definitions, not automatically synthesized proofs.
-- `Program` stores width-parameterized compositions as static, single-result
-  bitvector DAGs. It checks input references, earlier-step references, arities,
-  output and index capacity before evaluation. `instantiate` binds a width to
-  obtain the same `Function` used by the SMT encoder. `primitive` recognizes only
-  direct applications to all inputs in order; it does not infer equivalences.
+- `Program` is a borrowed/static recipe for a typed, multiple-result graph.
+  `TypeRef` binds constants and conversions to input/result sorts; comparison
+  properties are separate from runtime inputs. `instantiate(inputs, results,
+  properties)` builds every step through the checked `Expr` constructors, including
+  unused steps, then checks the output sorts. There is no separate Program evaluator.
+  `primitive` recognizes only direct applications to all inputs in order; it does
+  not infer equivalences. The same recipe representation accepts owned operand
+  lists in the definition compiler and static slices in generated MIR metadata.
 - `Expr` constructors enforce operation arities and sorts. Cloning an expression
   shares its immutable nodes.
 - `Function` checks every parameter reference against an explicit positional
-  signature. Execution and query generation use that same signature and graph.
+  signature. `with_outputs` and `eval_all` support multiple, possibly shared or
+  repeated outputs; `new` and `eval` are single-result conveniences. Execution
+  and query generation use the same signature and graph.
+- `with_traps` attaches ordered Bool guards: the first true guard selects a
+  `Trap`. `execute` returns `Outcome::Values` or `Outcome::Trap`; malformed calls
+  remain errors. Value-only `eval` helpers report a trap as `Error::Trapped`.
 - `equivalence_query` produces SMT-LIB2 asking whether two functions can disagree.
-  It requires identical input signatures and output sorts. A representation
+  It requires identical input signatures and corresponding output sorts, and
+  compares trap outcomes and, only on normal returns, whether ANY result can
+  differ. Trap guards are not assumptions excluding invalid inputs. A representation
   conversion must explicitly reconstruct a comparable result, e.g. by concatenating
   two 32-bit result halves into a 64-bit value.
 
@@ -40,12 +50,46 @@ and is not a build or test dependency.
 
 `composed_neg` compares `sub(Zero, x)` with primitive negation at 64 bits. It
 should produce `unsat`; the composed program remains structurally distinct from
-a primitive. Its parameters are all bitvectors of one width, with one result:
-this new static representation does not add effects, floating point or traps.
+a primitive. Typed recipes also support comparisons returning Bool, signed/zero
+extension, truncation, selection and multiple results. `IntPredicate` interprets
+signedness and accepted outcomes; MIR generates these properties from its
+comparison definitions. Bitwise and/or/xor accept Bool as well as bitvectors;
+arithmetic requires bitvectors. Explicit conversion bridges Bool and bitvectors.
+
+The MIR example checks actual operation definitions against independent expressions:
+
+```sh
+cargo run -q -p veloc-mir --example semantic_check -- overflow | z3 -in
+cargo run -q -p veloc-mir --example semantic_check -- overflow --broken | z3 -in
+cargo run -q -p veloc-mir --example semantic_check -- comparison | z3 -in
+cargo run -q -p veloc-mir --example semantic_check -- sext | z3 -in
+cargo run -q -p veloc-mir --example semantic_check -- division | z3 -in
+cargo run -q -p veloc-mir --example semantic_check -- division --broken | z3 -in
+cargo run -q -p veloc-mir --example semantic_check -- shift | z3 -in
+cargo run -q -p veloc-semantics --example check_primitives | z3 -in
+```
+
+Correct checks should return `unsat`; `--broken` changes only the overflow flag
+and should return `sat`, exercising verification of the second result. `zext`
+and `trunc` modes check the other conversion definitions. These examples use
+concrete widths, not width-independent proofs. `IAddWithOverflow` is signed
+overflow plus a modular sum, not unsigned carry.
+
+`division` compares 8-bit signed division and its guards against widened arithmetic;
+`--broken` omits the overflow guard and must return `sat`. `shift` compares
+modulo-width counts with a bitmask at 32 bits. `check_primitives` compares concrete
+evaluator edge cases with SMT execution, including 128-bit arithmetic and bit
+counts; it checks these examples, not all inputs.
+
+Primitive shifts and division follow total SMT-LIB bitvector semantics. In
+particular, shift counts are not masked and division by zero produces a bitvector.
+Operation recipes explicitly impose masked shifts and language-level traps.
+Clz/Ctz of zero return the bit width; their portable SMT encodings and Popcnt use
+bit extraction rather than solver-specific operators.
 
 `unsat` establishes equality in this model at the specified widths. `sat` means
 a counterexample exists; `unknown` proves nothing. The evaluator, SMT encoder,
 and solver are trusted components here: no proof certificate is checked, and
 there is no claim of end-to-end compiler verification. The model does not yet
-cover memory, traps, undefined behavior, floating point, vectors, loops, or ABI
+cover memory, undefined behavior, floating point, vectors, loops, or ABI
 state. Concrete-width checks are not width-independent theorems.

@@ -9,6 +9,7 @@ veloc-mir = { workspace = true }
 veloc-analyzer = { workspace = true }
 hashbrown = { workspace = true }
 log = { workspace = true }
+smallvec = { workspace = true }
 
 [features]
 default = ["std"]

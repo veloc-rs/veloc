@@ -136,34 +136,20 @@ fn composed_semantics_do_not_inherit_the_root_primitive_facts() {
     let source =
         definition(BvOp::Neg, "traits: []").replace("bv.neg(arg)", "bv.sub(bv.zero(), arg)");
     let generated = compile_mir(&source).unwrap();
+    assert!(generated.opcodes.contains("Program { inputs: 1"));
     assert!(
         generated
             .opcodes
-            .contains("crate::semantics::Program { inputs: 1")
+            .contains("Step::Const { value: BvConst::Zero")
     );
-    assert!(
-        generated
-            .opcodes
-            .contains("Step::Const(crate::semantics::BvConst::Zero)")
-    );
-    assert!(
-        generated
-            .opcodes
-            .contains("op: crate::semantics::BvOp::Sub")
-    );
+    assert!(generated.opcodes.contains("op: BvOp::Sub"));
     assert!(!generated.opcodes.contains("OpTraits::COMMUTATIVE"));
     assert!(!generated.opcodes.contains("OpTraits::ASSOCIATIVE"));
 
     let nested = definition(BvOp::Add, "traits: []")
         .replace("bv.add(lhs, rhs)", "bv.add(lhs, bv.add(rhs, bv.one()))");
     let generated = compile_mir(&nested).unwrap();
-    assert_eq!(
-        generated
-            .opcodes
-            .matches("op: crate::semantics::BvOp::Add")
-            .count(),
-        2
-    );
+    assert_eq!(generated.opcodes.matches("op: BvOp::Add").count(), 2);
     assert!(generated.opcodes.contains("identity: None"));
     assert!(!generated.opcodes.contains("OpTraits::ASSOCIATIVE"));
 }

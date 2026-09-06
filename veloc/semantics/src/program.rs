@@ -1,154 +1,267 @@
-use crate::{BvConst, BvOp, Error, Expr, Function, Sort, Width};
+use crate::{BvConst, BvOp, Error, Expr, Function, IntPredicate, Sort, Trap};
 
-/// A width-parameterized, single-result program over pure bitvectors.
-///
-/// The representation can be emitted as static data by a definition compiler.
-/// Every input, constant, intermediate value and result has the selected width.
-/// This does not model effects, traps, floating point, or varying lane widths.
-/// Public fields are checked by [`Self::validate`] before execution or export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Program {
-    pub inputs: u8,
-    pub steps: &'static [Step],
-    pub output: u16,
-}
-
-/// Steps are in dependency order. Apply operands index earlier steps, not inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Step {
+/// A sort supplied by the operation signature, independent of storage layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeRef {
     Input(u8),
-    Const(BvConst),
-    Apply { op: BvOp, args: &'static [u16] },
+    Result(u8),
+    Fixed(Sort),
 }
 
-impl Program {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComparisonRef {
+    Property(u8),
+    Fixed(IntPredicate),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Conversion {
+    ZeroExtend,
+    SignExtend,
+    Truncate,
+}
+
+/// A static/borrowed recipe for a typed semantic graph. Signature sorts and
+/// compile-time comparison properties are bound before evaluation or SMT export.
+/// Vector operations may reuse a recipe per lane; this is not a vector model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Program<'a, A = &'a [u16]> {
+    pub inputs: u8,
+    pub properties: u8,
+    pub steps: &'a [Step<A>],
+    pub outputs: &'a [u16],
+    pub traps: &'a [(u16, Trap)],
+}
+
+/// An encoding adapter, not a second evaluator: every step is constructed
+/// through the same checked Expr API used by dynamically constructed graphs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step<A = &'static [u16]> {
+    Input(u8),
+    Const {
+        value: BvConst,
+        ty: TypeRef,
+    },
+    Apply {
+        op: BvOp,
+        args: A,
+    },
+    Compare {
+        kind: ComparisonRef,
+        lhs: u16,
+        rhs: u16,
+    },
+    Convert {
+        kind: Conversion,
+        arg: u16,
+        to: TypeRef,
+    },
+    Select {
+        cond: u16,
+        yes: u16,
+        no: u16,
+    },
+}
+
+impl<A: AsRef<[u16]>> Program<'_, A> {
     pub const fn arity(&self) -> usize {
         self.inputs as usize
     }
 
-    /// Check all steps, including unreachable ones, and the output reference.
     pub fn validate(&self) -> Result<(), Error> {
-        const MAX_STEPS: usize = u16::MAX as usize + 1;
-        if self.steps.len() > MAX_STEPS {
+        const MAX: usize = u16::MAX as usize + 1;
+        if self.steps.len() > MAX {
             return Err(Error::TooManySteps {
                 count: self.steps.len(),
-                max: MAX_STEPS,
+                max: MAX,
             });
         }
+        let ty = |ty: TypeRef| match ty {
+            TypeRef::Input(i) if i >= self.inputs => Err(Error::InputIndex {
+                index: i as usize,
+                count: self.inputs as usize,
+            }),
+            TypeRef::Result(i) if i as usize >= self.outputs.len() => Err(Error::ResultArity {
+                expected: i as usize + 1,
+                actual: self.outputs.len(),
+            }),
+            _ => Ok(()),
+        };
         for (index, step) in self.steps.iter().enumerate() {
-            match step {
-                Step::Input(input) if *input >= self.inputs => {
-                    return Err(Error::InputIndex {
-                        index: usize::from(*input),
-                        count: usize::from(self.inputs),
-                    });
+            let reference = |arg: u16| {
+                if arg as usize >= index {
+                    Err(Error::StepIndex {
+                        index: arg as usize,
+                        count: index,
+                    })
+                } else {
+                    Ok(())
                 }
+            };
+            match step {
+                Step::Input(i) => ty(TypeRef::Input(*i))?,
+                Step::Const { ty: sort, .. } => ty(*sort)?,
                 Step::Apply { op, args } => {
-                    if args.len() != op.arity() {
+                    if args.as_ref().len() != op.arity() {
                         return Err(Error::Arity {
                             expected: op.arity(),
-                            actual: args.len(),
+                            actual: args.as_ref().len(),
                         });
                     }
-                    for &arg in *args {
-                        if usize::from(arg) >= index {
-                            return Err(Error::StepIndex {
-                                index: usize::from(arg),
-                                count: index,
-                            });
-                        }
+                    for &arg in args.as_ref() {
+                        reference(arg)?;
                     }
                 }
-                Step::Input(_) | Step::Const(_) => {}
+                Step::Compare { kind, lhs, rhs } => {
+                    reference(*lhs)?;
+                    reference(*rhs)?;
+                    if let ComparisonRef::Property(i) = kind
+                        && *i >= self.properties
+                    {
+                        return Err(Error::PropertyIndex {
+                            index: *i as usize,
+                            count: self.properties as usize,
+                        });
+                    }
+                }
+                Step::Convert { arg, to, .. } => {
+                    reference(*arg)?;
+                    ty(*to)?;
+                }
+                Step::Select { cond, yes, no } => {
+                    reference(*cond)?;
+                    reference(*yes)?;
+                    reference(*no)?;
+                }
             }
         }
-        if usize::from(self.output) >= self.steps.len() {
-            return Err(Error::StepIndex {
-                index: usize::from(self.output),
-                count: self.steps.len(),
-            });
+        for output in self
+            .outputs
+            .iter()
+            .copied()
+            .chain(self.traps.iter().map(|&(guard, _)| guard))
+        {
+            if output as usize >= self.steps.len() {
+                return Err(Error::StepIndex {
+                    index: output as usize,
+                    count: self.steps.len(),
+                });
+            }
         }
         Ok(())
     }
 
-    /// Execute modulo `2^width`, normalizing inputs to the chosen width.
-    pub fn eval(&self, width: Width, args: &[u128]) -> Result<u128, Error> {
+    pub fn instantiate(
+        &self,
+        inputs: &[Sort],
+        results: &[Sort],
+        properties: &[IntPredicate],
+    ) -> Result<Function, Error> {
         self.validate()?;
-        if args.len() != usize::from(self.inputs) {
+        if inputs.len() != self.inputs as usize {
             return Err(Error::Arity {
-                expected: usize::from(self.inputs),
-                actual: args.len(),
+                expected: self.inputs as usize,
+                actual: inputs.len(),
             });
         }
-        if let Some(op) = self.primitive_validated() {
-            return op.eval(width.bits(), args);
+        if results.len() != self.outputs.len() {
+            return Err(Error::ResultArity {
+                expected: self.outputs.len(),
+                actual: results.len(),
+            });
         }
-        let mut values = Vec::with_capacity(self.steps.len());
-        for step in self.steps {
-            let value = match step {
-                Step::Input(input) => width.normalize(args[usize::from(*input)]),
-                Step::Const(constant) => constant.eval(width.bits())?,
-                Step::Apply { op, args } => {
-                    // The primitive set is unary/binary. Keep operands on the
-                    // stack instead of allocating for every application.
-                    let mut operands = [0; BvOp::MAX_ARITY];
-                    for (operand, &arg) in operands.iter_mut().zip(*args) {
-                        *operand = values[usize::from(arg)];
-                    }
-                    op.eval(width.bits(), &operands[..args.len()])?
-                }
-            };
-            values.push(value);
+        if properties.len() != self.properties as usize {
+            return Err(Error::Arity {
+                expected: self.properties as usize,
+                actual: properties.len(),
+            });
         }
-        Ok(values[usize::from(self.output)])
-    }
-
-    /// Bind the width and translate into the graph used by execution and SMT.
-    /// The complete input signature is preserved, including unused inputs.
-    pub fn instantiate(&self, width: Width) -> Result<Function, Error> {
-        self.validate()?;
-        let sort = Sort::Bv(width);
+        let sort = |ty: TypeRef| match ty {
+            TypeRef::Input(i) => inputs[i as usize],
+            TypeRef::Result(i) => results[i as usize],
+            TypeRef::Fixed(sort) => sort,
+        };
         let mut expressions = Vec::<Expr>::with_capacity(self.steps.len());
         for step in self.steps {
+            let get = |i: u16| &expressions[i as usize];
             let expr = match step {
-                Step::Input(input) => Expr::input(usize::from(*input), sort),
-                Step::Const(constant) => Expr::bv(width.bits(), constant.eval(width.bits())?)?,
-                Step::Apply { op, args } => {
-                    let args = args
+                Step::Input(i) => Expr::input(*i as usize, inputs[*i as usize]),
+                Step::Const { value, ty } => match sort(*ty) {
+                    Sort::Bool => Expr::bool(value.eval(1)? != 0),
+                    Sort::Bv(width) => Expr::bv(width.bits(), value.eval(width.bits())?)?,
+                },
+                Step::Apply { op, args } => Expr::apply(
+                    *op,
+                    &args
+                        .as_ref()
                         .iter()
-                        .map(|&arg| expressions[usize::from(arg)].clone())
-                        .collect::<Vec<_>>();
-                    Expr::apply(*op, &args)?
+                        .map(|&i| get(i).clone())
+                        .collect::<Vec<_>>(),
+                )?,
+                Step::Compare { kind, lhs, rhs } => get(*lhs).compare(
+                    get(*rhs),
+                    match kind {
+                        ComparisonRef::Property(i) => properties[*i as usize],
+                        ComparisonRef::Fixed(p) => *p,
+                    },
+                )?,
+                Step::Convert { kind, arg, to } => {
+                    let arg = get(*arg);
+                    let width = sort(*to).width()?.bits();
+                    match kind {
+                        Conversion::ZeroExtend if arg.sort() == Sort::Bool => {
+                            arg.bool_to_bv(width)?
+                        }
+                        Conversion::ZeroExtend => arg.zero_extend(width)?,
+                        Conversion::SignExtend => arg.sign_extend(width)?,
+                        Conversion::Truncate => arg.extract(width - 1, 0)?,
+                    }
                 }
+                Step::Select { cond, yes, no } => Expr::select(get(*cond), get(*yes), get(*no))?,
             };
             expressions.push(expr);
         }
-        Function::new(
-            vec![sort; usize::from(self.inputs)],
-            expressions[usize::from(self.output)].clone(),
-        )
+        let outputs = self
+            .outputs
+            .iter()
+            .zip(results)
+            .map(|(&i, &expected)| {
+                let expr = expressions[i as usize].clone();
+                if expr.sort() != expected {
+                    Err(Error::SortMismatch {
+                        expected,
+                        actual: expr.sort(),
+                    })
+                } else {
+                    Ok(expr)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let traps = self
+            .traps
+            .iter()
+            .map(|&(guard, trap)| (expressions[guard as usize].clone(), trap))
+            .collect::<Vec<_>>();
+        Function::with_traps(inputs.to_vec(), outputs, traps)
     }
 
-    /// Recognize only a direct primitive over every logical input, in order.
-    ///
-    /// This is structural recognition, not equivalence inference. For example,
-    /// `sub(Zero, input(0))` is not classified as Neg. Valid unrelated steps are
-    /// permitted; invalid steps make recognition fail even if unreachable.
+    /// Structural recognition only; never a proof of algebraic equivalence.
     pub fn primitive(&self) -> Option<BvOp> {
         self.validate().ok()?;
-        self.primitive_validated()
-    }
-
-    fn primitive_validated(&self) -> Option<BvOp> {
-        let Step::Apply { op, args } = self.steps[usize::from(self.output)] else {
-            return None;
-        };
-        if usize::from(self.inputs) != op.arity() {
+        if self.properties != 0 || !self.traps.is_empty() {
             return None;
         }
-        args.iter()
-            .enumerate()
-            .all(|(input, &arg)| self.steps[usize::from(arg)] == Step::Input(input as u8))
-            .then_some(op)
+        let [output] = self.outputs else {
+            return None;
+        };
+        let Step::Apply { op, args } = &self.steps[*output as usize] else {
+            return None;
+        };
+        if self.inputs as usize != op.arity() {
+            return None;
+        }
+        args.as_ref().iter().enumerate().all(|(i, &arg)|
+            matches!(self.steps[arg as usize], Step::Input(input) if input as usize == i)
+        ).then_some(*op)
     }
 }

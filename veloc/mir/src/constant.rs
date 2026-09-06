@@ -1,4 +1,7 @@
-use crate::{InstructionData, IntCC, Opcode};
+use crate::semantics::{IntPredicate, Outcome, Sort, Value as SemanticValue};
+use crate::{InstructionData, IntCC, Opcode, Type};
+use alloc::vec::Vec;
+use smallvec::SmallVec;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Constant {
@@ -12,6 +15,72 @@ pub enum Constant {
 }
 
 impl Constant {
+    pub fn ty(self) -> Type {
+        match self {
+            Self::I8(_) => Type::I8,
+            Self::I16(_) => Type::I16,
+            Self::I32(_) => Type::I32,
+            Self::I64(_) => Type::I64,
+            Self::F32(_) => Type::F32,
+            Self::F64(_) => Type::F64,
+            Self::Bool(_) => Type::BOOL,
+        }
+    }
+
+    /// Fold scalar results through the same typed graph exported to SMT.
+    /// Unsupported types/effects are not evaluated speculatively.
+    pub fn evaluate(
+        op: Opcode,
+        args: &[Self],
+        results: &[Type],
+        properties: &[IntPredicate],
+    ) -> Option<Vec<Self>> {
+        let input_types = args.iter().map(|c| c.ty()).collect::<SmallVec<[Type; 4]>>();
+        op.validate_types(&input_types, results).ok()?;
+        let sort = |ty: Type| {
+            if ty == Type::BOOL {
+                Some(Sort::Bool)
+            } else if ty.is_scalar() && ty.is_integer() {
+                Sort::bv(ty.min_bit_width()? as u16).ok()
+            } else {
+                None
+            }
+        };
+        let inputs = input_types
+            .iter()
+            .map(|&ty| sort(ty))
+            .collect::<Option<SmallVec<[Sort; 4]>>>()?;
+        let outputs = results
+            .iter()
+            .map(|&ty| sort(ty))
+            .collect::<Option<SmallVec<[Sort; 2]>>>()?;
+        let function = op
+            .spec()
+            .semantics?
+            .instantiate(&inputs, &outputs, properties)
+            .ok()?;
+        let values = args
+            .iter()
+            .map(|c| match c {
+                Self::Bool(b) => Some(SemanticValue::Bool(*b)),
+                _ => c.as_i64().map(|v| SemanticValue::Bv(v as u128)),
+            })
+            .collect::<Option<SmallVec<[SemanticValue; 4]>>>()?;
+        let Outcome::Values(values) = function.execute(&values).ok()? else {
+            // A constant trap must remain an executable instruction, not become
+            // a fabricated constant (nor an error in the compiler itself).
+            return None;
+        };
+        values
+            .into_iter()
+            .zip(results)
+            .map(|(v, &ty)| match v {
+                SemanticValue::Bool(b) => Some(Self::Bool(b)),
+                SemanticValue::Bv(v) => Some(Self::from_i64(v as i64, ty.min_bit_width()?)),
+            })
+            .collect()
+    }
+
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Constant::I8(v) => Some(*v as i64),
@@ -55,121 +124,34 @@ impl Constant {
     }
 
     pub fn binary_op(self, other: Self, op: Opcode) -> Option<Self> {
-        let l_val = self.as_i64()?;
-        let r_val = other.as_i64()?;
-        let bits = self.bits();
-
-        if bits != other.bits() {
-            return None;
-        }
-
-        if let Some(semantics) = op.spec().semantics {
-            let width = crate::semantics::Width::new(bits as u16).ok()?;
-            let result = semantics
-                .eval(width, &[l_val as u128, r_val as u128])
-                .ok()?;
-            return Some(Self::from_i64(result as i64, bits));
-        }
-
-        let result = match op {
-            Opcode::IDivS => {
-                if r_val == 0 || (l_val == i64::MIN && r_val == -1) {
-                    return None;
-                }
-                l_val.wrapping_div(r_val)
-            }
-            Opcode::IDivU => {
-                if r_val == 0 {
-                    return None;
-                }
-                let l = truncate_u64(l_val as u64, bits);
-                let r = truncate_u64(r_val as u64, bits);
-                l.wrapping_div(r) as i64
-            }
-            Opcode::IShl => l_val.wrapping_shl((r_val as u32) % bits),
-            Opcode::IShrS => {
-                if bits == 32 {
-                    (l_val as i32).wrapping_shr((r_val as u32) % 32) as i64
-                } else {
-                    l_val.wrapping_shr((r_val as u32) % 64)
-                }
-            }
-            Opcode::IShrU => {
-                let l = truncate_u64(l_val as u64, bits);
-                l.wrapping_shr((r_val as u32) % bits) as i64
-            }
-            _ => return None,
-        };
-
-        Some(Self::from_i64(result, bits))
+        Self::apply(op, &[self, other])
     }
 
     pub fn unary_op(self, op: Opcode) -> Option<Self> {
-        let v = self.as_i64()?;
-        let bits = self.bits();
+        Self::apply(op, &[self])
+    }
 
-        if let Some(semantics) = op.spec().semantics {
-            let width = crate::semantics::Width::new(bits as u16).ok()?;
-            let result = semantics.eval(width, &[v as u128]).ok()?;
-            return Some(Self::from_i64(result as i64, bits));
-        }
-
-        let result = match op {
-            Opcode::IClz => {
-                let v_u = truncate_u64(v as u64, bits);
-                v_u.leading_zeros().saturating_sub(64 - bits) as i64
-            }
-            Opcode::ICtz => {
-                let v_u = truncate_u64(v as u64, bits);
-                v_u.trailing_zeros().min(bits) as i64
-            }
-            Opcode::IPopcnt => {
-                let v_u = truncate_u64(v as u64, bits);
-                v_u.count_ones() as i64
-            }
-            Opcode::IEqz => return Some(Constant::Bool(v == 0)),
-            _ => return None,
+    fn apply(op: Opcode, args: &[Self]) -> Option<Self> {
+        let types = args.iter().map(|c| c.ty()).collect::<SmallVec<[Type; 2]>>();
+        let crate::opspec::ResultTypes::Inferred(results) = op.infer_result_types(&types).ok()?
+        else {
+            return None;
         };
-
-        Some(Self::from_i64(result, bits))
+        if results.len() != 1 {
+            return None;
+        }
+        Self::evaluate(op, args, &results, &[])?.first().copied()
     }
 
     pub fn icmp(self, other: Self, kind: IntCC) -> Option<Self> {
-        let l = self.as_i64()?;
-        let r = other.as_i64()?;
-        let bits = self.bits();
-
-        if bits != other.bits() {
-            return None;
-        }
-
-        let result = if kind.is_unsigned() {
-            let lu = truncate_u64(l as u64, bits);
-            let ru = truncate_u64(r as u64, bits);
-            match kind {
-                IntCC::Eq => lu == ru,
-                IntCC::Ne => lu != ru,
-                IntCC::LtU => lu < ru,
-                IntCC::LeU => lu <= ru,
-                IntCC::GtU => lu > ru,
-                IntCC::GeU => lu >= ru,
-                _ => return None,
-            }
-        } else {
-            let ls = truncate_i64(l, bits);
-            let rs = truncate_i64(r, bits);
-            match kind {
-                IntCC::Eq => ls == rs,
-                IntCC::Ne => ls != rs,
-                IntCC::LtS => ls < rs,
-                IntCC::LeS => ls <= rs,
-                IntCC::GtS => ls > rs,
-                IntCC::GeS => ls >= rs,
-                _ => return None,
-            }
-        };
-
-        Some(Constant::Bool(result))
+        Self::evaluate(
+            Opcode::Icmp,
+            &[self, other],
+            &[Type::BOOL],
+            &[kind.predicate()],
+        )?
+        .first()
+        .copied()
     }
 
     fn from_i64(val: i64, bits: u32) -> Self {
@@ -181,14 +163,6 @@ impl Constant {
             64 => Constant::I64(val),
             _ => panic!("Unsupported bit width: {}", bits),
         }
-    }
-}
-
-fn truncate_u64(val: u64, bits: u32) -> u64 {
-    if bits == 64 {
-        val
-    } else {
-        val & ((1u64 << bits) - 1)
     }
 }
 

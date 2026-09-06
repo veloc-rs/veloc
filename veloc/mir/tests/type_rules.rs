@@ -1,6 +1,4 @@
-use veloc_mir::opspec::{
-    ResultTypes, TypeClass, TypePattern, TypeRelation, TypeScheme, TypeSchemeError, TypeSlot,
-};
+use veloc_mir::opspec::{ResultTypes, TypeSchemeError};
 use veloc_mir::types::TypeBits;
 use veloc_mir::{Opcode, Type, TypeSize};
 
@@ -33,8 +31,8 @@ fn logical_bits_are_independent_of_byte_storage() {
 
 #[test]
 fn mask_widening_uses_element_bits_and_preserves_shape() {
-    let extend = Opcode::ExtendU.spec().type_scheme;
-    assert!(extend.validate(&[Type::BOOL], &[Type::I8]).is_ok());
+    let extend = Opcode::ExtendU;
+    assert!(extend.validate_types(&[Type::BOOL], &[Type::I8]).is_ok());
 
     for scalable in [false, true] {
         let mask = Type::new_mask(4, scalable).unwrap();
@@ -56,9 +54,9 @@ fn mask_widening_uses_element_bits_and_preserves_shape() {
             .vector(4, !scalable)
             .unwrap()
             .as_type();
-        assert!(extend.validate(&[mask], &[widened]).is_ok());
-        assert!(extend.validate(&[mask], &[wrong_lanes]).is_err());
-        assert!(extend.validate(&[mask], &[wrong_scale]).is_err());
+        assert!(extend.validate_types(&[mask], &[widened]).is_ok());
+        assert!(extend.validate_types(&[mask], &[wrong_lanes]).is_err());
+        assert!(extend.validate_types(&[mask], &[wrong_scale]).is_err());
     }
 }
 
@@ -78,20 +76,20 @@ fn integer_conversions_compare_lane_widths() {
             .unwrap()
             .as_type();
         for opcode in [Opcode::ExtendS, Opcode::ExtendU] {
-            let scheme = opcode.spec().type_scheme;
-            assert!(scheme.validate(&[narrow], &[wide]).is_ok());
-            assert!(scheme.validate(&[wide], &[narrow]).is_err());
-            assert!(scheme.validate(&[wide], &[wide]).is_err());
+            let scheme = opcode;
+            assert!(scheme.validate_types(&[narrow], &[wide]).is_ok());
+            assert!(scheme.validate_types(&[wide], &[narrow]).is_err());
+            assert!(scheme.validate_types(&[wide], &[wide]).is_err());
         }
-        let wrap = Opcode::Wrap.spec().type_scheme;
-        assert!(wrap.validate(&[wide], &[narrow]).is_ok());
-        assert!(wrap.validate(&[narrow], &[wide]).is_err());
+        let wrap = Opcode::Wrap;
+        assert!(wrap.validate_types(&[wide], &[narrow]).is_ok());
+        assert!(wrap.validate_types(&[narrow], &[wide]).is_err());
     }
 }
 
 #[test]
 fn bitcasts_require_equal_size_expressions() {
-    let bitcast = Opcode::Reinterpret.spec().type_scheme;
+    let bitcast = Opcode::Reinterpret;
     let fixed = Type::I32X4;
     let scalable = Type::I32
         .as_scalar()
@@ -103,8 +101,8 @@ fn bitcasts_require_equal_size_expressions() {
     assert_ne!(fixed.bit_size(), scalable.bit_size());
     assert_eq!(fixed.bit_size().and_then(TypeBits::fixed_bits), Some(128));
     assert_eq!(scalable.bit_size().and_then(TypeBits::fixed_bits), None);
-    assert!(bitcast.validate(&[fixed], &[scalable]).is_err());
-    assert!(bitcast.validate(&[scalable], &[fixed]).is_err());
+    assert!(bitcast.validate_types(&[fixed], &[scalable]).is_err());
+    assert!(bitcast.validate_types(&[scalable], &[fixed]).is_err());
 
     for scalable in [false, true] {
         let from = Type::I32
@@ -125,23 +123,18 @@ fn bitcasts_require_equal_size_expressions() {
             .vector(4, scalable)
             .unwrap()
             .as_type();
-        assert!(bitcast.validate(&[from], &[same_bits]).is_ok());
-        assert!(bitcast.validate(&[from], &[more_bits]).is_err());
-        assert!(bitcast.validate(&[from], &[from]).is_err());
+        assert!(bitcast.validate_types(&[from], &[same_bits]).is_ok());
+        assert!(bitcast.validate_types(&[from], &[more_bits]).is_err());
+        assert!(bitcast.validate_types(&[from], &[from]).is_err());
     }
 }
 
 #[test]
 fn inference_and_validation_reject_conflicting_bindings() {
-    const OPERANDS: &[TypePattern] = &[
-        TypePattern::Bind(0, TypeClass::Integer),
-        TypePattern::Bind(0, TypeClass::Integer),
-    ];
-    const RESULTS: &[TypePattern] = &[TypePattern::Same(0)];
-    let scheme = TypeScheme::fixed(OPERANDS, RESULTS);
+    let scheme = Opcode::IAdd;
     let operands = [Type::I32, Type::I64];
-    let inferred_error = scheme.infer_results(&operands).unwrap_err();
-    let checked_error = scheme.validate(&operands, &[Type::I32]).unwrap_err();
+    let inferred_error = scheme.infer_result_types(&operands).unwrap_err();
+    let checked_error = scheme.validate_types(&operands, &[Type::I32]).unwrap_err();
     assert_eq!(inferred_error, checked_error);
     assert!(matches!(
         inferred_error,
@@ -152,37 +145,14 @@ fn inference_and_validation_reject_conflicting_bindings() {
         }
     ));
     assert_eq!(
-        scheme.infer_results(&[Type::I32, Type::I32]),
+        scheme.infer_result_types(&[Type::I32, Type::I32]),
         Ok(ResultTypes::Inferred(smallvec::smallvec![Type::I32]))
     );
 }
 
 #[test]
-fn type_schemes_support_more_than_four_variables() {
-    const OPERANDS: &[TypePattern] = &[
-        TypePattern::Bind(0, TypeClass::Any),
-        TypePattern::Bind(1, TypeClass::Any),
-        TypePattern::Bind(2, TypeClass::Any),
-        TypePattern::Bind(3, TypeClass::Any),
-        TypePattern::Bind(4, TypeClass::Any),
-    ];
-    const RESULTS: &[TypePattern] = &[TypePattern::Same(4), TypePattern::Same(0)];
-    let scheme = TypeScheme::fixed(OPERANDS, RESULTS);
-    let operands = [Type::I8, Type::I16, Type::I32, Type::I64, Type::F32];
-    assert_eq!(
-        scheme.infer_results(&operands),
-        Ok(ResultTypes::Inferred(smallvec::smallvec![
-            Type::F32,
-            Type::I8
-        ]))
-    );
-    assert!(scheme.validate(&operands, &[Type::F32, Type::I8]).is_ok());
-    assert!(scheme.validate(&operands, &[Type::I8, Type::F32]).is_err());
-}
-
-#[test]
 fn inference_checks_operand_arity_and_classes() {
-    let scheme = Opcode::IAdd.spec().type_scheme;
+    let scheme = Opcode::IAdd;
     for operands in [
         &[Type::I32][..],
         &[Type::I32, Type::I32, Type::I32][..],
@@ -190,38 +160,8 @@ fn inference_checks_operand_arity_and_classes() {
         &[Type::I32, Type::I64][..],
     ] {
         assert_eq!(
-            scheme.infer_results(operands).unwrap_err(),
-            scheme.validate(operands, &[Type::I32]).unwrap_err()
+            scheme.infer_result_types(operands).unwrap_err(),
+            scheme.validate_types(operands, &[Type::I32]).unwrap_err()
         );
     }
-}
-
-#[test]
-fn inferred_results_must_satisfy_relations() {
-    const OPERANDS: &[TypePattern] = &[TypePattern::Bind(0, TypeClass::Integer)];
-    const RESULTS: &[TypePattern] = &[TypePattern::Exact(Type::I8)];
-    const RELATION: TypeRelation = TypeRelation::Wider {
-        from: TypeSlot::Operand(0),
-        to: TypeSlot::Result(0),
-    };
-    let scheme = TypeScheme::fixed(OPERANDS, RESULTS).with_relations(&[RELATION]);
-    assert_eq!(
-        scheme.infer_results(&[Type::I32]),
-        Err(TypeSchemeError::Relation(RELATION))
-    );
-    assert_eq!(
-        scheme.infer_results(&[Type::I32]).unwrap_err(),
-        scheme.validate(&[Type::I32], &[Type::I8]).unwrap_err()
-    );
-}
-
-#[test]
-fn inferred_results_must_satisfy_bound_classes() {
-    const OPERANDS: &[TypePattern] = &[TypePattern::Bind(0, TypeClass::Integer)];
-    const RESULTS: &[TypePattern] = &[TypePattern::Bind(0, TypeClass::Float)];
-    let scheme = TypeScheme::fixed(OPERANDS, RESULTS);
-    assert_eq!(
-        scheme.infer_results(&[Type::I32]).unwrap_err(),
-        scheme.validate(&[Type::I32], &[Type::I32]).unwrap_err()
-    );
 }

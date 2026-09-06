@@ -4,7 +4,9 @@ pub const TYPES: &str = include_str!("../../../mir/defs/types.ops");
 pub const BUILTINS: &str = concat!(
     include_str!("../../../mir/defs/types.ops"),
     "\n",
-    include_str!("../../../mir/defs/builtins.ops")
+    include_str!("../../../mir/defs/builtins.ops"),
+    "\n",
+    include_str!("../../../mir/defs/comparisons.ops")
 );
 
 pub fn source(ops: &str) -> String {

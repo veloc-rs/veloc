@@ -4,10 +4,12 @@
 //! For example: `iconst 1 + iconst 2` -> `iconst 3`
 
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
+use smallvec::SmallVec;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::constant::Constant;
 use veloc_mir::function::Function;
 use veloc_mir::inst::{Inst, InstructionData};
+use veloc_mir::{Type, Value};
 
 const CONSTANT_FOLDING: &str = "constant_folding";
 
@@ -48,14 +50,19 @@ pub fn run_constant_folding(
         let mut pass_changed = false;
 
         // 获取指令快照进行遍历。
-        let insts: Vec<Inst> = func
+        let insts: Vec<_> = func
             .layout
             .block_order
             .iter()
-            .flat_map(|&block| func.layout.blocks[block].insts.iter().copied())
+            .flat_map(|&block| {
+                func.layout.blocks[block]
+                    .insts
+                    .iter()
+                    .map(move |&inst| (block, inst))
+            })
             .collect();
 
-        for inst in insts {
+        for (block, inst) in insts {
             // 检查指令是否有效（之前的 fold 可能已经将其变为 Nop）
             if matches!(func.dfg.instructions[inst], InstructionData::Nop) {
                 continue;
@@ -70,25 +77,36 @@ pub fn run_constant_folding(
                     );
                 }
 
-                let results = func.dfg.inst_results(inst);
-                if results.len() == 1 {
-                    // 指令变形 (Instruction Morphing)：保持相同的 Value ID，只需更改其定义逻辑。
-                    let inst_data = InstructionData::from(folded_const);
-
-                    // 在更改指令之前，从使用-定义链中脱离原操作数
-                    let use_def = am.use_def_mut(func);
-                    use_def.detach_inst(func, inst);
-
-                    // 替换指令数据
-                    func.dfg.replace_inst(inst, inst_data);
-
-                    // 注意：无需 RAUW，因为原结果 Value 仍然由该指令定义。
-                    func.bump_revision();
-                    am.update_use_def_revision(func);
-
-                    pass_changed = true;
-                    fold_count += 1;
+                let results = SmallVec::<[Value; 2]>::from_slice(func.dfg.inst_results(inst));
+                assert_eq!(results.len(), folded_const.len());
+                assert!(!results.is_empty());
+                am.use_def_mut(func).detach_inst(func, inst);
+                let mut added = SmallVec::<[Inst; 1]>::new();
+                for (index, (value, constant)) in results.into_iter().zip(folded_const).enumerate()
+                {
+                    let definition = if index == 0 {
+                        func.dfg.replace_inst(inst, constant.into());
+                        inst
+                    } else {
+                        let next = func.dfg.instructions.push(constant.into());
+                        added.push(next);
+                        next
+                    };
+                    func.dfg.inst_results[definition] = func.dfg.make_value_list(&[value]);
+                    func.dfg.values[value].def = veloc_mir::ValueDef::Inst(definition);
                 }
+                if !added.is_empty() {
+                    let insts = &mut func.layout.blocks[block].insts;
+                    let position = insts
+                        .iter()
+                        .position(|&i| i == inst)
+                        .expect("instruction is in its block");
+                    insts.splice(position + 1..position + 1, added);
+                }
+                func.bump_revision();
+                am.update_use_def_revision(func);
+                pass_changed = true;
+                fold_count += 1;
             }
         }
 
@@ -116,29 +134,24 @@ fn compact_layout(func: &mut Function) {
 }
 
 /// 尝试折叠单个指令
-fn try_fold_instruction(func: &Function, inst: Inst) -> Option<Constant> {
+fn try_fold_instruction(func: &Function, inst: Inst) -> Option<Vec<Constant>> {
     let idata = &func.dfg.instructions[inst];
     let results = func.dfg.inst_results(inst);
 
-    if results.len() != 1 {
-        return None;
-    }
-
-    match idata {
-        InstructionData::Binary { opcode, args } => {
-            let lhs = func.dfg.as_const(args[0])?;
-            let rhs = func.dfg.as_const(args[1])?;
-            lhs.binary_op(rhs, *opcode)
+    idata.opcode().spec().semantics?;
+    let mut args = Some(SmallVec::<[Constant; 4]>::new());
+    idata.visit_type_operands(&func.dfg, |v| {
+        if let Some(constants) = &mut args {
+            match func.dfg.as_const(v) {
+                Some(constant) => constants.push(constant),
+                None => args = None,
+            }
         }
-        InstructionData::Unary { opcode, arg } => {
-            let val = func.dfg.as_const(*arg)?;
-            val.unary_op(*opcode)
-        }
-        InstructionData::IntCompare { kind, args } => {
-            let lhs = func.dfg.as_const(args[0])?;
-            let rhs = func.dfg.as_const(args[1])?;
-            lhs.icmp(rhs, *kind)
-        }
-        _ => None,
-    }
+    });
+    let args = args?;
+    let types = results
+        .iter()
+        .map(|&v| func.dfg.value_type(v))
+        .collect::<SmallVec<[Type; 2]>>();
+    Constant::evaluate(idata.opcode(), &args, &types, &idata.semantic_properties())
 }

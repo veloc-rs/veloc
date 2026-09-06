@@ -285,7 +285,7 @@ pub(super) fn print(
             let index = format.fields.iter().position(|f| f.name == name).unwrap();
             format!("*_s{index}")
         },
-        "core::fmt::Error",
+        |value| format!("{value}.ok_or(core::fmt::Error)?"),
     ) {
         writeln!(out, "let {} = {expr};", local(op, &name)).unwrap();
     }

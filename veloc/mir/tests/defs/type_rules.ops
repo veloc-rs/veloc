@@ -1,0 +1,15 @@
+// Test-only contracts, compiled by the same generator as production MIR.
+format Quinary { fields: [opcode(Opcode), args(values(5))], opcode: dynamic(opcode) }
+format Empty { fields: [opcode(Opcode)], opcode: dynamic(opcode) }
+format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+
+op Many<A: Any, B: Any, C: Any, D: Any, E: Any>(a: A, b: B, c: C, d: D, e: E) -> (E, A) {
+    mnemonic: "many", storage: Quinary { args: [a, b, c, d, e] }, memory: NONE
+}
+op Output<T: Integer>() -> T {
+    mnemonic: "output", storage: Empty {}, memory: NONE
+}
+op Sized<T: Scalar>(arg: T) -> (result: I8) {
+    mnemonic: "sized", storage: Unary { arg: arg },
+    where: [wider(arg, result)], memory: NONE
+}

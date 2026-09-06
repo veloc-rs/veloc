@@ -5,6 +5,8 @@
 
 mod builtin_gen;
 mod builtins;
+mod comparisons;
+mod constraints;
 mod encoding;
 mod mir;
 mod model;
@@ -16,6 +18,7 @@ mod syntax;
 mod text;
 mod type_expr;
 mod type_gen;
+mod type_rules;
 mod type_set;
 mod types;
 
@@ -55,6 +58,7 @@ pub struct Generated {
     pub scalars: String,
     pub formats: String,
     pub types: String,
+    pub validation: String,
     pub opcodes: String,
     pub instructions: String,
     pub text_parser: String,
@@ -79,7 +83,9 @@ mod fixtures {
     const BUILTINS: &str = concat!(
         include_str!("../../mir/defs/types.ops"),
         "\n",
-        include_str!("../../mir/defs/builtins.ops")
+        include_str!("../../mir/defs/builtins.ops"),
+        "\n",
+        include_str!("../../mir/defs/comparisons.ops")
     );
 
     pub fn builtins() -> builtins::Builtins {

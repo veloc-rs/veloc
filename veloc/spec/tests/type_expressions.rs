@@ -108,10 +108,12 @@ op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Scalar) {
 
 #[test]
 fn semantics_and_text_codecs_use_resolved_inline_constraints() {
-    for domain in ["I32 | I64", "Integer & Vector", "BOOL | vectors(BOOL)"] {
+    for domain in ["I32 | I64", "Integer & Vector"] {
         assert!(compile_mir(&pair(domain)).is_ok(), "{domain}");
     }
-    rejected(&pair("I32 | F64"), "same-width integer inputs");
+    assert!(compile_mir(&pair("BOOL | vectors(BOOL)").replace("bv.add", "bv.and")).is_ok());
+    rejected(&pair("BOOL | vectors(BOOL)"), "expected a bitvector");
+    rejected(&pair("I32 | F64"), "floating-point");
     let source = r#"
 format Literal { fields: [opcode(Opcode), value(u64)], opcode: dynamic(opcode) }
 op Literal<T: Float & Scalar>(@value: u64) -> T {

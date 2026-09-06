@@ -178,8 +178,9 @@ impl<'a> IRTranslator<'a> {
                 .iter()
                 .map(|&value| ctx.func.dfg.value_type(value))
                 .collect();
-            spec.type_scheme
-                .validate(&operand_types, &result_types)
+            inst_data
+                .opcode()
+                .validate_types(&operand_types, &result_types)
                 .map_err(|error| {
                     Error::translate(format!(
                         "invalid types for {} semantic lowering: {error:?}",

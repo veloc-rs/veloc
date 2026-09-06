@@ -79,7 +79,7 @@ pub(crate) fn projections(
     format: &Format,
     dfg: &str,
     field: impl Fn(&str) -> String,
-    missing: &str,
+    required: impl Fn(String) -> String,
 ) -> Vec<(String, String)> {
     let mut locals = Vec::new();
     for storage in &format.fields {
@@ -111,13 +111,13 @@ pub(crate) fn projections(
             }
             Binding::Pool(name) => {
                 let ty = storage.ty.qualified_type();
-                let value =
-                    format!("<{ty} as crate::dfg::PoolKey>::get({value}, {dfg}).ok_or({missing})?");
+                let value = required(format!(
+                    "<{ty} as crate::dfg::PoolKey>::get({value}, {dfg})"
+                ));
                 locals.push((name.clone(), value));
             }
             Binding::Table { cases, default } => {
-                let split =
-                    format!("{dfg}.jump_table_targets({value}).split_last().ok_or({missing})?");
+                let split = required(format!("{dfg}.jump_table_targets({value}).split_last()"));
                 locals.push((cases.clone(), format!("({split}).1")));
                 locals.push((default.clone(), format!("*({split}).0")));
             }
@@ -157,7 +157,9 @@ mod tests {
                 )),
                 "{packed}"
             );
-            let locals = projections(op, format, "dfg", str::to_owned, "invalid");
+            let locals = projections(op, format, "dfg", str::to_owned, |value| {
+                format!("{value}.ok_or(invalid)?")
+            });
             let (_, expr) = locals.iter().find(|(name, _)| name == logical).unwrap();
             assert!(
                 expr.contains(&format!(
@@ -190,7 +192,9 @@ mod tests {
             constructor(op, format, "dfg", str::to_owned)
                 .contains("dfg.make_jump_table(&cases, default)")
         );
-        let locals = projections(op, format, "dfg", str::to_owned, "invalid");
+        let locals = projections(op, format, "dfg", str::to_owned, |value| {
+            format!("{value}.ok_or(invalid)?")
+        });
         assert!(
             locals
                 .iter()

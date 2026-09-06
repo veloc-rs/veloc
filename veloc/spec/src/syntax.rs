@@ -18,6 +18,10 @@ pub(crate) enum Kind {
     Object(String, BTreeMap<String, Node>),
     Union(Vec<Node>),
     Intersection(Vec<Node>),
+    Integer(i128),
+    Unary(&'static str, Box<Node>),
+    Binary(&'static str, Box<Node>, Box<Node>),
+    Lambda(String, Box<Node>),
 }
 
 #[derive(Debug, Clone)]
@@ -192,7 +196,16 @@ impl Parser<'_> {
             let offset = self.offset;
             let field = self.name()?;
             self.expect(b':')?;
-            let value = self.value(depth)?;
+            let value = if field == "constraints" {
+                let offset = self.offset;
+                self.expect(b'[')?;
+                Node {
+                    offset,
+                    kind: Kind::List(self.constraint_sequence(b']', depth + 1)?),
+                }
+            } else {
+                self.value(depth)?
+            };
             if fields.insert(field.clone(), value).is_some() {
                 return Err(self.error(offset, format!("duplicate field `{field}`")));
             }
@@ -206,6 +219,109 @@ impl Parser<'_> {
 
     fn error(&self, offset: usize, message: impl Into<String>) -> Error {
         Error::at(self.source, offset, message)
+    }
+
+    fn constraint_sequence(&mut self, end: u8, depth: u8) -> Result<Vec<Node>, Error> {
+        let mut nodes = Vec::new();
+        while self.peek() != Some(end) {
+            nodes.push(self.constraint(depth, 0)?);
+            if self.peek() != Some(end) {
+                self.expect(b',')?;
+            }
+        }
+        self.expect(end)?;
+        Ok(nodes)
+    }
+
+    fn constraint(&mut self, depth: u8, precedence: u8) -> Result<Node, Error> {
+        if depth >= 64 {
+            return Err(self.error(self.offset, "constraint nesting exceeds 64 levels"));
+        }
+        let token = self.peek();
+        let offset = self.offset;
+        let kind = match token {
+            Some(b'!' | b'-') => {
+                self.offset += 1;
+                Kind::Unary(
+                    if token == Some(b'!') { "!" } else { "-" },
+                    Box::new(self.constraint(depth + 1, 6)?),
+                )
+            }
+            Some(b'(') => {
+                self.offset += 1;
+                let node = self.constraint(depth + 1, 0)?;
+                self.expect(b')')?;
+                node.kind
+            }
+            Some(b'|') => {
+                self.offset += 1;
+                let name = self.name()?;
+                self.expect(b'|')?;
+                Kind::Lambda(name, Box::new(self.constraint(depth + 1, 0)?))
+            }
+            Some(b'0'..=b'9') => {
+                while self
+                    .source
+                    .as_bytes()
+                    .get(self.offset)
+                    .is_some_and(u8::is_ascii_digit)
+                {
+                    self.offset += 1;
+                }
+                Kind::Integer(
+                    self.source[offset..self.offset]
+                        .parse()
+                        .map_err(|_| self.error(offset, "constraint integer is out of range"))?,
+                )
+            }
+            Some(b'"') => self.atom(depth, false)?.kind,
+            _ => {
+                let name = self.name()?;
+                if self.peek() == Some(b'(') {
+                    self.offset += 1;
+                    Kind::Call(name, self.constraint_sequence(b')', depth + 1)?)
+                } else {
+                    Kind::Name(name)
+                }
+            }
+        };
+        let mut lhs = Node { offset, kind };
+        let mut chain = 0;
+        loop {
+            self.peek();
+            let tail = &self.source[self.offset..];
+            let Some((op, level)) = [
+                ("||", 1),
+                ("&&", 2),
+                ("==", 3),
+                ("!=", 3),
+                ("<=", 3),
+                (">=", 3),
+                ("<", 3),
+                (">", 3),
+                ("+", 4),
+                ("-", 4),
+                ("*", 5),
+            ]
+            .into_iter()
+            .find(|(op, _)| tail.starts_with(op)) else {
+                break;
+            };
+            if level < precedence {
+                break;
+            }
+            chain += 1;
+            if chain + usize::from(depth) >= 64 {
+                return Err(self.error(offset, "constraint nesting exceeds 64 levels"));
+            }
+            self.offset += op.len();
+            let rhs = self.constraint(depth + 1, level + 1)?;
+            lhs = Node {
+                offset,
+                kind: Kind::Binary(op, Box::new(lhs), Box::new(rhs)),
+            };
+        }
+        Ok(lhs)
     }
 
     fn peek(&mut self) -> Option<u8> {

@@ -159,9 +159,9 @@ impl<'a> FunctionBuilder<'a> {
                 .copied()
                 .collect()
         } else {
-            return match spec
-                .type_scheme
-                .infer_results(&operands)
+            return match data
+                .opcode()
+                .infer_result_types(&operands)
                 .unwrap_or_else(|error| {
                     panic!(
                         "{} constructed with invalid operand types: {error:?}",
@@ -175,8 +175,8 @@ impl<'a> FunctionBuilder<'a> {
                 ResultTypes::Signature => unreachable!("signature results were resolved above"),
             };
         };
-        spec.type_scheme
-            .validate(&operands, &types)
+        data.opcode()
+            .validate_types(&operands, &types)
             .unwrap_or_else(|error| {
                 panic!(
                     "{} constructed with types outside its type scheme: {error:?}",

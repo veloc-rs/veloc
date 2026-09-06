@@ -50,7 +50,7 @@ pub enum TypeRelation {
     SameWidthDistinct { lhs: TypeSlot, rhs: TypeSlot },
 }
 
-/// Complete, opcode-independent description of value type constraints.
+/// Read-only descriptive metadata. Executable checks are generated on Opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeScheme {
     pub operands: TypeList,
@@ -81,224 +81,24 @@ pub enum TypeSchemeError {
     Relation(TypeRelation),
 }
 
-type TypeBindings = smallvec::SmallVec<[Option<crate::Type>; 4]>;
-
-impl TypeScheme {
-    pub const fn fixed(operands: &'static [TypePattern], results: &'static [TypePattern]) -> Self {
-        Self {
-            operands: TypeList::Fixed(operands),
-            results: TypeList::Fixed(results),
-            relations: &[],
-        }
-    }
-
-    pub const fn with_relations(mut self, relations: &'static [TypeRelation]) -> Self {
-        self.relations = relations;
-        self
-    }
-
-    /// Infer result types when the scheme determines them completely.
-    /// Operations with caller-selected types report `Explicit`; calls report
-    /// `Signature` so the consumer can consult the module.
-    /// Operand constraints and inferred results use the same checks as
-    /// [`Self::validate`]; invalid inputs are not incomplete type information.
-    pub fn infer_results(
-        self,
-        operands: &[crate::Type],
-    ) -> core::result::Result<ResultTypes, TypeSchemeError> {
-        let bindings = self.bind_operands(operands)?;
-        let TypeList::Fixed(results) = self.results else {
-            return Ok(match self.results {
-                TypeList::Signature => ResultTypes::Signature,
-                TypeList::Variadic(_) => ResultTypes::Explicit,
-                TypeList::Fixed(_) => unreachable!(),
-            });
-        };
-        let mut inferred = smallvec::SmallVec::new();
-        for pattern in results {
-            let Some(ty) = infer_pattern(*pattern, &bindings) else {
-                return Ok(ResultTypes::Explicit);
-            };
-            inferred.push(ty);
-        }
-        self.validate_results(operands, &inferred, bindings)?;
-        Ok(ResultTypes::Inferred(inferred))
-    }
-
-    pub fn validate(
-        self,
-        operands: &[crate::Type],
-        results: &[crate::Type],
-    ) -> core::result::Result<(), TypeSchemeError> {
-        let bindings = self.bind_operands(operands)?;
-        self.validate_results(operands, results, bindings)
-    }
-
-    fn validate_results(
-        self,
-        operands: &[crate::Type],
-        results: &[crate::Type],
-        mut bindings: TypeBindings,
-    ) -> core::result::Result<(), TypeSchemeError> {
-        validate_list(self.results, results, true, &mut bindings)?;
-
-        for &relation in self.relations {
-            let resolve = |slot| match slot {
-                TypeSlot::Operand(index) => operands.get(index as usize),
-                TypeSlot::Result(index) => results.get(index as usize),
-            };
-            let resolve = |slot| {
-                resolve(slot)
-                    .copied()
-                    .expect("OpSpec type relation refers to a missing type slot")
-            };
-            let valid = match relation {
-                TypeRelation::Wider { from, to } => resolve(from)
-                    .element_bits()
-                    .zip(resolve(to).element_bits())
-                    .is_some_and(|(from, to)| to > from),
-                TypeRelation::Narrower { from, to } => resolve(from)
-                    .element_bits()
-                    .zip(resolve(to).element_bits())
-                    .is_some_and(|(from, to)| to < from),
-                TypeRelation::SameWidthDistinct { lhs, rhs } => {
-                    let lhs = resolve(lhs);
-                    let rhs = resolve(rhs);
-                    lhs.bit_size()
-                        .zip(rhs.bit_size())
-                        .is_some_and(|(lhs_width, rhs_width)| lhs != rhs && lhs_width == rhs_width)
-                }
-            };
-            if !valid {
-                return Err(TypeSchemeError::Relation(relation));
-            }
-        }
-        Ok(())
-    }
-
-    fn bind_operands(
-        self,
-        operands: &[crate::Type],
-    ) -> core::result::Result<TypeBindings, TypeSchemeError> {
-        let mut bindings = smallvec::smallvec![None; self.binding_count()];
-        validate_list(self.operands, operands, false, &mut bindings)?;
-        Ok(bindings)
-    }
-
-    fn binding_count(self) -> usize {
-        [self.operands, self.results]
-            .into_iter()
-            .flat_map(|list| match list {
-                TypeList::Fixed(patterns) | TypeList::Variadic(patterns) => patterns,
-                TypeList::Signature => &[],
-            })
-            .filter_map(|pattern| match *pattern {
-                TypePattern::Bind(slot, _)
-                | TypePattern::Same(slot)
-                | TypePattern::ElementOf(slot)
-                | TypePattern::VectorOf(slot)
-                | TypePattern::ShapeOf(slot, _) => Some(usize::from(slot) + 1),
-                TypePattern::Class(_) | TypePattern::Exact(_) => None,
-            })
-            .max()
-            .unwrap_or(0)
+fn same_shape(bound: crate::Type, ty: crate::Type) -> bool {
+    if let Some(bound) = bound.as_vector() {
+        ty.as_vector()
+            .is_some_and(|vector| vector.shape() == bound.shape())
+    } else {
+        ty.as_scalar().is_some()
     }
 }
 
-fn validate_list(
-    spec: TypeList,
-    types: &[crate::Type],
-    results: bool,
-    bindings: &mut [Option<crate::Type>],
-) -> core::result::Result<(), TypeSchemeError> {
-    let (patterns, exact) = match spec {
-        TypeList::Fixed(patterns) => (patterns, true),
-        TypeList::Variadic(prefix) => (prefix, false),
-        TypeList::Signature => return Ok(()),
-    };
-    if (exact && patterns.len() != types.len()) || (!exact && types.len() < patterns.len()) {
-        return Err(TypeSchemeError::Arity {
-            results,
-            expected: patterns.len(),
-            got: types.len(),
-        });
-    }
-    for (index, (&pattern, &ty)) in patterns.iter().zip(types).enumerate() {
-        if !matches_pattern(pattern, ty, bindings) {
-            return Err(TypeSchemeError::Pattern {
-                results,
-                index,
-                expected: pattern,
-                got: ty,
-            });
-        }
-    }
-    Ok(())
-}
-
-fn matches_pattern(
-    pattern: TypePattern,
-    ty: crate::Type,
-    bindings: &mut [Option<crate::Type>],
-) -> bool {
-    match pattern {
-        TypePattern::Class(class) => class.accepts(ty),
-        TypePattern::Exact(expected) => ty == expected,
-        TypePattern::Bind(variable, class) => {
-            if !class.accepts(ty) {
-                return false;
-            }
-            let binding = &mut bindings[variable as usize];
-            match *binding {
-                Some(expected) => ty == expected,
-                None => {
-                    *binding = Some(ty);
-                    true
-                }
-            }
-        }
-        TypePattern::Same(variable) => binding(bindings, variable) == Some(ty),
-        TypePattern::ElementOf(variable) => binding(bindings, variable)
-            .and_then(crate::Type::as_vector)
-            .is_some_and(|bound| ty == bound.element_type().as_type()),
-        TypePattern::VectorOf(variable) => binding(bindings, variable)
-            .and_then(crate::Type::as_scalar)
-            .is_some_and(|bound| {
-                ty.as_vector()
-                    .is_some_and(|vector| vector.element_type() == bound)
-            }),
-        TypePattern::ShapeOf(variable, class) => binding(bindings, variable).is_some_and(|bound| {
-            class.accepts(ty)
-                && if let Some(bound) = bound.as_vector() {
-                    ty.as_vector()
-                        .is_some_and(|vector| vector.shape() == bound.shape())
-                } else {
-                    ty.as_scalar().is_some()
-                }
-        }),
-    }
-}
-
-fn infer_pattern(pattern: TypePattern, bindings: &[Option<crate::Type>]) -> Option<crate::Type> {
-    match pattern {
-        TypePattern::Exact(ty) => Some(ty),
-        TypePattern::Same(variable) | TypePattern::Bind(variable, _) => binding(bindings, variable),
-        TypePattern::ElementOf(variable) => binding(bindings, variable)
-            .and_then(crate::Type::as_vector)
-            .map(|vector| vector.element_type().as_type()),
-        TypePattern::Class(_) | TypePattern::VectorOf(_) | TypePattern::ShapeOf(_, _) => None,
-    }
-}
-
-fn binding(bindings: &[Option<crate::Type>], variable: u8) -> Option<crate::Type> {
-    bindings[variable as usize]
-}
-
-/// Reusable type schemes. They are built from generic patterns rather than
-/// opcode-specific validator code, so new operations can compose existing
-/// constraints or add a new scheme without changing the validator.
-pub mod type_schemes {
+/// Shared metadata and executable rules generated from the definitions.
+pub(crate) mod type_schemes {
     include!(concat!(env!("OUT_DIR"), "/type_schemes.rs"));
+}
+
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+mod test_type_schemes {
+    include!(concat!(env!("OUT_DIR"), "/test_type_schemes.rs"));
 }
 
 /// Abstract memory regions used by generic scheduling, DCE, and alias queries.
@@ -457,16 +257,6 @@ impl core::fmt::Display for OpTraits {
 /// the value according to the operation's concrete operand type.
 pub use veloc_semantics::BvConst as AlgebraicConstant;
 
-/// Structural constraints that are not expressible as relationships between
-/// SSA value types. The validator interprets these uniformly from `OpSpec`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpConstraint {
-    PointerComparison,
-    NonZeroScale,
-    VectorConstant,
-    ShuffleMask,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpSpec {
     pub mnemonic: &'static str,
@@ -474,40 +264,41 @@ pub struct OpSpec {
     pub type_scheme: &'static TypeScheme,
     pub traits: OpTraits,
     pub memory_effect: MemoryEffect,
-    pub constraints: &'static [OpConstraint],
+    /// Descriptive predicates/diagnostics; executable checks are generated from definitions.
+    pub constraints: &'static [&'static str],
     pub identity: Option<AlgebraicConstant>,
     pub absorbing: Option<AlgebraicConstant>,
     /// Scalar bitvector program, applied independently to vector lanes.
     /// This does not describe predication, memory, or machine state effects.
-    pub semantics: Option<crate::semantics::Program>,
+    pub semantics: Option<crate::semantics::Program<'static>>,
 }
 
 impl OpSpec {
-    pub const fn is_pure(self) -> bool {
+    pub const fn is_pure(&self) -> bool {
         self.memory_effect.is_none() && !self.is_terminator() && !self.may_trap()
     }
 
-    pub const fn is_terminator(self) -> bool {
+    pub const fn is_terminator(&self) -> bool {
         self.traits.contains(OpTraits::TERMINATOR)
     }
 
-    pub const fn has_side_effects(self) -> bool {
+    pub const fn has_side_effects(&self) -> bool {
         self.is_terminator() || self.may_trap() || self.memory_effect.has_side_effects()
     }
 
-    pub const fn is_commutative(self) -> bool {
+    pub const fn is_commutative(&self) -> bool {
         self.traits.contains(OpTraits::COMMUTATIVE)
     }
 
-    pub const fn is_associative(self) -> bool {
+    pub const fn is_associative(&self) -> bool {
         self.traits.contains(OpTraits::ASSOCIATIVE)
     }
 
-    pub const fn is_idempotent(self) -> bool {
+    pub const fn is_idempotent(&self) -> bool {
         self.traits.contains(OpTraits::IDEMPOTENT)
     }
 
-    pub const fn may_trap(self) -> bool {
+    pub const fn may_trap(&self) -> bool {
         self.traits.contains(OpTraits::MAY_TRAP)
     }
 }
@@ -540,13 +331,51 @@ pub fn write_opcode_markdown(output: &mut dyn core::fmt::Write) -> core::fmt::Re
 #[cfg(test)]
 mod tests {
     use super::ResultTypes;
-    use super::{MemoryEffect, OpConstraint, OpFormat, TypeList};
+    use super::{MemoryEffect, TypeList};
     use crate::{FloatCC, IntCC, Opcode, Type};
+
+    #[test]
+    fn generated_contracts_cover_many_variables_and_result_only_bindings() {
+        use super::test_type_schemes::{
+            infer_0 as infer_many, infer_1 as infer_output, validate_0 as validate_many,
+            validate_1 as validate_output,
+        };
+        let operands = [Type::I8, Type::I16, Type::I32, Type::I64, Type::F32];
+        assert_eq!(
+            infer_many(&operands),
+            Ok(ResultTypes::Inferred(smallvec::smallvec![
+                Type::F32,
+                Type::I8
+            ]))
+        );
+        assert!(validate_many(&operands, &[Type::F32, Type::I8]).is_ok());
+        assert!(validate_many(&operands, &[Type::I8, Type::F32]).is_err());
+        assert!(infer_many(&operands[..4]).is_err());
+        assert_eq!(infer_output(&[]), Ok(ResultTypes::Explicit));
+        assert!(validate_output(&[], &[Type::I32]).is_ok());
+        assert!(validate_output(&[], &[Type::F32]).is_err());
+    }
+
+    #[test]
+    fn generated_inference_checks_relations_on_known_results() {
+        use super::test_type_schemes::{infer_2, validate_2};
+        let expected = super::TypeSchemeError::Relation(super::TypeRelation::Wider {
+            from: super::TypeSlot::Operand(0),
+            to: super::TypeSlot::Result(0),
+        });
+        assert_eq!(infer_2(&[Type::I32]), Err(expected));
+        assert_eq!(validate_2(&[Type::I32], &[Type::I8]), Err(expected));
+        assert_eq!(
+            infer_2(&[Type::BOOL]),
+            Ok(ResultTypes::Inferred(smallvec::smallvec![Type::I8]))
+        );
+    }
 
     #[test]
     fn opcode_mnemonics_are_unique_and_round_trip() {
         for (index, &opcode) in Opcode::ALL.iter().enumerate() {
-            let spec = opcode.spec();
+            let spec: &'static super::OpSpec = opcode.spec();
+            assert!(core::ptr::eq(spec, opcode.spec()));
             assert_eq!(Opcode::from_mnemonic(spec.mnemonic), Some(opcode));
             assert!(
                 Opcode::ALL[..index]
@@ -560,15 +389,15 @@ mod tests {
 
     #[test]
     fn control_and_arithmetic_traits_are_declarative() {
+        const ADD: &super::OpSpec = Opcode::IAdd.spec();
+        const _: () = assert!(ADD.is_pure() && ADD.is_commutative());
         assert!(Opcode::Return.spec().is_terminator());
         assert!(Opcode::Store.spec().has_side_effects());
         assert!(Opcode::IAdd.spec().is_commutative());
         assert!(Opcode::IAdd.spec().is_pure());
         assert_eq!(
             Opcode::Icmp
-                .spec()
-                .type_scheme
-                .infer_results(&[Type::I32, Type::I32])
+                .infer_result_types(&[Type::I32, Type::I32])
                 .unwrap(),
             ResultTypes::Inferred(smallvec::smallvec![Type::BOOL])
         );
@@ -576,39 +405,20 @@ mod tests {
 
     #[test]
     fn variadic_operands_validate_the_known_prefix() {
-        use super::{TypeClass, TypePattern, TypeScheme, TypeSchemeError};
-
-        let scheme = TypeScheme {
-            operands: TypeList::Variadic(&[TypePattern::Bind(0, TypeClass::Integer)]),
-            results: TypeList::Fixed(&[TypePattern::Same(0)]),
-            relations: &[],
-        };
-        assert_eq!(
-            scheme.infer_results(&[Type::I32, Type::F64]).unwrap(),
-            ResultTypes::Inferred(smallvec::smallvec![Type::I32])
-        );
-        assert!(scheme.validate(&[Type::I32], &[Type::I32]).is_ok());
-        assert!(matches!(
-            scheme.validate(&[], &[Type::I32]),
-            Err(TypeSchemeError::Arity { .. })
-        ));
-        assert!(matches!(
-            scheme.validate(&[Type::F64], &[Type::F64]),
-            Err(TypeSchemeError::Pattern { .. })
-        ));
-        assert!(scheme.validate(&[Type::I32], &[Type::I64]).is_err());
-
-        let branch = Opcode::Br.spec().type_scheme;
-        assert!(branch.validate(&[Type::BOOL, Type::I64], &[]).is_ok());
-        assert!(branch.validate(&[Type::I32, Type::I64], &[]).is_err());
-        assert!(branch.validate(&[], &[]).is_err());
-        let call = Opcode::CallIndirect.spec().type_scheme;
-        assert!(call.validate(&[Type::PTR, Type::I32], &[Type::I64]).is_ok());
+        let branch = Opcode::Br;
+        assert!(branch.validate_types(&[Type::BOOL, Type::I64], &[]).is_ok());
+        assert!(branch.validate_types(&[Type::I32, Type::I64], &[]).is_err());
+        assert!(branch.validate_types(&[], &[]).is_err());
+        let call = Opcode::CallIndirect;
         assert!(
-            call.validate(&[Type::I64, Type::I32], &[Type::I64])
+            call.validate_types(&[Type::PTR, Type::I32], &[Type::I64])
+                .is_ok()
+        );
+        assert!(
+            call.validate_types(&[Type::I64, Type::I32], &[Type::I64])
                 .is_err()
         );
-        assert!(call.validate(&[], &[]).is_err());
+        assert!(call.validate_types(&[], &[]).is_err());
     }
 
     #[test]
@@ -620,7 +430,9 @@ mod tests {
         assert_eq!(program.arity(), 1);
         for bits in [8, 16, 32, 64, 128] {
             let width = Width::new(bits).unwrap();
-            let function = program.instantiate(width).unwrap();
+            let function = program
+                .instantiate(&[Sort::Bv(width)], &[Sort::Bv(width)], &[])
+                .unwrap();
             let primitive = Function::new(
                 alloc::vec![Sort::Bv(width)],
                 Expr::apply(BvOp::Neg, &[Expr::input(0, Sort::Bv(width))]).unwrap(),
@@ -628,7 +440,6 @@ mod tests {
             .unwrap();
             for input in [0, 1, width.mask(), 1u128 << (bits - 1)] {
                 let expected = BvOp::Neg.eval(bits, &[input]).unwrap();
-                assert_eq!(program.eval(width, &[input]).unwrap(), expected);
                 assert_eq!(
                     function.eval(&[Value::Bv(input)]).unwrap(),
                     Value::Bv(expected)
@@ -644,6 +455,10 @@ mod tests {
 
     #[test]
     fn opcode_spec_invariants_hold() {
+        assert!(core::ptr::eq(
+            Opcode::IAdd.spec().type_scheme,
+            Opcode::ISub.spec().type_scheme,
+        ));
         for &opcode in Opcode::ALL {
             let spec = opcode.spec();
             if let (Some(format_arity), TypeList::Fixed(operands)) =
@@ -655,16 +470,6 @@ mod tests {
                     "{} format and type scheme disagree",
                     spec.mnemonic
                 );
-            }
-
-            for constraint in spec.constraints {
-                let compatible = match constraint {
-                    OpConstraint::PointerComparison => spec.format == OpFormat::IntCompare,
-                    OpConstraint::NonZeroScale => spec.format == OpFormat::PtrIndex,
-                    OpConstraint::VectorConstant => spec.format == OpFormat::Vconst,
-                    OpConstraint::ShuffleMask => spec.format == OpFormat::Shuffle,
-                };
-                assert!(compatible, "{} has incompatible constraint", spec.mnemonic);
             }
 
             if spec.identity.is_some() || spec.absorbing.is_some() {
@@ -749,25 +554,25 @@ mod tests {
         for class in [bits, comparable, indices] {
             assert!(!class.accepts(Type::INVALID));
         }
-        let scheme = Opcode::IAnd.spec().type_scheme;
+        let scheme = Opcode::IAnd;
         assert!(
             scheme
-                .validate(&[Type::I32, Type::I32], &[Type::I32])
+                .validate_types(&[Type::I32, Type::I32], &[Type::I32])
                 .is_ok()
         );
         assert!(
             scheme
-                .validate(&[Type::BOOL, Type::BOOL], &[Type::BOOL])
+                .validate_types(&[Type::BOOL, Type::BOOL], &[Type::BOOL])
                 .is_ok()
         );
         assert!(
             scheme
-                .validate(&[Type::I32, Type::I64], &[Type::I32])
+                .validate_types(&[Type::I32, Type::I64], &[Type::I32])
                 .is_err()
         );
         assert!(
             scheme
-                .validate(&[Type::I32, Type::I32], &[Type::BOOL])
+                .validate_types(&[Type::I32, Type::I32], &[Type::BOOL])
                 .is_err()
         );
     }
@@ -835,7 +640,16 @@ mod tests {
         for cc in integers {
             assert_eq!(cc.swap().swap(), cc);
             assert_eq!(cc.complement().complement(), cc);
+            assert_eq!(IntCC::from_mnemonic(cc.mnemonic()), Some(cc));
+            assert_eq!(cc.to_string(), cc.mnemonic());
+            assert_eq!(
+                cc.is_unsigned(),
+                matches!(cc, IntCC::LtU | IntCC::GtU | IntCC::LeU | IntCC::GeU)
+            );
+            assert_eq!(cc.swap().is_unsigned(), cc.is_unsigned());
+            assert_eq!(cc.complement().is_unsigned(), cc.is_unsigned());
         }
+        assert_eq!(IntCC::from_mnemonic("unknown"), None);
 
         let floats = [
             FloatCC::Eq,
@@ -848,8 +662,58 @@ mod tests {
         for cc in floats {
             assert_eq!(cc.swap().swap(), cc);
             assert_eq!(cc.complement_ordered().complement_ordered(), cc);
+            assert_eq!(FloatCC::from_mnemonic(cc.mnemonic()), Some(cc));
+            assert_eq!(cc.to_string(), cc.mnemonic());
         }
+        assert_eq!(FloatCC::from_mnemonic("unknown"), None);
         assert_eq!(FloatCC::Lt.complement(), None);
+    }
+
+    #[test]
+    fn float_condition_transforms_preserve_ieee_comparisons() {
+        fn eval(cc: FloatCC, lhs: f64, rhs: f64) -> bool {
+            match cc {
+                FloatCC::Eq => lhs == rhs,
+                FloatCC::Ne => lhs != rhs,
+                FloatCC::Lt => lhs < rhs,
+                FloatCC::Gt => lhs > rhs,
+                FloatCC::Le => lhs <= rhs,
+                FloatCC::Ge => lhs >= rhs,
+            }
+        }
+        let values = [
+            f64::NEG_INFINITY,
+            -1.0,
+            -0.0,
+            0.0,
+            1.0,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+        for cc in [
+            FloatCC::Eq,
+            FloatCC::Ne,
+            FloatCC::Lt,
+            FloatCC::Gt,
+            FloatCC::Le,
+            FloatCC::Ge,
+        ] {
+            assert_eq!(
+                cc.complement().is_some(),
+                matches!(cc, FloatCC::Eq | FloatCC::Ne)
+            );
+            for lhs in values {
+                for rhs in values {
+                    assert_eq!(eval(cc, lhs, rhs), eval(cc.swap(), rhs, lhs));
+                    if let Some(inverse) = cc.complement() {
+                        assert_ne!(eval(cc, lhs, rhs), eval(inverse, lhs, rhs));
+                    }
+                    if !lhs.is_nan() && !rhs.is_nan() {
+                        assert_ne!(eval(cc, lhs, rhs), eval(cc.complement_ordered(), lhs, rhs));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

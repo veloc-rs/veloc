@@ -1,12 +1,14 @@
 use crate::dfg::PoolKey;
 use crate::inst::{Inst, VectorExtId, VectorMemExtId};
-use crate::opspec::OpConstraint;
 use crate::{
-    Block, BlockCall, Function, InstructionData, IntCC, ModuleData, Opcode, Result, SigId, Type,
-    Value, ValueList,
+    Block, BlockCall, Function, InstructionData, ModuleData, Opcode, Result, SigId, Type, Value,
+    ValueList,
 };
 use alloc::string::String;
 use core::fmt;
+use smallvec::SmallVec;
+
+include!(concat!(env!("OUT_DIR"), "/validation.rs"));
 
 #[derive(Debug, Clone)]
 pub enum ValidationError {
@@ -74,7 +76,7 @@ impl Function {
             ));
         }
 
-        let mut operands = alloc::vec::Vec::new();
+        let mut operands = SmallVec::<[Type; 4]>::new();
         data.visit_type_operands(&self.dfg, |value| {
             operands.push(self.dfg.value_type(value));
         });
@@ -83,9 +85,9 @@ impl Function {
             .inst_results(inst)
             .iter()
             .map(|&value| self.dfg.value_type(value))
-            .collect::<alloc::vec::Vec<_>>();
-        spec.type_scheme
-            .validate(&operands, &results)
+            .collect::<SmallVec<[Type; 2]>>();
+        opcode
+            .validate_types(&operands, &results)
             .map_err(|error| {
                 crate::Error::from(ValidationError::Other(alloc::format!(
                     "{} type scheme violation at {:?}: {:?}",
@@ -95,9 +97,7 @@ impl Function {
                 )))
             })?;
 
-        for &constraint in spec.constraints {
-            self.validate_constraint(inst, data, constraint, &results)?;
-        }
+        self.validate_constraints(inst, data, &operands, &results)?;
 
         if let Some(call) = data.call_info() {
             let Some(signature) = call.signature.resolve(module) else {
@@ -127,7 +127,7 @@ impl Function {
                 self.validate_values(
                     "return",
                     self.dfg.get_value_list(*values),
-                    &module.signatures[self.signature].returns,
+                    module.signatures[self.signature].returns.iter().copied(),
                 )?;
             }
             InstructionData::VectorOpWithExt { ext, .. } => {
@@ -163,94 +163,15 @@ impl Function {
         Ok(())
     }
 
-    fn validate_constraint(
-        &self,
-        inst: Inst,
-        data: &InstructionData,
-        constraint: OpConstraint,
-        results: &[Type],
-    ) -> Result<()> {
-        match (constraint, data) {
-            (OpConstraint::PointerComparison, InstructionData::IntCompare { kind, args }) => {
-                if self.dfg.value_type(args[0]).is_ptr() && !matches!(kind, IntCC::Eq | IntCC::Ne) {
-                    return self.fail(alloc::format!(
-                        "pointer comparison at {:?} only supports eq and ne",
-                        inst
-                    ));
-                }
-            }
-            (OpConstraint::NonZeroScale, InstructionData::PtrIndex { imm_id, .. }) => {
-                let imm = imm_id.get(&self.dfg).ok_or_else(|| {
-                    crate::Error::from(ValidationError::Other(alloc::format!(
-                        "ptr-index at {:?} refers to missing immediate {:?}",
-                        inst,
-                        imm_id
-                    )))
-                })?;
-                if imm.scale == 0 {
-                    return self.fail(alloc::format!(
-                        "ptr-index scale at {:?} must be non-zero",
-                        inst
-                    ));
-                }
-            }
-            (OpConstraint::VectorConstant, InstructionData::Vconst { pool_id }) => {
-                let expected = results
-                    .first()
-                    .and_then(|ty| ty.min_size_bytes())
-                    .ok_or_else(|| {
-                        crate::Error::from(ValidationError::Other(alloc::format!(
-                            "vconst at {:?} has no statically sized vector result",
-                            inst
-                        )))
-                    })? as usize;
-                let bytes = pool_id.get(&self.dfg).ok_or_else(|| {
-                    crate::Error::from(ValidationError::Other(alloc::format!(
-                        "vconst at {:?} refers to missing constant {:?}",
-                        inst,
-                        pool_id
-                    )))
-                })?;
-                if bytes.len() != expected {
-                    return self.fail(alloc::format!(
-                        "vconst at {:?} requires {} bytes, got {}",
-                        inst,
-                        expected,
-                        bytes.len()
-                    ));
-                }
-            }
-            (OpConstraint::ShuffleMask, InstructionData::Shuffle { mask, .. }) => {
-                let Some(result_ty) = results[0].as_vector().filter(|ty| ty.is_fixed()) else {
-                    return self.fail(alloc::format!(
-                        "shuffle at {:?} requires a fixed-width vector",
-                        inst
-                    ));
-                };
-                let bytes = mask.get(&self.dfg).ok_or_else(|| {
-                    crate::Error::from(ValidationError::Other(alloc::format!(
-                        "shuffle at {:?} refers to missing mask {:?}",
-                        inst,
-                        mask
-                    )))
-                })?;
-                let lanes = usize::from(result_ty.lane_count());
-                if bytes.len() != lanes || bytes.iter().any(|&lane| usize::from(lane) >= 2 * lanes)
-                {
-                    return self.fail(alloc::format!(
-                        "shuffle mask at {:?} must contain {} selectors in 0..{}",
-                        inst,
-                        lanes,
-                        2 * lanes
-                    ));
-                }
-            }
-            _ => unreachable!(
-                "OpSpec constraint {:?} is incompatible with {:?}",
-                constraint, data
-            ),
-        }
-        Ok(())
+    #[cold]
+    fn constraint_error(&self, inst: Inst, message: &str) -> crate::Error {
+        ValidationError::Other(alloc::format!(
+            "{} constraint at {:?}: {}",
+            self.dfg.instructions[inst].opcode().spec().mnemonic,
+            inst,
+            message
+        ))
+        .into()
     }
 
     fn validate_signature(
@@ -262,7 +183,11 @@ impl Function {
         name: &str,
     ) -> Result<()> {
         let signature = &module.signatures[sig_id];
-        self.validate_values(name, self.dfg.get_value_list(args), &signature.params)?;
+        self.validate_values(
+            name,
+            self.dfg.get_value_list(args),
+            signature.params.iter().copied(),
+        )?;
 
         let results = self.dfg.inst_results(inst);
         if results.len() != signature.returns.len() {
@@ -290,7 +215,12 @@ impl Function {
         Ok(())
     }
 
-    fn validate_values(&self, name: &str, values: &[Value], expected: &[Type]) -> Result<()> {
+    fn validate_values(
+        &self,
+        name: &str,
+        values: &[Value],
+        expected: impl ExactSizeIterator<Item = Type>,
+    ) -> Result<()> {
         if values.len() != expected.len() {
             return self.fail(alloc::format!(
                 "{} value count mismatch: expected {}, got {}",
@@ -299,7 +229,7 @@ impl Function {
                 values.len()
             ));
         }
-        for (index, (&value, &expected)) in values.iter().zip(expected).enumerate() {
+        for (index, (&value, expected)) in values.iter().zip(expected).enumerate() {
             let got = self.dfg.value_type(value);
             if got != expected {
                 return self.fail(alloc::format!(
@@ -320,15 +250,8 @@ impl Function {
         self.validate_values(
             kind,
             self.dfg.get_value_list(call_data.args),
-            &self.value_types(params),
+            params.iter().map(|&value| self.dfg.value_type(value)),
         )
-    }
-
-    fn value_types(&self, values: &[Value]) -> alloc::vec::Vec<Type> {
-        values
-            .iter()
-            .map(|&value| self.dfg.value_type(value))
-            .collect()
     }
 
     fn validate_vector_ext(
@@ -431,6 +354,62 @@ mod tests {
     use crate::{CallConv, IntCC, Linkage, Type};
 
     #[test]
+    fn many_arguments_and_results_preserve_validation_and_diagnostics() {
+        let types = [
+            Type::I8,
+            Type::I16,
+            Type::I32,
+            Type::I64,
+            Type::F32,
+            Type::F64,
+            Type::BOOL,
+        ];
+        let mut module = ModuleBuilder::new();
+        let sig = module.make_signature(types.to_vec(), types.to_vec(), CallConv::SystemV);
+        let callee = module.declare_function("callee".into(), sig, Linkage::Local);
+        {
+            let mut builder = module.builder(callee);
+            builder.init_entry_block();
+            let params = builder.func_params().to_vec();
+            builder.ins().ret(&params);
+        }
+        let caller = module.declare_function("caller".into(), sig, Linkage::Local);
+        let (target, last_param) = {
+            let mut builder = module.builder(caller);
+            builder.init_entry_block();
+            let args = builder.func_params().to_vec();
+            let call = builder.ins().call(callee, &args);
+            let results = builder.func().dfg.inst_results(call).to_vec();
+            let target = builder.create_block();
+            let params = types
+                .iter()
+                .map(|&ty| builder.add_block_param(target, ty))
+                .collect::<Vec<_>>();
+            builder.ins().jump(target, &results);
+            builder.switch_to_block(target);
+            builder.seal_block(target);
+            builder.ins().ret(&params);
+            (target, *params.last().unwrap())
+        };
+        module.validate().unwrap();
+        let mut module = module.build_data();
+
+        // A mismatch beyond the inline capacity must not be skipped.
+        module.functions[caller].dfg.values[last_param].ty = Type::I32;
+        let error = module.validate().unwrap_err().to_string();
+        assert!(error.contains("value 6 type mismatch"), "{error}");
+        module.functions[caller].dfg.values[last_param].ty = Type::BOOL;
+        module.validate().unwrap();
+
+        module.functions[caller].layout.blocks[target].params.pop();
+        let error = module.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("value count mismatch: expected 6, got 7"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn branch_tables_require_a_default_destination() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
@@ -482,24 +461,24 @@ mod tests {
 
     #[test]
     fn opspec_rejects_wrong_arithmetic_family() {
-        let scheme = crate::Opcode::IAdd.spec().type_scheme;
+        let scheme = crate::Opcode::IAdd;
         assert!(
             scheme
-                .validate(&[Type::F32, Type::F32], &[Type::F32])
+                .validate_types(&[Type::F32, Type::F32], &[Type::F32])
                 .is_err()
         );
         assert!(
             scheme
-                .validate(&[Type::I32, Type::I32], &[Type::I32])
+                .validate_types(&[Type::I32, Type::I32], &[Type::I32])
                 .is_ok()
         );
     }
 
     #[test]
     fn opspec_validates_conversion_widths() {
-        let extend = crate::Opcode::ExtendS.spec().type_scheme;
-        assert!(extend.validate(&[Type::I32], &[Type::I64]).is_ok());
-        assert!(extend.validate(&[Type::I64], &[Type::I32]).is_err());
+        let extend = crate::Opcode::ExtendS;
+        assert!(extend.validate_types(&[Type::I32], &[Type::I64]).is_ok());
+        assert!(extend.validate_types(&[Type::I64], &[Type::I32]).is_err());
     }
 
     #[test]
@@ -516,7 +495,7 @@ mod tests {
 
         let error = module.validate().unwrap_err().to_string();
         assert!(
-            error.contains("requires 16 bytes"),
+            error.contains("vector constant byte count must match its type"),
             "unexpected error: {error}"
         );
     }
@@ -563,5 +542,67 @@ mod tests {
 
         let error = module.validate().unwrap_err().to_string();
         assert!(error.contains("only supports eq and ne"));
+    }
+
+    #[test]
+    fn generated_shuffle_constraints_check_shape_length_and_selectors() {
+        let scalable = Type::I32
+            .as_scalar()
+            .unwrap()
+            .vector(4, true)
+            .unwrap()
+            .as_type();
+        for (ty, mask, expected) in [
+            (Type::I32X4, vec![0, 7, 1, 4], None),
+            (Type::I32X4, vec![0, 1, 2], Some("mask length")),
+            (
+                Type::I32X4,
+                vec![0, 1, 2, 8],
+                Some("selector is out of range"),
+            ),
+            (scalable, vec![0, 1, 2, 3], Some("fixed-width vector")),
+        ] {
+            let mut module = ModuleBuilder::new();
+            let sig = module.make_signature(vec![ty, ty], vec![], CallConv::SystemV);
+            let id = module.declare_function("shuffle-check".into(), sig, Linkage::Local);
+            {
+                let mut builder = module.builder(id);
+                builder.init_entry_block();
+                let lhs = builder.func_param(0);
+                let rhs = builder.func_param(1);
+                builder.ins().shuffle(lhs, rhs, mask);
+                builder.ins().ret(&[]);
+            }
+            let result = module.validate();
+            if let Some(expected) = expected {
+                assert!(result.unwrap_err().to_string().contains(expected));
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn generated_pool_projection_reports_missing_data_without_panicking() {
+        let mut module = ModuleBuilder::new();
+        let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+        let id = module.declare_function("missing-pool".into(), sig, Linkage::Local);
+        {
+            let mut builder = module.builder(id);
+            builder.init_entry_block();
+            let value = builder.ins().vconst(vec![0; 16], Type::I32X4);
+            let inst = builder.func().dfg.value_inst(value).unwrap();
+            builder.func_mut().dfg.instructions[inst] = crate::InstructionData::Vconst {
+                pool_id: crate::inst::ConstantPoolId(u32::MAX),
+            };
+            builder.ins().ret(&[]);
+        }
+        assert!(
+            module
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("vconst constraint")
+        );
     }
 }

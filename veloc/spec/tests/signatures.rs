@@ -142,7 +142,7 @@ fn result_only_type_variables_and_nested_type_patterns_still_bind() {
     assert!(
         output
             .types
-            .contains("results: L::Fixed(&[P::Bind(0, C::Integer)])")
+            .contains("operands: L::Fixed(&[]),\n    results: L::Fixed(&[P::Bind(0, C::Integer)])")
     );
     // Multiple explicit results are valid signatures, but not supported by the
     // current field-builder projection. Check their binding at the model layer.

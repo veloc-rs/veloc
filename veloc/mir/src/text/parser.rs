@@ -207,9 +207,7 @@ fn parse_function_body(
             .map(|&value| func.dfg.value_type(value))
             .collect::<Vec<_>>();
         data.opcode()
-            .spec()
-            .type_scheme
-            .validate(&operands, &results)
+            .validate_types(&operands, &results)
             .map_err(|error| {
                 with_line(
                     ParseError(format!(
@@ -298,7 +296,7 @@ fn resolve_result_types(
     data.visit_type_operands(&func.dfg, |value| {
         operands.push(func.dfg.value_type(value));
     });
-    let (inferred, deferred) = match spec.type_scheme.infer_results(&operands) {
+    let (inferred, deferred) = match data.opcode().infer_result_types(&operands) {
         Ok(inferred) => (inferred, false),
         Err(error) => {
             // A later textual block may define an SSA value that dominates this

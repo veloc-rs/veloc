@@ -43,7 +43,10 @@ fn class_unions_drive_both_generated_contracts_and_semantic_checks() {
         "members: [ScalarInteger]",
         "members: [ScalarInteger, ScalarFloat]",
     );
-    rejected(&common::source(&mixed), "same-width integer inputs");
+    rejected(
+        &common::source(&mixed),
+        "floating-point execution semantics are not modeled",
+    );
     let vectors = ADD.replace("members: [ScalarInteger]", "members: [Integer & Vector]");
     assert!(compile_mir(&vectors).is_ok());
 }
@@ -181,7 +184,7 @@ fn effects_use_declared_regions_and_purity_not_effect_names() {
     assert!(compile_mir(&pure).is_ok());
     rejected(
         &common::source(&pure.replace("reads: []", "reads: [HEAP]")),
-        "same-width integer inputs",
+        "no memory effects or control flow",
     );
     for (defs, error) in [
         (

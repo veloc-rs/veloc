@@ -7,6 +7,7 @@ fn main() {
     for path in [
         "defs/types.ops",
         "defs/builtins.ops",
+        "defs/comparisons.ops",
         "defs/formats.ops",
         "defs/mir.ops",
     ] {
@@ -38,6 +39,7 @@ fn main() {
         ("scalars.rs", output.scalars),
         ("formats.rs", output.formats),
         ("type_schemes.rs", output.types),
+        ("validation.rs", output.validation),
         ("opcodes.rs", output.opcodes),
         ("instructions.rs", output.instructions),
         ("text_parser.rs", output.text_parser),
@@ -45,4 +47,20 @@ fn main() {
     ] {
         fs::write(dir.join(name), text).expect("write generated MIR definitions");
     }
+
+    // Only the type-contract code is included by unit tests; these operations
+    // never become production opcodes or part of the MIR text vocabulary.
+    let mut fixtures = String::new();
+    for path in [
+        "defs/types.ops",
+        "defs/builtins.ops",
+        "defs/comparisons.ops",
+        "tests/defs/type_rules.ops",
+    ] {
+        println!("cargo:rerun-if-changed={path}");
+        fixtures.push_str(&fs::read_to_string(path).unwrap());
+        fixtures.push('\n');
+    }
+    let fixtures = veloc_opgen::compile_mir(&fixtures).expect("compile test type contracts");
+    fs::write(dir.join("test_type_schemes.rs"), fixtures.types).expect("write test type contracts");
 }

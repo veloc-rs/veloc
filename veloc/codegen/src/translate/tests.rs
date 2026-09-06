@@ -60,7 +60,7 @@ fn direct_primitives_share_bindings_and_composed_negation_is_not_misidentified()
         (Opcode::IDivS, GenericOpcode::G_SDIV),
         (Opcode::FAdd, GenericOpcode::G_FADD),
     ] {
-        assert_eq!(mir.spec().semantics, None);
+        assert_eq!(mir.spec().semantics.and_then(|p| p.primitive()), None);
         assert_eq!(lir.semantics(), None);
     }
 }

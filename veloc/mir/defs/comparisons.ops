@@ -1,0 +1,32 @@
+// Predicates list the comparison outcomes they accept. Text names are the
+// lowercase variant names. Swap and complement are derived, not declared.
+// Integer equality is independent of signedness; ordering must specify it.
+comparison IntCC {
+    domain: integer,
+    predicates: [
+        Eq([equal]),
+        Ne([less, greater]),
+        LtS(signed, [less]),
+        LtU(unsigned, [less]),
+        GtS(signed, [greater]),
+        GtU(unsigned, [greater]),
+        LeS(signed, [less, equal]),
+        LeU(unsigned, [less, equal]),
+        GeS(signed, [greater, equal]),
+        GeU(unsigned, [greater, equal]),
+    ],
+}
+
+// IEEE comparisons have a fourth outcome: unordered (either operand is NaN).
+// Ne accepts it, so Eq/Ne are exact complements; Lt/Ge are not.
+comparison FloatCC {
+    domain: float,
+    predicates: [
+        Eq([equal]),
+        Ne([less, greater, unordered]),
+        Lt([less]),
+        Gt([greater]),
+        Le([less, equal]),
+        Ge([greater, equal]),
+    ],
+}

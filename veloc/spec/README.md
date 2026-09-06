@@ -9,6 +9,7 @@ The MIR definitions live in `veloc/mir/defs/`:
 
 - `types.ops`: compact type encoding, scalar definitions, named vectors and type sets.
 - `builtins.ops`: trait bits, memory-region bits and named memory effects.
+- `comparisons.ops`: integer and floating-point condition-code semantics.
 - `formats.ops`: compact storage layouts, structured property records and
   alternate-layout projections.
 - `mir.ops`: logical operation signatures, storage mappings, effects, constraints
@@ -17,6 +18,37 @@ The MIR definitions live in `veloc/mir/defs/`:
 Callers supply these files as one definition unit; the compiler does not inject
 an implicit MIR vocabulary. `build.rs` tracks each file and maps diagnostics back
 to its original location.
+
+## Comparison predicates
+
+```text
+comparison Conditions {
+    domain: float,
+    predicates: [
+        Eq([equal]), Ne([less, greater, unordered]),
+        Lt([less]), Gt([greater]),
+        Le([less, equal]), Ge([greater, equal]),
+    ],
+}
+```
+
+Predicates accept subsets of `less`, `equal`, `greater`, and, for floats,
+`unordered` (either operand is NaN). Integer ordering predicates specify
+`signed` or `unsigned`, e.g. `LtS(signed, [less])`; equality predicates omit
+signedness because their meaning does not depend on it. Variant names generate
+lowercase mnemonics, parsing and Display, but do not determine semantics.
+
+The compiler derives swap by exchanging less/greater and complement by taking
+the outcome-set complement. Swap must be representable, as must integer
+complement. Float `complement()` returns `None` if the exact IEEE complement
+is absent. Float `complement_ordered()` excludes unordered outcomes and requires
+a representable complement; callers must establish that neither operand is NaN.
+If multiple predicates are equivalent in this restricted domain, generation
+prefers the exact outcome set, then the first declared equivalent. Duplicate
+full-domain meanings, mnemonic collisions and invalid outcomes are errors.
+All transforms run at build time and emit direct const Rust matches. Comparison
+evaluation and target lowering remain separate Rust/ISLE consumers; this finite
+model does not specify floating-point exceptions or memory behavior.
 
 ## Type encoding
 
@@ -272,9 +304,117 @@ file.
 
 The same definitions generate `Opcode`, `OpFormat`, `InstructionData`, type
 contracts, opcode extraction, operand traversal/replacement, memory flag access,
-operation-specific parsing/printing and ordinary builders. Named variables are assigned slots
-by the definition compiler; runtime inference and validation share the same
-binding machinery and are not limited to four variables.
+operation-specific parsing/printing and ordinary builders.
+
+### Compiled type contracts
+
+Every type contract is compiled into validation and inference code.
+`Opcode::validate_types` and `Opcode::infer_result_types` exhaustively dispatch
+to shared generated handlers. The builder, validator, text parser, constant
+evaluator and codegen use this boundary; there is no runtime type-scheme
+interpreter, optional specialization feature or fallback.
+
+Selection uses signature structure, not opcode names. Equal operand/result
+patterns, type sets and relations share both handlers and static descriptors.
+Exact pattern slots are retained so sharing preserves error diagnostics.
+
+The definition compiler resolves type variables to concrete operand/result
+positions. Generated handlers check arity before indexing and retain the
+declaration's diagnostic order, without allocating bindings or interpreting
+patterns and relation slots. The number of variables is not limited to four.
+Inference knows statically whether results are fixed, require explicit types,
+or come from a function signature. For inferred results, arity and
+Same/Exact/ElementOf checks follow from the generated expressions and are
+omitted; additional class constraints and relations are still checked.
+
+`TypeScheme`, `TypeList`, `TypePattern` and `TypeRelation` remain descriptive
+metadata for inspection and diagnostics, not an executable second path.
+Descriptors expose immutable data through the opcode's static specification;
+there is no binding-count cache or constructor/accessor compatibility layer.
+
+Structural `constraints` are typed, pure expressions, compiled directly into
+Rust checks. For example:
+
+```text
+constraints: [
+    require(imm.scale != 0, "scale must be non-zero"),
+    len(mask) == lanes(type(lhs)),
+    all(mask, |i| i < 2 * lanes(type(lhs)))
+]
+```
+
+Expressions reference logical parameters and record fields, not physical pool
+IDs or layout names. The existing storage projection resolves those references.
+The language provides Boolean logic (`!`, `&&`, `||`), comparisons, checked
+integer arithmetic (`+`, `-`, `*`), comparison-enum literals such as `IntCC.Eq`,
+and lexical `all(sequence, |element| predicate)` over finite byte/value lists.
+It has no arbitrary Rust callbacks, user recursion or unbounded loops.
+Numbers are checked signed 128-bit integers, not wrapping instruction values;
+property integers are widened without truncation. Constant overflow is a
+definition error; dynamic overflow is a validation error.
+
+Queries are `type(value)`, `result_type(constant_index)`, `len(sequence)`,
+`lanes(type)`, `min_bytes(type)`, `is_ptr(type)`, `is_scalar(type)`,
+`is_vector(type)` and `is_fixed(type)` (a fixed-width vector).
+Lane counts and byte sizes are minima for scalable types. A target-dependent
+byte size is an evaluation error. Result indices must refer to declared fixed
+results. Enum literals are checked against the comparison definitions; record
+fields against the record definitions. Unsupported property kinds and optional
+fields are rejected instead of guessed or silently coerced.
+
+`require(predicate, "diagnostic")` supplies an optional diagnostic; a bare
+predicate uses its expression text. Errors include the instruction and opcode.
+Short-circuit operators do not evaluate the skipped branch, including pool
+lookups; `all` stops at its first false element and is true for an empty list.
+Nested binders are lexically scoped and emitted with hygienic identifiers.
+
+The checker produces a typed predicate tree, folds constants and uses signature
+type sets to fold type queries when all possible types give the same answer.
+Statically true checks disappear; an always-false top-level constraint is a
+definition error. Even dead branches must be well typed. Type validation runs
+first, allowing generated checks to use operand/result positions directly,
+including for alternative physical layouts. Actual property checks remain
+dynamic. `OpSpec::constraints` retains descriptive text only; there is no runtime
+rule interpreter or predefined constraint-name registry.
+
+These predicates specify IR legality, not instruction execution or traps.
+For example, a division instruction with a zero divisor can be valid IR with
+defined trapping behavior; that belongs in executable semantics, not here.
+
+The synthetic benchmark separates contract checks, module construction,
+validation and constant folding:
+
+```sh
+cargo run --release -q -p veloc-optimizer --example type_schemes -- all 3
+cargo test -p veloc-mir -p veloc-opgen
+```
+
+It contains 200 repetitions of add/sub/mul/extend/wrap, plus constants and return
+(1004 instructions). Folding excludes cloning, final validation and destruction
+from its timer. This contract-heavy workload is not representative of overall
+Wasm or compiler throughput; gains in construction or validation do not imply
+equal gains in optimization or execution.
+
+Migration snapshot: release profile on an AMD Ryzen 9 9950X virtualized host,
+CPU affinity 2, three alternating runs against the saved pre-migration generic
+executable. Each value is the median of three nine-sample medians:
+
+| Work per iteration | Generic | Compiled contracts |
+| --- | ---: | ---: |
+| Five type validations | 78.0 ns | 28.3 ns |
+| Three result inferences | 69.9 ns | 13.2 ns |
+| Build and drop module | 44.03 μs | 36.57 μs |
+| Validate module | 27.64 μs | 13.83 μs |
+| Fold 1000 instructions | 474.8 μs | 454.9 μs |
+
+These are local observations, not statistical guarantees. The linked example's
+`.text` grows from 469013 to 514293 bytes (9.7%). Full generation also has a
+tradeoff against the earlier partial-specialization prototype: a comparison run
+of that prototype measured 9.5 ns for inference and 30.15 μs for construction,
+both faster than the fully generated version on this workload. Eliminating the
+interpreter does not guarantee that every path gets faster; generated code size
+and the Rust compiler's inlining decisions still matter. Cold build time and
+representative application throughput have not been measured.
 
 Ordinary builders are generated automatically, without a `builder` field or an
 auto/custom/off switch. Their method name is the mnemonic with `-` replaced by
@@ -377,24 +517,72 @@ remain necessary to check that the two directions agree semantically.
 `semantics: bv.add(lhs, rhs)` describes the result using the named logical
 operands and the modular primitives in `veloc-semantics`. Expressions can compose
 primitives: integer negation is `bv.sub(bv.zero(), arg)`, rather than a second
-handwritten implementation of negation. Unary/binary constant folding executes
-these programs. MIR-to-LIR arithmetic translation directly maps recognized
+handwritten implementation of negation. Constants optionally specify their type,
+e.g. `bv.zero(type(arg))`; without it they use the first input type, or the first
+result type for an input-free operation. MIR-to-LIR arithmetic translation maps recognized
 primitive applications; composed negation retains the existing `G_NEG` lowering.
-Programs can also be instantiated at a concrete width for SMT export. Each describes a scalar
+Programs bind concrete input/result sorts and compile-time properties to the
+same typed graph used for execution and SMT export. Each describes a scalar
 operation or a per-lane operation, not an entire vector, memory or machine-state
 model. Absent expressions mean **unmodeled**,
 not a claim that an operation is pure or verified.
 
-Pure semantic expressions imply `memory: NONE`; unmodeled operations must
+Executable semantic expressions imply `memory: NONE`; unmodeled operations must
 declare their memory effect explicitly. Empty `traits` lists may be omitted.
 
-The current semantic backend covers modular arithmetic/bitwise expressions.
+The semantic backend supports modular arithmetic, bitwise operations, comparison,
+selection, shifts, division, bit counts, signed/zero extension, truncation and
+multiple typed results:
+
+```text
+semantics: bv.cmp(kind, lhs, rhs)
+semantics: bv.sext(arg, result(0))
+semantics: [bv.add(lhs, rhs), bv.ult(bv.add(lhs, rhs), lhs)]
+```
+
+The last example returns a sum and UNSIGNED carry; MIR's `IAddWithOverflow`
+instead explicitly defines SIGNED overflow using sign-bit arithmetic.
+`type(operand)` and `result(index)` refer to signature sorts, not runtime values.
+`kind` is an `IntCC` property whose signedness/outcomes come from comparisons.ops,
+not a runtime SSA input. Property extraction follows the storage mapping.
+Bool is a distinct sort: bitwise and/or/xor support it, arithmetic does not.
+Zero extension explicitly converts Bool to a zero-or-one bitvector.
+
+Operation-level traps are explicit, typed guards over the same graph:
+
+```text
+semantics: bv.sdiv(lhs, rhs),
+traps: [
+    DivisionByZero(bv.eq(rhs, bv.zero())),
+    IntegerOverflow(bv.and(bv.eq(lhs, bv.smin()), bv.eq(rhs, bv.ones())))
+]
+```
+
+The first true guard wins; `MAY_TRAP` is inferred from these guards. Declaring
+`MAY_TRAP` with executable semantics but no guards is rejected. Guards model
+observable failures, not preconditions that remove inputs from SMT checks.
+Constant folding replaces an operation only on `Outcome::Values`; a known trap
+stays as an instruction. Lowering must separately preserve these outcomes;
+adding the contract does not generate backend trap checks automatically.
+
+Raw `bv.sdiv/udiv/srem/urem` use total SMT-LIB semantics. Signed remainder of
+MIN and -1 is zero, not an overflow trap. Raw `bv.shl/lshr/ashr` do not mask
+counts: MIR explicitly uses `bv.urem(rhs, bv.width())`. `bv.width()` and
+`bv.smin()` are constants in the selected bitvector sort, not runtime queries.
+Rotations compose shifts and bitwise OR; `bv.clz/ctz/popcnt` provide bit counts.
+
+The definition compiler checks the recipe against all admitted scalar element
+types, respecting width relations and requiring shared lane shapes. It does not
+claim to model reductions, scalar broadcasts, predication, or whole vectors.
+The scalar constant folder executes this graph and splits multiple results into
+constant definitions while preserving SSA value IDs and use-def information.
+
 Direct primitive applications inherit shared trusted algebraic facts, so an add
 definition does not repeat its commutativity, associativity or identity. Explicit
 claims are checked against the semantic contract; an operation cannot bind to
 subtraction while claiming commutativity. Composed expressions are not assumed
 to inherit the outer primitive's algebraic laws without justification.
-Floating point, traps, memory, ABI state and general representation conversions
+Floating point, memory, pointer provenance, ABI state and general representation conversions
 are not modeled yet. LIR target descriptions and contextual lowering still use
 their own algorithms; migrating those descriptions into the shared definition
 model is a subsequent step. The `split_add` semantics example demonstrates a
@@ -403,6 +591,8 @@ fixed-width representation check; it is not an enabled wide-integer backend pass
 ```sh
 cargo test -p veloc-opgen -p veloc-mir -p veloc-semantics
 cargo run -q -p veloc-semantics --example split_add | z3 -in
+cargo run -q -p veloc-mir --example semantic_check -- overflow | z3 -in
+cargo run -q -p veloc-mir --example semantic_check -- overflow --broken | z3 -in
 ```
 
 Generated Rust lives in Cargo's `OUT_DIR`, not in the source tree. Building the
