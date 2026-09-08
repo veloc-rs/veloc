@@ -90,6 +90,28 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         writeln!(out, "{pat} => {opcode},").unwrap();
     }
     out.push_str("} } }\n");
+    out.push_str("impl InstFields { #[allow(clippy::single_match)] pub(crate) fn map_functions(&mut self, mut map: impl FnMut(crate::FuncId) -> crate::FuncId) { let _ = &mut map; match self {\n");
+    for layout in layouts {
+        let fields: Vec<_> = layout
+            .fields
+            .iter()
+            .filter(|f| f.ty.named("FuncId"))
+            .collect();
+        if fields.is_empty() {
+            continue;
+        }
+        let names = fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(out, "Self::{} {{ {names}, .. }} => {{", layout.name).unwrap();
+        for field in fields {
+            writeln!(out, "*{0} = map(*{0});", field.name).unwrap();
+        }
+        out.push_str("},\n");
+    }
+    out.push_str("_ => {},\n} } }\n");
     for record in records {
         writeln!(
             out,

@@ -396,18 +396,17 @@ also accepts caller-supplied result types for generic transformations or
 deliberately incomplete IR.
 
 `InstDraft::result_types` is the dynamic construction entry point used by
-the text parser and contextual builders. Its generated opcode branches return
-the final types directly, using operand types, explicit types or the referenced
+contextual builders and generic construction clients. Its generated opcode
+branches return the final types directly, using operand types, explicit types or the referenced
 signature. There is no runtime result-strategy enum. Missing explicit types,
 unknown signatures and operands whose types cannot determine the result are
 construction errors, not full contract validation.
 
 `Opcode::validate_types` dispatches to shared generated checks. Full module
 validation is an explicit pipeline/caller decision; builders and the parser do
-not invoke it implicitly. The parser still checks syntax, symbol resolution and
-conflicting result annotations, but does not maintain a deferred type-validator
-queue. Forward references that are not needed to determine results can be
-constructed and subsequently validated normally.
+not invoke it implicitly. The parser checks syntax and symbol resolution, but
+takes every result type directly from its SSA declaration. Result counts and
+operand/result type consistency belong to the validator, not the parser.
 
 Selection uses signature structure, not opcode names. Equal operand/result
 patterns, type sets and relations share handlers, using structural equality of
@@ -571,7 +570,7 @@ Both require a textual signature: `call callee(v0) : (i32) -> i32`. The
 it does not add a redundant property to Call storage. The parser checks that
 this textual declaration agrees with the function symbol. Checking argument
 and result values against the signature remains the validator\'s job. Calls
-print the full return signature instead of a redundant result-type suffix.
+print the full signature independently of their explicitly typed SSA results.
 Variadic values and
 successors retain their generic comma-list and bracketed-list syntax.
 
@@ -593,17 +592,52 @@ projected alongside the operation, preserving mask/EVL predication.
 MIR text uses an on-demand token cursor with source spans and recursive-descent
 parsers for declarations, types, signatures and successor lists. Physical
 newlines delimit statements; punctuation does not require surrounding whitespace.
-Functions are declared before bodies; blocks and their parameters are declared
-before instructions. These passes retain borrowed source ranges, not copied
-lines or a whole-file token array.
+The source is consumed once, without declaration prepasses, saved body ranges or
+instruction reparsing. Lookahead caches tokens until consumption, including the
+top-level named-field lookahead for alternate layouts. Line/column positions are
+tracked while lexing rather than recomputed by scanning a source prefix.
+One outer statement loop checks the line boundary for every declaration and
+instruction; generated operand parsers do not repeat that check. Parse errors
+carry a structured source location separately from their message. Adding operand
+context preserves that location, and unresolved symbol errors retain the
+original reference position.
+
+Function references reserve parser-local slots; explicit call signatures establish
+the referenced function's signature before its declaration. Later declarations
+must agree, and unresolved names are errors, not implicit imports. Function names
+are first parsed as temporary text references; registration happens only after
+the argument list and complete signature have been read. Every created Function
+therefore has a valid signature ID. Symbol records do not duplicate the signature
+or represent a signature-unknown state. Standalone FuncId atoms likewise carry a
+signature, for example `foo : (i32) -> i32`; invoke syntax places that signature
+after the arguments. Finalizing function IDs
+preserves source declaration order and numeric references without rereading text;
+the field schema generates the function-reference remapping. Identity mappings
+skip this IR traversal. Blocks reserve storage on first use but join layout order
+only at their definitions. SSA definitions fill the same Value slots reserved by
+references, without RAUW. Numbered spellings and their name hints share a symbol;
+if an unnumbered spelling already occupies the preferred slot, the numbered
+symbol receives a distinct slot rather than accidentally aliasing that value.
+
+Every SSA result declares its type using the same `name: Type` syntax as block
+parameters. Single results use `sum: i32 = iadd lhs, rhs`; multiple results use
+`(sum: i32, overflow: bool) = iadd-with-overflow lhs, rhs`. Zero-result
+instructions have no assignment. Type suffixes on opcodes and untyped result
+definitions are not accepted; suffixes describe memory flags only.
+
+The parser creates exactly the declared results without inferring their types
+from operands or signatures. Explicit types remain in the IR even when wrong,
+so the validator can diagnose type or result-count mismatches. Forward references
+reserve value IDs and definitions fill their types; there is no result-type
+propagation, pending-instruction queue or inference retry. Contextual Rust builders
+retain their generated type inference independently of the text syntax.
 
 Generated instruction parsers consume the cursor directly in projection order.
 Named fields use typed local slots and a generated key match, with explicit
 duplicate/unknown-field checks. Alternate layouts use top-level named-field
 lookahead. There are no operand substring lists or runtime grammar descriptors.
-Symbol resolution, pool access, CFG construction and result-type inference remain
-shared Rust algorithms. Full type/IR contracts are checked only by an explicit
-validator call, not by parsing. This is a finite text schema, not an arbitrary
+Symbol resolution, pool access and CFG construction remain shared Rust algorithms.
+Full type/IR contracts are checked only by an explicit validator call, not by parsing. This is a finite text schema, not an arbitrary
 parser-generator language.
 
 ### Generated/runtime contracts

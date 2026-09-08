@@ -169,6 +169,10 @@ fn execute(mode: &str, source: &str) -> Result<String> {
             }
             Ok(text)
         }
+        "parse" => ModuleParser::new()
+            .parse(source)
+            .map(|module| module.to_string())
+            .map_err(|error| error.to_string()),
         "parse-error" => rejected(ModuleParser::new().parse(source)),
         "validate-error" => {
             let module = ModuleParser::new()

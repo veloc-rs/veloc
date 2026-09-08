@@ -1,0 +1,202 @@
+// ----- forward-functions-preserve-declaration-order
+// run: roundtrip
+// check: local function main
+// check: call last() : () -> i32
+// check: call middle() : () -> i32
+// check: local function middle
+// check: local function last
+local function main() -> i32
+block0():
+  v0: i32 = call last() : () -> i32
+  v1: i32 = call middle() : () -> i32
+  v2: i32 = iadd v0, v1
+  return v2
+local function middle() -> i32
+block0():
+  v0: i32 = iconst 2
+  return v0
+local function last() -> i32
+block0():
+  v0: i32 = iconst 3
+  return v0
+
+// ----- numeric-functions-use-declaration-order
+// run: roundtrip
+// check: call last() : () -> i32
+// check: call middle() : () -> i32
+local function main() -> i32
+block0():
+  v0: i32 = call func2() : () -> i32
+  v1: i32 = call FuncId(1)() : () -> i32
+  v2: i32 = iadd v0, v1
+  return v2
+local function middle() -> i32
+block0():
+  v0: i32 = iconst 2
+  return v0
+local function last() -> i32
+block0():
+  v0: i32 = iconst 3
+  return v0
+
+// ----- numeric-looking-name-takes-precedence
+// run: roundtrip
+// check: call func0() : () -> i32
+local function main() -> i32
+block0():
+  v0: i32 = call func0() : () -> i32
+  return v0
+local function func0() -> i32
+block0():
+  v0: i32 = iconst 7
+  return v0
+
+// ----- forward-block-parameter-and-result-chain
+// run: roundtrip
+// check: block1():
+// check: v1: i32 = iadd v2, v2
+// check: block2():
+// check: v2: i32 = ineg v3
+// check: block3(v3: i32):
+local function main(i32) -> i32
+block0(v0: i32):
+  jump block3(v0)
+block1():
+  v1: i32 = iadd v2, v2
+  return v1
+block2():
+  v2: i32 = ineg v3
+  jump block1()
+block3(v3: i32):
+  jump block2()
+
+// ----- forward-multiple-result-types
+// run: roundtrip
+// check: (v1: i32, v2: bool) = iadd-with-overflow v3, v3
+local function main(i32) -> (i32, bool)
+block0(v0: i32):
+  jump block2(v0)
+block1():
+  (v1: i32, v2: bool) = iadd-with-overflow v3, v3
+  return v1, v2
+block2(v3: i32):
+  jump block1()
+
+// ----- forward-result-type-is-validated
+// run: validate-error
+// check: type scheme violation
+// check: got: I64
+local function main(i32) -> i64
+block0(v0: i32):
+  jump block2(v0)
+block1():
+  v1: i64 = ineg v2
+  return v1
+block2(v2: i32):
+  jump block1()
+
+// ----- explicit-types-do-not-need-cycle-resolution
+// run: parse
+// check: v0: i32 = ineg v1
+// check: v1: i32 = ineg v0
+local function main() -> i32
+block0():
+  v0: i32 = ineg v1
+  v1: i32 = ineg v0
+  return v0
+
+// ----- forward-result-count-is-validated
+// run: validate-error
+// check: type scheme violation
+// check: Arity { results: true, expected: 2, got: 1
+local function main(i32) -> i32
+block0(v0: i32):
+  jump block2(v0)
+block1():
+  v1: i32 = iadd-with-overflow v2, v2
+  return v1
+block2(v2: i32):
+  jump block1()
+
+// ----- missing-function-is-not-an-import
+// run: parse-error
+// check: unknown function `missing`
+local function main() -> void
+block0():
+  call missing() : () -> void
+  return
+
+// ----- missing-block-is-not-a-definition
+// run: parse-error
+// check: unknown block `block7`
+local function main() -> void
+block0():
+  jump block7()
+
+// ----- duplicate-block-after-forward-use
+// run: parse-error
+// check: duplicate block1
+local function main() -> void
+block0():
+  jump block1()
+block1():
+  return
+block1():
+  return
+
+// ----- conflicting-forward-calls
+// run: parse-error
+// check: call signature does not match declaration of `later`
+local function main() -> void
+block0():
+  v0: i32 = call later() : () -> i32
+  v1: i64 = call later() : () -> i64
+  return
+import function later() -> i32
+
+// ----- numeric-call-signature-must-agree
+// run: parse-error
+// check: call signature does not match declaration of `later`
+local function main() -> i32
+block0():
+  v0: i32 = call func1() : () -> i32
+  return v0
+import function later() -> i64
+
+// ----- mutually-recursive-functions
+// run: roundtrip
+// check: call second(v0) : (i32) -> i32
+// check: call first(v0) : (i32) -> i32
+local function first(i32) -> i32
+block0(v0: i32):
+  v1: i32 = call second(v0) : (i32) -> i32
+  return v1
+local function second(i32) -> i32
+block0(v0: i32):
+  v1: i32 = call first(v0) : (i32) -> i32
+  return v1
+
+// ----- bare-names-do-not-capture-later-numbered-values
+// run: roundtrip
+// check: constant.v1: i32 = iconst 1
+// check: sum.v3: i32 = iadd v2, constant.v1
+local function main(i32) -> i32
+block0(arg: i32):
+  constant: i32 = iconst 1
+  jump block2(arg)
+block1():
+  sum: i32 = iadd v1, constant
+  return sum
+block2(v1: i32):
+  jump block1()
+
+// ----- funcid-can-still-be-a-function-name
+// run: roundtrip
+// check: call FuncId(v0) : (i32) -> i32
+local function main(i32) -> i32
+block0(v0: i32):
+  v1: i32 = call FuncId(v0) : (i32) -> i32
+  return v1
+local function FuncId(i32) -> i32
+block0(v0: i32):
+  return v0

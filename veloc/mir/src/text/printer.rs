@@ -48,21 +48,30 @@ impl<'a> InstPrinter<'a> {
         let results = self.dfg.inst_results(inst);
         match results {
             [] => {}
-            [result] => write!(f, "{} = ", self.vf(*result))?,
+            [result] => {
+                self.fmt_definition(f, *result)?;
+                f.write_str(" = ")?;
+            }
             results => {
                 f.write_char('(')?;
-                self.fmt_values(f, results)?;
+                for (index, &result) in results.iter().enumerate() {
+                    if index != 0 {
+                        f.write_str(", ")?;
+                    }
+                    self.fmt_definition(f, result)?;
+                }
                 f.write_str(") = ")?;
             }
         }
         self.fmt_inst(f, inst)
     }
 
-    fn fmt_head(&self, f: &mut dyn Write, name: &str, ty: Option<Type>, flags: MemFlags) -> Result {
+    fn fmt_definition(&self, f: &mut dyn Write, value: Value) -> Result {
+        write!(f, "{}: {}", self.vf(value), self.dfg.value_type(value))
+    }
+
+    fn fmt_head(&self, f: &mut dyn Write, name: &str, flags: MemFlags) -> Result {
         f.write_str(name)?;
-        if let Some(ty) = ty {
-            write!(f, ".{ty}")?;
-        }
         if flags.is_volatile() {
             f.write_str(".volatile")?;
         }
@@ -210,12 +219,7 @@ impl<'a> FuncPrinter<'a> {
             if index != 0 {
                 f.write_str(", ")?;
             }
-            write!(
-                f,
-                "{}: {}",
-                ValueFmt(&self.func.dfg, param),
-                self.func.dfg.value_type(param)
-            )?;
+            self.inst_printer.fmt_definition(f, param)?;
         }
         writeln!(f, "):")
     }

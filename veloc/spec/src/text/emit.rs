@@ -2,7 +2,7 @@
 use std::fmt::Write;
 
 use super::schema::{Atom, AtomKind, CallSignature, Item, Mode, Schema};
-use crate::model::{Op, ParamKind, TypeList};
+use crate::model::{Op, ParamKind};
 use crate::records::RecordDef;
 use crate::storage::{FieldType, Format};
 
@@ -35,7 +35,7 @@ pub(super) fn parse(
     if let Some(path) = &schema.flags {
         writeln!(out, "let {} = flags;", leaf(op, path)).unwrap();
     } else {
-        out.push_str("if flags != crate::MemFlags::empty() { return Err(ParseError(\"memory flags are not supported by this operation\".into())); }\n");
+        out.push_str("if flags != crate::MemFlags::empty() { return Err(input.error(\"memory flags are not supported by this operation\")); }\n");
     }
     let variadic = matches!(
         schema.args.as_slice(),
@@ -78,7 +78,7 @@ pub(super) fn parse(
         for named in &schema.named {
             writeln!(out, "let mut {} = None;", leaf(op, &named.atom.path)).unwrap();
         }
-        out.push_str("if input.kind() != Kind::Eof {\n");
+        out.push_str("if !input.at_end() {\n");
         if variadic && arity.is_none() {
             let Item::Atom(atom) = &schema.args[0] else {
                 unreachable!()
@@ -93,19 +93,19 @@ pub(super) fn parse(
             out.push_str("input.expect(Kind::Comma)?;\n");
         }
         out.push_str(
-            "loop {\nlet _key = input.word()?;\ninput.expect(Kind::Equal)?;\nmatch _key {\n",
+            "loop {\nlet _key_location = input.location();\nlet _key = input.word()?;\ninput.expect(Kind::Equal)?;\nmatch _key {\n",
         );
         for named in &schema.named {
             let name = leaf(op, &named.atom.path);
-            writeln!(out, "{:?} => {{ if {name}.is_some() {{ return Err(ParseError(format!(\"duplicate `{{_key}}` field\"))); }} {name} = Some({}); }},", named.key, parse_atom(&named.atom)).unwrap();
+            writeln!(out, "{:?} => {{ if {name}.is_some() {{ return Err(_key_location.error(format!(\"duplicate `{{_key}}` field\"))); }} {name} = Some({}); }},", named.key, parse_atom(&named.atom)).unwrap();
         }
-        out.push_str("_ => return Err(ParseError(format!(\"unknown named field `{_key}`\"))),\n}\nif !input.eat(Kind::Comma) { break; }\n} }\n");
+        out.push_str("_ => return Err(_key_location.error(format!(\"unknown named field `{_key}`\"))),\n}\nif !input.eat(Kind::Comma) { break; }\n} }\n");
         for named in &schema.named {
             let name = leaf(op, &named.atom.path);
             match named.mode {
                 Mode::Required => writeln!(
                     out,
-                    "let {name} = {name}.ok_or_else(|| ParseError({:?}.into()))?;",
+                    "let {name} = {name}.ok_or_else(|| input.error({:?}))?;",
                     format!("missing `{}=` field", named.key)
                 )
                 .unwrap(),
@@ -116,7 +116,6 @@ pub(super) fn parse(
             }
         }
     }
-    out.push_str("input.finish()?;\n");
     for (path, default) in &schema.defaults {
         writeln!(out, "let {} = {};", leaf(op, path), default.rust()).unwrap();
     }
@@ -172,22 +171,31 @@ fn parse_item(out: &mut String, op: &Op, item: &Item) {
                 out,
                 "let {} = {};",
                 leaf(op, &callee.path),
-                parse_atom(callee)
+                parse_atom_with(callee, &callee_codec(callee))
             )
             .unwrap();
             out.push_str("input.expect(Kind::LParen)?;\n");
             writeln!(out, "let {} = {};", leaf(op, &args.path), parse_atom(args)).unwrap();
             out.push_str("input.expect(Kind::RParen)?;\n");
-            out.push_str("input.expect(Kind::Colon).map_err(|e| ParseError(format!(\"signature must follow `:`: {e}\")))?;\n");
+            out.push_str("input.expect(Kind::Colon).map_err(|e| e.context(\"signature must follow `:`\"))?;\n");
             match signature {
                 CallSignature::Field(sig) => {
                     writeln!(out, "let {} = {};", leaf(op, &sig.path), parse_atom(sig)).unwrap();
+                    if is_function(callee) {
+                        writeln!(
+                            out,
+                            "let {name} = self.function_reference({name}, {})?;",
+                            leaf(op, &sig.path),
+                            name = leaf(op, &callee.path)
+                        )
+                        .unwrap();
+                    }
                 }
                 CallSignature::Function => {
                     writeln!(
                         out,
-                        "self.function_signature({}, input)?;",
-                        leaf(op, &callee.path)
+                        "let _signature = self.signature(input)?;\nlet {name} = self.function_reference({name}, _signature)?;",
+                        name = leaf(op, &callee.path)
                     )
                     .unwrap();
                 }
@@ -214,11 +222,27 @@ fn codec(kind: &AtomKind) -> String {
     }
 }
 
+fn is_function(atom: &Atom) -> bool {
+    matches!(&atom.kind, AtomKind::Scalar(ty) if ty == "FuncId")
+}
+
+fn callee_codec(atom: &Atom) -> String {
+    if is_function(atom) {
+        "super::atom::FunctionName".into()
+    } else {
+        codec(&atom.kind)
+    }
+}
+
 fn parse_atom(atom: &Atom) -> String {
+    parse_atom_with(atom, &codec(&atom.kind))
+}
+
+fn parse_atom_with(atom: &Atom, codec: &str) -> String {
     format!(
-        "<{} as super::atom::AtomCodec>::parse(self, input, ty).map_err(|e| ParseError(format!({:?})))?",
-        codec(&atom.kind),
-        format!("operand `{}`: {{e}}", atom.path)
+        "<{} as super::atom::AtomCodec>::parse(self, input, ty).map_err(|e| e.context({:?}))?",
+        codec,
+        format!("operand `{}`", atom.path)
     )
 }
 
@@ -281,24 +305,12 @@ pub(super) fn print(
         )
         .unwrap();
     }
-    let ty = if matches!(&canonical.signature.results, TypeList::Signature)
-        || matches!(&canonical.signature.results, TypeList::Fixed(results) if results.is_empty())
-    {
-        "None"
-    } else {
-        "ty"
-    };
     let flags = schema
         .flags
         .as_ref()
         .map(|p| local(op, p))
         .unwrap_or_else(|| "crate::MemFlags::empty()".into());
-    writeln!(
-        out,
-        "self.fmt_head(f, {:?}, {ty}, {flags})?;",
-        canonical.mnemonic
-    )
-    .unwrap();
+    writeln!(out, "self.fmt_head(f, {:?}, {flags})?;", canonical.mnemonic).unwrap();
     if !schema.args.is_empty() || !schema.named.is_empty() {
         out.push_str("let mut _separator = \" \";\n");
     }
@@ -360,7 +372,7 @@ fn print_item(out: &mut String, op: &Op, item: &Item) {
             args,
             signature,
         } => {
-            print_atom(out, callee, &local(op, &callee.path));
+            print_atom_with(out, callee, &local(op, &callee.path), &callee_codec(callee));
             out.push_str("f.write_char('(')?;\n");
             print_atom(out, args, &local(op, &args.path));
             out.push_str("f.write_char(')')?;\n");
@@ -381,6 +393,10 @@ fn print_item(out: &mut String, op: &Op, item: &Item) {
 }
 
 fn print_atom(out: &mut String, atom: &Atom, value: &str) {
+    print_atom_with(out, atom, value, &codec(&atom.kind));
+}
+
+fn print_atom_with(out: &mut String, atom: &Atom, value: &str, codec: &str) {
     // Pool projections and variadic groups already yield borrowed slices.
     let value = if matches!(atom.kind, AtomKind::Values | AtomKind::Bytes) {
         value.to_owned()
@@ -390,7 +406,7 @@ fn print_atom(out: &mut String, atom: &Atom, value: &str) {
     writeln!(
         out,
         "<{} as super::atom::AtomCodec>::print(self, f, {value}, ty)?;",
-        codec(&atom.kind)
+        codec
     )
     .unwrap();
 }

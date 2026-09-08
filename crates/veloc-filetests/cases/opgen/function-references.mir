@@ -1,0 +1,56 @@
+// ----- standalone-forward-function-reference
+// run: fixture
+// check: function-operand later : () -> i32
+// check: import function later() -> i32
+local function main() -> void
+block0():
+  function-operand later : () -> i32
+  return
+import function later() -> i32
+
+// ----- standalone-numeric-function-reference
+// run: fixture
+// check: function-operand later : () -> i32
+local function main() -> void
+block0():
+  function-operand FuncId(1) : () -> i32
+  return
+import function later() -> i32
+
+// ----- call-with-explicit-signature-field
+// run: fixture
+// check: v0: i32 = explicit-call later() : () -> i32
+local function main() -> i32
+block0():
+  v0: i32 = explicit-call later() : () -> i32
+  return v0
+import function later() -> i32
+
+// ----- standalone-reference-requires-signature
+// run: fixture-error
+// check: expected Colon
+local function main() -> void
+block0():
+  function-operand later
+  return
+import function later() -> i32
+
+// ----- standalone-reference-checks-declaration
+// run: fixture-error
+// check: call signature does not match declaration of `later`
+local function main() -> void
+block0():
+  function-operand later : () -> i64
+  return
+import function later() -> i32
+
+// ----- function-reference-is-not-a-single-token
+// run: opgen-error
+// check: space requires two single-token atoms
+format RefTag {
+    fields: [op(Opcode), target(FuncId), tag(u32)], opcode: dynamic(op)
+}
+op RefTag(@target: FuncId, @tag: u32) -> () {
+    mnemonic: "ref-tag", storage: RefTag { target: target, tag: tag },
+    text: Text { args: [space(target, tag)] }, memory: NONE
+}

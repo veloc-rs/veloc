@@ -1,7 +1,7 @@
 //! Borrowed, on-demand tokens. Newlines delimit statements; nested grammar is
 //! consumed by the parser, never by delimiter-counting string splitters.
 use super::parser::ParseError;
-use alloc::format;
+use alloc::{collections::VecDeque, format, string::String};
 use core::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,48 +21,53 @@ pub(super) enum Kind {
     Eof,
 }
 
-#[derive(Clone, Debug)]
-struct Token {
-    kind: Kind,
-    joined: bool,
-    span: Range<usize>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Location {
+    pub line: usize,
+    pub column: usize,
 }
 
-#[derive(Clone)]
+impl Location {
+    pub fn error(self, message: impl Into<String>) -> ParseError {
+        ParseError {
+            location: self,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Token {
+    kind: Kind,
+    span: Range<usize>,
+    location: Location,
+}
+
+/// Lookahead caches tokens; consuming them never scans their source again.
 pub(super) struct Cursor<'a> {
     source: &'a str,
-    end: usize,
+    offset: usize,
+    location: Location,
     token: Token,
+    ahead: VecDeque<Token>,
 }
 
 impl<'a> Cursor<'a> {
     pub fn new(source: &'a str) -> Self {
-        Self::range(source, 0..source.len())
-    }
-
-    pub fn range(source: &'a str, range: Range<usize>) -> Self {
+        let location = Location { line: 1, column: 1 };
         let mut cursor = Self {
             source,
-            end: range.end,
+            offset: 0,
+            location,
             token: Token {
                 kind: Kind::Eof,
-                joined: false,
-                span: range.start..range.start,
+                span: 0..0,
+                location,
             },
+            ahead: VecDeque::new(),
         };
         cursor.advance();
         cursor
-    }
-
-    pub fn remaining(&self) -> Range<usize> {
-        self.offset()..self.end
-    }
-    pub fn slice(&self, range: Range<usize>) -> Self {
-        Self::range(self.source, range)
-    }
-
-    pub fn joined(&self) -> bool {
-        self.token.joined
     }
 
     pub fn kind(&self) -> Kind {
@@ -71,37 +76,50 @@ impl<'a> Cursor<'a> {
     pub fn text(&self) -> &'a str {
         &self.source[self.token.span.clone()]
     }
-    pub fn offset(&self) -> usize {
-        self.token.span.start
+    pub fn location(&self) -> Location {
+        self.token.location
     }
     pub fn is(&self, word: &str) -> bool {
         self.kind() == Kind::Word && self.text() == word
     }
 
-    pub fn advance(&mut self) {
-        let mut start = self.token.span.end;
-        let bytes = self.source.as_bytes();
-        while start < self.end {
-            let ch = self.source[start..self.end].chars().next().unwrap();
+    fn bump(&mut self) {
+        let ch = self.source[self.offset..].chars().next().expect("not EOF");
+        self.offset += ch.len_utf8();
+        if ch == '\n' {
+            self.location.line += 1;
+            self.location.column = 1;
+        } else {
+            self.location.column += 1;
+        }
+    }
+
+    fn scan(&mut self) -> Token {
+        while self.offset < self.source.len() {
+            let rest = &self.source[self.offset..];
+            let ch = rest.chars().next().unwrap();
             if ch != '\n' && ch.is_whitespace() {
-                start += ch.len_utf8();
-            } else if self.source[start..self.end].starts_with("//") {
-                start += self.source[start..self.end]
-                    .find('\n')
-                    .unwrap_or(self.end - start);
+                self.bump();
+            } else if rest.starts_with("//") {
+                while self.offset < self.source.len()
+                    && !self.source[self.offset..].starts_with('\n')
+                {
+                    self.bump();
+                }
             } else {
                 break;
             }
         }
-        if start == self.end {
-            self.token = Token {
+        let start = self.offset;
+        let location = self.location;
+        if start == self.source.len() {
+            return Token {
                 kind: Kind::Eof,
-                joined: false,
                 span: start..start,
+                location,
             };
-            return;
         }
-        let kind = match bytes[start] {
+        let kind = match self.source.as_bytes()[start] {
             b'(' => Kind::LParen,
             b')' => Kind::RParen,
             b'[' => Kind::LBracket,
@@ -112,28 +130,66 @@ impl<'a> Cursor<'a> {
             b':' => Kind::Colon,
             b'=' => Kind::Equal,
             b'\n' => Kind::Newline,
-            b'-' if self.source[start..self.end].starts_with("->") => Kind::Arrow,
+            b'-' if self.source[start..].starts_with("->") => Kind::Arrow,
             _ => Kind::Word,
         };
-        let mut end = start + if kind == Kind::Arrow { 2 } else { 1 };
         if kind == Kind::Word {
-            end = start;
-            for (offset, ch) in self.source[start..self.end].char_indices() {
+            while self.offset < self.source.len() {
+                let rest = &self.source[self.offset..];
+                let ch = rest.chars().next().unwrap();
                 if ch.is_whitespace()
                     || "()[]<>,:=".contains(ch)
-                    || self.source[start + offset..self.end].starts_with("->")
-                    || self.source[start + offset..self.end].starts_with("//")
+                    || rest.starts_with("->")
+                    || rest.starts_with("//")
                 {
                     break;
                 }
-                end = start + offset + ch.len_utf8();
+                self.bump();
+            }
+        } else {
+            self.bump();
+            if kind == Kind::Arrow {
+                self.bump();
             }
         }
-        self.token = Token {
+        Token {
             kind,
-            joined: start == self.token.span.end,
-            span: start..end,
-        };
+            span: start..self.offset,
+            location,
+        }
+    }
+
+    pub fn advance(&mut self) {
+        self.token = self.ahead.pop_front().unwrap_or_else(|| self.scan());
+    }
+
+    fn peek(&mut self, distance: usize) -> &Token {
+        if distance == 0 {
+            return &self.token;
+        }
+        while self.ahead.len() < distance {
+            let token = self.scan();
+            self.ahead.push_back(token);
+        }
+        &self.ahead[distance - 1]
+    }
+
+    pub fn peek_kind(&mut self, distance: usize) -> Kind {
+        self.peek(distance).kind
+    }
+
+    pub fn peek_is(&mut self, distance: usize, word: &str) -> bool {
+        let token = self.peek(distance);
+        let span = token.span.clone();
+        token.kind == Kind::Word && &self.source[span] == word
+    }
+
+    pub fn at_end(&self) -> bool {
+        matches!(self.kind(), Kind::Newline | Kind::Eof)
+    }
+
+    pub fn skip_newlines(&mut self) {
+        while self.eat(Kind::Newline) {}
     }
 
     pub fn eat(&mut self, kind: Kind) -> bool {
@@ -153,16 +209,10 @@ impl<'a> Cursor<'a> {
                 Kind::Equal => "`=` in named field",
                 Kind::LBracket => "`[` to start a [] list",
                 _ => {
-                    return Err(ParseError(format!(
-                        "expected {kind:?}, found `{}`",
-                        self.text()
-                    )));
+                    return Err(self.error(format!("expected {kind:?}, found `{}`", self.text())));
                 }
             };
-            Err(ParseError(format!(
-                "expected {expected}, found `{}`",
-                self.text()
-            )))
+            Err(self.error(format!("expected {expected}, found `{}`", self.text())))
         }
     }
 
@@ -174,71 +224,50 @@ impl<'a> Cursor<'a> {
     /// at their own span rather than at the following comma or end of line.
     pub fn atom<T>(
         &mut self,
-        decode: impl FnOnce(&'a str) -> Result<T, ParseError>,
+        decode: impl FnOnce(&'a str) -> Result<T, String>,
     ) -> Result<T, ParseError> {
         if self.kind() != Kind::Word {
-            return Err(ParseError(format!(
-                "expected name or operand, found {:?}",
-                self.kind()
-            )));
+            return Err(self.error(format!("expected name or operand, found {:?}", self.kind())));
         }
-        let value = decode(self.text())?;
+        let value = decode(self.text()).map_err(|message| self.error(message))?;
         self.advance();
         Ok(value)
     }
 
     pub fn keyword(&mut self, word: &str) -> Result<(), ParseError> {
         if !self.is(word) {
-            return Err(ParseError(format!("expected `{word}`")));
+            return Err(self.error(format!("expected `{word}`")));
         }
         self.advance();
         Ok(())
     }
 
     pub fn finish(&self) -> Result<(), ParseError> {
-        if self.kind() == Kind::Eof {
+        if self.at_end() {
             Ok(())
         } else {
-            Err(ParseError(format!(
+            Err(self.error(format!(
                 "unexpected operand or trailing text `{}`",
                 self.text()
             )))
         }
     }
 
-    /// The grammar deliberately keeps physical newlines significant. These
-    /// cursors borrow ranges of the original source, including absolute spans.
-    pub fn statement(&mut self) -> Option<Self> {
-        while self.eat(Kind::Newline) {}
-        if self.kind() == Kind::Eof {
-            return None;
-        }
-        let start = self.offset();
-        let end = start
-            + self.source[start..self.end]
-                .find('\n')
-                .unwrap_or(self.end - start);
-        let statement = Self::range(self.source, start..end);
-        self.token.span = end..end;
-        self.advance();
-        Some(statement)
+    pub fn named(&mut self) -> bool {
+        self.named_at(0)
     }
 
-    pub fn named(&self) -> bool {
-        let mut next = self.clone();
-        next.kind() == Kind::Word && {
-            next.advance();
-            next.kind() == Kind::Equal
-        }
+    pub fn named_at(&mut self, distance: usize) -> bool {
+        self.peek_kind(distance) == Kind::Word && self.peek_kind(distance + 1) == Kind::Equal
     }
 
-    /// Alternate layouts have required top-level named fields. Nested argument
-    /// lists cannot select an alternate layout.
-    pub fn has_named(&self) -> bool {
-        let mut next = self.clone();
+    /// Cache alternate-layout lookahead up to the first top-level named field
+    /// or statement boundary. Nested fields do not select a layout.
+    pub fn has_named(&mut self) -> bool {
         let mut depth = 0usize;
+        let mut distance = 0;
         loop {
-            match next.kind() {
+            match self.peek_kind(distance) {
                 Kind::Eof | Kind::Newline => return false,
                 Kind::Equal if depth == 0 => return true,
                 Kind::LParen | Kind::LBracket | Kind::Less => depth += 1,
@@ -250,15 +279,39 @@ impl<'a> Cursor<'a> {
                 }
                 _ => {}
             }
-            next.advance();
+            distance += 1;
         }
     }
 
-    pub fn locate(&self, error: ParseError) -> ParseError {
-        let prefix = &self.source[..self.offset()];
-        let line = prefix.bytes().filter(|&b| b == b'\n').count() + 1;
-        let start = prefix.rfind('\n').map_or(0, |i| i + 1);
-        let column = self.source[start..self.offset()].chars().count() + 1;
-        ParseError(format!("line {line}, column {column}: {}", error.0))
+    pub fn error(&self, message: impl Into<String>) -> ParseError {
+        self.location().error(message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookahead_reuses_tokens_and_stops_at_the_newline() {
+        let mut input = Cursor::new("v0, v1\nnext, mask=v2");
+        assert!(!input.has_named());
+        let scanned = input.offset;
+        assert!(!input.has_named());
+        for kind in [Kind::Comma, Kind::Word, Kind::Newline] {
+            input.advance();
+            assert_eq!(input.kind(), kind);
+            assert_eq!(
+                input.offset, scanned,
+                "cached tokens must not rescan source"
+            );
+        }
+        input.skip_newlines();
+        assert_eq!(input.text(), "next");
+        assert!(input.has_named());
+        let scanned = input.offset;
+        assert!(input.named_at(2));
+        assert_eq!(input.offset, scanned);
+        assert_eq!(input.error("test").to_string(), "line 2, column 1: test");
     }
 }

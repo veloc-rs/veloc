@@ -22,14 +22,14 @@ whose syntax differs from LLVM FileCheck:
 
 ```text
 // run: simplify
-// check: $(sum=v\d+) = iconst.i32 7
+// check: $(sum=v\d+): i32 = iconst 7
 // not: iadd
 // check: return $sum
 local function add() -> i32
 block0():
-  v0 = iconst.i32 3
-  v1 = iconst.i32 4
-  v2 = iadd v0, v1
+  v0: i32 = iconst 3
+  v1: i32 = iconst 4
+  v2: i32 = iadd v0, v1
   return v2
 ```
 
@@ -43,6 +43,7 @@ the presence of an opcode. Assertions belong in `//` comments.
 
 | `run:` | Observable behavior |
 | --- | --- |
+| `parse` | Parse and print without validation, including deliberately ill-typed IR |
 | `roundtrip` | Parse, validate, print, reparse, validate, and check canonical text stability |
 | `parse-error` | Require a parser diagnostic |
 | `validate-error` | Parsing must succeed; require a validator diagnostic |

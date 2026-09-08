@@ -26,6 +26,13 @@ pub struct DataFlowGraph {
 }
 
 impl DataFlowGraph {
+    /// Finalize parser-local function identities without touching SSA operands.
+    pub(crate) fn remap_functions(&mut self, map: &[crate::FuncId]) {
+        for (_, inst) in &mut self.instructions {
+            inst.fields.map_functions(|id| map[id.0 as usize]);
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             instructions: PrimaryMap::new(),

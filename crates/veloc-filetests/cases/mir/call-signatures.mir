@@ -1,19 +1,19 @@
 // ----- direct-call-signature
 // run: roundtrip
-// check: v1 = call callee(v0) : (i32) -> i32
+// check: v1: i32 = call callee(v0) : (i32) -> i32
 // check: return v1
 local function main(i32) -> i32
 block0(v0: i32):
-  v1 = call callee(v0) : (i32) -> i32
+  v1: i32 = call callee(v0) : (i32) -> i32
   return v1
 import function callee(i32) -> i32
 
 // ----- recursive-call
 // run: roundtrip
-// check: v1 = call recurse(v0) : (i32) -> i32
+// check: v1: i32 = call recurse(v0) : (i32) -> i32
 local function recurse(i32) -> i32
 block0(v0: i32):
-  v1 = call recurse(v0) : (i32) -> i32
+  v1: i32 = call recurse(v0) : (i32) -> i32
   return v1
 
 // ----- direct-call-requires-signature
@@ -30,7 +30,7 @@ import function callee() -> void
 // check: call signature does not match declaration of `callee`
 local function main(f32) -> i32
 block0(v0: f32):
-  v1 = call callee(v0) : (f32) -> i32
+  v1: i32 = call callee(v0) : (f32) -> i32
   return v1
 import function callee(i32) -> i32
 
@@ -39,7 +39,7 @@ import function callee(i32) -> i32
 // check: call signature does not match declaration of `callee`
 local function main() -> f32
 block0():
-  v0 = call callee() : () -> f32
+  v0: f32 = call callee() : () -> f32
   return v0
 import function callee() -> i32
 
@@ -48,7 +48,7 @@ import function callee() -> i32
 // check: call signature does not match declaration of `callee`
 local function main() -> i32
 block0():
-  v0 = call callee() : () -> i32
+  v0: i32 = call callee() : () -> i32
   return v0
 import function callee() -> (i32, i32)
 
@@ -58,7 +58,7 @@ import function callee() -> (i32, i32)
 // check: type mismatch
 local function main(f32) -> i32
 block0(v0: f32):
-  v1 = call callee(v0) : (i32) -> i32
+  v1: i32 = call callee(v0) : (i32) -> i32
   return v1
 import function callee(i32) -> i32
 
@@ -74,9 +74,9 @@ import function callee(i32) -> void
 
 // ----- complete-multiple-return-signature
 // run: roundtrip
-// check: (v0, v1) = call callee() : () -> (i32, f64)
+// check: (v0: i32, v1: f64) = call callee() : () -> (i32, f64)
 local function main() -> (i32, f64)
 block0():
-  (v0, v1) = call callee() : () -> (i32, f64)
+  (v0: i32, v1: f64) = call callee() : () -> (i32, f64)
   return v0, v1
 import function callee() -> (i32, f64)

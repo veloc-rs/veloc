@@ -468,7 +468,7 @@ fn single_token(kind: &AtomKind) -> bool {
     matches!(
         kind,
         AtomKind::Value | AtomKind::Integer | AtomKind::Float | AtomKind::Bytes
-    ) || matches!(kind, AtomKind::Scalar(ty) if ty != "SigId")
+    ) || matches!(kind, AtomKind::Scalar(ty) if !matches!(ty.as_str(), "SigId" | "FuncId"))
 }
 
 #[cfg(test)]

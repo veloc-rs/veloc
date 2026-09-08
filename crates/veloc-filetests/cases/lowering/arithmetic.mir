@@ -6,7 +6,7 @@
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
-  v2 = iadd v0, v1
+  v2: i8 = iadd v0, v1
   return v2
 
 // ----- isub-i8
@@ -17,7 +17,7 @@ block0(v0: i8, v1: i8):
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
-  v2 = isub v0, v1
+  v2: i8 = isub v0, v1
   return v2
 
 // ----- imul-i8
@@ -28,7 +28,7 @@ block0(v0: i8, v1: i8):
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
-  v2 = imul v0, v1
+  v2: i8 = imul v0, v1
   return v2
 
 // ----- ineg-i8
@@ -39,7 +39,7 @@ block0(v0: i8, v1: i8):
 // check: type $result: i8
 local function op(i8) -> i8
 block0(v0: i8):
-  v2 = ineg v0
+  v2: i8 = ineg v0
   return v2
 
 // ----- iand-i8
@@ -50,7 +50,7 @@ block0(v0: i8):
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
-  v2 = iand v0, v1
+  v2: i8 = iand v0, v1
   return v2
 
 // ----- ior-i8
@@ -61,7 +61,7 @@ block0(v0: i8, v1: i8):
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
-  v2 = ior v0, v1
+  v2: i8 = ior v0, v1
   return v2
 
 // ----- ixor-i8
@@ -72,7 +72,7 @@ block0(v0: i8, v1: i8):
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
-  v2 = ixor v0, v1
+  v2: i8 = ixor v0, v1
   return v2
 
 // ----- iadd-i16
@@ -83,7 +83,7 @@ block0(v0: i8, v1: i8):
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
-  v2 = iadd v0, v1
+  v2: i16 = iadd v0, v1
   return v2
 
 // ----- isub-i16
@@ -94,7 +94,7 @@ block0(v0: i16, v1: i16):
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
-  v2 = isub v0, v1
+  v2: i16 = isub v0, v1
   return v2
 
 // ----- imul-i16
@@ -105,7 +105,7 @@ block0(v0: i16, v1: i16):
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
-  v2 = imul v0, v1
+  v2: i16 = imul v0, v1
   return v2
 
 // ----- ineg-i16
@@ -116,7 +116,7 @@ block0(v0: i16, v1: i16):
 // check: type $result: i16
 local function op(i16) -> i16
 block0(v0: i16):
-  v2 = ineg v0
+  v2: i16 = ineg v0
   return v2
 
 // ----- iand-i16
@@ -127,7 +127,7 @@ block0(v0: i16):
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
-  v2 = iand v0, v1
+  v2: i16 = iand v0, v1
   return v2
 
 // ----- ior-i16
@@ -138,7 +138,7 @@ block0(v0: i16, v1: i16):
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
-  v2 = ior v0, v1
+  v2: i16 = ior v0, v1
   return v2
 
 // ----- ixor-i16
@@ -149,7 +149,7 @@ block0(v0: i16, v1: i16):
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
-  v2 = ixor v0, v1
+  v2: i16 = ixor v0, v1
   return v2
 
 // ----- iadd-i32
@@ -160,7 +160,7 @@ block0(v0: i16, v1: i16):
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = iadd v0, v1
+  v2: i32 = iadd v0, v1
   return v2
 
 // ----- isub-i32
@@ -171,7 +171,7 @@ block0(v0: i32, v1: i32):
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = isub v0, v1
+  v2: i32 = isub v0, v1
   return v2
 
 // ----- imul-i32
@@ -182,7 +182,7 @@ block0(v0: i32, v1: i32):
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = imul v0, v1
+  v2: i32 = imul v0, v1
   return v2
 
 // ----- ineg-i32
@@ -193,7 +193,7 @@ block0(v0: i32, v1: i32):
 // check: type $result: i32
 local function op(i32) -> i32
 block0(v0: i32):
-  v2 = ineg v0
+  v2: i32 = ineg v0
   return v2
 
 // ----- iand-i32
@@ -204,7 +204,7 @@ block0(v0: i32):
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = iand v0, v1
+  v2: i32 = iand v0, v1
   return v2
 
 // ----- ior-i32
@@ -215,7 +215,7 @@ block0(v0: i32, v1: i32):
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = ior v0, v1
+  v2: i32 = ior v0, v1
   return v2
 
 // ----- ixor-i32
@@ -226,7 +226,7 @@ block0(v0: i32, v1: i32):
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = ixor v0, v1
+  v2: i32 = ixor v0, v1
   return v2
 
 // ----- idiv-s-i32
@@ -237,7 +237,7 @@ block0(v0: i32, v1: i32):
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = idiv-s v0, v1
+  v2: i32 = idiv-s v0, v1
   return v2
 
 // ----- iadd-i64
@@ -248,7 +248,7 @@ block0(v0: i32, v1: i32):
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
-  v2 = iadd v0, v1
+  v2: i64 = iadd v0, v1
   return v2
 
 // ----- isub-i64
@@ -259,7 +259,7 @@ block0(v0: i64, v1: i64):
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
-  v2 = isub v0, v1
+  v2: i64 = isub v0, v1
   return v2
 
 // ----- imul-i64
@@ -270,7 +270,7 @@ block0(v0: i64, v1: i64):
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
-  v2 = imul v0, v1
+  v2: i64 = imul v0, v1
   return v2
 
 // ----- ineg-i64
@@ -281,7 +281,7 @@ block0(v0: i64, v1: i64):
 // check: type $result: i64
 local function op(i64) -> i64
 block0(v0: i64):
-  v2 = ineg v0
+  v2: i64 = ineg v0
   return v2
 
 // ----- iand-i64
@@ -292,7 +292,7 @@ block0(v0: i64):
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
-  v2 = iand v0, v1
+  v2: i64 = iand v0, v1
   return v2
 
 // ----- ior-i64
@@ -303,7 +303,7 @@ block0(v0: i64, v1: i64):
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
-  v2 = ior v0, v1
+  v2: i64 = ior v0, v1
   return v2
 
 // ----- ixor-i64
@@ -314,7 +314,7 @@ block0(v0: i64, v1: i64):
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
-  v2 = ixor v0, v1
+  v2: i64 = ixor v0, v1
   return v2
 
 // ----- iand-bool
@@ -325,7 +325,7 @@ block0(v0: i64, v1: i64):
 // check: type $result: bool
 local function op(bool, bool) -> bool
 block0(v0: bool, v1: bool):
-  v2 = iand v0, v1
+  v2: bool = iand v0, v1
   return v2
 
 // ----- ior-bool
@@ -336,7 +336,7 @@ block0(v0: bool, v1: bool):
 // check: type $result: bool
 local function op(bool, bool) -> bool
 block0(v0: bool, v1: bool):
-  v2 = ior v0, v1
+  v2: bool = ior v0, v1
   return v2
 
 // ----- ixor-bool
@@ -347,7 +347,7 @@ block0(v0: bool, v1: bool):
 // check: type $result: bool
 local function op(bool, bool) -> bool
 block0(v0: bool, v1: bool):
-  v2 = ixor v0, v1
+  v2: bool = ixor v0, v1
   return v2
 
 // ----- iadd-i32<4>
@@ -358,7 +358,7 @@ block0(v0: bool, v1: bool):
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
-  v2 = iadd v0, v1
+  v2: i32<4> = iadd v0, v1
   return v2
 
 // ----- isub-i32<4>
@@ -369,7 +369,7 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
-  v2 = isub v0, v1
+  v2: i32<4> = isub v0, v1
   return v2
 
 // ----- imul-i32<4>
@@ -380,7 +380,7 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
-  v2 = imul v0, v1
+  v2: i32<4> = imul v0, v1
   return v2
 
 // ----- ineg-i32<4>
@@ -391,7 +391,7 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: type $result: i32<4>
 local function op(i32<4>) -> i32<4>
 block0(v0: i32<4>):
-  v2 = ineg v0
+  v2: i32<4> = ineg v0
   return v2
 
 // ----- iand-i32<4>
@@ -402,7 +402,7 @@ block0(v0: i32<4>):
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
-  v2 = iand v0, v1
+  v2: i32<4> = iand v0, v1
   return v2
 
 // ----- ior-i32<4>
@@ -413,7 +413,7 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
-  v2 = ior v0, v1
+  v2: i32<4> = ior v0, v1
   return v2
 
 // ----- ixor-i32<4>
@@ -424,7 +424,7 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
-  v2 = ixor v0, v1
+  v2: i32<4> = ixor v0, v1
   return v2
 
 // ----- fadd-f64
@@ -435,5 +435,5 @@ block0(v0: i32<4>, v1: i32<4>):
 // check: type $result: f64
 local function op(f64, f64) -> f64
 block0(v0: f64, v1: f64):
-  v2 = fadd v0, v1
+  v2: f64 = fadd v0, v1
   return v2

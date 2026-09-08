@@ -1,0 +1,109 @@
+// ----- explicit-types-and-names
+// run: roundtrip
+// check: global.v1: i32 = iconst 1
+// check: ss0.v2: i32 = iadd input.v0, global.v1
+// check: (sum.v3: i32, overflow.v4: bool) = iadd-with-overflow ss0.v2, global.v1
+// check: return sum.v3, overflow.v4
+local function names(i32) -> (i32, bool)
+block0(input: i32):
+  global: i32 = iconst 1
+  ss0: i32 = iadd input, global
+  (sum: i32, overflow: bool) = iadd-with-overflow ss0, global
+  return sum, overflow
+
+// ----- result-types-are-not-inferred-or-overwritten
+// run: parse
+// check: v0: i64 = iadd v1, v1
+// check: v1: i32 = iconst 1
+local function bad() -> i64
+block0():
+  v0: i64 = iadd v1, v1
+  v1: i32 = iconst 1
+  return v0
+
+// ----- result-types-are-checked-by-validator
+// run: validate-error
+// check: iadd type scheme violation
+// check: results: true
+// check: got: I64
+local function bad() -> i64
+block0():
+  v0: i64 = iadd v1, v1
+  v1: i32 = iconst 1
+  return v0
+
+// ----- second-result-type-is-preserved
+// run: parse
+// check: (v1: i32, v2: i64) = iadd-with-overflow v0, v0
+local function bad(i32) -> (i32, i64)
+block0(v0: i32):
+  (v1: i32, v2: i64) = iadd-with-overflow v0, v0
+  return v1, v2
+
+// ----- second-result-type-is-validated
+// run: validate-error
+// check: iadd-with-overflow type scheme violation
+// check: results: true, index: 1
+// check: got: I64
+local function bad(i32) -> (i32, i64)
+block0(v0: i32):
+  (v1: i32, v2: i64) = iadd-with-overflow v0, v0
+  return v1, v2
+
+// ----- fixed-result-type-is-still-explicit
+// run: parse-error
+// check: expected Colon
+local function bad() -> bool
+block0():
+  v0 = bconst true
+  return v0
+
+// ----- every-result-needs-a-type
+// run: parse-error
+// check: expected Colon
+local function bad(i32) -> (i32, bool)
+block0(v0: i32):
+  (v1: i32, v2) = iadd-with-overflow v0, v0
+  return v1, v2
+
+// ----- missing-result-belongs-to-validator
+// run: validate-error
+// check: Arity { results: true, expected: 1, got: 0
+local function bad() -> void
+block0():
+  iconst 1
+  return
+
+// ----- extra-result-belongs-to-validator
+// run: validate-error
+// check: Arity { results: true, expected: 0, got: 1
+local function bad() -> void
+block0():
+  v0: i32 = nop
+  return
+
+// ----- call-result-is-independent-of-signature
+// run: parse
+// check: v0: i64 = call callee() : () -> i32
+local function bad() -> i64
+block0():
+  v0: i64 = call callee() : () -> i32
+  return v0
+import function callee() -> i32
+
+// ----- call-result-is-validated
+// run: validate-error
+// check: call result 0 type mismatch
+local function bad() -> i64
+block0():
+  v0: i64 = call callee() : () -> i32
+  return v0
+import function callee() -> i32
+
+// ----- malformed-result-type
+// run: parse-error
+// check: unknown type `i33`
+local function bad() -> i32
+block0():
+  v0: i33 = iconst 1
+  return v0

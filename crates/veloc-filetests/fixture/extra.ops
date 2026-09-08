@@ -1,4 +1,20 @@
 // Exercise contracts not represented by production MIR instructions.
+format FunctionOperand {
+    fields: [op(Opcode), target(FuncId)], opcode: dynamic(op)
+}
+op FunctionOperand(@target: FuncId) -> () {
+    mnemonic: "function-operand", storage: FunctionOperand { target: target },
+    text: Text { args: [target] }, memory: NONE
+}
+format ExplicitCall {
+    fields: [op(Opcode), target(FuncId), args(ValueList), sig(SigId)], opcode: dynamic(op)
+}
+op ExplicitCall(@target: FuncId, args: values, @sig: SigId) -> signature {
+    mnemonic: "explicit-call", storage: ExplicitCall { target: target, args: args, sig: sig },
+    signature: sig,
+    text: Text { args: [invoke(target, args, sig)] }, memory: NONE
+}
+
 record TestOperands {
     fields: [token(Value), optional(optional(Value), none), tag(u32, 9)]
 }

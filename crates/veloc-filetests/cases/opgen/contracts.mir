@@ -1,10 +1,10 @@
 // ----- many-variables-and-reordered-results
 // run: fixture
-// check: (v5, v6) = many.f32 v0, v1, v2, v3, v4
+// check: (v5: f32, v6: i8) = many v0, v1, v2, v3, v4
 // check: return v5, v6
 local function many_types(i8, i16, i32, i64, f32) -> (f32, i8)
 block0(v0: i8, v1: i16, v2: i32, v3: i64, v4: f32):
-  (v5, v6) = many v0, v1, v2, v3, v4
+  (v5: f32, v6: i8) = many v0, v1, v2, v3, v4
   return v5, v6
 
 // ----- many-wrong-arity
@@ -12,16 +12,16 @@ block0(v0: i8, v1: i16, v2: i32, v3: i64, v4: f32):
 // check: operand
 local function many_types(i8, i16, i32, i64) -> void
 block0(v0: i8, v1: i16, v2: i32, v3: i64):
-  (v5, v6) = many v0, v1, v2, v3
+  (v5: f32, v6: i8) = many v0, v1, v2, v3
   return
 
 // ----- result-only-variable
 // run: fixture
-// check: v0 = output.i32
+// check: v0: i32 = output
 // check: return v0
 local function output_type() -> i32
 block0():
-  v0 = output.i32
+  v0: i32 = output
   return v0
 
 // ----- result-only-wrong-class
@@ -30,16 +30,16 @@ block0():
 // check: got: F32
 local function output_type() -> f32
 block0():
-  v0 = output.f32
+  v0: f32 = output
   return v0
 
-// ----- infer-known-result-relation
+// ----- explicit-known-result-relation
 // run: fixture
-// check: v1 = sized.i8 v0
+// check: v1: i8 = sized v0
 // check: return v1
 local function sized_type(bool) -> i8
 block0(v0: bool):
-  v1 = sized v0
+  v1: i8 = sized v0
   return v1
 
 // ----- reject-known-result-relation
@@ -47,18 +47,18 @@ block0(v0: bool):
 // check: results[0] must have more bits per lane than operands[0]
 local function sized_type(i32) -> i8
 block0(v0: i32):
-  v1 = sized v0
+  v1: i8 = sized v0
   return v1
 
 // ----- shared-contracts
 // run: fixture
-// check: v2 = first.i32 v0, v1
-// check: v3 = second.i32 v2, v1
+// check: v2: i32 = first v0, v1
+// check: v3: i32 = second v2, v1
 // check: return v3
 local function shared(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = first v0, v1
-  v3 = second v2, v1
+  v2: i32 = first v0, v1
+  v3: i32 = second v2, v1
   return v3
 
 // ----- distinct-contract
@@ -66,5 +66,5 @@ block0(v0: i32, v1: i32):
 // check: Pattern { results: false, index: 0
 local function distinct(i32, i32) -> i32
 block0(v0: i32, v1: i32):
-  v2 = float-only v0, v1
+  v2: i32 = float-only v0, v1
   return v2

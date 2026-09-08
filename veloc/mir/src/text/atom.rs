@@ -32,6 +32,7 @@ pub(super) struct FloatBits;
 pub(super) struct Bytes;
 pub(super) struct Values;
 pub(super) struct Successors;
+pub(super) struct FunctionName;
 
 impl<T: FromStr + fmt::Display> AtomCodec for Decimal<T> {
     type Owned = T;
@@ -44,7 +45,7 @@ impl<T: FromStr + fmt::Display> AtomCodec for Decimal<T> {
     ) -> Result<T, ParseError> {
         input.atom(|text| {
             text.parse()
-                .map_err(|_| ParseError(format!("invalid numeric value `{text}`")))
+                .map_err(|_| format!("invalid numeric value `{text}`"))
         })
     }
 
@@ -70,11 +71,11 @@ impl AtomCodec for IntegerBits {
         input.atom(|text| {
             if let Some(hex) = text.strip_prefix("0x") {
                 u64::from_str_radix(hex, 16)
-                    .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
+                    .map_err(|_| format!("invalid integer constant `{text}`"))
             } else {
                 text.parse::<i64>()
                     .map(|value| value as u64)
-                    .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
+                    .map_err(|_| format!("invalid integer constant `{text}`"))
             }
         })
     }
@@ -100,19 +101,15 @@ impl AtomCodec for FloatBits {
     ) -> Result<u64, ParseError> {
         input.atom(|text| {
             if !matches!(ty, Some(Type::F32 | Type::F64)) {
-                return Err(ParseError(
-                    "floating constants require an `f32` or `f64` result suffix".into(),
-                ));
+                return Err("floating constants require an `f32` or `f64` result type".into());
             }
-            let hex = text.strip_prefix("0x").ok_or_else(|| {
-                ParseError("floating constants use an exact hexadecimal bit pattern".into())
-            })?;
+            let hex = text
+                .strip_prefix("0x")
+                .ok_or("floating constants use an exact hexadecimal bit pattern")?;
             let bits = u64::from_str_radix(hex, 16)
-                .map_err(|_| ParseError(format!("invalid floating bit pattern `{text}`")))?;
+                .map_err(|_| format!("invalid floating bit pattern `{text}`"))?;
             if ty == Some(Type::F32) && bits > u64::from(u32::MAX) {
-                return Err(ParseError(format!(
-                    "f32 bit pattern does not fit in 32 bits: `{text}`"
-                )));
+                return Err(format!("f32 bit pattern does not fit in 32 bits: `{text}`"));
             }
             Ok(bits)
         })
@@ -144,20 +141,18 @@ impl AtomCodec for Bytes {
         input.atom(|text| {
             let hex = text
                 .strip_prefix("0x")
-                .ok_or_else(|| ParseError(format!("expected hexadecimal bytes, found `{text}`")))?;
+                .ok_or_else(|| format!("expected hexadecimal bytes, found `{text}`"))?;
             if !hex.is_ascii() {
-                return Err(ParseError(format!("invalid hexadecimal bytes `{text}`")));
+                return Err(format!("invalid hexadecimal bytes `{text}`"));
             }
             if hex.len() % 2 != 0 {
-                return Err(ParseError(
-                    "hex byte strings must contain an even number of digits".into(),
-                ));
+                return Err("hex byte strings must contain an even number of digits".into());
             }
             (0..hex.len())
                 .step_by(2)
                 .map(|index| {
                     u8::from_str_radix(&hex[index..index + 2], 16)
-                        .map_err(|_| ParseError(format!("invalid hexadecimal bytes `{text}`")))
+                        .map_err(|_| format!("invalid hexadecimal bytes `{text}`"))
                 })
                 .collect()
         })
@@ -189,9 +184,7 @@ impl AtomCodec for bool {
         input.atom(|text| match text {
             "true" => Ok(true),
             "false" => Ok(false),
-            other => Err(ParseError(format!(
-                "expected `true` or `false`, found `{other}`"
-            ))),
+            other => Err(format!("expected `true` or `false`, found `{other}`")),
         })
     }
 
@@ -216,8 +209,7 @@ impl AtomCodec for IntCC {
     ) -> Result<IntCC, ParseError> {
         input.atom(|text| {
             let cc = text;
-            IntCC::from_mnemonic(cc)
-                .ok_or_else(|| ParseError(format!("unknown integer condition `{cc}`")))
+            IntCC::from_mnemonic(cc).ok_or_else(|| format!("unknown integer condition `{cc}`"))
         })
     }
 
@@ -242,8 +234,7 @@ impl AtomCodec for FloatCC {
     ) -> Result<FloatCC, ParseError> {
         input.atom(|text| {
             let cc = text;
-            FloatCC::from_mnemonic(cc)
-                .ok_or_else(|| ParseError(format!("unknown float condition `{cc}`")))
+            FloatCC::from_mnemonic(cc).ok_or_else(|| format!("unknown float condition `{cc}`"))
         })
     }
 
@@ -268,8 +259,7 @@ impl AtomCodec for Intrinsic {
     ) -> Result<Intrinsic, ParseError> {
         input.atom(|text| {
             let name = text;
-            Intrinsic::from_name(name)
-                .ok_or_else(|| ParseError(format!("unknown intrinsic `{name}`")))
+            Intrinsic::from_name(name).ok_or_else(|| format!("unknown intrinsic `{name}`"))
         })
     }
 
@@ -393,6 +383,28 @@ impl AtomCodec for Successors {
     }
 }
 
+impl AtomCodec for FunctionName {
+    type Owned = parser::FunctionName;
+    type View<'a> = FuncId;
+
+    fn parse(
+        _: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        _: Option<Type>,
+    ) -> Result<Self::Owned, ParseError> {
+        parser::parse_function_name(input, true)
+    }
+
+    fn print(
+        cx: &InstPrinter<'_>,
+        out: &mut dyn fmt::Write,
+        value: &FuncId,
+        _: Option<Type>,
+    ) -> fmt::Result {
+        cx.fmt_func_ref(out, *value)
+    }
+}
+
 impl AtomCodec for FuncId {
     type Owned = FuncId;
     type View<'a> = FuncId;
@@ -411,7 +423,9 @@ impl AtomCodec for FuncId {
         value: &FuncId,
         _: Option<Type>,
     ) -> fmt::Result {
-        cx.fmt_func_ref(out, *value)
+        cx.fmt_func_ref(out, *value)?;
+        out.write_str(" : ")?;
+        cx.fmt_function_signature(out, *value)
     }
 }
 

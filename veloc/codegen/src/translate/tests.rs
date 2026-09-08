@@ -7,7 +7,7 @@ fn module(opcode: Opcode, ty: Type, arity: usize) -> Module {
         format!(
             "local function op({ty}) -> {ty}\n\
              block0(v0: {ty}):\n\
-             v1 = {}.{ty} v0\n\
+             v1: {ty} = {} v0\n\
              return v1\n",
             opcode.spec().mnemonic
         )
@@ -15,7 +15,7 @@ fn module(opcode: Opcode, ty: Type, arity: usize) -> Module {
         format!(
             "local function op({ty}, {ty}) -> {ty}\n\
              block0(v0: {ty}, v1: {ty}):\n\
-             v2 = {}.{ty} v0, v1\n\
+             v2: {ty} = {} v0, v1\n\
              return v2\n",
             opcode.spec().mnemonic
         )

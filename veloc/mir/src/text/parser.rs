@@ -3,10 +3,10 @@
 //! OpSpec generates instruction grammar and construction; shared token parsers
 //! handle types, nested operands and forward references. Validation is explicit.
 
-use super::lexer::{Cursor, Kind};
+use super::lexer::{Cursor, Kind, Location};
 use crate::{
-    Block, BlockCall, CallConv, FuncId, Function, InstDraft, Linkage, MemFlags, Module, ModuleData,
-    Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef, function::StackSlotData,
+    Block, BlockCall, CallConv, FuncId, Function, Linkage, MemFlags, Module, ModuleData, Opcode,
+    Result, SigId, Signature, StackSlot, Type, Value, ValueDef, function::StackSlotData,
     types::ValueData,
 };
 use alloc::{
@@ -14,19 +14,36 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use core::ops::Range;
 use hashbrown::HashMap;
 
 #[derive(Debug, Clone)]
-pub struct ParseError(pub String);
+pub struct ParseError {
+    pub location: Location,
+    pub message: String,
+}
 
 type ParseResult<T> = core::result::Result<T, ParseError>;
 
-impl core::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.0)
+impl ParseError {
+    /// Add grammatical context without embedding or replacing the source position.
+    pub(super) fn context(mut self, context: &str) -> Self {
+        self.message = format!("{context}: {}", self.message);
+        self
     }
 }
+
+impl core::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "line {}, column {}: {}",
+            self.location.line, self.location.column, self.message
+        )
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ParseError {}
 
 struct FunctionHeader {
     name: String,
@@ -34,12 +51,124 @@ struct FunctionHeader {
     signature: Signature,
 }
 
-struct FunctionSource {
-    header: FunctionHeader,
-    body: Range<usize>,
+/// Parser-local function slots retain identity until all declarations are read.
+/// The final remap preserves source declaration order, including numeric refs.
+#[derive(Default)]
+struct Functions {
+    names: HashMap<String, FuncId>,
+    entries: Vec<FunctionSymbol>,
+    order: Vec<FuncId>,
 }
 
-/// Function symbols are declared before bodies, so calls may refer forwards.
+struct FunctionSymbol {
+    name: String,
+    defined: bool,
+    location: Location,
+}
+
+impl Functions {
+    fn reference(
+        &mut self,
+        name: &str,
+        signature: SigId,
+        location: Location,
+        module: &mut ModuleData,
+    ) -> ParseResult<FuncId> {
+        if let Some(&id) = self.names.get(name) {
+            if module.functions[id].signature != signature {
+                return Err(location.error(format!(
+                    "call signature does not match declaration of `{name}`"
+                )));
+            }
+            return Ok(id);
+        }
+        let id = module.declare_function(name.into(), signature, Linkage::Local);
+        self.names.insert(name.into(), id);
+        self.entries.push(FunctionSymbol {
+            name: name.into(),
+            defined: false,
+            location,
+        });
+        Ok(id)
+    }
+
+    fn declare(
+        &mut self,
+        header: &FunctionHeader,
+        location: Location,
+        module: &mut ModuleData,
+    ) -> ParseResult<FuncId> {
+        if self
+            .names
+            .get(&header.name)
+            .is_some_and(|id| self.entries[id.0 as usize].defined)
+        {
+            return Err(location.error(format!("duplicate function `{}`", header.name)));
+        }
+        let signature = module.intern_signature(header.signature.clone());
+        let id = self.reference(&header.name, signature, location, module)?;
+        self.entries[id.0 as usize].defined = true;
+        module.functions[id].linkage = header.linkage;
+        self.order.push(id);
+        Ok(id)
+    }
+
+    fn finish(self, module: &mut ModuleData) -> ParseResult<()> {
+        let mut map = vec![FuncId(u32::MAX); self.entries.len()];
+        for (index, &id) in self.order.iter().enumerate() {
+            map[id.0 as usize] = FuncId(index as u32);
+        }
+        for (index, entry) in self.entries.iter().enumerate() {
+            if entry.defined {
+                continue;
+            }
+            // Names take precedence over the legacy numeric spellings.
+            let number = entry
+                .name
+                .strip_prefix("func")
+                .or_else(|| {
+                    entry
+                        .name
+                        .strip_prefix("FuncId(")
+                        .and_then(|s| s.strip_suffix(')'))
+                })
+                .and_then(|s| s.parse::<usize>().ok());
+            let Some(target) = number.and_then(|n| self.order.get(n)).copied() else {
+                return Err(entry
+                    .location
+                    .error(format!("unknown function `{}`", entry.name)));
+            };
+            if module.functions[FuncId(index as u32)].signature
+                != module.functions[target].signature
+            {
+                return Err(entry.location.error(format!(
+                    "call signature does not match declaration of `{}`",
+                    module.functions[target].name
+                )));
+            }
+            map[index] = map[target.0 as usize];
+        }
+        if map
+            .iter()
+            .enumerate()
+            .all(|(index, id)| id.0 as usize == index)
+        {
+            return Ok(());
+        }
+        let old = core::mem::take(&mut module.functions);
+        let mut functions: Vec<_> = old.into_iter().map(|(_, func)| Some(func)).collect();
+        for id in self.order {
+            let mut func = functions[id.0 as usize]
+                .take()
+                .expect("unique function declaration");
+            func.dfg.remap_functions(&map);
+            module.functions.push(func);
+        }
+        Ok(())
+    }
+}
+
+/// Source is consumed once; result types are explicit and forward symbols are filled in IR.
 pub struct ModuleParser;
 
 impl Default for ModuleParser {
@@ -52,7 +181,6 @@ impl ModuleParser {
     pub const fn new() -> Self {
         Self
     }
-
     /// Resolve names/result types, without validating IR contracts.
     /// Call `Module::validate` explicitly when validation is required.
     pub fn parse(&mut self, source: &str) -> Result<Module> {
@@ -61,100 +189,161 @@ impl ModuleParser {
 }
 
 fn parse_module(source: &str) -> ParseResult<ModuleData> {
-    if source.trim().is_empty() {
-        return parse_err("empty input");
-    }
+    let mut input = Cursor::new(source);
     let mut module = ModuleData::default();
-    let sources = parse_declarations(source, &mut module)?;
-
-    // All function IDs must exist before resolving any call operands.
-    let mut func_ids = HashMap::new();
-    for source in &sources {
-        if func_ids.contains_key(&source.header.name) {
-            return parse_err(format!("duplicate function `{}`", source.header.name));
+    let mut functions = Functions::default();
+    let mut current: Option<FunctionParser> = None;
+    input.skip_newlines();
+    if input.kind() == Kind::Eof {
+        return Err(input.error("empty input"));
+    }
+    while input.kind() != Kind::Eof {
+        if is_function_header(&mut input) {
+            if let Some(previous) = current.take() {
+                previous.finish(&mut module)?;
+            }
+            let location = input.location();
+            let header = parse_function_header(&mut input)?;
+            let id = functions.declare(&header, location, &mut module)?;
+            current = Some(FunctionParser {
+                id,
+                func: Function::new(header.name, module.functions[id].signature, header.linkage),
+                symbols: Symbols::default(),
+                block: None,
+            });
+        } else if input.is("global") && input.peek_kind(1) == Kind::Word {
+            if current.is_some() {
+                return Err(input.error("global declaration inside function"));
+            }
+            let (name, ty, linkage) = parse_global(&mut input)?;
+            module.add_global(name, ty, linkage);
+        } else {
+            current
+                .as_mut()
+                .ok_or_else(|| input.error("expected global or function declaration"))?
+                .statement(&mut input, &mut functions, &mut module)?;
         }
-        let sig = module.intern_signature(source.header.signature.clone());
-        let id = module.declare_function(source.header.name.clone(), sig, source.header.linkage);
-        func_ids.insert(source.header.name.clone(), id);
+        // Every declaration and instruction has exactly one boundary check.
+        input.finish()?;
+        input.skip_newlines();
     }
-    for function in sources {
-        let id = func_ids[&function.header.name];
-        let sig = module.functions[id].signature;
-        let func = parse_function_body(
-            function.header,
-            sig,
-            Cursor::range(source, function.body),
-            &func_ids,
-            &mut module,
-        )?;
-        module.functions[id] = func;
+    if let Some(current) = current {
+        current.finish(&mut module)?;
     }
+    functions.finish(&mut module)?;
     Ok(module)
 }
 
-fn parse_declarations(source: &str, module: &mut ModuleData) -> ParseResult<Vec<FunctionSource>> {
-    let mut input = Cursor::new(source);
-    let mut sources = Vec::<FunctionSource>::new();
-    while let Some(mut line) = input.statement() {
-        if is_function_header(&line) {
-            if let Some(previous) = sources.last_mut() {
-                previous.body.end = line.offset();
-            }
-            let header = parse_line(&mut line, parse_function_header)?;
-            sources.push(FunctionSource {
-                header,
-                body: input.offset()..source.len(),
-            });
-        } else if line.is("global") {
-            if !sources.is_empty() {
-                return Err(line.locate(ParseError("global declaration inside function".into())));
-            }
-            let (name, ty, linkage) = parse_line(&mut line, parse_global)?;
-            module.add_global(name, ty, linkage);
-        } else if sources.is_empty() {
-            return Err(line.locate(ParseError("expected global or function declaration".into())));
-        }
-    }
-    if sources.is_empty() && module.globals.is_empty() {
-        return parse_err("module contains no declarations");
-    }
-
-    Ok(sources)
+struct FunctionParser {
+    id: FuncId,
+    func: Function,
+    symbols: Symbols,
+    block: Option<Block>,
 }
 
-/// Complete one declaration before attaching its source location to an error.
-fn parse_line<T>(
-    input: &mut Cursor<'_>,
-    parse: impl FnOnce(&mut Cursor<'_>) -> ParseResult<T>,
-) -> ParseResult<T> {
-    let result = parse(input).and_then(|value| {
-        input.finish()?;
-        Ok(value)
-    });
-    result.map_err(|error| input.locate(error))
+impl FunctionParser {
+    fn statement(
+        &mut self,
+        input: &mut Cursor<'_>,
+        functions: &mut Functions,
+        module: &mut ModuleData,
+    ) -> ParseResult<()> {
+        let name = input.text();
+        if name.starts_with("block") && input.peek_kind(1) == Kind::LParen {
+            self.block = Some(declare_block(input, &mut self.func, &mut self.symbols)?);
+        } else if name.starts_with("ss")
+            && input.peek_kind(1) == Kind::Colon
+            && input.peek_is(2, "size")
+        {
+            parse_stack_slot(input, &mut self.func)?;
+        } else {
+            let block = self
+                .block
+                .ok_or_else(|| input.error("instruction outside a basic block"))?;
+            OperandParser {
+                func: &mut self.func,
+                symbols: &mut self.symbols,
+                functions,
+                module,
+            }
+            .instruction(input, block)?;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, module: &mut ModuleData) -> ParseResult<()> {
+        self.symbols.finish()?;
+        for &block in &self.func.layout.block_order {
+            self.func.layout.blocks[block].is_sealed = true;
+        }
+        module.functions[self.id] = self.func;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
 struct Symbols {
     values: HashMap<String, Value>,
-    blocks: HashMap<String, Block>,
+    numbered: HashMap<u32, Value>,
+    blocks: HashMap<String, (Block, Location)>,
+    block_defs: hashbrown::HashSet<Block>,
     next_value: u32,
-    definitions: HashMap<Value, String>,
+    definitions: HashMap<Value, Definition>,
+}
+
+struct Definition {
+    name: Option<String>,
+    location: Location,
 }
 
 impl Symbols {
+    fn block(&mut self, name: &str, func: &mut Function, location: Location) -> ParseResult<Block> {
+        if let Some(&(block, _)) = self.blocks.get(name) {
+            return Ok(block);
+        }
+        let id = name
+            .strip_prefix("block")
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or_else(|| location.error(format!("unknown block `{name}`")))?;
+        while func.layout.blocks.len() <= id as usize {
+            func.layout.create_block();
+        }
+        let block = Block(id);
+        self.blocks.insert(name.into(), (block, location));
+        Ok(block)
+    }
+
     // References reserve the final Value ID. Definitions fill that same slot,
     // so resolving a forward reference never rewrites its uses.
-    fn reference(&mut self, name: &str, func: &mut Function) -> Value {
+    fn reference(&mut self, name: &str, func: &mut Function, location: Location) -> Value {
         if let Some(&value) = self.values.get(name) {
             return value;
         }
-        let index = parse_value_idx(name).unwrap_or(self.next_value);
-        let value = Value(index);
+        let value = if let Some(index) = parse_value_idx(name) {
+            if let Some(&value) = self.numbered.get(&index) {
+                value
+            } else {
+                // A symbolic spelling may already occupy the preferred number.
+                // The spelling identifies a value, not a preallocated DFG slot.
+                let value = if self.definitions.contains_key(&Value(index)) {
+                    Value(self.next_value)
+                } else {
+                    Value(index)
+                };
+                self.numbered.insert(index, value);
+                value
+            }
+        } else {
+            Value(self.next_value)
+        };
         ensure_value(value, func);
         set_value_name(value, name, func);
         self.values.insert(name.to_string(), value);
-        self.next_value = self.next_value.max(index + 1);
+        self.definitions.entry(value).or_insert(Definition {
+            name: None,
+            location,
+        });
+        self.next_value = self.next_value.max(value.0 + 1);
         value
     }
 
@@ -164,75 +353,35 @@ impl Symbols {
         func: &mut Function,
         ty: Type,
         def: ValueDef,
+        location: Location,
     ) -> ParseResult<Value> {
-        let value = self.reference(name, func);
-        if let Some(previous) = self.definitions.get(&value) {
-            return Err(ParseError(format!(
+        let value = self.reference(name, func, location);
+        let definition = self.definitions.get_mut(&value).expect("reserved value");
+        if let Some(previous) = &definition.name {
+            return Err(location.error(format!(
                 "SSA value `{name}` aliases already-defined `{previous}`"
             )));
         }
         func.dfg.values[value] = ValueData { ty, def };
-        self.definitions.insert(value, name.to_string());
+        definition.name = Some(name.to_string());
         Ok(value)
     }
 
     fn finish(&self) -> ParseResult<()> {
+        for (name, (block, location)) in &self.blocks {
+            if !self.block_defs.contains(block) {
+                return Err(location.error(format!("unknown block `{name}`")));
+            }
+        }
         for (name, value) in &self.values {
-            if !self.definitions.contains_key(value) {
-                return parse_err(format!("undefined SSA value `{name}`"));
+            if self.definitions[value].name.is_none() {
+                return Err(self.definitions[value]
+                    .location
+                    .error(format!("undefined SSA value `{name}`")));
             }
         }
         Ok(())
     }
-}
-
-fn parse_function_body(
-    header: FunctionHeader,
-    sig_id: SigId,
-    mut body: Cursor<'_>,
-    func_ids: &HashMap<String, FuncId>,
-    module: &mut ModuleData,
-) -> ParseResult<Function> {
-    let mut func = Function::new(header.name, sig_id, header.linkage);
-    let mut symbols = Symbols::default();
-    // Predeclare blocks/parameters and remember only borrowed instruction
-    // source ranges. No copied lines or second parse of block headers.
-    let mut instructions = Vec::new();
-    let mut current = None;
-    while let Some(mut line) = body.statement() {
-        let mut look = line.clone();
-        let name = look.text();
-        look.advance();
-        if name.starts_with("block") && look.kind() == Kind::LParen {
-            current = Some(parse_line(&mut line, |input| {
-                declare_block(input, &mut func, &mut symbols)
-            })?);
-        } else if name.starts_with("ss") && look.kind() == Kind::Colon {
-            parse_line(&mut line, |input| parse_stack_slot(input, &mut func))?;
-        } else {
-            let block = current.ok_or_else(|| {
-                line.locate(ParseError("instruction outside a basic block".into()))
-            })?;
-            instructions.push((block, line.remaining()));
-        }
-    }
-    let mut parser = OperandParser {
-        func: &mut func,
-        symbols: &mut symbols,
-        func_ids,
-        module,
-    };
-    for (block, range) in instructions {
-        let mut input = body.slice(range);
-        parser
-            .instruction(&mut input, block)
-            .map_err(|e| input.locate(e))?;
-    }
-    symbols.finish()?;
-    for &block in &func.layout.block_order {
-        func.layout.blocks[block].is_sealed = true;
-    }
-    Ok(func)
 }
 
 fn declare_block(
@@ -240,88 +389,67 @@ fn declare_block(
     func: &mut Function,
     symbols: &mut Symbols,
 ) -> ParseResult<Block> {
-    let (block_id, params) = parse_block_header(input)?;
-    while func.layout.blocks.len() <= block_id as usize {
-        func.layout.create_block();
-    }
-    let block = Block(block_id);
-    if symbols
-        .blocks
-        .insert(format!("block{block_id}"), block)
-        .is_some()
-    {
-        return Err(ParseError(format!("duplicate block{block_id}")));
+    let location = input.location();
+    let name = input.word()?;
+    let block_id = name
+        .strip_prefix("block")
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or_else(|| location.error(format!("invalid block name `{name}`")))?;
+    input.expect(Kind::LParen)?;
+    let block = symbols.block(&format!("block{block_id}"), func, location)?;
+    if !symbols.block_defs.insert(block) {
+        return Err(location.error(format!("duplicate block{block_id}")));
     }
     func.layout.append_block(block);
     if func.entry_block.is_none() {
         func.entry_block = Some(block);
     }
-    for (name, ty) in params {
-        let value = symbols.define(&name, func, ty, ValueDef::Param(block))?;
-        func.layout.blocks[block].params.push(value);
-    }
-    Ok(block)
-}
-
-fn resolve_result_types(
-    data: &InstDraft,
-    hint: Option<Type>,
-    func: &Function,
-    module: &ModuleData,
-) -> ParseResult<smallvec::SmallVec<[Type; 2]>> {
-    let spec = data.opcode().spec();
-    // Resolve only information needed to create result values. Type contracts
-    // (including forward-referenced operands) belong to the validator.
-    let results = data
-        .result_types(&func.dfg, module, hint.as_slice())
-        .map_err(|error| ParseError(format!("`{}`: {error}", spec.mnemonic)))?;
-
-    if let Some(hint) = hint {
-        if let Some(first) = results.first() {
-            if first.is_valid() && *first != hint {
-                return Err(ParseError(format!(
-                    "result annotation `{hint}` conflicts with inferred type `{first}`"
-                )));
+    if !input.eat(Kind::RParen) {
+        loop {
+            let param = parse_typed_name(input)?;
+            let value = symbols.define(
+                &param.name,
+                func,
+                param.ty,
+                ValueDef::Param(block),
+                param.location,
+            )?;
+            func.layout.blocks[block].params.push(value);
+            if !input.eat(Kind::Comma) {
+                break;
             }
-        } else {
-            return Err(ParseError(format!(
-                "`{}` does not produce an annotatable result",
-                spec.mnemonic
-            )));
         }
+        input.expect(Kind::RParen)?;
     }
-    Ok(results)
+    input.expect(Kind::Colon)?;
+    Ok(block)
 }
 
 pub(super) struct OperandParser<'a> {
     func: &'a mut Function,
     symbols: &'a mut Symbols,
-    func_ids: &'a HashMap<String, FuncId>,
+    functions: &'a mut Functions,
     module: &'a mut ModuleData,
 }
 
 impl OperandParser<'_> {
     fn instruction(&mut self, input: &mut Cursor<'_>, block: Block) -> ParseResult<()> {
-        let result_names = parse_result_names(input)?;
-        let (opcode, ty_hint, flags) = parse_instruction_header(input)?;
-        let data = self.parse(opcode, ty_hint, flags, input)?;
-        let result_types = resolve_result_types(&data, ty_hint, self.func, self.module)?;
-        if result_names.len() != result_types.len() {
-            return Err(ParseError(format!(
-                "`{}` defines {} result name(s), but its type scheme produces {}",
-                opcode.spec().mnemonic,
-                result_names.len(),
-                result_types.len()
-            )));
-        }
+        let results = parse_results(input)?;
+        let (opcode, flags) = parse_instruction_header(input)?;
+        let ty = results.first().map(|result| result.ty);
+        let data = self.parse(opcode, ty, flags, input)?;
         let inst = self.func.edit().append_inst(block, data, &[]);
-        if !result_names.is_empty() {
-            let values = result_names
+        if !results.is_empty() {
+            let values = results
                 .iter()
-                .zip(result_types)
-                .map(|(name, ty)| {
-                    self.symbols
-                        .define(name, self.func, ty, ValueDef::Inst(inst))
+                .map(|result| {
+                    self.symbols.define(
+                        &result.name,
+                        self.func,
+                        result.ty,
+                        ValueDef::Inst(inst),
+                        result.location,
+                    )
                 })
                 .collect::<ParseResult<Vec<_>>>()?;
             let list = self.func.dfg.make_value_list(&values);
@@ -331,15 +459,14 @@ impl OperandParser<'_> {
     }
 
     pub(super) fn value(&mut self, input: &mut Cursor<'_>) -> ParseResult<Value> {
-        let name = input
-            .word()
-            .map_err(|e| ParseError(format!("invalid SSA value: {e}")))?;
-        Ok(self.symbols.reference(name, self.func))
+        let location = input.location();
+        let name = input.word().map_err(|e| e.context("invalid SSA value"))?;
+        Ok(self.symbols.reference(name, self.func, location))
     }
 
     pub(super) fn values(&mut self, input: &mut Cursor<'_>) -> ParseResult<Vec<Value>> {
         let mut values = Vec::new();
-        if matches!(input.kind(), Kind::Eof | Kind::RParen) || input.named() {
+        if matches!(input.kind(), Kind::Eof | Kind::Newline | Kind::RParen) || input.named() {
             return Ok(values);
         }
         loop {
@@ -347,9 +474,7 @@ impl OperandParser<'_> {
             if input.kind() != Kind::Comma {
                 break;
             }
-            let mut next = input.clone();
-            next.advance();
-            if next.named() {
+            if input.named_at(1) {
                 break;
             }
             input.advance();
@@ -358,13 +483,9 @@ impl OperandParser<'_> {
     }
 
     pub(super) fn block_call(&mut self, input: &mut Cursor<'_>) -> ParseResult<BlockCall> {
+        let location = input.location();
         let name = input.word()?;
-        let block = self
-            .symbols
-            .blocks
-            .get(name)
-            .copied()
-            .ok_or_else(|| ParseError(format!("unknown block `{name}`")))?;
+        let block = self.symbols.block(name, self.func, location)?;
         input.expect(Kind::LParen)?;
         let values = self.values(input)?;
         input.expect(Kind::RParen)?;
@@ -386,48 +507,21 @@ impl OperandParser<'_> {
         Ok(calls)
     }
 
-    pub(super) fn func_ref(&self, input: &mut Cursor<'_>) -> ParseResult<FuncId> {
-        let name = input.word()?;
-        if let Some(&id) = self.func_ids.get(name) {
-            return Ok(id);
-        }
-        if name == "FuncId" {
-            input.expect(Kind::LParen)?;
-            let id = input
-                .word()?
-                .parse()
-                .map_err(|_| ParseError("invalid function ID".into()))?;
-            input.expect(Kind::RParen)?;
-            return Ok(FuncId(id));
-        }
-        name.strip_prefix("func")
-            .and_then(|s| s.parse().ok())
-            .map(FuncId)
-            .ok_or_else(|| ParseError(format!("unknown function `{name}`")))
+    pub(super) fn func_ref(&mut self, input: &mut Cursor<'_>) -> ParseResult<FuncId> {
+        let name = parse_function_name(input, false)?;
+        input.expect(Kind::Colon)?;
+        let signature = self.signature(input)?;
+        self.function_reference(name, signature)
     }
 
-    /// A textual function reference declares a signature, not a second
-    /// per-instruction signature. Check symbol consistency here; argument and
-    /// result value types are still checked by the explicit validator.
-    fn function_signature(&self, callee: FuncId, input: &mut Cursor<'_>) -> ParseResult<()> {
-        let signature = parse_signature(input)?;
-        let function = self
-            .module
-            .functions
-            .get(callee)
-            .ok_or_else(|| ParseError("unknown function".into()))?;
-        let declared = self
-            .module
-            .signatures
-            .get(function.signature)
-            .ok_or_else(|| ParseError("unknown function signature".into()))?;
-        if signature != *declared {
-            return parse_err(format!(
-                "call signature does not match declaration of `{}`",
-                function.name
-            ));
-        }
-        Ok(())
+    /// Register only after the complete signature has been parsed.
+    pub(super) fn function_reference(
+        &mut self,
+        name: FunctionName,
+        signature: SigId,
+    ) -> ParseResult<FuncId> {
+        self.functions
+            .reference(&name.name, signature, name.location, self.module)
     }
 
     pub(super) fn signature(&mut self, input: &mut Cursor<'_>) -> ParseResult<SigId> {
@@ -435,84 +529,101 @@ impl OperandParser<'_> {
     }
 }
 
-fn parse_result_names(input: &mut Cursor<'_>) -> ParseResult<Vec<String>> {
-    let mut names = Vec::new();
+pub(super) struct FunctionName {
+    name: String,
+    location: Location,
+}
+
+pub(super) fn parse_function_name(
+    input: &mut Cursor<'_>,
+    invoke: bool,
+) -> ParseResult<FunctionName> {
+    let location = input.location();
+    let name = input.word()?;
+    let name = if name == "FuncId"
+        && input.kind() == Kind::LParen
+        && input.peek_kind(2) == Kind::RParen
+        && (!invoke || input.peek_kind(3) != Kind::Colon)
+    {
+        input.advance();
+        let id = input.atom(|text| {
+            text.parse::<u32>()
+                .map_err(|_| "invalid function ID".into())
+        })?;
+        input.expect(Kind::RParen)?;
+        format!("FuncId({id})")
+    } else {
+        name.into()
+    };
+    Ok(FunctionName { name, location })
+}
+
+struct TypedName {
+    name: String,
+    ty: Type,
+    location: Location,
+}
+
+fn parse_typed_name(input: &mut Cursor<'_>) -> ParseResult<TypedName> {
+    let location = input.location();
+    let name = input.word()?.to_string();
+    input.expect(Kind::Colon)?;
+    let ty = parse_type(input)?;
+    Ok(TypedName { name, ty, location })
+}
+
+fn parse_results(input: &mut Cursor<'_>) -> ParseResult<Vec<TypedName>> {
+    let mut results = Vec::new();
     if input.eat(Kind::LParen) {
         loop {
-            names.push(input.word()?.to_string());
+            results.push(parse_typed_name(input)?);
             if !input.eat(Kind::Comma) {
                 break;
             }
         }
         input.expect(Kind::RParen)?;
         input.expect(Kind::Equal)?;
-    } else if input.named() {
-        names.push(input.word()?.to_string());
+    } else if input.kind() == Kind::Word && matches!(input.peek_kind(1), Kind::Colon | Kind::Equal)
+    {
+        results.push(parse_typed_name(input)?);
         input.expect(Kind::Equal)?;
     }
-    Ok(names)
+    Ok(results)
 }
 
-fn parse_instruction_header(
-    input: &mut Cursor<'_>,
-) -> ParseResult<(Opcode, Option<Type>, MemFlags)> {
-    let word = input.word()?;
-    let (opcode, mut suffix) = parse_opcode(word)?;
-    let mut ty = None;
+fn parse_instruction_header(input: &mut Cursor<'_>) -> ParseResult<(Opcode, MemFlags)> {
+    let location = input.location();
+    let (opcode, suffix) = input.atom(parse_opcode)?;
     let mut flags = MemFlags::new();
-    loop {
-        let mut parts = suffix
-            .strip_prefix('.')
-            .unwrap_or(suffix)
-            .split('.')
-            .peekable();
-        while let Some(part) = parts.next() {
-            if part.is_empty() {
-                if !suffix.is_empty() {
-                    return Err(ParseError("empty opcode suffix".into()));
-                }
-                continue;
+    for part in suffix.strip_prefix('.').unwrap_or(suffix).split('.') {
+        if part.is_empty() {
+            if !suffix.is_empty() {
+                return Err(location.error("empty opcode suffix"));
             }
-            if Type::from_name(part).is_some() || part == "mask" {
-                let parsed = if parts.peek().is_none() {
-                    parse_type_suffix(part, input)?
-                } else {
-                    Type::from_name(part)
-                        .ok_or_else(|| ParseError(format!("unknown type `{part}`")))?
-                };
-                if ty.replace(parsed).is_some() {
-                    return Err(ParseError("multiple result type suffixes".into()));
-                }
-            } else if part == "volatile" {
-                flags = flags.with_volatile(true);
-            } else if let Some(value) = part.strip_prefix("align") {
-                let alignment = parse_alignment(value, part)?;
-                flags = flags.with_alignment(alignment);
-            } else {
-                return Err(ParseError(format!("unknown opcode suffix `{part}`")));
-            }
+        } else if part == "volatile" {
+            flags = flags.with_volatile(true);
+        } else if let Some(value) = part.strip_prefix("align") {
+            flags = flags.with_alignment(parse_alignment(value, part, location)?);
+        } else {
+            return Err(location.error(format!("unknown opcode suffix `{part}`")));
         }
-        if !input.joined() || input.kind() != Kind::Word || !input.text().starts_with('.') {
-            break;
-        }
-        suffix = input.word()?;
     }
-    Ok((opcode, ty, flags))
+    Ok((opcode, flags))
 }
 
-fn parse_alignment(value: &str, suffix: &str) -> ParseResult<u32> {
+fn parse_alignment(value: &str, suffix: &str, location: Location) -> ParseResult<u32> {
     let alignment = value
         .parse::<u32>()
-        .map_err(|_| ParseError(format!("invalid alignment `{suffix}`")))?;
+        .map_err(|_| location.error(format!("invalid alignment `{suffix}`")))?;
     if alignment == 0 || !alignment.is_power_of_two() {
-        return parse_err(format!(
+        return Err(location.error(format!(
             "alignment must be a non-zero power of two: {alignment}"
-        ));
+        )));
     }
     Ok(alignment)
 }
 
-fn parse_opcode(word: &str) -> ParseResult<(Opcode, &str)> {
+fn parse_opcode(word: &str) -> core::result::Result<(Opcode, &str), String> {
     // Mnemonics and suffixes are dotted words. Prefer the longest mnemonic,
     // including any dots belonging to the opcode itself.
     let mut end = word.len();
@@ -522,19 +633,21 @@ fn parse_opcode(word: &str) -> ParseResult<(Opcode, &str)> {
         }
         end = word[..end]
             .rfind('.')
-            .ok_or_else(|| ParseError(format!("unknown opcode `{word}`")))?;
+            .ok_or_else(|| format!("unknown opcode `{word}`"))?;
     };
     Ok((opcode, &word[end..]))
 }
 
 fn parse_type(input: &mut Cursor<'_>) -> ParseResult<Type> {
+    let location = input.location();
     let name = input.word()?;
-    parse_type_suffix(name, input)
+    parse_type_suffix(name, location, input)
 }
 
-fn parse_type_suffix(name: &str, input: &mut Cursor<'_>) -> ParseResult<Type> {
+fn parse_type_suffix(name: &str, location: Location, input: &mut Cursor<'_>) -> ParseResult<Type> {
     if !input.eat(Kind::Less) {
-        return Type::from_name(name).ok_or_else(|| ParseError(format!("unknown type `{name}`")));
+        return Type::from_name(name)
+            .ok_or_else(|| location.error(format!("unknown type `{name}`")));
     }
     let base = if name == "mask" {
         Some(Type::BOOL)
@@ -545,15 +658,15 @@ fn parse_type_suffix(name: &str, input: &mut Cursor<'_>) -> ParseResult<Type> {
     if scalable {
         input.advance();
     }
-    let lanes = input
-        .word()?
-        .parse::<u16>()
-        .map_err(|_| ParseError("invalid vector lane count".into()))?;
+    let lanes = input.atom(|text| {
+        text.parse::<u16>()
+            .map_err(|_| "invalid vector lane count".into())
+    })?;
     input.expect(Kind::Greater)?;
     base.and_then(Type::as_scalar)
         .and_then(|s| s.vector(lanes, scalable))
         .map(crate::VectorType::as_type)
-        .ok_or_else(|| ParseError(format!("invalid vector type `{name}`")))
+        .ok_or_else(|| location.error(format!("invalid vector type `{name}`")))
 }
 
 fn parse_types(input: &mut Cursor<'_>) -> ParseResult<Vec<Type>> {
@@ -604,17 +717,15 @@ fn parse_signature(input: &mut Cursor<'_>) -> ParseResult<Signature> {
 }
 
 fn parse_linkage(input: &mut Cursor<'_>) -> ParseResult<Linkage> {
-    let name = input.word()?;
-    Linkage::from_mnemonic(name).ok_or_else(|| ParseError(format!("unknown linkage `{name}`")))
+    input.atom(|name| {
+        Linkage::from_mnemonic(name).ok_or_else(|| format!("unknown linkage `{name}`"))
+    })
 }
 
-fn is_function_header(input: &Cursor<'_>) -> bool {
-    let mut next = input.clone();
-    if next.kind() != Kind::Word || Linkage::from_mnemonic(next.text()).is_none() {
-        return false;
-    }
-    next.advance();
-    next.is("function")
+fn is_function_header(input: &mut Cursor<'_>) -> bool {
+    input.kind() == Kind::Word
+        && Linkage::from_mnemonic(input.text()).is_some()
+        && input.peek_is(1, "function")
 }
 
 fn parse_function_header(input: &mut Cursor<'_>) -> ParseResult<FunctionHeader> {
@@ -645,37 +756,14 @@ fn parse_global(input: &mut Cursor<'_>) -> ParseResult<(String, Type, Linkage)> 
     Ok((name, ty, linkage))
 }
 
-fn parse_block_header(input: &mut Cursor<'_>) -> ParseResult<(u32, Vec<(String, Type)>)> {
-    let name = input.word()?;
-    let id = name
-        .strip_prefix("block")
-        .and_then(|s| s.parse::<u32>().ok())
-        .ok_or_else(|| ParseError(format!("invalid block name `{name}`")))?;
-    input.expect(Kind::LParen)?;
-    let mut params = Vec::new();
-    if !input.eat(Kind::RParen) {
-        loop {
-            let name = input.word()?.to_string();
-            input.expect(Kind::Colon)?;
-            params.push((name, parse_type(input)?));
-            if !input.eat(Kind::Comma) {
-                break;
-            }
-        }
-        input.expect(Kind::RParen)?;
-    }
-    input.expect(Kind::Colon)?;
-    Ok((id, params))
-}
-
 fn parse_stack_slot(input: &mut Cursor<'_>, func: &mut Function) -> ParseResult<()> {
-    let slot = parse_stack_slot_ref(input.word()?)?;
+    let slot = input.atom(parse_stack_slot_ref)?;
     input.expect(Kind::Colon)?;
     input.keyword("size")?;
-    let size = input
-        .word()?
-        .parse::<u32>()
-        .map_err(|_| ParseError("invalid stack slot size".into()))?;
+    let size = input.atom(|text| {
+        text.parse::<u32>()
+            .map_err(|_| "invalid stack slot size".into())
+    })?;
     while func.stack_slots.len() <= slot.0 as usize {
         func.stack_slots.push(StackSlotData { size: 0 });
     }
@@ -683,12 +771,12 @@ fn parse_stack_slot(input: &mut Cursor<'_>, func: &mut Function) -> ParseResult<
     Ok(())
 }
 
-pub(super) fn parse_stack_slot_ref(text: &str) -> ParseResult<StackSlot> {
+pub(super) fn parse_stack_slot_ref(text: &str) -> core::result::Result<StackSlot, String> {
     let id = text
         .strip_prefix("ss")
-        .ok_or_else(|| ParseError(format!("expected stack slot, found `{text}`")))?
+        .ok_or_else(|| format!("expected stack slot, found `{text}`"))?
         .parse::<u32>()
-        .map_err(|_| ParseError(format!("invalid stack slot `{text}`")))?;
+        .map_err(|_| format!("invalid stack slot `{text}`"))?;
     Ok(StackSlot(id))
 }
 
@@ -729,10 +817,6 @@ fn set_value_name(value: Value, text: &str, func: &mut Function) {
     func.dfg.value_names[value] = name.to_string();
 }
 
-fn parse_err<T>(message: impl Into<String>) -> ParseResult<T> {
-    Err(ParseError(message.into()))
-}
-
 include!(concat!(env!("OUT_DIR"), "/text_parser.rs"));
 
 #[cfg(test)]
@@ -746,11 +830,11 @@ mod tests {
         let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
         let mut symbols = Symbols::default();
         let mut module = ModuleData::default();
-        let func_ids = HashMap::new();
+        let mut functions = Functions::default();
         test(&mut OperandParser {
             func: &mut func,
             symbols: &mut symbols,
-            func_ids: &func_ids,
+            functions: &mut functions,
             module: &mut module,
         });
     }
@@ -857,6 +941,62 @@ mod tests {
     }
 
     #[test]
+    fn function_reference_is_registered_only_after_its_signature() {
+        with_parser(|cx| {
+            for text in ["later()", "later() : () ->"] {
+                let mut input = Cursor::new(text);
+                assert!(
+                    cx.parse(Opcode::Call, None, MemFlags::empty(), &mut input)
+                        .is_err()
+                );
+                assert!(cx.module.functions.is_empty());
+                assert!(cx.functions.entries.is_empty());
+            }
+            let mut input = Cursor::new("later() : () -> i32");
+            cx.parse(Opcode::Call, Some(Type::I32), MemFlags::empty(), &mut input)
+                .unwrap();
+            assert_eq!(cx.module.functions.len(), 1);
+            let function = &cx.module.functions[FuncId(0)];
+            assert_eq!(
+                cx.module.signatures[function.signature].returns,
+                [Type::I32]
+            );
+        });
+    }
+
+    #[test]
+    fn parse_errors_preserve_locations_separately_from_context() {
+        for (source, line, column, message) in [
+            (
+                "local function bad()->i32\nblock0():\n  v0:i32=iconst nope",
+                3,
+                17,
+                "operand `value`: invalid integer constant",
+            ),
+            (
+                "local function bad()->void\nblock0():\n  jump block7()",
+                3,
+                8,
+                "unknown block",
+            ),
+            (
+                "local function bad()->i32\nblock0():\n  return missing",
+                3,
+                10,
+                "undefined SSA value",
+            ),
+        ] {
+            let crate::Error::Parse(error) = ModuleParser::new().parse(source).unwrap_err() else {
+                panic!("expected structured parse error");
+            };
+            assert_eq!(error.location, crate::text::Location { line, column });
+            assert!(error.message.contains(message), "{error}");
+            assert!(!error.message.contains("line "), "{error}");
+            assert_eq!(error.to_string().matches("line ").count(), 1);
+        }
+    }
+
+    #[test]
     fn line_endings_and_final_eof_preserve_source_ranges() {
         // File tests use LF and a final newline; exercise the other physical
         // encodings through the complete parser, printer and validator.
@@ -878,12 +1018,13 @@ mod tests {
     }
 
     #[test]
-    fn instruction_header_accepts_scalable_result_type() {
-        let mut input = Cursor::new("iadd.i32<scalable 4> v0, v1");
-        let (opcode, ty, _) = parse_instruction_header(&mut input).unwrap();
+    fn result_declaration_accepts_scalable_type() {
+        let mut input = Cursor::new("sum: i32<scalable 4> = iadd v0, v1");
+        let results = parse_results(&mut input).unwrap();
+        let (opcode, _) = parse_instruction_header(&mut input).unwrap();
         assert_eq!(opcode, Opcode::IAdd);
         assert_eq!(
-            ty,
+            Some(results[0].ty),
             crate::Type::I32
                 .as_scalar()
                 .unwrap()
@@ -901,13 +1042,15 @@ mod tests {
         let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
         let block = func.layout.create_block();
         let mut symbols = Symbols::default();
-        symbols.blocks.insert("block0".into(), block);
+        symbols
+            .blocks
+            .insert("block0".into(), (block, Location { line: 1, column: 1 }));
         let mut module = ModuleData::default();
-        let func_ids = HashMap::new();
+        let mut functions = Functions::default();
         let mut parser = OperandParser {
             func: &mut func,
             symbols: &mut symbols,
-            func_ids: &func_ids,
+            functions: &mut functions,
             module: &mut module,
         };
         let value = parser.value(&mut Cursor::new("v0")).unwrap();

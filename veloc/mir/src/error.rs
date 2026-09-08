@@ -12,7 +12,7 @@ pub enum Error {
     /// IR validation failed.
     Validation(ValidationError),
     /// IR parsing failed.
-    Parse(String),
+    Parse(ParseError),
     /// Generic error message.
     Message(String),
 }
@@ -50,6 +50,6 @@ impl From<&str> for Error {
 
 impl From<ParseError> for Error {
     fn from(e: ParseError) -> Self {
-        Self::Parse(e.0)
+        Self::Parse(e)
     }
 }

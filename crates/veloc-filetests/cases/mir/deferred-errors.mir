@@ -19,7 +19,7 @@ local function bad() -> void
 block0():
   jump block2()
 block2():
-  v0 = fconst.f32 0x00000000
+  v0: f32 = fconst 0x00000000
   jump block1()
 block1():
   br v0, block3(), block3()
@@ -49,7 +49,7 @@ block0():
 block1():
   br v0, block3(), block3()
 block2():
-  v0 = fconst.f32 0x00000000
+  v0: f32 = fconst 0x00000000
   jump block1()
 block3():
   return
@@ -75,7 +75,7 @@ local function bad() -> void
 block0():
   jump block2()
 block2():
-  v0 = fconst.f32 0x00000000
+  v0: f32 = fconst 0x00000000
   jump block1()
 block1():
   br-table v0, [], block3()
@@ -105,7 +105,7 @@ block0():
 block1():
   br-table v0, [], block3()
 block2():
-  v0 = fconst.f32 0x00000000
+  v0: f32 = fconst 0x00000000
   jump block1()
 block3():
   return
@@ -132,7 +132,7 @@ local function bad() -> void
 block0():
   jump block2()
 block2():
-  v0 = fconst.f32 0x00000000
+  v0: f32 = fconst 0x00000000
   jump block1()
 block1():
   call-indirect v0() : () -> void
@@ -165,7 +165,7 @@ block1():
   call-indirect v0() : () -> void
   jump block3()
 block2():
-  v0 = fconst.f32 0x00000000
+  v0: f32 = fconst 0x00000000
   jump block1()
 block3():
   return
