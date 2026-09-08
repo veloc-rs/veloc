@@ -107,3 +107,19 @@ local function bad() -> i32
 block0():
   v0: i33 = iconst 1
   return v0
+
+// ----- duplicate-result-declaration
+// run: parse-error
+// check: SSA value `sum` aliases already-defined `sum`
+local function bad(i32) -> i32
+block0(input: i32):
+  (sum: i32, sum: bool) = iadd-with-overflow input, input
+  return sum
+
+// ----- aliased-result-declaration
+// run: parse-error
+// check: SSA value `overflow.v1` aliases already-defined `sum.v1`
+local function bad(i32) -> i32
+block0(v0: i32):
+  (sum.v1: i32, overflow.v1: bool) = iadd-with-overflow v0, v0
+  return sum.v1

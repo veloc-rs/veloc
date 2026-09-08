@@ -179,7 +179,8 @@ block0(v0: i32):
 // ----- bare-names-do-not-capture-later-numbered-values
 // run: roundtrip
 // check: constant.v1: i32 = iconst 1
-// check: sum.v3: i32 = iadd v2, constant.v1
+// check: sum.v2: i32 = iadd v3, constant.v1
+// check: block2(v3: i32):
 local function main(i32) -> i32
 block0(arg: i32):
   constant: i32 = iconst 1

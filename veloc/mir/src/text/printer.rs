@@ -146,9 +146,8 @@ impl<'a> InstPrinter<'a> {
     }
 
     pub(super) fn fmt_block_call(&self, f: &mut dyn Write, call: crate::Successor<'_>) -> Result {
-        let data = call;
-        write!(f, "{}(", data.block)?;
-        self.fmt_values(f, data.args)?;
+        write!(f, "{}(", call.block)?;
+        self.fmt_values(f, call.args)?;
         f.write_char(')')
     }
 

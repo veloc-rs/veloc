@@ -29,3 +29,71 @@ local function bits() -> f32
 block0():
   v0: f32 = fconst 0x80000000
   return v0
+
+// ----- f32-full-width
+// run: roundtrip
+// check: v0: f32 = fconst 0xffffffff
+local function bits() -> f32
+block0():
+  v0: f32 = fconst 0xffffffff
+  return v0
+
+// ----- f32-overflow-is-a-validation-error
+// run: validate-error
+// check: f32 bit pattern does not fit in 32 bits
+local function bits() -> f32
+block0():
+  v0: f32 = fconst 0x100000000
+  return v0
+
+// ----- f64-allows-upper-bits
+// run: roundtrip
+// check: v0: f64 = fconst 0x0000000100000000
+// check: v1: f64 = fconst 0xffffffffffffffff
+local function bits() -> (f64, f64)
+block0():
+  v0: f64 = fconst 0x100000000
+  v1: f64 = fconst 0xffffffffffffffff
+  return v0, v1
+
+// ----- non-float-result-is-a-validation-error
+// run: validate-error
+// check: fconst type scheme violation
+// check: results: true, index: 0
+// check: got: I32
+local function bits() -> i32
+block0():
+  v0: i32 = fconst 0x0
+  return v0
+
+// ----- missing-result-is-a-validation-error
+// run: validate-error
+// check: Arity { results: true, expected: 1, got: 0
+local function bits() -> void
+block0():
+  fconst 0x0
+  return
+
+// ----- non-hex-float-is-a-syntax-error
+// run: parse-error
+// check: floating constants use an exact hexadecimal bit pattern
+local function bits() -> f32
+block0():
+  v0: f32 = fconst 1.0
+  return v0
+
+// ----- invalid-hex-is-a-syntax-error
+// run: parse-error
+// check: invalid floating bit pattern
+local function bits() -> f64
+block0():
+  v0: f64 = fconst 0xgg
+  return v0
+
+// ----- u64-overflow-is-a-syntax-error
+// run: parse-error
+// check: invalid floating bit pattern
+local function bits() -> f64
+block0():
+  v0: f64 = fconst 0x10000000000000000
+  return v0

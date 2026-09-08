@@ -216,15 +216,6 @@ block0():
   return
 import function callee(i32) -> i32
 
-// ----- payload-4
-// run: parse-error
-// check: 32 bits
-local function bad() -> void
-block0():
-  v6: f32 = fconst 0x100000000
-  return
-import function callee(i32) -> i32
-
 // ----- payload-5
 // run: parse-error
 // check: true

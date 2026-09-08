@@ -287,6 +287,7 @@ fn construction_does_not_validate_type_contracts() {
         ("binding", "Pattern { results: false, index: 1"),
         ("class", "Pattern { results: false, index: 0"),
         ("explicit", "Pattern { results: true, index: 0"),
+        ("float-bits", "f32 bit pattern does not fit in 32 bits"),
         ("relation", "results[0] must have more bits"),
         ("fixed", "Pattern { results: false, index: 0"),
         ("raw-results", "Pattern { results: true, index: 0"),
@@ -321,6 +322,10 @@ fn construction_does_not_validate_type_contracts() {
             }
             "explicit" => {
                 let result = ins.output(Type::F32);
+                assert_eq!(ins.value_type(result), Type::F32);
+            }
+            "float-bits" => {
+                let result = ins.fconst(0x100000000, Type::F32);
                 assert_eq!(ins.value_type(result), Type::F32);
             }
             "relation" => {
@@ -374,7 +379,9 @@ fn construction_does_not_validate_type_contracts() {
         drop(builder);
         let error = module.validate().unwrap_err().to_string();
         assert!(error.contains(expected), "{case}: {error}");
-        if !case.starts_with("raw-") {
+        // The float printer rejects payloads that cannot fit the declared width;
+        // its parser/validator boundary is covered by the float-bits file tests.
+        if !case.starts_with("raw-") && case != "float-bits" {
             // The textual path constructs the same invalid IR, and only the
             // explicit validator rejects it there as well.
             let text = module.build().to_string();

@@ -37,17 +37,11 @@ pub(super) fn parse(
     } else {
         out.push_str("if flags != crate::MemFlags::empty() { return Err(input.error(\"memory flags are not supported by this operation\")); }\n");
     }
-    let variadic = matches!(
-        schema.args.as_slice(),
-        [Item::Atom(Atom {
-            kind: AtomKind::Values,
-            ..
-        })]
-    );
-    if variadic {
-        let Item::Atom(atom) = &schema.args[0] else {
-            unreachable!()
-        };
+    let variadic = match schema.args.as_slice() {
+        [Item::Atom(atom)] if matches!(atom.kind, AtomKind::Values) => Some(atom),
+        _ => None,
+    };
+    if let Some(atom) = variadic {
         if let Some(count) = arity {
             let name = leaf(op, &atom.path);
             for index in 0..count {
@@ -79,10 +73,7 @@ pub(super) fn parse(
             writeln!(out, "let mut {} = None;", leaf(op, &named.atom.path)).unwrap();
         }
         out.push_str("if !input.at_end() {\n");
-        if variadic && arity.is_none() {
-            let Item::Atom(atom) = &schema.args[0] else {
-                unreachable!()
-            };
+        if let (Some(atom), None) = (variadic, arity) {
             writeln!(
                 out,
                 "if !{}.is_empty() {{ input.expect(Kind::Comma)?; }}",
@@ -240,7 +231,7 @@ fn parse_atom(atom: &Atom) -> String {
 
 fn parse_atom_with(atom: &Atom, codec: &str) -> String {
     format!(
-        "<{} as super::atom::AtomCodec>::parse(self, input, ty).map_err(|e| e.context({:?}))?",
+        "<{} as super::atom::AtomCodec>::parse(self, input).map_err(|e| e.context({:?}))?",
         codec,
         format!("operand `{}`", atom.path)
     )

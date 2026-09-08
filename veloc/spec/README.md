@@ -562,7 +562,12 @@ The same projection generates both directions. `args` are positional atoms;
 `named` fields use `name=value`. An ordinary atom derives its reader/writer from
 the logical type. `integer(value)` preserves integer bit patterns with signed
 text; `float(value)` preserves raw hexadecimal floating-point bits, including
-NaN payloads; `bytes(data)` is hexadecimal byte text. `space(kind, lhs)` composes
+NaN payloads; `bytes(data)` is hexadecimal byte text. Atom parsing does not receive
+result types: float text is decoded as a raw u64, while the Fconst type contract
+and its definition-owned constraint validate the result type and f32 payload
+width. Malformed hexadecimal text and payloads exceeding u64 remain parse errors.
+Printing still receives the first result type to select the canonical hexadecimal
+width. `space(kind, lhs)` composes
 the comparison spelling `eq v0`. Invocation syntax is composed with
 `invoke(func_id, args, function(func_id))` or `invoke(ptr, args, sig_id)`.
 Both require a textual signature: `call callee(v0) : (i32) -> i32`. The
@@ -624,6 +629,11 @@ parameters. Single results use `sum: i32 = iadd lhs, rhs`; multiple results use
 `(sum: i32, overflow: bool) = iadd-with-overflow lhs, rhs`. Zero-result
 instructions have no assignment. Type suffixes on opcodes and untyped result
 definitions are not accepted; suffixes describe memory flags only.
+
+Parsing result declarations claims their Value IDs and rejects duplicate names
+before reading operands. After ordinary instruction insertion, the DFG binds
+those reserved IDs to the instruction and stores its result list. This preserves
+forward uses without a separate instruction-creation path or temporary result IDs.
 
 The parser creates exactly the declared results without inferring their types
 from operands or signatures. Explicit types remain in the IR even when wrong,

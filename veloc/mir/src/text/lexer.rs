@@ -4,23 +4,37 @@ use super::parser::ParseError;
 use alloc::{collections::VecDeque, format, string::String};
 use core::ops::Range;
 
+/// Structural tokens only; keywords, types and literal values are decoded by
+/// the parser and atom codecs, keeping the lexer independent of the opcode set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
+    /// An uninterpreted name, mnemonic, keyword or literal (e.g. `iadd`, `-1`).
     Word,
+    /// `(` / `)`: parameter, argument, result and type lists.
     LParen,
     RParen,
+    /// `[` / `]`: successor lists.
     LBracket,
     RBracket,
+    /// `<` / `>`: vector shapes such as `i32<scalable 4>`, not comparisons.
     Less,
     Greater,
+    /// `,`: separates list entries, operands and named fields.
     Comma,
+    /// `:`: type/signature annotations and block or stack-slot declarations.
     Colon,
+    /// `=`: result definitions and named operand fields.
     Equal,
+    /// `->`: separates signature parameters from return types.
     Arrow,
+    /// A physical LF ends a statement; unlike other whitespace, it is retained.
     Newline,
+    /// End of source, also permitting a final statement without a newline.
     Eof,
 }
 
+/// One-based source position. Columns count Unicode scalar values, not UTF-8
+/// bytes or rendered display cells; a tab counts as one column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Location {
     pub line: usize,
@@ -39,6 +53,7 @@ impl Location {
 #[derive(Debug)]
 struct Token {
     kind: Kind,
+    /// UTF-8 byte range used to borrow the token spelling from the source.
     span: Range<usize>,
     location: Location,
 }
@@ -46,8 +61,10 @@ struct Token {
 /// Lookahead caches tokens; consuming them never scans their source again.
 pub(super) struct Cursor<'a> {
     source: &'a str,
+    // Scanner position: lookahead may place this beyond the current token.
     offset: usize,
     location: Location,
+    // Parser position: advancing consumes cached tokens before scanning more.
     token: Token,
     ahead: VecDeque<Token>,
 }
@@ -95,6 +112,8 @@ impl<'a> Cursor<'a> {
     }
 
     fn scan(&mut self) -> Token {
+        // Skip spaces and comments, but leave LF for the statement parser.
+        // In CRLF input the CR is skipped as whitespace and the LF ends the line.
         while self.offset < self.source.len() {
             let rest = &self.source[self.offset..];
             let ch = rest.chars().next().unwrap();
@@ -134,6 +153,8 @@ impl<'a> Cursor<'a> {
             _ => Kind::Word,
         };
         if kind == Kind::Word {
+            // Dots and hyphens belong to words (mnemonics, flags, SSA hints and
+            // negative literals); only `->` gives a hyphen structural meaning.
             while self.offset < self.source.len() {
                 let rest = &self.source[self.offset..];
                 let ch = rest.chars().next().unwrap();
@@ -163,6 +184,7 @@ impl<'a> Cursor<'a> {
         self.token = self.ahead.pop_front().unwrap_or_else(|| self.scan());
     }
 
+    /// Zero is the current token. Scanning ahead never advances parser position.
     fn peek(&mut self, distance: usize) -> &Token {
         if distance == 0 {
             return &self.token;
@@ -242,6 +264,8 @@ impl<'a> Cursor<'a> {
         Ok(())
     }
 
+    /// Check the statement boundary without consuming it; the outer parser
+    /// loop owns newline consumption for declarations and instructions alike.
     pub fn finish(&self) -> Result<(), ParseError> {
         if self.at_end() {
             Ok(())
@@ -263,6 +287,7 @@ impl<'a> Cursor<'a> {
 
     /// Cache alternate-layout lookahead up to the first top-level named field
     /// or statement boundary. Nested fields do not select a layout.
+    /// Depth tracking is only a hint; the parser validates matching delimiters.
     pub fn has_named(&mut self) -> bool {
         let mut depth = 0usize;
         let mut distance = 0;

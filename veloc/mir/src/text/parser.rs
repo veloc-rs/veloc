@@ -61,7 +61,6 @@ struct Functions {
 }
 
 struct FunctionSymbol {
-    name: String,
     defined: bool,
     location: Location,
 }
@@ -85,7 +84,6 @@ impl Functions {
         let id = module.declare_function(name.into(), signature, Linkage::Local);
         self.names.insert(name.into(), id);
         self.entries.push(FunctionSymbol {
-            name: name.into(),
             defined: false,
             location,
         });
@@ -123,24 +121,19 @@ impl Functions {
                 continue;
             }
             // Names take precedence over the legacy numeric spellings.
-            let number = entry
-                .name
+            let function = &module.functions[FuncId(index as u32)];
+            let name = &function.name;
+            let number = name
                 .strip_prefix("func")
                 .or_else(|| {
-                    entry
-                        .name
-                        .strip_prefix("FuncId(")
+                    name.strip_prefix("FuncId(")
                         .and_then(|s| s.strip_suffix(')'))
                 })
                 .and_then(|s| s.parse::<usize>().ok());
             let Some(target) = number.and_then(|n| self.order.get(n)).copied() else {
-                return Err(entry
-                    .location
-                    .error(format!("unknown function `{}`", entry.name)));
+                return Err(entry.location.error(format!("unknown function `{name}`")));
             };
-            if module.functions[FuncId(index as u32)].signature
-                != module.functions[target].signature
-            {
+            if function.signature != module.functions[target].signature {
                 return Err(entry.location.error(format!(
                     "call signature does not match declaration of `{}`",
                     module.functions[target].name
@@ -336,7 +329,14 @@ impl Symbols {
         } else {
             Value(self.next_value)
         };
-        ensure_value(value, func);
+        // Reserved slots are not definitions. Their placeholder def must not be
+        // interpreted until parsing succeeds and all symbols are resolved.
+        while func.dfg.values.len() <= value.0 as usize {
+            func.dfg.values.push(ValueData {
+                ty: Type::INVALID,
+                def: ValueDef::Param(Block(0)),
+            });
+        }
         set_value_name(value, name, func);
         self.values.insert(name.to_string(), value);
         self.definitions.entry(value).or_insert(Definition {
@@ -347,12 +347,11 @@ impl Symbols {
         value
     }
 
+    /// Claim a definition's stable ID before attaching its owner in the DFG.
     fn define(
         &mut self,
         name: &str,
         func: &mut Function,
-        ty: Type,
-        def: ValueDef,
         location: Location,
     ) -> ParseResult<Value> {
         let value = self.reference(name, func, location);
@@ -362,7 +361,6 @@ impl Symbols {
                 "SSA value `{name}` aliases already-defined `{previous}`"
             )));
         }
-        func.dfg.values[value] = ValueData { ty, def };
         definition.name = Some(name.to_string());
         Ok(value)
     }
@@ -407,13 +405,11 @@ fn declare_block(
     if !input.eat(Kind::RParen) {
         loop {
             let param = parse_typed_name(input)?;
-            let value = symbols.define(
-                &param.name,
-                func,
-                param.ty,
-                ValueDef::Param(block),
-                param.location,
-            )?;
+            let value = symbols.define(param.name, func, param.location)?;
+            func.dfg.values[value] = ValueData {
+                ty: param.ty,
+                def: ValueDef::Param(block),
+            };
             func.layout.blocks[block].params.push(value);
             if !input.eat(Kind::Comma) {
                 break;
@@ -434,28 +430,38 @@ pub(super) struct OperandParser<'a> {
 
 impl OperandParser<'_> {
     fn instruction(&mut self, input: &mut Cursor<'_>, block: Block) -> ParseResult<()> {
-        let results = parse_results(input)?;
+        let results = self.parse_results(input)?;
         let (opcode, flags) = parse_instruction_header(input)?;
-        let ty = results.first().map(|result| result.ty);
-        let data = self.parse(opcode, ty, flags, input)?;
+        let data = self.parse(opcode, flags, input)?;
         let inst = self.func.edit().append_inst(block, data, &[]);
-        if !results.is_empty() {
-            let values = results
-                .iter()
-                .map(|result| {
-                    self.symbols.define(
-                        &result.name,
-                        self.func,
-                        result.ty,
-                        ValueDef::Inst(inst),
-                        result.location,
-                    )
-                })
-                .collect::<ParseResult<Vec<_>>>()?;
-            let list = self.func.dfg.make_value_list(&values);
-            self.func.dfg.inst_results[inst] = list;
-        }
+        self.func.dfg.bind_results(inst, &results);
         Ok(())
+    }
+
+    fn parse_results(&mut self, input: &mut Cursor<'_>) -> ParseResult<Vec<(Value, Type)>> {
+        let mut results = Vec::new();
+        let multiple = input.eat(Kind::LParen);
+        if !multiple
+            && !(input.kind() == Kind::Word
+                && matches!(input.peek_kind(1), Kind::Colon | Kind::Equal))
+        {
+            return Ok(results);
+        }
+        loop {
+            let result = parse_typed_name(input)?;
+            let value = self
+                .symbols
+                .define(result.name, self.func, result.location)?;
+            results.push((value, result.ty));
+            if !multiple || !input.eat(Kind::Comma) {
+                break;
+            }
+        }
+        if multiple {
+            input.expect(Kind::RParen)?;
+        }
+        input.expect(Kind::Equal)?;
+        Ok(results)
     }
 
     pub(super) fn value(&mut self, input: &mut Cursor<'_>) -> ParseResult<Value> {
@@ -558,37 +564,18 @@ pub(super) fn parse_function_name(
     Ok(FunctionName { name, location })
 }
 
-struct TypedName {
-    name: String,
+struct TypedName<'a> {
+    name: &'a str,
     ty: Type,
     location: Location,
 }
 
-fn parse_typed_name(input: &mut Cursor<'_>) -> ParseResult<TypedName> {
+fn parse_typed_name<'a>(input: &mut Cursor<'a>) -> ParseResult<TypedName<'a>> {
     let location = input.location();
-    let name = input.word()?.to_string();
+    let name = input.word()?;
     input.expect(Kind::Colon)?;
     let ty = parse_type(input)?;
     Ok(TypedName { name, ty, location })
-}
-
-fn parse_results(input: &mut Cursor<'_>) -> ParseResult<Vec<TypedName>> {
-    let mut results = Vec::new();
-    if input.eat(Kind::LParen) {
-        loop {
-            results.push(parse_typed_name(input)?);
-            if !input.eat(Kind::Comma) {
-                break;
-            }
-        }
-        input.expect(Kind::RParen)?;
-        input.expect(Kind::Equal)?;
-    } else if input.kind() == Kind::Word && matches!(input.peek_kind(1), Kind::Colon | Kind::Equal)
-    {
-        results.push(parse_typed_name(input)?);
-        input.expect(Kind::Equal)?;
-    }
-    Ok(results)
 }
 
 fn parse_instruction_header(input: &mut Cursor<'_>) -> ParseResult<(Opcode, MemFlags)> {
@@ -641,10 +628,6 @@ fn parse_opcode(word: &str) -> core::result::Result<(Opcode, &str), String> {
 fn parse_type(input: &mut Cursor<'_>) -> ParseResult<Type> {
     let location = input.location();
     let name = input.word()?;
-    parse_type_suffix(name, location, input)
-}
-
-fn parse_type_suffix(name: &str, location: Location, input: &mut Cursor<'_>) -> ParseResult<Type> {
     if !input.eat(Kind::Less) {
         return Type::from_name(name)
             .ok_or_else(|| location.error(format!("unknown type `{name}`")));
@@ -789,17 +772,6 @@ fn parse_value_idx(name: &str) -> Option<u32> {
         })
 }
 
-fn ensure_value(value: Value, func: &mut Function) {
-    // These slots are not definitions. Symbols::definitions tracks resolution;
-    // the placeholder def must not be interpreted before parsing succeeds.
-    while func.dfg.values.len() <= value.0 as usize {
-        func.dfg.values.push(ValueData {
-            ty: Type::INVALID,
-            def: ValueDef::Param(Block(0)),
-        });
-    }
-}
-
 fn set_value_name(value: Value, text: &str, func: &mut Function) {
     let name = if text
         .strip_prefix('v')
@@ -839,13 +811,9 @@ mod tests {
         });
     }
 
-    fn parse<C: AtomCodec>(
-        cx: &mut OperandParser<'_>,
-        text: &str,
-        ty: Option<Type>,
-    ) -> ParseResult<C::Owned> {
+    fn parse<C: AtomCodec>(cx: &mut OperandParser<'_>, text: &str) -> ParseResult<C::Owned> {
         let mut input = Cursor::new(text);
-        let value = C::parse(cx, &mut input, ty)?;
+        let value = C::parse(cx, &mut input)?;
         input.finish()?;
         Ok(value)
     }
@@ -854,7 +822,7 @@ mod tests {
     where
         C::Owned: Debug + PartialEq + for<'a> Borrow<C::View<'a>>,
     {
-        let value = parse::<C>(cx, text, ty).unwrap();
+        let value = parse::<C>(cx, text).unwrap();
         let mut printed = String::new();
         C::print(
             &InstPrinter::new(&cx.func.dfg, None),
@@ -863,7 +831,7 @@ mod tests {
             ty,
         )
         .unwrap();
-        assert_eq!(parse::<C>(cx, &printed, ty).unwrap(), value);
+        assert_eq!(parse::<C>(cx, &printed).unwrap(), value);
         printed
     }
 
@@ -878,15 +846,15 @@ mod tests {
                 round_trip::<Decimal<u64>>(cx, "18446744073709551615", None),
                 "18446744073709551615"
             );
-            assert!(parse::<Decimal<u64>>(cx, "-1", None).is_err());
+            assert!(parse::<Decimal<u64>>(cx, "-1").is_err());
             assert_eq!(
                 round_trip::<Decimal<i32>>(cx, "-2147483648", None),
                 "-2147483648"
             );
             assert_eq!(round_trip::<Decimal<u8>>(cx, "255", None), "255");
-            assert!(parse::<Decimal<u8>>(cx, "256", None).is_err());
+            assert!(parse::<Decimal<u8>>(cx, "256").is_err());
             assert_eq!(round_trip::<bool>(cx, "true", None), "true");
-            assert!(parse::<bool>(cx, "1", None).is_err());
+            assert!(parse::<bool>(cx, "1").is_err());
             assert_eq!(round_trip::<crate::IntCC>(cx, "eq", None), "eq");
             assert_eq!(round_trip::<crate::FloatCC>(cx, "eq", None), "eq");
             assert_eq!(round_trip::<StackSlot>(cx, "ss7", None), "ss7");
@@ -895,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn float_codec_preserves_bits_and_checks_width_in_both_directions() {
+    fn float_codec_decodes_raw_bits_and_formats_by_result_type() {
         with_parser(|cx| {
             for (ty, bits) in [
                 (Type::F32, "0x7fc00001"),
@@ -905,7 +873,6 @@ mod tests {
                 assert_eq!(round_trip::<FloatBits>(cx, bits, Some(ty)), bits);
             }
             for ty in [None, Some(Type::I32)] {
-                assert!(parse::<FloatBits>(cx, "0x0", ty).is_err());
                 assert!(
                     FloatBits::print(
                         &InstPrinter::new(&cx.func.dfg, None),
@@ -916,7 +883,7 @@ mod tests {
                     .is_err()
                 );
             }
-            assert!(parse::<FloatBits>(cx, "0x100000000", Some(Type::F32)).is_err());
+            assert_eq!(parse::<FloatBits>(cx, "0x100000000").unwrap(), 0x100000000);
             assert!(
                 FloatBits::print(
                     &InstPrinter::new(&cx.func.dfg, None),
@@ -935,7 +902,7 @@ mod tests {
             assert_eq!(round_trip::<Bytes>(cx, "0x00FF", None), "0x00ff");
             assert_eq!(round_trip::<Bytes>(cx, "0x", None), "0x");
             for text in ["0x🦀", "0x界a", "0xé", "0x0", "0xgg"] {
-                assert!(parse::<Bytes>(cx, text, None).is_err(), "{text}");
+                assert!(parse::<Bytes>(cx, text).is_err(), "{text}");
             }
         });
     }
@@ -946,14 +913,14 @@ mod tests {
             for text in ["later()", "later() : () ->"] {
                 let mut input = Cursor::new(text);
                 assert!(
-                    cx.parse(Opcode::Call, None, MemFlags::empty(), &mut input)
+                    cx.parse(Opcode::Call, MemFlags::empty(), &mut input)
                         .is_err()
                 );
                 assert!(cx.module.functions.is_empty());
                 assert!(cx.functions.entries.is_empty());
             }
             let mut input = Cursor::new("later() : () -> i32");
-            cx.parse(Opcode::Call, Some(Type::I32), MemFlags::empty(), &mut input)
+            cx.parse(Opcode::Call, MemFlags::empty(), &mut input)
                 .unwrap();
             assert_eq!(cx.module.functions.len(), 1);
             let function = &cx.module.functions[FuncId(0)];
@@ -1019,22 +986,24 @@ mod tests {
 
     #[test]
     fn result_declaration_accepts_scalable_type() {
-        let mut input = Cursor::new("sum: i32<scalable 4> = iadd v0, v1");
-        let results = parse_results(&mut input).unwrap();
-        let (opcode, _) = parse_instruction_header(&mut input).unwrap();
-        assert_eq!(opcode, Opcode::IAdd);
-        assert_eq!(
-            Some(results[0].ty),
-            crate::Type::I32
-                .as_scalar()
-                .unwrap()
-                .vector(4, true)
-                .map(crate::VectorType::as_type)
-        );
-        assert_eq!(input.word().unwrap(), "v0");
-        input.expect(Kind::Comma).unwrap();
-        assert_eq!(input.word().unwrap(), "v1");
-        input.finish().unwrap();
+        with_parser(|cx| {
+            let mut input = Cursor::new("sum: i32<scalable 4> = iadd v0, v1");
+            let results = cx.parse_results(&mut input).unwrap();
+            let (opcode, _) = parse_instruction_header(&mut input).unwrap();
+            assert_eq!(opcode, Opcode::IAdd);
+            assert_eq!(
+                Some(results[0].1),
+                crate::Type::I32
+                    .as_scalar()
+                    .unwrap()
+                    .vector(4, true)
+                    .map(crate::VectorType::as_type)
+            );
+            assert_eq!(input.word().unwrap(), "v0");
+            input.expect(Kind::Comma).unwrap();
+            assert_eq!(input.word().unwrap(), "v1");
+            input.finish().unwrap();
+        });
     }
 
     #[test]

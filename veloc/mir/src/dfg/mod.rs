@@ -17,8 +17,8 @@ pub struct DataFlowGraph {
     instructions: PrimaryMap<Inst, StoredInst>,
     pub(crate) values: PrimaryMap<Value, ValueData>,
     pub value_names: SecondaryMap<Value, String>,
-    pub(crate) inst_results: SecondaryMap<Inst, ValueList>,
-    pub(crate) value_list_pool: ValueListPool,
+    inst_results: SecondaryMap<Inst, ValueList>,
+    value_list_pool: ValueListPool,
     operands: operands::Operands,
     /// Constant bytes are immutable and may be interned.
     constant_pool: PrimaryMap<ConstantPoolId, Arc<[u8]>>,
@@ -95,7 +95,7 @@ impl DataFlowGraph {
     }
 
     /// 从切片创建 ValueList
-    pub(crate) fn make_value_list(&mut self, values: &[Value]) -> ValueList {
+    fn make_value_list(&mut self, values: &[Value]) -> ValueList {
         ValueList::from_slice(values, &mut self.value_list_pool)
     }
 
@@ -141,6 +141,21 @@ impl DataFlowGraph {
         });
         self.instructions[inst].operands = self.operands.alloc(inst, &values);
         inst
+    }
+
+    /// Bind reserved result IDs to an instruction, preserving existing uses.
+    /// The caller must supply distinct, not-yet-defined values from this DFG.
+    /// Result types and counts are intentionally not validated here.
+    pub(crate) fn bind_results(&mut self, inst: Inst, results: &[(Value, Type)]) {
+        assert!(self.inst_results(inst).is_empty(), "results already bound");
+        let values = results.iter().map(|&(value, ty)| {
+            self.values[value] = ValueData {
+                ty,
+                def: ValueDef::Inst(inst),
+            };
+            value
+        });
+        self.inst_results[inst] = ValueList::from_iter(values, &mut self.value_list_pool);
     }
 
     pub fn value_type(&self, val: Value) -> Type {
