@@ -28,7 +28,7 @@ fn property_order_follows_the_logical_signature_not_storage() {
     assert!(
         output
             .opcodes
-            .contains("InstructionData::Load { ptr: address, offset: displacement, flags }")
+            .contains("InstDraft::load(address, displacement, flags)")
     );
     assert!(output.opcodes.contains(
         "pub fn store(&mut self, ptr: crate::Value, flags: crate::MemFlags, value: crate::Value, offset: u32)"

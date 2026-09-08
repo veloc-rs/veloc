@@ -55,7 +55,7 @@ pub(crate) fn generate(
     ops.push_str("    }\n}\n}\n");
     // Only the dynamic construction path needs opcode dispatch. Generated
     // builders use the same result expressions directly on their arguments.
-    ops.push_str("impl crate::InstructionData {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch self.opcode() {\n");
+    ops.push_str("impl crate::InstructionView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch self.opcode() {\n");
     for (signature, id) in &ids {
         let arms = groups[*id]
             .iter()
@@ -67,7 +67,7 @@ pub(crate) fn generate(
             ops.push_str("let sig = self.call_info().expect(\"signature results require call metadata\").signature.resolve(module).ok_or(\"unknown function or signature\")?;\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(&sig.returns))\n");
         } else if let Some(results) = result_exprs(signature) {
             if results.iter().any(|r| !matches!(r, ResultExpr::Exact(_))) {
-                ops.push_str("let mut operands = smallvec::SmallVec::<[Type; 4]>::new();\nself.visit_type_operands(dfg, |value| operands.push(dfg.value_type(value)));\n");
+                ops.push_str("let mut operands = smallvec::SmallVec::<[Type; 4]>::new();\nself.visit_type_operands(|value| operands.push(dfg.value_type(value)));\n");
             }
             let operand = |index: usize| {
                 if index == 0 {

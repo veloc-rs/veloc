@@ -11,8 +11,7 @@ use veloc_lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
     MachineBlock, MachineFunction, MachineInst, MachineModule, MachineOpcode, MachineOperand, Reg,
 };
-use veloc_mir::dfg::PoolKey;
-use veloc_mir::{Function, InstructionData, Module, Opcode, Value};
+use veloc_mir::{Function, InstructionView, Module, Opcode, Value};
 
 include!(concat!(env!("OUT_DIR"), "/mir_lowering.rs"));
 
@@ -104,15 +103,15 @@ impl<'a> IRTranslator<'a> {
         };
 
         // 1. 预分配所有 Value 对应的 VReg
-        for (val, data) in &func.dfg.values {
+        for (val, data) in func.dfg().values() {
             let vreg = ctx.mfunc.alloc_vreg(data.ty.clone());
             ctx.value_map.insert(val, vreg);
         }
 
         // 2. 翻译基本块和指令
-        for (idx, &block_id) in func.layout.block_order.iter().enumerate() {
+        for (idx, &block_id) in func.layout().block_order().iter().enumerate() {
             let mut mblock = MachineBlock::new(block_id);
-            mblock.params = func.layout.blocks[block_id]
+            mblock.params = func.layout().blocks()[block_id]
                 .params
                 .iter()
                 .map(|value| ctx.value_map[value])
@@ -123,7 +122,7 @@ impl<'a> IRTranslator<'a> {
                 self.lower_arguments(&mut ctx, &mut mblock);
             }
 
-            for &inst_id in &func.layout.blocks[block_id].insts {
+            for &inst_id in &func.layout().blocks()[block_id].insts {
                 let translated = self.translate_instruction(inst_id, &mut ctx, &mut mblock)?;
                 let m_inst_id = ctx.mfunc.alloc_inst(translated.inst);
                 if let Some(extra) = translated.extra {
@@ -154,10 +153,10 @@ impl<'a> IRTranslator<'a> {
         use smallvec::SmallVec;
         use veloc_lir::Writable;
 
-        let inst_data = &ctx.func.dfg.instructions[inst_id];
+        let inst_data = &ctx.func.dfg().inst(inst_id);
 
         // 获取结果寄存器 (Defs)
-        let results = ctx.func.dfg.inst_results(inst_id);
+        let results = ctx.func.dfg().inst_results(inst_id);
         let mut defs = SmallVec::<[MachineOperand; 4]>::new();
         for &res in results {
             let vreg = ctx.value_map[&res];
@@ -167,17 +166,16 @@ impl<'a> IRTranslator<'a> {
         let spec = inst_data.opcode().spec();
         if matches!(
             inst_data,
-            InstructionData::Unary { .. } | InstructionData::Binary { .. }
+            InstructionView::Unary { .. } | InstructionView::Binary { .. }
         ) {
-            let mut args = SmallVec::<[Value; 2]>::new();
-            inst_data.visit_operands(&ctx.func.dfg, |value| args.push(value));
+            let args = ctx.func.dfg().operands(inst_id);
             let operand_types: SmallVec<[_; 2]> = args
                 .iter()
-                .map(|&value| ctx.func.dfg.value_type(value))
+                .map(|&value| ctx.func.dfg().value_type(value))
                 .collect();
             let result_types: SmallVec<[_; 1]> = results
                 .iter()
-                .map(|&value| ctx.func.dfg.value_type(value))
+                .map(|&value| ctx.func.dfg().value_type(value))
                 .collect();
             inst_data
                 .opcode()
@@ -193,15 +191,15 @@ impl<'a> IRTranslator<'a> {
                 // Preserve source types here; target legalization still decides
                 // which widths and vector shapes the backend can implement.
                 defs.extend(
-                    args.into_iter()
-                        .map(|arg| MachineOperand::Use(ctx.value_map[&arg])),
+                    args.iter()
+                        .map(|arg| MachineOperand::Use(ctx.value_map[arg])),
                 );
                 return Ok(MachineInst::build_generic(MachineOpcode::Generic(opcode), defs).into());
             }
         }
 
         match inst_data {
-            InstructionData::Binary { opcode, args } => {
+            InstructionView::Binary { opcode, args } => {
                 let src0 = ctx.value_map[&args[0]];
                 let src1 = ctx.value_map[&args[1]];
 
@@ -226,7 +224,7 @@ impl<'a> IRTranslator<'a> {
                 )
             }
 
-            InstructionData::Unary { opcode, arg } => {
+            InstructionView::Unary { opcode, arg } => {
                 let src = ctx.value_map[arg];
 
                 let m_opcode = match opcode {
@@ -257,7 +255,7 @@ impl<'a> IRTranslator<'a> {
                 Ok(MachineInst::build_unary(m_opcode, defs[0].as_writable().unwrap(), src).into())
             }
 
-            InstructionData::IntCompare { kind, args } => {
+            InstructionView::IntCompare { kind, args } => {
                 let src0 = ctx.value_map[&args[0]];
                 let src1 = ctx.value_map[&args[1]];
 
@@ -267,7 +265,7 @@ impl<'a> IRTranslator<'a> {
                 )
             }
 
-            InstructionData::FloatCompare { kind, args } => {
+            InstructionView::FloatCompare { kind, args } => {
                 let src0 = ctx.value_map[&args[0]];
                 let src1 = ctx.value_map[&args[1]];
 
@@ -277,7 +275,7 @@ impl<'a> IRTranslator<'a> {
                 )
             }
 
-            InstructionData::Load { ptr, offset, .. } => {
+            InstructionView::Load { ptr, offset, .. } => {
                 let base = ctx.value_map[ptr];
                 Ok(MachineInst::build_load_offset(
                     defs[0].as_writable().unwrap(),
@@ -287,7 +285,7 @@ impl<'a> IRTranslator<'a> {
                 .into())
             }
 
-            InstructionData::Store {
+            InstructionView::Store {
                 ptr, value, offset, ..
             } => {
                 let val = ctx.value_map[value];
@@ -295,11 +293,11 @@ impl<'a> IRTranslator<'a> {
                 Ok(MachineInst::build_store_offset(val, base, *offset as i64).into())
             }
 
-            InstructionData::Iconst { value: imm } => {
+            InstructionView::Iconst { value: imm } => {
                 Ok(MachineInst::build_constant(defs[0].as_writable().unwrap(), *imm as i64).into())
             }
 
-            InstructionData::Fconst { value } => {
+            InstructionView::Fconst { value } => {
                 let dst = defs[0].as_writable().unwrap();
                 let dst_ty = ctx.mfunc.vreg_data(dst.to_reg()).ty;
 
@@ -326,12 +324,10 @@ impl<'a> IRTranslator<'a> {
                 .into())
             }
 
-            InstructionData::Jump { dest } => {
-                let target = ctx.func.dfg.block_call_block(*dest);
-                let args = ctx
-                    .func
-                    .dfg
-                    .block_call_args(*dest)
+            InstructionView::Jump { dest } => {
+                let target = dest.block;
+                let args = dest
+                    .args
                     .iter()
                     .map(|value| ctx.value_map[value])
                     .collect::<SmallVec<[Reg; 2]>>();
@@ -346,32 +342,24 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstructionData::Br {
+            InstructionView::Br {
                 condition,
                 then_dest,
                 else_dest,
             } => {
                 let cond_vreg = ctx.value_map[condition];
-                let then_args = ctx
-                    .func
-                    .dfg
-                    .block_call_args(*then_dest)
+                let then_args = then_dest
+                    .args
                     .iter()
                     .map(|value| ctx.value_map[value])
                     .collect::<SmallVec<[Reg; 2]>>();
-                let else_args = ctx
-                    .func
-                    .dfg
-                    .block_call_args(*else_dest)
+                let else_args = else_dest
+                    .args
                     .iter()
                     .map(|value| ctx.value_map[value])
                     .collect::<SmallVec<[Reg; 2]>>();
 
-                let inst = MachineInst::build_br_cond(
-                    cond_vreg,
-                    ctx.func.dfg.block_call_block(*then_dest),
-                    ctx.func.dfg.block_call_block(*else_dest),
-                );
+                let inst = MachineInst::build_br_cond(cond_vreg, then_dest.block, else_dest.block);
                 if then_args.is_empty() && else_args.is_empty() {
                     Ok(inst.into())
                 } else {
@@ -385,25 +373,16 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstructionData::BrTable { index, .. } => {
+            InstructionView::BrTable { index, .. } => {
                 let idx_vreg = ctx.value_map[index];
-                let InstructionData::BrTable { table, .. } = inst_data else {
+                let InstructionView::BrTable { table, .. } = inst_data else {
                     unreachable!();
                 };
-                let targets = ctx
-                    .func
-                    .dfg
-                    .jump_table_targets(*table)
+                let targets = table
                     .iter()
-                    .map(|&call| BrTableTarget {
-                        block: ctx.func.dfg.block_call_block(call),
-                        args: ctx
-                            .func
-                            .dfg
-                            .block_call_args(call)
-                            .iter()
-                            .map(|value| ctx.value_map[value])
-                            .collect(),
+                    .map(|call| BrTableTarget {
+                        block: call.block,
+                        args: call.args.iter().map(|value| ctx.value_map[value]).collect(),
                     })
                     .collect();
 
@@ -413,8 +392,8 @@ impl<'a> IRTranslator<'a> {
                 ))
             }
 
-            InstructionData::Return { values } => {
-                let ret_values = ctx.func.dfg.get_value_list(*values);
+            InstructionView::Return { values } => {
+                let ret_values = *values;
                 let mut rets = SmallVec::new();
                 for &v in ret_values {
                     let vreg = ctx.value_map[&v];
@@ -423,8 +402,8 @@ impl<'a> IRTranslator<'a> {
                 Ok(MachineInst::build_ret(rets).into())
             }
 
-            InstructionData::Call { func_id, args } => {
-                let call_args = ctx.func.dfg.get_value_list(*args);
+            InstructionView::Call { func_id, args } => {
+                let call_args = *args;
                 let callee = self.module.get_function(*func_id);
                 let sym_id = ctx.mmodule.symbols_mut().get_or_create_function(
                     self.module.get_function_name(*func_id),
@@ -446,8 +425,8 @@ impl<'a> IRTranslator<'a> {
                 ))
             }
 
-            InstructionData::CallIndirect { ptr, args, sig_id } => {
-                let call_args = ctx.func.dfg.get_value_list(*args);
+            InstructionView::CallIndirect { ptr, args, sig_id } => {
+                let call_args = *args;
                 let call_inst = MachineInst::build_call_indirect(
                     defs.iter().map(|operand| operand.as_writable().unwrap()),
                     ctx.value_map[ptr],
@@ -463,7 +442,7 @@ impl<'a> IRTranslator<'a> {
                 ))
             }
 
-            InstructionData::Ternary { opcode, args } => {
+            InstructionView::Ternary { opcode, args } => {
                 let v0 = ctx.value_map[&args[0]];
                 let v1 = ctx.value_map[&args[1]];
                 let v2 = ctx.value_map[&args[2]];
@@ -482,7 +461,7 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstructionData::IntToPtr { arg } => {
+            InstructionView::IntToPtr { arg } => {
                 let src = ctx.value_map[arg];
                 Ok(MachineInst::build_unary(
                     MachineOpcode::Generic(GenericOpcode::G_INTTOPTR),
@@ -492,7 +471,7 @@ impl<'a> IRTranslator<'a> {
                 .into())
             }
 
-            InstructionData::PtrToInt { arg } => {
+            InstructionView::PtrToInt { arg } => {
                 let src = ctx.value_map[arg];
                 Ok(MachineInst::build_unary(
                     MachineOpcode::Generic(GenericOpcode::G_PTRTOINT),
@@ -502,7 +481,7 @@ impl<'a> IRTranslator<'a> {
                 .into())
             }
 
-            InstructionData::PtrOffset { ptr, offset } => {
+            InstructionView::PtrOffset { ptr, offset } => {
                 use veloc_lir::Writable;
 
                 let addr = ctx.value_map[ptr];
@@ -532,12 +511,10 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstructionData::PtrIndex { ptr, index, imm_id } => {
+            InstructionView::PtrIndex { ptr, index, imm_id } => {
                 let base_ptr = ctx.value_map[ptr];
                 let idx = ctx.value_map[index];
-                let imm = *imm_id
-                    .get(&ctx.func.dfg)
-                    .expect("validated ptr-index must have an immediate");
+                let imm = *imm_id;
 
                 // 1. scale index: idx * scale
                 let scaled_idx = if imm.scale != 1 {
@@ -588,10 +565,10 @@ impl<'a> IRTranslator<'a> {
                 )
                 .into())
             }
-            InstructionData::Unreachable => Ok(MachineInst::build_unreachable().into()),
+            InstructionView::Unreachable => Ok(MachineInst::build_unreachable().into()),
 
             _ => Err(Error::translate(format!(
-                "InstructionData variant not implemented for translation: {:?}",
+                "InstructionView variant not implemented for translation: {:?}",
                 inst_data
             ))),
         }

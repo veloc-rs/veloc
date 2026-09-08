@@ -34,27 +34,20 @@ pub enum ValueDef {
 pub struct Block(pub u32);
 entity_impl!(Block, "block");
 
-/// A reference to a block call (branch destination with arguments).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct BlockCall(pub u32);
-entity_impl!(BlockCall, "bc");
-
-/// Data for a block call: the target block and arguments.
-#[derive(Debug, Clone, Copy)]
-pub struct BlockCallData {
+/// Construction-time successor. Installed arguments live in the operand array.
+#[derive(Debug, Clone)]
+pub struct BlockCall {
     pub block: Block,
-    pub args: ValueList,
+    pub args: smallvec::SmallVec<[Value; 4]>,
 }
 
-/// A reference to a jump table.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct JumpTable(pub u32);
-entity_impl!(JumpTable, "jt");
-
-/// Data for a jump table: list of block calls.
-#[derive(Debug, Clone)]
-pub struct JumpTableData {
-    pub targets: alloc::vec::Vec<BlockCall>,
+impl BlockCall {
+    pub fn new(block: Block, args: &[Value]) -> Self {
+        Self {
+            block,
+            args: smallvec::SmallVec::from_slice(args),
+        }
+    }
 }
 
 /// A reference to a stack slot.

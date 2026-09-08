@@ -4,7 +4,10 @@ extern crate alloc;
 extern crate veloc_test_mir as veloc_mir;
 
 use veloc_mir::constant::Constant;
-use veloc_mir::{CallConv, InstructionData, IntCC, Linkage, ModuleBuilder, Opcode, Type, Value};
+use veloc_mir::{
+    Arguments, BlockCall, CallConv, InstDraft, InstructionView, IntCC, Linkage, ModuleBuilder,
+    Opcode, Type, Value,
+};
 
 #[allow(dead_code)]
 mod evaluator {
@@ -19,6 +22,199 @@ mod offline {
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
 include!(concat!(env!("OUT_DIR"), "/lowering.rs"));
+
+#[test]
+fn definition_owned_records_flatten_operands_in_field_order() {
+    use veloc_mir::dfg::DataFlowGraph;
+    use veloc_mir::inst::TestOperands;
+    let mut dfg = DataFlowGraph::new();
+    for optional in [None, Some(Value(1))] {
+        let inst = dfg.create_inst(InstDraft::grouped(
+            Opcode::Grouped,
+            Value(0),
+            TestOperands {
+                token: Value(1),
+                optional,
+                tag: 17,
+            },
+            Value(2),
+        ));
+        let expected = if optional.is_some() {
+            vec![Value(0), Value(1), Value(1), Value(2)]
+        } else {
+            vec![Value(0), Value(1), Value(2)]
+        };
+        assert_eq!(dfg.operands(inst), expected);
+        dfg.set_operand(inst, 1, Value(3));
+        let InstructionView::Grouped {
+            before,
+            group,
+            after,
+            ..
+        } = dfg.inst(inst)
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (before, group.token, group.optional, group.tag, after),
+            (Value(0), Value(3), optional, 17, Value(2))
+        );
+        let mut primary = vec![];
+        dfg.inst(inst).visit_type_operands(|v| primary.push(v));
+        assert_eq!(primary, [Value(0), Value(2)]);
+        dfg.check_uses().unwrap();
+    }
+}
+
+#[test]
+fn variadic_ranges_grow_recycle_and_remain_independent_after_clone() {
+    use veloc_mir::dfg::DataFlowGraph;
+    let mut dfg = DataFlowGraph::new();
+    let left = dfg.create_inst(InstDraft::nop());
+    let right = dfg.create_inst(InstDraft::binary(Opcode::IAdd, [Value(7), Value(7)]));
+    for size in [0, 1, 2, 3, 4, 5, 17, 65, 3, 0, 65, 17, 5, 1] {
+        let args: Arguments = (0..size).map(|i| Value(i % 7)).collect();
+        dfg.replace_inst(left, InstDraft::ret(&args));
+        assert_eq!(dfg.operands(left), args.as_slice());
+        assert_eq!(dfg.operands(right), &[Value(7), Value(7)]);
+        let InstructionView::Return { values } = dfg.inst(left) else {
+            unreachable!()
+        };
+        assert_eq!(values.as_ptr(), dfg.operands(left).as_ptr());
+        dfg.check_uses().unwrap();
+    }
+    let mut copy = dfg.clone();
+    copy.replace_all_uses(Value(7), Value(8));
+    assert_eq!(dfg.operands(right), &[Value(7), Value(7)]);
+    assert_eq!(copy.operands(right), &[Value(8), Value(8)]);
+    dfg.check_uses().unwrap();
+    copy.check_uses().unwrap();
+}
+
+#[test]
+fn function_edits_keep_layout_and_successor_edges_in_sync() {
+    let module = veloc_mir::ModuleParser::new().parse("local function main() -> void\nblock0():\n  jump block1()\nblock1():\n  return\nblock2():\n  return\n").unwrap();
+    let mut data = (*module).clone();
+    let (_, func) = data.functions.iter_mut().next().unwrap();
+    let entry = func.entry_block.unwrap();
+    let old = func.layout().block_order()[1];
+    let new = func.layout().block_order()[2];
+    let jump = func.layout().blocks()[entry].insts[0];
+    let dest = BlockCall::new(new, &[]);
+    func.edit()
+        .replace_inst(jump, InstDraft::jump(dest.as_view()));
+    assert!(func.layout().blocks()[old].preds.is_empty());
+    assert_eq!(func.layout().blocks()[new].preds, [entry]);
+    assert_eq!(func.layout().blocks()[entry].succs, [new]);
+    func.edit().erase_inst(jump);
+    assert!(func.layout().inst_block(jump).is_none());
+    assert!(func.layout().blocks()[new].preds.is_empty());
+    assert!(func.layout().blocks()[entry].succs.is_empty());
+    let replacement = func
+        .edit()
+        .append_inst(entry, InstDraft::jump(dest.as_view()), &[]);
+    assert_eq!(func.layout().inst_block(replacement), Some(entry));
+    func.dfg().check_uses().unwrap();
+    data.validate().unwrap();
+}
+
+#[test]
+fn borrowed_uses_distinguish_operands_and_edits_update_the_single_storage() {
+    use veloc_mir::dfg::DataFlowGraph;
+    let mut dfg = DataFlowGraph::new();
+    let inst = dfg.create_inst(InstDraft::binary(Opcode::IAdd, [Value(0), Value(0)]));
+    assert_eq!(dfg.uses(Value(0)).count(), 2);
+    assert!(!dfg.has_one_use(Value(0)));
+    let mut positions = dfg
+        .uses(Value(0))
+        .map(|site| (site.inst(), site.index(), site.value()))
+        .collect::<Vec<_>>();
+    positions.sort_unstable_by_key(|site| site.1);
+    assert_eq!(positions, [(inst, 0, Value(0)), (inst, 1, Value(0))]);
+    dfg.set_operand(inst, 0, Value(1));
+    assert_eq!(dfg.operands(inst), &[Value(1), Value(0)]);
+    assert!(dfg.has_one_use(Value(0)));
+    dfg.replace_all_uses(Value(0), Value(1));
+    dfg.replace_all_uses(Value(1), Value(1));
+    assert!(dfg.use_empty(Value(0)));
+    assert_eq!(dfg.uses(Value(1)).count(), 2);
+    dfg.check_uses().unwrap();
+    let before = dfg.clone();
+    dfg.replace_inst(inst, InstDraft::unary(Opcode::INeg, Value(2)));
+    let invalid = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dfg.set_operand(inst, 1, Value(3))
+    }));
+    assert!(invalid.is_err());
+    assert_eq!(before.uses(Value(1)).count(), 2);
+    assert!(dfg.use_empty(Value(1)));
+    dfg.check_uses().unwrap();
+}
+
+#[test]
+fn unified_slots_distinguish_repeated_successors_and_vector_operands() {
+    use veloc_mir::Block;
+    use veloc_mir::dfg::DataFlowGraph;
+    use veloc_mir::inst::VectorExtData;
+    let mut dfg = DataFlowGraph::new();
+    let call = BlockCall::new(Block(0), &[Value(0)]);
+    let table = [call.clone(), call.clone()];
+    let data = InstDraft::br_table(Value(0), table.iter().map(BlockCall::as_view));
+    let first = dfg.create_inst(data.clone());
+    let other = dfg.create_inst(data);
+    dfg.set_operand(first, 1, Value(1));
+    assert_eq!(dfg.operands(first)[2], Value(0));
+    assert_eq!(dfg.operands(other)[1], Value(0));
+    assert_eq!(call.args.as_slice(), &[Value(0)]);
+    let ext = VectorExtData {
+        mask: Value(0),
+        evl: Some(Value(0)),
+    };
+    let args = Arguments::from_slice(&[Value(0), Value(0)]);
+    let data = InstDraft::vector_op_with_ext(Opcode::IAdd, &args, ext);
+    let first = dfg.create_inst(data.clone());
+    let other = dfg.create_inst(data);
+    dfg.set_operand(first, 2, Value(2));
+    assert_eq!(dfg.operands(first)[3], Value(0));
+    assert_eq!(dfg.operands(other)[2], Value(0));
+    assert_eq!(ext.mask, Value(0));
+    dfg.replace_all_uses(Value(0), Value(3));
+    dfg.check_uses().unwrap();
+}
+
+#[test]
+fn exact_use_index_survives_deterministic_edit_sequences() {
+    use veloc_mir::dfg::DataFlowGraph;
+    let mut dfg = DataFlowGraph::new();
+    let insts: Vec<_> = (0..32).map(|_| dfg.create_inst(InstDraft::nop())).collect();
+    let mut random = 12345u32;
+    for _ in 0..1000 {
+        random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+        let inst = insts[(random >> 16) as usize % insts.len()];
+        let value = Value((random >> 8) % 8);
+        match random % 4 {
+            0 => dfg.replace_inst(inst, InstDraft::binary(Opcode::IAdd, [value, value])),
+            1 => dfg.replace_inst(inst, InstDraft::unary(Opcode::INeg, value)),
+            2 => dfg.remove_inst(inst),
+            _ => dfg.replace_all_uses(value, Value((value.0 + 1) % 8)),
+        }
+        dfg.check_uses().unwrap();
+    }
+}
+
+#[test]
+fn closed_dead_cycles_are_erased_together() {
+    use veloc_mir::dfg::DataFlowGraph;
+    let mut dfg = DataFlowGraph::new();
+    let a = dfg.create_inst(InstDraft::unary(Opcode::INeg, Value(1)));
+    dfg.append_results(a, &[Type::I32]);
+    let b = dfg.create_inst(InstDraft::unary(Opcode::INeg, Value(0)));
+    dfg.append_results(b, &[Type::I32]);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dfg.remove_inst(a))).is_err());
+    dfg.check_uses().unwrap();
+    dfg.remove_insts(&[a, b]);
+    assert!(dfg.use_empty(Value(0)) && dfg.use_empty(Value(1)));
+    dfg.check_uses().unwrap();
+}
 
 #[test]
 fn generated_encodings_preserve_neighboring_fields_and_check_ranges() {
@@ -136,7 +332,7 @@ fn construction_does_not_validate_type_contracts() {
                 assert_eq!(ins.value_type(result), Type::BOOL);
             }
             "raw-results" | "raw-arity" => {
-                let data = InstructionData::from_values(Opcode::IAdd, &[i, i]).unwrap();
+                let data = InstDraft::from_values(Opcode::IAdd, &[i, i]).unwrap();
                 let types = if case == "raw-results" {
                     &[Type::F32][..]
                 } else {
@@ -144,13 +340,13 @@ fn construction_does_not_validate_type_contracts() {
                 };
                 let inst = ins.insert(data, types);
                 assert_eq!(
-                    ins.builder().func().dfg.inst_results(inst).len(),
+                    ins.builder().func().dfg().inst_results(inst).len(),
                     types.len()
                 );
             }
             "call" => {
                 let inst = ins.call(callee, &[i]);
-                let dfg = &ins.builder().func().dfg;
+                let dfg = ins.builder().func().dfg();
                 let types = dfg
                     .inst_results(inst)
                     .iter()
@@ -160,7 +356,7 @@ fn construction_does_not_validate_type_contracts() {
             }
             "indirect-call" => {
                 let inst = ins.call_indirect(callee_sig, i, &[f]);
-                assert_eq!(ins.builder().func().dfg.inst_results(inst).len(), 2);
+                assert_eq!(ins.builder().func().dfg().inst_results(inst).len(), 2);
             }
             "branch" | "table" => {
                 let dest = ins.builder().create_block();
@@ -203,21 +399,19 @@ fn result_resolution_only_requires_construction_inputs() {
     let i = dfg.append_block_param(Block(0), Type::I32);
     let f = dfg.append_block_param(Block(0), Type::F32);
     let unknown = dfg.append_block_param(Block(0), Type::INVALID);
-    let data = InstructionData::from_values(Opcode::First, &[i, f]).unwrap();
+    let data = InstDraft::from_values(Opcode::First, &[i, f]).unwrap();
     assert_eq!(
         data.result_types(&dfg, &module, &[]).unwrap().as_slice(),
         &[Type::I32]
     );
-    let data = InstructionData::from_values(Opcode::First, &[unknown, i]).unwrap();
+    let data = InstDraft::from_values(Opcode::First, &[unknown, i]).unwrap();
     assert!(data.result_types(&dfg, &module, &[]).is_err());
-    let data = InstructionData::from_values(Opcode::Sized, &[unknown]).unwrap();
+    let data = InstDraft::from_values(Opcode::Sized, &[unknown]).unwrap();
     assert_eq!(
         data.result_types(&dfg, &module, &[]).unwrap().as_slice(),
         &[Type::I8]
     );
-    let output = InstructionData::Empty {
-        opcode: Opcode::Output,
-    };
+    let output = InstDraft::empty(Opcode::Output);
     assert!(output.result_types(&dfg, &module, &[]).is_err());
     assert_eq!(
         output
@@ -226,13 +420,9 @@ fn result_resolution_only_requires_construction_inputs() {
             .as_slice(),
         &[Type::F32]
     );
-    let data = InstructionData::from_values(Opcode::Lane, &[i]).unwrap();
+    let data = InstDraft::from_values(Opcode::Lane, &[i]).unwrap();
     assert!(data.result_types(&dfg, &module, &[]).is_err());
-    let data = InstructionData::CallIndirect {
-        sig_id: SigId(123),
-        ptr: i,
-        args: dfg.make_value_list(&[]),
-    };
+    let data = InstDraft::call_indirect(i, &[], SigId(123));
     assert!(data.result_types(&dfg, &module, &[]).is_err());
 }
 
@@ -259,17 +449,17 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
     let offset = builder.ins().offset(ptr, 7);
     let (last, first_arg) = builder.ins().many(a, b, a, b, ptr);
     builder.ins().ret(&[triple]);
-    let dfg = &builder.func().dfg;
+    let dfg = builder.func().dfg();
     let inst = |value| dfg.inst(dfg.value_inst(value).unwrap());
-    assert!(matches!(inst(difference), InstructionData::Pair { inputs, .. } if *inputs == [a, b]));
+    assert!(matches!(inst(difference), InstructionView::Pair { inputs, .. } if *inputs == [a, b]));
     assert!(
-        matches!(inst(reverse), InstructionData::FieldPair { right, left, .. } if (*right, *left) == (a, b))
+        matches!(inst(reverse), InstructionView::FieldPair { right, left, .. } if (right, left) == (a, b))
     );
     assert!(
-        matches!(inst(triple), InstructionData::Triple { args, .. } if dfg.get_value_list(*args) == [a, b, difference])
+        matches!(inst(triple), InstructionView::Triple { args, .. } if *args == [a, b, difference])
     );
     assert!(
-        matches!(inst(offset), InstructionData::Immediate { value, displacement: 7, .. } if *value == ptr)
+        matches!(inst(offset), InstructionView::Immediate { value, displacement: 7, .. } if value == ptr)
     );
     assert_eq!(dfg.value_type(selected), Type::I64);
     assert_eq!(dfg.value_type(first), Type::I32);
@@ -291,8 +481,12 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
     // Inferred text cannot construct mismatched result types, but callers of
     // the in-memory IR can. Check the generated validator independently too.
     let mut malformed = (*module).clone();
-    malformed.functions[id].dfg.values[last].ty = Type::I32;
-    malformed.functions[id].dfg.values[first_arg].ty = Type::PTR;
+    malformed.functions[id]
+        .edit()
+        .set_value_type(last, Type::I32);
+    malformed.functions[id]
+        .edit()
+        .set_value_type(first_arg, Type::PTR);
     assert!(
         malformed
             .validate()
@@ -423,12 +617,11 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
     }
     assert!(!evaluator::can_fold(Opcode::VectorOnly));
     assert!(!evaluator::can_fold(Opcode::Difference));
-    let compare = InstructionData::Compare {
-        op: Opcode::CompareValue,
-        cc: IntCC::GtS,
-        args: [Value(0), Value(1)],
-    };
-    assert_eq!(evaluator::properties(&compare).as_slice(), &[IntCC::GtS]);
+    let compare = InstDraft::compare(Opcode::CompareValue, IntCC::GtS, [Value(0), Value(1)]);
+    assert_eq!(
+        evaluator::properties(&compare.as_view()).as_slice(),
+        &[IntCC::GtS]
+    );
     assert!(!Opcode::Composed.spec().is_commutative());
     assert!(!Opcode::Composed.spec().is_associative());
     assert!(Opcode::Trapping.spec().may_trap());
@@ -447,4 +640,132 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
             .unwrap(),
         veloc_semantics::Outcome::Trap(veloc_semantics::Trap::DivisionByZero)
     );
+}
+
+#[test]
+fn drafts_share_storage_shape_and_edit_repeated_successors_independently() {
+    use veloc_mir::dfg::DataFlowGraph;
+    use veloc_mir::{Block, Successor};
+    let target = Block(1);
+    let mut dfg = DataFlowGraph::new();
+    let inst = dfg.create_inst(InstDraft::br_table(
+        Value(0),
+        [
+            Successor {
+                block: target,
+                args: &[Value(1)],
+            },
+            Successor {
+                block: Block(2),
+                args: &[Value(2), Value(3)],
+            },
+            Successor {
+                block: target,
+                args: &[],
+            },
+        ],
+    ));
+    let original = dfg.operands(inst).to_vec();
+    let mut draft = dfg.draft(inst);
+    let untouched = draft.clone();
+    assert!(draft.set_successor_arg(target, 2, Value(4)));
+    assert!(!draft.set_successor_arg(target, 2, Value(4)));
+    assert!(!draft.set_successor_arg(Block(9), 0, Value(8)));
+    draft.set_operand(0, Value(5));
+    assert_eq!(dfg.operands(inst), original);
+    assert_eq!(untouched.operands(), original);
+    assert_eq!(
+        draft.operands(),
+        [
+            Value(5),
+            Value(1),
+            Value(4),
+            Value(4),
+            Value(2),
+            Value(3),
+            Value(4),
+            Value(4),
+            Value(4),
+        ]
+    );
+    let InstructionView::BrTable { index, table } = draft.as_view() else {
+        unreachable!()
+    };
+    assert_eq!(index, Value(5));
+    let calls: Vec<_> = table.iter().collect();
+    assert_eq!(
+        calls.iter().map(|c| c.block).collect::<Vec<_>>(),
+        [target, Block(2), target]
+    );
+    assert_eq!(calls[0].args, &[Value(1), Value(4), Value(4)]);
+    assert_eq!(calls[1].args, &[Value(2), Value(3)]);
+    assert_eq!(table.split_last().unwrap().0.args, &[Value(4); 3]);
+    dfg.replace_inst(inst, draft);
+    assert_eq!(
+        dfg.operands(inst),
+        [
+            Value(5),
+            Value(1),
+            Value(4),
+            Value(4),
+            Value(2),
+            Value(3),
+            Value(4),
+            Value(4),
+            Value(4),
+        ]
+    );
+    dfg.check_uses().unwrap();
+    assert!(dfg.use_empty(Value(0)));
+    assert_eq!(dfg.uses(Value(4)).count(), 5);
+}
+
+#[test]
+fn draft_successor_growth_preserves_record_inputs_and_following_fields() {
+    use veloc_mir::dfg::DataFlowGraph;
+    use veloc_mir::inst::{TestOperands, VectorExtData};
+    use veloc_mir::{Block, Successor};
+    let mut dfg = DataFlowGraph::new();
+    for optional in [None, Some(Value(1))] {
+        let mut draft = InstDraft::routed(
+            Opcode::Routed,
+            Value(3),
+            TestOperands {
+                token: Value(0),
+                optional,
+                tag: 19,
+            },
+            Successor {
+                block: Block(1),
+                args: &[Value(2)],
+            },
+            VectorExtData {
+                mask: Value(5),
+                evl: optional,
+            },
+        );
+        assert!(draft.set_successor_arg(Block(1), 3, Value(4)));
+        let InstructionView::Routed {
+            group,
+            dest,
+            operands,
+            tail,
+            ..
+        } = draft.as_view()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (group.token, group.optional, group.tag),
+            (Value(0), optional, 19)
+        );
+        assert_eq!(dest.args, &[Value(2), Value(4), Value(4), Value(4)]);
+        assert_eq!(operands, Value(3));
+        assert_eq!((tail.mask, tail.evl), (Value(5), optional));
+        let expected = draft.operands().to_vec();
+        let inst = dfg.create_inst(draft);
+        assert_eq!(dfg.operands(inst), expected);
+        assert_eq!(dfg.draft(inst).operands(), expected);
+        dfg.check_uses().unwrap();
+    }
 }

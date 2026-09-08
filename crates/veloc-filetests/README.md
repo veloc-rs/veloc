@@ -46,7 +46,7 @@ the presence of an opcode. Assertions belong in `//` comments.
 | `roundtrip` | Parse, validate, print, reparse, validate, and check canonical text stability |
 | `parse-error` | Require a parser diagnostic |
 | `validate-error` | Parsing must succeed; require a validator diagnostic |
-| `simplify` | Run simplify, compare cached/rebuilt use-def, check a fixed point, validate and round-trip |
+| `simplify` | Run simplify, audit exact use chains against operands, check a fixed point, validate and round-trip |
 | `o1` | Run the production O1 pipeline, validate and round-trip |
 | `lower` | Translate MIR to LIR; print instructions, operands and register types |
 | `execute` | Compare interpreter results/traps before and after O1, then check the expected outcome |

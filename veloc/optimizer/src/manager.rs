@@ -1,4 +1,4 @@
-use crate::pass::{FunctionPass, ModulePass, OptConfig, Pass, PreservedAnalyses};
+use crate::pass::{FunctionPass, ModulePass, OptConfig, Pass};
 use crate::passes::function::dce;
 use crate::stats::{PipelineStats, TimingGuard};
 use alloc::boxed::Box;
@@ -10,7 +10,6 @@ use veloc_mir::{ModuleData, function::Function};
 /// 优化流程管理器。
 pub struct PassManager {
     passes: Vec<Pass>,
-    am: AnalysisManager,
     config: OptConfig,
     pub stats: PipelineStats,
 }
@@ -19,7 +18,6 @@ impl PassManager {
     pub fn new(config: OptConfig) -> Self {
         Self {
             passes: Vec::new(),
-            am: AnalysisManager::new(),
             config,
             stats: PipelineStats::default(),
         }
@@ -61,36 +59,31 @@ impl PassManager {
                 None
             };
 
-            let pa = match pass {
+            match pass {
                 Pass::Module(mp) => {
-                    let pa = mp.run(module, &mut self.am, &self.config, &mut self.stats.metrics);
+                    let pa = mp.run(module, &self.config, &mut self.stats.metrics);
                     if pa.changed() {
                         changed = true;
                     }
-                    pa
                 }
                 Pass::Function(fp) => {
                     let mut fp_changed = false;
                     for (_, func) in module.functions.iter_mut() {
-                        let pa = fp.run(func, &mut self.am, &self.config, &mut self.stats.metrics);
+                        let mut analyses = AnalysisManager::new(func);
+                        let pa = fp.run(&mut analyses, &self.config, &mut self.stats.metrics);
                         if pa.changed() {
                             fp_changed = true;
-                            func.bump_revision();
                         }
                     }
                     if fp_changed {
                         changed = true;
                     }
-                    PreservedAnalyses::none()
                 }
             };
 
             if let Some(g) = guard {
                 g.finish(&mut self.stats);
             }
-
-            self.am
-                .invalidate_with_preserved(|id| pa.is_preserved_id(id));
         }
 
         self.stats.total_duration = total_start.elapsed();
@@ -106,6 +99,7 @@ impl PassManager {
         self.stats.start_session();
         let total_start = Instant::now();
 
+        let mut analyses = AnalysisManager::new(func);
         for pass in &self.passes {
             match pass {
                 Pass::Function(fp) => {
@@ -115,18 +109,16 @@ impl PassManager {
                         None
                     };
 
-                    let pa = fp.run(func, &mut self.am, &self.config, &mut self.stats.metrics);
+                    let pa = fp.run(&mut analyses, &self.config, &mut self.stats.metrics);
                     if pa.changed() {
                         changed = true;
-                        func.bump_revision();
                     }
 
                     if let Some(g) = guard {
                         g.finish(&mut self.stats);
                     }
 
-                    self.am
-                        .invalidate_with_preserved(|id| pa.is_preserved_id(id));
+                    analyses.invalidate_with_preserved(|id| pa.is_preserved_id(id));
                 }
                 Pass::Module(_) => {}
             }

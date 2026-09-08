@@ -1,7 +1,7 @@
 use super::inst::Inst;
 use super::types::{Block, Value};
 use alloc::vec::Vec;
-use cranelift_entity::{PrimaryMap, SecondaryMap};
+use cranelift_entity::{PrimaryMap, SecondaryMap, packed_option::PackedOption};
 
 #[derive(Debug, Clone)]
 pub struct BlockData {
@@ -14,8 +14,9 @@ pub struct BlockData {
 
 #[derive(Debug, Clone)]
 pub struct Layout {
-    pub blocks: PrimaryMap<Block, BlockData>,
-    pub block_order: Vec<Block>,
+    pub(crate) blocks: PrimaryMap<Block, BlockData>,
+    pub(crate) block_order: Vec<Block>,
+    inst_blocks: SecondaryMap<Inst, PackedOption<Block>>,
 }
 
 impl Layout {
@@ -23,10 +24,19 @@ impl Layout {
         Self {
             blocks: PrimaryMap::new(),
             block_order: Vec::new(),
+            inst_blocks: SecondaryMap::new(),
         }
     }
 
-    pub fn create_block(&mut self) -> Block {
+    pub fn blocks(&self) -> &PrimaryMap<Block, BlockData> {
+        &self.blocks
+    }
+
+    pub fn block_order(&self) -> &[Block] {
+        &self.block_order
+    }
+
+    pub(crate) fn create_block(&mut self) -> Block {
         self.blocks.push(BlockData {
             params: Vec::new(),
             preds: Vec::new(),
@@ -36,15 +46,51 @@ impl Layout {
         })
     }
 
-    pub fn append_block(&mut self, block: Block) {
+    pub(crate) fn append_block(&mut self, block: Block) {
         self.block_order.push(block);
     }
 
-    pub fn append_inst(&mut self, block: Block, inst: Inst) {
+    pub(crate) fn append_inst(&mut self, block: Block, inst: Inst) {
+        assert!(
+            self.inst_blocks[inst].is_none(),
+            "instruction already in layout"
+        );
+        self.inst_blocks[inst] = Some(block).into();
         self.blocks[block].insts.push(inst);
     }
 
-    pub fn add_edge(&mut self, from: Block, to: Block) {
+    pub fn inst_block(&self, inst: Inst) -> Option<Block> {
+        self.inst_blocks[inst].expand()
+    }
+
+    pub(crate) fn insert_after(&mut self, after: Inst, inst: Inst) {
+        let block = self.inst_block(after).expect("anchor not in layout");
+        assert!(
+            self.inst_blocks[inst].is_none(),
+            "instruction already in layout"
+        );
+        let insts = &mut self.blocks[block].insts;
+        let index = insts
+            .iter()
+            .position(|&i| i == after)
+            .expect("missing anchor");
+        insts.insert(index + 1, inst);
+        self.inst_blocks[inst] = Some(block).into();
+    }
+
+    pub(crate) fn remove_insts(&mut self, insts: &[Inst]) {
+        let dead: hashbrown::HashSet<_> = insts.iter().copied().collect();
+        let blocks: hashbrown::HashSet<_> =
+            insts.iter().filter_map(|&i| self.inst_block(i)).collect();
+        for block in blocks {
+            self.blocks[block].insts.retain(|i| !dead.contains(i));
+        }
+        for &inst in insts {
+            self.inst_blocks[inst] = None.into();
+        }
+    }
+
+    pub(crate) fn add_edge(&mut self, from: Block, to: Block) {
         if !self.blocks[from].succs.contains(&to) {
             self.blocks[from].succs.push(to);
         }

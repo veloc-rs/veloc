@@ -23,7 +23,7 @@ fn constant_folding_preserves_precedence_and_short_circuiting() {
     ] {
         let code = checked(predicate).unwrap().validation;
         assert!(!code.contains("constraint_error"), "{predicate}: {code}");
-        assert!(!code.contains("InstructionData::Custom"));
+        assert!(!code.contains("InstructionView::Custom"));
     }
     assert!(
         checked("1 + 2 * 3 == 9")
@@ -43,7 +43,7 @@ fn record_access_uses_logical_names_not_rule_or_storage_names() {
     .join("\n");
     let renamed = source
         .replace("@imm: PtrIndexImm", "@stride: PtrIndexImm")
-        .replace("pool(imm)", "pool(stride)")
+        .replace("imm_id: imm", "imm_id: stride")
         .replace("imm.scale", "stride.scale")
         .replace("imm.offset", "stride.offset");
     assert!(
@@ -67,9 +67,8 @@ type Type = ();
 type Result<T> = std::result::Result<T, String>;
 mod inst { #[derive(Clone, Copy)] pub struct ConstantPoolId(pub usize); }
 mod dfg {
-    pub trait PoolKey { fn get(self, data: &[Vec<u8>]) -> Option<&Vec<u8>>; }
-    impl PoolKey for crate::inst::ConstantPoolId {
-        fn get(self, data: &[Vec<u8>]) -> Option<&Vec<u8>> {
+    impl crate::inst::ConstantPoolId {
+        pub fn get(self, data: &[Vec<u8>]) -> Option<&Vec<u8>> {
             assert_ne!(self.0, 99, "unreachable property was read");
             data.get(self.0)
         }
@@ -91,15 +90,16 @@ mod dfg {
 mod numeric_{index} {{
     use super::*;
     enum Opcode {{ Example }}
-    enum InstructionData {{ Custom {{ opcode: Opcode, bits: u64, yes: bool }} }}
-    impl InstructionData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
+    enum ViewData {{ Custom {{ opcode: Opcode, bits: u64, yes: bool }} }}
+    type InstructionView<'a> = ViewData;
+    impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
     struct Function;
     impl Function {{ fn constraint_error(&self, _: Inst, message: &str) -> String {{ message.into() }} }}
     {validation}
     #[test] fn execute() {{
         let f = Function;
         for ((bits, yes), expected) in [(3, false), (3, true), (u64::MAX, false), (u64::MAX, true)].into_iter().zip({expected:?}) {{
-            assert_eq!(f.validate_constraints(0, &InstructionData::Custom {{ opcode: Opcode::Example, bits, yes }}, &[], &[]).is_ok(), expected);
+            assert_eq!(f.validate_constraints(0, &ViewData::Custom {{ opcode: Opcode::Example, bits, yes }}, &[], &[]).is_ok(), expected);
         }}
     }}
 }}
@@ -125,13 +125,14 @@ op Example(@data: Bytes, @other: Bytes) -> Vector {{
 mod sequences_{index} {{
     use super::*;
     enum Opcode {{ Example }}
-    enum InstructionData {{ Buffers {{ opcode: Opcode, first: inst::ConstantPoolId, second: inst::ConstantPoolId }} }}
-    impl InstructionData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
+    type InstructionView<'a> = ViewData;
+    enum ViewData {{ Buffers {{ opcode: Opcode, first: inst::ConstantPoolId, second: inst::ConstantPoolId }} }}
+    impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
     struct Function {{ dfg: Vec<Vec<u8>> }}
     impl Function {{ fn constraint_error(&self, _: Inst, message: &str) -> String {{ message.into() }} }}
     {validation}
     #[test] fn execute() {{
-        let data = InstructionData::Buffers {{ opcode: Opcode::Example, first: inst::ConstantPoolId(0), second: inst::ConstantPoolId(99) }};
+        let data = ViewData::Buffers {{ opcode: Opcode::Example, first: inst::ConstantPoolId(0), second: inst::ConstantPoolId(99) }};
         let f = Function {{ dfg: vec![vec![0, 1]] }};
         assert_eq!(f.validate_constraints(0, &data, &[], &[]).is_ok(), {valid});
         let empty = Function {{ dfg: vec![vec![]] }};

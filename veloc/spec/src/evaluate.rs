@@ -83,7 +83,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error
 
 fn properties(defs: &Definitions, source: &str) -> Result<String, Error> {
     let mut ops = String::from(
-        "#[allow(unused_variables)] pub(crate) fn properties(data: &InstructionData) -> smallvec::SmallVec<[IntCC; 1]> { match data.opcode() {\n",
+        "#[allow(unused_variables)] pub(crate) fn properties(data: &veloc_mir::InstructionView<'_>) -> smallvec::SmallVec<[IntCC; 1]> { match data.opcode() {\n",
     );
     for op in &defs.ops {
         let Some(sem) = &op.semantics else {
@@ -110,7 +110,7 @@ fn properties(defs: &Definitions, source: &str) -> Result<String, Error> {
                 })?;
             fields.push(field.clone());
         }
-        writeln!(ops, "Opcode::{} => {{ let InstructionData::{} {{ {}, .. }} = data else {{ unreachable!(\"checked semantic property layout\") }}; smallvec::smallvec![{}] }},", op.name, op.format, fields.join(", "), fields.iter().map(|f| format!("*{f}")).collect::<Vec<_>>().join(", ")).unwrap();
+        writeln!(ops, "Opcode::{} => {{ let veloc_mir::InstructionView::{} {{ {}, .. }} = data else {{ unreachable!(\"checked semantic property layout\") }}; smallvec::smallvec![{}] }},", op.name, op.format, fields.join(", "), fields.iter().map(|f| format!("*{f}")).collect::<Vec<_>>().join(", ")).unwrap();
     }
     ops.push_str("_ => smallvec::smallvec![],\n} }\n");
     Ok(ops)

@@ -7,6 +7,9 @@ use super::types::{Block, SigId, StackSlot};
 use alloc::string::String;
 use cranelift_entity::PrimaryMap;
 
+mod edit;
+pub use edit::FunctionEditor;
+
 #[derive(Debug, Clone)]
 pub struct StackSlotData {
     pub size: u32,
@@ -17,12 +20,10 @@ pub struct Function {
     pub name: String,
     pub signature: SigId,
     pub linkage: Linkage,
-    pub dfg: DataFlowGraph,
-    pub layout: Layout,
+    pub(crate) dfg: DataFlowGraph,
+    pub(crate) layout: Layout,
     pub stack_slots: PrimaryMap<StackSlot, StackSlotData>,
     pub entry_block: Option<Block>,
-    /// 当前函数的修订版本，用于缓存失效
-    revision: u64,
 }
 
 impl Function {
@@ -35,7 +36,6 @@ impl Function {
             layout: Layout::new(),
             stack_slots: PrimaryMap::new(),
             entry_block: None,
-            revision: 0,
         }
     }
 
@@ -43,12 +43,16 @@ impl Function {
         self.entry_block.is_some()
     }
 
-    pub fn revision(&self) -> u64 {
-        self.revision
+    pub fn dfg(&self) -> &DataFlowGraph {
+        &self.dfg
     }
 
-    pub fn bump_revision(&mut self) {
-        self.revision += 1;
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    pub fn edit(&mut self) -> FunctionEditor<'_> {
+        FunctionEditor::new(self)
     }
 
     /// 获取函数的参数列表（入口块的定义参数）

@@ -8,7 +8,6 @@ use crate::{Error, model};
 #[derive(Debug, Clone)]
 pub(crate) struct RecordDef {
     pub name: String,
-    pub storage: String,
     pub fields: Vec<RecordField>,
 }
 
@@ -45,7 +44,6 @@ impl DefaultValue {
 pub(crate) fn compile(records: &[Record], source: &str) -> Result<Vec<RecordDef>, Error> {
     let mut result = Vec::new();
     let mut names = BTreeSet::new();
-    let mut stores = BTreeSet::new();
     for record in records.iter().filter(|r| r.kind == "record") {
         let fail = |msg: &str| Error::at(source, record.offset, msg);
         model::identifier(source, record.offset, &record.name)?;
@@ -53,24 +51,9 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Vec<RecordDef>
             return Err(fail("duplicate property record"));
         }
         for key in record.fields.keys() {
-            if !matches!(key.as_str(), "storage" | "fields") {
+            if key != "fields" {
                 return Err(fail("unknown property record field"));
             }
-        }
-        let Some(storage) = record.fields.get("storage") else {
-            return Err(fail("record has no storage type"));
-        };
-        let Kind::Name(storage) = &storage.kind else {
-            return Err(fail("expected storage type name"));
-        };
-        if !matches!(
-            storage.as_str(),
-            "PtrIndexImmId" | "VectorMemExtId" | "VectorExtId"
-        ) {
-            return Err(fail("unsupported property pool storage type"));
-        }
-        if !stores.insert(storage.clone()) {
-            return Err(fail("duplicate property pool storage type"));
         }
         let Some(fields) = record.fields.get("fields") else {
             return Err(fail("record has no fields"));
@@ -131,77 +114,12 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Vec<RecordDef>
                 default,
             });
         }
-        validate_runtime_contract(source, record.offset, &record.name, storage, &members)?;
         result.push(RecordDef {
             name: record.name.clone(),
-            storage: storage.clone(),
             fields: members,
         });
     }
     Ok(result)
-}
-
-/// These pools still have typed DFG constructors and operand visitors. Their
-/// Rust-facing fields cannot change independently of those runtime adapters.
-/// Order and defaults remain definition-owned, but accepting an extra Value
-/// here would silently omit it from use-def traversal and replacement.
-fn validate_runtime_contract(
-    source: &str,
-    offset: usize,
-    name: &str,
-    storage: &str,
-    fields: &[RecordField],
-) -> Result<(), Error> {
-    let (expected_name, expected): (&str, &[(&str, &str)]) = match storage {
-        "PtrIndexImmId" => ("PtrIndexImm", &[("offset", "i32"), ("scale", "u32")]),
-        "VectorExtId" => (
-            "VectorExtData",
-            &[("mask", "Value"), ("evl", "optional(Value)")],
-        ),
-        "VectorMemExtId" => (
-            "VectorMemOptions",
-            &[
-                ("offset", "i32"),
-                ("flags", "MemFlags"),
-                ("scale", "u8"),
-                ("mask", "optional(Value)"),
-                ("evl", "optional(Value)"),
-            ],
-        ),
-        _ => unreachable!("storage types were checked"),
-    };
-    let fail = |message| Error::at(source, offset, message);
-    if name != expected_name {
-        return Err(fail(format!(
-            "pool `{storage}` requires runtime record `{expected_name}`"
-        )));
-    }
-    for &(name, ty) in expected {
-        let Some(field) = fields.iter().find(|field| field.name == name) else {
-            return Err(fail(format!(
-                "runtime pool record `{expected_name}` requires field `{name}`"
-            )));
-        };
-        let actual = match &field.ty {
-            PropertyType::Named(ty) => ty.clone(),
-            PropertyType::Optional(ty) => format!("optional({ty})"),
-        };
-        if actual != ty {
-            return Err(fail(format!(
-                "runtime pool field `{expected_name}.{name}` requires `{ty}`, got `{actual}`"
-            )));
-        }
-    }
-    if let Some(field) = fields
-        .iter()
-        .find(|field| !expected.iter().any(|(name, _)| *name == field.name))
-    {
-        return Err(fail(format!(
-            "unsupported runtime pool field `{expected_name}.{}`; extend the DFG adapter before adding fields",
-            field.name
-        )));
-    }
-    Ok(())
 }
 
 pub(crate) fn numeric_default(ty: &PropertyType, n: u32) -> bool {
@@ -261,13 +179,12 @@ mod tests {
 
     const RECORDS: &str = r#"
         record PtrIndexImm {
-            storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+            fields: [offset(i32, 0), scale(u32, 1)]
         }
         record VectorExtData {
-            storage: VectorExtId, fields: [mask(Value), evl(optional(Value), none)]
+            fields: [mask(Value), evl(optional(Value), none)]
         }
         record VectorMemOptions {
-            storage: VectorMemExtId,
             fields: [offset(i32, 0), flags(MemFlags, empty), scale(u8, 1), mask(optional(Value), none), evl(optional(Value), none)]
         }
     "#;
@@ -282,39 +199,19 @@ mod tests {
     }
 
     #[test]
-    fn records_keep_runtime_names_and_field_types() {
+    fn records_are_definition_owned_and_can_contain_operand_groups() {
         assert_eq!(checked(RECORDS).unwrap().len(), 3);
-        rejected(
-            &RECORDS.replace("record PtrIndexImm", "record Other"),
-            "requires runtime record",
+        assert!(checked(&RECORDS.replace("record PtrIndexImm", "record Other")).is_ok());
+        assert!(
+            checked(&RECORDS.replace("mask(Value)", "mask(Value), passthrough(Value)")).is_ok()
         );
         rejected(
-            &RECORDS.replace("scale(u32, 1)", "scale(u8, 1)"),
-            "PtrIndexImm.scale",
+            &RECORDS.replace("scale(u32, 1)", "scale(u8, 256)"),
+            "default is incompatible",
         );
         rejected(
-            &RECORDS.replace("mask(Value)", "mask(u32)"),
-            "VectorExtData.mask",
-        );
-        rejected(
-            &RECORDS.replace("mask(optional(Value), none)", "mask(Value)"),
-            "VectorMemOptions.mask",
-        );
-        rejected(
-            &RECORDS.replace(", scale(u32, 1)", ""),
-            "requires field `scale`",
-        );
-    }
-
-    #[test]
-    fn extending_fields_requires_extending_the_runtime_adapter() {
-        rejected(
-            &RECORDS.replace("mask(Value)", "mask(Value), passthrough(Value)"),
-            "extend the DFG adapter",
-        );
-        rejected(
-            &RECORDS.replace("scale(u32, 1)", "scale(u32, 1), extra(u8, 0)"),
-            "extend the DFG adapter",
+            &RECORDS.replace("mask(Value)", "mask(Value), mask(Value)"),
+            "duplicate property field",
         );
     }
 

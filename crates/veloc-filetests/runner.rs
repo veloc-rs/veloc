@@ -3,7 +3,6 @@ use std::{fs, path::Path};
 
 use filecheck::{CheckerBuilder, NO_VARIABLES};
 use libtest_mimic::{Arguments, Trial};
-use veloc_analyzer::{AnalysisManager, UseDefAnalysis};
 use veloc_mir::{Module, ModuleParser};
 use veloc_optimizer::{Metrics, PassManager, passes::function::simplify::run_simplify};
 
@@ -14,6 +13,28 @@ fn main() {
     let mut tests = Vec::new();
     discover(&root, &root, &mut tests).expect("discover file tests");
     assert!(!tests.is_empty(), "no file tests discovered");
+    tests.push(Trial::test("analysis/function-scoped-invalidation", || {
+        use veloc_analyzer::{AnalysisManager, analyze_liveness};
+        let module = ModuleParser::new().parse(
+            "local function main(i32, i32) -> i32\nblock0(v0: i32, v1: i32):\n  return v0\n",
+        )?;
+        let mut data = (*module).clone();
+        let (_, func) = data.functions.iter_mut().next().unwrap();
+        let ret = *func.layout().blocks()[func.entry_block.unwrap()]
+            .insts
+            .last()
+            .unwrap();
+        let second = func.params()[1];
+        let mut analyses = AnalysisManager::new(func);
+        let before = format!("{:?}", analyses.liveness().intervals);
+        analyses.function_mut().edit().set_operand(ret, 0, second);
+        let expected = format!("{:?}", analyze_liveness(analyses.function()).intervals);
+        let actual = format!("{:?}", analyses.liveness().intervals);
+        if actual == before || actual != expected {
+            return Err("stale derived analysis after operand edit".into());
+        }
+        Ok(())
+    }));
     tests.push(Trial::test("runner/rejects-invalid-expectations", || {
         let input = "local function main() -> void\nblock0():\n  return\n";
         for directives in [
@@ -283,27 +304,11 @@ fn simplify(module: Module) -> Result<Module> {
         if function.entry_block.is_none() {
             continue;
         }
-        let mut analyses = AnalysisManager::new();
-        analyses.use_def(function);
         let mut metrics = Metrics::default();
-        run_simplify(function, &mut analyses, false, &mut metrics);
-        let rebuilt = UseDefAnalysis::new(function);
-        for value in function.dfg.values.keys() {
-            let mut actual = analyses.use_def(function).users_of(value).to_vec();
-            let mut expected = rebuilt.users_of(value).to_vec();
-            actual.sort_unstable();
-            expected.sort_unstable();
-            if actual != expected {
-                return Err(format!(
-                    "{}: stale use-def cache for {value:?}",
-                    function.name
-                ));
-            }
-        }
-        let revision = function.revision();
-        if run_simplify(function, &mut analyses, false, &mut metrics)
-            || function.revision() != revision
-        {
+        run_simplify(function, false, &mut metrics);
+        function.dfg().check_uses().map_err(str::to_owned)?;
+        let before = format!("{function:?}");
+        if run_simplify(function, false, &mut metrics) || format!("{function:?}") != before {
             return Err(format!(
                 "{}: simplify did not reach a fixed point",
                 function.name

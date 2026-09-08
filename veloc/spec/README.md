@@ -326,23 +326,19 @@ variable-length `args: values` group and `signature: sig_id`. Direct calls use
 `signature: function(func_id)` to identify the callee's signature. The source of
 dynamic result types is explicit, not inferred from the opcode's name.
 
-The storage mapping explicitly connects logical parameters to physical fields.
-Every non-opcode field is mapped; arrays and fixed-length pooled lists use
-`[lhs, rhs]`, and the dynamic opcode field is supplied by the compiler. Logical
-properties use their actual data, not physical pool IDs: `@bytes: Bytes` maps to
-`pool(bytes)`; `@imm: PtrIndexImm` and `@mem: VectorMemOptions` map to their
-corresponding pools. A branch table maps its named `cases` and `default`
-successors with `table(cases, default)`, making the default-last representation
-explicit. Construction and projection use the same checked mapping. The
-current MIR adapter still requires SSA traversal order to agree with its
-existing physical layouts. Naming the mapping does not yet make arbitrary
-physical reordering safe for consumers that directly destructure those layouts.
+The mapping connects logical parameters to generated construction/view fields.
+Every non-opcode field is mapped; fixed groups use `[lhs, rhs]`, and the dynamic
+opcode is supplied by the compiler. Variadic groups use `ValueList` in the
+schema, but become ordinary slices in views, never a mutable Value-list pool.
+Only byte properties use `pool(bytes)`; records such as `PtrIndexImm` and
+`VectorMemOptions` bind directly. Branch tables use `table(cases, default)`,
+with the default destination last.
 
-The three structured property records are emitted from their field definitions.
-Their names and field types are checked against the existing typed DFG pool
-adapters: adding a field also requires updating those adapters, including SSA
-visitation and replacement for value fields. Unsupported changes fail during
-definition checking instead of silently losing operand uses.
+Record names and fields belong to definitions. Generated storage extracts Value
+and optional(Value) members as auxiliary operands and stores only non-SSA fields
+and presence bits. Adding a record operand needs no DFG visitor or mutation
+adapter. Built-in format field contracts remain checked because hand-written
+lowering consumers destructure their generated, typed views.
 
 The definition compiler checks references, field coverage, type variables,
 arities, constraints, semantic compatibility and generated method names before
@@ -352,7 +348,7 @@ file.
 
 ## Generated consumers
 
-The same definitions generate `Opcode`, `OpFormat`, `InstructionData`, type
+The same definitions generate `Opcode`, `OpFormat`, `InstDraft`, type
 contracts, opcode extraction, operand traversal/replacement, memory flag access,
 operation-specific parsing/printing and ordinary builders.
 
@@ -364,7 +360,7 @@ fixed-size arrays to `InstBuilder::insert`. Neither operation validates the type
 contract. The insertion API also accepts caller-supplied result types for generic
 transformations or deliberately incomplete IR.
 
-`InstructionData::result_types` is the dynamic construction entry point used by
+`InstDraft::result_types` is the dynamic construction entry point used by
 the text parser and contextual builders. Its generated opcode branches return
 the final types directly, using operand types, explicit types or the referenced
 signature. There is no runtime result-strategy enum. Missing explicit types,
@@ -500,12 +496,13 @@ mapping, independently of the text projection.
 
 Pool-backed and fixed-length-list operations use the same generated builders:
 `vconst(bytes: Vec<u8>, ty: Type)`, `ptr_index(ptr, index, imm: PtrIndexImm)` and
-`gather(ptr, index, mem: VectorMemOptions, ty: Type)`. Packing inserts properties
-through `PoolKey` before pushing the completed instruction. Contextual helpers
+`gather(ptr, index, mem: VectorMemOptions, ty: Type)`. Packing interns byte properties
+through `ConstantPoolId::insert`; record properties are stored inline. Contextual helpers
 remain for variadic groups, CFG destinations and signature-selected results.
-They provide higher-level slices and blocks while storage retains compact IDs.
-All insertion paths check the format and resolve/check the type scheme once;
-inferred results are not redundantly revalidated before insertion.
+They provide higher-level slices and blocks while installed operands occupy one
+flat range. Generated builders compute result types without validating the type
+contract; contextual builders resolve only the information needed for results.
+Full validation remains an explicit phase.
 
 ## Bidirectional text projections
 
@@ -564,18 +561,16 @@ Text atoms implement the internal `AtomCodec` trait, pairing `parse` with `print
 The emitter selects one codec type for both directions instead of maintaining
 separate reader/writer function-name mappings. Codec identity describes notation:
 `IntegerBits` and `FloatBits` both store `u64`, while `Decimal<u64>` is unsigned
-decimal text. Associated `Owned` and `View` types let parsing produce a vector
+decimal text. Associated `Owned` and `View<'a>` types let parsing produce a vector
 and printing borrow a slice. Contextual codecs reuse the scanner and symbol
 resolution algorithms; this does not require a trait for every syntax helper.
 
-Interned property handles implement `dfg::PoolKey`, with associated insertion
-input and borrowed view types. Generated `pool(...)` mappings call only `insert`
-and `get`; hand-written consumers use that same API rather than parallel DFG
-getters/interners. Byte constants are stored as shared `Arc<[u8]>` buffers: the
-pool and deduplication index share one payload, while reads borrow `[u8]`. Value
-lists and jump-table construction retain their shared, non-interning algorithms.
-Both contracts use static dispatch and do not add a codec registry or trait-object
-dispatch. Rust checks the implementations and generated calls; round-trip tests
+Only immutable byte constants are interned. Generated `pool(...)` mappings call
+`ConstantPoolId::insert` and `get` directly; there is no generic pool trait or
+parallel set of DFG getters/interners. Byte constants are stored as shared `Arc<[u8]>` buffers: the
+pool and deduplication index share one payload, while reads borrow `[u8]`.
+Operand groups and successor arguments use the unified operand storage instead.
+The atom codecs use static dispatch without a registry or trait objects. Rust checks the implementations and generated calls; round-trip tests
 remain necessary to check that the two directions agree semantically.
 
 ## Semantics and lowering
@@ -662,6 +657,70 @@ generated identity, absorbing-element and idempotence rules through a common
 replacement path that maintains SSA, layout and use-def information. O1 runs
 simplification before dead-code elimination. Removing a use of a trapping
 instruction does not authorize deleting that instruction.
+
+### Exact operands and structural editing
+
+SSA operands have one authoritative representation. Every instruction owns a
+contiguous range in a function-wide Value array. A parallel link array stores
+only owner, previous and next occurrence; per-value heads select these same
+slots. Ordinary operand traversal reads a compact slice without loading links.
+Single-occurrence replacement unlinks, writes one Value and relinks in constant
+time. Analyses iterate `dfg.operands(inst)` directly. Instruction views inspect
+operands, successors, formats and memory flags without requiring a DFG; type
+resolution and constant-pool access still require their context. RAUW visits occurrences, not distinct users. Iteration order is unspecified.
+
+Operand ranges use power-of-two size classes and are recycled as units. Range
+growth/replacement rebuilds links for that instruction, never the whole function.
+There is no separate UseIndex, per-instruction UseId list, storage-path locator,
+mirrored operand Value, or generation table.
+
+Definitions generate named layout constructors on `InstDraft`, borrowed
+`InstructionView` variants, and private SSA-free `InstFields`. A draft owns
+one flat operand buffer; an installed instruction holds an arena range instead.
+Both use the same fields, group metadata and view projection. There is no owned
+instruction-shape enum or per-variant draft-to-storage conversion.
+
+Fixed and variadic operands, successor arguments and record inputs (mask/EVL)
+are flattened by the generated constructors. Installation moves fields, copies
+the flat operands into the arena and links their uses. `dfg.draft(inst)` snapshots
+fields and operands without decoding/reconstructing instruction variants.
+Draft operand edits and successor argument growth preserve this layout; type
+contracts remain an explicit validation step. Successor constructors borrow
+argument slices and branch tables accept iterators, avoiding nested temporary
+argument copies.
+
+Successor metadata contains targets and argument
+lengths, not another Value list. Borrowed successor views preserve duplicate
+edges and the final default edge. Record properties are stored inline; only
+immutable byte constants are interned. No mutable SSA-bearing pool is shared.
+
+`Use<'a>` is a borrowed view with `inst()`, `index()` and `value()`, not a
+persistent entity ID. Editing uses `set_operand(inst, index, value)`. Replacing
+an instruction invalidates its previous positions. Borrowing prevents live
+views from crossing mutations; manually saved numeric positions have no identity
+guarantee and must be looked up again after structural replacement.
+
+`Function::dfg()` and `layout()` expose read-only storage. `Function::edit()`
+updates instructions, result transfers, layout and affected CFG edges. Builder,
+parser, simplification and dead-code removal use this path. Standalone DFG
+editing maintains operand references but does not own block layout. Type
+contracts remain explicit validation, not implicit builder checks.
+
+Simplification uses a deduplicated worklist of affected definitions and users
+instead of repeatedly scanning the whole function. It preserves Value IDs during
+multi-result constant replacement. Dead-code removal erases closed sets together
+so dead internal references do not obstruct deletion. `check_uses` independently
+reconstructs occurrences for structural tests; it is not run on every edit.
+
+`AnalysisManager` borrows one function exclusively. Reading analyses is cached;
+requesting mutable function access clears derived analyses. It cannot switch to a
+different function. MIR has no revision counter or use-def synchronization
+protocol. Fixed-point tests compare complete function state across another pass. LIR retains its separate non-SSA register analysis.
+
+This establishes the ordinary mutable MIR path. It does not add an e-graph, an AI
+search driver, solver invocation, general rollback or fine-grained incremental
+liveness. Those mechanisms can use the edit boundary without becoming IR storage
+requirements. Runtime and memory improvements require measurement.
 
 Codegen joins checked direct MIR primitive applications with the reviewed LIR
 bindings in `lir/defs/generic.rs` at build time. The same declaration supplies

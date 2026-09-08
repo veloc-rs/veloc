@@ -84,7 +84,7 @@ impl<'a> WasmTranslator<'a> {
                     self.runtime.table_grow,
                     &[vmctx, table_idx, init_val, delta],
                 );
-                let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
+                let res_val = self.builder.func().dfg().inst_results(call_inst)[0];
                 self.stack.push(res_val);
                 self.reload_table(table);
             }

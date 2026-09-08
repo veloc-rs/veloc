@@ -2,10 +2,10 @@
 // run: opgen-error
 // check: expected parameter, array, pool(parameter) or table(cases, default)
 record PtrIndexImm {
-    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+    fields: [offset(i32, 0), scale(u32, 1)]
 }
 format Indexed {
-    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: dynamic(opcode)
 }
 op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm) -> (result: PTR) {
@@ -17,14 +17,14 @@ op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm) -> (result: PTR) {
 // run: opgen-error
 // check: parameter `imm` is incompatible with storage field `imm_id`
 record PtrIndexImm {
-    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+    fields: [offset(i32, 0), scale(u32, 1)]
 }
 format Indexed {
-    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: dynamic(opcode)
 }
 op Indexed(ptr: PTR, index: I32, @imm: Bytes) -> (result: PTR) {
-    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
     memory: NONE
 }
 
@@ -32,14 +32,14 @@ op Indexed(ptr: PTR, index: I32, @imm: Bytes) -> (result: PTR) {
 // run: opgen-error
 // check: parameter `unused` has no storage mapping
 record PtrIndexImm {
-    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+    fields: [offset(i32, 0), scale(u32, 1)]
 }
 format Indexed {
-    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: dynamic(opcode)
 }
 op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm, @unused: PtrIndexImm) -> (result: PTR) {
-    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
     memory: NONE
 }
 
@@ -47,14 +47,14 @@ op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm, @unused: PtrIndexImm) -> (re
 // run: opgen-error
 // check: parameter `imm` is stored more than once
 record PtrIndexImm {
-    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+    fields: [offset(i32, 0), scale(u32, 1)]
 }
 format Indexed {
-    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId), other(PtrIndexImmId)],
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImm), other(PtrIndexImm)],
     opcode: dynamic(opcode)
 }
 op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm) -> (result: PTR) {
-    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm), other: pool(imm) },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm, other: imm },
     memory: NONE
 }
 
@@ -62,14 +62,14 @@ op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm) -> (result: PTR) {
 // run: opgen-error
 // check: unknown property type `PtrIndexImmId`
 record PtrIndexImm {
-    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+    fields: [offset(i32, 0), scale(u32, 1)]
 }
 format Indexed {
-    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: dynamic(opcode)
 }
 op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImmId) -> (result: PTR) {
-    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
     memory: NONE
 }
 
@@ -77,14 +77,14 @@ op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImmId) -> (result: PTR) {
 // run: opgen-error
 // check: unknown property type `ConstantPoolId`
 record PtrIndexImm {
-    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+    fields: [offset(i32, 0), scale(u32, 1)]
 }
 format Indexed {
-    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: dynamic(opcode)
 }
 op Indexed(ptr: PTR, index: I32, @imm: ConstantPoolId) -> (result: PTR) {
-    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
     memory: NONE
 }
 
@@ -92,14 +92,14 @@ op Indexed(ptr: PTR, index: I32, @imm: ConstantPoolId) -> (result: PTR) {
 // run: opgen-error
 // check: unknown property type `VectorExtId`
 record PtrIndexImm {
-    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+    fields: [offset(i32, 0), scale(u32, 1)]
 }
 format Indexed {
-    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: dynamic(opcode)
 }
 op Indexed(ptr: PTR, index: I32, @imm: VectorExtId) -> (result: PTR) {
-    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
     memory: NONE
 }
 
@@ -107,21 +107,21 @@ op Indexed(ptr: PTR, index: I32, @imm: VectorExtId) -> (result: PTR) {
 // run: opgen-error
 // check: unknown property type `VectorMemExtId`
 record PtrIndexImm {
-    storage: PtrIndexImmId, fields: [offset(i32, 0), scale(u32, 1)]
+    fields: [offset(i32, 0), scale(u32, 1)]
 }
 format Indexed {
-    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [opcode(Opcode), ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: dynamic(opcode)
 }
 op Indexed(ptr: PTR, index: I32, @imm: VectorMemExtId) -> (result: PTR) {
-    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool(imm) },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
     memory: NONE
 }
 
 // ----- pooled-value-lists-and-inline-arrays-keep-distinct-bindings-1
 // run: opgen-error
 // check: storage field `args` requires 3 arguments
-format Triple { fields: [opcode(Opcode), args(list(3))], opcode: dynamic(opcode) }
+format Triple { fields: [opcode(Opcode), args(values(3))], opcode: dynamic(opcode) }
 op Triple<T: Integer>(a: T, b: T, c: T) -> (result: T) {
     mnemonic: "triple", storage: Triple { args: [a, b] }, memory: NONE
 }
@@ -129,7 +129,7 @@ op Triple<T: Integer>(a: T, b: T, c: T) -> (result: T) {
 // ----- pooled-value-lists-and-inline-arrays-keep-distinct-bindings-2
 // run: opgen-error
 // check: parameter `a` is stored more than once
-format Triple { fields: [opcode(Opcode), args(list(3))], opcode: dynamic(opcode) }
+format Triple { fields: [opcode(Opcode), args(values(3))], opcode: dynamic(opcode) }
 op Triple<T: Integer>(a: T, b: T, c: T) -> (result: T) {
     mnemonic: "triple", storage: Triple { args: [a, a, c] }, memory: NONE
 }
@@ -221,3 +221,19 @@ op Table(index: I32, cases: successors, default: successor) -> () {
     mnemonic: "table", storage: Table { index: index, table: cases },
     traits: [TERMINATOR], memory: NONE
 }
+
+// ----- draft-constructor-name-collision
+// run: opgen-error
+// check: conflicting draft constructor `a_b`
+format AB { fields: [op(Opcode)], opcode: dynamic(op) }
+format A_b { fields: [op(Opcode)], opcode: dynamic(op) }
+
+// ----- draft-constructor-api-collision
+// run: opgen-error
+// check: conflicting draft constructor `operands`
+format Operands { fields: [op(Opcode)], opcode: dynamic(op) }
+
+// ----- draft-constructor-keyword
+// run: opgen-error
+// check: invalid generated identifier `match`
+format Match { fields: [op(Opcode)], opcode: dynamic(op) }

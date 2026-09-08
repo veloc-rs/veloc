@@ -75,7 +75,11 @@ fn runtime_layout_contracts_check_property_types_and_operand_order() {
             "value(Value), ptr(Value)",
         ),
         ("IntCompare", "kind(IntCC)", "kind(FloatCC)"),
-        ("VectorGather", "ext(VectorMemExtId)", "ext(VectorExtId)"),
+        (
+            "VectorGather",
+            "ext(VectorMemOptions)",
+            "ext(VectorExtData)",
+        ),
     ] {
         rejected(
             &changed_record("format", layout, from, to),
@@ -85,11 +89,11 @@ fn runtime_layout_contracts_check_property_types_and_operand_order() {
 }
 
 #[test]
-fn runtime_layout_contracts_distinguish_arrays_from_fixed_and_variadic_lists() {
+fn runtime_layout_contracts_check_fixed_and_variadic_groups() {
     for (layout, from, to) in [
-        ("IntCompare", "args(values(2))", "args(list(2))"),
-        ("VectorStoreStrided", "args(list(3))", "args(values(3))"),
-        ("VectorScatter", "args(list(3))", "args(ValueList)"),
+        ("IntCompare", "args(values(2))", "args(values(3))"),
+        ("VectorStoreStrided", "args(values(3))", "args(values(2))"),
+        ("VectorScatter", "args(values(3))", "args(ValueList)"),
         ("Shuffle", "args(values(2))", "args(values(3))"),
     ] {
         rejected(
@@ -184,9 +188,9 @@ fn signature_results_require_a_typed_signature_source() {
 fn existing_predication_has_a_checked_supported_adapter() {
     assert!(compile_mir(&definitions()).is_ok());
     for (from, to) in [
-        ("ext(VectorExtId)", "config(VectorExtId)"),
-        ("ext(VectorExtId)", "ext(VectorMemExtId)"),
-        ("ext(VectorExtId)", "ext(VectorExtId), hidden(u32)"),
+        ("ext(VectorExtData)", "config(VectorExtData)"),
+        ("ext(VectorExtData)", "ext(VectorMemOptions)"),
+        ("ext(VectorExtData)", "ext(VectorExtData), hidden(u32)"),
     ] {
         rejected(
             &changed_record("layout", "VectorOpWithExt", from, to),

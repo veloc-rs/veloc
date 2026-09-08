@@ -258,23 +258,26 @@ pub(super) fn print(
         .collect::<Vec<_>>()
         .join(", ");
     if fields.is_empty() {
-        writeln!(out, "crate::InstructionData::{} => {{", format.name).unwrap();
+        writeln!(out, "crate::InstructionView::{} => {{", format.name).unwrap();
     } else {
         writeln!(
             out,
-            "crate::InstructionData::{} {{ {fields} }} => {{",
+            "crate::InstructionView::{} {{ {fields} }} => {{",
             format.name
         )
         .unwrap();
     }
     for (index, field) in format.fields.iter().enumerate() {
         let expected = match &field.ty {
-            FieldType::List(n) => Some(*n),
             FieldType::Named(ty) if ty == "ValueList" => arity,
             _ => None,
         };
         if let Some(n) = expected {
-            writeln!(out, "if self.dfg.get_value_list(*_s{index}).len() != {n} {{ return Err(core::fmt::Error); }}").unwrap();
+            writeln!(
+                out,
+                "if _s{index}.len() != {n} {{ return Err(core::fmt::Error); }}"
+            )
+            .unwrap();
         }
     }
     for (name, expr) in crate::packing::projections(
@@ -390,10 +393,7 @@ fn print_item(out: &mut String, op: &Op, item: &Item) {
 
 fn print_atom(out: &mut String, atom: &Atom, value: &str) {
     // Pool projections and variadic groups already yield borrowed slices.
-    let value = if matches!(
-        atom.kind,
-        AtomKind::Values | AtomKind::Successors | AtomKind::Bytes
-    ) {
+    let value = if matches!(atom.kind, AtomKind::Values | AtomKind::Bytes) {
         value.to_owned()
     } else {
         format!("&{value}")

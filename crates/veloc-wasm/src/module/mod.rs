@@ -517,7 +517,7 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
             }
 
             let call_inst = ins.call(func_id, &call_args);
-            let res_vals: Vec<_> = ins.builder().func().dfg.inst_results(call_inst).to_vec();
+            let res_vals: Vec<_> = ins.builder().func().dfg().inst_results(call_inst).to_vec();
             let ret_bits = if let Some(&res_val) = res_vals.first() {
                 let res_ty = ins.builder().value_type(res_val);
                 match res_ty {

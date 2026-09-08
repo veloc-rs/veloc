@@ -5,8 +5,8 @@
 //! and forward SSA references independently of the instruction set.
 
 use crate::{
-    Block, BlockCall, CallConv, FuncId, Function, InstructionData, Linkage, MemFlags, Module,
-    ModuleData, Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
+    Block, BlockCall, CallConv, FuncId, Function, InstDraft, Linkage, MemFlags, Module, ModuleData,
+    Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
     function::StackSlotData,
     types::{ValueData, parse_type},
 };
@@ -238,9 +238,7 @@ fn parse_instruction(
         ));
     }
 
-    let successors = instruction_successors(&data, func);
-    let inst = func.dfg.instructions.push(data);
-    func.layout.append_inst(block, inst);
+    let inst = func.edit().append_inst(block, data, &[]);
     if !result_names.is_empty() {
         let values = result_names
             .iter()
@@ -251,14 +249,11 @@ fn parse_instruction(
         let list = func.dfg.make_value_list(&values);
         func.dfg.inst_results[inst] = list;
     }
-    for successor in successors {
-        func.layout.add_edge(block, successor);
-    }
     Ok(())
 }
 
 fn resolve_result_types(
-    data: &InstructionData,
+    data: &InstDraft,
     hint: Option<Type>,
     func: &Function,
     module: &ModuleData,
@@ -285,14 +280,6 @@ fn resolve_result_types(
         }
     }
     Ok(results)
-}
-
-fn instruction_successors(data: &InstructionData, func: &Function) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    data.visit_successors(&func.dfg, |call| {
-        blocks.push(func.dfg.block_call_block(call));
-    });
-    blocks
 }
 
 pub(super) struct OperandParser<'a> {
@@ -335,7 +322,7 @@ impl OperandParser<'_> {
             .copied()
             .ok_or_else(|| ParseError(format!("unknown block `{name}`")))?;
         let values = self.values(args)?;
-        Ok(self.func.dfg.make_block_call(block, &values))
+        Ok(BlockCall::new(block, &values))
     }
 
     pub(super) fn block_calls(
@@ -895,7 +882,7 @@ mod tests {
 
     fn round_trip<C: AtomCodec>(cx: &mut OperandParser<'_>, text: &str, ty: Option<Type>) -> String
     where
-        C::Owned: Debug + PartialEq,
+        C::Owned: Debug + PartialEq + for<'a> Borrow<C::View<'a>>,
     {
         let value = C::parse(cx, text, ty).unwrap();
         let mut printed = String::new();
@@ -1084,8 +1071,8 @@ mod tests {
         let value = parser.value("v0").unwrap();
         let calls = parser.block_calls("[block0(v0), block0()]").unwrap();
         assert_eq!(calls.len(), 2);
-        assert_eq!(parser.func.dfg.block_call_args(calls[0]), &[value]);
-        assert!(parser.func.dfg.block_call_args(calls[1]).is_empty());
+        assert_eq!(calls[0].args.as_slice(), &[value]);
+        assert!(calls[1].args.is_empty());
         assert!(parser.block_calls("[]").unwrap().is_empty());
         assert!(parser.block_calls("block0()").is_err());
         assert!(parser.block_calls("[block0(),]").is_err());

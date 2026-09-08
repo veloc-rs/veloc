@@ -5,6 +5,23 @@ use crate::Error;
 use crate::records::RecordDef;
 use crate::syntax::{Kind, Node, Record};
 
+mod generate;
+
+pub(crate) fn constructor_name(name: &str) -> String {
+    let mut method = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if i > 0 && ch.is_uppercase() {
+            method.push('_');
+        }
+        method.extend(ch.to_lowercase());
+    }
+    if method == "return" {
+        "ret".into()
+    } else {
+        method
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Format {
     pub name: String,
@@ -51,7 +68,6 @@ pub(crate) struct Field {
 pub(crate) enum FieldType {
     Named(String),
     Values(usize),
-    List(usize),
 }
 
 #[derive(Debug)]
@@ -67,17 +83,13 @@ enum FormatSource {
 }
 
 impl FieldType {
-    fn named(&self, expected: &str) -> bool {
+    pub(crate) fn named(&self, expected: &str) -> bool {
         matches!(self, Self::Named(name) if name == expected)
-    }
-
-    fn auxiliary(&self) -> bool {
-        self.named("VectorExtId") || self.named("VectorMemExtId")
     }
 
     fn arity(&self) -> Option<usize> {
         match self {
-            Self::Values(n) | Self::List(n) => Some(*n),
+            Self::Values(n) => Some(*n),
             Self::Named(name) => match name.as_str() {
                 "Value" => Some(1),
                 "ValueList" | "BlockCall" | "JumpTable" => None,
@@ -90,7 +102,6 @@ impl FieldType {
         match self {
             Self::Named(name) => name.clone(),
             Self::Values(n) => format!("[Value; {n}]"),
-            Self::List(_) => "ValueList".to_owned(),
         }
     }
 
@@ -98,17 +109,15 @@ impl FieldType {
         match self {
             Self::Named(name) => name.clone(),
             Self::Values(n) => format!("values({n})"),
-            Self::List(n) => format!("list({n})"),
         }
     }
 
     pub(crate) fn qualified_type(&self) -> String {
         match self {
             Self::Values(n) => format!("[crate::Value; {n}]"),
-            Self::List(_) => "crate::ValueList".to_owned(),
             Self::Named(name) => match name.as_str() {
                 "u32" | "u64" | "i32" | "bool" => name.clone(),
-                "PtrIndexImmId" | "ConstantPoolId" | "VectorExtId" | "VectorMemExtId" => {
+                "PtrIndexImm" | "ConstantPoolId" | "VectorExtData" | "VectorMemOptions" => {
                     format!("crate::inst::{name}")
                 }
                 _ => format!("crate::{name}"),
@@ -119,14 +128,11 @@ impl FieldType {
     fn traversal(&self) -> Option<&'static str> {
         match self {
             Self::Values(_) => Some("array"),
-            Self::List(_) => Some("value_list"),
             Self::Named(name) => match name.as_str() {
                 "Value" => Some("value"),
                 "ValueList" => Some("value_list"),
                 "BlockCall" => Some("block_call"),
                 "JumpTable" => Some("jump_table"),
-                "VectorExtId" => Some("vector_ext"),
-                "VectorMemExtId" => Some("vector_mem_ext"),
                 _ => None,
             },
         }
@@ -161,6 +167,19 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
     let properties = crate::records::compile(records, source)?;
     let mut layouts = Vec::new();
     let mut names = BTreeSet::new();
+    let mut methods: BTreeSet<String> = [
+        "as_view",
+        "opcode",
+        "operands",
+        "set_operand",
+        "set_successor_arg",
+        "is_terminator",
+        "result_types",
+        "from_values",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
     for record in records {
         if !matches!(record.kind.as_str(), "format" | "layout") {
             continue;
@@ -169,7 +188,16 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
         if !names.insert(record.name.clone()) {
             return Err(Error::at(source, record.offset, "duplicate storage layout"));
         }
-        layouts.push(parse_layout(record, source)?);
+        let method = constructor_name(&record.name);
+        crate::model::identifier(source, record.offset, &method)?;
+        if !methods.insert(method.clone()) {
+            return Err(Error::at(
+                source,
+                record.offset,
+                format!("conflicting draft constructor `{method}`"),
+            ));
+        }
+        layouts.push(parse_layout(record, source, &properties)?);
     }
     let formats = layouts
         .iter()
@@ -186,7 +214,8 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
         .collect::<Vec<_>>();
     validate_links(&layouts, &formats, records, source)?;
     Ok(Storage {
-        instructions: crate::records::generate(&properties) + &generate_instructions(&layouts),
+        instructions: crate::records::generate(&properties)
+            + &generate::instructions(&layouts, &properties),
         formats_code: generate_formats(&formats),
         records: properties,
         alternatives: layouts
@@ -209,7 +238,7 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
     })
 }
 
-fn parse_layout(record: &Record, source: &str) -> Result<Layout, Error> {
+fn parse_layout(record: &Record, source: &str, records: &[RecordDef]) -> Result<Layout, Error> {
     let is_format = record.kind == "format";
     let allowed: &[&str] = if is_format {
         &["fields", "opcode"]
@@ -248,7 +277,7 @@ fn parse_layout(record: &Record, source: &str) -> Result<Layout, Error> {
         }
         fields.push(Field {
             name: name.clone(),
-            ty: field_type(&args[0], source)?,
+            ty: field_type(&args[0], source, records)?,
         });
     }
     let opcode_node = required(record, "opcode", source)?;
@@ -295,7 +324,7 @@ fn parse_layout(record: &Record, source: &str) -> Result<Layout, Error> {
     }
     let flags_fields = fields
         .iter()
-        .filter(|f| f.ty.named("MemFlags") || f.ty.named("VectorMemExtId"))
+        .filter(|f| f.ty.named("MemFlags") || f.ty.named("VectorMemOptions"))
         .count();
     if flags_fields > 1 {
         return Err(Error::at(
@@ -324,7 +353,7 @@ fn parse_layout(record: &Record, source: &str) -> Result<Layout, Error> {
                 if fields
                     .iter()
                     .enumerate()
-                    .any(|(i, f)| i != index && !f.ty.auxiliary() && f.ty.arity() != Some(0))
+                    .any(|(i, f)| i != index && f.ty.arity() != Some(0))
                 {
                     return Err(Error::at(
                         source,
@@ -426,7 +455,7 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
             &[
                 ("ptr", "Value"),
                 ("index", "Value"),
-                ("imm_id", "PtrIndexImmId"),
+                ("imm_id", "PtrIndexImm"),
             ],
             Some("PtrIndex"),
         ),
@@ -467,24 +496,24 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
             &[
                 ("ptr", "Value"),
                 ("stride", "Value"),
-                ("ext", "VectorMemExtId"),
+                ("ext", "VectorMemOptions"),
             ],
             Some("LoadStride"),
         ),
         "VectorStoreStrided" => (
-            &[("args", "list(3)"), ("ext", "VectorMemExtId")],
+            &[("args", "values(3)"), ("ext", "VectorMemOptions")],
             Some("StoreStride"),
         ),
         "VectorGather" => (
             &[
                 ("ptr", "Value"),
                 ("index", "Value"),
-                ("ext", "VectorMemExtId"),
+                ("ext", "VectorMemOptions"),
             ],
             Some("Gather"),
         ),
         "VectorScatter" => (
-            &[("args", "list(3)"), ("ext", "VectorMemExtId")],
+            &[("args", "values(3)"), ("ext", "VectorMemOptions")],
             Some("Scatter"),
         ),
         "Shuffle" => (
@@ -496,7 +525,7 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
             &[
                 ("opcode", "Opcode"),
                 ("args", "ValueList"),
-                ("ext", "VectorExtId"),
+                ("ext", "VectorExtData"),
             ],
             None,
         ),
@@ -551,7 +580,7 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
     Ok(())
 }
 
-fn field_type(node: &Node, source: &str) -> Result<FieldType, Error> {
+fn field_type(node: &Node, source: &str, records: &[RecordDef]) -> Result<FieldType, Error> {
     match &node.kind {
         Kind::Name(name)
             if [
@@ -560,13 +589,13 @@ fn field_type(node: &Node, source: &str) -> Result<FieldType, Error> {
                 "ValueList",
                 "BlockCall",
                 "JumpTable",
-                "VectorExtId",
-                "VectorMemExtId",
+                "VectorExtData",
+                "VectorMemOptions",
                 "MemFlags",
                 "FuncId",
                 "SigId",
                 "StackSlot",
-                "PtrIndexImmId",
+                "PtrIndexImm",
                 "ConstantPoolId",
                 "Intrinsic",
                 "IntCC",
@@ -576,11 +605,12 @@ fn field_type(node: &Node, source: &str) -> Result<FieldType, Error> {
                 "i32",
                 "bool",
             ]
-            .contains(&name.as_str()) =>
+            .contains(&name.as_str())
+                || records.iter().any(|r| r.name == *name) =>
         {
             Ok(FieldType::Named(name.clone()))
         }
-        Kind::Call(kind, args) if matches!(kind.as_str(), "values" | "list") && args.len() == 1 => {
+        Kind::Call(kind, args) if kind == "values" && args.len() == 1 => {
             let n = number(&args[0], source)?;
             if n == 0 || n > u8::MAX as usize {
                 return Err(Error::at(
@@ -589,11 +619,7 @@ fn field_type(node: &Node, source: &str) -> Result<FieldType, Error> {
                     "operand group size must be in 1..=255",
                 ));
             }
-            Ok(if kind == "values" {
-                FieldType::Values(n)
-            } else {
-                FieldType::List(n)
-            })
+            Ok(FieldType::Values(n))
         }
         _ => Err(Error::at(source, node.offset, "unknown storage field type")),
     }
@@ -706,159 +732,6 @@ fn generate_formats(formats: &[Format]) -> String {
         writeln!(out, "            Self::{} => {arity},", format.name).unwrap();
     }
     out.push_str("        }\n    }\n}\n");
-    out
-}
-
-fn generate_instructions(layouts: &[Layout]) -> String {
-    let mut out = String::from(
-        "// @generated from operation storage definitions.\n#[derive(Debug, Clone)]\npub enum InstructionData {\n",
-    );
-    for layout in layouts {
-        if layout.fields.is_empty() {
-            writeln!(out, "    {},", layout.name).unwrap();
-        } else {
-            writeln!(out, "    {} {{", layout.name).unwrap();
-            for field in &layout.fields {
-                writeln!(out, "        {}: {},", field.name, field.ty.rust_type()).unwrap();
-            }
-            out.push_str("    },\n");
-        }
-    }
-    out.push_str("}\n#[allow(unused_variables)]\nimpl InstructionData {\n    pub fn opcode(&self) -> Opcode {\n        match self {\n");
-    for layout in layouts {
-        let value = match &layout.opcode {
-            OpcodeSource::Fixed(opcode) => format!("Opcode::{opcode}"),
-            OpcodeSource::Dynamic(index) => format!("*_field{index}"),
-        };
-        writeln!(out, "            {} => {value},", layout.pattern()).unwrap();
-    }
-    out.push_str("        }\n    }\n    pub fn matches_format(&self, dfg: &DataFlowGraph, format: OpFormat) -> bool {\n        match self {\n");
-    for layout in layouts {
-        let mut condition = match &layout.format {
-            FormatSource::Fixed(name) => format!("format == OpFormat::{name}"),
-            FormatSource::Arity { field, formats } => {
-                let targets = formats
-                    .iter()
-                    .map(|f| format!("OpFormat::{f}"))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                format!(
-                    "matches!(format, {targets}) && format.fixed_value_arity() == Some(dfg.get_value_list(*_field{field}).len())"
-                )
-            }
-        };
-        for (i, field) in layout.fields.iter().enumerate() {
-            if let FieldType::List(n) = field.ty {
-                write!(condition, " && dfg.get_value_list(*_field{i}).len() == {n}").unwrap();
-            }
-        }
-        writeln!(out, "            {} => {condition},", layout.pattern()).unwrap();
-    }
-    out.push_str("        }\n    }\n");
-    for (name, auxiliary) in [("visit_type_operands", false), ("visit_operands", true)] {
-        writeln!(out, "    pub fn {name}<F: FnMut(Value)>(&self, dfg: &DataFlowGraph, mut f: F) {{\n        match self {{").unwrap();
-        for layout in layouts {
-            writeln!(out, "            {} => {{", layout.pattern()).unwrap();
-            for (i, field) in layout.fields.iter().enumerate() {
-                if field.ty.auxiliary() && !auxiliary {
-                    continue;
-                }
-                if let Some(kind) = field.ty.traversal() {
-                    let visit = match kind {
-                        "value" => format!("f(*_field{i});"),
-                        "array" => format!("for &value in _field{i} {{ f(value); }}"),
-                        _ => format!("dfg.visit_{kind}(*_field{i}, &mut f);"),
-                    };
-                    writeln!(out, "                {visit}").unwrap();
-                }
-            }
-            out.push_str("            },\n");
-        }
-        out.push_str("        }\n    }\n");
-    }
-    out.push_str("    pub fn replace_value(&mut self, dfg: &mut DataFlowGraph, old_val: Value, new_val: Value) {\n        match self {\n");
-    for layout in layouts {
-        writeln!(out, "            {} => {{", layout.pattern()).unwrap();
-        for (i, field) in layout.fields.iter().enumerate() {
-            if let Some(kind) = field.ty.traversal() {
-                let replace = match kind {
-                    "value" => format!("if *_field{i} == old_val {{ *_field{i} = new_val; }}"),
-                    "array" => format!(
-                        "for value in _field{i} {{ if *value == old_val {{ *value = new_val; }} }}"
-                    ),
-                    "block_call" | "jump_table" => {
-                        format!("dfg.replace_{kind}(*_field{i}, old_val, new_val);")
-                    }
-                    _ => format!("dfg.replace_{kind}(_field{i}, old_val, new_val);"),
-                };
-                writeln!(out, "                {replace}").unwrap();
-            }
-        }
-        out.push_str("            },\n");
-    }
-    out.push_str("        }\n    }\n    pub fn memory_flags(&self, dfg: &DataFlowGraph) -> Option<MemFlags> {\n        match self {\n");
-    for layout in layouts {
-        let value = layout.fields.iter().enumerate().find_map(|(i, f)| {
-            if f.ty.named("MemFlags") {
-                Some(format!("Some(*_field{i})"))
-            } else if f.ty.named("VectorMemExtId") {
-                Some(format!("Some(crate::dfg::PoolKey::get(*_field{i}, dfg).expect(\"instruction refers to a missing vector memory extension\").flags)"))
-            } else {
-                None
-            }
-        }).unwrap_or_else(|| "None".to_owned());
-        writeln!(out, "            {} => {value},", layout.pattern()).unwrap();
-    }
-    out.push_str("        }\n    }\n    /// Construct a values-only or nullary instruction in its canonical layout.\n    pub fn from_values(opcode: Opcode, values: &[Value]) -> Option<Self> {\n        match opcode.spec().format {\n");
-    for layout in layouts {
-        if !layout.canonical || !value_only(&layout.fields) {
-            continue;
-        }
-        let arity = layout.arity().expect("inline values have a fixed arity");
-        let mut index = 0;
-        let mut fields = Vec::new();
-        for field in &layout.fields {
-            let value = match &field.ty {
-                FieldType::Values(n) => {
-                    let args = (index..index + n)
-                        .map(|i| format!("values[{i}]"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    index += n;
-                    format!("[{args}]")
-                }
-                FieldType::Named(name) if name == "Value" => {
-                    let value = format!("values[{index}]");
-                    index += 1;
-                    value
-                }
-                FieldType::Named(name) if name == "Opcode" => "opcode".to_owned(),
-                _ => unreachable!("validated values-only format"),
-            };
-            fields.push(if field.name == value {
-                value
-            } else {
-                format!("{}: {value}", field.name)
-            });
-        }
-        let construct = if fields.is_empty() {
-            format!("Self::{}", layout.name)
-        } else {
-            format!("Self::{} {{ {} }}", layout.name, fields.join(", "))
-        };
-        let arity_check = if arity == 0 {
-            "values.is_empty()".into()
-        } else {
-            format!("values.len() == {arity}")
-        };
-        writeln!(
-            out,
-            "            OpFormat::{} if {arity_check} => Some({construct}),",
-            layout.name
-        )
-        .unwrap();
-    }
-    out.push_str("            _ => None,\n        }\n    }\n}\n");
     out
 }
 

@@ -1,4 +1,4 @@
-use crate::{InstructionData, Type};
+use crate::{InstDraft, Type};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Constant {
@@ -67,19 +67,17 @@ impl Constant {
     }
 }
 
-impl From<Constant> for InstructionData {
+impl From<Constant> for InstDraft {
     fn from(c: Constant) -> Self {
         use crate::constant::Constant;
         match c {
-            Constant::I8(v) => InstructionData::Iconst { value: v as u64 },
-            Constant::I16(v) => InstructionData::Iconst { value: v as u64 },
-            Constant::I32(v) => InstructionData::Iconst { value: v as u64 },
-            Constant::I64(v) => InstructionData::Iconst { value: v as u64 },
-            Constant::F32(v) => InstructionData::Fconst {
-                value: v.to_bits() as u64,
-            },
-            Constant::F64(v) => InstructionData::Fconst { value: v.to_bits() },
-            Constant::Bool(v) => InstructionData::Bconst { value: v },
+            Constant::I8(v) => InstDraft::iconst(v as u64),
+            Constant::I16(v) => InstDraft::iconst(v as u64),
+            Constant::I32(v) => InstDraft::iconst(v as u64),
+            Constant::I64(v) => InstDraft::iconst(v as u64),
+            Constant::F32(v) => InstDraft::fconst(v.to_bits() as u64),
+            Constant::F64(v) => InstDraft::fconst(v.to_bits()),
+            Constant::Bool(v) => InstDraft::bconst(v),
         }
     }
 }

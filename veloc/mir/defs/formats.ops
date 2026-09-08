@@ -1,24 +1,20 @@
-// Logical properties are independent of the pool handles used in storage.
+// Logical records. SSA fields are extracted into the instruction's operands.
 record PtrIndexImm {
-    storage: PtrIndexImmId,
     fields: [offset(i32, 0), scale(u32, 1)]
 }
 record VectorMemOptions {
-    storage: VectorMemExtId,
     fields: [
         offset(i32, 0), flags(MemFlags, empty), scale(u8, 1),
         mask(optional(Value), none), evl(optional(Value), none)
     ]
 }
 record VectorExtData {
-    storage: VectorExtId,
     fields: [mask(Value), evl(optional(Value), none)]
 }
 
-// Field types determine storage and operand traversal. Value, values(N),
-// ValueList, list(N), BlockCall and JumpTable carry primary operands;
-// VectorExtId and VectorMemExtId carry auxiliary mask/EVL operands.
-// values(N) is an inline array; list(N) is a fixed-arity pooled ValueList.
+// Fields describe logical groups, not physical storage. All SSA inputs,
+// including successor arguments and record inputs, occupy one operand range.
+// values(N) is fixed-arity; ValueList is variadic.
 
 format Unary {
     fields: [opcode(Opcode), arg(Value)],
@@ -73,7 +69,7 @@ format PtrOffset {
     opcode: fixed(PtrOffset)
 }
 format PtrIndex {
-    fields: [ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: fixed(PtrIndex)
 }
 format IntToPtr {
@@ -121,19 +117,19 @@ format FloatCompare {
     opcode: fixed(Fcmp)
 }
 format VectorLoadStrided {
-    fields: [ptr(Value), stride(Value), ext(VectorMemExtId)],
+    fields: [ptr(Value), stride(Value), ext(VectorMemOptions)],
     opcode: fixed(LoadStride)
 }
 format VectorStoreStrided {
-    fields: [args(list(3)), ext(VectorMemExtId)],
+    fields: [args(values(3)), ext(VectorMemOptions)],
     opcode: fixed(StoreStride)
 }
 format VectorGather {
-    fields: [ptr(Value), index(Value), ext(VectorMemExtId)],
+    fields: [ptr(Value), index(Value), ext(VectorMemOptions)],
     opcode: fixed(Gather)
 }
 format VectorScatter {
-    fields: [args(list(3)), ext(VectorMemExtId)],
+    fields: [args(values(3)), ext(VectorMemOptions)],
     opcode: fixed(Scatter)
 }
 format Shuffle {
@@ -149,10 +145,10 @@ format Nop {
     opcode: fixed(Nop)
 }
 
-// Predication uses alternate physical storage while keeping the operation's
+// Predication adds auxiliary operands while keeping the operation's
 // logical Unary/Binary/Ternary format and type rules.
 layout VectorOpWithExt {
-    fields: [opcode(Opcode), args(ValueList), ext(VectorExtId)],
+    fields: [opcode(Opcode), args(ValueList), ext(VectorExtData)],
     opcode: dynamic(opcode),
     format: arity(args, [Unary, Binary, Ternary]),
     text: Text { args: [args], named: [ext.mask, optional(ext.evl)] }

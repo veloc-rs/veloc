@@ -428,7 +428,7 @@ op PtrOffset(ptr: PTR, @offset: i32) -> PTR {
 
 op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
     mnemonic: "ptr-index",
-    storage: PtrIndex { ptr: ptr, index: index, imm_id: pool(imm) },
+    storage: PtrIndex { ptr: ptr, index: index, imm_id: imm },
     text: Text { args: [ptr, index], named: [default(imm.scale, 1), default(imm.offset, 0)] },
     memory: NONE,
     constraints: [require(imm.scale != 0, "ptr-index scale must be non-zero")]
@@ -574,28 +574,28 @@ op ReduceXor<T: Vector>(arg: T) -> element(T) {
 
 op LoadStride(ptr: PTR, stride: ScalarInteger, @mem: VectorMemOptions) -> Vector {
     mnemonic: "load-stride",
-    storage: VectorLoadStrided { ptr: ptr, stride: stride, ext: pool(mem) },
+    storage: VectorLoadStrided { ptr: ptr, stride: stride, ext: mem },
     text: Text { args: [ptr], named: [stride, default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
 op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, @mem: VectorMemOptions) -> () {
     mnemonic: "store-stride",
-    storage: VectorStoreStrided { args: [ptr, stride, value], ext: pool(mem) },
+    storage: VectorStoreStrided { args: [ptr, stride, value], ext: mem },
     text: Text { args: [value, ptr], named: [stride, default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
     traits: [MAY_TRAP], memory: HEAP_WRITE
 }
 
 op Gather<T: Integer & Vector>(ptr: PTR, index: T, @mem: VectorMemOptions) -> shape(T, Vector) {
     mnemonic: "gather",
-    storage: VectorGather { ptr: ptr, index: index, ext: pool(mem) },
+    storage: VectorGather { ptr: ptr, index: index, ext: mem },
     text: Text { args: [ptr], named: [index, default(mem.scale, 1), default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
 op Scatter<T: Integer & Vector>(ptr: PTR, index: T, value: shape(T, Vector), @mem: VectorMemOptions) -> () {
     mnemonic: "scatter",
-    storage: VectorScatter { args: [ptr, index, value], ext: pool(mem) },
+    storage: VectorScatter { args: [ptr, index, value], ext: mem },
     text: Text { args: [value, ptr], named: [index, default(mem.scale, 1), default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
     traits: [MAY_TRAP], memory: HEAP_WRITE
 }

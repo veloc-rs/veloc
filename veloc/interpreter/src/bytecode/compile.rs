@@ -1,11 +1,10 @@
 use crate::bytecode::inst::{CodeWord, Reg, TypePair, emit, emit_auto};
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
-use veloc_analyzer::{LiveInterval, UseDefAnalysis, analyze_liveness};
-use veloc_mir::dfg::PoolKey;
+use veloc_analyzer::{LiveInterval, analyze_liveness};
 use veloc_mir::{
-    Block, BlockCall, FuncId, Function, Inst, InstructionData, Intrinsic, ModuleId,
-    Opcode as IrOpcode, StackSlot, Type, Value, ValueList,
+    Block, FuncId, Function, Inst, InstructionView, Intrinsic, ModuleId, Opcode as IrOpcode,
+    StackSlot, Successor, Type, Value,
 };
 
 macro_rules! unary_dispatch_op {
@@ -168,8 +167,8 @@ impl<'a> ValueMapper<'a> {
         fused_values: &'a std::collections::HashSet<Value>,
     ) -> Self {
         let mut values: Vec<Value> = func
-            .dfg
-            .values
+            .dfg()
+            .values()
             .keys()
             .filter(|value| !fused_values.contains(value) && !intervals[*value].ranges.is_empty())
             .collect();
@@ -258,13 +257,13 @@ fn try_emit_inline_intrinsic(
 /// Check if a value is a constant that can be fused into a given user instruction.
 fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
     use IrOpcode::*;
-    let idata = &func.dfg.instructions[user_inst];
-    let constant = func.dfg.as_const(val);
+    let idata = &func.dfg().inst(user_inst);
+    let constant = func.dfg().as_const(val);
 
     match idata {
-        InstructionData::Binary { opcode, args } => {
-            let res = func.dfg.first_result(user_inst).unwrap();
-            let ty = func.dfg.value_type(res);
+        InstructionView::Binary { opcode, args } => {
+            let res = func.dfg().first_result(user_inst).unwrap();
+            let ty = func.dfg().value_type(res);
             // Only I32 and I64 binary operations currently support immediate operands in bytecode
             if ty != Type::I32 && ty != Type::I64 {
                 return false;
@@ -284,7 +283,7 @@ fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
                 _ => false,
             }
         }
-        InstructionData::Unary { opcode, .. } => {
+        InstructionView::Unary { opcode, .. } => {
             // Unary instructions can fuse integer, boolean, or float constants.
             if constant.is_none() {
                 return false;
@@ -302,23 +301,22 @@ fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
 /// Identify constants that can be fully fused into their user instructions and thus do not need a register.
 fn identify_fused_values(func: &Function, rpo: &[Block]) -> std::collections::HashSet<Value> {
     let mut fused_values = std::collections::HashSet::new();
-    let use_def = UseDefAnalysis::new(func);
     let mut insts_with_fused_op = std::collections::HashSet::new();
 
     for &block in rpo {
-        for &inst in &func.layout.blocks[block].insts {
-            let idata = &func.dfg.instructions[inst];
+        for &inst in &func.layout().blocks()[block].insts {
+            let idata = &func.dfg().inst(inst);
             if matches!(
                 idata,
-                InstructionData::Iconst { .. } | InstructionData::Bconst { .. }
+                InstructionView::Iconst { .. } | InstructionView::Bconst { .. }
             ) {
-                let res = func.dfg.first_result(inst).unwrap();
-                let users = use_def.users_of(res);
+                let res = func.dfg().first_result(inst).unwrap();
+                let users = || func.dfg().uses(res).map(|site| site.inst());
 
                 // A constant can be fused if all its uses support fusion
                 // and haven't fused another operand yet.
                 let mut all_fusable = true;
-                for &user_inst in users {
+                for user_inst in users() {
                     if !can_fuse_operand(func, user_inst, res)
                         || insts_with_fused_op.contains(&user_inst)
                     {
@@ -327,7 +325,7 @@ fn identify_fused_values(func: &Function, rpo: &[Block]) -> std::collections::Ha
                     }
                 }
                 if all_fusable {
-                    for &user_inst in users {
+                    for user_inst in users() {
                         insts_with_fused_op.insert(user_inst);
                     }
                     fused_values.insert(res);
@@ -404,8 +402,8 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_binary(&mut self, inst: Inst, opcode: IrOpcode, args: &[Value; 2]) {
-        let res = self.func.dfg.first_result(inst).unwrap();
-        let ty = self.func.dfg.value_type(res);
+        let res = self.func.dfg().first_result(inst).unwrap();
+        let ty = self.func.dfg().value_type(res);
         let mut bin = |imm_f: &dyn Fn(&mut Vec<CodeWord>, Reg, Reg, i64),
                        reg_f: &dyn Fn(&mut Vec<CodeWord>, Reg, Reg, Reg),
                        commutative: bool| {
@@ -413,12 +411,12 @@ impl<'a> Compiler<'a> {
             let rhs_fused = self.mapper.fused_values.contains(&args[1]);
 
             if rhs_fused {
-                let imm = self.func.dfg.as_const(args[1]).unwrap().as_i64().unwrap();
+                let imm = self.func.dfg().as_const(args[1]).unwrap().as_i64().unwrap();
                 let lhs = self.mapper.reg(args[0]);
                 let dst = self.mapper.reg(res);
                 imm_f(&mut self.code, dst, lhs, imm);
             } else if commutative && lhs_fused {
-                let imm = self.func.dfg.as_const(args[0]).unwrap().as_i64().unwrap();
+                let imm = self.func.dfg().as_const(args[0]).unwrap().as_i64().unwrap();
                 let rhs = self.mapper.reg(args[1]);
                 let dst = self.mapper.reg(res);
                 imm_f(&mut self.code, dst, rhs, imm);
@@ -643,8 +641,8 @@ impl<'a> Compiler<'a> {
     fn emit_icmp(&mut self, inst: Inst, kind: veloc_mir::IntCC, args: &[Value; 2]) {
         let lhs = self.mapper.reg(args[0]);
         let rhs = self.mapper.reg(args[1]);
-        let dst = self.mapper.reg(self.func.dfg.first_result(inst).unwrap());
-        let ty = self.func.dfg.value_type(args[0]);
+        let dst = self.mapper.reg(self.func.dfg().first_result(inst).unwrap());
+        let ty = self.func.dfg().value_type(args[0]);
 
         use veloc_mir::IntCC::*;
         match (ty, kind) {
@@ -683,8 +681,8 @@ impl<'a> Compiler<'a> {
     fn emit_fcmp(&mut self, inst: Inst, kind: veloc_mir::FloatCC, args: &[Value; 2]) {
         let lhs = self.mapper.reg(args[0]);
         let rhs = self.mapper.reg(args[1]);
-        let dst = self.mapper.reg(self.func.dfg.first_result(inst).unwrap());
-        let ty = self.func.dfg.value_type(args[0]);
+        let dst = self.mapper.reg(self.func.dfg().first_result(inst).unwrap());
+        let ty = self.func.dfg().value_type(args[0]);
 
         use veloc_mir::FloatCC::*;
         match (ty, kind) {
@@ -706,7 +704,7 @@ impl<'a> Compiler<'a> {
 
     fn emit_load(&mut self, inst: Inst, ptr: Value, offset: u32) {
         let ptr_reg = self.mapper.reg(ptr);
-        let res = self.func.dfg.first_result(inst).unwrap();
+        let res = self.func.dfg().first_result(inst).unwrap();
         let dst = self.mapper.reg(res);
         let ty = self.val_ty(res);
 
@@ -721,8 +719,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_jump(&mut self, dest: BlockCall) {
-        let target_block = self.func.dfg.block_calls[dest].block;
+    fn emit_jump(&mut self, dest: Successor<'_>) {
+        let target_block = dest.block;
         let moves = calculate_moves(self.func, dest, &mut self.mapper);
 
         if moves.is_empty() {
@@ -735,10 +733,10 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_br(&mut self, condition: Value, then_dest: BlockCall, else_dest: BlockCall) {
-        let then_block = self.func.dfg.block_calls[then_dest].block;
+    fn emit_br(&mut self, condition: Value, then_dest: Successor<'_>, else_dest: Successor<'_>) {
+        let then_block = then_dest.block;
         let then_moves = calculate_moves(self.func, then_dest, &mut self.mapper);
-        let else_block = self.func.dfg.block_calls[else_dest].block;
+        let else_block = else_dest.block;
         let else_moves = calculate_moves(self.func, else_dest, &mut self.mapper);
         let source_pc = self.code.len();
         let cond_reg = self.mapper.reg(condition);
@@ -753,14 +751,14 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_br_table(&mut self, index: Value, table: veloc_mir::JumpTable) {
-        let table_data = self.func.dfg.jump_tables[table].targets.clone();
+    fn emit_br_table(&mut self, index: Value, table: veloc_mir::Successors<'_>) {
+        let table_data = table;
         let num_targets = table_data.len() as u32;
         let source_pc = self.code.len();
 
         let mut br_offset = 0;
-        for (i, &target_call) in table_data.iter().enumerate() {
-            let target_block = self.func.dfg.block_calls[target_call].block;
+        for (i, target_call) in table_data.iter().enumerate() {
+            let target_block = target_call.block;
             let moves = calculate_moves(self.func, target_call, &mut self.mapper);
             let id = self.push_target(target_block, moves, source_pc);
             if i == 0 {
@@ -772,24 +770,18 @@ impl<'a> Compiler<'a> {
         emit::BrTable(&mut self.code, index_reg, br_offset, num_targets);
     }
 
-    fn emit_return(&mut self, values: veloc_mir::ValueList) {
-        let ret_vals = self.func.dfg.get_value_list(values);
+    fn emit_return(&mut self, values: &[Value]) {
+        let ret_vals = values;
         let ret_regs: SmallVec<[Reg; 2]> = ret_vals.iter().map(|&v| self.mapper.reg(v)).collect();
         let num_vals = ret_regs.len() as u32;
         let data_offset = self.data_section.add_return_regs(&ret_regs);
         emit::Return(&mut self.code, data_offset, num_vals);
     }
 
-    fn emit_call(&mut self, inst: Inst, func_id: FuncId, args: veloc_mir::ValueList) {
-        let args_regs: SmallVec<[Reg; 4]> = self
-            .func
-            .dfg
-            .get_value_list(args)
-            .iter()
-            .map(|&v| self.mapper.reg(v))
-            .collect();
+    fn emit_call(&mut self, inst: Inst, func_id: FuncId, args: &[Value]) {
+        let args_regs: SmallVec<[Reg; 4]> = args.iter().map(|&v| self.mapper.reg(v)).collect();
 
-        let res_vals = self.func.dfg.inst_results(inst);
+        let res_vals = self.func.dfg().inst_results(inst);
         let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
             ret_regs.push(self.mapper.reg(v));
@@ -805,17 +797,11 @@ impl<'a> Compiler<'a> {
         );
     }
 
-    fn emit_call_indirect(&mut self, inst: Inst, ptr: Value, args: ValueList) {
+    fn emit_call_indirect(&mut self, inst: Inst, ptr: Value, args: &[Value]) {
         let ptr_reg = self.mapper.reg(ptr);
-        let args_regs: SmallVec<[Reg; 4]> = self
-            .func
-            .dfg
-            .get_value_list(args)
-            .iter()
-            .map(|&v| self.mapper.reg(v))
-            .collect();
+        let args_regs: SmallVec<[Reg; 4]> = args.iter().map(|&v| self.mapper.reg(v)).collect();
 
-        let res_vals = self.func.dfg.inst_results(inst);
+        let res_vals = self.func.dfg().inst_results(inst);
         let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
             ret_regs.push(self.mapper.reg(v));
@@ -830,15 +816,9 @@ impl<'a> Compiler<'a> {
         );
     }
 
-    fn emit_call_intrinsic(&mut self, inst: Inst, intrinsic: Intrinsic, args: ValueList) {
-        let args_regs: SmallVec<[Reg; 4]> = self
-            .func
-            .dfg
-            .get_value_list(args)
-            .iter()
-            .map(|&v| self.mapper.reg(v))
-            .collect();
-        let res_vals = self.func.dfg.inst_results(inst);
+    fn emit_call_intrinsic(&mut self, inst: Inst, intrinsic: Intrinsic, args: &[Value]) {
+        let args_regs: SmallVec<[Reg; 4]> = args.iter().map(|&v| self.mapper.reg(v)).collect();
+        let res_vals = self.func.dfg().inst_results(inst);
         let mut ret_regs: SmallVec<[Reg; 2]> = SmallVec::with_capacity(res_vals.len());
         for &v in res_vals {
             ret_regs.push(self.mapper.reg(v));
@@ -862,11 +842,11 @@ impl<'a> Compiler<'a> {
 
     fn emit_unary(&mut self, inst: Inst, opcode: IrOpcode, arg: Value) {
         let from_ty = self.val_ty(arg);
-        let res = self.func.dfg.first_result(inst).unwrap();
+        let res = self.func.dfg().first_result(inst).unwrap();
         let to_ty = self.val_ty(res);
 
         // Try to handle constant operands first (fusion)
-        if let Some(c) = self.func.dfg.as_const(arg) {
+        if let Some(c) = self.func.dfg().as_const(arg) {
             if let Some(val) = c.as_i64().or_else(|| c.as_bool().map(|b| b as i64)) {
                 match opcode {
                     IrOpcode::ExtendS => {
@@ -1082,7 +1062,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn val_ty(&self, v: Value) -> Type {
-        self.func.dfg.value_type(v)
+        self.func.dfg().value_type(v)
     }
 
     fn emit_store(&mut self, ptr: Value, value: Value, offset: u32) {
@@ -1156,15 +1136,15 @@ pub(crate) fn compile_function(
     // The register representation and opcode handlers currently support scalar
     // values only. Check before fusion/emission, including block parameters and
     // values moved or returned without going through a typed opcode dispatch.
-    for value in func.dfg.values.keys() {
-        let ty = func.dfg.value_type(value);
+    for value in func.dfg().values().keys() {
+        let ty = func.dfg().value_type(value);
         assert!(
             ty.is_scalar(),
             "interpreter does not support value type {ty}"
         );
     }
     let entry = func.entry_block.expect("Function must have entry block");
-    let rpo = func.layout.compute_rpo(entry);
+    let rpo = func.layout().compute_rpo(entry);
 
     let liveness = analyze_liveness(func);
     let fused_values = identify_fused_values(func, &rpo);
@@ -1179,13 +1159,13 @@ pub(crate) fn compile_function(
 impl<'a> Compiler<'a> {
     fn apply_rpo(&mut self, rpo: &[Block]) {
         let entry_block = self.func.entry_block.unwrap();
-        for &param in &self.func.layout.blocks[entry_block].params {
+        for &param in &self.func.layout().blocks()[entry_block].params {
             self.param_indices.push(self.mapper.reg(param));
         }
 
         for &block in rpo {
             self.block_to_pc[block] = self.code.len() as u32;
-            let block_data = &self.func.layout.blocks[block];
+            let block_data = &self.func.layout().blocks()[block];
 
             for &inst in &block_data.insts {
                 self.compile_inst(inst);
@@ -1194,50 +1174,50 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_inst(&mut self, inst: Inst) {
-        let idata = &self.func.dfg.instructions[inst];
+        let idata = &self.func.dfg().inst(inst);
 
         match idata {
-            InstructionData::Iconst { value } => {
-                let res = self.func.dfg.first_result(inst).unwrap();
+            InstructionView::Iconst { value } => {
+                let res = self.func.dfg().first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
                     let dst = self.mapper.reg(res);
                     emit_auto::Iconst(&mut self.code, dst, *value);
                 }
             }
-            InstructionData::Fconst { value } => {
-                let res = self.func.dfg.first_result(inst).unwrap();
+            InstructionView::Fconst { value } => {
+                let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit_auto::Fconst(&mut self.code, dst, *value);
             }
-            InstructionData::Vconst { pool_id } => {
-                let res = self.func.dfg.first_result(inst).unwrap();
+            InstructionView::Vconst { pool_id } => {
+                let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit::Vconst(&mut self.code, dst, pool_id.as_u32());
             }
-            InstructionData::Bconst { value } => {
-                let res = self.func.dfg.first_result(inst).unwrap();
+            InstructionView::Bconst { value } => {
+                let res = self.func.dfg().first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
                     let dst = self.mapper.reg(res);
                     emit::Bconst(&mut self.code, dst, *value);
                 }
             }
-            InstructionData::Binary { opcode, args } => self.emit_binary(inst, *opcode, args),
-            InstructionData::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args),
-            InstructionData::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args),
-            InstructionData::StackAddr { slot, offset, .. } => {
-                let res = self.func.dfg.first_result(inst).unwrap();
+            InstructionView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args),
+            InstructionView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args),
+            InstructionView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args),
+            InstructionView::StackAddr { slot, offset, .. } => {
+                let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 let base_offset = self.slot_to_offset[*slot];
                 emit::StackAddr(&mut self.code, dst, base_offset + *offset);
             }
-            InstructionData::StackLoad { slot, offset } => {
-                let res = self.func.dfg.first_result(inst).unwrap();
+            InstructionView::StackLoad { slot, offset } => {
+                let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 let base_offset = self.slot_to_offset[*slot];
                 let ty = self.val_ty(res);
                 emit::StackLoad(&mut self.code, dst, ty, base_offset + *offset);
             }
-            InstructionData::StackStore {
+            InstructionView::StackStore {
                 slot,
                 value,
                 offset,
@@ -1248,42 +1228,40 @@ impl<'a> Compiler<'a> {
                 let ty = self.val_ty(*value);
                 emit::StackStore(&mut self.code, val_reg, ty, base_offset + *offset);
             }
-            InstructionData::Load { ptr, offset, .. } => self.emit_load(inst, *ptr, *offset as u32),
-            InstructionData::Store {
+            InstructionView::Load { ptr, offset, .. } => self.emit_load(inst, *ptr, *offset as u32),
+            InstructionView::Store {
                 ptr, value, offset, ..
             } => self.emit_store(*ptr, *value, *offset as u32),
-            InstructionData::Jump { dest } => self.emit_jump(*dest),
-            InstructionData::Br {
+            InstructionView::Jump { dest } => self.emit_jump(*dest),
+            InstructionView::Br {
                 condition,
                 then_dest,
                 else_dest,
             } => {
                 self.emit_br(*condition, *then_dest, *else_dest);
             }
-            InstructionData::BrTable { index, table } => self.emit_br_table(*index, *table),
-            InstructionData::Return { values } => self.emit_return(*values),
-            InstructionData::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg),
-            InstructionData::IntToPtr { arg } | InstructionData::PtrToInt { arg, .. } => {
+            InstructionView::BrTable { index, table } => self.emit_br_table(*index, *table),
+            InstructionView::Return { values } => self.emit_return(*values),
+            InstructionView::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg),
+            InstructionView::IntToPtr { arg } | InstructionView::PtrToInt { arg, .. } => {
                 let arg_reg = self.mapper.reg(*arg);
-                let res = self.func.dfg.first_result(inst).unwrap();
+                let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit::RegMove(&mut self.code, dst, arg_reg);
             }
-            InstructionData::Call { func_id, args, .. } => self.emit_call(inst, *func_id, *args),
-            InstructionData::CallIndirect { ptr, args, .. } => {
+            InstructionView::Call { func_id, args, .. } => self.emit_call(inst, *func_id, *args),
+            InstructionView::CallIndirect { ptr, args, .. } => {
                 self.emit_call_indirect(inst, *ptr, *args)
             }
-            InstructionData::CallIntrinsic {
+            InstructionView::CallIntrinsic {
                 intrinsic, args, ..
             } => self.emit_call_intrinsic(inst, *intrinsic, *args),
-            InstructionData::PtrIndex { ptr, index, imm_id } => {
+            InstructionView::PtrIndex { ptr, index, imm_id } => {
                 let ptr_reg = self.mapper.reg(*ptr);
                 let index_reg = self.mapper.reg(*index);
-                let res = self.func.dfg.first_result(inst).unwrap();
+                let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
-                let imm = imm_id
-                    .get(&self.func.dfg)
-                    .expect("validated ptr-index must have an immediate");
+                let imm = imm_id;
                 emit::PtrIndex(
                     &mut self.code,
                     dst,
@@ -1293,24 +1271,24 @@ impl<'a> Compiler<'a> {
                     imm.offset as u32,
                 );
             }
-            InstructionData::PtrOffset { ptr, offset } => {
+            InstructionView::PtrOffset { ptr, offset } => {
                 let ptr_reg = self.mapper.reg(*ptr);
-                let res = self.func.dfg.first_result(inst).unwrap();
+                let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit_auto::I64AddImm(&mut self.code, dst, ptr_reg, *offset as u64);
             }
-            InstructionData::Unreachable => {
+            InstructionView::Unreachable => {
                 emit::Unreachable(&mut self.code);
             }
-            InstructionData::Ternary { opcode, args } if *opcode == IrOpcode::Select => {
+            InstructionView::Ternary { opcode, args } if *opcode == IrOpcode::Select => {
                 let cond_reg = self.mapper.reg(args[0]);
                 let then_reg = self.mapper.reg(args[1]);
                 let else_reg = self.mapper.reg(args[2]);
-                let res = self.func.dfg.first_result(inst).unwrap();
+                let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit::Select(&mut self.code, dst, cond_reg, then_reg, else_reg);
             }
-            InstructionData::Nop => {}
+            InstructionView::Nop => {}
             _ => todo!("Unsupported instruction: {:?}", idata),
         }
     }
@@ -1322,7 +1300,7 @@ impl<'a> Compiler<'a> {
 /// the moves in the order they are stored.
 fn calculate_moves(
     func: &Function,
-    call: veloc_mir::types::BlockCall,
+    call: veloc_mir::Successor<'_>,
     mapper: &mut ValueMapper,
 ) -> Vec<(Reg, Reg)> {
     fn find_non_conflicting_move_index(pending: &[(Reg, Reg)]) -> Option<usize> {
@@ -1339,9 +1317,9 @@ fn calculate_moves(
         None
     }
 
-    let target_block = func.dfg.block_calls[call].block;
-    let args = func.dfg.get_value_list(func.dfg.block_calls[call].args);
-    let params = &func.layout.blocks[target_block].params;
+    let target_block = call.block;
+    let args = call.args;
+    let params = &func.layout().blocks()[target_block].params;
 
     // 1. Collect all move requests with pre-allocated capacity
     let mut pending: Vec<(Reg, Reg)> = Vec::with_capacity(params.len());

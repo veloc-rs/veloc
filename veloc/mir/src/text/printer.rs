@@ -5,7 +5,7 @@
 //! printed by semantic value so the output can be parsed into a fresh module.
 
 use crate::{
-    BlockCall, FuncId, Function, Inst, MemFlags, Module, SigId, Signature, Type, Value,
+    FuncId, Function, Inst, MemFlags, Module, SigId, Signature, Successors, Type, Value,
     dfg::DataFlowGraph,
 };
 use core::fmt::{Display, Formatter, Result, Write};
@@ -35,7 +35,7 @@ impl<'a> InstPrinter<'a> {
     }
 
     pub fn fmt_inst(&self, f: &mut dyn Write, inst: Inst) -> Result {
-        let data = &self.dfg.instructions[inst];
+        let data = &self.dfg.inst(inst);
         let ty = self
             .dfg
             .inst_results(inst)
@@ -126,16 +126,16 @@ impl<'a> InstPrinter<'a> {
         }
     }
 
-    pub(super) fn fmt_block_call(&self, f: &mut dyn Write, call: crate::BlockCall) -> Result {
-        let data = &self.dfg.block_calls[call];
+    pub(super) fn fmt_block_call(&self, f: &mut dyn Write, call: crate::Successor<'_>) -> Result {
+        let data = call;
         write!(f, "{}(", data.block)?;
-        self.fmt_values(f, self.dfg.get_value_list(data.args))?;
+        self.fmt_values(f, data.args)?;
         f.write_char(')')
     }
 
-    pub(super) fn fmt_block_calls(&self, f: &mut dyn Write, calls: &[BlockCall]) -> Result {
+    pub(super) fn fmt_block_calls(&self, f: &mut dyn Write, calls: Successors<'_>) -> Result {
         f.write_char('[')?;
-        for (index, &call) in calls.iter().enumerate() {
+        for (index, call) in calls.iter().enumerate() {
             if index != 0 {
                 f.write_str(", ")?;
             }

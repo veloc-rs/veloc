@@ -377,12 +377,7 @@ fn binding(source: &str, node: Node) -> Result<Binding, Error> {
     }
 }
 
-pub(super) fn validate_packing(
-    source: &str,
-    op: &Op,
-    format: &Format,
-    storage: &storage::Storage,
-) -> Result<(), Error> {
+pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result<(), Error> {
     let fail = |message| Error::at(source, op.offset, message);
     let params: BTreeMap<_, _> = op
         .params
@@ -432,7 +427,7 @@ pub(super) fn validate_packing(
             .get(&field.name)
             .ok_or_else(|| fail(format!("missing storage field `{}`", field.name)))?;
         match (binding, &field.ty) {
-            (Binding::Array(args), FieldType::Values(n) | FieldType::List(n)) => {
+            (Binding::Array(args), FieldType::Values(n)) => {
                 if args.len() != *n {
                     return Err(fail(format!(
                         "storage field `{}` requires {n} arguments",
@@ -463,13 +458,7 @@ pub(super) fn validate_packing(
                 use_param(
                     arg,
                     &|kind| match kind {
-                        ParamKind::Property(prop) => {
-                            (ty == "ConstantPoolId" && prop == "Bytes")
-                                || storage
-                                    .records
-                                    .iter()
-                                    .any(|record| record.storage == *ty && record.name == *prop)
-                        }
+                        ParamKind::Property(prop) => ty == "ConstantPoolId" && prop == "Bytes",
                         _ => false,
                     },
                     &field.name,

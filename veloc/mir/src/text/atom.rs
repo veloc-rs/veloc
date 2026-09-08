@@ -6,11 +6,11 @@ use super::parser::{self, OperandParser, ParseError};
 use super::printer::InstPrinter;
 use crate::{BlockCall, FloatCC, FuncId, IntCC, Intrinsic, SigId, StackSlot, Type, Value};
 use alloc::vec::Vec;
-use core::{borrow::Borrow, fmt, marker::PhantomData, str::FromStr};
+use core::{fmt, marker::PhantomData, str::FromStr};
 
 pub(super) trait AtomCodec {
-    type Owned: Borrow<Self::View>;
-    type View: ?Sized;
+    type Owned;
+    type View<'a>: ?Sized;
 
     fn parse(
         cx: &mut OperandParser<'_>,
@@ -20,7 +20,7 @@ pub(super) trait AtomCodec {
     fn print(
         cx: &InstPrinter<'_>,
         out: &mut dyn fmt::Write,
-        value: &Self::View,
+        value: &Self::View<'_>,
         ty: Option<Type>,
     ) -> fmt::Result;
 }
@@ -34,7 +34,7 @@ pub(super) struct Successors;
 
 impl<T: FromStr + fmt::Display> AtomCodec for Decimal<T> {
     type Owned = T;
-    type View = T;
+    type View<'a> = T;
 
     fn parse(_: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<T, ParseError> {
         text.trim()
@@ -54,7 +54,7 @@ impl<T: FromStr + fmt::Display> AtomCodec for Decimal<T> {
 
 impl AtomCodec for IntegerBits {
     type Owned = u64;
-    type View = u64;
+    type View<'a> = u64;
 
     fn parse(_: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<u64, ParseError> {
         let text = text.trim();
@@ -80,7 +80,7 @@ impl AtomCodec for IntegerBits {
 
 impl AtomCodec for FloatBits {
     type Owned = u64;
-    type View = u64;
+    type View<'a> = u64;
 
     fn parse(_: &mut OperandParser<'_>, text: &str, ty: Option<Type>) -> Result<u64, ParseError> {
         if !matches!(ty, Some(Type::F32 | Type::F64)) {
@@ -118,7 +118,7 @@ impl AtomCodec for FloatBits {
 
 impl AtomCodec for Bytes {
     type Owned = Vec<u8>;
-    type View = [u8];
+    type View<'a> = [u8];
 
     fn parse(
         _: &mut OperandParser<'_>,
@@ -162,7 +162,7 @@ impl AtomCodec for Bytes {
 
 impl AtomCodec for bool {
     type Owned = bool;
-    type View = bool;
+    type View<'a> = bool;
 
     fn parse(_: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<bool, ParseError> {
         match text.trim() {
@@ -186,7 +186,7 @@ impl AtomCodec for bool {
 
 impl AtomCodec for IntCC {
     type Owned = IntCC;
-    type View = IntCC;
+    type View<'a> = IntCC;
 
     fn parse(_: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<IntCC, ParseError> {
         let cc = text.trim();
@@ -206,7 +206,7 @@ impl AtomCodec for IntCC {
 
 impl AtomCodec for FloatCC {
     type Owned = FloatCC;
-    type View = FloatCC;
+    type View<'a> = FloatCC;
 
     fn parse(
         _: &mut OperandParser<'_>,
@@ -230,7 +230,7 @@ impl AtomCodec for FloatCC {
 
 impl AtomCodec for Intrinsic {
     type Owned = Intrinsic;
-    type View = Intrinsic;
+    type View<'a> = Intrinsic;
 
     fn parse(
         _: &mut OperandParser<'_>,
@@ -253,7 +253,7 @@ impl AtomCodec for Intrinsic {
 
 impl AtomCodec for StackSlot {
     type Owned = StackSlot;
-    type View = StackSlot;
+    type View<'a> = StackSlot;
 
     fn parse(
         _: &mut OperandParser<'_>,
@@ -275,7 +275,7 @@ impl AtomCodec for StackSlot {
 
 impl AtomCodec for Value {
     type Owned = Value;
-    type View = Value;
+    type View<'a> = Value;
 
     fn parse(cx: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<Value, ParseError> {
         cx.value(text)
@@ -293,7 +293,7 @@ impl AtomCodec for Value {
 
 impl AtomCodec for Values {
     type Owned = Vec<Value>;
-    type View = [Value];
+    type View<'a> = [Value];
 
     fn parse(
         cx: &mut OperandParser<'_>,
@@ -315,7 +315,7 @@ impl AtomCodec for Values {
 
 impl AtomCodec for BlockCall {
     type Owned = BlockCall;
-    type View = BlockCall;
+    type View<'a> = crate::Successor<'a>;
 
     fn parse(
         cx: &mut OperandParser<'_>,
@@ -328,7 +328,7 @@ impl AtomCodec for BlockCall {
     fn print(
         cx: &InstPrinter<'_>,
         out: &mut dyn fmt::Write,
-        value: &BlockCall,
+        value: &crate::Successor<'_>,
         _: Option<Type>,
     ) -> fmt::Result {
         cx.fmt_block_call(out, *value)
@@ -337,7 +337,7 @@ impl AtomCodec for BlockCall {
 
 impl AtomCodec for Successors {
     type Owned = Vec<BlockCall>;
-    type View = [BlockCall];
+    type View<'a> = crate::Successors<'a>;
 
     fn parse(
         cx: &mut OperandParser<'_>,
@@ -350,16 +350,16 @@ impl AtomCodec for Successors {
     fn print(
         cx: &InstPrinter<'_>,
         out: &mut dyn fmt::Write,
-        value: &[BlockCall],
+        value: &crate::Successors<'_>,
         _: Option<Type>,
     ) -> fmt::Result {
-        cx.fmt_block_calls(out, value)
+        cx.fmt_block_calls(out, *value)
     }
 }
 
 impl AtomCodec for FuncId {
     type Owned = FuncId;
-    type View = FuncId;
+    type View<'a> = FuncId;
 
     fn parse(
         cx: &mut OperandParser<'_>,
@@ -381,7 +381,7 @@ impl AtomCodec for FuncId {
 
 impl AtomCodec for SigId {
     type Owned = SigId;
-    type View = SigId;
+    type View<'a> = SigId;
 
     fn parse(cx: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<SigId, ParseError> {
         cx.signature(text)

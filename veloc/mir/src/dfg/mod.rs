@@ -1,39 +1,26 @@
-use super::inst::{
-    ConstantPoolId, Inst, InstructionData, PtrIndexImm, PtrIndexImmId, VectorExtData, VectorExtId,
-    VectorMemExtId, VectorMemOptions,
-};
+use super::inst::{ConstantPoolId, Inst, InstDraft, InstFields, InstructionView, StoredInst};
 use crate::constant::Constant;
-use crate::types::{
-    Block, BlockCall, BlockCallData, JumpTable, JumpTableData, Type, Value, ValueData, ValueDef,
-    ValueList, ValueListPool,
-};
+use crate::types::{Block, Type, Value, ValueData, ValueDef, ValueList, ValueListPool};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
 
+mod operands;
 mod pool;
-pub use pool::PoolKey;
+pub(crate) use operands::OperandRange;
+pub use operands::{Use, Uses};
 
 #[derive(Debug, Clone)]
 pub struct DataFlowGraph {
-    pub instructions: PrimaryMap<Inst, InstructionData>,
-    pub values: PrimaryMap<Value, ValueData>,
+    instructions: PrimaryMap<Inst, StoredInst>,
+    pub(crate) values: PrimaryMap<Value, ValueData>,
     pub value_names: SecondaryMap<Value, String>,
-    pub inst_results: SecondaryMap<Inst, ValueList>,
+    pub(crate) inst_results: SecondaryMap<Inst, ValueList>,
     pub(crate) value_list_pool: ValueListPool,
-    pub block_calls: PrimaryMap<BlockCall, BlockCallData>,
-    pub jump_tables: PrimaryMap<JumpTable, JumpTableData>,
-    ptr_imm_pool: PrimaryMap<PtrIndexImmId, PtrIndexImm>,
-    ptr_imm_map: HashMap<PtrIndexImm, PtrIndexImmId>,
-    /// 向量操作扩展信息池 (mask, evl)
-    vector_ext_pool: PrimaryMap<VectorExtId, VectorExtData>,
-    vector_ext_map: HashMap<VectorExtData, VectorExtId>,
-    /// 向量内存操作扩展配置池
-    vector_mem_ext_pool: PrimaryMap<VectorMemExtId, VectorMemOptions>,
-    vector_mem_ext_map: HashMap<VectorMemOptions, VectorMemExtId>,
-    /// 常量数据池
+    operands: operands::Operands,
+    /// Constant bytes are immutable and may be interned.
     constant_pool: PrimaryMap<ConstantPoolId, Arc<[u8]>>,
     constant_pool_map: HashMap<Arc<[u8]>, ConstantPoolId>,
 }
@@ -46,14 +33,7 @@ impl DataFlowGraph {
             value_names: SecondaryMap::new(),
             inst_results: SecondaryMap::new(),
             value_list_pool: ValueListPool::new(),
-            block_calls: PrimaryMap::new(),
-            jump_tables: PrimaryMap::new(),
-            ptr_imm_pool: PrimaryMap::new(),
-            ptr_imm_map: HashMap::new(),
-            vector_ext_pool: PrimaryMap::new(),
-            vector_ext_map: HashMap::new(),
-            vector_mem_ext_pool: PrimaryMap::new(),
-            vector_mem_ext_map: HashMap::new(),
+            operands: operands::Operands::default(),
             constant_pool: PrimaryMap::new(),
             constant_pool_map: HashMap::new(),
         }
@@ -86,14 +66,30 @@ impl DataFlowGraph {
         self.inst_results(inst).first().copied()
     }
 
-    /// 从切片创建 ValueList
-    pub fn make_value_list(&mut self, values: &[Value]) -> ValueList {
-        ValueList::from_slice(values, &mut self.value_list_pool)
+    pub(crate) fn move_result(&mut self, value: Value, to: Inst) {
+        let ValueDef::Inst(from) = self.value_def(value) else {
+            panic!("cannot move a block parameter");
+        };
+        if from == to {
+            return;
+        }
+        let mut old = self.inst_results(from).to_vec();
+        let index = old
+            .iter()
+            .position(|&v| v == value)
+            .expect("result missing from definition");
+        old.remove(index);
+        let mut new = self.inst_results(to).to_vec();
+        assert!(!new.contains(&value), "duplicate result");
+        new.push(value);
+        self.inst_results[from] = self.make_value_list(&old);
+        self.inst_results[to] = self.make_value_list(&new);
+        self.values[value].def = ValueDef::Inst(to);
     }
 
-    /// 获取 ValueList 的切片引用
-    pub fn get_value_list(&self, list: ValueList) -> &[Value] {
-        list.as_slice(&self.value_list_pool)
+    /// 从切片创建 ValueList
+    pub(crate) fn make_value_list(&mut self, values: &[Value]) -> ValueList {
+        ValueList::from_slice(values, &mut self.value_list_pool)
     }
 
     pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
@@ -103,16 +99,54 @@ impl DataFlowGraph {
         })
     }
 
-    pub fn inst(&self, inst: Inst) -> &InstructionData {
-        &self.instructions[inst]
+    pub fn opcode(&self, inst: Inst) -> crate::Opcode {
+        self.instructions[inst].fields.opcode()
     }
 
-    pub fn inst_mut(&mut self, inst: Inst) -> &mut InstructionData {
-        &mut self.instructions[inst]
+    pub fn inst(&self, inst: Inst) -> InstructionView<'_> {
+        let data = &self.instructions[inst];
+        data.fields.view(self.operands.get(data.operands))
+    }
+
+    /// Copy an instruction into an independent draft without decoding its fields.
+    pub fn draft(&self, inst: Inst) -> InstDraft {
+        let data = &self.instructions[inst];
+        InstDraft {
+            fields: data.fields.clone(),
+            operands: crate::inst::Arguments::from_slice(self.operands.get(data.operands)),
+        }
+    }
+
+    pub fn instructions(&self) -> impl ExactSizeIterator<Item = (Inst, InstructionView<'_>)> {
+        self.instructions
+            .iter()
+            .map(|(inst, _)| (inst, self.inst(inst)))
+    }
+
+    pub fn create_inst(&mut self, data: InstDraft) -> Inst {
+        let InstDraft {
+            fields,
+            operands: values,
+        } = data;
+        let inst = self.instructions.push(StoredInst {
+            fields,
+            operands: OperandRange::default(),
+        });
+        self.instructions[inst].operands = self.operands.alloc(inst, &values);
+        inst
     }
 
     pub fn value_type(&self, val: Value) -> Type {
         self.values[val].ty
+    }
+
+    pub fn values(&self) -> &PrimaryMap<Value, ValueData> {
+        &self.values
+    }
+
+    /// Change a declared type without validating the instruction's contract.
+    pub fn set_value_type(&mut self, value: Value, ty: Type) {
+        self.values[value].ty = ty;
     }
 
     pub fn value_def(&self, val: Value) -> ValueDef {
@@ -129,8 +163,8 @@ impl DataFlowGraph {
     pub fn as_const(&self, val: Value) -> Option<Constant> {
         if let ValueDef::Inst(inst) = self.value_def(val) {
             let ty = self.value_type(val);
-            match &self.instructions[inst] {
-                InstructionData::Iconst { value } => {
+            match &self.inst(inst) {
+                InstructionView::Iconst { value } => {
                     let val = *value as i64;
                     if ty == Type::I8 {
                         Some(Constant::I8(val as i8))
@@ -144,7 +178,7 @@ impl DataFlowGraph {
                         None
                     }
                 }
-                InstructionData::Fconst { value } => {
+                InstructionView::Fconst { value } => {
                     if ty == Type::F32 {
                         Some(Constant::F32(f32::from_bits(*value as u32)))
                     } else if ty == Type::F64 {
@@ -153,7 +187,7 @@ impl DataFlowGraph {
                         None
                     }
                 }
-                InstructionData::Bconst { value } => Some(Constant::Bool(*value)),
+                InstructionView::Bconst { value } => Some(Constant::Bool(*value)),
                 _ => None,
             }
         } else {
@@ -161,182 +195,47 @@ impl DataFlowGraph {
         }
     }
 
-    pub fn block_call_block(&self, call: BlockCall) -> Block {
-        self.block_calls[call].block
-    }
-
-    pub fn make_block_call(&mut self, block: Block, args: &[Value]) -> BlockCall {
-        let args = self.make_value_list(args);
-        self.block_calls.push(BlockCallData { block, args })
-    }
-
-    /// Store case destinations followed by the required default destination.
-    pub fn make_jump_table(&mut self, cases: &[BlockCall], default: BlockCall) -> JumpTable {
-        let mut targets = Vec::with_capacity(cases.len() + 1);
-        targets.extend_from_slice(cases);
-        targets.push(default);
-        self.jump_tables.push(JumpTableData { targets })
-    }
-
-    pub fn block_call_args(&self, call: BlockCall) -> &[Value] {
-        self.block_calls[call].args.as_slice(&self.value_list_pool)
-    }
-
-    pub fn jump_table_targets(&self, table: JumpTable) -> &[BlockCall] {
-        &self.jump_tables[table].targets
-    }
-
     pub fn remove_inst(&mut self, inst: Inst) {
-        self.instructions[inst] = InstructionData::Nop;
+        assert!(
+            self.inst_results(inst).iter().all(|&v| self.use_empty(v)),
+            "cannot erase a used definition"
+        );
+        self.clear_inst(inst);
+    }
+
+    fn clear_inst(&mut self, inst: Inst) {
+        self.operands
+            .release(core::mem::take(&mut self.instructions[inst].operands));
+        self.instructions[inst].fields = InstFields::Nop;
         self.inst_results[inst] = ValueList::default();
     }
 
-    /// 替换指定指令的数据内容。
-    pub fn replace_inst(&mut self, inst: Inst, data: InstructionData) {
-        self.instructions[inst] = data;
-    }
-
-    /// 替换指令中使用的 Value。
-    pub fn replace_value_in_inst(&mut self, inst: Inst, old_val: Value, new_val: Value) {
-        let mut data = core::mem::replace(&mut self.instructions[inst], InstructionData::Nop);
-        data.replace_value(self, old_val, new_val);
-        self.instructions[inst] = data;
-    }
-
-    // ======================================
-    // 操作数访问与替换 Helper 方法
-    // ======================================
-
-    /// 遍历 Value 列表
-    pub fn visit_value_list<F>(&self, list: ValueList, mut f: F)
-    where
-        F: FnMut(Value),
-    {
-        for &v in self.get_value_list(list) {
-            f(v);
-        }
-    }
-
-    /// 替换 Value 列表中的值
-    pub fn replace_value_list(&mut self, list: &mut ValueList, old: Value, new: Value) {
-        let mut values = list.as_slice(&self.value_list_pool).to_vec();
-        let mut changed = false;
-        for v in &mut values {
-            if *v == old {
-                *v = new;
-                changed = true;
+    /// Erase a closed set, including mutually dependent dead instructions.
+    pub fn remove_insts(&mut self, insts: &[Inst]) {
+        let dead: hashbrown::HashSet<_> = insts.iter().copied().collect();
+        for &inst in insts {
+            for &value in self.inst_results(inst) {
+                assert!(
+                    self.uses(value).all(|site| dead.contains(&site.inst())),
+                    "cannot erase a live definition"
+                );
             }
         }
-        if changed {
-            *list = ValueList::from_slice(&values, &mut self.value_list_pool);
+        for &inst in insts {
+            self.clear_inst(inst);
         }
     }
 
-    /// 遍历 Block 调用的参数
-    pub fn visit_block_call<F>(&self, call: BlockCall, f: F)
-    where
-        F: FnMut(Value),
-    {
-        self.visit_value_list(self.block_calls[call].args, f);
-    }
-
-    /// 替换 Block 调用中的参数
-    pub fn replace_block_call(&mut self, call: BlockCall, old: Value, new_val: Value) {
-        let mut args = self.block_calls[call].args;
-        self.replace_value_list(&mut args, old, new_val);
-        self.block_calls[call].args = args;
-    }
-
-    /// 遍历跳转表中的所有参数
-    pub fn visit_jump_table<F>(&self, table: JumpTable, mut f: F)
-    where
-        F: FnMut(Value),
-    {
-        for &dest in &self.jump_tables[table].targets {
-            self.visit_block_call(dest, &mut f);
-        }
-    }
-
-    /// 替换跳转表中的所有参数
-    pub fn replace_jump_table(&mut self, table: JumpTable, old: Value, new_val: Value) {
-        let targets = self.jump_tables[table].targets.clone();
-        for dest in targets {
-            self.replace_block_call(dest, old, new_val);
-        }
-    }
-
-    /// 遍历向量扩展信息 (mask, evl)
-    pub fn visit_vector_ext<F>(&self, ext: VectorExtId, mut f: F)
-    where
-        F: FnMut(Value),
-    {
-        let data = ext
-            .get(self)
-            .expect("instruction refers to a missing vector extension");
-        f(data.mask);
-        if let Some(evl) = data.evl {
-            f(evl);
-        }
-    }
-
-    /// 替换向量扩展信息中的值 (并处理 interning)
-    pub fn replace_vector_ext(&mut self, ext: &mut VectorExtId, old: Value, new: Value) {
-        let mut data = *ext
-            .get(self)
-            .expect("instruction refers to a missing vector extension");
-        let mut changed = false;
-        if data.mask == old {
-            data.mask = new;
-            changed = true;
-        }
-        if let Some(ref mut evl) = data.evl
-            && *evl == old
-        {
-            *evl = new;
-            changed = true;
-        }
-        if changed {
-            *ext = VectorExtId::insert(self, data);
-        }
-    }
-
-    /// 遍历向量内存扩展配置中的值
-    pub fn visit_vector_mem_ext<F>(&self, ext: VectorMemExtId, mut f: F)
-    where
-        F: FnMut(Value),
-    {
-        let data = ext
-            .get(self)
-            .expect("instruction refers to a missing vector memory extension");
-        if let Some(mask) = data.mask {
-            f(mask);
-        }
-        if let Some(evl) = data.evl {
-            f(evl);
-        }
-    }
-
-    /// 替换向量内存扩展配置中的值 (并处理 interning)
-    pub fn replace_vector_mem_ext(&mut self, ext: &mut VectorMemExtId, old: Value, new: Value) {
-        let mut data = *ext
-            .get(self)
-            .expect("instruction refers to a missing vector memory extension");
-        let mut changed = false;
-        if let Some(ref mut mask) = data.mask
-            && *mask == old
-        {
-            *mask = new;
-            changed = true;
-        }
-        if let Some(ref mut evl) = data.evl
-            && *evl == old
-        {
-            *evl = new;
-            changed = true;
-        }
-        if changed {
-            *ext = VectorMemExtId::insert(self, data);
-        }
+    /// Replace operand structure. Positions from the previous instruction expire.
+    pub fn replace_inst(&mut self, inst: Inst, data: InstDraft) {
+        let InstDraft {
+            fields,
+            operands: values,
+        } = data;
+        self.operands
+            .release(core::mem::take(&mut self.instructions[inst].operands));
+        let operands = self.operands.alloc(inst, &values);
+        self.instructions[inst] = StoredInst { fields, operands };
     }
 }
 

@@ -2,7 +2,6 @@
 //! Optional arguments: phase (all/types/build/validate/fold), iteration multiplier.
 use std::hint::black_box;
 use std::time::Instant;
-use veloc_analyzer::AnalysisManager;
 use veloc_mir::{CallConv, Linkage, ModuleBuilder, ModuleData, Opcode, Type};
 use veloc_optimizer::Metrics;
 use veloc_optimizer::passes::function::simplify::run_simplify;
@@ -79,8 +78,7 @@ fn main() {
         let context = ModuleData::default();
         measure("resolve_results (3 calls)", 100_000 * scale, || {
             for op in [Opcode::IAdd, Opcode::ISub, Opcode::IMul] {
-                let data =
-                    veloc_mir::InstructionData::from_values(black_box(op), &[lhs, rhs]).unwrap();
+                let data = veloc_mir::InstDraft::from_values(black_box(op), &[lhs, rhs]).unwrap();
                 black_box(
                     black_box(data)
                         .result_types(black_box(&dfg), black_box(&context), &[])
@@ -108,11 +106,10 @@ fn main() {
             let mut elapsed = 0.0;
             for _ in 0..10 * scale {
                 let mut data = source.clone();
-                let mut analyses = AnalysisManager::new();
                 let mut metrics = Metrics::default();
                 let start = Instant::now();
                 for (_, function) in data.functions.iter_mut() {
-                    assert!(run_simplify(function, &mut analyses, false, &mut metrics));
+                    assert!(run_simplify(function, false, &mut metrics));
                 }
                 elapsed += start.elapsed().as_secs_f64();
                 black_box(&data);

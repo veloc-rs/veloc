@@ -403,7 +403,7 @@ fn fold(op: Opcode, args: &[Constant]) -> Option<Constant> {
         .iter()
         .map(|c| dfg.append_block_param(veloc_mir::Block(0), c.ty()))
         .collect::<Vec<_>>();
-    let data = veloc_mir::InstructionData::from_values(op, &values)?;
+    let data = veloc_mir::InstDraft::from_values(op, &values)?;
     let results = data
         .result_types(&dfg, &veloc_mir::ModuleData::default(), &[])
         .ok()?;

@@ -252,7 +252,7 @@ impl Definitions {
                 )));
             }
             let ty = &op.signature;
-            operation::validate_packing(source, op, format, &self.storage)?;
+            operation::validate_packing(source, op, format)?;
             match (format.arity, &ty.operands) {
                 (Some(arity), TypeList::Fixed(patterns)) if arity == patterns.len() => {}
                 (None, TypeList::Variadic(_)) => {}

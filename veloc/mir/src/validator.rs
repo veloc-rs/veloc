@@ -1,8 +1,6 @@
-use crate::dfg::PoolKey;
-use crate::inst::{Inst, VectorExtId, VectorMemExtId};
+use crate::inst::{Inst, VectorExtData, VectorMemOptions};
 use crate::{
-    Block, BlockCall, Function, InstructionData, ModuleData, Opcode, Result, SigId, Type, Value,
-    ValueList,
+    Block, Function, InstructionView, ModuleData, Opcode, Result, SigId, Successor, Type, Value,
 };
 use alloc::string::String;
 use core::fmt;
@@ -56,7 +54,7 @@ impl Function {
                 self.validate_inst(module, inst)?;
             }
             let terminator = *block_data.insts.last().unwrap();
-            if !self.dfg.instructions[terminator].is_terminator() {
+            if !self.dfg.opcode(terminator).spec().is_terminator() {
                 return Err(ValidationError::NoTerminator(block).into());
             }
         }
@@ -64,11 +62,11 @@ impl Function {
     }
 
     fn validate_inst(&self, module: &ModuleData, inst: Inst) -> Result<()> {
-        let data = &self.dfg.instructions[inst];
+        let data = &self.dfg.inst(inst);
         let opcode = data.opcode();
         let spec = opcode.spec();
 
-        if !data.matches_format(&self.dfg, spec.format) {
+        if !data.matches_format(spec.format) {
             return self.fail(alloc::format!(
                 "{} at {:?} is stored in an incompatible instruction format",
                 spec.mnemonic,
@@ -77,7 +75,7 @@ impl Function {
         }
 
         let mut operands = SmallVec::<[Type; 4]>::new();
-        data.visit_type_operands(&self.dfg, |value| {
+        data.visit_type_operands(|value| {
             operands.push(self.dfg.value_type(value));
         });
         let results = self
@@ -110,7 +108,7 @@ impl Function {
             self.validate_signature(module, inst, signature, call.args, spec.mnemonic)?;
         }
         let mut successors = Ok(());
-        data.visit_successors(&self.dfg, |call| {
+        data.visit_successors(|call| {
             if successors.is_ok() {
                 successors = self.validate_block_call(call, spec.mnemonic);
             }
@@ -118,19 +116,17 @@ impl Function {
         successors?;
 
         match data {
-            InstructionData::BrTable { table, .. }
-                if self.dfg.jump_table_targets(*table).is_empty() =>
-            {
+            InstructionView::BrTable { table, .. } if table.is_empty() => {
                 return self.fail("branch table must contain a default destination".into());
             }
-            InstructionData::Return { values } => {
+            InstructionView::Return { values } => {
                 self.validate_values(
                     "return",
-                    self.dfg.get_value_list(*values),
+                    values,
                     module.signatures[self.signature].returns.iter().copied(),
                 )?;
             }
-            InstructionData::VectorOpWithExt { ext, .. } => {
+            InstructionView::VectorOpWithExt { ext, .. } => {
                 let vector_ty = results.first().copied().ok_or_else(|| {
                     crate::Error::from(ValidationError::Other(alloc::format!(
                         "predicated {} at {:?} has no result",
@@ -148,13 +144,13 @@ impl Function {
                 }
                 self.validate_vector_ext(inst, opcode, *ext, vector_ty)?;
             }
-            InstructionData::VectorLoadStrided { ext, .. }
-            | InstructionData::VectorGather { ext, .. } => {
+            InstructionView::VectorLoadStrided { ext, .. }
+            | InstructionView::VectorGather { ext, .. } => {
                 self.validate_vector_mem_ext(inst, opcode, *ext, results[0])?;
             }
-            InstructionData::VectorStoreStrided { args, ext }
-            | InstructionData::VectorScatter { args, ext } => {
-                let values = self.dfg.get_value_list(*args);
+            InstructionView::VectorStoreStrided { args, ext }
+            | InstructionView::VectorScatter { args, ext } => {
+                let values = args;
                 self.validate_vector_mem_ext(inst, opcode, *ext, self.dfg.value_type(values[2]))?;
             }
             _ => {}
@@ -167,7 +163,7 @@ impl Function {
     fn constraint_error(&self, inst: Inst, message: &str) -> crate::Error {
         ValidationError::Other(alloc::format!(
             "{} constraint at {:?}: {}",
-            self.dfg.instructions[inst].opcode().spec().mnemonic,
+            self.dfg.opcode(inst).spec().mnemonic,
             inst,
             message
         ))
@@ -179,15 +175,11 @@ impl Function {
         module: &ModuleData,
         inst: Inst,
         sig_id: SigId,
-        args: ValueList,
+        args: &[Value],
         name: &str,
     ) -> Result<()> {
         let signature = &module.signatures[sig_id];
-        self.validate_values(
-            name,
-            self.dfg.get_value_list(args),
-            signature.params.iter().copied(),
-        )?;
+        self.validate_values(name, args, signature.params.iter().copied())?;
 
         let results = self.dfg.inst_results(inst);
         if results.len() != signature.returns.len() {
@@ -244,12 +236,12 @@ impl Function {
         Ok(())
     }
 
-    fn validate_block_call(&self, call: BlockCall, kind: &str) -> Result<()> {
-        let call_data = &self.dfg.block_calls[call];
+    fn validate_block_call(&self, call: Successor<'_>, kind: &str) -> Result<()> {
+        let call_data = call;
         let params = &self.layout.blocks[call_data.block].params;
         self.validate_values(
             kind,
-            self.dfg.get_value_list(call_data.args),
+            call_data.args,
             params.iter().map(|&value| self.dfg.value_type(value)),
         )
     }
@@ -258,16 +250,9 @@ impl Function {
         &self,
         inst: Inst,
         opcode: Opcode,
-        ext: VectorExtId,
+        ext: VectorExtData,
         vector_ty: Type,
     ) -> Result<()> {
-        let ext = ext.get(&self.dfg).ok_or_else(|| {
-            crate::Error::from(ValidationError::Other(alloc::format!(
-                "vector operation at {:?} refers to missing extension {:?}",
-                inst,
-                ext
-            )))
-        })?;
         self.validate_mask(inst, opcode, ext.mask, vector_ty)?;
         if let Some(evl) = ext.evl {
             self.validate_evl(inst, opcode, evl)?;
@@ -279,16 +264,9 @@ impl Function {
         &self,
         inst: Inst,
         opcode: Opcode,
-        ext: VectorMemExtId,
+        ext: VectorMemOptions,
         vector_ty: Type,
     ) -> Result<()> {
-        let ext = ext.get(&self.dfg).ok_or_else(|| {
-            crate::Error::from(ValidationError::Other(alloc::format!(
-                "vector memory operation at {:?} refers to missing extension {:?}",
-                inst,
-                ext
-            )))
-        })?;
         if let Some(mask) = ext.mask {
             self.validate_mask(inst, opcode, mask, vector_ty)?;
         }
@@ -428,10 +406,11 @@ mod tests {
             .insts
             .last()
             .unwrap();
-        let crate::InstructionData::BrTable { table, .. } = func.dfg.instructions[inst] else {
+        let crate::InstructionView::BrTable { index, .. } = func.dfg.inst(inst) else {
             unreachable!()
         };
-        func.dfg.jump_tables[table].targets.clear();
+        func.dfg
+            .replace_inst(inst, crate::InstDraft::br_table(index, []));
         assert!(
             module
                 .validate()
@@ -469,9 +448,10 @@ mod tests {
             builder.init_entry_block();
             let value = builder.ins().vconst(vec![0; 16], Type::I32X4);
             let inst = builder.func().dfg.value_inst(value).unwrap();
-            builder.func_mut().dfg.instructions[inst] = crate::InstructionData::Vconst {
-                pool_id: crate::inst::ConstantPoolId(u32::MAX),
-            };
+            builder.func_mut().dfg.replace_inst(
+                inst,
+                crate::InstDraft::vconst(crate::inst::ConstantPoolId(u32::MAX)),
+            );
             builder.ins().ret(&[]);
         }
         assert!(

@@ -18,8 +18,10 @@ pub(crate) fn constructor(
             match &op.packing[&field.name] {
                 Binding::Name(name) => {
                     let value = local(name);
-                    if matches!(&field.ty, FieldType::Named(ty) if ty == "ValueList") {
-                        format!("{dfg}.make_value_list(&{value})")
+                    if field.ty.named("BlockCall") {
+                        format!("({value}).as_view()")
+                    } else if field.ty.named("ValueList") {
+                        format!("&{value}")
                     } else {
                         value
                     }
@@ -35,41 +37,29 @@ pub(crate) fn constructor(
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
-                    if matches!(field.ty, FieldType::List(_)) {
-                        format!("{dfg}.make_value_list(&[{args}])")
-                    } else {
-                        format!("[{args}]")
-                    }
+                    format!("[{args}]")
                 }
                 Binding::Pool(name) => {
                     let value = local(name);
                     let ty = field.ty.qualified_type();
-                    format!("<{ty} as crate::dfg::PoolKey>::insert(&mut {dfg}, {value})")
+                    format!("{ty}::insert(&mut {dfg}, {value})")
                 }
                 Binding::Table { cases, default } => {
                     format!(
-                        "{dfg}.make_jump_table(&{}, {})",
+                        "({}).iter().map(crate::BlockCall::as_view).chain(core::iter::once(({}).as_view()))",
                         local(cases),
                         local(default)
                     )
                 }
             }
         };
-        fields.push(if value == field.name {
-            value
-        } else {
-            format!("{}: {value}", field.name)
-        });
+        fields.push(value);
     }
-    if fields.is_empty() {
-        format!("crate::InstructionData::{}", format.name)
-    } else {
-        format!(
-            "crate::InstructionData::{} {{ {} }}",
-            format.name,
-            fields.join(", ")
-        )
-    }
+    format!(
+        "crate::InstDraft::{}({})",
+        crate::storage::constructor_name(&format.name),
+        fields.join(", ")
+    )
 }
 
 /// Recover logical locals from physical values. Records, byte buffers and
@@ -89,19 +79,10 @@ pub(crate) fn projections(
         let value = field(&storage.name);
         match &op.packing[&storage.name] {
             Binding::Name(name) => {
-                let value = if matches!(&storage.ty, FieldType::Named(ty) if ty == "ValueList") {
-                    format!("{dfg}.get_value_list({value})")
-                } else {
-                    value
-                };
                 locals.push((name.clone(), value));
             }
             Binding::Array(args) => {
-                let value = if matches!(storage.ty, FieldType::List(_)) {
-                    format!("{dfg}.get_value_list({value})")
-                } else {
-                    format!("({value})")
-                };
+                let value = format!("({value})");
                 for (index, arg) in args.iter().enumerate() {
                     let Binding::Name(name) = arg else {
                         unreachable!("checked array binding")
@@ -111,15 +92,13 @@ pub(crate) fn projections(
             }
             Binding::Pool(name) => {
                 let ty = storage.ty.qualified_type();
-                let value = required(format!(
-                    "<{ty} as crate::dfg::PoolKey>::get({value}, {dfg})"
-                ));
+                let value = required(format!("{ty}::get({value}, {dfg})"));
                 locals.push((name.clone(), value));
             }
             Binding::Table { cases, default } => {
-                let split = required(format!("{dfg}.jump_table_targets({value}).split_last()"));
+                let split = required(format!("({value}).split_last()"));
                 locals.push((cases.clone(), format!("({split}).1")));
-                locals.push((default.clone(), format!("*({split}).0")));
+                locals.push((default.clone(), format!("({split}).0")));
             }
         }
     }
@@ -131,45 +110,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_pool_projections_borrow_and_constructors_intern_whole_records() {
+    fn only_immutable_bytes_are_interned() {
         let source = [
             include_str!("../../mir/defs/formats.ops"),
             include_str!("../../mir/defs/mir.ops"),
         ]
         .join("\n");
         let defs = crate::fixtures::parse(&source).unwrap();
-        for (name, logical, key) in [
-            ("PtrIndex", "imm", "PtrIndexImmId"),
-            ("LoadStride", "mem", "VectorMemExtId"),
-            ("Vconst", "bytes", "ConstantPoolId"),
+        for (name, logical, pooled) in [
+            ("PtrIndex", "imm", false),
+            ("LoadStride", "mem", false),
+            ("Vconst", "bytes", true),
         ] {
             let op = defs.ops.iter().find(|op| op.name == name).unwrap();
             let format = defs
                 .storage
                 .formats
                 .iter()
-                .find(|format| format.name == op.format)
+                .find(|f| f.name == op.format)
                 .unwrap();
             let packed = constructor(op, format, "dfg", str::to_owned);
-            assert!(
-                packed.contains(&format!(
-                    "<crate::inst::{key} as crate::dfg::PoolKey>::insert(&mut dfg, {logical})"
-                )),
-                "{packed}"
-            );
+            assert_eq!(packed.contains("::insert("), pooled, "{packed}");
             let locals = projections(op, format, "dfg", str::to_owned, |value| {
                 format!("{value}.ok_or(invalid)?")
             });
             let (_, expr) = locals.iter().find(|(name, _)| name == logical).unwrap();
-            assert!(
-                expr.contains(&format!(
-                    "<crate::inst::{key} as crate::dfg::PoolKey>::get("
-                )),
-                "{expr}"
-            );
-            assert!(expr.contains("ok_or(invalid)?"), "{expr}");
-            assert!(!expr.contains("clone"), "{expr}");
-            assert!(!expr.contains("ConstantPoolData"), "{expr}");
+            assert_eq!(expr.contains("::get("), pooled, "{expr}");
         }
     }
 
@@ -190,7 +156,7 @@ mod tests {
             .unwrap();
         assert!(
             constructor(op, format, "dfg", str::to_owned)
-                .contains("dfg.make_jump_table(&cases, default)")
+                .contains("chain(core::iter::once((default).as_view()))")
         );
         let locals = projections(op, format, "dfg", str::to_owned, |value| {
             format!("{value}.ok_or(invalid)?")
@@ -201,7 +167,7 @@ mod tests {
                 .any(|(name, expr)| name == "cases" && expr.ends_with(").1"))
         );
         assert!(locals.iter().any(|(name, expr)| name == "default"
-            && expr.starts_with("*(")
+            && expr.starts_with("(")
             && expr.ends_with(").0")));
     }
 }

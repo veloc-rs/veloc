@@ -1,50 +1,44 @@
-use veloc_mir::dfg::{DataFlowGraph, PoolKey};
-use veloc_mir::inst::{VectorExtData, VectorExtId, VectorMemExtId};
+use veloc_mir::dfg::DataFlowGraph;
+use veloc_mir::inst::VectorExtData;
 use veloc_mir::opcode::OpFormat;
-use veloc_mir::types::{BlockCallData, JumpTableData};
+use veloc_mir::{Arguments, BlockCall, InstructionView};
 use veloc_mir::{
-    Block, CallConv, InstructionData, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value,
+    Block, CallConv, InstDraft, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value,
     VectorMemOptions,
 };
 
-fn operands(data: &InstructionData, dfg: &DataFlowGraph, include_auxiliary: bool) -> Vec<Value> {
+fn operands(data: &InstructionView<'_>, include_auxiliary: bool) -> Vec<Value> {
     let mut values = Vec::new();
     if include_auxiliary {
-        data.visit_operands(dfg, |value| values.push(value));
+        data.visit_operands(|value| values.push(value));
     } else {
-        data.visit_type_operands(dfg, |value| values.push(value));
+        data.visit_type_operands(|value| values.push(value));
     }
     values
 }
 
 #[test]
-fn rewriting_predicated_operands_preserves_interned_original() {
+fn rewriting_predicated_operands_preserves_construction_data() {
     let mut dfg = DataFlowGraph::new();
     let old = Value(0);
     let evl = Value(1);
     let new = Value(2);
-    let args = dfg.make_value_list(&[old, old]);
-    let ext = VectorExtId::insert(
-        &mut dfg,
-        VectorExtData {
-            mask: old,
-            evl: Some(evl),
-        },
-    );
-    let original = InstructionData::VectorOpWithExt {
-        opcode: Opcode::IAdd,
-        args,
-        ext,
+    let args = Arguments::from_slice(&[old, old]);
+    let ext = VectorExtData {
+        mask: old,
+        evl: Some(evl),
     };
-    let mut changed = original.clone();
-    changed.replace_value(&mut dfg, old, new);
+    let original = InstDraft::vector_op_with_ext(Opcode::IAdd, &args, ext);
+    let inst = dfg.create_inst(original.clone());
+    dfg.replace_all_uses(old, new);
+    let changed = dfg.inst(inst);
 
-    assert_eq!(operands(&changed, &dfg, false), [new, new]);
-    assert_eq!(operands(&changed, &dfg, true), [new, new, new, evl]);
-    assert_eq!(operands(&original, &dfg, true), [old, old, old, evl]);
-    assert!(changed.matches_format(&dfg, OpFormat::Binary));
-    assert!(!changed.matches_format(&dfg, OpFormat::Unary));
-    assert!(!changed.matches_format(&dfg, OpFormat::IntCompare));
+    assert_eq!(operands(&changed, false), [new, new]);
+    assert_eq!(operands(&changed, true), [new, new, new, evl]);
+    assert_eq!(operands(&original.as_view(), true), [old, old, old, evl]);
+    assert!(changed.matches_format(OpFormat::Binary));
+    assert!(!changed.matches_format(OpFormat::Unary));
+    assert!(!changed.matches_format(OpFormat::IntCompare));
 }
 
 #[test]
@@ -53,58 +47,56 @@ fn branch_table_rewriting_visits_successor_arguments() {
     let old = Value(0);
     let keep = Value(1);
     let new = Value(2);
-    let left_args = dfg.make_value_list(&[old, keep]);
-    let right_args = dfg.make_value_list(&[keep, old]);
-    let left = dfg.block_calls.push(BlockCallData {
+    let left_args = Arguments::from_slice(&[old, keep]);
+    let right_args = Arguments::from_slice(&[keep, old]);
+    let left = BlockCall {
         block: Block(0),
         args: left_args,
-    });
-    let right = dfg.block_calls.push(BlockCallData {
+    };
+    let right = BlockCall {
         block: Block(1),
         args: right_args,
-    });
-    let table = dfg.jump_tables.push(JumpTableData {
-        targets: vec![left, right],
-    });
-    let mut branch = InstructionData::BrTable { index: old, table };
-    assert_eq!(operands(&branch, &dfg, false), [old, old, keep, keep, old]);
-    branch.replace_value(&mut dfg, old, new);
-    assert_eq!(operands(&branch, &dfg, true), [new, new, keep, keep, new]);
+    };
+    let table = [left, right];
+    let branch = InstDraft::br_table(old, table.iter().map(BlockCall::as_view));
+    assert_eq!(
+        operands(&branch.as_view(), false),
+        [old, old, keep, keep, old]
+    );
+    let inst = dfg.create_inst(branch);
+    dfg.replace_all_uses(old, new);
+    let branch = dfg.draft(inst);
+    assert_eq!(
+        operands(&branch.as_view(), true),
+        [new, new, keep, keep, new]
+    );
 }
 
 #[test]
-fn pooled_memory_layout_checks_arity_and_keeps_auxiliary_operands_separate() {
-    let mut dfg = DataFlowGraph::new();
+fn memory_view_keeps_auxiliary_operands_separate() {
     let values = [Value(0), Value(1), Value(2)];
     let flags = MemFlags::new().with_volatile(true).with_alignment(8);
-    let ext = VectorMemExtId::insert(
-        &mut dfg,
-        VectorMemOptions {
-            flags,
-            mask: Some(Value(3)),
-            evl: Some(Value(4)),
-            ..VectorMemOptions::default()
-        },
-    );
-    let args = dfg.make_value_list(&values);
-    let scatter = InstructionData::VectorScatter { args, ext };
-    assert!(scatter.matches_format(&dfg, OpFormat::VectorScatter));
-    assert_eq!(operands(&scatter, &dfg, false), values);
+    let ext = VectorMemOptions {
+        flags,
+        mask: Some(Value(3)),
+        evl: Some(Value(4)),
+        ..VectorMemOptions::default()
+    };
+    let scatter = InstDraft::vector_scatter(values, ext);
+    assert!(scatter.as_view().matches_format(OpFormat::VectorScatter));
+    assert_eq!(operands(&scatter.as_view(), false), values);
     assert_eq!(
-        operands(&scatter, &dfg, true),
+        operands(&scatter.as_view(), true),
         [Value(0), Value(1), Value(2), Value(3), Value(4)]
     );
-    assert_eq!(scatter.memory_flags(&dfg), Some(flags));
-    assert!(scatter.memory_effect(&dfg).volatile);
+    assert_eq!(scatter.as_view().memory_flags(), Some(flags));
+    assert!(scatter.as_view().memory_effect().volatile);
 
-    let args = dfg.make_value_list(&values[..2]);
-    let incomplete = InstructionData::VectorScatter { args, ext };
-    assert!(!incomplete.matches_format(&dfg, OpFormat::VectorScatter));
+    // Fixed operand groups cannot have the wrong length in construction data.
 }
 
 #[test]
 fn values_construction_handles_inline_fixed_opcode_and_nullary_layouts() {
-    let dfg = DataFlowGraph::new();
     let values = [Value(0), Value(1), Value(2)];
     for opcode in [
         Opcode::INeg,
@@ -117,15 +109,15 @@ fn values_construction_handles_inline_fixed_opcode_and_nullary_layouts() {
     ] {
         let format = opcode.spec().format;
         let arity = format.fixed_value_arity().unwrap();
-        let instruction = InstructionData::from_values(opcode, &values[..arity]).unwrap();
+        let instruction = InstDraft::from_values(opcode, &values[..arity]).unwrap();
         assert_eq!(instruction.opcode(), opcode);
-        assert!(instruction.matches_format(&dfg, format));
-        assert_eq!(operands(&instruction, &dfg, true), values[..arity]);
-        assert_eq!(instruction.memory_flags(&dfg), None);
-        assert!(InstructionData::from_values(opcode, &[Value(0); 4]).is_none());
+        assert!(instruction.as_view().matches_format(format));
+        assert_eq!(operands(&instruction.as_view(), true), values[..arity]);
+        assert_eq!(instruction.as_view().memory_flags(), None);
+        assert!(InstDraft::from_values(opcode, &[Value(0); 4]).is_none());
     }
     // Property-bearing instructions cannot be fabricated from operands alone.
-    assert!(InstructionData::from_values(Opcode::Load, &values[..1]).is_none());
+    assert!(InstDraft::from_values(Opcode::Load, &values[..1]).is_none());
 }
 
 #[test]
@@ -146,26 +138,26 @@ fn generated_memory_builders_preserve_field_order() {
     builder.ins().stack_store(slot, value, 24);
     let stacked = builder.ins().stack_load(slot, 24, Type::PTR);
 
-    let dfg = &builder.func().dfg;
-    let instructions: Vec<_> = dfg.instructions.values().collect();
+    let dfg = builder.func().dfg();
+    let instructions: Vec<_> = dfg.instructions().map(|(_, data)| data).collect();
     assert!(matches!(
         instructions[0],
-        InstructionData::Store { ptr: actual_ptr, value: actual_value, offset: 16, flags: actual_flags }
-            if (*actual_ptr, *actual_value, *actual_flags) == (ptr, value, flags)
+        InstructionView::Store { ptr: actual_ptr, value: actual_value, offset: 16, flags: actual_flags }
+            if (actual_ptr, actual_value, actual_flags) == (ptr, value, flags)
     ));
     assert!(matches!(
         dfg.inst(dfg.value_inst(loaded).unwrap()),
-        InstructionData::Load { ptr: actual_ptr, offset: 16, flags: actual_flags }
-            if (*actual_ptr, *actual_flags) == (ptr, flags)
+        InstructionView::Load { ptr: actual_ptr, offset: 16, flags: actual_flags }
+            if (actual_ptr, actual_flags) == (ptr, flags)
     ));
     assert!(matches!(
         instructions[2],
-        InstructionData::StackStore { slot: actual_slot, value: actual_value, offset: 24 }
-            if (*actual_slot, *actual_value) == (slot, value)
+        InstructionView::StackStore { slot: actual_slot, value: actual_value, offset: 24 }
+            if (actual_slot, actual_value) == (slot, value)
     ));
     assert!(matches!(
         dfg.inst(dfg.value_inst(stacked).unwrap()),
-        InstructionData::StackLoad { slot: actual_slot, offset: 24 } if *actual_slot == slot
+        InstructionView::StackLoad { slot: actual_slot, offset: 24 } if actual_slot == slot
     ));
     assert_eq!(dfg.value_type(loaded), Type::PTR);
     assert_eq!(dfg.value_type(stacked), Type::PTR);
@@ -187,7 +179,7 @@ fn generated_integer_constant_builder_preserves_bit_patterns() {
     let raw = builder.ins().iconst(bits, Type::I64);
     let negative = builder.ins().i32const(-1);
     let minimum = builder.ins().i64const(i64::MIN);
-    let dfg = &builder.func().dfg;
+    let dfg = builder.func().dfg();
     for (result, expected_bits, expected_type) in [
         (raw, bits, Type::I64),
         (negative, u64::MAX, Type::I32),
@@ -195,7 +187,7 @@ fn generated_integer_constant_builder_preserves_bit_patterns() {
     ] {
         assert!(matches!(
             dfg.inst(dfg.value_inst(result).unwrap()),
-            InstructionData::Iconst { value } if *value == expected_bits
+            InstructionView::Iconst { value } if value == expected_bits
         ));
         assert_eq!(dfg.value_type(result), expected_type);
     }

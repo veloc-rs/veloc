@@ -100,7 +100,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
 
 fn accessors(defs: &Definitions) -> String {
     let mut output = String::from(
-        "impl crate::InstructionData {\n    pub fn call_info(&self) -> Option<crate::inst::CallInfo> {\n        match (self.opcode(), self) {\n",
+        "impl<'a> crate::InstructionView<'a> {\n    pub fn call_info(&self) -> Option<crate::inst::CallInfo<'a>> {\n        match (self.opcode(), self) {\n",
     );
     for op in &defs.ops {
         let Some(source) = &op.signature_source else {
@@ -125,10 +125,10 @@ fn accessors(defs: &Definitions) -> String {
                 .expect("checked call parameter storage")
         };
         writeln!(output,
-            "            (crate::Opcode::{}, crate::InstructionData::{} {{ {}: call_signature, {}: call_args, .. }}) => Some(crate::inst::CallInfo {{ signature: crate::inst::SignatureRef::{variant}(*call_signature), args: *call_args }}),",
+            "            (crate::Opcode::{}, crate::InstructionView::{} {{ {}: call_signature, {}: call_args, .. }}) => Some(crate::inst::CallInfo {{ signature: crate::inst::SignatureRef::{variant}(*call_signature), args: call_args }}),",
             op.name, op.format, field(source), field(args)).unwrap();
     }
-    output.push_str("            _ => None,\n        }\n    }\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, dfg: &crate::dfg::DataFlowGraph, mut f: impl FnMut(crate::BlockCall)) {\n        match self {\n");
+    output.push_str("            _ => None,\n        }\n    }\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, mut f: impl FnMut(crate::Successor<'a>)) {\n        match self {\n");
     for format in &defs.storage.formats {
         let edges: Vec<_> = format.fields.iter().filter(|field| {
             matches!(&field.ty, FieldType::Named(ty) if matches!(ty.as_str(), "BlockCall" | "JumpTable"))
@@ -144,13 +144,17 @@ fn accessors(defs: &Definitions) -> String {
             .join(", ");
         writeln!(
             output,
-            "            crate::InstructionData::{} {{ {bindings}, .. }} => {{",
+            "            crate::InstructionView::{} {{ {bindings}, .. }} => {{",
             format.name
         )
         .unwrap();
         for (index, field) in edges.iter().enumerate() {
             if matches!(&field.ty, FieldType::Named(ty) if ty == "JumpTable") {
-                writeln!(output, "                for &call in dfg.jump_table_targets(*edge{index}) {{ f(call); }}").unwrap();
+                writeln!(
+                    output,
+                    "                for call in edge{index}.iter() {{ f(call); }}"
+                )
+                .unwrap();
             } else {
                 writeln!(output, "                f(*edge{index});").unwrap();
             }

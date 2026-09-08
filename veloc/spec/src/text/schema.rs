@@ -508,7 +508,6 @@ mod tests {
     fn record() -> RecordDef {
         RecordDef {
             name: "Config".into(),
-            storage: "VectorMemExtId".into(),
             fields: vec![
                 RecordField {
                     name: "mask".into(),

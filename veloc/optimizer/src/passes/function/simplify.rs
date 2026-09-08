@@ -4,9 +4,10 @@
 //! For example: `iconst 1 + iconst 2` -> `iconst 3`, and `x + 0` -> `x`.
 
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
+use alloc::collections::VecDeque;
+use cranelift_entity::SecondaryMap;
 use veloc_analyzer::AnalysisManager;
 use veloc_mir::function::Function;
-use veloc_mir::inst::InstructionData;
 
 const SIMPLIFY: &str = "simplify";
 
@@ -19,12 +20,15 @@ impl FunctionPass for SimplifyPass {
 
     fn run(
         &self,
-        func: &mut Function,
-        am: &mut AnalysisManager,
+        am: &mut AnalysisManager<'_>,
         config: &OptConfig,
         metrics: &mut Metrics,
     ) -> PreservedAnalyses {
-        let changed = run_simplify(func, am, config.is_debug_enabled(SIMPLIFY), metrics);
+        let changed = run_simplify(
+            am.function_mut(),
+            config.is_debug_enabled(SIMPLIFY),
+            metrics,
+        );
         if changed {
             PreservedAnalyses::none()
         } else {
@@ -33,65 +37,36 @@ impl FunctionPass for SimplifyPass {
     }
 }
 
-pub fn run_simplify(
-    func: &mut Function,
-    am: &mut AnalysisManager,
-    debug: bool,
-    metrics: &mut Metrics,
-) -> bool {
-    let mut changed = false;
+pub fn run_simplify(func: &mut Function, debug: bool, metrics: &mut Metrics) -> bool {
+    let mut queue = VecDeque::new();
+    let mut queued = SecondaryMap::<veloc_mir::Inst, bool>::new();
+    for &block in func.layout().block_order() {
+        for &inst in &func.layout().blocks()[block].insts {
+            queue.push_back(inst);
+            queued[inst] = true;
+        }
+    }
     let mut rewritten = 0u64;
-
-    loop {
-        let mut pass_changed = false;
-
-        // 获取指令快照进行遍历。
-        let insts: Vec<_> = func
-            .layout
-            .block_order
-            .iter()
-            .flat_map(|&block| {
-                func.layout.blocks[block]
-                    .insts
-                    .iter()
-                    .map(move |&inst| (block, inst))
-            })
-            .collect();
-
-        for (block, inst) in insts {
-            // 检查指令是否有效（之前的 fold 可能已经将其变为 Nop）
-            if matches!(func.dfg.instructions[inst], InstructionData::Nop) {
-                continue;
+    while let Some(inst) = queue.pop_front() {
+        queued[inst] = false;
+        if func.layout().inst_block(inst).is_none() {
+            continue;
+        }
+        if let Some(affected) = crate::rewrite::rewrite(func, inst) {
+            if debug {
+                log::info!("Rewrote instruction {}", inst);
             }
-
-            if crate::rewrite::rewrite(func, block, inst, am) {
-                if debug {
-                    log::info!("Rewrote instruction {}", inst);
+            rewritten += 1;
+            for user in affected {
+                if !queued[user] && func.layout().inst_block(user).is_some() {
+                    queued[user] = true;
+                    queue.push_back(user);
                 }
-                pass_changed = true;
-                rewritten += 1;
             }
         }
-
-        if !pass_changed {
-            break;
-        }
-        changed = true;
     }
-
-    if changed {
+    if rewritten != 0 {
         metrics.add("simplify.rewritten_insts", rewritten);
-        compact_layout(func);
     }
-
-    changed
-}
-
-/// 从布局中移除 Nop 指令
-fn compact_layout(func: &mut Function) {
-    for block in &func.layout.block_order.clone() {
-        func.layout.blocks[*block]
-            .insts
-            .retain(|&inst| !matches!(func.dfg.instructions[inst], InstructionData::Nop));
-    }
+    rewritten != 0
 }

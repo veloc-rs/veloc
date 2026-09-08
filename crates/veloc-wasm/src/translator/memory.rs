@@ -120,7 +120,7 @@ impl<'a> WasmTranslator<'a> {
                     .builder
                     .ins()
                     .call(self.runtime.memory_grow, &[vmctx, mem_idx, delta]);
-                let res_val = self.builder.func().dfg.inst_results(call_inst)[0];
+                let res_val = self.builder.func().dfg().inst_results(call_inst)[0];
                 self.stack.push(res_val);
                 self.reload_memory(mem);
             }

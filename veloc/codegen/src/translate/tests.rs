@@ -1,6 +1,6 @@
 use crate::translate::IRTranslator;
 use alloc::format;
-use veloc_mir::{InstructionData, Module, ModuleParser, Opcode, Type, ValueList};
+use veloc_mir::{InstDraft, Module, ModuleParser, Opcode, Type};
 
 fn module(opcode: Opcode, ty: Type, arity: usize) -> Module {
     let source = if arity == 1 {
@@ -31,31 +31,33 @@ fn semantic_lowering_rejects_malformed_arity_and_type_instances() {
     for case in 0..7 {
         let mut data = (*source).clone();
         let (_, function) = data.functions.iter_mut().next().unwrap();
-        let inst = function.layout.blocks[function.entry_block.unwrap()].insts[0];
+        let inst = function.layout().blocks()[function.entry_block.unwrap()].insts[0];
         let args = function.params().to_vec();
-        let result = function.dfg.first_result(inst).unwrap();
+        let result = function.dfg().first_result(inst).unwrap();
         match case {
-            0 => function.dfg.values[args[1]].ty = Type::I64,
-            1 => function.dfg.values[result].ty = Type::I64,
+            0 => function.edit().set_value_type(args[1], Type::I64),
+            1 => function.edit().set_value_type(result, Type::I64),
             2 => {
-                function.dfg.replace_inst(
-                    inst,
-                    InstructionData::Unary {
-                        opcode: Opcode::IAdd,
-                        arg: args[0],
-                    },
-                );
+                function
+                    .edit()
+                    .replace_inst(inst, InstDraft::unary(Opcode::IAdd, args[0]));
             }
-            3 => function.dfg.inst_results[inst] = ValueList::default(),
+            3 => {
+                let replacement = function.dfg().draft(inst);
+                function.edit().insert_after(inst, replacement, &[]);
+            }
             4 => {
                 for value in [args[0], args[1], result] {
-                    function.dfg.values[value].ty = Type::F32;
+                    function.edit().set_value_type(value, Type::F32);
                 }
             }
             5 => {
-                function.dfg.append_results(inst, &[Type::I32, Type::I32]);
+                let replacement = function.dfg().draft(inst);
+                function
+                    .edit()
+                    .insert_after(inst, replacement, &[Type::I32, Type::I32]);
             }
-            6 => function.dfg.values[args[1]].ty = Type::I32X4,
+            6 => function.edit().set_value_type(args[1], Type::I32X4),
             _ => unreachable!(),
         }
         assert!(
@@ -72,24 +74,24 @@ fn composed_semantic_fallback_still_validates_its_source_contract() {
     for case in 0..4 {
         let mut data = (*source).clone();
         let (_, function) = data.functions.iter_mut().next().unwrap();
-        let inst = function.layout.blocks[function.entry_block.unwrap()].insts[0];
+        let inst = function.layout().blocks()[function.entry_block.unwrap()].insts[0];
         let arg = function.params()[0];
-        let result = function.dfg.first_result(inst).unwrap();
+        let result = function.dfg().first_result(inst).unwrap();
         match case {
-            0 => function.dfg.values[result].ty = Type::I64,
+            0 => function.edit().set_value_type(result, Type::I64),
             1 => {
-                function.dfg.values[arg].ty = Type::F32;
-                function.dfg.values[result].ty = Type::F32;
+                function.edit().set_value_type(arg, Type::F32);
+                function.edit().set_value_type(result, Type::F32);
             }
-            2 => function.dfg.inst_results[inst] = ValueList::default(),
+            2 => {
+                function
+                    .edit()
+                    .insert_after(inst, InstDraft::unary(Opcode::INeg, arg), &[]);
+            }
             3 => {
-                function.dfg.replace_inst(
-                    inst,
-                    InstructionData::Binary {
-                        opcode: Opcode::INeg,
-                        args: [arg, arg],
-                    },
-                );
+                function
+                    .edit()
+                    .replace_inst(inst, InstDraft::binary(Opcode::INeg, [arg, arg]));
             }
             _ => unreachable!(),
         }

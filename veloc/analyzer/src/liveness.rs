@@ -80,10 +80,10 @@ pub struct Liveness {
 
 pub fn analyze_liveness(func: &Function) -> Liveness {
     let entry = func.entry_block.expect("Function must have entry block");
-    let rpo = func.layout.compute_rpo(entry);
-    let num_values = func.dfg.values.len();
-    let num_blocks = func.layout.blocks.len();
-    let num_insts = func.dfg.instructions.len();
+    let rpo = func.layout().compute_rpo(entry);
+    let num_values = func.dfg().values().len();
+    let num_blocks = func.layout().blocks().len();
+    let num_insts = func.dfg().instructions().len();
 
     let mut intervals: SecondaryMap<Value, LiveInterval> = SecondaryMap::with_capacity(num_values);
     let mut block_starts: SecondaryMap<Block, u32> = SecondaryMap::with_capacity(num_blocks);
@@ -101,23 +101,23 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
         block_starts[block] = inst_pc;
 
         // Block parameters are defined at the start of the block
-        for &param in &func.layout.blocks[block].params {
+        for &param in &func.layout().blocks()[block].params {
             def_pc[param] = inst_pc;
             def_block[param] = Some(block);
         }
         inst_pc += 2;
 
-        for &inst in &func.layout.blocks[block].insts {
+        for &inst in &func.layout().blocks()[block].insts {
             let current_inst_pc = inst_pc;
             inst_pcs[inst] = current_inst_pc;
 
             // Record uses
-            inst.visit_operands(&func.dfg, |v| {
+            for &v in func.dfg().operands(inst) {
                 uses[v].push((current_inst_pc, block));
-            });
+            }
 
             // Record defs (results are defined at inst_pc + 1)
-            for &res in func.dfg.inst_results(inst) {
+            for &res in func.dfg().inst_results(inst) {
                 def_pc[res] = current_inst_pc + 1;
                 def_block[res] = Some(block);
             }
@@ -131,8 +131,8 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
     let mut worklist = Vec::with_capacity(num_blocks);
 
     let values_to_process: Vec<Value> = func
-        .dfg
-        .values
+        .dfg()
+        .values()
         .keys()
         .filter(|&v| def_block[v].is_some())
         .collect();
@@ -154,7 +154,7 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
                 intervals[v].add_range(block_starts[use_block], use_pc + 1);
                 if !live_in[use_block.index()] {
                     live_in.set(use_block.index(), true);
-                    for &pred in &func.layout.blocks[use_block].preds {
+                    for &pred in &func.layout().blocks()[use_block].preds {
                         if !live_in[pred.index()] {
                             worklist.push(pred);
                         }
@@ -173,7 +173,7 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
                 intervals[v].add_range(v_def_pc, block_ends[b]);
             } else {
                 intervals[v].add_range(block_starts[b], block_ends[b]);
-                for &pred in &func.layout.blocks[b].preds {
+                for &pred in &func.layout().blocks()[b].preds {
                     if !live_in[pred.index()] {
                         worklist.push(pred);
                     }

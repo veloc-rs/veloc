@@ -42,8 +42,10 @@ pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
 // Re-export text format module
 pub use text::{ModuleParser, ParseError};
 pub use types::{
-    Block, BlockCall, FuncId, JumpTable, ModuleId, ScalarType, SigId, Signature, StackSlot, Type,
-    TypeBits, TypeSize, Value, ValueDef, ValueList, Variable, VectorType,
+    Block, BlockCall, FuncId, ModuleId, ScalarType, SigId, Signature, StackSlot, Type, TypeBits,
+    TypeSize, Value, ValueDef, ValueList, Variable, VectorType,
 };
 
-pub use inst::{Inst, InstructionData, VectorMemOptions};
+pub use inst::{
+    Arguments, Inst, InstDraft, InstructionView, Successor, Successors, VectorMemOptions,
+};

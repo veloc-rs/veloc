@@ -193,18 +193,17 @@ op Vconst(@data: Bytes) -> () {
 // run: opgen-error
 // check: unknown field PtrIndexImm.unknown
 record PtrIndexImm {
-    storage: PtrIndexImmId,
     fields: [offset(i32, 0), scale(u32, 1)]
 }
 
 format PtrIndex {
-    fields: [ptr(Value), index(Value), imm_id(PtrIndexImmId)],
+    fields: [ptr(Value), index(Value), imm_id(PtrIndexImm)],
     opcode: fixed(PtrIndex)
 }
 
 op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
     mnemonic: "ptr-index",
-    storage: PtrIndex { ptr: ptr, index: index, imm_id: pool(imm) },
+    storage: PtrIndex { ptr: ptr, index: index, imm_id: imm },
     text: Text { args: [ptr, index], named: [default(imm.scale, 1), default(imm.offset, 0)] },
     memory: NONE,
     constraints: [require(imm.unknown != 0, "ptr-index scale must be non-zero")]

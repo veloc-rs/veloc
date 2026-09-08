@@ -1,11 +1,7 @@
 use super::function::{Function, StackSlotData};
-use super::inst::{Inst, InstructionData, VectorExtData, VectorExtId};
+use super::inst::{Inst, InstDraft, VectorExtData};
 use super::opcode::Opcode;
-use super::types::{
-    Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, ValueList, Variable,
-};
-use crate::dfg::PoolKey;
-use crate::types::JumpTableData;
+use super::types::{Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, Variable};
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
 use alloc::vec::Vec;
 use hashbrown::HashMap;
@@ -129,34 +125,24 @@ impl<'a> FunctionBuilder<'a> {
         &self.module.signatures[sig_id]
     }
 
-    fn push_inst(&mut self, block: Block, data: InstructionData) -> Option<Value> {
+    fn push_inst(&mut self, block: Block, data: InstDraft) -> Option<Value> {
         let inst = self.push_inst_raw(block, data);
         self.func().dfg.first_result(inst)
     }
 
-    fn push_inst_raw(&mut self, block: Block, data: InstructionData) -> Inst {
+    fn push_inst_raw(&mut self, block: Block, data: InstDraft) -> Inst {
         let types = data
             .result_types(&self.func().dfg, self.module, &[])
             .unwrap_or_else(|error| panic!("{}: {error}", data.opcode().spec().mnemonic));
         self.append_inst(block, data, &types)
     }
 
-    fn append_inst(&mut self, block: Block, data: InstructionData, types: &[Type]) -> Inst {
-        let func = self.func_mut();
-        let (dfg, layout) = (&func.dfg, &mut func.layout);
-        data.visit_successors(dfg, |call| {
-            layout.add_edge(block, dfg.block_call_block(call))
-        });
-        let inst = self.func_mut().dfg.instructions.push(data);
-        self.func_mut().layout.append_inst(block, inst);
-        if !types.is_empty() {
-            self.func_mut().dfg.append_results(inst, types);
-        }
-        inst
+    fn append_inst(&mut self, block: Block, data: InstDraft, types: &[Type]) -> Inst {
+        self.func_mut().edit().append_inst(block, data, types)
     }
 
     /// Push an instruction whose result type is selected by the caller.
-    fn push_inst_with_type(&mut self, block: Block, data: InstructionData, ty: Type) -> Value {
+    fn push_inst_with_type(&mut self, block: Block, data: InstDraft, ty: Type) -> Value {
         let inst = self.append_inst(block, data, &[ty]);
         self.func()
             .dfg
@@ -164,12 +150,8 @@ impl<'a> FunctionBuilder<'a> {
             .expect("an explicitly typed instruction must produce one result")
     }
 
-    pub fn make_value_list(&mut self, values: &[Value]) -> ValueList {
-        self.func_mut().dfg.make_value_list(values)
-    }
-
     pub fn make_block_call(&mut self, block: Block, args: &[Value]) -> BlockCall {
-        self.func_mut().dfg.make_block_call(block, args)
+        BlockCall::new(block, args)
     }
 
     pub fn create_block(&mut self) -> Block {
@@ -238,7 +220,7 @@ impl<'a> FunctionBuilder<'a> {
     pub fn is_current_block_terminated(&self) -> bool {
         let block = self.current_block.expect("No current block");
         if let Some(&last_inst) = self.func().layout.blocks[block].insts.last() {
-            self.func().dfg.inst(last_inst).is_terminator()
+            self.func().dfg.opcode(last_inst).spec().is_terminator()
         } else {
             false
         }
@@ -396,97 +378,12 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     fn add_block_param_to_jump(&mut self, pred: Block, target: Block, index: usize, val: Value) {
-        if let Some(&last_inst) = self.func().layout.blocks[pred].insts.last() {
-            let dfg = &mut self.module.functions[self.func_id].dfg;
-            let idata = dfg.inst(last_inst).clone();
-
-            match idata {
-                InstructionData::Jump { mut dest } => {
-                    let mut dest_data = dfg.block_calls[dest];
-                    if dest_data.block == target {
-                        let mut vec = dfg.block_call_args(dest).to_vec();
-                        if index >= vec.len() {
-                            vec.resize(index + 1, val);
-                        } else {
-                            vec[index] = val;
-                        }
-                        dest_data.args = dfg.make_value_list(&vec);
-                        dest = dfg.block_calls.push(dest_data);
-                        *dfg.inst_mut(last_inst) = InstructionData::Jump { dest };
-                    }
-                }
-                InstructionData::Br {
-                    condition,
-                    mut then_dest,
-                    mut else_dest,
-                } => {
-                    let mut changed = false;
-                    let mut then_data = dfg.block_calls[then_dest];
-                    if then_data.block == target {
-                        let mut vec = dfg.block_call_args(then_dest).to_vec();
-                        if index >= vec.len() {
-                            vec.resize(index + 1, val);
-                        } else {
-                            vec[index] = val;
-                        }
-                        then_data.args = dfg.make_value_list(&vec);
-                        then_dest = dfg.block_calls.push(then_data);
-                        changed = true;
-                    }
-                    let mut else_data = dfg.block_calls[else_dest];
-                    if else_data.block == target {
-                        let mut vec = dfg.block_call_args(else_dest).to_vec();
-                        if index >= vec.len() {
-                            vec.resize(index + 1, val);
-                        } else {
-                            vec[index] = val;
-                        }
-                        else_data.args = dfg.make_value_list(&vec);
-                        else_dest = dfg.block_calls.push(else_data);
-                        changed = true;
-                    }
-
-                    if changed {
-                        *dfg.inst_mut(last_inst) = InstructionData::Br {
-                            condition,
-                            then_dest,
-                            else_dest,
-                        };
-                    }
-                }
-                InstructionData::BrTable {
-                    index: idx_val,
-                    table,
-                } => {
-                    let mut targets_data = dfg.jump_table_targets(table).to_vec();
-                    let mut changed = false;
-                    for target_call in targets_data.iter_mut() {
-                        let mut dest_data = dfg.block_calls[*target_call];
-                        if dest_data.block == target {
-                            let mut vec = dfg.block_call_args(*target_call).to_vec();
-                            if index >= vec.len() {
-                                vec.resize(index + 1, val);
-                            } else {
-                                vec[index] = val;
-                            }
-                            dest_data.args = dfg.make_value_list(&vec);
-                            *target_call = dfg.block_calls.push(dest_data);
-                            changed = true;
-                        }
-                    }
-
-                    if changed {
-                        let new_table = dfg.jump_tables.push(JumpTableData {
-                            targets: targets_data,
-                        });
-                        *dfg.inst_mut(last_inst) = InstructionData::BrTable {
-                            index: idx_val,
-                            table: new_table,
-                        };
-                    }
-                }
-                _ => {}
-            }
+        let Some(&inst) = self.func().layout.blocks[pred].insts.last() else {
+            return;
+        };
+        let mut data = self.func().dfg.draft(inst);
+        if data.set_successor_arg(target, index, val) {
+            self.func_mut().edit().replace_inst(inst, data);
         }
     }
 }
@@ -519,22 +416,22 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     /// Insert an instruction with caller-supplied result types, without validation.
     /// Referenced storage and the current block must exist. Run the validator
     /// before passing untrusted or potentially invalid IR to later stages.
-    pub fn insert(&mut self, data: InstructionData, types: &[Type]) -> Inst {
+    pub fn insert(&mut self, data: InstDraft, types: &[Type]) -> Inst {
         let block = self.block();
         self.builder.append_inst(block, data, types)
     }
 
-    pub(crate) fn push(&mut self, data: InstructionData) -> Option<Value> {
+    pub(crate) fn push(&mut self, data: InstDraft) -> Option<Value> {
         let block = self.block();
         self.builder.push_inst(block, data)
     }
 
-    pub(crate) fn push_with_type(&mut self, data: InstructionData, ty: Type) -> Value {
+    pub(crate) fn push_with_type(&mut self, data: InstDraft, ty: Type) -> Value {
         let block = self.block();
         self.builder.push_inst_with_type(block, data, ty)
     }
 
-    pub(crate) fn push_raw(&mut self, data: InstructionData) -> Inst {
+    pub(crate) fn push_raw(&mut self, data: InstDraft) -> Inst {
         let block = self.block();
         self.builder.push_inst_raw(block, data)
     }
@@ -606,18 +503,18 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Inst {
-        let args = self.builder.make_value_list(args);
-        self.push_raw(InstructionData::Call { func_id, args })
+        self.push_raw(InstDraft::call(func_id, args))
     }
 
     pub fn call_indirect(&mut self, sig_id: SigId, ptr: Value, args: &[Value]) -> Inst {
-        let args = self.builder.make_value_list(args);
-        self.push_raw(InstructionData::CallIndirect { ptr, args, sig_id })
+        self.push_raw(InstDraft::call_indirect(ptr, args, sig_id))
     }
 
     pub fn jump(&mut self, destination: Block, args: &[Value]) {
-        let dest = self.builder.make_block_call(destination, args);
-        self.push(InstructionData::Jump { dest });
+        self.push(InstDraft::jump(crate::Successor {
+            block: destination,
+            args,
+        }));
     }
 
     pub fn br(
@@ -628,38 +525,37 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         else_block: Block,
         else_args: &[Value],
     ) {
-        let then_dest = self.builder.make_block_call(then_block, then_args);
-        let else_dest = self.builder.make_block_call(else_block, else_args);
-        self.push(InstructionData::Br {
+        self.push(InstDraft::br(
             condition,
-            then_dest,
-            else_dest,
-        });
+            crate::Successor {
+                block: then_block,
+                args: then_args,
+            },
+            crate::Successor {
+                block: else_block,
+                args: else_args,
+            },
+        ));
     }
 
     pub fn br_table(&mut self, index: Value, default_call: BlockCall, targets: &[BlockCall]) {
-        let table = self
-            .builder
-            .func_mut()
-            .dfg
-            .make_jump_table(targets, default_call);
-        self.push(InstructionData::BrTable { index, table });
+        self.push(InstDraft::br_table(
+            index,
+            targets
+                .iter()
+                .map(BlockCall::as_view)
+                .chain(core::iter::once(default_call.as_view())),
+        ));
     }
 
     pub fn ret(&mut self, values: &[Value]) {
-        let value_list = self.builder.make_value_list(values);
-        self.push(InstructionData::Return { values: value_list });
+        self.push(InstDraft::ret(values));
     }
 
     /// Call an intrinsic function.
     /// Returns the instruction handle, use `dfg.inst_results(inst)` to get return values.
     pub fn call_intrinsic(&mut self, intrinsic: Intrinsic, sig_id: SigId, args: &[Value]) -> Inst {
-        let args = self.builder.make_value_list(args);
-        self.push_raw(InstructionData::CallIntrinsic {
-            intrinsic,
-            args,
-            sig_id,
-        })
+        self.push_raw(InstDraft::call_intrinsic(intrinsic, args, sig_id))
     }
 
     // ======================================
@@ -694,19 +590,8 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         evl: Option<Value>,
         result_ty: Type,
     ) -> Value {
-        let args_list = self.builder.make_value_list(args);
-        let ext_id = VectorExtId::insert(
-            &mut self.builder.func_mut().dfg,
-            VectorExtData { mask, evl },
-        );
+        let ext = VectorExtData { mask, evl };
 
-        self.push_with_type(
-            InstructionData::VectorOpWithExt {
-                opcode,
-                args: args_list,
-                ext: ext_id,
-            },
-            result_ty,
-        )
+        self.push_with_type(InstDraft::vector_op_with_ext(opcode, args, ext), result_ty)
     }
 }

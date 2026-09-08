@@ -317,7 +317,7 @@ impl<'a> WasmTranslator<'a> {
                         }
                     } else {
                         for i in 0..results.len() {
-                            let res_val = self.builder.func().dfg.inst_results(call_inst)[i];
+                            let res_val = self.builder.func().dfg().inst_results(call_inst)[i];
                             self.stack.push(res_val);
                         }
                     }
@@ -336,7 +336,7 @@ impl<'a> WasmTranslator<'a> {
                         }
                     } else {
                         for i in 0..results.len() {
-                            let res_val = self.builder.func().dfg.inst_results(call_inst)[i];
+                            let res_val = self.builder.func().dfg().inst_results(call_inst)[i];
                             self.stack.push(res_val);
                         }
                     }
@@ -457,7 +457,7 @@ impl<'a> WasmTranslator<'a> {
                     }
                 } else {
                     for i in 0..results.len() {
-                        let res_val = self.builder.func().dfg.inst_results(call_inst)[i];
+                        let res_val = self.builder.func().dfg().inst_results(call_inst)[i];
                         self.stack.push(res_val);
                     }
                 }
@@ -505,7 +505,7 @@ impl<'a> WasmTranslator<'a> {
                     }
                 } else {
                     for i in 0..results.len() {
-                        let res_val = self.builder.func().dfg.inst_results(call_inst)[i];
+                        let res_val = self.builder.func().dfg().inst_results(call_inst)[i];
                         self.stack.push(res_val);
                     }
                 }

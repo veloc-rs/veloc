@@ -1,4 +1,31 @@
 // Exercise contracts not represented by production MIR instructions.
+record TestOperands {
+    fields: [token(Value), optional(optional(Value), none), tag(u32, 9)]
+}
+format Grouped {
+    fields: [op(Opcode), before(Value), group(TestOperands), after(Value)],
+    opcode: dynamic(op)
+}
+op Grouped(before: I32, after: I32, @group: TestOperands) -> I32 {
+    mnemonic: "grouped", storage: Grouped { before: before, group: group, after: after },
+    text: Text { args: [before, after], named: [group.token, optional(group.optional), default(group.tag, 9)] },
+    memory: NONE
+}
+
+format Routed {
+    fields: [op(Opcode), operands(Value), group(TestOperands), dest(BlockCall), tail(VectorExtData)],
+    opcode: dynamic(op)
+}
+op Routed(input: I32, @group: TestOperands, @tail: VectorExtData, dest: successor) -> () {
+    mnemonic: "routed",
+    storage: Routed { operands: input, group: group, dest: dest, tail: tail },
+    text: Text {
+        args: [input, dest],
+        named: [group.token, optional(group.optional), group.tag, tail.mask, optional(tail.evl)]
+    },
+    memory: NONE
+}
+
 flags TestFlags {
     storage: u128,
     members: [HIGH(127), LOW_BIT(0), MIDDLE(63)],
@@ -31,7 +58,7 @@ op FloatOnly<U: Float>(a: U, b: U) -> U {
 
 format Pair { fields: [op(Opcode), inputs(values(2))], opcode: dynamic(op) }
 format FieldPair { fields: [op(Opcode), right(Value), left(Value)], opcode: dynamic(op) }
-format Triple { fields: [op(Opcode), args(list(3))], opcode: dynamic(op) }
+format Triple { fields: [op(Opcode), args(values(3))], opcode: dynamic(op) }
 format Immediate { fields: [op(Opcode), value(Value), displacement(i32)], opcode: dynamic(op) }
 format Compare { fields: [op(Opcode), cc(IntCC), args(values(2))], opcode: dynamic(op) }
 
