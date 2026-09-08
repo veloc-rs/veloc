@@ -80,6 +80,16 @@ impl<'a> InstPrinter<'a> {
         }
     }
 
+    pub(super) fn fmt_function_signature(&self, f: &mut dyn Write, callee: FuncId) -> Result {
+        let module = self.module.ok_or(core::fmt::Error)?;
+        let function = module.functions.get(callee).ok_or(core::fmt::Error)?;
+        let signature = module
+            .signatures
+            .get(function.signature)
+            .ok_or(core::fmt::Error)?;
+        self.fmt_signature(f, signature)
+    }
+
     fn fmt_signature(&self, f: &mut dyn Write, sig: &Signature) -> Result {
         f.write_char('(')?;
         self.fmt_types(f, &sig.params)?;

@@ -39,6 +39,9 @@ format Empty { fields: [opcode(Opcode)], opcode: dynamic(opcode) }
 op Many<A: Any, B: Any, C: Any, D: Any, E: Any>(a: A, b: B, c: C, d: D, e: E) -> (E, A) {
     mnemonic: "many", storage: Quinary { args: [a, b, c, d, e] }, memory: NONE
 }
+op ThreeResults<A: Any, B: Any>(a: A, b: B) -> (B, A, BOOL) {
+    mnemonic: "three-results", storage: Binary { args: [a, b] }, memory: NONE
+}
 op Output<T: Integer>() -> T {
     mnemonic: "output", storage: Empty {}, memory: NONE
 }

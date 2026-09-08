@@ -1,0 +1,170 @@
+// ----- tight-punctuation-forward-calls-and-multiple-results
+// run: roundtrip
+// check: (v1, v2) = call later(v0) : (i32) -> (i32, i32)
+// check: return v1, v2
+local function main(i32)->(i32,i32)
+block0(v0:i32):
+  (v1,v2)=call later(v0):(i32)->(i32,i32)// forward function, no whitespace required
+  return v1,v2
+local function later(i32)->(i32,i32)
+block0(v0:i32):
+  return v0,v0
+
+// ----- utf8-names-and-nested-signature
+// run: roundtrip
+// check: call-indirect 入口.v0(值.v1) : (i32) -> (i32, i32)
+local function 调用(ptr,i32)->(i32,i32)
+block0(入口:ptr,值:i32):
+  (v2,v3)=call-indirect 入口(值):(i32)->(i32,i32)
+  return v2,v3
+
+// ----- nested-successors-and-comments
+// run: roundtrip
+// check: br-table v0, [block1(v1), block2(v1)], block2(v1)
+local function table(i32,i32)->i32
+block0(v0:i32,v1:i32):
+  br-table v0,[block1(v1),block2(v1)],block2(v1) // ) ] , = ignored
+block1(v2:i32):
+  jump block2(v2)
+block2(v3:i32):
+  return v3
+
+// ----- scalable-types-and-reordered-fields
+// run: roundtrip
+// check: load-stride.i32<scalable 4>.volatile.align4
+// check: stride=v1, offset=-16, mask=v2
+local function vector(ptr,i32,mask<scalable 4>)->i32<scalable 4>
+block0(v0:ptr,v1:i32,v2:mask<scalable 4>):
+  v3=load-stride.i32<scalable 4>.volatile.align4 v0,mask=v2,offset=-16,stride=v1
+  return v3
+
+// ----- global-and-declaration-like-value-names
+// run: roundtrip
+// check: global counter: i32 (local)
+// check: ssvalue.v0 = iconst.i32 1
+// check: blockvalue.v1 = iadd.i32 ssvalue.v0, ssvalue.v0
+global counter:i32(local)
+local function names()->i32
+block0():
+  ssvalue=iconst.i32 1
+  blockvalue=iadd ssvalue,ssvalue
+  return blockvalue
+
+// ----- missing-comma-location
+// run: parse-error
+// check: line 6, column 14
+// check: expected `,`
+local function bad(i32)->i32
+block0(v0:i32):
+  v1=iadd v0 v0
+
+// ----- newline-does-not-continue-operands
+// run: parse-error
+// check: line 6
+// check: SSA value
+local function bad(i32)->i32
+block0(v0:i32):
+  v1=iadd v0,
+  return v0
+
+// ----- nested-call-cannot-hide-trailing-text
+// run: parse-error
+// check: unexpected operand or trailing text
+local function bad()->void
+block0():
+  jump block1() extra
+block1():
+  return
+
+// ----- unmatched-call-delimiter
+// run: parse-error
+// check: RParen
+local function bad()->void
+block0():
+  jump block1(
+block1():
+  return
+
+// ----- unmatched-list-delimiter
+// run: parse-error
+// check: RBracket
+local function bad(i32)->void
+block0(v0:i32):
+  br-table v0,[block1()),block1()
+block1():
+  return
+
+// ----- trailing-comma-before-optional-fields
+// run: parse-error
+// check: expected name or operand
+local function bad(ptr)->i32
+block0(v0:ptr):
+  v1=load.i32 v0,
+  return v1
+
+// ----- trailing-comma-after-named-fields
+// run: parse-error
+// check: expected name or operand
+local function bad(ptr)->i32
+block0(v0:ptr):
+  v1=load.i32 v0,offset=4,
+  return v1
+
+// ----- missing-value-in-named-field
+// run: parse-error
+// check: operand `offset`
+local function bad(ptr)->i32
+block0(v0:ptr):
+  v1=load.i32 v0,offset=
+  return v1
+
+// ----- trailing-comma-in-successor-list
+// run: parse-error
+// check: expected name or operand
+local function bad(i32)->void
+block0(v0:i32):
+  br-table v0,[block1(),],block1()
+block1():
+  return
+
+// ----- malformed-vector-type
+// run: parse-error
+// check: Greater
+local function bad(i32<4])->void
+
+// ----- duplicate-result-type
+// run: parse-error
+// check: multiple result type suffixes
+local function bad()->i32
+block0():
+  v0=iconst.i32.i32 1
+  return v0
+
+// ----- missing-arrow-in-nested-signature
+// run: parse-error
+// check: Arrow
+local function bad(ptr,i32)->i32
+block0(v0:ptr,v1:i32):
+  v2=call-indirect v0(v1):(i32) i32
+  return v2
+
+// ----- trailing-text-in-function-header
+// run: parse-error
+// check: unexpected operand or trailing text
+local function bad()->void extra
+
+// ----- leading-dot-value-is-not-a-suffix
+// run: roundtrip
+// check: .value.v1 = iadd.i32 .input.v0, .input.v0
+local function dots(i32)->i32
+block0(.input:i32):
+  .value=iadd .input,.input
+  return .value
+
+// ----- unicode-literal-error-location
+// run: parse-error
+// check: line 6, column 16
+// check: invalid integer constant
+local function bad()->i32
+block0():
+  值=iconst.i32 nope

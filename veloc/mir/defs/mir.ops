@@ -438,7 +438,7 @@ op Call(@func_id: FuncId, args: values) -> signature {
     mnemonic: "call",
     storage: Call { func_id: func_id, args: args },
     signature: function(func_id),
-    text: Text { args: [invoke(func_id, args)] },
+    text: Text { args: [invoke(func_id, args, function(func_id))] },
     traits: [MAY_TRAP], memory: UNKNOWN
 }
 

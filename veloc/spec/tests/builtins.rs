@@ -37,8 +37,8 @@ fn builtin_references_are_explicit_not_hidden_mir_defaults() {
 #[test]
 fn class_unions_drive_both_generated_contracts_and_semantic_checks() {
     let output = compile_mir(ADD).unwrap();
-    assert!(output.types.contains("C::Bits"));
-    assert!(output.builtins.contains("1..=4 => 0x00000001,"));
+    assert!(output.type_rules.contains("C::Bits"));
+    assert!(output.opcodes.contains("1..=4 => 0x00000001,"));
     let mixed = ADD.replace(
         "members: [ScalarInteger]",
         "members: [ScalarInteger, ScalarFloat]",
@@ -131,16 +131,16 @@ fn compact_scalar_codes_and_adapter_contracts_are_checked() {
     let output = veloc_opgen::compile_mir(BUILTINS).unwrap();
     assert!(
         output
-            .scalars
+            .types
             .contains("pub const I8: Self = Self(1 << SCALAR_SHIFT);")
     );
     assert!(
         output
-            .scalars
+            .types
             .contains("pub const PTR: Self = Self(8 << SCALAR_SHIFT);")
     );
-    assert!(output.scalars.contains("pub const BOOL: Self"));
-    assert!(output.scalars.contains("\"bool\" => Some(Self::BOOL)"));
+    assert!(output.types.contains("pub const BOOL: Self"));
+    assert!(output.types.contains("\"bool\" => Some(Self::BOOL)"));
 }
 
 #[test]
@@ -151,18 +151,18 @@ fn traits_and_regions_use_declared_storage_and_members() {
     let output = veloc_opgen::compile_mir(&source).unwrap();
     assert!(
         output
-            .builtins
+            .opcodes
             .contains("pub const EXTRA_FACT: Self = Self(1 << 5)")
     );
     assert!(
         output
-            .builtins
+            .opcodes
             .contains("(Self::EXTRA_FACT, \"extra-fact\")")
     );
-    assert!(output.builtins.contains("pub const ALL: Self = Self(63)"));
+    assert!(output.opcodes.contains("pub const ALL: Self = Self(63)"));
     assert!(
         output
-            .builtins
+            .opcodes
             .contains("pub const UNKNOWN: Self = Self::new(MemoryRegions(63), MemoryRegions(63))")
     );
     // The same region/effect adapter must also handle wider declared storage.
@@ -171,8 +171,8 @@ fn traits_and_regions_use_declared_storage_and_members() {
         .replace("DEVICE(5)", "DEVICE(127)");
     let output = veloc_opgen::compile_mir(&source).unwrap();
     let all = (1u128 << 127) | 31;
-    assert!(output.builtins.contains("pub struct MemoryRegions(u128)"));
-    assert!(output.builtins.contains(&format!(
+    assert!(output.opcodes.contains("pub struct MemoryRegions(u128)"));
+    assert!(output.opcodes.contains(&format!(
         "Self::new(MemoryRegions({all}), MemoryRegions({all}))"
     )));
 }
@@ -219,7 +219,7 @@ fn effects_use_declared_regions_and_purity_not_effect_names() {
         ("TABLE_READ", 8, 0),
         ("TABLE_WRITE", 0, 8),
     ] {
-        assert!(output.builtins.contains(&format!(
+        assert!(output.opcodes.contains(&format!(
             "pub const {name}: Self = Self::new(MemoryRegions({read}), MemoryRegions({write}))"
         )));
     }

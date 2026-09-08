@@ -1,7 +1,7 @@
 //! Typed Rust emission. No operation names or text-codec registry live here.
 use std::fmt::Write;
 
-use super::schema::{Atom, AtomKind, Item, Mode, Schema};
+use super::schema::{Atom, AtomKind, CallSignature, Item, Mode, Schema};
 use crate::model::{Op, ParamKind, TypeList};
 use crate::records::RecordDef;
 use crate::storage::{FieldType, Format};
@@ -44,87 +44,79 @@ pub(super) fn parse(
             ..
         })]
     );
-    if variadic && arity.is_none() && schema.named.is_empty() {
+    if variadic {
         let Item::Atom(atom) = &schema.args[0] else {
             unreachable!()
         };
-        // An unbounded value list needs no split/rejoin or temporary text buffer.
-        writeln!(
-            out,
-            "let {} = {};",
-            leaf(op, &atom.path),
-            parse_atom(atom, "text")
-        )
-        .unwrap();
-    } else {
-        if variadic && arity.is_none() {
-            out.push_str("let (_core, _named) = split_core_and_named(text, None)?;\n");
-        } else {
-            let count = if variadic {
-                arity.expect("alternate arity")
-            } else {
-                schema.args.len()
-            };
-            if schema.named.is_empty() {
-                writeln!(out, "let _core = exact_fields(text, {count})?;").unwrap();
-            } else {
-                writeln!(
-                    out,
-                    "let (_core, _named) = split_core_and_named(text, Some({count}))?;"
-                )
-                .unwrap();
+        if let Some(count) = arity {
+            let name = leaf(op, &atom.path);
+            for index in 0..count {
+                if index != 0 {
+                    out.push_str("input.expect(Kind::Comma)?;\n");
+                }
+                writeln!(out, "let {name}_{index} = self.value(input)?;").unwrap();
             }
-        }
-        if !schema.named.is_empty() {
-            let keys = schema
-                .named
-                .iter()
-                .map(|n| format!("{:?}", n.key))
+            let values = (0..count)
+                .map(|i| format!("{name}_{i}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(out, "reject_unknown_named(&_named, &[{keys}])?;").unwrap();
+            writeln!(out, "let {name}: [crate::Value; {count}] = [{values}];").unwrap();
+        } else {
+            writeln!(out, "let {} = self.values(input)?;", leaf(op, &atom.path)).unwrap();
         }
-        if variadic {
+    } else {
+        for (index, item) in schema.args.iter().enumerate() {
+            if index != 0 {
+                out.push_str("input.expect(Kind::Comma)?;\n");
+            }
+            parse_item(&mut out, op, item);
+        }
+    }
+    if !schema.named.is_empty() {
+        // Each field has a statically typed slot: no runtime field registry,
+        // string pairs, or repeated searches through a temporary field list.
+        for named in &schema.named {
+            writeln!(out, "let mut {} = None;", leaf(op, &named.atom.path)).unwrap();
+        }
+        out.push_str("if input.kind() != Kind::Eof {\n");
+        if variadic && arity.is_none() {
             let Item::Atom(atom) = &schema.args[0] else {
                 unreachable!()
             };
-            writeln!(out, "let {} = _core.iter().map(|s| <crate::Value as super::atom::AtomCodec>::parse(self, s, ty)).collect::<core::result::Result<Vec<_>, _>>()?;", leaf(op, &atom.path)).unwrap();
-        } else {
-            for (index, item) in schema.args.iter().enumerate() {
-                parse_item(
-                    &mut out,
-                    op,
-                    item,
-                    &format!("_core[{index}]"),
-                    &format!("_t{index}"),
-                );
-            }
+            writeln!(
+                out,
+                "if !{}.is_empty() {{ input.expect(Kind::Comma)?; }}",
+                leaf(op, &atom.path)
+            )
+            .unwrap();
+        } else if arity.unwrap_or(schema.args.len()) != 0 {
+            out.push_str("input.expect(Kind::Comma)?;\n");
         }
+        out.push_str(
+            "loop {\nlet _key = input.word()?;\ninput.expect(Kind::Equal)?;\nmatch _key {\n",
+        );
+        for named in &schema.named {
+            let name = leaf(op, &named.atom.path);
+            writeln!(out, "{:?} => {{ if {name}.is_some() {{ return Err(ParseError(format!(\"duplicate `{{_key}}` field\"))); }} {name} = Some({}); }},", named.key, parse_atom(&named.atom)).unwrap();
+        }
+        out.push_str("_ => return Err(ParseError(format!(\"unknown named field `{_key}`\"))),\n}\nif !input.eat(Kind::Comma) { break; }\n} }\n");
         for named in &schema.named {
             let name = leaf(op, &named.atom.path);
             match named.mode {
-                Mode::Required => {
-                    let expr = parse_atom(
-                        &named.atom,
-                        &format!("named_value(&_named, {:?})?", named.key),
-                    );
-                    writeln!(out, "let {name} = {expr};").unwrap();
-                }
-                Mode::Optional => {
-                    writeln!(
-                        out,
-                        "let {name} = _named.iter().find(|(key, _)| *key == {:?}).map(|(_, text)| <crate::Value as super::atom::AtomCodec>::parse(self, text, ty)).transpose()?;",
-                        named.key
-                    )
-                    .unwrap();
-                }
+                Mode::Required => writeln!(
+                    out,
+                    "let {name} = {name}.ok_or_else(|| ParseError({:?}.into()))?;",
+                    format!("missing `{}=` field", named.key)
+                )
+                .unwrap(),
+                Mode::Optional => {}
                 Mode::Default(default) => {
-                    let expr = parse_atom(&named.atom, "_text");
-                    writeln!(out, "let {name} = match _named.iter().find(|(key, _)| *key == {:?}) {{ Some((_, _text)) => {expr}, None => {default} }};", named.key).unwrap();
+                    writeln!(out, "let {name} = {name}.unwrap_or({default});").unwrap()
                 }
             }
         }
     }
+    out.push_str("input.finish()?;\n");
     for (path, default) in &schema.defaults {
         writeln!(out, "let {} = {};", leaf(op, path), default.rust()).unwrap();
     }
@@ -162,21 +154,14 @@ pub(super) fn parse(
     out
 }
 
-fn parse_item(out: &mut String, op: &Op, item: &Item, text: &str, temp: &str) {
+fn parse_item(out: &mut String, op: &Op, item: &Item) {
     match item {
         Item::Atom(atom) => {
-            writeln!(
-                out,
-                "let {} = {};",
-                leaf(op, &atom.path),
-                parse_atom(atom, text)
-            )
-            .unwrap();
+            writeln!(out, "let {} = {};", leaf(op, &atom.path), parse_atom(atom)).unwrap();
         }
         Item::Space(lhs, rhs) => {
-            writeln!(out, "let ({temp}_lhs, {temp}_rhs) = split_space({text})?;").unwrap();
-            parse_item(out, op, lhs, &format!("{temp}_lhs"), &format!("{temp}a"));
-            parse_item(out, op, rhs, &format!("{temp}_rhs"), &format!("{temp}b"));
+            parse_item(out, op, lhs);
+            parse_item(out, op, rhs);
         }
         Item::Invoke {
             callee,
@@ -185,33 +170,27 @@ fn parse_item(out: &mut String, op: &Op, item: &Item, text: &str, temp: &str) {
         } => {
             writeln!(
                 out,
-                "let ({temp}_callee, {temp}_args, {temp}_tail) = parse_invocation({text})?;"
-            )
-            .unwrap();
-            writeln!(
-                out,
                 "let {} = {};",
                 leaf(op, &callee.path),
-                parse_atom(callee, &format!("{temp}_callee"))
+                parse_atom(callee)
             )
             .unwrap();
-            writeln!(
-                out,
-                "let {} = {};",
-                leaf(op, &args.path),
-                parse_atom(args, &format!("{temp}_args"))
-            )
-            .unwrap();
-            if let Some(sig) = signature {
-                writeln!(
-                    out,
-                    "let {} = {};",
-                    leaf(op, &sig.path),
-                    parse_atom(sig, &format!("signature_suffix({temp}_tail)?"))
-                )
-                .unwrap();
-            } else {
-                writeln!(out, "require_empty({temp}_tail)?;").unwrap();
+            out.push_str("input.expect(Kind::LParen)?;\n");
+            writeln!(out, "let {} = {};", leaf(op, &args.path), parse_atom(args)).unwrap();
+            out.push_str("input.expect(Kind::RParen)?;\n");
+            out.push_str("input.expect(Kind::Colon).map_err(|e| ParseError(format!(\"signature must follow `:`: {e}\")))?;\n");
+            match signature {
+                CallSignature::Field(sig) => {
+                    writeln!(out, "let {} = {};", leaf(op, &sig.path), parse_atom(sig)).unwrap();
+                }
+                CallSignature::Function => {
+                    writeln!(
+                        out,
+                        "self.function_signature({}, input)?;",
+                        leaf(op, &callee.path)
+                    )
+                    .unwrap();
+                }
             }
         }
     }
@@ -235,10 +214,11 @@ fn codec(kind: &AtomKind) -> String {
     }
 }
 
-fn parse_atom(atom: &Atom, text: &str) -> String {
+fn parse_atom(atom: &Atom) -> String {
     format!(
-        "<{} as super::atom::AtomCodec>::parse(self, {text}, ty)?",
-        codec(&atom.kind)
+        "<{} as super::atom::AtomCodec>::parse(self, input, ty).map_err(|e| ParseError(format!({:?})))?",
+        codec(&atom.kind),
+        format!("operand `{}`: {{e}}", atom.path)
     )
 }
 
@@ -301,7 +281,8 @@ pub(super) fn print(
         )
         .unwrap();
     }
-    let ty = if matches!(&canonical.signature.results, TypeList::Fixed(results) if results.is_empty())
+    let ty = if matches!(&canonical.signature.results, TypeList::Signature)
+        || matches!(&canonical.signature.results, TypeList::Fixed(results) if results.is_empty())
     {
         "None"
     } else {
@@ -383,9 +364,17 @@ fn print_item(out: &mut String, op: &Op, item: &Item) {
             out.push_str("f.write_char('(')?;\n");
             print_atom(out, args, &local(op, &args.path));
             out.push_str("f.write_char(')')?;\n");
-            if let Some(sig) = signature {
-                out.push_str("f.write_str(\" : \")?;\n");
-                print_atom(out, sig, &local(op, &sig.path));
+            out.push_str("f.write_str(\" : \")?;\n");
+            match signature {
+                CallSignature::Field(sig) => print_atom(out, sig, &local(op, &sig.path)),
+                CallSignature::Function => {
+                    writeln!(
+                        out,
+                        "self.fmt_function_signature(f, {})?;",
+                        local(op, &callee.path)
+                    )
+                    .unwrap();
+                }
             }
         }
     }

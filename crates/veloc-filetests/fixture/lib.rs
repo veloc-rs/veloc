@@ -1,3 +1,3 @@
 include!("../../../veloc/mir/src/lib.rs");
 
-pub use opcode::{FloatOrderCC, OrderCC};
+pub use inst::{FloatOrderCC, OrderCC};

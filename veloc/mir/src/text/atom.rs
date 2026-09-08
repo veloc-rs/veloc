@@ -2,6 +2,7 @@
 //!
 //! Codec identity describes notation, not just the stored Rust type: both
 //! IntegerBits and FloatBits store u64, but have different textual contracts.
+use super::lexer::Cursor;
 use super::parser::{self, OperandParser, ParseError};
 use super::printer::InstPrinter;
 use crate::{BlockCall, FloatCC, FuncId, IntCC, Intrinsic, SigId, StackSlot, Type, Value};
@@ -14,7 +15,7 @@ pub(super) trait AtomCodec {
 
     fn parse(
         cx: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         ty: Option<Type>,
     ) -> Result<Self::Owned, ParseError>;
     fn print(
@@ -36,10 +37,15 @@ impl<T: FromStr + fmt::Display> AtomCodec for Decimal<T> {
     type Owned = T;
     type View<'a> = T;
 
-    fn parse(_: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<T, ParseError> {
-        text.trim()
-            .parse()
-            .map_err(|_| ParseError(format!("invalid numeric value `{text}`")))
+    fn parse(
+        _: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        _: Option<Type>,
+    ) -> Result<T, ParseError> {
+        input.atom(|text| {
+            text.parse()
+                .map_err(|_| ParseError(format!("invalid numeric value `{text}`")))
+        })
     }
 
     fn print(
@@ -56,16 +62,21 @@ impl AtomCodec for IntegerBits {
     type Owned = u64;
     type View<'a> = u64;
 
-    fn parse(_: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<u64, ParseError> {
-        let text = text.trim();
-        if let Some(hex) = text.strip_prefix("0x") {
-            u64::from_str_radix(hex, 16)
-                .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
-        } else {
-            text.parse::<i64>()
-                .map(|value| value as u64)
-                .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
-        }
+    fn parse(
+        _: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        _: Option<Type>,
+    ) -> Result<u64, ParseError> {
+        input.atom(|text| {
+            if let Some(hex) = text.strip_prefix("0x") {
+                u64::from_str_radix(hex, 16)
+                    .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
+            } else {
+                text.parse::<i64>()
+                    .map(|value| value as u64)
+                    .map_err(|_| ParseError(format!("invalid integer constant `{text}`")))
+            }
+        })
     }
 
     fn print(
@@ -82,24 +93,29 @@ impl AtomCodec for FloatBits {
     type Owned = u64;
     type View<'a> = u64;
 
-    fn parse(_: &mut OperandParser<'_>, text: &str, ty: Option<Type>) -> Result<u64, ParseError> {
-        if !matches!(ty, Some(Type::F32 | Type::F64)) {
-            return Err(ParseError(
-                "floating constants require an `f32` or `f64` result suffix".into(),
-            ));
-        }
-        let text = text.trim();
-        let hex = text.strip_prefix("0x").ok_or_else(|| {
-            ParseError("floating constants use an exact hexadecimal bit pattern".into())
-        })?;
-        let bits = u64::from_str_radix(hex, 16)
-            .map_err(|_| ParseError(format!("invalid floating bit pattern `{text}`")))?;
-        if ty == Some(Type::F32) && bits > u64::from(u32::MAX) {
-            return Err(ParseError(format!(
-                "f32 bit pattern does not fit in 32 bits: `{text}`"
-            )));
-        }
-        Ok(bits)
+    fn parse(
+        _: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        ty: Option<Type>,
+    ) -> Result<u64, ParseError> {
+        input.atom(|text| {
+            if !matches!(ty, Some(Type::F32 | Type::F64)) {
+                return Err(ParseError(
+                    "floating constants require an `f32` or `f64` result suffix".into(),
+                ));
+            }
+            let hex = text.strip_prefix("0x").ok_or_else(|| {
+                ParseError("floating constants use an exact hexadecimal bit pattern".into())
+            })?;
+            let bits = u64::from_str_radix(hex, 16)
+                .map_err(|_| ParseError(format!("invalid floating bit pattern `{text}`")))?;
+            if ty == Some(Type::F32) && bits > u64::from(u32::MAX) {
+                return Err(ParseError(format!(
+                    "f32 bit pattern does not fit in 32 bits: `{text}`"
+                )));
+            }
+            Ok(bits)
+        })
     }
 
     fn print(
@@ -122,28 +138,29 @@ impl AtomCodec for Bytes {
 
     fn parse(
         _: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         _: Option<Type>,
     ) -> Result<Vec<u8>, ParseError> {
-        let text = text.trim();
-        let hex = text
-            .strip_prefix("0x")
-            .ok_or_else(|| ParseError(format!("expected hexadecimal bytes, found `{text}`")))?;
-        if !hex.is_ascii() {
-            return Err(ParseError(format!("invalid hexadecimal bytes `{text}`")));
-        }
-        if hex.len() % 2 != 0 {
-            return Err(ParseError(
-                "hex byte strings must contain an even number of digits".into(),
-            ));
-        }
-        (0..hex.len())
-            .step_by(2)
-            .map(|index| {
-                u8::from_str_radix(&hex[index..index + 2], 16)
-                    .map_err(|_| ParseError(format!("invalid hexadecimal bytes `{text}`")))
-            })
-            .collect()
+        input.atom(|text| {
+            let hex = text
+                .strip_prefix("0x")
+                .ok_or_else(|| ParseError(format!("expected hexadecimal bytes, found `{text}`")))?;
+            if !hex.is_ascii() {
+                return Err(ParseError(format!("invalid hexadecimal bytes `{text}`")));
+            }
+            if hex.len() % 2 != 0 {
+                return Err(ParseError(
+                    "hex byte strings must contain an even number of digits".into(),
+                ));
+            }
+            (0..hex.len())
+                .step_by(2)
+                .map(|index| {
+                    u8::from_str_radix(&hex[index..index + 2], 16)
+                        .map_err(|_| ParseError(format!("invalid hexadecimal bytes `{text}`")))
+                })
+                .collect()
+        })
     }
 
     fn print(
@@ -164,14 +181,18 @@ impl AtomCodec for bool {
     type Owned = bool;
     type View<'a> = bool;
 
-    fn parse(_: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<bool, ParseError> {
-        match text.trim() {
+    fn parse(
+        _: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        _: Option<Type>,
+    ) -> Result<bool, ParseError> {
+        input.atom(|text| match text {
             "true" => Ok(true),
             "false" => Ok(false),
             other => Err(ParseError(format!(
                 "expected `true` or `false`, found `{other}`"
             ))),
-        }
+        })
     }
 
     fn print(
@@ -188,10 +209,16 @@ impl AtomCodec for IntCC {
     type Owned = IntCC;
     type View<'a> = IntCC;
 
-    fn parse(_: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<IntCC, ParseError> {
-        let cc = text.trim();
-        IntCC::from_mnemonic(cc)
-            .ok_or_else(|| ParseError(format!("unknown integer condition `{cc}`")))
+    fn parse(
+        _: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        _: Option<Type>,
+    ) -> Result<IntCC, ParseError> {
+        input.atom(|text| {
+            let cc = text;
+            IntCC::from_mnemonic(cc)
+                .ok_or_else(|| ParseError(format!("unknown integer condition `{cc}`")))
+        })
     }
 
     fn print(
@@ -210,12 +237,14 @@ impl AtomCodec for FloatCC {
 
     fn parse(
         _: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         _: Option<Type>,
     ) -> Result<FloatCC, ParseError> {
-        let cc = text.trim();
-        FloatCC::from_mnemonic(cc)
-            .ok_or_else(|| ParseError(format!("unknown float condition `{cc}`")))
+        input.atom(|text| {
+            let cc = text;
+            FloatCC::from_mnemonic(cc)
+                .ok_or_else(|| ParseError(format!("unknown float condition `{cc}`")))
+        })
     }
 
     fn print(
@@ -234,11 +263,14 @@ impl AtomCodec for Intrinsic {
 
     fn parse(
         _: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         _: Option<Type>,
     ) -> Result<Intrinsic, ParseError> {
-        let name = text.trim();
-        Intrinsic::from_name(name).ok_or_else(|| ParseError(format!("unknown intrinsic `{name}`")))
+        input.atom(|text| {
+            let name = text;
+            Intrinsic::from_name(name)
+                .ok_or_else(|| ParseError(format!("unknown intrinsic `{name}`")))
+        })
     }
 
     fn print(
@@ -257,10 +289,10 @@ impl AtomCodec for StackSlot {
 
     fn parse(
         _: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         _: Option<Type>,
     ) -> Result<StackSlot, ParseError> {
-        parser::parse_stack_slot_ref(text)
+        input.atom(parser::parse_stack_slot_ref)
     }
 
     fn print(
@@ -277,8 +309,12 @@ impl AtomCodec for Value {
     type Owned = Value;
     type View<'a> = Value;
 
-    fn parse(cx: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<Value, ParseError> {
-        cx.value(text)
+    fn parse(
+        cx: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        _: Option<Type>,
+    ) -> Result<Value, ParseError> {
+        cx.value(input)
     }
 
     fn print(
@@ -297,10 +333,10 @@ impl AtomCodec for Values {
 
     fn parse(
         cx: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         _: Option<Type>,
     ) -> Result<Vec<Value>, ParseError> {
-        cx.values(text)
+        cx.values(input)
     }
 
     fn print(
@@ -319,10 +355,10 @@ impl AtomCodec for BlockCall {
 
     fn parse(
         cx: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         _: Option<Type>,
     ) -> Result<BlockCall, ParseError> {
-        cx.block_call(text)
+        cx.block_call(input)
     }
 
     fn print(
@@ -341,10 +377,10 @@ impl AtomCodec for Successors {
 
     fn parse(
         cx: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         _: Option<Type>,
     ) -> Result<Vec<BlockCall>, ParseError> {
-        cx.block_calls(text)
+        cx.block_calls(input)
     }
 
     fn print(
@@ -363,10 +399,10 @@ impl AtomCodec for FuncId {
 
     fn parse(
         cx: &mut OperandParser<'_>,
-        text: &str,
+        input: &mut Cursor<'_>,
         _: Option<Type>,
     ) -> Result<FuncId, ParseError> {
-        cx.func_ref(text)
+        cx.func_ref(input)
     }
 
     fn print(
@@ -383,8 +419,12 @@ impl AtomCodec for SigId {
     type Owned = SigId;
     type View<'a> = SigId;
 
-    fn parse(cx: &mut OperandParser<'_>, text: &str, _: Option<Type>) -> Result<SigId, ParseError> {
-        cx.signature(text)
+    fn parse(
+        cx: &mut OperandParser<'_>,
+        input: &mut Cursor<'_>,
+        _: Option<Type>,
+    ) -> Result<SigId, ParseError> {
+        cx.signature(input)
     }
 
     fn print(

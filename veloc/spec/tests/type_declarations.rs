@@ -22,30 +22,30 @@ fn type_expressions_support_aliases_forward_references_and_nested_construction()
         predicate is_chosen = Chosen;
     "#;
     let output = compile_mir(source).unwrap();
-    assert!(output.scalars.contains("pub const WORD: Self = Self::I32;"));
+    assert!(output.types.contains("pub const WORD: Self = Self::I32;"));
     assert!(
         output
-            .scalars
+            .types
             .contains("pub const WORDS: Self = Self::I32.as_scalar().expect(\"checked scalar definition\").vector(4, false)")
     );
     assert!(
         output
-            .scalars
+            .types
             .contains("pub const COPY: Self = Self::I32.as_scalar().expect(\"checked scalar definition\").vector(4, false)")
     );
     assert!(
         output
-            .scalars
+            .types
             .contains("pub const MASK: Self = Self::BOOL.as_scalar().expect(\"checked scalar definition\").vector(8, true)")
     );
     let equivalent = source
         .replace("vector(WORD, 4)", "vector(int(32), 4)")
         .replace("type WORD = LATER;", "type WORD = int(32);");
     let equivalent = compile_mir(&equivalent).unwrap();
-    assert_eq!(output.scalars, equivalent.scalars);
-    assert_eq!(output.builtins, equivalent.builtins);
+    assert_eq!(output.types, equivalent.types);
+    assert_eq!(output.opcodes, equivalent.opcodes);
     let reversed = source.lines().rev().collect::<Vec<_>>().join("\n");
-    assert_eq!(output.scalars, compile_mir(&reversed).unwrap().scalars);
+    assert_eq!(output.types, compile_mir(&reversed).unwrap().types);
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn aliases_work_in_operation_signatures_and_set_expressions() {
     "#,
     )
     .unwrap();
-    assert!(output.builtins.contains("3 => 0x00040001,"));
+    assert!(output.opcodes.contains("3 => 0x00040001,"));
 }
 
 #[test]
@@ -142,10 +142,10 @@ fn encoding_bindings_are_separate_checked_and_not_assigned_to_aliases() {
     let output = veloc_opgen::compile_mir(&BUILTINS.replace("I32(3)", "I32(9)")).unwrap();
     assert!(
         output
-            .scalars
+            .types
             .contains("pub const I32: Self = Self(9 << SCALAR_SHIFT);")
     );
-    assert!(output.scalars.contains("9 => Some(Self::I32)"));
+    assert!(output.types.contains("9 => Some(Self::I32)"));
 }
 
 #[test]

@@ -22,8 +22,14 @@ pub(super) enum Item {
     Invoke {
         callee: Atom,
         args: Atom,
-        signature: Option<Atom>,
+        signature: CallSignature,
     },
+}
+
+#[derive(Debug)]
+pub(super) enum CallSignature {
+    Field(Atom),
+    Function,
 }
 
 #[derive(Debug, Clone)]
@@ -290,15 +296,14 @@ impl Checker<'_> {
                 ))
             }
             Kind::Call(name, args) if name == "invoke" => {
-                if !(2..=3).contains(&args.len()) {
+                if args.len() != 3 {
                     return Err(self.error(
                         node.offset,
-                        "invoke requires callee, values and an optional signature",
+                        "invoke requires callee, values and a signature source",
                     ));
                 }
                 let callee = self.atom(&args[0])?;
                 let values = self.atom(&args[1])?;
-                let signature = args.get(2).map(|node| self.atom(node)).transpose()?;
                 if !matches!(&callee.kind, AtomKind::Value)
                     && !matches!(&callee.kind, AtomKind::Scalar(ty) if matches!(ty.as_str(), "FuncId" | "Intrinsic"))
                 {
@@ -310,12 +315,29 @@ impl Checker<'_> {
                 if values.kind != AtomKind::Values {
                     return Err(self.error(node.offset, "invoke arguments must be values"));
                 }
-                if signature
-                    .as_ref()
-                    .is_some_and(|atom| atom.kind != AtomKind::Scalar("SigId".into()))
-                {
-                    return Err(self.error(node.offset, "invoke signature must be a SigId"));
-                }
+                let signature = match &args[2].kind {
+                    Kind::Call(name, source) if name == "function" => {
+                        if source.len() != 1
+                            || path(&source[0], self.source)? != callee.path
+                            || callee.kind != AtomKind::Scalar("FuncId".into())
+                        {
+                            return Err(self.error(
+                                args[2].offset,
+                                "function signature must reference the FuncId callee",
+                            ));
+                        }
+                        CallSignature::Function
+                    }
+                    _ => {
+                        let atom = self.atom(&args[2])?;
+                        if atom.kind != AtomKind::Scalar("SigId".into()) {
+                            return Err(
+                                self.error(args[2].offset, "invoke signature must be a SigId")
+                            );
+                        }
+                        CallSignature::Field(atom)
+                    }
+                };
                 Ok(Item::Invoke {
                     callee,
                     args: values,
@@ -678,6 +700,50 @@ mod tests {
     }
 
     #[test]
+    fn function_signature_projection_reuses_the_callee() {
+        let params = [("target", "FuncId"), ("args", "values")];
+        let schema = compile(
+            &op(
+                &params,
+                Some("Text { args: [invoke(target, args, function(target))] }"),
+            ),
+            &[],
+            "",
+        )
+        .unwrap();
+        assert!(matches!(
+            &schema.args[0],
+            Item::Invoke {
+                signature: CallSignature::Function,
+                ..
+            }
+        ));
+        for text in [
+            "Text { args: [invoke(target, args)] }",
+            "Text { args: [invoke(target, args, function(args))] }",
+            "Text { args: [invoke(target, args, function())] }",
+            "Text { args: [invoke(target, args, function(target, target))] }",
+        ] {
+            assert!(
+                compile(&op(&params, Some(text)), &[], "").is_err(),
+                "{text}"
+            );
+        }
+        let params = [("target", "value"), ("args", "values")];
+        assert!(
+            compile(
+                &op(
+                    &params,
+                    Some("Text { args: [invoke(target, args, function(target))] }")
+                ),
+                &[],
+                "",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn variadic_and_compound_items_have_decodable_boundaries() {
         let params = [("callee", "value"), ("args", "values"), ("sig", "SigId")];
         let schema = compile(
@@ -689,7 +755,7 @@ mod tests {
         assert!(matches!(
             &schema.args[0],
             Item::Invoke {
-                signature: Some(_),
+                signature: CallSignature::Field(_),
                 ..
             }
         ));

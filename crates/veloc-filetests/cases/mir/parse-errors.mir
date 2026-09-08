@@ -312,7 +312,7 @@ import function callee(i32) -> i32
 // check: function
 local function bad(i32) -> void
 block0(v11: i32):
-  v21 = call.i32 missing(v11)
+  v21 = call missing(v11) : (i32) -> i32
   return
 import function callee(i32) -> i32
 

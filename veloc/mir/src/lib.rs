@@ -4,48 +4,28 @@ extern crate std;
 extern crate alloc;
 
 pub mod builder;
+pub mod constant;
 pub mod dfg;
 pub mod error;
 pub mod function;
 pub mod inst;
-
-pub mod layout;
+pub mod intrinsic;
 pub mod module;
-pub mod opcode;
 pub mod text;
 pub mod types;
 pub mod validator;
 
-pub mod constant;
-pub mod intrinsic;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CallConv {
-    /// Standard System V ABI (e.g., for standard C functions on Linux)
-    SystemV,
-}
-
-impl core::fmt::Display for CallConv {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            CallConv::SystemV => write!(f, "system_v"),
-        }
-    }
-}
-
 pub use builder::{FunctionBuilder, InstBuilder, ModuleBuilder};
 pub use error::{Error, Result};
 pub use function::Function;
+pub use inst::{
+    Arguments, FloatCC, Inst, InstDraft, InstructionView, IntCC, MemFlags, Opcode, Successor,
+    Successors, VectorMemOptions,
+};
 pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{Global, Linkage, Module, ModuleData};
-pub use opcode::{FloatCC, IntCC, MemFlags, Opcode};
-// Re-export text format module
 pub use text::{ModuleParser, ParseError};
 pub use types::{
-    Block, BlockCall, FuncId, ModuleId, ScalarType, SigId, Signature, StackSlot, Type, TypeBits,
-    TypeSize, Value, ValueDef, ValueList, Variable, VectorType,
-};
-
-pub use inst::{
-    Arguments, Inst, InstDraft, InstructionView, Successor, Successors, VectorMemOptions,
+    Block, BlockCall, CallConv, FuncId, ModuleId, ScalarType, SigId, Signature, StackSlot, Type,
+    TypeBits, TypeSize, Value, ValueDef, ValueList, Variable, VectorType,
 };

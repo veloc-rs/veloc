@@ -218,7 +218,7 @@ fn closed_dead_cycles_are_erased_together() {
 
 #[test]
 fn generated_encodings_preserve_neighboring_fields_and_check_ranges() {
-    use veloc_mir::opcode::{MemFlags, PackedRecord, WideRecord};
+    use veloc_mir::inst::{MemFlags, PackedRecord, WideRecord};
     const PACKED: PackedRecord = PackedRecord::empty()
         .with_enabled(true)
         .with_count(7)
@@ -248,7 +248,7 @@ fn generated_encodings_preserve_neighboring_fields_and_check_ranges() {
 
 #[test]
 fn generated_flag_sets_preserve_bits_order_and_set_operations() {
-    use veloc_mir::opcode::{EmptyFlags, MemoryRegions, OpTraits, TestFlags as F};
+    use veloc_mir::inst::{EmptyFlags, MemoryRegions, OpTraits, TestFlags as F};
     const SELECTED: F = F::HIGH.union(F::LOW_BIT);
     const {
         assert!(F::ALL.contains(SELECTED));
@@ -448,6 +448,8 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
     let output = builder.ins().output(Type::I32);
     let offset = builder.ins().offset(ptr, 7);
     let (last, first_arg) = builder.ins().many(a, b, a, b, ptr);
+    let (address, integer, flag) = builder.ins().three_results(a, ptr);
+    builder.ins().nop();
     builder.ins().ret(&[triple]);
     let dfg = builder.func().dfg();
     let inst = |value| dfg.inst(dfg.value_inst(value).unwrap());
@@ -467,6 +469,13 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
     assert_eq!(dfg.value_type(output), Type::I32);
     assert_eq!(dfg.value_type(last), Type::PTR);
     assert_eq!(dfg.value_type(first_arg), Type::I32);
+    assert_eq!(dfg.value_type(address), Type::PTR);
+    assert_eq!(dfg.value_type(integer), Type::I32);
+    assert_eq!(dfg.value_type(flag), Type::BOOL);
+    let three_results = dfg.value_inst(address).unwrap();
+    assert_eq!(dfg.inst_results(three_results), [address, integer, flag]);
+    assert_eq!(dfg.value_inst(integer), Some(three_results));
+    assert_eq!(dfg.value_inst(flag), Some(three_results));
     drop(builder);
     module.validate().unwrap();
     let module = module.build();

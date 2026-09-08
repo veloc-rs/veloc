@@ -1,4 +1,5 @@
 mod atom;
+mod lexer;
 pub mod parser;
 pub mod printer;
 

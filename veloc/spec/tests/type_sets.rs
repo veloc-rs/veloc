@@ -19,8 +19,8 @@ fn exact_class_members_drive_codegen_and_bitvector_semantics() {
         }
     "#;
     let output = compile_mir(source).unwrap();
-    assert!(output.builtins.contains("3 | 4 => 0x00000001,\n_ => 0,"));
-    assert!(output.types.contains("C::Wide.accepts(operands[0])"));
+    assert!(output.opcodes.contains("3 | 4 => 0x00000001,\n_ => 0,"));
+    assert!(output.type_rules.contains("C::Wide.accepts(operands[0])"));
     rejected(
         &source.replace("[I32, I64]", "[I32, F64]"),
         "floating-point execution semantics are not modeled",
@@ -42,16 +42,16 @@ fn vector_declarations_generate_constants_and_exact_type_patterns() {
     .unwrap();
     assert!(
         output
-            .scalars
+            .types
             .contains("pub const SV4: Self = Self::I32.as_scalar().expect(\"checked scalar definition\").vector(4, true)")
     );
     assert!(
         output
-            .scalars
+            .types
             .contains("pub const MV8: Self = Self::BOOL.as_scalar().expect(\"checked scalar definition\").vector(8, false)")
     );
-    assert!(output.types.contains("operands[0] == Type::SV4"));
-    assert!(output.builtins.contains("3 => 0x00040004,"));
+    assert!(output.type_rules.contains("operands[0] == Type::SV4"));
+    assert!(output.opcodes.contains("3 => 0x00040004,"));
 }
 
 #[test]

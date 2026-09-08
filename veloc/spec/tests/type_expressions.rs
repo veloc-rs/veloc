@@ -44,8 +44,8 @@ fn precedence_parentheses_and_equivalent_sets_share_runtime_checks() {
         let source = |expr| pair(expr).replace("semantics: bv.add(lhs, rhs)", "memory: NONE");
         let actual = compile_mir(&source(expression)).unwrap();
         let expected = compile_mir(&source(equivalent)).unwrap();
-        assert_eq!(actual.types, expected.types, "{expression}");
-        assert_eq!(actual.builtins, expected.builtins, "{expression}");
+        assert_eq!(actual.type_rules, expected.type_rules, "{expression}");
+        assert_eq!(actual.opcodes, expected.opcodes, "{expression}");
     }
 }
 
@@ -54,16 +54,16 @@ fn named_aliases_and_inline_expressions_intern_to_the_same_set() {
     let source = format!("class Wide {{ members: [I32 | I64] }}\n{}", pair("Wide"));
     let named = compile_mir(&source).unwrap();
     let inline = compile_mir(&source.replace("T: Wide", "T: I64 | I32")).unwrap();
-    assert_eq!(named.types, inline.types);
-    assert_eq!(named.builtins, inline.builtins);
-    assert!(inline.types.contains("C::Wide.accepts(operands[0])"));
-    assert!(inline.types.contains("operands[1] == operands[0]"));
+    assert_eq!(named.type_rules, inline.type_rules);
+    assert_eq!(named.opcodes, inline.opcodes);
+    assert!(inline.type_rules.contains("C::Wide.accepts(operands[0])"));
+    assert!(inline.type_rules.contains("operands[1] == operands[0]"));
 
     let aliases =
         compile_mir("class A { members: [I32 | I64] } class B { members: [I64 | I32] }").unwrap();
     let id = |name| {
         aliases
-            .builtins
+            .opcodes
             .lines()
             .find(|line| line.starts_with(&format!("pub const {name}:")))
             .unwrap()

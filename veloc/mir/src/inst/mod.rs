@@ -1,9 +1,13 @@
-use super::dfg::DataFlowGraph;
-use crate::opcode::{MemoryEffect, OpFormat};
+//! Instruction kinds, metadata, drafts and borrowed storage views.
+
+use crate::dfg::DataFlowGraph;
 use crate::types::{FuncId, StackSlot, Value};
-use crate::{FloatCC, IntCC, Intrinsic, MemFlags, Opcode, SigId};
+use crate::{Intrinsic, SigId};
 use core::fmt;
 use cranelift_entity::entity_impl;
+
+mod opcode;
+pub use opcode::*;
 
 /// The declared source of a call's argument/result signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

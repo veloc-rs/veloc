@@ -22,8 +22,8 @@ fn pattern(p: &Pattern, classes: &Classes) -> String {
 pub(crate) fn generate(
     defs: &Definitions,
     classes: &Classes,
-    types: &mut String,
-    ops: &mut String,
+    validation: &mut String,
+    instructions: &mut String,
 ) {
     let mut ids = BTreeMap::new();
     let mut groups: Vec<Vec<&str>> = Vec::new();
@@ -33,13 +33,13 @@ pub(crate) fn generate(
         let next = groups.len();
         let id = *ids.entry(ty).or_insert(next);
         if id == next {
-            emit_rule(id, ty, classes, types);
+            emit_rule(id, ty, classes, validation);
             groups.push(Vec::new());
         }
         groups[id].push(&op.name);
     }
-    ops.push_str("impl Opcode {\n");
-    ops.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), crate::opcode::TypeError> {\n    match self {\n");
+    validation.push_str("impl crate::Opcode {\n");
+    validation.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), crate::inst::TypeError> {\n    match self {\n");
     for (id, names) in groups.iter().enumerate() {
         let arms = names
             .iter()
@@ -47,27 +47,27 @@ pub(crate) fn generate(
             .collect::<Vec<_>>()
             .join(" | ");
         writeln!(
-            ops,
-            "        {arms} => crate::opcode::type_rules::validate_{id}(operands, results),"
+            validation,
+            "        {arms} => validate_{id}(operands, results),"
         )
         .unwrap();
     }
-    ops.push_str("    }\n}\n}\n");
+    validation.push_str("    }\n}\n}\n");
     // Only the dynamic construction path needs opcode dispatch. Generated
     // builders use the same result expressions directly on their arguments.
-    ops.push_str("impl crate::InstructionView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch self.opcode() {\n");
+    instructions.push_str("impl crate::InstructionView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch self.opcode() {\n");
     for (signature, id) in &ids {
         let arms = groups[*id]
             .iter()
             .map(|name| format!("crate::Opcode::{name}"))
             .collect::<Vec<_>>()
             .join(" | ");
-        writeln!(ops, "{arms} => {{").unwrap();
+        writeln!(instructions, "{arms} => {{").unwrap();
         if matches!(signature.results, TypeList::Signature) {
-            ops.push_str("let sig = self.call_info().expect(\"signature results require call metadata\").signature.resolve(module).ok_or(\"unknown function or signature\")?;\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(&sig.returns))\n");
+            instructions.push_str("let sig = self.call_info().expect(\"signature results require call metadata\").signature.resolve(module).ok_or(\"unknown function or signature\")?;\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(&sig.returns))\n");
         } else if let Some(results) = result_exprs(signature) {
             if results.iter().any(|r| !matches!(r, ResultExpr::Exact(_))) {
-                ops.push_str("let mut operands = smallvec::SmallVec::<[Type; 4]>::new();\nself.visit_type_operands(|value| operands.push(dfg.value_type(value)));\n");
+                instructions.push_str("let mut operands = smallvec::SmallVec::<[Type; 4]>::new();\nself.visit_type_operands(|value| operands.push(dfg.value_type(value)));\n");
             }
             let operand = |index: usize| {
                 if index == 0 {
@@ -81,13 +81,13 @@ pub(crate) fn generate(
                 ResultExpr::Operand(index) => format!("*{}.filter(|ty| ty.is_valid()).ok_or(\"result type requires a known operand type\")?", operand(*index)),
                 ResultExpr::Element(index) => format!("{}.and_then(|ty| ty.as_vector()).ok_or(\"result element type requires a known vector operand\")?.element_type().as_type()", operand(*index)),
             }).collect::<Vec<_>>().join(", ");
-            writeln!(ops, "Ok(smallvec::smallvec![{expressions}])").unwrap();
+            writeln!(instructions, "Ok(smallvec::smallvec![{expressions}])").unwrap();
         } else {
-            ops.push_str("if explicit.is_empty() { return Err(\"requires an explicit result type\"); }\nOk(smallvec::SmallVec::from_slice(explicit))\n");
+            instructions.push_str("if explicit.is_empty() { return Err(\"requires an explicit result type\"); }\nOk(smallvec::SmallVec::from_slice(explicit))\n");
         }
-        ops.push_str("},\n");
+        instructions.push_str("},\n");
     }
-    ops.push_str("}\n}\n}\n");
+    instructions.push_str("}\n}\n}\n");
 }
 
 /// Build-time expressions, never emitted as runtime descriptors.
@@ -239,7 +239,7 @@ fn function(out: &mut String, name: &str, ty: &TypeDef, body: &str) {
     } else {
         ", results: &[Type]"
     };
-    writeln!(out, "#[inline]\npub(crate) fn {name}({arg}: &[Type]{extra}) -> core::result::Result<(), super::TypeError> {{\n{body}}}\n").unwrap();
+    writeln!(out, "#[inline]\nfn {name}({arg}: &[Type]{extra}) -> core::result::Result<(), super::TypeError> {{\n{body}}}\n").unwrap();
 }
 
 fn emit_rule(id: usize, ty: &TypeDef, classes: &Classes, out: &mut String) {

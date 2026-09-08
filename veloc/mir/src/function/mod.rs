@@ -1,14 +1,14 @@
-use crate::Value;
+//! Functions, block layout and structural editing.
 
-use super::dfg::DataFlowGraph;
-use super::layout::Layout;
-use super::module::Linkage;
-use super::types::{Block, SigId, StackSlot};
+use crate::dfg::DataFlowGraph;
+use crate::{Block, Linkage, SigId, StackSlot, Value};
 use alloc::string::String;
 use cranelift_entity::PrimaryMap;
 
 mod edit;
+mod layout;
 pub use edit::FunctionEditor;
+pub use layout::{BlockData, Layout};
 
 #[derive(Debug, Clone)]
 pub struct StackSlotData {

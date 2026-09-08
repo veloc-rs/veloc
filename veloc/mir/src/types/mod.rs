@@ -5,6 +5,5 @@ mod signature;
 mod r#type;
 
 pub use entities::*;
-pub use signature::Signature;
-pub(crate) use r#type::parse_type;
+pub use signature::{CallConv, Signature};
 pub use r#type::{ScalarType, Type, TypeBits, TypeSize, VectorType};

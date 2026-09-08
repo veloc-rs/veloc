@@ -2,8 +2,7 @@
 
 use core::fmt;
 
-include!(concat!(env!("OUT_DIR"), "/encoding.rs"));
-include!(concat!(env!("OUT_DIR"), "/scalars.rs"));
+include!(concat!(env!("OUT_DIR"), "/types.rs"));
 
 impl Type {
     // === 构造函数 ===
@@ -203,28 +202,6 @@ impl fmt::Display for Type {
             f.write_str(self.element_name(false))
         }
     }
-}
-
-pub(crate) fn parse_type(s: &str) -> Option<Type> {
-    let Some((base, shape)) = s.split_once('<') else {
-        return Type::from_name(s);
-    };
-    let shape = shape.strip_suffix('>')?;
-    let scalar = if base == "mask" {
-        Type::BOOL
-    } else {
-        Type::from_name(base)?
-    };
-    let (scalable, lanes) = match shape.strip_prefix("scalable ") {
-        Some(lanes) => (true, lanes),
-        None => (false, shape),
-    };
-    Some(
-        scalar
-            .as_scalar()?
-            .vector(lanes.parse().ok()?, scalable)?
-            .as_type(),
-    )
 }
 
 /// A validated scalar Type, including pointers. This is a view, not another

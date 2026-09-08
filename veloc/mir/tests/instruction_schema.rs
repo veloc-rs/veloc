@@ -1,6 +1,6 @@
 use veloc_mir::dfg::DataFlowGraph;
+use veloc_mir::inst::OpFormat;
 use veloc_mir::inst::VectorExtData;
-use veloc_mir::opcode::OpFormat;
 use veloc_mir::{Arguments, BlockCall, InstructionView};
 use veloc_mir::{
     Block, CallConv, InstDraft, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value,

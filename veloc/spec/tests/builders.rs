@@ -22,15 +22,15 @@ fn property_order_follows_the_logical_signature_not_storage() {
         }
     "#;
     let output = compile_mir(source).unwrap();
-    assert!(output.opcodes.contains(
+    assert!(output.builders.contains(
         "pub fn load(&mut self, flags: crate::MemFlags, address: crate::Value, displacement: u32, ty: crate::Type) -> crate::Value"
     ));
     assert!(
         output
-            .opcodes
+            .builders
             .contains("InstDraft::load(address, displacement, flags)")
     );
-    assert!(output.opcodes.contains(
+    assert!(output.builders.contains(
         "pub fn store(&mut self, ptr: crate::Value, flags: crate::MemFlags, value: crate::Value, offset: u32)"
     ));
 }
@@ -44,6 +44,6 @@ fn contextual_selection_does_not_depend_on_the_method_name() {
         }
     "#;
     let output = compile_mir(source).unwrap();
-    assert!(!output.opcodes.contains("pub fn connect_edge("));
-    assert!(!output.opcodes.contains("self.push("));
+    assert!(!output.builders.contains("pub fn connect_edge("));
+    assert!(!output.builders.contains("self.push("));
 }

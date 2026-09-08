@@ -19,6 +19,37 @@ Callers supply these files as one definition unit; the compiler does not inject
 an implicit MIR vocabulary. `build.rs` tracks each file and maps diagnostics back
 to its original location.
 
+## Runtime organization
+
+MIR groups related runtime code under one module boundary:
+
+- `inst/mod.rs` exports instruction handles, drafts, views and opcode metadata.
+  `inst/opcode.rs` owns generated opcode/type contracts and their support;
+  `inst/storage.rs` owns physical instruction storage.
+- `function/mod.rs` owns functions, with `edit.rs` for structural editing and
+  `layout.rs` for block order, instruction placement and CFG edges.
+- `types/signature.rs` owns both signatures and calling conventions.
+- `dfg` remains independent; `builder` and `validator` serve both functions and
+  modules and remain top-level modules.
+
+Use `veloc_mir::inst::{OpSpec, OpFormat, TypeError, MemoryEffect}` for instruction
+metadata and `veloc_mir::function::{Layout, BlockData}` for layout types. Common
+types such as `Opcode`, `Function`, `Signature` and `CallConv` remain re-exported
+from the crate root.
+
+Generated Rust artifacts follow their consumers, not the input file boundaries:
+
+- `types.rs`: compact type encoding, constants and type helpers.
+- `opcodes.rs`: opcode metadata, formats, type classes, flags and comparisons.
+- `instructions.rs`: storage, drafts, views, accessors and result type inference.
+- `builders.rs`: operation-specific `InstBuilder` methods.
+- `type_rules.rs`: type validation dispatch and shared signature checks.
+- `validation.rs`: function-level property constraints.
+- `text_parser.rs` and `text_printer.rs`: their respective text codecs.
+
+Construction and validation remain separate. Optimizer evaluation, offline
+semantics and backend lowering retain separate artifacts and consumers.
+
 ## Comparison predicates
 
 ```text
@@ -356,9 +387,13 @@ operation-specific parsing/printing and ordinary builders.
 
 Type signatures drive two independent paths: result construction and validation.
 Generated builders compute result types directly from logical arguments and pass
-fixed-size arrays to `InstBuilder::insert`. Neither operation validates the type
-contract. The insertion API also accepts caller-supplied result types for generic
-transformations or deliberately incomplete IR.
+fixed-size arrays to `InstBuilder::emit`, which inserts and retrieves exactly
+that many results. Generated methods return a `Value` or a tuple; inferred result
+counts are not limited to two. Zero-result instructions call `insert` with an
+empty type slice instead of invoking dynamic inference. All paths use the same
+`insert` primitive and none validates the type contract. The public insertion API
+also accepts caller-supplied result types for generic transformations or
+deliberately incomplete IR.
 
 `InstDraft::result_types` is the dynamic construction entry point used by
 the text parser and contextual builders. Its generated opcode branches return
@@ -530,7 +565,14 @@ the logical type. `integer(value)` preserves integer bit patterns with signed
 text; `float(value)` preserves raw hexadecimal floating-point bits, including
 NaN payloads; `bytes(data)` is hexadecimal byte text. `space(kind, lhs)` composes
 the comparison spelling `eq v0`. Invocation syntax is composed with
-`invoke(func_id, args)` or `invoke(ptr, args, sig_id)`. Variadic values and
+`invoke(func_id, args, function(func_id))` or `invoke(ptr, args, sig_id)`.
+Both require a textual signature: `call callee(v0) : (i32) -> i32`. The
+`function(callee)` projection reads/writes the referenced function signature;
+it does not add a redundant property to Call storage. The parser checks that
+this textual declaration agrees with the function symbol. Checking argument
+and result values against the signature remains the validator\'s job. Calls
+print the full return signature instead of a redundant result-type suffix.
+Variadic values and
 successors retain their generic comma-list and bracketed-list syntax.
 
 `default(offset, 0)` accepts an omitted value and omits it when printing zero.
@@ -548,11 +590,20 @@ also select a named text codec: that would duplicate the operation's grammar.
 An alternate storage layout instead declares how its shared extension data is
 projected alongside the operation, preserving mask/EVL predication.
 
-The runtime retains generic lexical, symbol-resolution, pool and CFG algorithms:
-function/module syntax, type spelling, token splitting, forward SSA references,
-signature lookup and final validation are not opcode definitions. The generated
-code composes these primitives; there is no per-opcode parser/printer switch to
-keep synchronized manually. This is a finite text schema, not an arbitrary
+MIR text uses an on-demand token cursor with source spans and recursive-descent
+parsers for declarations, types, signatures and successor lists. Physical
+newlines delimit statements; punctuation does not require surrounding whitespace.
+Functions are declared before bodies; blocks and their parameters are declared
+before instructions. These passes retain borrowed source ranges, not copied
+lines or a whole-file token array.
+
+Generated instruction parsers consume the cursor directly in projection order.
+Named fields use typed local slots and a generated key match, with explicit
+duplicate/unknown-field checks. Alternate layouts use top-level named-field
+lookahead. There are no operand substring lists or runtime grammar descriptors.
+Symbol resolution, pool access, CFG construction and result-type inference remain
+shared Rust algorithms. Full type/IR contracts are checked only by an explicit
+validator call, not by parsing. This is a finite text schema, not an arbitrary
 parser-generator language.
 
 ### Generated/runtime contracts
@@ -562,7 +613,7 @@ The emitter selects one codec type for both directions instead of maintaining
 separate reader/writer function-name mappings. Codec identity describes notation:
 `IntegerBits` and `FloatBits` both store `u64`, while `Decimal<u64>` is unsigned
 decimal text. Associated `Owned` and `View<'a>` types let parsing produce a vector
-and printing borrow a slice. Contextual codecs reuse the scanner and symbol
+and printing borrow a slice. Contextual codecs reuse the token cursor and symbol
 resolution algorithms; this does not require a trait for every syntax helper.
 
 Only immutable byte constants are interned. Generated `pool(...)` mappings call

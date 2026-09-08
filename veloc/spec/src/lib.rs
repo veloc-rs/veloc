@@ -58,16 +58,14 @@ impl std::error::Error for Error {}
 
 /// Generated MIR, optimizer and offline artifacts; callers choose which to write.
 pub struct Generated {
-    pub encoding: String,
-    pub builtins: String,
-    pub scalars: String,
-    pub formats: String,
     pub types: String,
+    pub type_rules: String,
     pub validation: String,
     pub evaluation: String,
     pub semantics: String,
     pub opcodes: String,
     pub instructions: String,
+    pub builders: String,
     pub text_parser: String,
     pub text_printer: String,
 }

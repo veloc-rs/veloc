@@ -1,11 +1,7 @@
-//! MIR opcodes, metadata, memory flags and type contracts.
+//! Instruction kinds: opcodes, metadata, memory flags and type contracts.
 //!
 //! Layouts, type checks and operation tables are compiled from `defs/*.ops`.
 //! Their shared runtime support lives alongside the generated definitions.
-
-include!(concat!(env!("OUT_DIR"), "/formats.rs"));
-
-include!(concat!(env!("OUT_DIR"), "/builtins.rs"));
 
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
 
@@ -52,7 +48,7 @@ fn same_shape(bound: crate::Type, ty: crate::Type) -> bool {
 }
 
 /// Shared executable rules generated from the definitions.
-pub(crate) mod type_rules {
+mod type_rules {
     include!(concat!(env!("OUT_DIR"), "/type_rules.rs"));
 }
 

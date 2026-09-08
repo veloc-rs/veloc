@@ -28,7 +28,7 @@ block0(v0: ptr, v1: i32, v2: f32, v3: i32<4>, v4: mask<4>):
   v18 = ptr-index.ptr v0, v1, scale=4, offset=-8
   v19 = inttoptr.ptr v1
   v20 = ptrtoint.i64 v0
-  v21 = call.i32 callee(v11)
+  v21 = call callee(v11) : (i32) -> i32
   v22 = call-indirect.i32 v0(v11) : (i32) -> i32
   v23 = call-intrinsic.f32 veloc.sin.f32(v2) : (f32) -> f32
   v24 = shuffle.i32<4> v3, v8, mask=0x00010203

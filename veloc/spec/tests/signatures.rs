@@ -26,13 +26,11 @@ op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
 }
 "#;
 
-fn artifacts(output: veloc_opgen::Generated) -> [String; 9] {
+fn artifacts(output: veloc_opgen::Generated) -> [String; 7] {
     [
-        output.encoding,
-        output.builtins,
-        output.scalars,
-        output.formats,
         output.types,
+        output.type_rules,
+        output.builders,
         output.opcodes,
         output.instructions,
         output.text_parser,
@@ -78,7 +76,7 @@ fn named_results_keep_their_position_among_anonymous_results() {
     let output = compile_mir(&source).unwrap();
     assert!(
         output
-            .types
+            .type_rules
             .contains("results[1] must have more bits per lane than operands[0]")
     );
     let both_named = source.replace("(T, wider: I64)", "(result: T, wider: I64)");
@@ -97,7 +95,7 @@ fn result_only_type_variables_and_nested_type_patterns_still_bind() {
         }
     "#;
     let output = compile_mir(source).unwrap();
-    assert!(output.types.contains("C::Integer.accepts(results[0])"));
+    assert!(output.type_rules.contains("C::Integer.accepts(results[0])"));
     // Multiple explicit results are valid signatures, but not supported by the
     // current field-builder projection. Check their binding at the model layer.
     common::parse(&source.replace("-> T", "-> (T, T)")).unwrap();

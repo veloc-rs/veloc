@@ -1,25 +1,26 @@
-//! Parser for the canonical textual IR.
+//! Recursive-descent parser for canonical MIR text.
 //!
-//! Instruction syntax and storage construction are generated from OpSpec.
-//! A delimiter-aware scanner and typed atoms handle nested lists, signatures,
-//! and forward SSA references independently of the instruction set.
+//! OpSpec generates instruction grammar and construction; shared token parsers
+//! handle types, nested operands and forward references. Validation is explicit.
 
+use super::lexer::{Cursor, Kind};
 use crate::{
     Block, BlockCall, CallConv, FuncId, Function, InstDraft, Linkage, MemFlags, Module, ModuleData,
-    Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef,
-    function::StackSlotData,
-    types::{ValueData, parse_type},
+    Opcode, Result, SigId, Signature, StackSlot, Type, Value, ValueDef, function::StackSlotData,
+    types::ValueData,
 };
 use alloc::{
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
+use core::ops::Range;
 use hashbrown::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ParseError(pub String);
+
+type ParseResult<T> = core::result::Result<T, ParseError>;
 
 impl core::fmt::Display for ParseError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -27,21 +28,18 @@ impl core::fmt::Display for ParseError {
     }
 }
 
-#[derive(Debug, Clone)]
 struct FunctionHeader {
     name: String,
     linkage: Linkage,
     signature: Signature,
 }
 
-#[derive(Debug)]
 struct FunctionSource {
     header: FunctionHeader,
-    body: Vec<(usize, String)>,
+    body: Range<usize>,
 }
 
-/// Complete-module parser. Function symbols are declared before any body is
-/// decoded, so direct calls may refer to functions appearing later in a file.
+/// Function symbols are declared before bodies, so calls may refer forwards.
 pub struct ModuleParser;
 
 impl Default for ModuleParser {
@@ -55,201 +53,214 @@ impl ModuleParser {
         Self
     }
 
-    /// Parse text and resolve names/result types, without validating IR contracts.
+    /// Resolve names/result types, without validating IR contracts.
     /// Call `Module::validate` explicitly when validation is required.
-    pub fn parse(&mut self, input: &str) -> Result<Module> {
-        if input.trim().is_empty() {
-            return parse_err("empty input");
-        }
-
-        let mut sources = Vec::<FunctionSource>::new();
-        let mut globals = Vec::<(String, Type, Linkage)>::new();
-        let mut current = None;
-
-        for (index, raw) in input.lines().enumerate() {
-            let line_no = index + 1;
-            let line = strip_comment(raw).trim();
-            if line.is_empty() {
-                continue;
-            }
-            if is_function_header(line) {
-                let header =
-                    parse_function_header(line).map_err(|error| with_line(error, line_no, line))?;
-                sources.push(FunctionSource {
-                    header,
-                    body: Vec::new(),
-                });
-                current = Some(sources.len() - 1);
-            } else if line.starts_with("global ") {
-                if current.is_some() {
-                    return parse_err(format!(
-                        "line {line_no}: global declaration inside function"
-                    ));
-                }
-                globals.push(parse_global(line).map_err(|error| with_line(error, line_no, line))?);
-            } else if let Some(source) = current.map(|index| &mut sources[index]) {
-                source.body.push((line_no, line.to_string()));
-            } else {
-                return parse_err(format!(
-                    "line {line_no}: expected global or function declaration"
-                ));
-            }
-        }
-
-        if sources.is_empty() && globals.is_empty() {
-            return parse_err("module contains no declarations");
-        }
-
-        let mut module = ModuleData::default();
-        for (name, ty, linkage) in globals {
-            module.add_global(name, ty, linkage);
-        }
-
-        let mut func_ids = HashMap::new();
-        for source in &sources {
-            if func_ids.contains_key(&source.header.name) {
-                return parse_err(format!("duplicate function `{}`", source.header.name));
-            }
-            let sig = module.intern_signature(source.header.signature.clone());
-            let id =
-                module.declare_function(source.header.name.clone(), sig, source.header.linkage);
-            func_ids.insert(source.header.name.clone(), id);
-        }
-
-        for source in sources {
-            let id = func_ids[&source.header.name];
-            let sig = module.functions[id].signature;
-            let func =
-                parse_function_body(source.header, sig, &source.body, &func_ids, &mut module)?;
-            module.functions[id] = func;
-        }
-        Ok(Module::new(module))
+    pub fn parse(&mut self, source: &str) -> Result<Module> {
+        parse_module(source).map(Module::new).map_err(Into::into)
     }
 }
 
+fn parse_module(source: &str) -> ParseResult<ModuleData> {
+    if source.trim().is_empty() {
+        return parse_err("empty input");
+    }
+    let mut module = ModuleData::default();
+    let sources = parse_declarations(source, &mut module)?;
+
+    // All function IDs must exist before resolving any call operands.
+    let mut func_ids = HashMap::new();
+    for source in &sources {
+        if func_ids.contains_key(&source.header.name) {
+            return parse_err(format!("duplicate function `{}`", source.header.name));
+        }
+        let sig = module.intern_signature(source.header.signature.clone());
+        let id = module.declare_function(source.header.name.clone(), sig, source.header.linkage);
+        func_ids.insert(source.header.name.clone(), id);
+    }
+    for function in sources {
+        let id = func_ids[&function.header.name];
+        let sig = module.functions[id].signature;
+        let func = parse_function_body(
+            function.header,
+            sig,
+            Cursor::range(source, function.body),
+            &func_ids,
+            &mut module,
+        )?;
+        module.functions[id] = func;
+    }
+    Ok(module)
+}
+
+fn parse_declarations(source: &str, module: &mut ModuleData) -> ParseResult<Vec<FunctionSource>> {
+    let mut input = Cursor::new(source);
+    let mut sources = Vec::<FunctionSource>::new();
+    while let Some(mut line) = input.statement() {
+        if is_function_header(&line) {
+            if let Some(previous) = sources.last_mut() {
+                previous.body.end = line.offset();
+            }
+            let header = parse_line(&mut line, parse_function_header)?;
+            sources.push(FunctionSource {
+                header,
+                body: input.offset()..source.len(),
+            });
+        } else if line.is("global") {
+            if !sources.is_empty() {
+                return Err(line.locate(ParseError("global declaration inside function".into())));
+            }
+            let (name, ty, linkage) = parse_line(&mut line, parse_global)?;
+            module.add_global(name, ty, linkage);
+        } else if sources.is_empty() {
+            return Err(line.locate(ParseError("expected global or function declaration".into())));
+        }
+    }
+    if sources.is_empty() && module.globals.is_empty() {
+        return parse_err("module contains no declarations");
+    }
+
+    Ok(sources)
+}
+
+/// Complete one declaration before attaching its source location to an error.
+fn parse_line<T>(
+    input: &mut Cursor<'_>,
+    parse: impl FnOnce(&mut Cursor<'_>) -> ParseResult<T>,
+) -> ParseResult<T> {
+    let result = parse(input).and_then(|value| {
+        input.finish()?;
+        Ok(value)
+    });
+    result.map_err(|error| input.locate(error))
+}
+
 #[derive(Default)]
-struct ParseContext {
-    value_map: HashMap<String, Value>,
-    block_map: HashMap<String, Block>,
-    next_value_idx: u32,
-    defined_values: HashMap<Value, String>,
+struct Symbols {
+    values: HashMap<String, Value>,
+    blocks: HashMap<String, Block>,
+    next_value: u32,
+    definitions: HashMap<Value, String>,
+}
+
+impl Symbols {
+    // References reserve the final Value ID. Definitions fill that same slot,
+    // so resolving a forward reference never rewrites its uses.
+    fn reference(&mut self, name: &str, func: &mut Function) -> Value {
+        if let Some(&value) = self.values.get(name) {
+            return value;
+        }
+        let index = parse_value_idx(name).unwrap_or(self.next_value);
+        let value = Value(index);
+        ensure_value(value, func);
+        set_value_name(value, name, func);
+        self.values.insert(name.to_string(), value);
+        self.next_value = self.next_value.max(index + 1);
+        value
+    }
+
+    fn define(
+        &mut self,
+        name: &str,
+        func: &mut Function,
+        ty: Type,
+        def: ValueDef,
+    ) -> ParseResult<Value> {
+        let value = self.reference(name, func);
+        if let Some(previous) = self.definitions.get(&value) {
+            return Err(ParseError(format!(
+                "SSA value `{name}` aliases already-defined `{previous}`"
+            )));
+        }
+        func.dfg.values[value] = ValueData { ty, def };
+        self.definitions.insert(value, name.to_string());
+        Ok(value)
+    }
+
+    fn finish(&self) -> ParseResult<()> {
+        for (name, value) in &self.values {
+            if !self.definitions.contains_key(value) {
+                return parse_err(format!("undefined SSA value `{name}`"));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn parse_function_body(
     header: FunctionHeader,
     sig_id: SigId,
-    body: &[(usize, String)],
+    mut body: Cursor<'_>,
     func_ids: &HashMap<String, FuncId>,
     module: &mut ModuleData,
-) -> Result<Function> {
+) -> ParseResult<Function> {
     let mut func = Function::new(header.name, sig_id, header.linkage);
-    let mut ctx = ParseContext::default();
-
-    // Predeclare every block and parameter. Forward branches are therefore a
-    // normal case instead of depending on textual block order.
-    for (line_no, line) in body {
-        if is_block_header(line) {
-            let (block_id, params) =
-                parse_block_header(line).map_err(|error| with_line(error, *line_no, line))?;
-            while func.layout.blocks.len() <= block_id as usize {
-                func.layout.create_block();
-            }
-            let block = Block(block_id);
-            let key = format!("block{block_id}");
-            if ctx.block_map.insert(key, block).is_some() {
-                return parse_err(format!("line {line_no}: duplicate block{block_id}"));
-            }
-            func.layout.append_block(block);
-            if func.entry_block.is_none() {
-                func.entry_block = Some(block);
-            }
-            for (name, ty) in params {
-                let value = define_value(&name, &mut func, &mut ctx, ty, ValueDef::Param(block))
-                    .map_err(|error| with_line(error, *line_no, line))?;
-                func.layout.blocks[block].params.push(value);
-            }
-        } else if line.starts_with("ss") {
-            parse_stack_slot(line, &mut func).map_err(|error| with_line(error, *line_no, line))?;
-        }
-    }
-
+    let mut symbols = Symbols::default();
+    // Predeclare blocks/parameters and remember only borrowed instruction
+    // source ranges. No copied lines or second parse of block headers.
+    let mut instructions = Vec::new();
     let mut current = None;
-    for (line_no, line) in body {
-        if is_block_header(line) {
-            let (block_id, _) =
-                parse_block_header(line).map_err(|error| with_line(error, *line_no, line))?;
-            current = Some(Block(block_id));
-            continue;
-        }
-        if line.starts_with("ss") {
-            continue;
-        }
-        let block = current.ok_or_else(|| {
-            ParseError(format!("line {line_no}: instruction outside a basic block"))
-        })?;
-        parse_instruction(line, *line_no, block, &mut func, &mut ctx, func_ids, module)?;
-    }
-
-    for (name, value) in &ctx.value_map {
-        if !ctx.defined_values.contains_key(value) {
-            return parse_err(format!("undefined SSA value `{name}`"));
+    while let Some(mut line) = body.statement() {
+        let mut look = line.clone();
+        let name = look.text();
+        look.advance();
+        if name.starts_with("block") && look.kind() == Kind::LParen {
+            current = Some(parse_line(&mut line, |input| {
+                declare_block(input, &mut func, &mut symbols)
+            })?);
+        } else if name.starts_with("ss") && look.kind() == Kind::Colon {
+            parse_line(&mut line, |input| parse_stack_slot(input, &mut func))?;
+        } else {
+            let block = current.ok_or_else(|| {
+                line.locate(ParseError("instruction outside a basic block".into()))
+            })?;
+            instructions.push((block, line.remaining()));
         }
     }
+    let mut parser = OperandParser {
+        func: &mut func,
+        symbols: &mut symbols,
+        func_ids,
+        module,
+    };
+    for (block, range) in instructions {
+        let mut input = body.slice(range);
+        parser
+            .instruction(&mut input, block)
+            .map_err(|e| input.locate(e))?;
+    }
+    symbols.finish()?;
     for &block in &func.layout.block_order {
         func.layout.blocks[block].is_sealed = true;
     }
     Ok(func)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn parse_instruction(
-    line: &str,
-    line_no: usize,
-    block: Block,
+fn declare_block(
+    input: &mut Cursor<'_>,
     func: &mut Function,
-    ctx: &mut ParseContext,
-    func_ids: &HashMap<String, FuncId>,
-    module: &mut ModuleData,
-) -> Result<()> {
-    let (result_names, instruction) =
-        parse_result_names(line).map_err(|error| with_line(error, line_no, line))?;
-    let (opcode, ty_hint, flags, operands) =
-        parse_instruction_header(instruction).map_err(|error| with_line(error, line_no, line))?;
-
-    let data = {
-        let mut parser = OperandParser {
-            func,
-            ctx,
-            func_ids,
-            module,
-        };
-        parser
-            .parse(opcode, ty_hint, flags, operands)
-            .map_err(|error| with_line(error, line_no, line))?
-    };
-    let result_types = resolve_result_types(&data, ty_hint, func, module)
-        .map_err(|error| with_line(error, line_no, line))?;
-    if result_names.len() != result_types.len() {
-        return parse_err(format!(
-            "line {line_no}: `{}` defines {} result name(s), but its type scheme produces {}",
-            opcode.spec().mnemonic,
-            result_names.len(),
-            result_types.len()
-        ));
+    symbols: &mut Symbols,
+) -> ParseResult<Block> {
+    let (block_id, params) = parse_block_header(input)?;
+    while func.layout.blocks.len() <= block_id as usize {
+        func.layout.create_block();
     }
-
-    let inst = func.edit().append_inst(block, data, &[]);
-    if !result_names.is_empty() {
-        let values = result_names
-            .iter()
-            .zip(result_types)
-            .map(|(name, ty)| define_value(name, func, ctx, ty, ValueDef::Inst(inst)))
-            .collect::<core::result::Result<Vec<_>, _>>()
-            .map_err(|error| with_line(error, line_no, line))?;
-        let list = func.dfg.make_value_list(&values);
-        func.dfg.inst_results[inst] = list;
+    let block = Block(block_id);
+    if symbols
+        .blocks
+        .insert(format!("block{block_id}"), block)
+        .is_some()
+    {
+        return Err(ParseError(format!("duplicate block{block_id}")));
     }
-    Ok(())
+    func.layout.append_block(block);
+    if func.entry_block.is_none() {
+        func.entry_block = Some(block);
+    }
+    for (name, ty) in params {
+        let value = symbols.define(&name, func, ty, ValueDef::Param(block))?;
+        func.layout.blocks[block].params.push(value);
+    }
+    Ok(block)
 }
 
 fn resolve_result_types(
@@ -257,7 +268,7 @@ fn resolve_result_types(
     hint: Option<Type>,
     func: &Function,
     module: &ModuleData,
-) -> core::result::Result<smallvec::SmallVec<[Type; 2]>, ParseError> {
+) -> ParseResult<smallvec::SmallVec<[Type; 2]>> {
     let spec = data.opcode().spec();
     // Resolve only information needed to create result values. Type contracts
     // (including forward-referenced operands) belong to the validator.
@@ -284,310 +295,385 @@ fn resolve_result_types(
 
 pub(super) struct OperandParser<'a> {
     func: &'a mut Function,
-    ctx: &'a mut ParseContext,
+    symbols: &'a mut Symbols,
     func_ids: &'a HashMap<String, FuncId>,
     module: &'a mut ModuleData,
 }
 
 impl OperandParser<'_> {
-    pub(super) fn value(&mut self, name: &str) -> core::result::Result<Value, ParseError> {
-        let name = name.trim();
-        if name.is_empty() || name.chars().any(char::is_whitespace) {
-            return Err(ParseError(format!("invalid SSA value `{name}`")));
-        }
-        Ok(get_or_create_value(name, self.func, self.ctx))
-    }
-
-    pub(super) fn values(&mut self, fields: &str) -> core::result::Result<Vec<Value>, ParseError> {
-        if fields.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        split_top_level(fields, ',')
-            .into_iter()
-            .map(|field| self.value(field))
-            .collect()
-    }
-
-    pub(super) fn block_call(&mut self, text: &str) -> core::result::Result<BlockCall, ParseError> {
-        let (name, args, trailing) = parse_invocation(text)?;
-        if !trailing.trim().is_empty() {
+    fn instruction(&mut self, input: &mut Cursor<'_>, block: Block) -> ParseResult<()> {
+        let result_names = parse_result_names(input)?;
+        let (opcode, ty_hint, flags) = parse_instruction_header(input)?;
+        let data = self.parse(opcode, ty_hint, flags, input)?;
+        let result_types = resolve_result_types(&data, ty_hint, self.func, self.module)?;
+        if result_names.len() != result_types.len() {
             return Err(ParseError(format!(
-                "unexpected text after block call: `{trailing}`"
+                "`{}` defines {} result name(s), but its type scheme produces {}",
+                opcode.spec().mnemonic,
+                result_names.len(),
+                result_types.len()
             )));
         }
+        let inst = self.func.edit().append_inst(block, data, &[]);
+        if !result_names.is_empty() {
+            let values = result_names
+                .iter()
+                .zip(result_types)
+                .map(|(name, ty)| {
+                    self.symbols
+                        .define(name, self.func, ty, ValueDef::Inst(inst))
+                })
+                .collect::<ParseResult<Vec<_>>>()?;
+            let list = self.func.dfg.make_value_list(&values);
+            self.func.dfg.inst_results[inst] = list;
+        }
+        Ok(())
+    }
+
+    pub(super) fn value(&mut self, input: &mut Cursor<'_>) -> ParseResult<Value> {
+        let name = input
+            .word()
+            .map_err(|e| ParseError(format!("invalid SSA value: {e}")))?;
+        Ok(self.symbols.reference(name, self.func))
+    }
+
+    pub(super) fn values(&mut self, input: &mut Cursor<'_>) -> ParseResult<Vec<Value>> {
+        let mut values = Vec::new();
+        if matches!(input.kind(), Kind::Eof | Kind::RParen) || input.named() {
+            return Ok(values);
+        }
+        loop {
+            values.push(self.value(input)?);
+            if input.kind() != Kind::Comma {
+                break;
+            }
+            let mut next = input.clone();
+            next.advance();
+            if next.named() {
+                break;
+            }
+            input.advance();
+        }
+        Ok(values)
+    }
+
+    pub(super) fn block_call(&mut self, input: &mut Cursor<'_>) -> ParseResult<BlockCall> {
+        let name = input.word()?;
         let block = self
-            .ctx
-            .block_map
+            .symbols
+            .blocks
             .get(name)
             .copied()
             .ok_or_else(|| ParseError(format!("unknown block `{name}`")))?;
-        let values = self.values(args)?;
+        input.expect(Kind::LParen)?;
+        let values = self.values(input)?;
+        input.expect(Kind::RParen)?;
         Ok(BlockCall::new(block, &values))
     }
 
-    pub(super) fn block_calls(
-        &mut self,
-        text: &str,
-    ) -> core::result::Result<Vec<BlockCall>, ParseError> {
-        let inner = text
-            .trim()
-            .strip_prefix('[')
-            .and_then(|text| text.strip_suffix(']'))
-            .ok_or_else(|| ParseError("block-call list must be enclosed in `[]`".into()))?;
-        if inner.trim().is_empty() {
-            return Ok(Vec::new());
+    pub(super) fn block_calls(&mut self, input: &mut Cursor<'_>) -> ParseResult<Vec<BlockCall>> {
+        input.expect(Kind::LBracket)?;
+        let mut calls = Vec::new();
+        if !input.eat(Kind::RBracket) {
+            loop {
+                calls.push(self.block_call(input)?);
+                if !input.eat(Kind::Comma) {
+                    break;
+                }
+            }
+            input.expect(Kind::RBracket)?;
         }
-        split_top_level(inner, ',')
-            .into_iter()
-            .map(|text| self.block_call(text))
-            .collect()
+        Ok(calls)
     }
 
-    pub(super) fn func_ref(&self, text: &str) -> core::result::Result<FuncId, ParseError> {
-        let name = text.trim();
-        self.func_ids
-            .get(name)
-            .copied()
-            .or_else(|| parse_func_ref(name))
+    pub(super) fn func_ref(&self, input: &mut Cursor<'_>) -> ParseResult<FuncId> {
+        let name = input.word()?;
+        if let Some(&id) = self.func_ids.get(name) {
+            return Ok(id);
+        }
+        if name == "FuncId" {
+            input.expect(Kind::LParen)?;
+            let id = input
+                .word()?
+                .parse()
+                .map_err(|_| ParseError("invalid function ID".into()))?;
+            input.expect(Kind::RParen)?;
+            return Ok(FuncId(id));
+        }
+        name.strip_prefix("func")
+            .and_then(|s| s.parse().ok())
+            .map(FuncId)
             .ok_or_else(|| ParseError(format!("unknown function `{name}`")))
     }
 
-    pub(super) fn signature(&mut self, text: &str) -> core::result::Result<SigId, ParseError> {
-        Ok(self.module.intern_signature(parse_signature(text)?))
+    /// A textual function reference declares a signature, not a second
+    /// per-instruction signature. Check symbol consistency here; argument and
+    /// result value types are still checked by the explicit validator.
+    fn function_signature(&self, callee: FuncId, input: &mut Cursor<'_>) -> ParseResult<()> {
+        let signature = parse_signature(input)?;
+        let function = self
+            .module
+            .functions
+            .get(callee)
+            .ok_or_else(|| ParseError("unknown function".into()))?;
+        let declared = self
+            .module
+            .signatures
+            .get(function.signature)
+            .ok_or_else(|| ParseError("unknown function signature".into()))?;
+        if signature != *declared {
+            return parse_err(format!(
+                "call signature does not match declaration of `{}`",
+                function.name
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn signature(&mut self, input: &mut Cursor<'_>) -> ParseResult<SigId> {
+        Ok(self.module.intern_signature(parse_signature(input)?))
     }
 }
 
-fn parse_result_names(line: &str) -> core::result::Result<(Vec<String>, &str), ParseError> {
-    let Some((lhs, rhs)) = line.split_once(" = ") else {
-        return Ok((Vec::new(), line.trim()));
-    };
-    let lhs = lhs.trim();
-    let names = if let Some(inner) = lhs
-        .strip_prefix('(')
-        .and_then(|value| value.strip_suffix(')'))
-    {
-        split_top_level(inner, ',')
-    } else {
-        vec![lhs]
-    };
-    if names.iter().any(|name| name.is_empty()) {
-        return Err(ParseError("empty result name".into()));
+fn parse_result_names(input: &mut Cursor<'_>) -> ParseResult<Vec<String>> {
+    let mut names = Vec::new();
+    if input.eat(Kind::LParen) {
+        loop {
+            names.push(input.word()?.to_string());
+            if !input.eat(Kind::Comma) {
+                break;
+            }
+        }
+        input.expect(Kind::RParen)?;
+        input.expect(Kind::Equal)?;
+    } else if input.named() {
+        names.push(input.word()?.to_string());
+        input.expect(Kind::Equal)?;
     }
-    Ok((names.into_iter().map(str::to_string).collect(), rhs.trim()))
+    Ok(names)
 }
 
 fn parse_instruction_header(
-    text: &str,
-) -> core::result::Result<(Opcode, Option<Type>, MemFlags, &str), ParseError> {
-    let text = text.trim();
-    let opcode = Opcode::ALL
-        .iter()
-        .copied()
-        .filter(|opcode| {
-            let name = opcode.spec().mnemonic;
-            text.strip_prefix(name).is_some_and(|rest| {
-                rest.is_empty()
-                    || rest.starts_with('.')
-                    || rest.chars().next().is_some_and(char::is_whitespace)
-            })
-        })
-        .max_by_key(|opcode| opcode.spec().mnemonic.len())
-        .ok_or_else(|| ParseError(format!("unknown opcode in `{text}`")))?;
-    let mut rest = &text[opcode.spec().mnemonic.len()..];
+    input: &mut Cursor<'_>,
+) -> ParseResult<(Opcode, Option<Type>, MemFlags)> {
+    let word = input.word()?;
+    let (opcode, mut suffix) = parse_opcode(word)?;
     let mut ty = None;
     let mut flags = MemFlags::new();
-
-    if rest.starts_with('.') {
-        let end = token_end_with_angles(rest);
-        let suffix = &rest[1..end];
-        rest = &rest[end..];
-        for part in split_top_level(suffix, '.') {
-            if let Some(parsed) = parse_type(part) {
+    loop {
+        let mut parts = suffix
+            .strip_prefix('.')
+            .unwrap_or(suffix)
+            .split('.')
+            .peekable();
+        while let Some(part) = parts.next() {
+            if part.is_empty() {
+                if !suffix.is_empty() {
+                    return Err(ParseError("empty opcode suffix".into()));
+                }
+                continue;
+            }
+            if Type::from_name(part).is_some() || part == "mask" {
+                let parsed = if parts.peek().is_none() {
+                    parse_type_suffix(part, input)?
+                } else {
+                    Type::from_name(part)
+                        .ok_or_else(|| ParseError(format!("unknown type `{part}`")))?
+                };
                 if ty.replace(parsed).is_some() {
                     return Err(ParseError("multiple result type suffixes".into()));
                 }
             } else if part == "volatile" {
                 flags = flags.with_volatile(true);
             } else if let Some(value) = part.strip_prefix("align") {
-                let alignment = value
-                    .parse::<u32>()
-                    .map_err(|_| ParseError(format!("invalid alignment `{part}`")))?;
-                if alignment == 0 || !alignment.is_power_of_two() {
-                    return Err(ParseError(format!(
-                        "alignment must be a non-zero power of two: {alignment}"
-                    )));
-                }
+                let alignment = parse_alignment(value, part)?;
                 flags = flags.with_alignment(alignment);
             } else {
                 return Err(ParseError(format!("unknown opcode suffix `{part}`")));
             }
         }
+        if !input.joined() || input.kind() != Kind::Word || !input.text().starts_with('.') {
+            break;
+        }
+        suffix = input.word()?;
     }
-    Ok((opcode, ty, flags, rest.trim()))
+    Ok((opcode, ty, flags))
 }
 
-fn token_end_with_angles(text: &str) -> usize {
-    let mut angles = 0u32;
-    for (index, ch) in text.char_indices() {
-        match ch {
-            '<' => angles += 1,
-            '>' => angles = angles.saturating_sub(1),
-            _ if ch.is_whitespace() && angles == 0 => return index,
-            _ => {}
+fn parse_alignment(value: &str, suffix: &str) -> ParseResult<u32> {
+    let alignment = value
+        .parse::<u32>()
+        .map_err(|_| ParseError(format!("invalid alignment `{suffix}`")))?;
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return parse_err(format!(
+            "alignment must be a non-zero power of two: {alignment}"
+        ));
+    }
+    Ok(alignment)
+}
+
+fn parse_opcode(word: &str) -> ParseResult<(Opcode, &str)> {
+    // Mnemonics and suffixes are dotted words. Prefer the longest mnemonic,
+    // including any dots belonging to the opcode itself.
+    let mut end = word.len();
+    let opcode = loop {
+        if let Some(opcode) = Opcode::from_mnemonic(&word[..end]) {
+            break opcode;
+        }
+        end = word[..end]
+            .rfind('.')
+            .ok_or_else(|| ParseError(format!("unknown opcode `{word}`")))?;
+    };
+    Ok((opcode, &word[end..]))
+}
+
+fn parse_type(input: &mut Cursor<'_>) -> ParseResult<Type> {
+    let name = input.word()?;
+    parse_type_suffix(name, input)
+}
+
+fn parse_type_suffix(name: &str, input: &mut Cursor<'_>) -> ParseResult<Type> {
+    if !input.eat(Kind::Less) {
+        return Type::from_name(name).ok_or_else(|| ParseError(format!("unknown type `{name}`")));
+    }
+    let base = if name == "mask" {
+        Some(Type::BOOL)
+    } else {
+        Type::from_name(name)
+    };
+    let scalable = input.is("scalable");
+    if scalable {
+        input.advance();
+    }
+    let lanes = input
+        .word()?
+        .parse::<u16>()
+        .map_err(|_| ParseError("invalid vector lane count".into()))?;
+    input.expect(Kind::Greater)?;
+    base.and_then(Type::as_scalar)
+        .and_then(|s| s.vector(lanes, scalable))
+        .map(crate::VectorType::as_type)
+        .ok_or_else(|| ParseError(format!("invalid vector type `{name}`")))
+}
+
+fn parse_types(input: &mut Cursor<'_>) -> ParseResult<Vec<Type>> {
+    input.expect(Kind::LParen)?;
+    let mut types = Vec::new();
+    if !input.eat(Kind::RParen) {
+        loop {
+            types.push(parse_type(input)?);
+            if !input.eat(Kind::Comma) {
+                break;
+            }
+        }
+        input.expect(Kind::RParen)?;
+    }
+    Ok(types)
+}
+
+fn parse_function_returns(input: &mut Cursor<'_>) -> ParseResult<Vec<Type>> {
+    if input.is("void") {
+        input.advance();
+        return Ok(Vec::new());
+    }
+    if input.kind() == Kind::LParen {
+        return parse_types(input);
+    }
+    let mut types = Vec::new();
+    loop {
+        types.push(parse_type(input)?);
+        if !input.eat(Kind::Comma) {
+            break;
         }
     }
-    text.len()
+    Ok(types)
 }
 
-fn parse_function_header(text: &str) -> core::result::Result<FunctionHeader, ParseError> {
-    let split = text
-        .find(char::is_whitespace)
-        .ok_or_else(|| ParseError("incomplete function header".into()))?;
-    let linkage_text = &text[..split];
-    let linkage = Linkage::from_mnemonic(linkage_text)
-        .ok_or_else(|| ParseError(format!("unknown linkage `{linkage_text}`")))?;
-    let rest = text[split..]
-        .trim_start()
-        .strip_prefix("function ")
-        .ok_or_else(|| ParseError("expected `function`".into()))?;
-    let (name, params, trailing) = parse_invocation(rest)?;
-    let params = parse_type_list(params)?;
-    let trailing = trailing.trim();
-    let returns = if let Some(ret) = trailing.strip_prefix("->") {
-        parse_return_types(ret.trim())?
-    } else if trailing.is_empty() {
+fn parse_signature(input: &mut Cursor<'_>) -> ParseResult<Signature> {
+    let params = parse_types(input)?;
+    input.expect(Kind::Arrow)?;
+    let returns = if input.is("void") {
+        input.advance();
         Vec::new()
+    } else if input.kind() == Kind::LParen {
+        parse_types(input)?
     } else {
-        return Err(ParseError(format!(
-            "unexpected function header suffix `{trailing}`"
-        )));
+        alloc::vec![parse_type(input)?]
+    };
+    Ok(Signature::new(params, returns, CallConv::SystemV))
+}
+
+fn parse_linkage(input: &mut Cursor<'_>) -> ParseResult<Linkage> {
+    let name = input.word()?;
+    Linkage::from_mnemonic(name).ok_or_else(|| ParseError(format!("unknown linkage `{name}`")))
+}
+
+fn is_function_header(input: &Cursor<'_>) -> bool {
+    let mut next = input.clone();
+    if next.kind() != Kind::Word || Linkage::from_mnemonic(next.text()).is_none() {
+        return false;
+    }
+    next.advance();
+    next.is("function")
+}
+
+fn parse_function_header(input: &mut Cursor<'_>) -> ParseResult<FunctionHeader> {
+    let linkage = parse_linkage(input)?;
+    input.keyword("function")?;
+    let name = input.word()?.to_string();
+    let params = parse_types(input)?;
+    let returns = if input.eat(Kind::Arrow) {
+        parse_function_returns(input)?
+    } else {
+        Vec::new()
     };
     Ok(FunctionHeader {
-        name: name.to_string(),
+        name,
         linkage,
         signature: Signature::new(params, returns, CallConv::SystemV),
     })
 }
 
-fn parse_signature(text: &str) -> core::result::Result<Signature, ParseError> {
-    let text = text.trim();
-    if !text.starts_with('(') {
-        return Err(ParseError(
-            "signature parameters must start with `(`".into(),
-        ));
-    }
-    let close = matching_delimiter(text, 0, '(', ')')?;
-    let returns = text[close + 1..]
-        .trim()
-        .strip_prefix("->")
-        .ok_or_else(|| ParseError("signature is missing `->`".into()))?;
-    if returns.trim().is_empty() {
-        return Err(ParseError("signature is missing return types".into()));
-    }
-    Ok(Signature::new(
-        parse_type_list(&text[1..close])?,
-        parse_return_types(returns.trim())?,
-        CallConv::SystemV,
-    ))
+fn parse_global(input: &mut Cursor<'_>) -> ParseResult<(String, Type, Linkage)> {
+    input.keyword("global")?;
+    let name = input.word()?.to_string();
+    input.expect(Kind::Colon)?;
+    let ty = parse_type(input)?;
+    input.expect(Kind::LParen)?;
+    let linkage = parse_linkage(input)?;
+    input.expect(Kind::RParen)?;
+    Ok((name, ty, linkage))
 }
 
-fn parse_type_list(text: &str) -> core::result::Result<Vec<Type>, ParseError> {
-    if text.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    split_top_level(text, ',')
-        .into_iter()
-        .map(|field| parse_type(field).ok_or_else(|| ParseError(format!("unknown type `{field}`"))))
-        .collect()
-}
-
-fn parse_return_types(text: &str) -> core::result::Result<Vec<Type>, ParseError> {
-    let text = text.trim();
-    if text == "void" {
-        return Ok(Vec::new());
-    }
-    let inner = text
-        .strip_prefix('(')
-        .and_then(|value| value.strip_suffix(')'))
-        .unwrap_or(text);
-    parse_type_list(inner)
-}
-
-fn parse_global(text: &str) -> core::result::Result<(String, Type, Linkage), ParseError> {
-    let rest = text
-        .strip_prefix("global ")
-        .ok_or_else(|| ParseError("expected `global`".into()))?;
-    let (name, rest) = rest
-        .split_once(':')
-        .ok_or_else(|| ParseError("global is missing `:`".into()))?;
-    let open = rest
-        .rfind('(')
-        .ok_or_else(|| ParseError("global is missing linkage".into()))?;
-    let ty_text = rest[..open].trim();
-    let ty = parse_type(ty_text)
-        .ok_or_else(|| ParseError(format!("unknown global type `{ty_text}`")))?;
-    let linkage_text = rest[open + 1..]
-        .trim()
-        .strip_suffix(')')
-        .ok_or_else(|| ParseError("global linkage is missing `)`".into()))?;
-    let linkage = Linkage::from_mnemonic(linkage_text)
-        .ok_or_else(|| ParseError(format!("unknown linkage `{linkage_text}`")))?;
-    Ok((name.trim().to_string(), ty, linkage))
-}
-
-fn is_function_header(text: &str) -> bool {
-    ["local function ", "export function ", "import function "]
-        .iter()
-        .any(|prefix| text.starts_with(prefix))
-}
-
-fn is_block_header(text: &str) -> bool {
-    text.starts_with("block") && text.ends_with(':')
-}
-
-fn parse_block_header(text: &str) -> core::result::Result<(u32, Vec<(String, Type)>), ParseError> {
-    let text = text
-        .strip_suffix(':')
-        .ok_or_else(|| ParseError("block header is missing `:`".into()))?
-        .trim();
-    let (name, params, trailing) = parse_invocation(text)?;
-    if !trailing.trim().is_empty() {
-        return Err(ParseError(format!(
-            "unexpected block metadata `{trailing}`"
-        )));
-    }
+fn parse_block_header(input: &mut Cursor<'_>) -> ParseResult<(u32, Vec<(String, Type)>)> {
+    let name = input.word()?;
     let id = name
         .strip_prefix("block")
-        .ok_or_else(|| ParseError("block name must start with `block`".into()))?
-        .parse::<u32>()
-        .map_err(|_| ParseError(format!("invalid block name `{name}`")))?;
-    let params = if params.trim().is_empty() {
-        Vec::new()
-    } else {
-        split_top_level(params, ',')
-            .into_iter()
-            .map(|field| {
-                let (name, ty) = field.split_once(':').ok_or_else(|| {
-                    ParseError(format!("block parameter `{field}` is missing `:`"))
-                })?;
-                let ty = parse_type(ty.trim())
-                    .ok_or_else(|| ParseError(format!("unknown type `{}`", ty.trim())))?;
-                Ok((name.trim().to_string(), ty))
-            })
-            .collect::<core::result::Result<Vec<_>, ParseError>>()?
-    };
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or_else(|| ParseError(format!("invalid block name `{name}`")))?;
+    input.expect(Kind::LParen)?;
+    let mut params = Vec::new();
+    if !input.eat(Kind::RParen) {
+        loop {
+            let name = input.word()?.to_string();
+            input.expect(Kind::Colon)?;
+            params.push((name, parse_type(input)?));
+            if !input.eat(Kind::Comma) {
+                break;
+            }
+        }
+        input.expect(Kind::RParen)?;
+    }
+    input.expect(Kind::Colon)?;
     Ok((id, params))
 }
 
-fn parse_stack_slot(text: &str, func: &mut Function) -> core::result::Result<(), ParseError> {
-    let (slot, size) = text
-        .split_once(':')
-        .ok_or_else(|| ParseError("stack slot is missing `:`".into()))?;
-    let slot = parse_stack_slot_ref(slot)?;
-    let size = size
-        .trim()
-        .strip_prefix("size ")
-        .ok_or_else(|| ParseError("stack slot is missing `size`".into()))?
+fn parse_stack_slot(input: &mut Cursor<'_>, func: &mut Function) -> ParseResult<()> {
+    let slot = parse_stack_slot_ref(input.word()?)?;
+    input.expect(Kind::Colon)?;
+    input.keyword("size")?;
+    let size = input
+        .word()?
         .parse::<u32>()
         .map_err(|_| ParseError("invalid stack slot size".into()))?;
     while func.stack_slots.len() <= slot.0 as usize {
@@ -597,187 +683,13 @@ fn parse_stack_slot(text: &str, func: &mut Function) -> core::result::Result<(),
     Ok(())
 }
 
-pub(crate) fn parse_invocation(text: &str) -> core::result::Result<(&str, &str, &str), ParseError> {
-    let open = text
-        .find('(')
-        .ok_or_else(|| ParseError(format!("expected `(` in `{text}`")))?;
-    let close = matching_delimiter(text, open, '(', ')')?;
-    let name = text[..open].trim();
-    if name.is_empty() {
-        return Err(ParseError("missing invocation target".into()));
-    }
-    Ok((name, &text[open + 1..close], &text[close + 1..]))
-}
-
-fn matching_delimiter(
-    text: &str,
-    open: usize,
-    open_char: char,
-    close_char: char,
-) -> core::result::Result<usize, ParseError> {
-    let mut depth = 0u32;
-    for (offset, ch) in text[open..].char_indices() {
-        if ch == open_char {
-            depth += 1;
-        } else if ch == close_char {
-            depth -= 1;
-            if depth == 0 {
-                return Ok(open + offset);
-            }
-        }
-    }
-    Err(ParseError(format!("unclosed `{open_char}` in `{text}`")))
-}
-
-pub(crate) fn split_top_level(text: &str, separator: char) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut start = 0;
-    let (mut parens, mut brackets, mut angles) = (0u32, 0u32, 0u32);
-    for (index, ch) in text.char_indices() {
-        match ch {
-            '(' => parens += 1,
-            ')' => parens = parens.saturating_sub(1),
-            '[' => brackets += 1,
-            ']' => brackets = brackets.saturating_sub(1),
-            '<' => angles += 1,
-            '>' => angles = angles.saturating_sub(1),
-            _ => {}
-        }
-        if ch == separator && parens == 0 && brackets == 0 && angles == 0 {
-            result.push(text[start..index].trim());
-            start = index + ch.len_utf8();
-        }
-    }
-    result.push(text[start..].trim());
-    result
-}
-
-pub(crate) fn exact_fields(
-    text: &str,
-    count: usize,
-) -> core::result::Result<Vec<&str>, ParseError> {
-    let fields = if text.trim().is_empty() {
-        Vec::new()
-    } else {
-        split_top_level(text, ',')
-    };
-    if fields.len() != count {
-        return Err(ParseError(format!(
-            "expected {count} operand(s), found {}",
-            fields.len()
-        )));
-    }
-    Ok(fields)
-}
-
-type NamedFields<'a> = Vec<(&'a str, &'a str)>;
-
-pub(crate) fn split_core_and_named(
-    text: &str,
-    core_count: Option<usize>,
-) -> core::result::Result<(Vec<&str>, NamedFields<'_>), ParseError> {
-    let fields = if text.trim().is_empty() {
-        Vec::new()
-    } else {
-        split_top_level(text, ',')
-    };
-    let core_count = core_count.unwrap_or_else(|| {
-        fields
-            .iter()
-            .position(|field| field.contains('='))
-            .unwrap_or(fields.len())
-    });
-    if fields.len() < core_count {
-        return Err(ParseError(format!(
-            "expected at least {core_count} operand(s), found {}",
-            fields.len()
-        )));
-    }
-    let mut named = Vec::new();
-    for field in &fields[core_count..] {
-        let (key, value) = field
-            .split_once('=')
-            .ok_or_else(|| ParseError(format!("expected named field, found `{field}`")))?;
-        let key = key.trim();
-        let value = value.trim();
-        if key.is_empty() || value.is_empty() {
-            return Err(ParseError(format!(
-                "empty name or value in named field `{field}`"
-            )));
-        }
-        if named.iter().any(|(existing, _)| *existing == key) {
-            return Err(ParseError(format!("duplicate `{key}` field")));
-        }
-        named.push((key, value));
-    }
-    Ok((fields[..core_count].to_vec(), named))
-}
-
-pub(crate) fn split_space(text: &str) -> core::result::Result<(&str, &str), ParseError> {
-    let text = text.trim();
-    let split = text
-        .find(char::is_whitespace)
-        .ok_or_else(|| ParseError("expected whitespace-separated fields".into()))?;
-    Ok((&text[..split], text[split..].trim_start()))
-}
-
-pub(crate) fn signature_suffix(text: &str) -> core::result::Result<&str, ParseError> {
-    let signature = text
-        .trim()
-        .strip_prefix(':')
-        .ok_or_else(|| ParseError("signature must follow `:`".into()))?
-        .trim();
-    if signature.is_empty() {
-        return Err(ParseError("missing signature after `:`".into()));
-    }
-    Ok(signature)
-}
-
-fn named_value<'a>(
-    named: &'a [(&str, &str)],
-    key: &str,
-) -> core::result::Result<&'a str, ParseError> {
-    named
-        .iter()
-        .find(|(candidate, _)| *candidate == key)
-        .map(|(_, value)| *value)
-        .ok_or_else(|| ParseError(format!("missing `{key}=` field")))
-}
-
-fn reject_unknown_named(
-    named: &[(&str, &str)],
-    allowed: &[&str],
-) -> core::result::Result<(), ParseError> {
-    if let Some((key, _)) = named.iter().find(|(key, _)| !allowed.contains(key)) {
-        Err(ParseError(format!("unknown named field `{key}`")))
-    } else {
-        Ok(())
-    }
-}
-
-pub(super) fn parse_stack_slot_ref(text: &str) -> core::result::Result<StackSlot, ParseError> {
+pub(super) fn parse_stack_slot_ref(text: &str) -> ParseResult<StackSlot> {
     let id = text
-        .trim()
         .strip_prefix("ss")
         .ok_or_else(|| ParseError(format!("expected stack slot, found `{text}`")))?
         .parse::<u32>()
         .map_err(|_| ParseError(format!("invalid stack slot `{text}`")))?;
     Ok(StackSlot(id))
-}
-
-fn parse_func_ref(text: &str) -> Option<FuncId> {
-    let id = text
-        .strip_prefix("func")
-        .or_else(|| text.strip_prefix("FuncId(")?.strip_suffix(')'))?;
-    id.parse().ok().map(FuncId)
-}
-
-pub(crate) fn require_empty(text: &str) -> core::result::Result<(), ParseError> {
-    if text.trim().is_empty() {
-        Ok(())
-    } else {
-        Err(ParseError(format!("unexpected operands `{text}`")))
-    }
 }
 
 fn parse_value_idx(name: &str) -> Option<u32> {
@@ -789,38 +701,9 @@ fn parse_value_idx(name: &str) -> Option<u32> {
         })
 }
 
-fn get_or_create_value(name: &str, func: &mut Function, ctx: &mut ParseContext) -> Value {
-    if let Some(&value) = ctx.value_map.get(name) {
-        return value;
-    }
-    let index = parse_value_idx(name).unwrap_or(ctx.next_value_idx);
-    let value = Value(index);
-    ensure_value(value, func);
-    set_value_name(value, name, func);
-    ctx.value_map.insert(name.to_string(), value);
-    ctx.next_value_idx = ctx.next_value_idx.max(index + 1);
-    value
-}
-
-fn define_value(
-    name: &str,
-    func: &mut Function,
-    ctx: &mut ParseContext,
-    ty: Type,
-    def: ValueDef,
-) -> core::result::Result<Value, ParseError> {
-    let value = get_or_create_value(name, func, ctx);
-    if let Some(previous) = ctx.defined_values.get(&value) {
-        return Err(ParseError(format!(
-            "SSA value `{name}` aliases already-defined `{previous}`"
-        )));
-    }
-    func.dfg.values[value] = ValueData { ty, def };
-    ctx.defined_values.insert(value, name.to_string());
-    Ok(value)
-}
-
 fn ensure_value(value: Value, func: &mut Function) {
+    // These slots are not definitions. Symbols::definitions tracks resolution;
+    // the placeholder def must not be interpreted before parsing succeeds.
     while func.dfg.values.len() <= value.0 as usize {
         func.dfg.values.push(ValueData {
             ty: Type::INVALID,
@@ -846,16 +729,8 @@ fn set_value_name(value: Value, text: &str, func: &mut Function) {
     func.dfg.value_names[value] = name.to_string();
 }
 
-fn strip_comment(text: &str) -> &str {
-    text.split_once("//").map_or(text, |(code, _)| code)
-}
-
-fn with_line(error: ParseError, line_no: usize, line: &str) -> ParseError {
-    ParseError(format!("line {line_no}: {}\n  {line}", error.0))
-}
-
-fn parse_err<T>(message: impl Into<String>) -> Result<T> {
-    Err(ParseError(message.into()).into())
+fn parse_err<T>(message: impl Into<String>) -> ParseResult<T> {
+    Err(ParseError(message.into()))
 }
 
 include!(concat!(env!("OUT_DIR"), "/text_parser.rs"));
@@ -869,22 +744,33 @@ mod tests {
 
     fn with_parser(test: impl FnOnce(&mut OperandParser<'_>)) {
         let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
-        let mut ctx = ParseContext::default();
+        let mut symbols = Symbols::default();
         let mut module = ModuleData::default();
         let func_ids = HashMap::new();
         test(&mut OperandParser {
             func: &mut func,
-            ctx: &mut ctx,
+            symbols: &mut symbols,
             func_ids: &func_ids,
             module: &mut module,
         });
+    }
+
+    fn parse<C: AtomCodec>(
+        cx: &mut OperandParser<'_>,
+        text: &str,
+        ty: Option<Type>,
+    ) -> ParseResult<C::Owned> {
+        let mut input = Cursor::new(text);
+        let value = C::parse(cx, &mut input, ty)?;
+        input.finish()?;
+        Ok(value)
     }
 
     fn round_trip<C: AtomCodec>(cx: &mut OperandParser<'_>, text: &str, ty: Option<Type>) -> String
     where
         C::Owned: Debug + PartialEq + for<'a> Borrow<C::View<'a>>,
     {
-        let value = C::parse(cx, text, ty).unwrap();
+        let value = parse::<C>(cx, text, ty).unwrap();
         let mut printed = String::new();
         C::print(
             &InstPrinter::new(&cx.func.dfg, None),
@@ -893,7 +779,7 @@ mod tests {
             ty,
         )
         .unwrap();
-        assert_eq!(C::parse(cx, &printed, ty).unwrap(), value);
+        assert_eq!(parse::<C>(cx, &printed, ty).unwrap(), value);
         printed
     }
 
@@ -908,15 +794,15 @@ mod tests {
                 round_trip::<Decimal<u64>>(cx, "18446744073709551615", None),
                 "18446744073709551615"
             );
-            assert!(Decimal::<u64>::parse(cx, "-1", None).is_err());
+            assert!(parse::<Decimal<u64>>(cx, "-1", None).is_err());
             assert_eq!(
                 round_trip::<Decimal<i32>>(cx, "-2147483648", None),
                 "-2147483648"
             );
             assert_eq!(round_trip::<Decimal<u8>>(cx, "255", None), "255");
-            assert!(Decimal::<u8>::parse(cx, "256", None).is_err());
+            assert!(parse::<Decimal<u8>>(cx, "256", None).is_err());
             assert_eq!(round_trip::<bool>(cx, "true", None), "true");
-            assert!(bool::parse(cx, "1", None).is_err());
+            assert!(parse::<bool>(cx, "1", None).is_err());
             assert_eq!(round_trip::<crate::IntCC>(cx, "eq", None), "eq");
             assert_eq!(round_trip::<crate::FloatCC>(cx, "eq", None), "eq");
             assert_eq!(round_trip::<StackSlot>(cx, "ss7", None), "ss7");
@@ -935,7 +821,7 @@ mod tests {
                 assert_eq!(round_trip::<FloatBits>(cx, bits, Some(ty)), bits);
             }
             for ty in [None, Some(Type::I32)] {
-                assert!(FloatBits::parse(cx, "0x0", ty).is_err());
+                assert!(parse::<FloatBits>(cx, "0x0", ty).is_err());
                 assert!(
                     FloatBits::print(
                         &InstPrinter::new(&cx.func.dfg, None),
@@ -946,7 +832,7 @@ mod tests {
                     .is_err()
                 );
             }
-            assert!(FloatBits::parse(cx, "0x100000000", Some(Type::F32)).is_err());
+            assert!(parse::<FloatBits>(cx, "0x100000000", Some(Type::F32)).is_err());
             assert!(
                 FloatBits::print(
                     &InstPrinter::new(&cx.func.dfg, None),
@@ -965,23 +851,36 @@ mod tests {
             assert_eq!(round_trip::<Bytes>(cx, "0x00FF", None), "0x00ff");
             assert_eq!(round_trip::<Bytes>(cx, "0x", None), "0x");
             for text in ["0x🦀", "0x界a", "0xé", "0x0", "0xgg"] {
-                assert!(Bytes::parse(cx, text, None).is_err(), "{text}");
+                assert!(parse::<Bytes>(cx, text, None).is_err(), "{text}");
             }
         });
     }
 
     #[test]
-    fn delimiter_split_ignores_vectors_and_nested_calls() {
-        assert_eq!(
-            split_top_level("i32<scalable 4>, block1(v0, v1), [block2()]", ','),
-            ["i32<scalable 4>", "block1(v0, v1)", "[block2()]"]
-        );
+    fn line_endings_and_final_eof_preserve_source_ranges() {
+        // File tests use LF and a final newline; exercise the other physical
+        // encodings through the complete parser, printer and validator.
+        let source = "local function first()->void\nblock0():\n  call second() : () -> void// comment\n  return\nimport function second()->void";
+        let mut expected = None;
+        for newline in ["\n", "\r\n"] {
+            for ending in ["", newline] {
+                let text = format!("{}{ending}", source.replace('\n', newline));
+                let module = ModuleParser::new().parse(&text).unwrap();
+                module.validate().unwrap();
+                let printed = module.to_string();
+                if let Some(expected) = &expected {
+                    assert_eq!(&printed, expected);
+                } else {
+                    expected = Some(printed);
+                }
+            }
+        }
     }
 
     #[test]
     fn instruction_header_accepts_scalable_result_type() {
-        let (opcode, ty, _, args) =
-            parse_instruction_header("iadd.i32<scalable 4> v0, v1").unwrap();
+        let mut input = Cursor::new("iadd.i32<scalable 4> v0, v1");
+        let (opcode, ty, _) = parse_instruction_header(&mut input).unwrap();
         assert_eq!(opcode, Opcode::IAdd);
         assert_eq!(
             ty,
@@ -991,96 +890,55 @@ mod tests {
                 .vector(4, true)
                 .map(crate::VectorType::as_type)
         );
-        assert_eq!(args, "v0, v1");
-    }
-
-    #[test]
-    fn generic_fields_preserve_nested_arguments_and_reject_duplicates() {
-        let (core, named) = split_core_and_named(
-            "block1(v0, v1), [block2(), block3(v2)], mask=v3, evl=v4",
-            Some(2),
-        )
-        .unwrap();
-        assert_eq!(core, ["block1(v0, v1)", "[block2(), block3(v2)]"]);
-        assert_eq!(named, [("mask", "v3"), ("evl", "v4")]);
-        for text in ["v0, mask=v1, mask=v2", "v0, mask=", "v0, =v1"] {
-            assert!(split_core_and_named(text, Some(1)).is_err(), "{text}");
-        }
-        assert_eq!(split_space(" eq  v0, v1 ").unwrap(), ("eq", "v0, v1"));
-        assert!(split_space("eq").is_err());
-    }
-
-    #[test]
-    fn variadic_named_tail_preserves_boundaries_and_rejects_bad_fields() {
-        let (core, named) = split_core_and_named("v0, v1, mask=v2, evl=v3", None).unwrap();
-        assert_eq!(core, ["v0", "v1"]);
-        assert_eq!(named, [("mask", "v2"), ("evl", "v3")]);
-        let (core, named) = split_core_and_named("mask=v2", None).unwrap();
-        assert!(core.is_empty());
-        assert_eq!(named, [("mask", "v2")]);
-        let (core, named) = split_core_and_named("v0, v1", None).unwrap();
-        assert_eq!(core, ["v0", "v1"]);
-        assert!(named.is_empty());
-        let (core, named) = split_core_and_named("", None).unwrap();
-        assert!(core.is_empty() && named.is_empty());
-        let (core, named) = split_core_and_named("block0(v0, v1), mask=v2", None).unwrap();
-        assert_eq!(core, ["block0(v0, v1)"]);
-        assert_eq!(named, [("mask", "v2")]);
-        for text in [
-            "v0, mask=v1, mask=v2",
-            "v0, mask=",
-            "v0, =v1",
-            "v0, mask=v1, v2",
-        ] {
-            assert!(split_core_and_named(text, None).is_err(), "{text}");
-        }
-    }
-
-    #[test]
-    fn invocation_and_signature_atoms_handle_nested_types_and_utf8() {
-        assert_eq!(
-            parse_invocation("目标(v0, block1(v1)) : (i32) -> i32").unwrap(),
-            ("目标", "v0, block1(v1)", " : (i32) -> i32")
-        );
-        let text = signature_suffix(" : (i32<scalable 4>, ptr) -> (i32, f64) ").unwrap();
-        let signature = parse_signature(text).unwrap();
-        assert_eq!(signature.params.len(), 2);
-        assert_eq!(signature.returns, [Type::I32, Type::F64]);
-        for text in ["(i32) -> i32", ":", ""] {
-            assert!(signature_suffix(text).is_err(), "{text}");
-        }
-        for text in ["bad(i32) -> i32", "(i32)", "(i32) ->", "(i32 -> i32"] {
-            assert!(parse_signature(text).is_err(), "{text}");
-        }
+        assert_eq!(input.word().unwrap(), "v0");
+        input.expect(Kind::Comma).unwrap();
+        assert_eq!(input.word().unwrap(), "v1");
+        input.finish().unwrap();
     }
 
     #[test]
     fn context_atoms_share_ssa_values_and_intern_signatures() {
         let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
         let block = func.layout.create_block();
-        let mut ctx = ParseContext::default();
-        ctx.block_map.insert("block0".into(), block);
+        let mut symbols = Symbols::default();
+        symbols.blocks.insert("block0".into(), block);
         let mut module = ModuleData::default();
         let func_ids = HashMap::new();
         let mut parser = OperandParser {
             func: &mut func,
-            ctx: &mut ctx,
+            symbols: &mut symbols,
             func_ids: &func_ids,
             module: &mut module,
         };
-        let value = parser.value("v0").unwrap();
-        let calls = parser.block_calls("[block0(v0), block0()]").unwrap();
+        let value = parser.value(&mut Cursor::new("v0")).unwrap();
+        let calls = parser
+            .block_calls(&mut Cursor::new("[block0(v0), block0()]"))
+            .unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].args.as_slice(), &[value]);
         assert!(calls[1].args.is_empty());
-        assert!(parser.block_calls("[]").unwrap().is_empty());
-        assert!(parser.block_calls("block0()").is_err());
-        assert!(parser.block_calls("[block0(),]").is_err());
-        assert!(parser.block_call("block0() extra").is_err());
-        let sig = parser.signature("(i32) -> i32").unwrap();
-        assert_eq!(parser.signature(" (i32)->i32 ").unwrap(), sig);
+        assert!(
+            parser
+                .block_calls(&mut Cursor::new("[]"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(parser.block_calls(&mut Cursor::new("block0()")).is_err());
+        assert!(parser.block_calls(&mut Cursor::new("[block0(),]")).is_err());
+        let mut input = Cursor::new("block0() extra");
+        parser.block_call(&mut input).unwrap();
+        assert!(input.finish().is_err());
+        let sig = parser.signature(&mut Cursor::new("(i32) -> i32")).unwrap();
+        assert_eq!(
+            parser.signature(&mut Cursor::new(" (i32)->i32 ")).unwrap(),
+            sig
+        );
         assert_eq!(parser.module.signatures[sig].params, [Type::I32]);
         assert_eq!(parser.module.signatures[sig].returns, [Type::I32]);
-        assert!(parser.signature(": (i32) -> i32").is_err());
+        assert!(
+            parser
+                .signature(&mut Cursor::new(": (i32) -> i32"))
+                .is_err()
+        );
     }
 }

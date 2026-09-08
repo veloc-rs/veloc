@@ -1,5 +1,6 @@
-use super::inst::Inst;
-use super::types::{Block, Value};
+//! Block order, instruction placement and control-flow edges within a function.
+
+use crate::{Block, Inst, Value};
 use alloc::vec::Vec;
 use cranelift_entity::{PrimaryMap, SecondaryMap, packed_option::PackedOption};
 

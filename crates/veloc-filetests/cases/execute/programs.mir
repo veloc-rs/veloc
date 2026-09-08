@@ -14,7 +14,7 @@ block0():
 local function main() -> i32
 block0():
   v0 = iconst.i32 10
-  v1 = call sum(v0)
+  v1 = call sum(v0) : (i32) -> i32
   return v1
 
 local function sum(i32) -> i32

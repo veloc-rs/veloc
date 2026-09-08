@@ -37,11 +37,9 @@ fn main() {
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
     let mut rust_files = Vec::new();
     for (name, text) in [
-        ("encoding.rs", output.encoding),
-        ("builtins.rs", output.builtins),
-        ("scalars.rs", output.scalars),
-        ("formats.rs", output.formats),
-        ("type_rules.rs", output.types),
+        ("types.rs", output.types),
+        ("type_rules.rs", output.type_rules),
+        ("builders.rs", output.builders),
         ("validation.rs", output.validation),
         ("opcodes.rs", output.opcodes),
         ("instructions.rs", output.instructions),

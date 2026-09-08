@@ -10,7 +10,7 @@ fn public_predicate_meanings_come_from_defs_not_rust_name_allowlists() {
     );
     let output = veloc_opgen::compile_mir(&changed).unwrap();
     let method = output
-        .scalars
+        .types
         .rsplit("pub const fn is_integer(self)")
         .next()
         .unwrap()
