@@ -28,6 +28,7 @@ pub(super) enum Item {
 
 #[derive(Debug)]
 pub(super) enum CallSignature {
+    Value,
     Field(Atom),
     Function,
 }
@@ -281,6 +282,25 @@ impl Checker<'_> {
 
     fn item(&mut self, node: &Node) -> Result<Item, Error> {
         match &node.kind {
+            Kind::Call(name, args) if name == "apply" => {
+                if args.len() != 2 {
+                    return Err(
+                        self.error(node.offset, "apply requires a callable value and arguments")
+                    );
+                }
+                let callee = self.atom(&args[0])?;
+                let values = self.atom(&args[1])?;
+                if callee.kind != AtomKind::Value || values.kind != AtomKind::Values {
+                    return Err(
+                        self.error(node.offset, "apply requires a callable value and arguments")
+                    );
+                }
+                Ok(Item::Invoke {
+                    callee,
+                    args: values,
+                    signature: CallSignature::Value,
+                })
+            }
             Kind::Call(name, args) if name == "space" => {
                 if args.len() != 2 {
                     return Err(self.error(node.offset, "space requires two single-token atoms"));
@@ -493,6 +513,7 @@ mod tests {
                 .unwrap()
         });
         Op {
+            moves: Vec::new(),
             offset: 0,
             name: "Test".into(),
             mnemonic: "test".into(),
@@ -517,6 +538,7 @@ mod tests {
                 .collect(),
             packing: BTreeMap::new(),
             signature_source: None,
+            control: None,
             text,
             traits: vec![],
             memory: "NONE".into(),

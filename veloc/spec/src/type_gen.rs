@@ -43,7 +43,7 @@ pub(crate) fn scalars(types: &Types) -> String {
         )
         .unwrap();
     }
-    out.push_str("_ => None, } }\n/// Logical bits per lane; pointers require a target layout.\npub const fn element_bits(self) -> Option<u32> {\nassert!(self.is_valid(), \"invalid MIR type has no element width\");\nmatch self.element_code() {\n");
+    out.push_str("_ => None, } }\n/// Logical bits per lane; pointers and callables have no fixed width.\npub const fn element_bits(self) -> Option<u32> {\nassert!(self.is_valid(), \"invalid MIR type has no element width\");\nif !self.is_compact() { return None; }\nmatch self.element_code() {\n");
     for s in &types.scalars {
         writeln!(out, "{} => {:?},", s.code, s.bits).unwrap();
     }
@@ -151,7 +151,7 @@ impl Classes {
         for (name, set) in &types.classes {
             writeln!(out, "pub const {name}: Self = Self({});", self.sets[set]).unwrap();
         }
-        out.push_str("pub fn accepts(self, ty: crate::Type) -> bool {\nif !ty.is_valid() { return false; }\nlet code = ty.element_code();\nlet shape = ty.lane_count().trailing_zeros() + if ty.is_scalable() { 16 } else { 0 };\nlet shapes: u32 = match self.0 {\n");
+        out.push_str("pub fn accepts(self, ty: crate::Type) -> bool {\nif !ty.is_compact() || !ty.is_valid() { return false; }\nlet code = ty.element_code();\nlet shape = ty.lane_count().trailing_zeros() + if ty.is_scalable() { 16 } else { 0 };\nlet shapes: u32 = match self.0 {\n");
         for (set, id) in &self.sets {
             writeln!(out, "{id} => {},", shape_match(set, "code")).unwrap();
         }
@@ -200,7 +200,7 @@ fn describe(set: &TypeSet, types: &Types) -> String {
 
 fn membership(set: &TypeSet) -> String {
     format!(
-        "if self.0 & !USED_MASK != 0 {{ return false; }}\nlet shapes: u32 = {};\nlet shape = self.lanes_log2() as u32 + if self.is_scalable() {{ 16 }} else {{ 0 }};\nshapes & (1 << shape) != 0\n",
+        "if self.0 & !(USED_MASK as u64) != 0 {{ return false; }}\nlet shapes: u32 = {};\nlet shape = self.lanes_log2() as u32 + if self.is_scalable() {{ 16 }} else {{ 0 }};\nshapes & (1 << shape) != 0\n",
         shape_match(set, "self.element_code()")
     )
 }

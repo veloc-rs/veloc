@@ -14,7 +14,17 @@ fn changed_record(kind: &str, name: &str, from: &str, to: &str) -> String {
     } else {
         format!("{kind} {name} {{")
     };
-    let start = source.find(&prefix).unwrap();
+    let start = source
+        .match_indices(&prefix)
+        .find_map(|(start, _)| {
+            (kind != "op"
+                || matches!(
+                    source.as_bytes().get(start + prefix.len()),
+                    Some(b'(' | b'<')
+                ))
+            .then_some(start)
+        })
+        .unwrap();
     let end = start + source[start..].find("\n}").unwrap() + 2;
     let record = &source[start..end];
     assert!(record.contains(from), "{kind} {name} has no `{from}`");
@@ -55,6 +65,8 @@ fn existing_runtime_layouts_keep_their_public_field_names() {
             );
             let expected = if name == "opcode" {
                 "unknown storage field `opcode`"
+            } else if matches!(layout, "ClosureNew" | "Closure" | "TailCall" | "CallValue") {
+                "unknown storage field"
             } else {
                 "field contract"
             };
@@ -179,6 +191,17 @@ fn signature_results_require_a_typed_signature_source() {
         ("CallIndirect", "signature: sig_id,", ""),
         ("CallIndirect", "signature: sig_id", "signature: ptr"),
         ("Call", "signature: function(func_id)", "signature: func_id"),
+        ("CallValue", "signature: callable(callee),", ""),
+        (
+            "CallValue",
+            "signature: callable(callee)",
+            "signature: callable(args)",
+        ),
+        (
+            "CallValue",
+            "signature: callable(callee)",
+            "signature: callee",
+        ),
     ] {
         rejected(&changed_record("op", op, from, to), "signature");
     }

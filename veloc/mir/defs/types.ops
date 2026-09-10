@@ -1,6 +1,6 @@
-// Compact MIR Type representation, packed from least to most significant bit.
-// Unused high bits are reserved. Scalar code zero is invalid; lanes_log2 zero
-// denotes a scalar. Changing this layout changes the raw encoding.
+// The compact scalar/vector payload of Type, packed least significant bit first.
+// Structural callable types use a disjoint tag and module signature ID;
+// they never pass through this u16 bytecode encoding. Scalar code zero is invalid.
 encoding Type {
     storage: u16,
     fields: [scalar(4), lanes_log2(4), scalable(1)],

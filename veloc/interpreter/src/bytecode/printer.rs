@@ -90,6 +90,9 @@ impl<'a> InstPrinter<'a> {
         write!(f, "  {:4}  {:20}", pc, format!("{opcode:?}").to_lowercase())?;
 
         match inst {
+            DecodedInstruction::Control { site } => {
+                write!(f, " {:?}", self.data_section.controls[site as usize])
+            }
             // Constants
             DecodedInstruction::Iconst { dst, imm64 } => {
                 write!(f, " {}, 0x{:x}", dst, imm64)
@@ -457,7 +460,9 @@ impl<'a> InstPrinter<'a> {
                 data_offset,
                 num_rets,
                 num_args,
+                sig_id,
             } => {
+                write!(f, " sig={sig_id}")?;
                 write!(f, " ptr=")?;
                 write!(f, "{}", ptr)?;
                 write!(f, " rets=")?;

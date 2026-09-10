@@ -76,6 +76,7 @@ fn relative_byte_offset(source_pc: usize, target_pc: u32) -> i64 {
 /// For Jump targets, they are stored in a separate Vec<JumpTarget>
 #[derive(Debug, Clone, Default)]
 pub struct DataSection {
+    pub controls: Vec<ControlSite>,
     /// Register lists stored as Reg (counts are encoded in instructions)
     pub regs: Vec<Reg>,
     /// Jump targets with relative offsets and register moves
@@ -85,6 +86,7 @@ pub struct DataSection {
 impl DataSection {
     pub fn new() -> Self {
         Self {
+            controls: Vec::new(),
             regs: Vec::new(),
             jump_targets: Vec::new(),
         }
@@ -142,6 +144,38 @@ impl DataSection {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum ControlSite {
+    Create {
+        dst: Reg,
+        function: FuncId,
+        cleanup: Option<FuncId>,
+        ty: Type,
+        captures: Vec<Reg>,
+        /// Shared by all environments created at this site; only these slots
+        /// contain callable handles and need tracing.
+        references: alloc::sync::Arc<[usize]>,
+    },
+    TailCall {
+        function: FuncId,
+        args: Vec<Reg>,
+    },
+    TailCallValue {
+        callee: Reg,
+        ty: Type,
+        args: Vec<Reg>,
+    },
+    Call {
+        callee: Reg,
+        ty: Type,
+        args: Vec<Reg>,
+        results: Vec<Reg>,
+    },
+    Drop {
+        callee: Reg,
+    },
+}
+
 pub struct CompiledFunction {
     pub(crate) module_id: ModuleId,
     pub(crate) func_id: FuncId,
@@ -151,6 +185,7 @@ pub struct CompiledFunction {
     pub(crate) stack_slots_sizes: Vec<usize>,
     pub(crate) param_indices: Vec<Reg>,
     pub(crate) register_count: usize,
+    pub(crate) roots: alloc::collections::BTreeMap<usize, Vec<Reg>>,
 }
 
 struct ValueMapper<'a> {
@@ -337,6 +372,9 @@ fn identify_fused_values(func: &Function, rpo: &[Block]) -> std::collections::Ha
 }
 
 struct Compiler<'a> {
+    callable_values: Vec<Value>,
+    liveness: &'a veloc_analyzer::Liveness,
+    roots: alloc::collections::BTreeMap<usize, Vec<Reg>>,
     func: &'a Function,
     mapper: ValueMapper<'a>,
     code: Vec<CodeWord>,
@@ -350,7 +388,11 @@ struct Compiler<'a> {
 }
 
 impl<'a> Compiler<'a> {
-    fn new(func: &'a Function, mapper: ValueMapper<'a>) -> Self {
+    fn new(
+        func: &'a Function,
+        mapper: ValueMapper<'a>,
+        liveness: &'a veloc_analyzer::Liveness,
+    ) -> Self {
         let mut slot_to_offset = SecondaryMap::new();
         let mut current_offset = 0u32;
         for (id, data) in &func.stack_slots {
@@ -359,6 +401,15 @@ impl<'a> Compiler<'a> {
         }
 
         Self {
+            callable_values: func
+                .dfg()
+                .values()
+                .iter()
+                .filter(|(_, data)| data.ty.is_callable())
+                .map(|(value, _)| value)
+                .collect(),
+            liveness,
+            roots: alloc::collections::BTreeMap::new(),
             func,
             mapper,
             code: Vec::new(),
@@ -797,7 +848,13 @@ impl<'a> Compiler<'a> {
         );
     }
 
-    fn emit_call_indirect(&mut self, inst: Inst, ptr: Value, args: &[Value]) {
+    fn emit_call_indirect(
+        &mut self,
+        inst: Inst,
+        ptr: Value,
+        args: &[Value],
+        sig_id: veloc_mir::SigId,
+    ) {
         let ptr_reg = self.mapper.reg(ptr);
         let args_regs: SmallVec<[Reg; 4]> = args.iter().map(|&v| self.mapper.reg(v)).collect();
 
@@ -813,6 +870,7 @@ impl<'a> Compiler<'a> {
             ret_regs.len() as u16,
             args_regs.len() as u16,
             data_offset,
+            sig_id.0,
         );
     }
 
@@ -1112,6 +1170,7 @@ impl<'a> Compiler<'a> {
         }
 
         CompiledFunction {
+            roots: self.roots,
             module_id,
             func_id,
             code: self.code,
@@ -1139,7 +1198,7 @@ pub(crate) fn compile_function(
     for value in func.dfg().values().keys() {
         let ty = func.dfg().value_type(value);
         assert!(
-            ty.is_scalar(),
+            ty.is_scalar() || ty.is_callable(),
             "interpreter does not support value type {ty}"
         );
     }
@@ -1150,7 +1209,7 @@ pub(crate) fn compile_function(
     let fused_values = identify_fused_values(func, &rpo);
 
     let mapper = ValueMapper::new(func, &liveness.intervals, &fused_values);
-    let mut compiler = Compiler::new(func, mapper);
+    let mut compiler = Compiler::new(func, mapper, &liveness);
 
     compiler.apply_rpo(&rpo);
     compiler.finish(module_id, func_id)
@@ -1173,8 +1232,102 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn closure_site(
+        &self,
+        inst: Inst,
+        function: FuncId,
+        captures: &[Value],
+        cleanup: Option<FuncId>,
+    ) -> ControlSite {
+        let value = self.func.dfg().first_result(inst).unwrap();
+        ControlSite::Create {
+            dst: self.mapper.reg(value),
+            function,
+            cleanup,
+            ty: self.func.dfg().value_type(value),
+            captures: captures.iter().map(|v| self.mapper.reg(*v)).collect(),
+            references: captures
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| self.func.dfg().value_type(*v).is_callable().then_some(i))
+                .collect(),
+        }
+    }
+
     fn compile_inst(&mut self, inst: Inst) {
         let idata = &self.func.dfg().inst(inst);
+
+        if !self.callable_values.is_empty()
+            && (idata.opcode().has_control() || idata.opcode().has_signature())
+        {
+            let pc = self.liveness.inst_pcs[inst];
+            let roots = self
+                .callable_values
+                .iter()
+                .filter(|v| {
+                    self.liveness.intervals[**v]
+                        .ranges
+                        .iter()
+                        .any(|r| r.start <= pc && pc < r.end)
+                })
+                .map(|v| self.mapper.reg(*v))
+                .collect();
+            self.roots.insert(self.code.len(), roots);
+        }
+        if idata.opcode().has_control() {
+            let regs = |values: &[Value]| {
+                values
+                    .iter()
+                    .map(|v| self.mapper.reg(*v))
+                    .collect::<Vec<_>>()
+            };
+            let site = match idata {
+                InstructionView::ClosureNew {
+                    func_id,
+                    captures,
+                    cleanup,
+                } => self.closure_site(inst, *func_id, captures, Some(*cleanup)),
+                InstructionView::Closure {
+                    opcode: IrOpcode::ClosureLocal | IrOpcode::ClosureShared,
+                    func_id,
+                    captures,
+                } => self.closure_site(inst, *func_id, captures, None),
+                InstructionView::TailCall { func_id, args } => ControlSite::TailCall {
+                    function: *func_id,
+                    args: regs(args),
+                },
+                InstructionView::CallValue {
+                    opcode: IrOpcode::TailCallValue,
+                    callee,
+                    args,
+                } => ControlSite::TailCallValue {
+                    callee: self.mapper.reg(*callee),
+                    ty: self.func.dfg().value_type(*callee),
+                    args: regs(args),
+                },
+                InstructionView::CallValue {
+                    opcode: IrOpcode::CallValue,
+                    callee,
+                    args,
+                } => ControlSite::Call {
+                    callee: self.mapper.reg(*callee),
+                    ty: self.func.dfg().value_type(*callee),
+                    args: regs(args),
+                    results: regs(self.func.dfg().inst_results(inst)),
+                },
+                InstructionView::Unary {
+                    opcode: IrOpcode::ClosureDrop,
+                    arg,
+                } => ControlSite::Drop {
+                    callee: self.mapper.reg(*arg),
+                },
+                _ => unimplemented!("unsupported callable instruction {:?}", idata.opcode()),
+            };
+            let site_id = self.data_section.controls.len() as u32;
+            self.data_section.controls.push(site);
+            emit::Control(&mut self.code, site_id);
+            return;
+        }
 
         match idata {
             InstructionView::Iconst { value } => {
@@ -1250,8 +1403,8 @@ impl<'a> Compiler<'a> {
                 emit::RegMove(&mut self.code, dst, arg_reg);
             }
             InstructionView::Call { func_id, args, .. } => self.emit_call(inst, *func_id, *args),
-            InstructionView::CallIndirect { ptr, args, .. } => {
-                self.emit_call_indirect(inst, *ptr, *args)
+            InstructionView::CallIndirect { ptr, args, sig_id } => {
+                self.emit_call_indirect(inst, *ptr, *args, *sig_id)
             }
             InstructionView::CallIntrinsic {
                 intrinsic, args, ..

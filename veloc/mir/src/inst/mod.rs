@@ -9,30 +9,6 @@ use cranelift_entity::entity_impl;
 mod opcode;
 pub use opcode::*;
 
-/// The declared source of a call's argument/result signature.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignatureRef {
-    Function(FuncId),
-    Signature(SigId),
-}
-
-impl SignatureRef {
-    pub fn resolve(self, module: &crate::ModuleData) -> Option<SigId> {
-        let sig = match self {
-            Self::Function(func) => module.functions.get(func)?.signature,
-            Self::Signature(sig) => sig,
-        };
-        module.signatures.get(sig)?;
-        Some(sig)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct CallInfo<'a> {
-    pub signature: SignatureRef,
-    pub args: &'a [Value],
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Inst(pub u32);
 entity_impl!(Inst, "inst");
@@ -43,7 +19,7 @@ entity_impl!(ConstantPoolId, "const");
 
 mod storage;
 pub(crate) use storage::StoredInst;
-pub use storage::{Arguments, Successor, Successors};
+pub use storage::{Arguments, Successor, SuccessorMut, Successors};
 
 /// Owned instruction draft using the same fields and operand order as the DFG.
 /// Constructors guarantee storage shape, not the instruction's type contract.
@@ -119,49 +95,56 @@ mod tests {
     use crate::{Block, BlockCall, CallConv, Linkage, ModuleBuilder, Type};
 
     #[test]
-    fn call_metadata_preserves_signature_and_borrows_installed_arguments() {
+    fn call_results_resolve_the_declared_source_without_validating_arguments() {
         let mut module = ModuleBuilder::new();
         let signature = module.make_signature(
-            alloc::vec![Type::I32],
-            alloc::vec![Type::I32],
+            alloc::vec![Type::I32, Type::I64],
+            alloc::vec![Type::I32, Type::I64],
             CallConv::SystemV,
         );
         let func = module.declare_function("callee".into(), signature, Linkage::Import);
         let module = module.build_data();
         let mut dfg = DataFlowGraph::new();
-        for (data, expected) in [
-            (
-                InstDraft::call(func, &[Value(7)]),
-                SignatureRef::Function(func),
-            ),
-            (
-                InstDraft::call_indirect(Value(9), &[Value(7)], signature),
-                SignatureRef::Signature(signature),
-            ),
-            (
-                InstDraft::call_intrinsic(crate::intrinsic_ids::SIN_F32, &[Value(7)], signature),
-                SignatureRef::Signature(signature),
-            ),
+        let callee = dfg.values.push(crate::types::ValueData {
+            ty: Type::callable(signature, crate::CallableKind::Shared),
+            def: crate::ValueDef::Param(Block(0)),
+        });
+        // The nonexistent argument values are deliberately not validated here.
+        for data in [
+            InstDraft::call(func, &[Value(7)]),
+            InstDraft::call_indirect(Value(9), &[Value(7)], signature),
+            InstDraft::call_intrinsic(crate::intrinsic_ids::SIN_F32, &[Value(7)], signature),
+            InstDraft::call_value(Opcode::CallValue, callee, &[Value(7)]),
         ] {
+            assert!(data.opcode().has_signature());
             let inst = dfg.create_inst(data);
-            let call = dfg.inst(inst).call_info().unwrap();
-            assert_eq!(call.signature, expected);
-            assert_eq!(call.signature.resolve(&module), Some(signature));
-            assert_eq!(call.args, &[Value(7)]);
             assert_eq!(
-                call.args.as_ptr(),
-                dfg.operands(inst)[dfg.operands(inst).len() - 1..].as_ptr()
+                dfg.inst(inst)
+                    .result_types(&dfg, &module, &[Type::F32])
+                    .unwrap()
+                    .as_slice(),
+                module.signatures[signature].returns.as_slice()
             );
         }
-        assert!(InstDraft::ret(&[]).as_view().call_info().is_none());
-        assert_eq!(
-            SignatureRef::Function(FuncId(u32::MAX)).resolve(&module),
-            None
-        );
-        assert_eq!(
-            SignatureRef::Signature(SigId(u32::MAX)).resolve(&module),
-            None
-        );
+        assert!(!Opcode::Return.has_signature());
+        assert!(!Opcode::TailCall.has_signature());
+        let scalar = dfg.values.push(crate::types::ValueData {
+            ty: Type::I32,
+            def: crate::ValueDef::Param(Block(0)),
+        });
+        let unknown = dfg.values.push(crate::types::ValueData {
+            ty: Type::callable(SigId(u32::MAX), crate::CallableKind::Shared),
+            def: crate::ValueDef::Param(Block(0)),
+        });
+        for data in [
+            InstDraft::call(FuncId(u32::MAX), &[]),
+            InstDraft::call_indirect(Value(9), &[], SigId(u32::MAX)),
+            InstDraft::call_value(Opcode::CallValue, Value(u32::MAX), &[]),
+            InstDraft::call_value(Opcode::CallValue, scalar, &[]),
+            InstDraft::call_value(Opcode::CallValue, unknown, &[]),
+        ] {
+            assert!(data.result_types(&dfg, &module, &[]).is_err());
+        }
     }
 
     #[test]

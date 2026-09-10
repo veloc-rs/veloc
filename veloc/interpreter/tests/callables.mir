@@ -1,0 +1,181 @@
+import function cleanup(i32) -> void
+import function cleanup_empty() -> void
+import function host_pair(i32, i32) -> (i32, i64)
+
+local function noop() -> void
+block0():
+  return
+
+local function make_empty() -> owned<() -> void>
+block0():
+  v0: owned<() -> void> = closure-new noop() : () -> void, cleanup_empty : () -> void
+  return v0
+
+local function drop_empty(owned<() -> void>) -> void
+block0(v0: owned<() -> void>):
+  closure-drop v0
+  return
+
+local function tail_host(i32) -> void
+block0(v0: i32):
+  tail-call cleanup(v0) : (i32) -> void
+
+local function raw_call(ptr, i64, i32) -> i32
+block0(v0: ptr, v1: i64, v2: i32):
+  v3: i32 = call-indirect v0(v1, v2) : (i64, i32) -> i32
+  return v3
+
+local function add(i32, i32) -> i32
+block0(v0: i32, v1: i32):
+  v2: i32 = iadd v0, v1
+  return v2
+
+local function make() -> owned<(i32) -> i32>
+block0():
+  v0: i32 = iconst 40
+  v1: owned<(i32) -> i32> = closure-new add(v0) : (i32, i32) -> i32, cleanup : (i32) -> void
+  return v1
+
+local function tail_call_owned(owned<(i32) -> i32>, i32) -> i32
+block0(v0: owned<(i32) -> i32>, v1: i32):
+  tail-call-value v0(v1)
+
+local function call_owned(owned<(i32) -> i32>, i32) -> i32
+block0(v0: owned<(i32) -> i32>, v1: i32):
+  v2: i32 = call-value v0(v1)
+  v3: i32 = iconst 1
+  v4: i32 = iadd v2, v3
+  return v4
+
+local function drop_owned(owned<(i32) -> i32>) -> void
+block0(v0: owned<(i32) -> i32>):
+  closure-drop v0
+  return
+
+local function abort(owned<(i32) -> i32>) -> void
+block0(v0: owned<(i32) -> i32>):
+  unreachable
+
+local function drop_two(owned<(i32) -> i32>, owned<(i32) -> i32>) -> void
+block0(v0: owned<(i32) -> i32>, v1: owned<(i32) -> i32>):
+  closure-drop v0
+  closure-drop v1
+  return
+
+local function outer_body(owned<(i32) -> i32>, i32) -> i32
+block0(v0: owned<(i32) -> i32>, v1: i32):
+  tail-call-value v0(v1)
+
+local function wrap(owned<(i32) -> i32>) -> owned<(i32) -> i32>
+block0(v0: owned<(i32) -> i32>):
+  v1: owned<(i32) -> i32> = closure-new outer_body(v0) : (owned<(i32) -> i32>, i32) -> i32, drop_owned : (owned<(i32) -> i32>) -> void
+  return v1
+
+local function make_shared() -> shared<(i32) -> i32>
+block0():
+  v0: i32 = iconst 40
+  v1: shared<(i32) -> i32> = closure-shared add(v0) : (i32, i32) -> i32
+  return v1
+
+local function tail_call_shared(shared<(i32) -> i32>, i32) -> i32
+block0(v0: shared<(i32) -> i32>, v1: i32):
+  tail-call-value v0(v1)
+
+local function call_shared(shared<(i32) -> i32>, i32) -> i32
+block0(v0: shared<(i32) -> i32>, v1: i32):
+  v2: i32 = call-value v0(v1)
+  v3: i32 = call-value v0(v1)
+  v4: i32 = iadd v2, v3
+  return v4
+
+local function call_host_values() -> (i32, i64)
+block0():
+  v0: i32 = iconst 40
+  v1: owned<(i32) -> (i32, i64)> = closure-new host_pair(v0) : (i32, i32) -> (i32, i64), cleanup : (i32) -> void
+  v2: i32 = iconst 2
+  (v3: i32, v4: i64) = call-value v1(v2)
+  v5: i32 = iadd v3, v2
+  return v5, v4
+
+local function call_host_ignored_result() -> i64
+block0():
+  v0: i32 = iconst 40
+  v1: local<(i32) -> (i32, i64)> = closure-local host_pair(v0) : (i32, i32) -> (i32, i64)
+  v2: i32 = iconst 2
+  (v3: i32, v4: i64) = call-value v1(v2)
+  return v4
+
+local function call_host_empty() -> i32
+block0():
+  v0: shared<() -> void> = closure-shared cleanup_empty() : () -> void
+  call-value v0()
+  call-value v0()
+  v1: i32 = iconst 7
+  return v1
+
+local function churn(i32) -> void
+block0(v0: i32):
+  jump block1(v0)
+block1(v1: i32):
+  v2: shared<(i32) -> i32> = closure-shared add(v1) : (i32, i32) -> i32
+  v3: bool = ieqz v1
+  br v3, block2(), block3()
+block2():
+  return
+block3():
+  v4: i32 = iconst 1
+  v5: i32 = isub v1, v4
+  jump block1(v5)
+
+local function keep_across_gc() -> i32
+block0():
+  v0: owned<(i32) -> i32> = call make() : () -> owned<(i32) -> i32>
+  v1: i32 = iconst 1024
+  call churn(v1) : (i32) -> void
+  v2: i32 = iconst 2
+  tail-call-value v0(v2)
+
+local function tail_loop(i32) -> i32
+block0(v0: i32):
+  v1: bool = ieqz v0
+  br v1, block1(), block2()
+block1():
+  return v0
+block2():
+  v2: i32 = iconst 1
+  v3: i32 = isub v0, v2
+  tail-call tail_loop(v3) : (i32) -> i32
+
+local function read(ptr, i32) -> i32
+block0(v0: ptr, v1: i32):
+  v2: i32 = load v0, offset=0
+  v3: i32 = iadd v2, v1
+  return v3
+
+local function apply_local(local<(i32) -> i32>, i32) -> i32
+block0(v0: local<(i32) -> i32>, v1: i32):
+  tail-call-value v0(v1)
+
+local function local_borrow() -> i32
+  ss0: size 4
+block0():
+  v0: i32 = iconst 40
+  stack-store v0, ss0, offset=0
+  v1: ptr = stack-addr ss0, offset=0
+  v2: local<(i32) -> i32> = closure-local read(v1) : (ptr, i32) -> i32
+  v3: i32 = iconst 2
+  tail-call apply_local(v2, v3) : (local<(i32) -> i32>, i32) -> i32
+
+local function local_borrow_across_calls() -> (i32, i32)
+  ss0: size 4
+block0():
+  v0: i32 = iconst 20
+  stack-store v0, ss0, offset=0
+  v1: ptr = stack-addr ss0, offset=0
+  v2: local<(i32) -> i32> = closure-local read(v1) : (ptr, i32) -> i32
+  v3: i32 = iconst 0
+  v4: i32 = call-value v2(v3)
+  v5: i32 = iconst 22
+  stack-store v5, ss0, offset=0
+  v6: i32 = call-value v2(v3)
+  return v4, v6

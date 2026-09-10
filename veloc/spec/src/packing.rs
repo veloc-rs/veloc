@@ -1,7 +1,9 @@
 //! Typed projections between logical parameters and physical instruction fields.
 
-use crate::model::{Binding, Op};
-use crate::storage::{FieldType, Format};
+use crate::Error;
+use crate::model::{Binding, Op, Param, ParamKind, TypeDef, TypeList};
+use crate::storage::{Alternative, FieldType, Format};
+use std::collections::BTreeMap;
 
 /// Construct physical storage from already typed logical locals.
 pub(crate) fn constructor(
@@ -20,8 +22,6 @@ pub(crate) fn constructor(
                     let value = local(name);
                     if field.ty.named("BlockCall") {
                         format!("({value}).as_view()")
-                    } else if field.ty.named("ValueList") {
-                        format!("&{value}")
                     } else {
                         value
                     }
@@ -103,6 +103,72 @@ pub(crate) fn projections(
         }
     }
     locals
+}
+
+/// An alternate storage layout exposes its own text-facing fields. Pool handles
+/// become structured properties, while its primary list retains canonical arity.
+pub(crate) fn alternate(op: &Op, alt: &Alternative, source: &str) -> Result<(Op, Format), Error> {
+    let mut params = Vec::new();
+    let mut packing = BTreeMap::new();
+    for field in &alt.fields {
+        let FieldType::Named(ty) = &field.ty else {
+            return Err(Error::at(
+                source,
+                alt.text.offset,
+                "alternate text fields must use named storage types",
+            ));
+        };
+        let (kind, binding) = match ty.as_str() {
+            "Opcode" => continue,
+            "Value" => (ParamKind::Value, Binding::Name(field.name.clone())),
+            "ValueList" => (ParamKind::Values, Binding::Name(field.name.clone())),
+            "BlockCall" => (ParamKind::Successor, Binding::Name(field.name.clone())),
+            "ConstantPoolId" => (
+                ParamKind::Property("Bytes".into()),
+                Binding::Pool(field.name.clone()),
+            ),
+            _ => (
+                ParamKind::Property(ty.clone()),
+                Binding::Name(field.name.clone()),
+            ),
+        };
+        params.push(Param {
+            name: field.name.clone(),
+            kind,
+        });
+        packing.insert(field.name.clone(), binding);
+    }
+    Ok((
+        Op {
+            moves: Vec::new(),
+            offset: alt.text.offset,
+            name: op.name.clone(),
+            mnemonic: op.mnemonic.clone(),
+            format: alt.name.clone(),
+            signature: TypeDef {
+                operands: TypeList::Fixed(Vec::new()),
+                results: TypeList::Fixed(Vec::new()),
+                relations: Vec::new(),
+            },
+            params,
+            packing,
+            signature_source: None,
+            control: None,
+            text: Some(alt.text.clone()),
+            traits: Vec::new(),
+            memory: "NONE".into(),
+            constraints: Vec::new(),
+            identity: None,
+            absorbing: None,
+            semantics: None,
+        },
+        Format {
+            name: alt.name.clone(),
+            arity: None,
+            fixed_opcode: None,
+            fields: alt.fields.clone(),
+        },
+    ))
 }
 
 #[cfg(test)]

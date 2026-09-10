@@ -3,7 +3,7 @@ mod inst;
 pub mod printer;
 
 pub use compile::CompiledFunction;
-pub(crate) use compile::{DataSection, JumpTarget};
+pub(crate) use compile::{ControlSite, DataSection, JumpTarget};
 
 pub(crate) use compile::compile_function;
 pub(crate) use inst::{CodeWord, Opcode, OpcodeHandlers, Reg, decode};

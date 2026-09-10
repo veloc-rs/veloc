@@ -12,6 +12,8 @@ pub trait VirtualMemory {
 }
 
 pub struct Interpreter {
+    callables: callable::Callables,
+    next_scope: u64,
     value_stack: Vec<InterpreterValue>,
     stack_memory: Box<[u8]>,
     stack_top: usize,
@@ -22,6 +24,9 @@ pub struct Interpreter {
 }
 
 pub(crate) struct StackFrame {
+    scope: u64,
+    stack_mark: usize,
+    roots_pc: usize,
     module: ModuleId,
     func: ::alloc::sync::Arc<CompiledFunction>,
     pc: usize,
@@ -43,6 +48,8 @@ pub(crate) struct DispatchContext<M> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DispatchExit {
+    InvalidCallSignature,
+    InvalidCallable,
     Returned,
     OutOfBounds,
     StackOverflow,
@@ -198,6 +205,7 @@ macro_rules! define_control_handlers {
     };
 }
 
+mod callable;
 pub(crate) mod handlers;
 
 impl Interpreter {
@@ -209,6 +217,8 @@ impl Interpreter {
 
     pub fn with_stack_limit(stack_limit: usize) -> Self {
         Self {
+            callables: callable::Callables::default(),
+            next_scope: 0,
             value_stack: Vec::with_capacity(4096),
             stack_memory: vec![0; stack_limit].into_boxed_slice(),
             stack_top: 0,
@@ -303,15 +313,23 @@ impl Interpreter {
     where
         M: VirtualMemory,
     {
-        let func = program.compiled_func(module, func)?;
+        let compiled = program.compiled_func(module, func)?;
         let frame_checkpoint = self.frames.len();
         let dst_checkpoint = self.dst_regs_buffer.len();
         let base = self.value_stack.len();
         let stack_checkpoint = self.stack_top;
-        let total_stack_size: usize = func.stack_slots_sizes.iter().sum();
+        let total_stack_size: usize = compiled.stack_slots_sizes.iter().sum();
         let Some(stack_base) = self.alloc_stack_frame(total_stack_size) else {
             return Err(crate::error::Error::StackOverflow);
         };
+        let result_types = match self.begin_callables(program, module, func, args) {
+            Ok(types) => types,
+            Err(error) => {
+                self.stack_top = stack_checkpoint;
+                return Err(error);
+            }
+        };
+        let func = compiled;
         self.value_stack
             .resize(base + func.register_count, InterpreterValue::none());
 
@@ -321,6 +339,9 @@ impl Interpreter {
         }
 
         self.frames.push(StackFrame {
+            scope: self.next_scope,
+            stack_mark: stack_base,
+            roots_pc: 0,
             module,
             func,
             pc: 0,
@@ -339,6 +360,8 @@ impl Interpreter {
         self.frames.truncate(frame_checkpoint);
         self.dst_regs_buffer.truncate(dst_checkpoint);
         self.args_buffer.clear();
+
+        self.end_callables(result_types, result.is_ok());
 
         result?;
         Ok(&self.results_buffer)
@@ -363,6 +386,9 @@ impl Interpreter {
             return Err(DispatchExit::StackOverflow);
         };
         self.frames.push(StackFrame {
+            scope: frame.scope,
+            stack_mark: frame.stack_mark,
+            roots_pc: frame.roots_pc,
             module: frame.module,
             func: frame.func.clone(),
             pc: return_pc,
@@ -380,6 +406,10 @@ impl Interpreter {
             InterpreterValue::none(),
         );
         frame.stack_base = next_stack_base;
+        frame.stack_mark = next_stack_base;
+        self.next_scope += 1;
+        frame.scope = self.next_scope;
+        frame.roots_pc = 0;
         for (i, &new_idx) in frame.func.param_indices.iter().enumerate() {
             let val = self.args_buffer[i];
             self.value_stack[frame.base + new_idx.0 as usize] = val;
@@ -408,6 +438,12 @@ impl Interpreter {
             handler(&mut context, ip, values_ptr, handlers)
         };
         match exit {
+            DispatchExit::InvalidCallSignature => Err(crate::error::Error::Message(
+                "indirect call signature mismatch".into(),
+            )),
+            DispatchExit::InvalidCallable => Err(crate::error::Error::Message(
+                "invalid, expired or already consumed callable".into(),
+            )),
             DispatchExit::Returned => Ok(()),
             DispatchExit::OutOfBounds => Err(crate::error::Error::OutOfBounds),
             DispatchExit::StackOverflow => Err(crate::error::Error::StackOverflow),

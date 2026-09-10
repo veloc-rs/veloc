@@ -129,50 +129,80 @@ pub(crate) fn store_edge(call: Successor<'_>, values: &mut Arguments) -> Edge {
     }
 }
 
+/// A single successor occurrence in a draft. Resizing its arguments preserves
+/// all other operand groups, including other edges to the same block.
+pub struct SuccessorMut<'a> {
+    edge: &'a mut Edge,
+    values: &'a mut Arguments,
+    offset: usize,
+}
+
+impl SuccessorMut<'_> {
+    pub fn block(&self) -> Block {
+        self.edge.block
+    }
+
+    pub fn args(&self) -> &[Value] {
+        &self.values[self.offset..self.offset + self.edge.len as usize]
+    }
+
+    pub fn set_block(&mut self, block: Block) {
+        self.edge.block = block;
+    }
+
+    pub fn set_args(&mut self, args: &[Value]) {
+        let len = u32::try_from(args.len()).expect("too many successor arguments");
+        let end = self.offset + self.edge.len as usize;
+        self.values.drain(self.offset..end);
+        self.values.insert_from_slice(self.offset, args);
+        self.edge.len = len;
+    }
+
+    /// Set a construction-time argument, filling incomplete earlier positions.
+    /// Explicit validation checks the completed edge's parameter contract.
+    pub fn set_arg(&mut self, index: usize, value: Value) {
+        if index >= self.edge.len as usize {
+            let len = u32::try_from(index.checked_add(1).expect("too many successor arguments"))
+                .expect("too many successor arguments");
+            let end = self.offset + self.edge.len as usize;
+            self.values.insert_many(
+                end,
+                core::iter::repeat_n(value, (len - self.edge.len) as usize),
+            );
+            self.edge.len = len;
+        } else {
+            self.values[self.offset + index] = value;
+        }
+    }
+}
+
 impl Edge {
-    pub fn set_arg(
+    pub(super) fn edit(
         &mut self,
         values: &mut Arguments,
         offset: &mut usize,
-        target: Block,
-        index: usize,
-        value: Value,
-    ) -> bool {
-        let mut changed = false;
-        if self.block == target {
-            if index >= self.len as usize {
-                let len = index.checked_add(1).expect("too many successor arguments");
-                let len = u32::try_from(len).expect("too many successor arguments");
-                let end = *offset + self.len as usize;
-                let extra = (len - self.len) as usize;
-                values.insert_many(end, core::iter::repeat_n(value, extra));
-                self.len = len;
-                changed = true;
-            } else if values[*offset + index] != value {
-                values[*offset + index] = value;
-                changed = true;
-            }
-        }
+        f: &mut impl FnMut(&mut SuccessorMut<'_>),
+    ) {
+        f(&mut SuccessorMut {
+            edge: self,
+            values,
+            offset: *offset,
+        });
         *offset += self.len as usize;
-        changed
     }
 }
 
 impl Edges {
-    pub fn set_arg(
+    pub(super) fn edit(
         &mut self,
         values: &mut Arguments,
         offset: &mut usize,
-        target: Block,
-        index: usize,
-        value: Value,
-    ) -> bool {
+        f: &mut impl FnMut(&mut SuccessorMut<'_>),
+    ) {
         let start = *offset;
-        let mut changed = false;
         for edge in &mut self.entries {
-            changed |= edge.set_arg(values, offset, target, index, value);
+            edge.edit(values, offset, f);
         }
         self.len = *offset - start;
-        changed
     }
 }

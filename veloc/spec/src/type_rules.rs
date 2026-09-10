@@ -1,6 +1,8 @@
 //! Compile independent result construction and type validation from signatures.
 //! Bindings exist only here: runtime code refers directly to operand/result slots.
-use crate::model::{Definitions, Pattern, Relation, Slot, TypeDef, TypeList};
+use crate::model::{
+    Binding, Definitions, Op, Pattern, Relation, SignatureSource, Slot, TypeDef, TypeList,
+};
 use crate::type_gen::Classes;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -9,6 +11,7 @@ type Bindings = BTreeMap<u8, String>;
 
 fn pattern(p: &Pattern, classes: &Classes) -> String {
     match p {
+        Pattern::Callable => "Callable".into(),
         Pattern::Class(class) => classes.describe(class).into(),
         Pattern::Exact(ty) => ty.clone(),
         Pattern::Bind(var, class) => format!("T{var}: {}", classes.describe(class)),
@@ -55,17 +58,23 @@ pub(crate) fn generate(
     validation.push_str("    }\n}\n}\n");
     // Only the dynamic construction path needs opcode dispatch. Generated
     // builders use the same result expressions directly on their arguments.
-    instructions.push_str("impl crate::InstructionView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch self.opcode() {\n");
+    instructions.push_str("impl crate::InstructionView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch (self.opcode(), self) {\n");
     for (signature, id) in &ids {
+        if matches!(signature.results, TypeList::Signature) {
+            // Equal type schemes can still resolve their signatures differently.
+            // Specialize each source directly instead of emitting a runtime tag.
+            for op in defs.ops.iter().filter(|op| &op.signature == *signature) {
+                signature_results(op, instructions);
+            }
+            continue;
+        }
         let arms = groups[*id]
             .iter()
             .map(|name| format!("crate::Opcode::{name}"))
             .collect::<Vec<_>>()
             .join(" | ");
-        writeln!(instructions, "{arms} => {{").unwrap();
-        if matches!(signature.results, TypeList::Signature) {
-            instructions.push_str("let sig = self.call_info().expect(\"signature results require call metadata\").signature.resolve(module).ok_or(\"unknown function or signature\")?;\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(&sig.returns))\n");
-        } else if let Some(results) = result_exprs(signature) {
+        writeln!(instructions, "({arms}, _) => {{").unwrap();
+        if let Some(results) = result_exprs(signature) {
             if results.iter().any(|r| !matches!(r, ResultExpr::Exact(_))) {
                 instructions.push_str("let mut operands = smallvec::SmallVec::<[Type; 4]>::new();\nself.visit_type_operands(|value| operands.push(dfg.value_type(value)));\n");
             }
@@ -87,7 +96,38 @@ pub(crate) fn generate(
         }
         instructions.push_str("},\n");
     }
+    if defs.storage.formats.len() > 1 && defs.ops.iter().any(|op| op.signature_source.is_some()) {
+        instructions.push_str(
+            "_ => Err(\"signature source is stored in an incompatible instruction format\"),\n",
+        );
+    }
     instructions.push_str("}\n}\n}\n");
+}
+
+fn signature_results(op: &Op, out: &mut String) {
+    let source = op
+        .signature_source
+        .as_ref()
+        .expect("checked signature source");
+    let (name, id) = match source {
+        SignatureSource::Function(name) => (
+            name,
+            "module.functions.get(*source).ok_or(\"unknown function\")?.signature",
+        ),
+        SignatureSource::Signature(name) => (name, "*source"),
+        SignatureSource::Value(name) => (
+            name,
+            "dfg.values().get(*source).and_then(|value| value.ty.as_callable()).ok_or(\"unknown or non-callable value\")?.0",
+        ),
+    };
+    let field = op
+        .packing
+        .iter()
+        .find_map(|(field, binding)| {
+            matches!(binding, Binding::Name(param) if param == name).then_some(field)
+        })
+        .expect("checked signature source storage");
+    writeln!(out, "(crate::Opcode::{}, Self::{} {{ {field}: source, .. }}) => {{\nlet sig = {id};\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(&sig.returns))\n}},", op.name, op.format).unwrap();
 }
 
 /// Build-time expressions, never emitted as runtime descriptors.
@@ -166,6 +206,7 @@ fn check_list(
     for (index, p) in patterns.iter().enumerate() {
         let value = format!("{values}[{index}]");
         let condition = match p {
+            Pattern::Callable => format!("{value}.is_callable()"),
             Pattern::Class(class) => format!("{}.accepts({value})", classes.reference(class)),
             Pattern::Exact(ty) => format!("{value} == Type::{ty}"),
             Pattern::Bind(var, class) => {

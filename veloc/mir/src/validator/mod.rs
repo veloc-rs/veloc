@@ -1,10 +1,13 @@
-use crate::inst::{Inst, VectorExtData, VectorMemOptions};
-use crate::{
-    Block, Function, InstructionView, ModuleData, Opcode, Result, SigId, Successor, Type, Value,
-};
+//! MIR validation: module types, instruction contracts, SSA and ownership.
+use crate::inst::Inst;
+use crate::{Block, Function, InstructionView, ModuleData, Opcode, Result, Successor, Type, Value};
 use alloc::string::String;
 use core::fmt;
 use smallvec::SmallVec;
+
+mod control;
+mod ownership;
+mod types;
 
 include!(concat!(env!("OUT_DIR"), "/validation.rs"));
 
@@ -12,7 +15,6 @@ include!(concat!(env!("OUT_DIR"), "/validation.rs"));
 pub enum ValidationError {
     EmptyBlock(Block),
     NoTerminator(Block),
-    UnsealedBlock(Block),
     Other(String),
 }
 
@@ -23,7 +25,6 @@ impl fmt::Display for ValidationError {
             Self::NoTerminator(block) => {
                 write!(f, "Block {:?} does not end with a terminator", block)
             }
-            Self::UnsealedBlock(block) => write!(f, "Block {:?} is not sealed", block),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -31,8 +32,9 @@ impl fmt::Display for ValidationError {
 
 impl ModuleData {
     pub fn validate(&self) -> Result<()> {
+        types::validate(self)?;
         for (_, function) in self.functions.iter() {
-            function.validate(self).map_err(|error| {
+            function.validate_body(self).map_err(|error| {
                 crate::Error::Message(alloc::format!("In function {}: {}", function.name, error))
             })?;
         }
@@ -42,23 +44,20 @@ impl ModuleData {
 
 impl Function {
     pub fn validate(&self, module: &ModuleData) -> Result<()> {
+        types::validate(module)?;
+        self.validate_body(module)
+    }
+
+    fn validate_body(&self, module: &ModuleData) -> Result<()> {
+        let structure = control::Structure::check(self, module)?;
         for &block in &self.layout.block_order {
             let block_data = &self.layout.blocks[block];
-            if !block_data.is_sealed {
-                return Err(ValidationError::UnsealedBlock(block).into());
-            }
-            if block_data.insts.is_empty() {
-                return Err(ValidationError::EmptyBlock(block).into());
-            }
             for &inst in &block_data.insts {
                 self.validate_inst(module, inst)?;
             }
-            let terminator = *block_data.insts.last().unwrap();
-            if !self.dfg.opcode(terminator).spec().is_terminator() {
-                return Err(ValidationError::NoTerminator(block).into());
-            }
         }
-        Ok(())
+        structure.check_ssa(self)?;
+        ownership::validate(self)
     }
 
     fn validate_inst(&self, module: &ModuleData, inst: Inst) -> Result<()> {
@@ -95,68 +94,9 @@ impl Function {
                 )))
             })?;
 
-        self.validate_constraints(inst, data, &operands, &results)?;
+        self.validate_constraints(module, inst, data, &operands, &results)?;
 
-        if let Some(call) = data.call_info() {
-            let Some(signature) = call.signature.resolve(module) else {
-                return self.fail(alloc::format!(
-                    "{} at {:?} refers to a missing function or signature",
-                    spec.mnemonic,
-                    inst
-                ));
-            };
-            self.validate_signature(module, inst, signature, call.args, spec.mnemonic)?;
-        }
-        let mut successors = Ok(());
-        data.visit_successors(|call| {
-            if successors.is_ok() {
-                successors = self.validate_block_call(call, spec.mnemonic);
-            }
-        });
-        successors?;
-
-        match data {
-            InstructionView::BrTable { table, .. } if table.is_empty() => {
-                return self.fail("branch table must contain a default destination".into());
-            }
-            InstructionView::Return { values } => {
-                self.validate_values(
-                    "return",
-                    values,
-                    module.signatures[self.signature].returns.iter().copied(),
-                )?;
-            }
-            InstructionView::VectorOpWithExt { ext, .. } => {
-                let vector_ty = results.first().copied().ok_or_else(|| {
-                    crate::Error::from(ValidationError::Other(alloc::format!(
-                        "predicated {} at {:?} has no result",
-                        spec.mnemonic,
-                        inst
-                    )))
-                })?;
-                if !vector_ty.is_vector() {
-                    return self.fail(alloc::format!(
-                        "predicated {} at {:?} must produce a vector, got {}",
-                        spec.mnemonic,
-                        inst,
-                        vector_ty
-                    ));
-                }
-                self.validate_vector_ext(inst, opcode, *ext, vector_ty)?;
-            }
-            InstructionView::VectorLoadStrided { ext, .. }
-            | InstructionView::VectorGather { ext, .. } => {
-                self.validate_vector_mem_ext(inst, opcode, *ext, results[0])?;
-            }
-            InstructionView::VectorStoreStrided { args, ext }
-            | InstructionView::VectorScatter { args, ext } => {
-                let values = args;
-                self.validate_vector_mem_ext(inst, opcode, *ext, self.dfg.value_type(values[2]))?;
-            }
-            _ => {}
-        }
-
-        Ok(())
+        data.try_visit_successors(|call| self.validate_block_call(call, spec.mnemonic))
     }
 
     #[cold]
@@ -170,53 +110,18 @@ impl Function {
         .into()
     }
 
-    fn validate_signature(
-        &self,
-        module: &ModuleData,
-        inst: Inst,
-        sig_id: SigId,
-        args: &[Value],
-        name: &str,
-    ) -> Result<()> {
-        let signature = &module.signatures[sig_id];
-        self.validate_values(name, args, signature.params.iter().copied())?;
-
-        let results = self.dfg.inst_results(inst);
-        if results.len() != signature.returns.len() {
-            return self.fail(alloc::format!(
-                "{} result count mismatch: expected {}, got {}",
-                name,
-                signature.returns.len(),
-                results.len()
-            ));
-        }
-        for (index, (&result, &expected)) in
-            results.iter().zip(signature.returns.iter()).enumerate()
-        {
-            let got = self.dfg.value_type(result);
-            if got != expected {
-                return self.fail(alloc::format!(
-                    "{} result {} type mismatch: expected {}, got {}",
-                    name,
-                    index,
-                    expected,
-                    got
-                ));
-            }
-        }
-        Ok(())
-    }
-
     fn validate_values(
         &self,
         name: &str,
+        role: &str,
         values: &[Value],
         expected: impl ExactSizeIterator<Item = Type>,
     ) -> Result<()> {
         if values.len() != expected.len() {
             return self.fail(alloc::format!(
-                "{} value count mismatch: expected {}, got {}",
+                "{} {} count mismatch: expected {}, got {}",
                 name,
+                role,
                 expected.len(),
                 values.len()
             ));
@@ -225,8 +130,9 @@ impl Function {
             let got = self.dfg.value_type(value);
             if got != expected {
                 return self.fail(alloc::format!(
-                    "{} value {} type mismatch: expected {}, got {}",
+                    "{} {} {} type mismatch: expected {}, got {}",
                     name,
+                    role,
                     index,
                     expected,
                     got
@@ -237,88 +143,13 @@ impl Function {
     }
 
     fn validate_block_call(&self, call: Successor<'_>, kind: &str) -> Result<()> {
-        let call_data = call;
-        let params = &self.layout.blocks[call_data.block].params;
+        let params = &self.layout.blocks[call.block].params;
         self.validate_values(
             kind,
-            call_data.args,
+            "value",
+            call.args,
             params.iter().map(|&value| self.dfg.value_type(value)),
         )
-    }
-
-    fn validate_vector_ext(
-        &self,
-        inst: Inst,
-        opcode: Opcode,
-        ext: VectorExtData,
-        vector_ty: Type,
-    ) -> Result<()> {
-        self.validate_mask(inst, opcode, ext.mask, vector_ty)?;
-        if let Some(evl) = ext.evl {
-            self.validate_evl(inst, opcode, evl)?;
-        }
-        Ok(())
-    }
-
-    fn validate_vector_mem_ext(
-        &self,
-        inst: Inst,
-        opcode: Opcode,
-        ext: VectorMemOptions,
-        vector_ty: Type,
-    ) -> Result<()> {
-        if let Some(mask) = ext.mask {
-            self.validate_mask(inst, opcode, mask, vector_ty)?;
-        }
-        if let Some(evl) = ext.evl {
-            self.validate_evl(inst, opcode, evl)?;
-        }
-        Ok(())
-    }
-
-    fn validate_mask(
-        &self,
-        inst: Inst,
-        opcode: Opcode,
-        mask: Value,
-        vector_ty: Type,
-    ) -> Result<()> {
-        let mask_ty = self.dfg.value_type(mask);
-        let Some(vector) = vector_ty.as_vector() else {
-            return self.fail(alloc::format!(
-                "{} mask at {:?} requires a vector type, got {}",
-                opcode.spec().mnemonic,
-                inst,
-                vector_ty
-            ));
-        };
-        if !mask_ty.is_predicate()
-            || mask_ty
-                .as_vector()
-                .is_none_or(|mask| mask.shape() != vector.shape())
-        {
-            return self.fail(alloc::format!(
-                "{} mask at {:?} must match vector shape {:?}, got {}",
-                opcode.spec().mnemonic,
-                inst,
-                vector.shape(),
-                mask_ty
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate_evl(&self, inst: Inst, opcode: Opcode, evl: Value) -> Result<()> {
-        let evl_ty = self.dfg.value_type(evl);
-        if evl_ty != Type::I32 {
-            return self.fail(alloc::format!(
-                "{} EVL at {:?} must be i32, got {}",
-                opcode.spec().mnemonic,
-                inst,
-                evl_ty
-            ));
-        }
-        Ok(())
     }
 
     fn fail<T>(&self, message: String) -> Result<T> {
@@ -380,6 +211,12 @@ mod tests {
         module.validate().unwrap();
 
         module.functions[caller].layout.blocks[target].params.pop();
+        // Keep all uses attached so this case isolates the edge arity error.
+        let func = &mut module.functions[caller];
+        let ret = *func.layout.blocks[target].insts.last().unwrap();
+        let params = func.layout.blocks[target].params.clone();
+        func.edit()
+            .replace_inst(ret, crate::InstDraft::ret(&params));
         let error = module.validate().unwrap_err().to_string();
         assert!(
             error.contains("value count mismatch: expected 6, got 7"),
@@ -421,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unsealed_block_validation() {
+    fn explicit_ssa_does_not_require_builder_sealing() {
         let mut module = ModuleBuilder::new();
         let signature = module.make_signature(vec![], vec![], CallConv::SystemV);
         let function = module.declare_function("test".to_string(), signature, Linkage::Export);
@@ -434,8 +271,7 @@ mod tests {
         builder.ins().ret(&[]);
 
         drop(builder);
-        let error = module.validate().unwrap_err().to_string();
-        assert!(error.contains("is not sealed"), "unexpected error: {error}");
+        module.validate().unwrap();
     }
 
     #[test]

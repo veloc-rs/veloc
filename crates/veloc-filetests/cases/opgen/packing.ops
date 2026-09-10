@@ -1,3 +1,11 @@
+// ----- successor-editor-name-is-reserved
+// run: opgen-error
+// check: conflicting draft constructor `edit_successors`
+format EditSuccessors {
+    fields: [opcode(Opcode)],
+    opcode: dynamic(opcode)
+}
+
 // ----- pool-bindings-are-typed-and-consume-the-complete-record-1
 // run: opgen-error
 // check: expected parameter, array, pool(parameter) or table(cases, default)

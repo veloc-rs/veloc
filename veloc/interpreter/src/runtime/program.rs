@@ -16,6 +16,7 @@ use veloc_mir::{FuncId, Module, ModuleId};
 
 /// Main program structure managing all modules and host functions
 pub struct Program {
+    pub(crate) identity: Arc<()>,
     /// Map from host function name to ID
     hosts_by_name: HashMap<String, HostFuncId>,
     /// Storage for host function implementations
@@ -37,6 +38,51 @@ pub struct ProgramBuilder<'a> {
 }
 
 impl Program {
+    pub(crate) fn matches_signature(
+        &self,
+        module: ModuleId,
+        signature: veloc_mir::SigId,
+        target: CallTarget,
+    ) -> bool {
+        let source = &self.modules[module].ir;
+        match target {
+            CallTarget::Bytecode(module, func) => {
+                let target = &self.modules[module].ir;
+                source.signature_eq(signature, target, target.functions[func].signature)
+            }
+            CallTarget::Host(host) => {
+                source.get_signature(signature) == self.hosts[host].signature()
+            }
+        }
+    }
+    pub(crate) fn type_eq(
+        &self,
+        a: ModuleId,
+        lhs: veloc_mir::Type,
+        b: ModuleId,
+        rhs: veloc_mir::Type,
+    ) -> bool {
+        let (Some(a), Some(b)) = (self.modules.get(a), self.modules.get(b)) else {
+            return false;
+        };
+        a.ir.type_eq(lhs, &b.ir, rhs)
+    }
+    pub(crate) fn signature(
+        &self,
+        module: ModuleId,
+        func: FuncId,
+    ) -> Result<&veloc_mir::Signature> {
+        let loaded = self
+            .modules
+            .get(module)
+            .ok_or(Error::InvalidModule(module))?;
+        let function = loaded
+            .ir
+            .functions
+            .get(func)
+            .ok_or(Error::InvalidFunction { module, func })?;
+        Ok(loaded.ir.get_signature(function.signature))
+    }
     /// Start building a module without exposing partial state through `Program`.
     pub fn builder(&mut self, module: Module) -> ProgramBuilder<'_> {
         ProgramBuilder::new(self, module)
@@ -62,6 +108,7 @@ impl Program {
     /// Create a new empty program
     pub fn new() -> Self {
         Self {
+            identity: Arc::new(()),
             hosts_by_name: HashMap::new(),
             hosts: PrimaryMap::new(),
             modules: PrimaryMap::new(),
@@ -206,9 +253,10 @@ impl<'a> ProgramBuilder<'a> {
         }
 
         let source = &self.module.functions[import];
-        let source_sig = self.module.get_signature(source.signature);
-        let target_sig = target.get_signature(target_data.signature);
-        if source_sig != target_sig {
+        if !self
+            .module
+            .signature_eq(source.signature, target, target_data.signature)
+        {
             return Err(Error::SignatureMismatch {
                 module: self.id,
                 func: import,
@@ -256,6 +304,25 @@ impl<'a> ProgramBuilder<'a> {
 
     /// Validate, compile, and atomically add the module to the program.
     pub fn finish(self) -> Result<ModuleId> {
+        self.module
+            .validate()
+            .map_err(|e| Error::Message(e.to_string()))?;
+        // The generic host callback ABI carries raw bits, not owned handles.
+        // Guest links instead compare structural types across module contexts.
+        for (id, function) in &self.module.functions {
+            let sig = self.module.get_signature(function.signature);
+            if matches!(self.targets[id], Some(CallTarget::Host(_)))
+                && sig
+                    .params
+                    .iter()
+                    .chain(&sig.returns)
+                    .any(|ty| ty.is_callable())
+            {
+                return Err(Error::Message(
+                    "host callable imports require an ownership-aware ABI lowering".into(),
+                ));
+            }
+        }
         for (func, function) in self.module.functions.iter() {
             if !function.is_defined() && self.targets[func].is_none() {
                 return Err(Error::UnresolvedImport {

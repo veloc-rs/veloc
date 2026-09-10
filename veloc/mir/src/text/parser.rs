@@ -196,7 +196,7 @@ fn parse_module(source: &str) -> ParseResult<ModuleData> {
                 previous.finish(&mut module)?;
             }
             let location = input.location();
-            let header = parse_function_header(&mut input)?;
+            let header = parse_function_header(&mut input, &mut module)?;
             let id = functions.declare(&header, location, &mut module)?;
             current = Some(FunctionParser {
                 id,
@@ -208,7 +208,7 @@ fn parse_module(source: &str) -> ParseResult<ModuleData> {
             if current.is_some() {
                 return Err(input.error("global declaration inside function"));
             }
-            let (name, ty, linkage) = parse_global(&mut input)?;
+            let (name, ty, linkage) = parse_global(&mut input, &mut module)?;
             module.add_global(name, ty, linkage);
         } else {
             current
@@ -243,7 +243,12 @@ impl FunctionParser {
     ) -> ParseResult<()> {
         let name = input.text();
         if name.starts_with("block") && input.peek_kind(1) == Kind::LParen {
-            self.block = Some(declare_block(input, &mut self.func, &mut self.symbols)?);
+            self.block = Some(declare_block(
+                input,
+                &mut self.func,
+                &mut self.symbols,
+                module,
+            )?);
         } else if name.starts_with("ss")
             && input.peek_kind(1) == Kind::Colon
             && input.peek_is(2, "size")
@@ -264,11 +269,8 @@ impl FunctionParser {
         Ok(())
     }
 
-    fn finish(mut self, module: &mut ModuleData) -> ParseResult<()> {
+    fn finish(self, module: &mut ModuleData) -> ParseResult<()> {
         self.symbols.finish()?;
-        for &block in &self.func.layout.block_order {
-            self.func.layout.blocks[block].is_sealed = true;
-        }
         module.functions[self.id] = self.func;
         Ok(())
     }
@@ -386,6 +388,7 @@ fn declare_block(
     input: &mut Cursor<'_>,
     func: &mut Function,
     symbols: &mut Symbols,
+    module: &mut ModuleData,
 ) -> ParseResult<Block> {
     let location = input.location();
     let name = input.word()?;
@@ -404,7 +407,7 @@ fn declare_block(
     }
     if !input.eat(Kind::RParen) {
         loop {
-            let param = parse_typed_name(input)?;
+            let param = parse_typed_name(input, module)?;
             let value = symbols.define(param.name, func, param.location)?;
             func.dfg.values[value] = ValueData {
                 ty: param.ty,
@@ -448,7 +451,7 @@ impl OperandParser<'_> {
             return Ok(results);
         }
         loop {
-            let result = parse_typed_name(input)?;
+            let result = parse_typed_name(input, self.module)?;
             let value = self
                 .symbols
                 .define(result.name, self.func, result.location)?;
@@ -531,7 +534,8 @@ impl OperandParser<'_> {
     }
 
     pub(super) fn signature(&mut self, input: &mut Cursor<'_>) -> ParseResult<SigId> {
-        Ok(self.module.intern_signature(parse_signature(input)?))
+        let sig = parse_signature(input, self.module)?;
+        Ok(self.module.intern_signature(sig))
     }
 }
 
@@ -570,11 +574,14 @@ struct TypedName<'a> {
     location: Location,
 }
 
-fn parse_typed_name<'a>(input: &mut Cursor<'a>) -> ParseResult<TypedName<'a>> {
+fn parse_typed_name<'a>(
+    input: &mut Cursor<'a>,
+    module: &mut ModuleData,
+) -> ParseResult<TypedName<'a>> {
     let location = input.location();
     let name = input.word()?;
     input.expect(Kind::Colon)?;
-    let ty = parse_type(input)?;
+    let ty = parse_type(input, module)?;
     Ok(TypedName { name, ty, location })
 }
 
@@ -625,12 +632,23 @@ fn parse_opcode(word: &str) -> core::result::Result<(Opcode, &str), String> {
     Ok((opcode, &word[end..]))
 }
 
-fn parse_type(input: &mut Cursor<'_>) -> ParseResult<Type> {
+fn parse_type(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Type> {
     let location = input.location();
     let name = input.word()?;
     if !input.eat(Kind::Less) {
         return Type::from_name(name)
             .ok_or_else(|| location.error(format!("unknown type `{name}`")));
+    }
+    if matches!(name, "owned" | "local" | "shared") {
+        let signature = parse_signature(input, module)?;
+        input.expect(Kind::Greater)?;
+        let id = module.intern_signature(signature);
+        let kind = match name {
+            "owned" => crate::CallableKind::Owned,
+            "local" => crate::CallableKind::Local,
+            _ => crate::CallableKind::Shared,
+        };
+        return Ok(Type::callable(id, kind));
     }
     let base = if name == "mask" {
         Some(Type::BOOL)
@@ -652,12 +670,12 @@ fn parse_type(input: &mut Cursor<'_>) -> ParseResult<Type> {
         .ok_or_else(|| location.error(format!("invalid vector type `{name}`")))
 }
 
-fn parse_types(input: &mut Cursor<'_>) -> ParseResult<Vec<Type>> {
+fn parse_types(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Vec<Type>> {
     input.expect(Kind::LParen)?;
     let mut types = Vec::new();
     if !input.eat(Kind::RParen) {
         loop {
-            types.push(parse_type(input)?);
+            types.push(parse_type(input, module)?);
             if !input.eat(Kind::Comma) {
                 break;
             }
@@ -667,17 +685,20 @@ fn parse_types(input: &mut Cursor<'_>) -> ParseResult<Vec<Type>> {
     Ok(types)
 }
 
-fn parse_function_returns(input: &mut Cursor<'_>) -> ParseResult<Vec<Type>> {
+fn parse_function_returns(
+    input: &mut Cursor<'_>,
+    module: &mut ModuleData,
+) -> ParseResult<Vec<Type>> {
     if input.is("void") {
         input.advance();
         return Ok(Vec::new());
     }
     if input.kind() == Kind::LParen {
-        return parse_types(input);
+        return parse_types(input, module);
     }
     let mut types = Vec::new();
     loop {
-        types.push(parse_type(input)?);
+        types.push(parse_type(input, module)?);
         if !input.eat(Kind::Comma) {
             break;
         }
@@ -685,16 +706,16 @@ fn parse_function_returns(input: &mut Cursor<'_>) -> ParseResult<Vec<Type>> {
     Ok(types)
 }
 
-fn parse_signature(input: &mut Cursor<'_>) -> ParseResult<Signature> {
-    let params = parse_types(input)?;
+fn parse_signature(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Signature> {
+    let params = parse_types(input, module)?;
     input.expect(Kind::Arrow)?;
     let returns = if input.is("void") {
         input.advance();
         Vec::new()
     } else if input.kind() == Kind::LParen {
-        parse_types(input)?
+        parse_types(input, module)?
     } else {
-        alloc::vec![parse_type(input)?]
+        alloc::vec![parse_type(input, module)?]
     };
     Ok(Signature::new(params, returns, CallConv::SystemV))
 }
@@ -711,13 +732,16 @@ fn is_function_header(input: &mut Cursor<'_>) -> bool {
         && input.peek_is(1, "function")
 }
 
-fn parse_function_header(input: &mut Cursor<'_>) -> ParseResult<FunctionHeader> {
+fn parse_function_header(
+    input: &mut Cursor<'_>,
+    module: &mut ModuleData,
+) -> ParseResult<FunctionHeader> {
     let linkage = parse_linkage(input)?;
     input.keyword("function")?;
     let name = input.word()?.to_string();
-    let params = parse_types(input)?;
+    let params = parse_types(input, module)?;
     let returns = if input.eat(Kind::Arrow) {
-        parse_function_returns(input)?
+        parse_function_returns(input, module)?
     } else {
         Vec::new()
     };
@@ -728,11 +752,14 @@ fn parse_function_header(input: &mut Cursor<'_>) -> ParseResult<FunctionHeader> 
     })
 }
 
-fn parse_global(input: &mut Cursor<'_>) -> ParseResult<(String, Type, Linkage)> {
+fn parse_global(
+    input: &mut Cursor<'_>,
+    module: &mut ModuleData,
+) -> ParseResult<(String, Type, Linkage)> {
     input.keyword("global")?;
     let name = input.word()?.to_string();
     input.expect(Kind::Colon)?;
-    let ty = parse_type(input)?;
+    let ty = parse_type(input, module)?;
     input.expect(Kind::LParen)?;
     let linkage = parse_linkage(input)?;
     input.expect(Kind::RParen)?;

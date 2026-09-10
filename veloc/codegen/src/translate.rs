@@ -78,6 +78,29 @@ impl<'a> IRTranslator<'a> {
 
     /// 将 IR 模块翻译为 MachineModule
     pub fn translate_module(&self) -> Result<MachineModule> {
+        for (_, func) in &self.module.functions {
+            if func
+                .dfg()
+                .values()
+                .iter()
+                .any(|(_, value)| value.ty.is_callable())
+                || func
+                    .dfg()
+                    .instructions()
+                    .any(|(_, view)| view.opcode().has_control())
+                || self
+                    .module
+                    .get_signature(func.signature)
+                    .params
+                    .iter()
+                    .chain(&self.module.get_signature(func.signature).returns)
+                    .any(|ty| ty.is_callable())
+            {
+                return Err(Error::message(
+                    "typed callables and tail calls require callable/environment and tail-call lowering before native code generation",
+                ));
+            }
+        }
         // IR Module 目前没有直接的 name 字段，可以根据需要从其他地方获取或使用默认值
         let mut mmodule = MachineModule::new(alloc::string::String::from("default"));
 

@@ -663,6 +663,7 @@ mod tests {
         }];
         let sem = parsed("bv.neg(arg)", &params).unwrap();
         Op {
+            moves: Vec::new(),
             offset: 0,
             name: "Test".into(),
             mnemonic: "test".into(),
@@ -673,6 +674,7 @@ mod tests {
                 relations: vec![],
             },
             signature_source: None,
+            control: None,
             text: None,
             params,
             packing: Default::default(),

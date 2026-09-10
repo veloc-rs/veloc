@@ -940,10 +940,11 @@ define_opcodes! {
 
     Select [Payload32] { dst: Reg, cond: Reg, then_reg: Reg, else_reg: Reg };
     Return [Payload32x2] { data_offset: u32, num_vals: u32 };
+    Control [Payload32] { site: u32 };
 
     // Slots fields come first; data-section identifiers occupy the payload.
     Call [Payload32x2] { num_rets: u16, num_args: u16, func_id: u32, data_offset: u32 };
-    CallIndirect [Payload32] { ptr: Reg, num_rets: u16, num_args: u16, data_offset: u32 };
+    CallIndirect [Payload32x2] { ptr: Reg, num_rets: u16, num_args: u16, data_offset: u32, sig_id: u32 };
     CallIntrinsic [Payload32] { intrinsic: u16, num_rets: u16, num_args: u16, data_offset: u32 };
 
     RegMove [Slots] { dst: Reg, src: Reg };

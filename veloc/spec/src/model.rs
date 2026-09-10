@@ -55,6 +55,7 @@ impl TypeList {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Pattern {
+    Callable,
     Class(TypeSet),
     Exact(String),
     Bind(u8, TypeSet),
@@ -86,6 +87,8 @@ pub(crate) struct Op {
     pub params: Vec<Param>,
     pub packing: BTreeMap<String, Binding>,
     pub signature_source: Option<SignatureSource>,
+    pub control: Option<crate::control::Control>,
+    pub moves: Vec<String>,
     pub text: Option<Node>,
     pub traits: Vec<String>,
     pub memory: String,
@@ -106,6 +109,7 @@ pub(crate) enum Binding {
 pub(crate) enum SignatureSource {
     Function(String),
     Signature(String),
+    Value(String),
 }
 
 pub(crate) struct Param {
@@ -149,7 +153,7 @@ impl Semantic {
 
 impl Op {
     pub fn method_name(&self) -> String {
-        self.mnemonic.replace('-', "_")
+        crate::storage::constructor_name(&self.mnemonic.replace('-', "_"))
     }
 }
 
@@ -286,6 +290,7 @@ fn pattern(
     types: &Types,
 ) -> Result<Pattern, Error> {
     match node.kind {
+        Kind::Name(name) if name == "Callable" => Ok(Pattern::Callable),
         Kind::Name(name) if types.exact.contains_key(&name) => Ok(Pattern::Exact(name)),
         Kind::Name(ref name) if types.classes.contains_key(name) => {
             Ok(Pattern::Class(types.set(source, &node)?))
@@ -517,6 +522,6 @@ mod tests {
     #[test]
     fn method_identifier_checks_are_left_to_the_emitter() {
         let defs = parse(&SOURCE.replace("i-add", "return")).unwrap();
-        assert_eq!(defs.ops[0].method_name(), "return");
+        assert_eq!(defs.ops[0].method_name(), "ret");
     }
 }

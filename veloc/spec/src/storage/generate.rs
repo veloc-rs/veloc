@@ -296,11 +296,17 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
     }
     out.push_str("} }\n");
     for (name, auxiliary) in [("visit_operands", true), ("visit_type_operands", false)] {
-        writeln!(
-            out,
-            "pub fn {name}(&self, mut f: impl FnMut(Value)) {{ match self {{"
-        )
-        .unwrap();
+        let propagate = if auxiliary { "?" } else { "" };
+        if auxiliary {
+            writeln!(out, "pub fn {name}(&self, mut f: impl FnMut(Value)) {{ self.try_visit_operands::<core::convert::Infallible>(|value| {{ f(value); Ok(()) }}).unwrap_or_else(|never| match never {{}}); }}").unwrap();
+            out.push_str("/// Visit all operands in storage order, stopping at the first error.\npub fn try_visit_operands<E>(&self, mut f: impl FnMut(Value) -> core::result::Result<(), E>) -> core::result::Result<(), E> { match self {\n");
+        } else {
+            writeln!(
+                out,
+                "pub fn {name}(&self, mut f: impl FnMut(Value)) {{ match self {{"
+            )
+            .unwrap();
+        }
         for layout in layouts {
             writeln!(out, "{} => {{", layout.pattern()).unwrap();
             for (i, field) in layout.fields.iter().enumerate() {
@@ -311,11 +317,11 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                     for member in &record.fields {
                         match &member.ty {
                             PropertyType::Named(ty) if ty == "Value" => {
-                                writeln!(out, "f(_field{i}.{});", member.name).unwrap()
+                                writeln!(out, "f(_field{i}.{})?;", member.name).unwrap()
                             }
                             PropertyType::Optional(_) => writeln!(
                                 out,
-                                "if let Some(value) = _field{i}.{} {{ f(value); }}",
+                                "if let Some(value) = _field{i}.{} {{ f(value)?; }}",
                                 member.name
                             )
                             .unwrap(),
@@ -324,17 +330,17 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                     }
                 } else {
                     match field.ty.traversal() {
-                        Some("value") => writeln!(out, "f(*_field{i});").unwrap(),
-                        Some("array" | "value_list") => writeln!(out, "for &value in _field{i}.iter() {{ f(value); }}").unwrap(),
-                        Some("block_call") => writeln!(out, "for &value in _field{i}.args {{ f(value); }}").unwrap(),
-                        Some("jump_table") => writeln!(out, "for call in _field{i}.iter() {{ for &value in call.args {{ f(value); }} }}").unwrap(),
+                        Some("value") => writeln!(out, "f(*_field{i}){propagate};").unwrap(),
+                        Some("array" | "value_list") => writeln!(out, "for &value in _field{i}.iter() {{ f(value){propagate}; }}").unwrap(),
+                        Some("block_call") => writeln!(out, "for &value in _field{i}.args {{ f(value){propagate}; }}").unwrap(),
+                        Some("jump_table") => writeln!(out, "for call in _field{i}.iter() {{ for &value in call.args {{ f(value){propagate}; }} }}").unwrap(),
                         _ => {}
                     }
                 }
             }
             out.push_str("},\n");
         }
-        out.push_str("} }\n");
+        out.push_str(if auxiliary { "} Ok(()) }\n" } else { "} }\n" });
     }
     out.push_str("pub fn memory_flags(&self) -> Option<MemFlags> { match self {\n");
     for layout in layouts {
@@ -407,7 +413,7 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
 }
 
 fn successor_edit(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
-    out.push_str("/// Set this argument on every edge to the target, filling missing positions with value.\npub fn set_successor_arg(&mut self, target: crate::Block, index: usize, value: Value) -> bool {\nlet mut offset = 0;\nlet mut changed = false;\nmatch &mut self.fields {\n");
+    out.push_str("/// Edit individual successor occurrences in storage order.\npub fn edit_successors(&mut self, mut f: impl FnMut(&mut SuccessorMut<'_>)) {\nlet mut offset = 0;\nmatch &mut self.fields {\n");
     for layout in layouts {
         let Some(last) = layout
             .fields
@@ -445,14 +451,20 @@ fn successor_edit(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
                     FieldType::Values(n) => writeln!(out, "offset += {n};").unwrap(),
                     _ => match field.ty.traversal() {
                         Some("value") => out.push_str("offset += 1;\n"),
-                        Some("value_list") => writeln!(out, "offset += *_field{i} as usize;").unwrap(),
-                        Some("block_call" | "jump_table") => writeln!(out, "changed |= _field{i}.set_arg(&mut self.operands, &mut offset, target, index, value);").unwrap(),
+                        Some("value_list") => {
+                            writeln!(out, "offset += *_field{i} as usize;").unwrap()
+                        }
+                        Some("block_call" | "jump_table") => writeln!(
+                            out,
+                            "_field{i}.edit(&mut self.operands, &mut offset, &mut f);"
+                        )
+                        .unwrap(),
                         _ => {}
-                    }
+                    },
                 }
             }
         }
         out.push_str("},\n");
     }
-    out.push_str("_ => {},\n}\nchanged\n}\n");
+    out.push_str("_ => {},\n}\n}\n");
 }

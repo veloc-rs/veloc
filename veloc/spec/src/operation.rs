@@ -59,14 +59,41 @@ pub(super) fn parse(
             Kind::Call(kind, mut args) if kind == "function" && args.len() == 1 => {
                 Ok(SignatureSource::Function(name(source, args.remove(0))?))
             }
+            Kind::Call(kind, mut args) if kind == "callable" && args.len() == 1 => {
+                Ok(SignatureSource::Value(name(source, args.remove(0))?))
+            }
             _ => Err(Error::at(
                 source,
                 node.offset,
-                "expected signature parameter or function(parameter)",
+                "expected signature parameter, function(parameter) or callable(parameter)",
             )),
         })
         .transpose()?;
     let text = fields.optional("text");
+    let moves = fields
+        .optional("moves")
+        .map(|node| {
+            list(source, node)?
+                .into_iter()
+                .map(|node| name(source, node))
+                .collect::<Result<Vec<_>, Error>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let mut seen_moves = BTreeSet::new();
+    for name in &moves {
+        if !seen_moves.insert(name)
+            || !params
+                .iter()
+                .any(|p| p.name == *name && matches!(p.kind, ParamKind::Value | ParamKind::Values))
+        {
+            return Err(fields.error("moves must name distinct value operands; successor arguments transfer on their own edge"));
+        }
+    }
+    let control = fields
+        .optional("control")
+        .map(|node| crate::control::check(source, node, &params))
+        .transpose()?;
     if let Some(node) = fields.optional("where") {
         for node in list(source, node)? {
             let Kind::Call(kind, args) = node.kind else {
@@ -110,6 +137,21 @@ pub(super) fn parse(
         .map(|node| list(source, node))
         .transpose()?
         .unwrap_or_default();
+    if let Some(control) = &control {
+        for &name in control.traits() {
+            if !builtins.has_trait(name) {
+                return Err(fields.error(format!(
+                    "control interface requires undeclared trait `{name}`"
+                )));
+            }
+            if !traits.iter().any(|t| t == name) {
+                traits.push(name.into());
+            }
+        }
+    }
+    if traits.iter().any(|t| t == "ABORT") && !traits.iter().any(|t| t == "TERMINATOR") {
+        return Err(fields.error("ABORT requires TERMINATOR"));
+    }
     let mut identity = fields
         .optional("identity")
         .map(|n| algebraic_constant(source, n))
@@ -169,6 +211,8 @@ pub(super) fn parse(
         params,
         packing,
         signature_source,
+        control,
+        moves,
         text,
         traits,
         memory,
@@ -378,6 +422,9 @@ fn binding(source: &str, node: Node) -> Result<Binding, Error> {
 }
 
 pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result<(), Error> {
+    if let Some(control) = &op.control {
+        control.validate(source, op)?;
+    }
     let fail = |message| Error::at(source, op.offset, message);
     let params: BTreeMap<_, _> = op
         .params
@@ -510,15 +557,47 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
             ));
         }
         (Some(source), TypeList::Signature) => {
-            let (param, expected) = match source {
-                SignatureSource::Function(param) => (param, "FuncId"),
-                SignatureSource::Signature(param) => (param, "SigId"),
-            };
-            if !matches!(params.get(param.as_str()), Some(ParamKind::Property(ty)) if ty == expected)
-            {
-                return Err(fail(format!(
-                    "signature source `{param}` must be a {expected} property"
-                )));
+            match source {
+                SignatureSource::Value(param) => {
+                    let index = op
+                        .params
+                        .iter()
+                        .filter(|p| p.kind == ParamKind::Value)
+                        .position(|p| p.name == *param);
+                    let patterns = match &op.signature.operands {
+                        TypeList::Fixed(patterns) | TypeList::Variadic(patterns) => patterns,
+                        TypeList::Signature => {
+                            unreachable!("operands cannot use signature results")
+                        }
+                    };
+                    if index.and_then(|i| patterns.get(i)) != Some(&Pattern::Callable) {
+                        return Err(fail(format!(
+                            "signature source `{param}` must be a Callable value operand"
+                        )));
+                    }
+                    if !op
+                        .packing
+                        .values()
+                        .any(|binding| matches!(binding, Binding::Name(name) if name == param))
+                    {
+                        return Err(fail(format!(
+                            "signature source `{param}` requires direct value storage"
+                        )));
+                    }
+                }
+                SignatureSource::Function(param) | SignatureSource::Signature(param) => {
+                    let expected = if matches!(source, SignatureSource::Function(_)) {
+                        "FuncId"
+                    } else {
+                        "SigId"
+                    };
+                    if !matches!(params.get(param.as_str()), Some(ParamKind::Property(ty)) if ty == expected)
+                    {
+                        return Err(fail(format!(
+                            "signature source `{param}` must be a {expected} property"
+                        )));
+                    }
+                }
             }
             if op
                 .params

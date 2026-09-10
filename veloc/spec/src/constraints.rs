@@ -17,6 +17,10 @@ enum Sort {
     Int,
     Type,
     Value,
+    Signature,
+    Handle(String),
+    Shape,
+    Optional(Box<Sort>),
     Enum(String),
     Record(String),
     Sequence(Box<Sort>),
@@ -38,6 +42,11 @@ enum TermKind {
     Member(Box<Term>, String),
     Enum(String, String),
     ResultType(usize),
+    CurrentSignature,
+    Results,
+    Type(String),
+    Slice(Box<Term>, Box<Term>, bool),
+    Matches(Box<Term>, Box<Term>),
     Unary(&'static str, Box<Term>),
     Binary(&'static str, Box<Term>, Box<Term>),
     Query(Query, Box<Term>),
@@ -54,6 +63,16 @@ enum Query {
     IsPtr,
     IsVector,
     IsScalar,
+    Signature,
+    Params,
+    Returns,
+    Shape,
+    IsPredicate,
+    IsCallable,
+    IsOwned,
+    IsLocal,
+    IsShared,
+    IsCompact,
 }
 
 pub(crate) struct Constraint {
@@ -160,6 +179,7 @@ impl Checker<'_> {
             "bool" => Sort::Bool,
             "u8" | "u32" | "u64" | "i32" => Sort::Int,
             "Value" => Sort::Value,
+            "FuncId" | "SigId" => Sort::Handle(name.into()),
             "Bytes" => Sort::Sequence(Box::new(Sort::Int)),
             name if self.storage.records.iter().any(|r| r.name == name) => {
                 Sort::Record(name.into())
@@ -180,6 +200,12 @@ impl Checker<'_> {
         }
         if name == "false" {
             return Ok(Term::boolean(false));
+        }
+        if self.types.exact.contains_key(name)
+            && !self.locals.contains_key(name)
+            && !self.op.params.iter().any(|param| param.name == name)
+        {
+            return Ok(Term::new(Sort::Type, TermKind::Type(name.into())));
         }
         let mut path = name.split('.');
         let root = path.next().unwrap();
@@ -231,16 +257,11 @@ impl Checker<'_> {
                 .iter()
                 .find(|f| f.name == member)
                 .ok_or_else(|| self.error(offset, format!("unknown field {record}.{member}")))?;
-            let PropertyType::Named(ty) = &field.ty else {
-                return Err(self.error(
-                    offset,
-                    "optional fields need an explicit presence operation",
-                ));
+            let sort = match &field.ty {
+                PropertyType::Named(ty) => self.property(offset, ty)?,
+                PropertyType::Optional(ty) => Sort::Optional(Box::new(self.property(offset, ty)?)),
             };
-            value = Term::new(
-                self.property(offset, ty)?,
-                TermKind::Member(Box::new(value), member.into()),
-            );
+            value = Term::new(sort, TermKind::Member(Box::new(value), member.into()));
         }
         Ok(value)
     }
@@ -284,7 +305,12 @@ impl Checker<'_> {
                     "==" | "!="
                         if matches!(
                             lhs.sort,
-                            Sort::Bool | Sort::Int | Sort::Type | Sort::Enum(_)
+                            Sort::Bool
+                                | Sort::Int
+                                | Sort::Type
+                                | Sort::Enum(_)
+                                | Sort::Shape
+                                | Sort::Sequence(_)
                         ) =>
                     {
                         Sort::Bool
@@ -331,6 +357,33 @@ impl Checker<'_> {
                     }
                 }
             }
+            Kind::Call(name, args) if name == "results" && args.is_empty() => {
+                Term::new(Sort::Sequence(Box::new(Sort::Type)), TermKind::Results)
+            }
+            Kind::Call(name, args) if name == "current_signature" && args.is_empty() => {
+                Term::new(Sort::Signature, TermKind::CurrentSignature)
+            }
+            Kind::Call(name, args) if matches!(name.as_str(), "prefix" | "suffix" | "matches") => {
+                let [lhs, rhs] = args.as_slice() else {
+                    return Err(self.error(offset, "sequence operation expects two arguments"));
+                };
+                let lhs = self.term(lhs)?;
+                let rhs = self.term(rhs)?;
+                if name == "matches" {
+                    self.expect(offset, &lhs, &Sort::Sequence(Box::new(Sort::Value)))?;
+                    self.expect(offset, &rhs, &Sort::Sequence(Box::new(Sort::Type)))?;
+                    Term::new(Sort::Bool, TermKind::Matches(Box::new(lhs), Box::new(rhs)))
+                } else {
+                    if !matches!(lhs.sort, Sort::Sequence(_)) {
+                        return Err(self.error(offset, "slice expects a sequence"));
+                    }
+                    self.expect(offset, &rhs, &Sort::Int)?;
+                    Term::new(
+                        lhs.sort.clone(),
+                        TermKind::Slice(Box::new(lhs), Box::new(rhs), name == "prefix"),
+                    )
+                }
+            }
             Kind::Call(name, args) if name == "result_type" => {
                 let [
                     Node {
@@ -368,8 +421,10 @@ impl Checker<'_> {
                 };
                 crate::model::identifier(self.source, offset, name)?;
                 let sequence = self.term(sequence)?;
-                let Sort::Sequence(element) = &sequence.sort else {
-                    return Err(self.error(offset, "all expects a finite sequence"));
+                let (Sort::Sequence(element) | Sort::Optional(element)) = &sequence.sort else {
+                    return Err(
+                        self.error(offset, "all expects a finite sequence or optional value")
+                    );
                 };
                 let id = self.next_local;
                 self.next_local += 1;
@@ -396,6 +451,16 @@ impl Checker<'_> {
                     "is_ptr" => Query::IsPtr,
                     "is_vector" => Query::IsVector,
                     "is_scalar" => Query::IsScalar,
+                    "signature" => Query::Signature,
+                    "params" => Query::Params,
+                    "returns" => Query::Returns,
+                    "shape" => Query::Shape,
+                    "is_predicate" => Query::IsPredicate,
+                    "is_callable" => Query::IsCallable,
+                    "is_owned" => Query::IsOwned,
+                    "is_local" => Query::IsLocal,
+                    "is_shared" => Query::IsShared,
+                    "is_compact" => Query::IsCompact,
                     _ => {
                         return Err(
                             self.error(offset, format!("unknown constraint operation {name}"))
@@ -407,6 +472,23 @@ impl Checker<'_> {
                 };
                 let value = self.term(arg)?;
                 let sort = match query {
+                    Query::Signature => {
+                        if !matches!(&value.sort, Sort::Type | Sort::Handle(_)) {
+                            return Err(self.error(
+                                offset,
+                                "signature expects a function, signature ID or callable type",
+                            ));
+                        }
+                        Sort::Signature
+                    }
+                    Query::Params | Query::Returns => {
+                        self.expect(offset, &value, &Sort::Signature)?;
+                        Sort::Sequence(Box::new(Sort::Type))
+                    }
+                    Query::Shape => {
+                        self.expect(offset, &value, &Sort::Type)?;
+                        Sort::Shape
+                    }
                     Query::TypeOf => {
                         self.expect(offset, &value, &Sort::Value)?;
                         Sort::Type
@@ -434,7 +516,9 @@ impl Checker<'_> {
                             | crate::model::TypeList::Variadic(p) => p,
                             _ => unreachable!("operand type prefix"),
                         };
-                        self.possible(&patterns[index])
+                        patterns
+                            .get(index)
+                            .and_then(|pattern| self.possible(pattern))
                     } else {
                         None
                     }
@@ -588,6 +672,28 @@ impl Emitter<'_> {
                 ))
             }
             TermKind::ResultType(index) => format!("_results[{index}]"),
+            TermKind::CurrentSignature => "_module.signatures[self.signature]".into(),
+            TermKind::Results => "_results".into(),
+            TermKind::Type(name) => format!("crate::Type::{name}"),
+            TermKind::Slice(sequence, index, prefix) => {
+                let sequence = self.term(sequence);
+                let index = format!(
+                    "usize::try_from({}).map_err(|_| {})?",
+                    self.term(index),
+                    self.error
+                );
+                let range = if *prefix {
+                    format!("..{index}")
+                } else {
+                    format!("{index}..")
+                };
+                format!("({sequence}).get({range}).ok_or_else(|| {})?", self.error)
+            }
+            TermKind::Matches(values, types) => format!(
+                "{{ let values = {}; let types = {}; values.len() == types.len() && values.iter().zip(types.iter()).all(|(&v, &ty)| self.dfg.value_type(v) == ty) }}",
+                self.term(values),
+                self.term(types)
+            ),
             TermKind::Unary("!", value) => format!("!({})", self.term(value)),
             TermKind::Unary("-", value) => format!(
                 "({}).checked_neg().ok_or_else(|| {})?",
@@ -610,17 +716,52 @@ impl Emitter<'_> {
             TermKind::Query(query, value) => {
                 if let Query::TypeOf = query
                     && let TermKind::Param(index) = value.kind
+                    && matches!(&self.op.signature.operands, crate::model::TypeList::Fixed(p) | crate::model::TypeList::Variadic(p) if operand_index(self.op, index) < p.len())
                 {
                     return format!("_operands[{}]", operand_index(self.op, index));
                 }
                 let known_valid = value.types.is_some();
+                let sort = &value.sort;
                 let value = self.term(value);
                 match query {
+                    Query::Signature => {
+                        let id = match sort {
+                            Sort::Handle(name) if name == "FuncId" => format!(
+                                "_module.functions.get({value}).ok_or_else(|| {})?.signature",
+                                self.error
+                            ),
+                            Sort::Handle(_) => value,
+                            Sort::Type => {
+                                format!("({value}).as_callable().ok_or_else(|| {})?.0", self.error)
+                            }
+                            _ => unreachable!("checked signature source"),
+                        };
+                        format!(
+                            "_module.signatures.get({id}).ok_or_else(|| {})?",
+                            self.error
+                        )
+                    }
+                    Query::Params => format!("({value}).params.as_slice()"),
+                    Query::Returns => format!("({value}).returns.as_slice()"),
+                    Query::Shape => format!(
+                        "({value}).as_vector().ok_or_else(|| {})?.shape()",
+                        self.error
+                    ),
+                    Query::IsPredicate => format!("({value}).is_predicate()"),
+                    Query::IsCallable => format!("({value}).is_callable()"),
+                    Query::IsOwned => format!("({value}).is_owned()"),
+                    Query::IsLocal => format!(
+                        "matches!(({value}).as_callable(), Some((_, crate::CallableKind::Local)))"
+                    ),
+                    Query::IsShared => format!(
+                        "matches!(({value}).as_callable(), Some((_, crate::CallableKind::Shared)))"
+                    ),
+                    Query::IsCompact => format!("({value}).is_compact()"),
                     Query::TypeOf => format!("self.dfg.value_type({value})"),
                     Query::Len => format!("({value}).len() as i128"),
                     Query::Lanes if known_valid => format!("i128::from(({value}).lane_count())"),
                     Query::Lanes => format!(
-                        "{{ let ty = {value}; if !ty.is_valid() {{ return Err({}); }} i128::from(ty.lane_count()) }}",
+                        "{{ let ty = {value}; if !ty.is_valid() || !ty.is_compact() {{ return Err({}); }} i128::from(ty.lane_count()) }}",
                         self.error
                     ),
                     Query::MinBytes => format!(
@@ -644,7 +785,7 @@ impl Emitter<'_> {
     }
 }
 
-pub(crate) fn generate(defs: &Definitions) -> String {
+pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error> {
     let mut groups = BTreeMap::<String, Vec<&str>>::new();
     for op in &defs.ops {
         let format = defs
@@ -653,70 +794,42 @@ pub(crate) fn generate(defs: &Definitions) -> String {
             .iter()
             .find(|f| f.name == op.format)
             .unwrap();
-        let mut body = String::new();
-        let mut storage_used = false;
-        for constraint in &op.constraints {
-            if matches!(constraint.condition.kind, TermKind::Bool(true)) {
-                continue;
-            }
-            let error = format!("self.constraint_error(_inst, {:?})", constraint.text);
-            let projections = crate::packing::projections(
-                op,
-                format,
-                "&self.dfg",
-                |name| {
-                    format!(
-                        "*_f{}",
-                        format.fields.iter().position(|f| f.name == name).unwrap()
-                    )
-                },
-                |value| format!("{value}.ok_or_else(|| {error})?"),
-            )
-            .into_iter()
-            .collect();
-            let emitter = Emitter {
-                op,
-                projections,
-                error,
-                storage_used: std::cell::Cell::new(false),
-            };
-            let condition = emitter.term(&constraint.condition);
-            storage_used |= emitter.storage_used.get();
-            writeln!(
-                body,
-                "                if !({condition}) {{ return Err({}); }}",
-                emitter.error
-            )
-            .unwrap();
-        }
-        // Type-only predicates use already checked operand/result slices and
-        // therefore work for alternate instruction layouts without reprojection.
-        if storage_used {
-            let fields = format
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(i, f)| format!("{}: _f{i}", f.name))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let mismatch = if defs.storage.formats.len() + defs.storage.alternatives.len() == 1 {
-                ""
-            } else {
-                " else { unreachable!(\"checked constraint storage\") }"
-            };
-            body.insert_str(
-                0,
-                &format!(
-                    "                let InstructionView::{} {{ {fields} }} = data{mismatch};\n",
-                    format.name
-                ),
-            );
-        }
+        let body = emit_body(defs, op, format);
         groups.entry(body).or_default().push(&op.name);
     }
     let mut out = String::from(
-        "// @generated by veloc-opgen. Edit the .ops definitions instead.\nimpl Function {\n    fn validate_constraints(&self, _inst: Inst, data: &InstructionView<'_>, _operands: &[Type], _results: &[Type]) -> Result<()> {\n        match data.opcode() {\n",
+        "// @generated by veloc-opgen. Edit the .ops definitions instead.\nimpl Function {\n    fn validate_constraints(&self, _module: &crate::ModuleData, _inst: Inst, data: &InstructionView<'_>, _operands: &[Type], _results: &[Type]) -> Result<()> {\n",
     );
+    // Layout-specific auxiliary operands have contracts independent of opcode.
+    for alt in &defs.storage.alternatives {
+        if alt.constraints.is_empty() {
+            continue;
+        }
+        let Some(base) = defs.ops.iter().find(|op| alt.formats.contains(&op.format)) else {
+            return Err(Error::at(
+                source,
+                alt.text.offset,
+                "constraint layout has no operation",
+            ));
+        };
+        let (mut op, format) = crate::packing::alternate(base, alt, source)?;
+        op.constraints = check(
+            source,
+            alt.constraints.clone(),
+            &op,
+            &defs.storage,
+            &defs.types,
+            &defs.comparisons,
+        )?;
+        let body = emit_body(defs, &op, &format);
+        writeln!(
+            out,
+            "if matches!(data, InstructionView::{} {{ .. }}) {{ {body} }}",
+            alt.name
+        )
+        .unwrap();
+    }
+    out.push_str("        match data.opcode() {\n");
     for (body, names) in groups {
         let names = names
             .iter()
@@ -730,5 +843,114 @@ pub(crate) fn generate(defs: &Definitions) -> String {
         .unwrap();
     }
     out.push_str("        }\n    }\n}\n");
-    out
+    Ok(out)
+}
+
+fn emit_body(defs: &Definitions, op: &Op, format: &crate::storage::Format) -> String {
+    let mut body = String::new();
+    let mut storage_used = false;
+    if let Some(source) = &op.signature_source {
+        use crate::model::SignatureSource;
+        let error = "self.constraint_error(_inst, \"missing function or signature\")";
+        let projections: BTreeMap<_, _> = crate::packing::projections(
+            op,
+            format,
+            "&self.dfg",
+            |name| {
+                format!(
+                    "*_f{}",
+                    format.fields.iter().position(|f| f.name == name).unwrap()
+                )
+            },
+            |v| format!("{v}.ok_or_else(|| {error})?"),
+        )
+        .into_iter()
+        .collect();
+        let id = match source {
+            SignatureSource::Function(name) => format!(
+                "_module.functions.get({}).ok_or_else(|| {error})?.signature",
+                projections[name]
+            ),
+            SignatureSource::Signature(name) => projections[name].clone(),
+            SignatureSource::Value(name) => format!(
+                "self.dfg.value_type({}).as_callable().ok_or_else(|| {error})?.0",
+                projections[name]
+            ),
+        };
+        let args = &projections[&op
+            .params
+            .iter()
+            .find(|p| p.kind == ParamKind::Values)
+            .expect("checked signature arguments")
+            .name];
+        let args = args.strip_prefix('*').unwrap_or(args);
+        writeln!(body, "let signature = _module.signatures.get({id}).ok_or_else(|| {error})?;\nself.validate_values({:?}, \"value\", {args}, signature.params.iter().copied())?;\nself.validate_values({:?}, \"result\", self.dfg.inst_results(_inst), signature.returns.iter().copied())?;", op.mnemonic, op.mnemonic).unwrap();
+        storage_used = true;
+    }
+    // table(cases, default) requires a default in its physical sequence.
+    for (field, binding) in &op.packing {
+        if matches!(binding, crate::model::Binding::Table { .. }) {
+            let index = format.fields.iter().position(|f| f.name == *field).unwrap();
+            writeln!(body, "if _f{index}.is_empty() {{ return Err(self.constraint_error(_inst, \"branch table must contain a default destination\")); }}").unwrap();
+            storage_used = true;
+        }
+    }
+    for constraint in &op.constraints {
+        if matches!(constraint.condition.kind, TermKind::Bool(true)) {
+            continue;
+        }
+        let error = format!("self.constraint_error(_inst, {:?})", constraint.text);
+        let projections = crate::packing::projections(
+            op,
+            format,
+            "&self.dfg",
+            |name| {
+                format!(
+                    "*_f{}",
+                    format.fields.iter().position(|f| f.name == name).unwrap()
+                )
+            },
+            |value| format!("{value}.ok_or_else(|| {error})?"),
+        )
+        .into_iter()
+        .collect();
+        let emitter = Emitter {
+            op,
+            projections,
+            error,
+            storage_used: std::cell::Cell::new(false),
+        };
+        let condition = emitter.term(&constraint.condition);
+        storage_used |= emitter.storage_used.get();
+        writeln!(
+            body,
+            "                if !({condition}) {{ return Err({}); }}",
+            emitter.error
+        )
+        .unwrap();
+    }
+    // Type-only predicates use already checked operand/result slices and
+    // therefore work for alternate instruction layouts without reprojection.
+    if storage_used {
+        let fields = format
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, f)| format!("{}: _f{i}", f.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mismatch = if defs.storage.formats.len() + defs.storage.alternatives.len() == 1 {
+            ""
+        } else {
+            " else { unreachable!(\"checked constraint storage\") }"
+        };
+        body.insert_str(
+            0,
+            &format!(
+                "                let InstructionView::{} {{ {fields} }} = data{mismatch};\n",
+                format.name
+            ),
+        );
+    }
+    body
 }

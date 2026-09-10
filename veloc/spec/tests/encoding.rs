@@ -13,7 +13,7 @@ fn rejected(source: &str, message: &str) {
 fn layout_generates_masks_shifts_limits_and_the_type_storage() {
     let output = veloc_opgen::compile_mir(BUILTINS).unwrap().types;
     for expected in [
-        "pub struct Type(u16)",
+        "pub struct Type(u64)",
         "const SCALAR_MASK: u16 = 0x000f;",
         "const SCALAR_SHIFT: u32 = 0;",
         "const LANES_LOG2_MASK: u16 = 0x00f0;",

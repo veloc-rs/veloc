@@ -2,6 +2,100 @@
 // Storage mappings preserve the current compact MIR layout and SSA traversal order.
 // Structural constraints compile to direct checks, not a runtime rule list.
 
+// First-class callable values. Captures bind a prefix of the function parameters;
+// the resulting callable signature describes the remaining inputs and answer.
+// Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
+op ClosureNew(@func_id: FuncId, captures: values, @cleanup: FuncId) -> Callable {
+    moves: [captures],
+    mnemonic: "closure-new",
+    storage: ClosureNew { func_id: func_id, captures: captures, cleanup: cleanup },
+    text: Text { args: [invoke(func_id, captures, function(func_id)), cleanup] },
+    control: owned(func_id, captures, cleanup),
+    memory: UNKNOWN,
+    constraints: [
+        require(is_owned(result_type(0)), "callable ownership kind mismatch"),
+        require(matches(captures, prefix(params(signature(func_id)), len(captures))), "capture parameter type mismatch"),
+        require(suffix(params(signature(func_id)), len(captures)) == params(signature(result_type(0))) && returns(signature(func_id)) == returns(signature(result_type(0))), "callable inputs or answer do not match the unbound function signature"),
+        require(all(captures, |v| !is_local(type(v)) && !is_ptr(type(v))), "capture would escape a borrow or duplicate an owned environment"),
+        require(params(signature(cleanup)) == prefix(params(signature(func_id)), len(captures)) && len(returns(signature(cleanup))) == 0, "cleanup must consume the captured parameters and return void")
+    ]
+}
+
+op ClosureLocal(@func_id: FuncId, captures: values) -> Callable {
+    mnemonic: "closure-local",
+    storage: Closure { func_id: func_id, captures: captures },
+    text: Text { args: [invoke(func_id, captures, function(func_id))] },
+    control: local(func_id, captures),
+    memory: UNKNOWN,
+    constraints: [
+        require(is_local(result_type(0)), "callable ownership kind mismatch"),
+        require(matches(captures, prefix(params(signature(func_id)), len(captures))), "capture parameter type mismatch"),
+        require(suffix(params(signature(func_id)), len(captures)) == params(signature(result_type(0))) && returns(signature(func_id)) == returns(signature(result_type(0))), "callable inputs or answer do not match the unbound function signature"),
+        require(all(captures, |v| !is_owned(type(v))), "capture would escape a borrow or duplicate an owned environment")
+    ]
+}
+
+op ClosureShared(@func_id: FuncId, captures: values) -> Callable {
+    mnemonic: "closure-shared",
+    storage: Closure { func_id: func_id, captures: captures },
+    text: Text { args: [invoke(func_id, captures, function(func_id))] },
+    control: shared(func_id, captures),
+    memory: UNKNOWN,
+    constraints: [
+        require(is_shared(result_type(0)), "callable ownership kind mismatch"),
+        require(matches(captures, prefix(params(signature(func_id)), len(captures))), "capture parameter type mismatch"),
+        require(suffix(params(signature(func_id)), len(captures)) == params(signature(result_type(0))) && returns(signature(func_id)) == returns(signature(result_type(0))), "callable inputs or answer do not match the unbound function signature"),
+        require(all(captures, |v| (is_compact(type(v)) && !is_ptr(type(v))) || is_shared(type(v))), "capture would escape a borrow or duplicate an owned environment")
+    ]
+}
+
+op TailCall(@func_id: FuncId, args: values) -> () {
+    moves: [args],
+    mnemonic: "tail-call",
+    storage: TailCall { func_id: func_id, args: args },
+    text: Text { args: [invoke(func_id, args, function(func_id))] },
+    control: tail_call(func_id, args),
+    memory: UNKNOWN,
+    constraints: [
+        require(matches(args, params(signature(func_id))), "tail-call parameter type mismatch"),
+        require(returns(signature(func_id)) == returns(current_signature()), "tail-call answer type mismatch")
+    ]
+}
+
+op TailCallValue(callee: Callable, args: values) -> () {
+    moves: [callee, args],
+    mnemonic: "tail-call-value",
+    storage: CallValue { callee: callee, args: args },
+    text: Text { args: [apply(callee, args)] },
+    control: tail_call_value(callee, args),
+    memory: UNKNOWN,
+    constraints: [
+        require(matches(args, params(signature(type(callee)))), "tail-call-value parameter type mismatch"),
+        require(returns(signature(type(callee))) == returns(current_signature()), "tail-call-value answer type mismatch")
+    ]
+}
+
+op CallValue(callee: Callable, args: values) -> signature {
+    moves: [callee, args],
+    mnemonic: "call-value",
+    storage: CallValue { callee: callee, args: args },
+    signature: callable(callee),
+    text: Text { args: [apply(callee, args)] },
+    control: call(callee, args),
+    memory: UNKNOWN
+}
+
+op ClosureDrop(callee: Callable) -> () {
+    moves: [callee],
+    mnemonic: "closure-drop",
+    storage: Unary { arg: callee },
+    control: drop(callee),
+    memory: UNKNOWN,
+    constraints: [
+        require(is_owned(type(callee)), "only an owned one-shot callable can be dropped")
+    ]
+}
+
 op Iconst(@value: u64) -> ScalarInteger {
     mnemonic: "iconst",
     storage: Iconst { value: value },
@@ -437,6 +531,7 @@ op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
 }
 
 op Call(@func_id: FuncId, args: values) -> signature {
+    moves: [args],
     mnemonic: "call",
     storage: Call { func_id: func_id, args: args },
     signature: function(func_id),
@@ -445,19 +540,27 @@ op Call(@func_id: FuncId, args: values) -> signature {
 }
 
 op CallIndirect(@sig_id: SigId, ptr: PTR, args: values) -> signature {
+    moves: [args],
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
     signature: sig_id,
     text: Text { args: [invoke(ptr, args, sig_id)] },
-    traits: [MAY_TRAP], memory: UNKNOWN
+    traits: [MAY_TRAP], memory: UNKNOWN,
+    constraints: [
+        require(all(params(signature(sig_id)), |t| !is_callable(t)) && all(returns(signature(sig_id)), |t| !is_callable(t)), "indirect and intrinsic callable calls require an ownership-aware callable type")
+    ]
 }
 
 op CallIntrinsic(@intrinsic: Intrinsic, @sig_id: SigId, args: values) -> signature {
+    moves: [args],
     mnemonic: "call-intrinsic",
     storage: CallIntrinsic { intrinsic: intrinsic, args: args, sig_id: sig_id },
     signature: sig_id,
     text: Text { args: [invoke(intrinsic, args, sig_id)] },
-    traits: [MAY_TRAP], memory: UNKNOWN
+    traits: [MAY_TRAP], memory: UNKNOWN,
+    constraints: [
+        require(all(params(signature(sig_id)), |t| !is_callable(t)) && all(returns(signature(sig_id)), |t| !is_callable(t)), "indirect and intrinsic callable calls require an ownership-aware callable type")
+    ]
 }
 
 op Jump(dest: successor) -> () {
@@ -479,9 +582,13 @@ op BrTable(index: I32, cases: successors, default: successor) -> () {
 }
 
 op Return(values: values) -> () {
+    moves: [values],
     mnemonic: "return",
     storage: Return { values: values },
-    traits: [TERMINATOR], memory: NONE
+    traits: [TERMINATOR], memory: NONE,
+    constraints: [
+        require(matches(values, returns(current_signature())), "return value type mismatch")
+    ]
 }
 
 op Select<T: Any>(condition: BOOL, if_true: T, if_false: T) -> T {
@@ -493,7 +600,7 @@ op Select<T: Any>(condition: BOOL, if_true: T, if_false: T) -> T {
 op Unreachable() -> () {
     mnemonic: "unreachable",
     storage: Unreachable {},
-    traits: [TERMINATOR, MAY_TRAP], memory: NONE
+    traits: [TERMINATOR, MAY_TRAP, ABORT], memory: NONE
 }
 
 op Nop() -> () {
@@ -578,28 +685,44 @@ op LoadStride(ptr: PTR, stride: ScalarInteger, @mem: VectorMemOptions) -> Vector
     mnemonic: "load-stride",
     storage: VectorLoadStrided { ptr: ptr, stride: stride, ext: mem },
     text: Text { args: [ptr], named: [stride, default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
-    traits: [MAY_TRAP], memory: HEAP_READ
+    traits: [MAY_TRAP], memory: HEAP_READ,
+    constraints: [
+        require(all(mem.mask, |v| is_predicate(type(v)) && shape(type(v)) == shape(result_type(0))), "mask must match vector shape"),
+        require(all(mem.evl, |v| type(v) == I32), "EVL must be i32")
+    ]
 }
 
 op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, @mem: VectorMemOptions) -> () {
     mnemonic: "store-stride",
     storage: VectorStoreStrided { args: [ptr, stride, value], ext: mem },
     text: Text { args: [value, ptr], named: [stride, default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
-    traits: [MAY_TRAP], memory: HEAP_WRITE
+    traits: [MAY_TRAP], memory: HEAP_WRITE,
+    constraints: [
+        require(all(mem.mask, |v| is_predicate(type(v)) && shape(type(v)) == shape(type(value))), "mask must match vector shape"),
+        require(all(mem.evl, |v| type(v) == I32), "EVL must be i32")
+    ]
 }
 
 op Gather<T: Integer & Vector>(ptr: PTR, index: T, @mem: VectorMemOptions) -> shape(T, Vector) {
     mnemonic: "gather",
     storage: VectorGather { ptr: ptr, index: index, ext: mem },
     text: Text { args: [ptr], named: [index, default(mem.scale, 1), default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
-    traits: [MAY_TRAP], memory: HEAP_READ
+    traits: [MAY_TRAP], memory: HEAP_READ,
+    constraints: [
+        require(all(mem.mask, |v| is_predicate(type(v)) && shape(type(v)) == shape(result_type(0))), "mask must match vector shape"),
+        require(all(mem.evl, |v| type(v) == I32), "EVL must be i32")
+    ]
 }
 
 op Scatter<T: Integer & Vector>(ptr: PTR, index: T, value: shape(T, Vector), @mem: VectorMemOptions) -> () {
     mnemonic: "scatter",
     storage: VectorScatter { args: [ptr, index, value], ext: mem },
     text: Text { args: [value, ptr], named: [index, default(mem.scale, 1), default(mem.offset, 0), optional(mem.mask), optional(mem.evl)], flags: mem.flags },
-    traits: [MAY_TRAP], memory: HEAP_WRITE
+    traits: [MAY_TRAP], memory: HEAP_WRITE,
+    constraints: [
+        require(all(mem.mask, |v| is_predicate(type(v)) && shape(type(v)) == shape(type(value))), "mask must match vector shape"),
+        require(all(mem.evl, |v| type(v) == I32), "EVL must be i32")
+    ]
 }
 
 op SetVL(arg: ScalarInteger) -> I32 {

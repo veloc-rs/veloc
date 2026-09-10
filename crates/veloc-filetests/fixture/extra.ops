@@ -1,4 +1,21 @@
 // Exercise contracts not represented by production MIR instructions.
+// These have no control lowering interface: validation comes only from defs.
+op Rebind(value: Callable) -> Callable {
+    mnemonic: "rebind", storage: Unary { arg: value },
+    moves: [value], memory: UNKNOWN,
+    constraints: [require(type(value) == result_type(0), "rebind type mismatch")]
+}
+format MoveBranch {
+    fields: [value(Value), dest(BlockCall)], opcode: fixed(MoveBranch)
+}
+op MoveBranch(value: Callable, dest: successor) -> () {
+    mnemonic: "move-branch", storage: MoveBranch { value: value, dest: dest },
+    moves: [value], traits: [TERMINATOR], memory: UNKNOWN
+}
+op Observe(value: Callable) -> () {
+    mnemonic: "observe", storage: Unary { arg: value }, memory: UNKNOWN
+}
+
 format FunctionOperand {
     fields: [op(Opcode), target(FuncId)], opcode: dynamic(op)
 }

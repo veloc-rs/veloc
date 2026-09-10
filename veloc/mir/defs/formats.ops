@@ -84,6 +84,22 @@ format Call {
     fields: [func_id(FuncId), args(ValueList)],
     opcode: fixed(Call)
 }
+format ClosureNew {
+    fields: [func_id(FuncId), captures(ValueList), cleanup(FuncId)],
+    opcode: fixed(ClosureNew)
+}
+format Closure {
+    fields: [opcode(Opcode), func_id(FuncId), captures(ValueList)],
+    opcode: dynamic(opcode)
+}
+format TailCall {
+    fields: [func_id(FuncId), args(ValueList)],
+    opcode: fixed(TailCall)
+}
+format CallValue {
+    fields: [opcode(Opcode), callee(Value), args(ValueList)],
+    opcode: dynamic(opcode)
+}
 format CallIndirect {
     fields: [ptr(Value), args(ValueList), sig_id(SigId)],
     opcode: fixed(CallIndirect)
@@ -151,5 +167,10 @@ layout VectorOpWithExt {
     fields: [opcode(Opcode), args(ValueList), ext(VectorExtData)],
     opcode: dynamic(opcode),
     format: arity(args, [Unary, Binary, Ternary]),
-    text: Text { args: [args], named: [ext.mask, optional(ext.evl)] }
+    text: Text { args: [args], named: [ext.mask, optional(ext.evl)] },
+    constraints: [
+        require(len(results()) == 1 && all(results(), |t| is_vector(t)), "predicated operation must produce a vector"),
+        require(all(results(), |t| is_predicate(type(ext.mask)) && shape(type(ext.mask)) == shape(t)), "mask must match vector shape"),
+        require(all(ext.evl, |v| type(v) == I32), "EVL must be i32")
+    ]
 }

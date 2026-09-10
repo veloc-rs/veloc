@@ -62,6 +62,7 @@ fn generated_rust_executes_checked_arithmetic_and_short_circuit_loops() {
     let mut code = String::from(
         r#"
 #![allow(dead_code)]
+type ModuleData = ();
 type Inst = usize;
 type Type = ();
 type Result<T> = std::result::Result<T, String>;
@@ -99,7 +100,7 @@ mod numeric_{index} {{
     #[test] fn execute() {{
         let f = Function;
         for ((bits, yes), expected) in [(3, false), (3, true), (u64::MAX, false), (u64::MAX, true)].into_iter().zip({expected:?}) {{
-            assert_eq!(f.validate_constraints(0, &ViewData::Custom {{ opcode: Opcode::Example, bits, yes }}, &[], &[]).is_ok(), expected);
+            assert_eq!(f.validate_constraints(&(), 0, &ViewData::Custom {{ opcode: Opcode::Example, bits, yes }}, &[], &[]).is_ok(), expected);
         }}
     }}
 }}
@@ -134,11 +135,11 @@ mod sequences_{index} {{
     #[test] fn execute() {{
         let data = ViewData::Buffers {{ opcode: Opcode::Example, first: inst::ConstantPoolId(0), second: inst::ConstantPoolId(99) }};
         let f = Function {{ dfg: vec![vec![0, 1]] }};
-        assert_eq!(f.validate_constraints(0, &data, &[], &[]).is_ok(), {valid});
+        assert_eq!(f.validate_constraints(&(), 0, &data, &[], &[]).is_ok(), {valid});
         let empty = Function {{ dfg: vec![vec![]] }};
-        assert!(empty.validate_constraints(0, &data, &[], &[]).is_ok());
+        assert!(empty.validate_constraints(&(), 0, &data, &[], &[]).is_ok());
         let missing = Function {{ dfg: vec![] }};
-        assert!(missing.validate_constraints(0, &data, &[], &[]).is_err());
+        assert!(missing.validate_constraints(&(), 0, &data, &[], &[]).is_err());
     }}
 }}
 "#));

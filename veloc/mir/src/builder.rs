@@ -4,7 +4,7 @@ use super::types::{Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, 
 use crate::Opcode;
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
 use alloc::vec::Vec;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 include!(concat!(env!("OUT_DIR"), "/builders.rs"));
 
@@ -74,10 +74,18 @@ pub struct FunctionBuilder<'a> {
     def_map: HashMap<Block, HashMap<Variable, Value>>,
     // 未密封 Block 中待处理的 Phi 节点: Block -> Variable -> Phi Value
     incomplete_phis: HashMap<Block, Vec<(Variable, Value)>>,
+    // Sealing belongs to this SSA construction session, not the finished IR.
+    sealed: HashSet<Block>,
 }
 
 impl<'a> FunctionBuilder<'a> {
     pub(crate) fn new(module: &'a mut ModuleData, func_id: FuncId) -> Self {
+        let sealed = module.functions[func_id]
+            .layout
+            .block_order
+            .iter()
+            .copied()
+            .collect();
         let mut builder = Self {
             module,
             func_id,
@@ -85,6 +93,7 @@ impl<'a> FunctionBuilder<'a> {
             var_types: HashMap::new(),
             def_map: HashMap::new(),
             incomplete_phis: HashMap::new(),
+            sealed,
         };
 
         if let Some(entry) = builder.func().entry_block {
@@ -298,7 +307,7 @@ impl<'a> FunctionBuilder<'a> {
 
     fn use_var_recursive(&mut self, block: Block, var: Variable) -> Value {
         let val;
-        if !self.func().layout.blocks[block].is_sealed {
+        if !self.sealed.contains(&block) {
             // Incomplete phi
             let ty = self.var_types[&var];
             val = self.add_block_param(block, ty);
@@ -336,7 +345,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn seal_block(&mut self, block: Block) {
-        if self.func().layout.blocks[block].is_sealed {
+        if self.sealed.contains(&block) {
             return;
         }
         if let Some(phis) = self.incomplete_phis.remove(&block) {
@@ -344,7 +353,7 @@ impl<'a> FunctionBuilder<'a> {
                 self.add_phi_operands(block, var, phi);
             }
         }
-        self.func_mut().layout.blocks[block].is_sealed = true;
+        self.sealed.insert(block);
     }
 
     pub fn seal_all_blocks(&mut self) {
@@ -359,7 +368,14 @@ impl<'a> FunctionBuilder<'a> {
             return;
         };
         let mut data = self.func().dfg.draft(inst);
-        if data.set_successor_arg(target, index, val) {
+        let mut changed = false;
+        data.edit_successors(|edge| {
+            if edge.block() == target {
+                edge.set_arg(index, val);
+                changed = true;
+            }
+        });
+        if changed {
             self.func_mut().edit().replace_inst(inst, data);
         }
     }
@@ -485,6 +501,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         self.insert_inferred(InstDraft::call(func_id, args))
     }
 
+    /// Call a typed value and infer its results from the value's signature.
+    pub fn call_value(&mut self, callee: Value, args: &[Value]) -> Inst {
+        self.insert_inferred(InstDraft::call_value(Opcode::CallValue, callee, args))
+    }
+
     pub fn call_indirect(&mut self, sig_id: SigId, ptr: Value, args: &[Value]) -> Inst {
         self.insert_inferred(InstDraft::call_indirect(ptr, args, sig_id))
     }
@@ -534,10 +555,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             ),
             &[],
         );
-    }
-
-    pub fn ret(&mut self, values: &[Value]) {
-        self.insert(InstDraft::ret(values), &[]);
     }
 
     /// Call an intrinsic function.

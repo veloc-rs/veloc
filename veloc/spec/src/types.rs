@@ -56,6 +56,16 @@ impl Types {
         source: &str,
         encoding: &TypeEncoding,
     ) -> Result<Self, Error> {
+        if let Some(record) = records
+            .iter()
+            .find(|r| matches!(r.kind.as_str(), "type" | "class") && r.name == "Callable")
+        {
+            return Err(Error::at(
+                source,
+                record.offset,
+                "Callable is a reserved structural type name",
+            ));
+        }
         let declarations = crate::type_expr::compile(records, source, encoding)?;
         let mut types = Self {
             scalars: declarations.scalars,
@@ -153,7 +163,10 @@ impl Types {
             {
                 return Err(fields.error("predicate name must be snake_case and start with is_"));
             }
-            if matches!(record.name.as_str(), "is_valid" | "is_scalable") {
+            if matches!(
+                record.name.as_str(),
+                "is_valid" | "is_scalable" | "is_compact" | "is_callable" | "is_owned"
+            ) {
                 return Err(fields.error("predicate name conflicts with a built-in Type method"));
             }
             let set = types.set(source, &fields.take("set")?)?;

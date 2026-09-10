@@ -146,13 +146,13 @@ fn compact_scalar_codes_and_adapter_contracts_are_checked() {
 #[test]
 fn traits_and_regions_use_declared_storage_and_members() {
     let source = common::source("")
-        .replace("MAY_TRAP(2)", "MAY_TRAP(2), EXTRA_FACT(5)")
+        .replace("MAY_TRAP(2)", "MAY_TRAP(2), EXTRA_FACT(6)")
         .replace("EXTERNAL(4)", "EXTERNAL(4), DEVICE(5)");
     let output = veloc_opgen::compile_mir(&source).unwrap();
     assert!(
         output
             .opcodes
-            .contains("pub const EXTRA_FACT: Self = Self(1 << 5)")
+            .contains("pub const EXTRA_FACT: Self = Self(1 << 6)")
     );
     assert!(
         output

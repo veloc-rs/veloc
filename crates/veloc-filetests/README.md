@@ -5,6 +5,7 @@ Run the file regressions and the generated-API execution tests:
 ```sh
 cargo test -p veloc-filetests -p veloc-test-mir
 cargo test -p veloc-filetests --test files opgen/
+cargo test -p veloc-filetests --test files mir/callables.mir
 cargo test -p veloc-filetests --test files optimizer/simplify
 cargo test --workspace
 ```
@@ -46,6 +47,7 @@ the presence of an opcode. Assertions belong in `//` comments.
 | `parse` | Parse and print without validation, including deliberately ill-typed IR |
 | `roundtrip` | Parse, validate, print, reparse, validate, and check canonical text stability |
 | `parse-error` | Require a parser diagnostic |
+| `lower-error` | Require valid MIR to be explicitly rejected by native lowering |
 | `validate-error` | Parsing must succeed; require a validator diagnostic |
 | `simplify` | Run simplify, audit exact use chains against operands, check a fixed point, validate and round-trip |
 | `o1` | Run the production O1 pipeline, validate and round-trip |
@@ -68,6 +70,12 @@ accepted as modeled traps. In particular, interpreter integer division by zero
 currently panics, so division-trap coverage remains in semantic execution and
 optimization-preservation tests rather than being treated as a passing runtime
 trap test here.
+
+`mir/callables.mir` covers ordinary typed calls with SSA results, repeated local
+and shared calls, owned call/drop rules, and explicit tail transfers. Its runtime
+cases compare behavior before and after O1; round-trip and rejection cases check
+the inferred callable signature and ownership diagnostics. The model and current
+backend limits are described in [the callable documentation](../../veloc/mir/docs/callables.md).
 
 ## Generator coverage
 

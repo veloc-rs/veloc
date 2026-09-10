@@ -67,7 +67,8 @@ impl<'a> InstPrinter<'a> {
     }
 
     fn fmt_definition(&self, f: &mut dyn Write, value: Value) -> Result {
-        write!(f, "{}: {}", self.vf(value), self.dfg.value_type(value))
+        write!(f, "{}: ", self.vf(value))?;
+        self.fmt_type(f, self.dfg.value_type(value))
     }
 
     fn fmt_head(&self, f: &mut dyn Write, name: &str, flags: MemFlags) -> Result {
@@ -128,7 +129,7 @@ impl<'a> InstPrinter<'a> {
             if index != 0 {
                 f.write_str(", ")?;
             }
-            write!(f, "{ty}")?;
+            self.fmt_type(f, *ty)?;
         }
         Ok(())
     }
@@ -136,12 +137,28 @@ impl<'a> InstPrinter<'a> {
     pub fn fmt_ret_types(&self, f: &mut dyn Write, types: &[Type]) -> Result {
         match types {
             [] => f.write_str("void"),
-            [ty] => write!(f, "{ty}"),
+            [ty] => self.fmt_type(f, *ty),
             types => {
                 f.write_char('(')?;
                 self.fmt_types(f, types)?;
                 f.write_char(')')
             }
+        }
+    }
+
+    fn fmt_type(&self, f: &mut dyn Write, ty: Type) -> Result {
+        if let Some((sig, kind)) = ty.as_callable() {
+            let module = self.module.ok_or(core::fmt::Error)?;
+            let sig = module.signatures.get(sig).ok_or(core::fmt::Error)?;
+            f.write_str(match kind {
+                crate::CallableKind::Local => "local<",
+                crate::CallableKind::Owned => "owned<",
+                crate::CallableKind::Shared => "shared<",
+            })?;
+            self.fmt_signature(f, sig)?;
+            f.write_char('>')
+        } else {
+            write!(f, "{ty}")
         }
     }
 

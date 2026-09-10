@@ -56,49 +56,18 @@ define_control_handlers! {
         data_offset,
         num_vals,
     } => {
-        let data_off = data_offset as usize;
-        let nvals = num_vals as usize;
-        let cur_base = frame.base;
-        let cur_stack = frame.stack_base;
-
-        if interpreter.frames.is_empty() {
-            for i in 0..nvals {
-                interpreter.results_buffer
-                    .push(get!(frame.func.data_section.return_reg(data_off, i)));
-            }
-            interpreter.value_stack.truncate(cur_base);
-            interpreter.stack_top = cur_stack;
-            return DispatchExit::Returned;
-        }
-
         interpreter.args_buffer.clear();
-        for i in 0..nvals {
-            interpreter.args_buffer
-                .push(get!(frame.func.data_section.return_reg(data_off, i)));
+        for i in 0..num_vals as usize {
+            interpreter.args_buffer.push(get!(frame.func.data_section.return_reg(data_offset as usize, i)));
         }
-        interpreter.value_stack.truncate(cur_base);
-        interpreter.stack_top = cur_stack;
-
-        let prev = interpreter.frames.pop().unwrap();
-        let dst_start = prev.dst_regs_start;
-        let dst_count = prev.dst_regs_count;
-        frame.pc = prev.pc;
-        frame.base = prev.base;
-        frame.stack_base = prev.stack_base;
-        frame.func = prev.func;
-        frame.module = prev.module;
-        next_ip = frame.func.code.as_ptr().add(frame.pc);
-        values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
-
-        debug_assert_eq!(dst_count, interpreter.args_buffer.len());
-        for i in 0..dst_count {
-            let dst_reg = interpreter.dst_regs_buffer[dst_start + i];
-            if dst_reg != Reg::NULL {
-                *reg!(dst_reg) = interpreter.args_buffer[i];
+        match interpreter.return_frame(frame) {
+            Some(pc) => {
+                next_ip = frame.func.code.as_ptr().add(pc);
+                values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
+                dispatch_next!(next_ip, values_ptr);
             }
+            None => return DispatchExit::Returned,
         }
-        interpreter.dst_regs_buffer.truncate(dst_start);
-        dispatch_next!(next_ip, values_ptr);
     }
     Call {
         num_rets,
@@ -106,6 +75,7 @@ define_control_handlers! {
         func_id,
         data_offset,
     } => {
+        frame.roots_pc = ip.offset_from(frame.func.code.as_ptr()) as usize;
         let dst_start = interpreter.read_call_data(
             &frame.func.data_section,
             values_ptr,
@@ -161,7 +131,9 @@ define_control_handlers! {
         num_rets,
         num_args,
         data_offset,
+        sig_id,
     } => {
+        frame.roots_pc = ip.offset_from(frame.func.code.as_ptr()) as usize;
         let dst_start = interpreter.read_call_data(
             &frame.func.data_section,
             values_ptr,
@@ -172,7 +144,11 @@ define_control_handlers! {
         let address = get!(ptr).0 as usize;
         let return_pc = next_ip.offset_from(frame.func.code.as_ptr()) as usize;
 
-        match program.resolve_ref(address) {
+        let target = program.resolve_ref(address);
+        if target.is_some_and(|target| !program.matches_signature(frame.module,veloc_mir::SigId(sig_id),target)) {
+            return DispatchExit::InvalidCallSignature;
+        }
+        match target {
             Some(CallTarget::Bytecode(target_module, target_func)) => {
                 if let Err(exit) = interpreter.do_call(
                     program,
@@ -272,5 +248,19 @@ define_control_handlers! {
     }
     Unreachable {} => {
         return DispatchExit::Unreachable;
+    }
+    Control { site } => {
+        frame.roots_pc = ip.offset_from(frame.func.code.as_ptr()) as usize;
+        let return_pc = next_ip.offset_from(frame.func.code.as_ptr()) as usize;
+        match interpreter.execute_control(program, frame, site as usize, return_pc) {
+            Ok(super::super::callable::Action::Enter(pc)) => {
+                next_ip = frame.func.code.as_ptr().add(pc);
+                values_ptr = interpreter.value_stack.as_mut_ptr().add(frame.base);
+                dispatch_next!(next_ip, values_ptr);
+            }
+            Ok(super::super::callable::Action::Continue) => {},
+            Ok(super::super::callable::Action::Returned) => return DispatchExit::Returned,
+            Err(exit) => return exit,
+        }
     }
 }

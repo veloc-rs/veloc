@@ -45,6 +45,7 @@ pub(crate) struct Alternative {
     pub fields: Vec<Field>,
     pub formats: Vec<String>,
     pub text: Node,
+    pub constraints: Vec<Node>,
 }
 
 #[derive(Debug)]
@@ -56,6 +57,7 @@ struct Layout {
     format: FormatSource,
     canonical: bool,
     text: Option<Node>,
+    constraints: Vec<Node>,
 }
 
 #[derive(Clone, Debug)]
@@ -172,7 +174,7 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
         "opcode",
         "operands",
         "set_operand",
-        "set_successor_arg",
+        "edit_successors",
         "is_terminator",
         "result_types",
         "from_values",
@@ -222,6 +224,7 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
             .iter()
             .filter(|layout| !layout.canonical)
             .map(|layout| Alternative {
+                constraints: layout.constraints.clone(),
                 name: layout.name.clone(),
                 fields: layout.fields.clone(),
                 formats: match &layout.format {
@@ -243,7 +246,7 @@ fn parse_layout(record: &Record, source: &str, records: &[RecordDef]) -> Result<
     let allowed: &[&str] = if is_format {
         &["fields", "opcode"]
     } else {
-        &["fields", "opcode", "format", "text"]
+        &["fields", "opcode", "format", "text", "constraints"]
     };
     for (name, value) in &record.fields {
         if !allowed.contains(&name.as_str()) {
@@ -404,6 +407,13 @@ fn parse_layout(record: &Record, source: &str, records: &[RecordDef]) -> Result<
         (format, Some(text))
     };
     let layout = Layout {
+        constraints: record
+            .fields
+            .get("constraints")
+            .cloned()
+            .map(|node| crate::model::list(source, node))
+            .transpose()?
+            .unwrap_or_default(),
         offset: record.offset,
         name: record.name.clone(),
         fields,

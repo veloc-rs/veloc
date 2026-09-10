@@ -1,0 +1,81 @@
+// ----- reject-impure-control-without-effects
+// run: opgen-error
+// check: control interface must bind all parameters directly
+format Apply {
+    fields: [cont(Value), args(ValueList)], opcode: fixed(Apply)
+}
+op Apply(cont: Callable, args: values) -> () {
+    mnemonic: "apply", storage: Apply { cont: cont, args: args },
+    control: tail_call_value(cont, args), memory: NONE
+}
+
+// ----- reject-wrong-control-operand-kind
+// run: opgen-error
+// check: invalid control interface or parameter kinds
+format Apply {
+    fields: [cont(Value), args(ValueList)], opcode: fixed(Apply)
+}
+op Apply(cont: Callable, args: values) -> () {
+    mnemonic: "apply", storage: Apply { cont: cont, args: args },
+    control: tail_call(cont, args), traits: [TERMINATOR, MAY_TRAP], memory: UNKNOWN
+}
+
+// ----- reject-noncallable-tail-call-contract
+// run: opgen-error
+// check: control interface must bind all parameters directly
+format Apply {
+    fields: [cont(Value), args(ValueList)], opcode: fixed(Apply)
+}
+op Apply(cont: I32, args: values) -> () {
+    mnemonic: "apply", storage: Apply { cont: cont, args: args },
+    control: tail_call_value(cont, args), traits: [TERMINATOR, MAY_TRAP], memory: UNKNOWN
+}
+
+// ----- structural-type-name-cannot-be-shadowed
+// run: opgen-error
+// check: Callable is a reserved structural type name
+class Callable { members: [I32] }
+
+// ----- move-contract-rejects-properties
+// run: opgen-error
+// check: moves must name distinct value operands
+format Take { fields: [function(FuncId)], opcode: fixed(Take) }
+op Take(@function: FuncId) -> () {
+    mnemonic: "take", storage: Take { function: function },
+    moves: [function], memory: UNKNOWN
+}
+
+// ----- move-contract-rejects-duplicates
+// run: opgen-error
+// check: moves must name distinct value operands
+format Take { fields: [value(Value)], opcode: fixed(Take) }
+op Take(value: Callable) -> () {
+    mnemonic: "take", storage: Take { value: value },
+    moves: [value, value], memory: UNKNOWN
+}
+
+// ----- abort-is-an-exit-contract
+// run: opgen-error
+// check: ABORT requires TERMINATOR
+format Stop { fields: [], opcode: fixed(Stop) }
+op Stop() -> () {
+    mnemonic: "stop", storage: Stop {}, traits: [ABORT], memory: NONE
+}
+
+// ----- signature-query-is-typed
+// run: opgen-error
+// check: signature expects a function, signature ID or callable type
+format Check { fields: [n(u32)], opcode: fixed(Check) }
+op Check(@n: u32) -> () {
+    mnemonic: "check", storage: Check { n: n }, memory: NONE,
+    constraints: [len(params(signature(n))) == 0]
+}
+
+// ----- slice-query-is-typed
+// run: opgen-error
+// check: slice expects a sequence
+format Check { fields: [n(u32)], opcode: fixed(Check) }
+op Check(@n: u32) -> () {
+    mnemonic: "check", storage: Check { n: n }, memory: NONE,
+    constraints: [len(prefix(n, 0)) == 0]
+}

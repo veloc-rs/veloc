@@ -24,6 +24,51 @@ mod offline {
 include!(concat!(env!("OUT_DIR"), "/lowering.rs"));
 
 #[test]
+fn new_ops_get_constraints_and_ownership_without_rust_opcode_cases() {
+    let parse = |text: &str| veloc_mir::ModuleParser::new().parse(text).unwrap();
+    let valid = "local function test(owned<() -> void>) -> owned<() -> void>\nblock0(v0: owned<() -> void>):\n  v1: owned<() -> void> = rebind v0\n  return v1\n";
+    parse(valid).validate().unwrap();
+    let twice = valid.replace("return v1", "closure-drop v0\n  return v1");
+    assert!(
+        parse(&twice)
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("used after move")
+    );
+    let changed = valid.replace("v1: owned<() -> void>", "v1: shared<() -> void>");
+    assert!(
+        parse(&changed)
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("rebind type mismatch")
+    );
+    let observe = valid.replace(
+        "v1: owned<() -> void> = rebind v0",
+        "observe v0\n  v1: owned<() -> void> = rebind v0",
+    );
+    assert!(
+        parse(&observe)
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("no ownership transfer contract")
+    );
+
+    let branch = "local function test(owned<() -> void>, owned<() -> void>) -> void\nblock0(v0: owned<() -> void>, v1: owned<() -> void>):\n  move-branch v0, block1(v1)\nblock1(v2: owned<() -> void>):\n  closure-drop v2\n  return\n";
+    parse(branch).validate().unwrap();
+    let twice = branch.replace("block1(v1)", "block1(v0)");
+    assert!(
+        parse(&twice)
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("used after move")
+    );
+}
+
+#[test]
 fn definition_owned_records_flatten_operands_in_field_order() {
     use veloc_mir::dfg::DataFlowGraph;
     use veloc_mir::inst::TestOperands;
@@ -45,6 +90,21 @@ fn definition_owned_records_flatten_operands_in_field_order() {
             vec![Value(0), Value(1), Value(2)]
         };
         assert_eq!(dfg.operands(inst), expected);
+        // Errors in auxiliary record operands must stop traversal too, not
+        // merely suppress later callbacks or skip optional fields.
+        for stop in 0..expected.len() {
+            let mut visited = Vec::new();
+            let result = dfg.inst(inst).try_visit_operands(|value| {
+                visited.push(value);
+                if visited.len() == stop + 1 {
+                    Err(stop)
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result, Err(stop));
+            assert_eq!(visited, expected[..=stop]);
+        }
         dfg.set_operand(inst, 1, Value(3));
         let InstructionView::Grouped {
             before,
@@ -684,9 +744,11 @@ fn drafts_share_storage_shape_and_edit_repeated_successors_independently() {
     let original = dfg.operands(inst).to_vec();
     let mut draft = dfg.draft(inst);
     let untouched = draft.clone();
-    assert!(draft.set_successor_arg(target, 2, Value(4)));
-    assert!(!draft.set_successor_arg(target, 2, Value(4)));
-    assert!(!draft.set_successor_arg(Block(9), 0, Value(8)));
+    draft.edit_successors(|edge| {
+        if edge.block() == target {
+            edge.set_arg(2, Value(4));
+        }
+    });
     draft.set_operand(0, Value(5));
     assert_eq!(dfg.operands(inst), original);
     assert_eq!(untouched.operands(), original);
@@ -760,7 +822,7 @@ fn draft_successor_growth_preserves_record_inputs_and_following_fields() {
                 evl: optional,
             },
         );
-        assert!(draft.set_successor_arg(Block(1), 3, Value(4)));
+        draft.edit_successors(|edge| edge.set_arg(3, Value(4)));
         let InstructionView::Routed {
             group,
             dest,

@@ -180,7 +180,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 .map_err(|error| error.to_string())?;
             rejected(module.validate())
         }
-        "roundtrip" | "simplify" | "o1" | "lower" | "execute" => {
+        "roundtrip" | "simplify" | "o1" | "lower" | "lower-error" | "execute" => {
             let module = ModuleParser::new()
                 .parse(source)
                 .map_err(|error| error.to_string())?;
@@ -188,6 +188,11 @@ fn execute(mode: &str, source: &str) -> Result<String> {
             let module = match mode {
                 "simplify" => simplify(module)?,
                 "o1" => optimize(&module),
+                "lower-error" => {
+                    return rejected(
+                        veloc_codegen::translate::IRTranslator::new(&module).translate_module(),
+                    );
+                }
                 "execute" => {
                     let optimized = optimize(&module);
                     optimized.validate().map_err(|error| error.to_string())?;

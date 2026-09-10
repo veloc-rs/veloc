@@ -50,6 +50,40 @@ Generated Rust artifacts follow their consumers, not the input file boundaries:
 Construction and validation remain separate. Optimizer evaluation, offline
 semantics and backend lowering retain separate artifacts and consumers.
 
+### Validation and ownership contracts
+
+`constraints` compile to direct Rust checks at the explicit validation phase.
+They do not run in builders and are not interpreted at runtime. The same
+expression language applies to operations and alternate storage layouts:
+
+```text
+constraints: [
+    require(matches(args, params(signature(function))), "argument types differ"),
+    require(returns(signature(function)) == returns(current_signature()), "answer types differ"),
+    require(all(options.evl, |v| type(v) == I32), "EVL must be i32")
+]
+```
+
+`signature` accepts a `FuncId`, `SigId`, or callable `Type`. `params` and
+`returns` borrow type sequences; `results()` exposes the instruction's result
+types. `matches` compares SSA value types with a type sequence without allocating.
+`prefix(sequence, count)` and `suffix(sequence, count)` use checked slicing.
+`all` supports both sequences and optional values (absence satisfies the predicate).
+Invalid handles or slices produce the constraint diagnostic, not a panic.
+Layout constraints describe auxiliary operands such as masks independently of
+the underlying opcode. A signature-selected call's argument/result checks and a
+`table(cases, default)` mapping's required default are derived automatically.
+
+`moves: [operand, operand_list]` declares which non-edge operands transfer
+ownership. Undeclared inputs cannot consume owned values. Successor arguments
+transfer on their own mutually exclusive edges; non-edge inputs execute once
+before the branch. `ABORT` marks an abnormal exit that need not transfer remaining
+owned values and requires `TERMINATOR`. The generated operand visitor feeds one
+shared CFG dataflow analysis: it contains no opcode whitelist. Control lowering
+interfaces describe execution, not an implicit ownership contract.
+Their required `MAY_TRAP`/`TERMINATOR` traits are derived from the control
+primitive; operations need not repeat them. Memory effects remain explicit.
+
 ## Comparison predicates
 
 ```text
@@ -118,7 +152,9 @@ encoding Type {
 ```
 
 Fields are packed in declaration order, from low to high bits. Unused high bits
-are reserved. This generates the `Type` storage declaration, layout documentation,
+of this compact payload are reserved. `Type` itself is a tagged u64: structural
+callable types use a disjoint tag plus a module-interned signature, and do not
+have a u16 raw encoding. This generates the storage declaration, layout documentation,
 masks, shifts, used-bit mask and lane-exponent limit. Scalar code validation uses
 the same field width; it does not independently assume codes fit in four bits.
 Type construction and decoding consume these generated values, including a
@@ -135,6 +171,29 @@ zero-width and overflowing fields are definition errors. Changing the layout
 changes raw encodings; the checked-in layout preserves the existing representation.
 Vector legality and type semantics remain Rust algorithms, separate from this
 MIR-specific physical representation. HIR and LIR need not share this layout.
+
+Callable operations additionally declare a typed `control` interface:
+`owned(function, captures, cleanup)`, `local(function, captures)`,
+`shared(function, captures)`, `tail_call(function, args)`,
+`call(callee, args)`, `tail_call_value(callee, args)` or `drop(callee)`.
+These are trusted semantic primitives, like the bitvector
+primitives, not arbitrary Rust snippets. The generator checks their operand,
+result, storage and effect contracts and emits `Opcode::has_control()` for
+classification. Backends lower instruction views directly; there is no runtime
+control wrapper or automatic implementation of new operations.
+Global signature/ownership dataflow remains a shared validator algorithm. The
+`Callable` type pattern and `apply(callee, args)` text projection require no
+opcode-specific parser switch. `signature: callable(callee)` selects the signature
+from the SSA value's type, derives argument/result validation and infers the
+results of an ordinary `call-value`. Tail calls instead require their answer to
+match the enclosing function. See [the MIR callable contract](../mir/docs/callables.md)
+for ownership, dropping and interpreter behavior.
+
+Signature sources exist only in the generator. Result inference directly reads
+the declared function, signature ID or callable type; it does not construct call
+metadata or validate arguments. `Opcode::has_signature()` classifies operations
+with such a declaration without unpacking their operands. Invalid source handles
+still report inference errors; complete type validation remains a separate stage.
 
 The `codes` table assigns each primitive scalar its stable backend code separately
 from its type expression. Codes must be nonzero, unique and fit the scalar field.
@@ -800,6 +859,16 @@ updates instructions, result transfers, layout and affected CFG edges. Builder,
 parser, simplification and dead-code removal use this path. Standalone DFG
 editing maintains operand references but does not own block layout. Type
 contracts remain explicit validation, not implicit builder checks.
+
+Storage definitions also generate successor-occurrence editing. `EdgeRef`
+identifies an instruction and a successor position, not a source/destination
+pair. `SuccessorMut` can redirect or resize one edge without changing parallel
+edges. CFG adjacency is derived from the final instruction and unchanged targets
+retain their predecessor relations. Sealing is SSA-builder-local state, not a
+property of finished blocks. Validation checks structure before type projections,
+then CFG consistency and entry-reachable dominance. The callable migration
+contract and its implementation status are documented in
+[callables.md](../mir/docs/callables.md).
 
 Simplification uses a deduplicated worklist of affected definitions and users
 instead of repeatedly scanning the whole function. It preserves Value IDs during

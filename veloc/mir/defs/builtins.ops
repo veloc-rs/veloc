@@ -7,7 +7,7 @@ encoding MemFlags {
 
 flags OpTraits {
     storage: u16,
-    members: [TERMINATOR(0), COMMUTATIVE(1), ASSOCIATIVE(3), IDEMPOTENT(4), MAY_TRAP(2)],
+    members: [TERMINATOR(0), COMMUTATIVE(1), ASSOCIATIVE(3), IDEMPOTENT(4), MAY_TRAP(2), ABORT(5)],
     separator: ", "
 }
 

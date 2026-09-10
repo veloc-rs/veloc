@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::model::{Binding, Definitions, Op, ParamKind, Semantic, SemanticStep, SignatureSource};
+use crate::model::{Definitions, Op, ParamKind, Semantic, SemanticStep};
 use crate::storage::FieldType;
 use crate::{Error, Generated};
 
@@ -13,6 +13,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
     type_rules.push_str("use super::TypeClass as C;\nuse crate::Type;\n");
     let mut instructions = defs.storage.instructions.clone();
     instructions.push_str(&accessors(defs));
+    instructions.push_str(&crate::ownership::generate(defs));
     crate::type_rules::generate(defs, &classes, &mut type_rules, &mut instructions);
 
     let mut ops = String::from(HEADER);
@@ -70,6 +71,12 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         .unwrap();
     }
     ops.push_str("            _ => None,\n        }\n    }\n}\n");
+    ops.push_str(&classification(defs, "has_control", |op| {
+        op.control.is_some()
+    }));
+    ops.push_str(&classification(defs, "has_signature", |op| {
+        op.signature_source.is_some()
+    }));
     let mut builders = String::from(HEADER);
     builders.push_str("impl<'b, 'a> crate::builder::InstBuilder<'b, 'a> {\n");
     for op in &defs.ops {
@@ -92,44 +99,37 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         text_parser,
         text_printer,
         type_rules,
-        validation: crate::constraints::generate(defs),
+        validation: crate::constraints::generate(defs, source)?,
         evaluation: crate::evaluate::generate(defs, source)?,
         semantics: semantic_specs(defs),
         opcodes: ops,
     })
 }
 
+/// Classifications depend only on declarations, never on runtime operand data.
+fn classification(defs: &Definitions, name: &str, accepts: impl Fn(&Op) -> bool) -> String {
+    let ops = defs
+        .ops
+        .iter()
+        .filter(|op| accepts(op))
+        .map(|op| format!("Self::{}", op.name))
+        .collect::<Vec<_>>();
+    let test = if ops.is_empty() {
+        "false".into()
+    } else if ops.len() == defs.ops.len() {
+        "true".into()
+    } else {
+        format!("matches!(self, {})", ops.join(" | "))
+    };
+    format!(
+        "impl Opcode {{\n/// Definition-derived classification; does not inspect operands.\npub const fn {name}(self) -> bool {{ {test} }}\n}}\n"
+    )
+}
+
 fn accessors(defs: &Definitions) -> String {
     let mut output = String::from(
-        "impl<'a> crate::InstructionView<'a> {\n    pub fn call_info(&self) -> Option<crate::inst::CallInfo<'a>> {\n        match (self.opcode(), self) {\n",
+        "impl<'a> crate::InstructionView<'a> {\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, mut f: impl FnMut(crate::Successor<'a>)) {\nself.try_visit_successors::<core::convert::Infallible>(|edge| { f(edge); Ok(()) }).unwrap_or_else(|never| match never {});\n}\n/// Visit successors in storage order, stopping at the first error.\npub fn try_visit_successors<E>(&self, mut f: impl FnMut(crate::Successor<'a>) -> core::result::Result<(), E>) -> core::result::Result<(), E> {\n        match self {\n",
     );
-    for op in &defs.ops {
-        let Some(source) = &op.signature_source else {
-            continue;
-        };
-        let (source, variant) = match source {
-            SignatureSource::Function(name) => (name, "Function"),
-            SignatureSource::Signature(name) => (name, "Signature"),
-        };
-        let args = &op
-            .params
-            .iter()
-            .find(|p| p.kind == ParamKind::Values)
-            .unwrap()
-            .name;
-        let field = |name: &str| {
-            op.packing
-                .iter()
-                .find_map(|(field, binding)| {
-                    matches!(binding, Binding::Name(param) if param == name).then_some(field)
-                })
-                .expect("checked call parameter storage")
-        };
-        writeln!(output,
-            "            (crate::Opcode::{}, crate::InstructionView::{} {{ {}: call_signature, {}: call_args, .. }}) => Some(crate::inst::CallInfo {{ signature: crate::inst::SignatureRef::{variant}(*call_signature), args: call_args }}),",
-            op.name, op.format, field(source), field(args)).unwrap();
-    }
-    output.push_str("            _ => None,\n        }\n    }\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, mut f: impl FnMut(crate::Successor<'a>)) {\n        match self {\n");
     for format in &defs.storage.formats {
         let edges: Vec<_> = format.fields.iter().filter(|field| {
             matches!(&field.ty, FieldType::Named(ty) if matches!(ty.as_str(), "BlockCall" | "JumpTable"))
@@ -153,16 +153,16 @@ fn accessors(defs: &Definitions) -> String {
             if matches!(&field.ty, FieldType::Named(ty) if ty == "JumpTable") {
                 writeln!(
                     output,
-                    "                for call in edge{index}.iter() {{ f(call); }}"
+                    "                for call in edge{index}.iter() {{ f(call)?; }}"
                 )
                 .unwrap();
             } else {
-                writeln!(output, "                f(*edge{index});").unwrap();
+                writeln!(output, "                f(*edge{index})?;").unwrap();
             }
         }
         output.push_str("            },\n");
     }
-    output.push_str("            _ => {},\n        }\n    }\n}\n");
+    output.push_str("            _ => {},\n        }\nOk(())\n    }\n}\n");
     output
 }
 
@@ -262,12 +262,11 @@ fn builder(
         // Signature- and context-selected results need the module's help.
         return Ok(None);
     };
-    if op.params.iter().any(|param| {
-        matches!(
-            param.kind,
-            ParamKind::Values | ParamKind::Successor | ParamKind::Successors
-        )
-    }) {
+    if op
+        .params
+        .iter()
+        .any(|param| matches!(param.kind, ParamKind::Successor | ParamKind::Successors))
+    {
         return Ok(None);
     }
     let name = op.method_name();
@@ -310,12 +309,13 @@ fn builder(
     for param in &op.params {
         let ty = match &param.kind {
             ParamKind::Value => "crate::Value".to_owned(),
+            ParamKind::Values => "&[crate::Value]".to_owned(),
             ParamKind::Property(ty) if ty == "Bytes" => "alloc::vec::Vec<u8>".into(),
             ParamKind::Property(ty) if records.iter().any(|record| record.name == *ty) => {
                 format!("crate::inst::{ty}")
             }
             ParamKind::Property(ty) => FieldType::Named(ty.clone()).qualified_type(),
-            ParamKind::Values | ParamKind::Successor | ParamKind::Successors => {
+            ParamKind::Successor | ParamKind::Successors => {
                 unreachable!("contextual builder was excluded")
             }
         };

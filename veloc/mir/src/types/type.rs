@@ -1,8 +1,61 @@
-//! Compact MIR types, checked views, sizes and text representation.
+//! Tagged MIR types, compact scalar/vector payloads, checked views and sizes.
 
+use super::SigId;
 use core::fmt;
 
 include!(concat!(env!("OUT_DIR"), "/types.rs"));
+
+/// Supported callable environment contracts. These describe values, not a CPS
+/// calling convention: each kind supports ordinary calls as well as tail calls.
+/// Lifetime and call multiplicity are distinct concepts; these are the currently
+/// supported combinations, not a claim that every owned closure must be one-shot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallableKind {
+    /// Borrows the creating activation; reusable while that activation is alive.
+    Local,
+    /// Owns its captures; must be called, transferred or explicitly dropped once.
+    Owned,
+    /// Reentrant immutable environments containing only duplicable values.
+    Shared,
+}
+
+impl Type {
+    /// Signatures belong to the containing module, just like function signatures.
+    /// Keeping the tag outside the compact payload preserves fast scalar tests.
+    pub const fn callable(signature: SigId, kind: CallableKind) -> Self {
+        let tag = match kind {
+            CallableKind::Local => 1u64,
+            CallableKind::Owned => 2u64,
+            CallableKind::Shared => 3u64,
+        };
+        Self((tag << 48) | ((signature.0 as u64) << 16))
+    }
+
+    pub const fn as_callable(self) -> Option<(SigId, CallableKind)> {
+        if self.0 & 0xffff != 0 {
+            return None;
+        }
+        let kind = match self.0 >> 48 {
+            1 => CallableKind::Local,
+            2 => CallableKind::Owned,
+            3 => CallableKind::Shared,
+            _ => return None,
+        };
+        Some((SigId((self.0 >> 16) as u32), kind))
+    }
+
+    pub const fn is_callable(self) -> bool {
+        self.as_callable().is_some()
+    }
+
+    pub const fn is_owned(self) -> bool {
+        matches!(self.as_callable(), Some((_, CallableKind::Owned)))
+    }
+
+    pub const fn is_compact(self) -> bool {
+        self.0 <= u16::MAX as u64
+    }
+}
 
 impl Type {
     // === 构造函数 ===
@@ -25,13 +78,17 @@ impl Type {
 
     /// Minimum lane count, treating a valid scalar as one lane.
     pub const fn lane_count(self) -> u16 {
-        assert!(self.is_valid(), "invalid MIR type has no lane count");
+        assert!(
+            self.is_valid() && self.is_compact(),
+            "type has no lane count"
+        );
         1 << self.lanes_log2()
     }
 
-    /// Whether this value has a valid compact type encoding.
+    /// Whether the type encoding is valid. Structural signature references are
+    /// checked against their module at the explicit validation phase.
     pub const fn is_valid(self) -> bool {
-        Self::from_raw(self.0).is_some()
+        self.is_callable() || (self.is_compact() && Self::from_raw(self.0 as u16).is_some())
     }
 
     /// Decode a raw value after validating all currently defined fields.
@@ -39,7 +96,7 @@ impl Type {
         if raw == 0 || raw & !USED_MASK != 0 {
             return None;
         }
-        let ty = Self(raw);
+        let ty = Self(raw as u64);
         let Some(scalar) = Self::from_scalar_code(ty.element_code()) else {
             return None;
         };
@@ -154,6 +211,9 @@ impl Type {
 
 impl fmt::Debug for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_callable() {
+            return fmt::Display::fmt(self, f);
+        }
         if !self.is_valid() {
             return f.write_str("invalid");
         }
@@ -180,6 +240,18 @@ impl fmt::Debug for Type {
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some((sig, kind)) = self.as_callable() {
+            return write!(
+                f,
+                "{}<sig{}>",
+                match kind {
+                    CallableKind::Local => "local",
+                    CallableKind::Owned => "owned",
+                    CallableKind::Shared => "shared",
+                },
+                sig.0
+            );
+        }
         if !self.is_valid() {
             return f.write_str("invalid");
         }
@@ -244,7 +316,7 @@ impl Type {
     /// Check validity and scalar shape once, then expose scalar-only operations.
     pub const fn as_scalar(self) -> Option<ScalarType> {
         // Use structural shape, not a user-declared predicate's type set.
-        if self.is_valid() && self.lanes_log2() == 0 {
+        if self.is_compact() && self.is_valid() && self.lanes_log2() == 0 {
             Some(ScalarType(self))
         } else {
             None
@@ -253,7 +325,7 @@ impl Type {
 
     /// Check validity and vector shape once, then expose vector-only operations.
     pub const fn as_vector(self) -> Option<VectorType> {
-        if self.is_valid() && self.lanes_log2() > 0 {
+        if self.is_compact() && self.is_valid() && self.lanes_log2() > 0 {
             Some(VectorType(self))
         } else {
             None
@@ -290,7 +362,7 @@ impl ScalarType {
         }
         let scalable_bit = if scalable { SCALABLE_MASK } else { 0 };
         Some(VectorType(Type(
-            self.0.0 | (log2_lanes << LANES_LOG2_SHIFT) | scalable_bit,
+            self.0.0 | ((log2_lanes << LANES_LOG2_SHIFT) | scalable_bit) as u64,
         )))
     }
 }

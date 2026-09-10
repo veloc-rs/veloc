@@ -10,7 +10,6 @@ pub struct BlockData {
     pub preds: Vec<Block>,
     pub succs: Vec<Block>,
     pub insts: Vec<Inst>,
-    pub is_sealed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +42,6 @@ impl Layout {
             preds: Vec::new(),
             succs: Vec::new(),
             insts: Vec::new(),
-            is_sealed: false,
         })
     }
 
@@ -88,15 +86,6 @@ impl Layout {
         }
         for &inst in insts {
             self.inst_blocks[inst] = None.into();
-        }
-    }
-
-    pub(crate) fn add_edge(&mut self, from: Block, to: Block) {
-        if !self.blocks[from].succs.contains(&to) {
-            self.blocks[from].succs.push(to);
-        }
-        if !self.blocks[to].preds.contains(&from) {
-            self.blocks[to].preds.push(from);
         }
     }
 

@@ -1,7 +1,16 @@
 //! Structural editing. Type contracts and dominance remain explicit validation.
 use super::Function;
-use crate::{Block, Inst, InstDraft, Type, Value};
+use crate::{Block, Inst, InstDraft, SuccessorMut, Type, Value};
 use alloc::vec::Vec;
+use smallvec::SmallVec;
+
+/// One successor occurrence, not a pair of adjacent blocks. This location is
+/// invalidated when the instruction is erased or its successor order changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EdgeRef {
+    pub inst: Inst,
+    pub index: u32,
+}
 
 pub struct FunctionEditor<'a> {
     func: &'a mut Function,
@@ -26,6 +35,22 @@ impl<'a> FunctionEditor<'a> {
 
     pub fn replace_all_uses(&mut self, old: Value, new: Value) {
         self.func.dfg.replace_all_uses(old, new);
+    }
+
+    /// Edit exactly one outgoing edge, maintaining operands, uses and CFG
+    /// adjacency. Type and dominance contracts remain explicit validation.
+    pub fn edit_edge(&mut self, edge: EdgeRef, edit: impl FnOnce(&mut SuccessorMut<'_>)) {
+        let mut draft = self.func.dfg.draft(edge.inst);
+        let mut edit = Some(edit);
+        let mut index = 0;
+        draft.edit_successors(|successor| {
+            if index == edge.index {
+                edit.take().expect("unique successor position")(successor);
+            }
+            index += 1;
+        });
+        assert!(edit.is_none(), "successor position out of bounds");
+        self.replace_inst(edge.inst, draft);
     }
 
     pub fn append_inst(&mut self, block: Block, data: InstDraft, types: &[Type]) -> Inst {
@@ -98,19 +123,29 @@ impl<'a> FunctionEditor<'a> {
     }
 
     fn sync_edges(&mut self, block: Block) {
-        let old = core::mem::take(&mut self.func.layout.blocks[block].succs);
-        for succ in old {
-            self.func.layout.blocks[succ].preds.retain(|&b| b != block);
-        }
-        let mut successors = Vec::new();
-        for &inst in &self.func.layout.blocks[block].insts {
+        let mut successors = SmallVec::<[Block; 2]>::new();
+        if let Some(&inst) = self.func.layout.blocks[block].insts.last() {
             self.func
                 .dfg
                 .inst(inst)
                 .visit_successors(|call| successors.push(call.block));
         }
-        for succ in successors {
-            self.func.layout.add_edge(block, succ);
+        successors.sort_unstable();
+        successors.dedup();
+        if self.func.layout.blocks[block].succs == successors.as_slice() {
+            return;
         }
+        let old = core::mem::take(&mut self.func.layout.blocks[block].succs);
+        for &succ in &old {
+            if !successors.contains(&succ) {
+                self.func.layout.blocks[succ].preds.retain(|&b| b != block);
+            }
+        }
+        for &succ in &successors {
+            if !old.contains(&succ) {
+                self.func.layout.blocks[succ].preds.push(block);
+            }
+        }
+        self.func.layout.blocks[block].succs = successors.into_vec();
     }
 }

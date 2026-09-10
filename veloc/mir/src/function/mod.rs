@@ -5,9 +5,11 @@ use crate::{Block, Linkage, SigId, StackSlot, Value};
 use alloc::string::String;
 use cranelift_entity::PrimaryMap;
 
+mod dominance;
 mod edit;
 mod layout;
-pub use edit::FunctionEditor;
+pub use dominance::Dominators;
+pub use edit::{EdgeRef, FunctionEditor};
 pub use layout::{BlockData, Layout};
 
 #[derive(Debug, Clone)]

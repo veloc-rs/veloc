@@ -138,7 +138,18 @@ pub(super) fn parse(
     writeln!(
         out,
         "Ok({})",
-        crate::packing::constructor(op, format, "self.func.dfg", |name| local(op, name))
+        crate::packing::constructor(op, format, "self.func.dfg", |name| {
+            let value = local(op, name);
+            if op
+                .params
+                .iter()
+                .any(|p| p.name == name && p.kind == ParamKind::Values)
+            {
+                format!("&{value}")
+            } else {
+                value
+            }
+        })
     )
     .unwrap();
     out
@@ -168,8 +179,11 @@ fn parse_item(out: &mut String, op: &Op, item: &Item) {
             out.push_str("input.expect(Kind::LParen)?;\n");
             writeln!(out, "let {} = {};", leaf(op, &args.path), parse_atom(args)).unwrap();
             out.push_str("input.expect(Kind::RParen)?;\n");
-            out.push_str("input.expect(Kind::Colon).map_err(|e| e.context(\"signature must follow `:`\"))?;\n");
+            if !matches!(signature, CallSignature::Value) {
+                out.push_str("input.expect(Kind::Colon).map_err(|e| e.context(\"signature must follow `:`\"))?;\n");
+            }
             match signature {
+                CallSignature::Value => {}
                 CallSignature::Field(sig) => {
                     writeln!(out, "let {} = {};", leaf(op, &sig.path), parse_atom(sig)).unwrap();
                     if is_function(callee) {
@@ -367,8 +381,11 @@ fn print_item(out: &mut String, op: &Op, item: &Item) {
             out.push_str("f.write_char('(')?;\n");
             print_atom(out, args, &local(op, &args.path));
             out.push_str("f.write_char(')')?;\n");
-            out.push_str("f.write_str(\" : \")?;\n");
+            if !matches!(signature, CallSignature::Value) {
+                out.push_str("f.write_str(\" : \")?;\n");
+            }
             match signature {
+                CallSignature::Value => {}
                 CallSignature::Field(sig) => print_atom(out, sig, &local(op, &sig.path)),
                 CallSignature::Function => {
                     writeln!(
