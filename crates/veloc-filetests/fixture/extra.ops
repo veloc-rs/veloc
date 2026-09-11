@@ -38,7 +38,7 @@ op WideRef(@target: FuncId, @low: u64, @high: u64) -> () {
 }
 op FunctionOperand(@target: FuncId) -> () {
     mnemonic: "function-operand", storage: FunctionOperand { target: target },
-    text: Text { args: [target] }, memory: NONE
+    text: "{target}", memory: NONE
 }
 format ExplicitCall {
     fields: [op(Opcode), target(FuncId), args(ValueList), sig(SigId)], opcode: dynamic(op)
@@ -46,7 +46,7 @@ format ExplicitCall {
 op ExplicitCall(@target: FuncId, args: values, @sig: SigId) -> signature {
     mnemonic: "explicit-call", storage: ExplicitCall { target: target, args: args, sig: sig },
     signature: sig,
-    text: Text { args: [invoke(target, args, sig)] }, memory: NONE
+    text: "{target}({args}) : {sig}", memory: NONE
 }
 
 record TestOperands {
@@ -58,7 +58,7 @@ format Grouped {
 }
 op Grouped(before: I32, after: I32, @group: TestOperands) -> I32 {
     mnemonic: "grouped", storage: Grouped { before: before, group: group, after: after },
-    text: Text { args: [before, after], named: [group.token, optional(group.optional), default(group.tag, 9)] },
+    text: "{before}, {after}, token={group.token}[, optional={group.optional}], tag={group.tag}",
     memory: NONE
 }
 
@@ -69,10 +69,7 @@ format Routed {
 op Routed(input: I32, @group: TestOperands, @tail: VectorExtData, dest: successor) -> () {
     mnemonic: "routed",
     storage: Routed { operands: input, group: group, dest: dest, tail: tail },
-    text: Text {
-        args: [input, dest],
-        named: [group.token, optional(group.optional), group.tag, tail.mask, optional(tail.evl)]
-    },
+    text: "{input}, {dest}, token={group.token}[, optional={group.optional}], tag={group.tag}, mask={tail.mask}[, evl={tail.evl}]",
     memory: NONE
 }
 
@@ -120,7 +117,7 @@ op Difference<T: Integer>(left: T, right: T) -> T {
 }
 op ReverseText<T: Integer>(left: T, right: T) -> T {
     mnemonic: "reverse-text", storage: FieldPair { right: left, left: right },
-    text: Text { args: [right, left] }, memory: NONE
+    text: "{right}, {left}", memory: NONE
 }
 op SelectType<T: Integer>(lhs: T, rhs: T) -> Integer {
     mnemonic: "select-type", storage: Pair { inputs: [lhs, rhs] }, memory: NONE
@@ -134,11 +131,11 @@ op Triple<T: Integer>(base: T, index: T, increment: T) -> T {
 }
 op Offset(arg: PTR, @amount: i32) -> PTR {
     mnemonic: "offset", storage: Immediate { value: arg, displacement: amount },
-    text: Text { args: [arg], named: [default(amount, 7)] }, memory: NONE
+    text: "{arg}, amount={amount}", memory: NONE
 }
 layout Extended {
     fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
-    format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [tag] }
+    format: arity(inputs, [Pair]), text: "{inputs}, tag={tag}"
 }
 
 predicate is_wide = Scalar & (I32 | I64);

@@ -101,9 +101,6 @@ pub(super) fn parse(
                 )
                 .unwrap(),
                 Mode::Optional => {}
-                Mode::Default(default) => {
-                    writeln!(out, "let {name} = {name}.unwrap_or({default});").unwrap()
-                }
             }
         }
     }
@@ -338,9 +335,6 @@ pub(super) fn print(
     for named in &schema.named {
         let value = local(op, &named.atom.path);
         match named.mode {
-            Mode::Default(n) => {
-                writeln!(out, "if {value} != {n} {{").unwrap();
-            }
             Mode::Optional => {
                 writeln!(out, "if let Some(_value) = {value} {{").unwrap();
             }

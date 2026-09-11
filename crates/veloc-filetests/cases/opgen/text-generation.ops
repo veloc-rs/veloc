@@ -13,12 +13,12 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
 
 layout Extended {
             fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
-            format: arity(inputs, [Pair]), text: Text { args: [inputs] }
+            format: arity(inputs, [Pair]), text: "{inputs}"
         }
 
 // ----- incomplete-or-ambiguous-alternates-return-definition-errors-2
 // run: opgen-error
-// check: text alternative requires distinct, required named fields
+// check: optional named fields require optional(Value)
 format Pair {
     fields: [op(Opcode), inputs(values(2))],
     opcode: dynamic(op)
@@ -31,7 +31,7 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
 
 layout Extended {
             fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
-            format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [default(tag, 0)] }
+            format: arity(inputs, [Pair]), text: "{inputs}[, tag={tag}]"
         }
 
 // ----- incomplete-or-ambiguous-alternates-return-definition-errors-3
@@ -49,7 +49,7 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
 
 layout Extended {
             fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
-            format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [optional(tag)] }
+            format: arity(inputs, [Pair]), text: "{inputs}[, tag={tag}]"
         }
 
 // ----- incomplete-or-ambiguous-alternates-return-definition-errors-4
@@ -67,11 +67,11 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
 
 layout Extended {
             fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
-            format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [tag] }
+            format: arity(inputs, [Pair]), text: "{inputs}, tag={tag}"
         }
 layout Another {
             fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
-            format: arity(inputs, [Pair]), text: Text { args: [inputs], named: [tag] }
+            format: arity(inputs, [Pair]), text: "{inputs}, tag={tag}"
         }
 
 // ----- unsupported-alternate-storage-groups-fail-before-rust-emission-1
@@ -90,5 +90,5 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
 layout Extended {
             fields: [op(Opcode), inputs(values(2)), tag(u32)],
             opcode: dynamic(op), format: fixed(Pair),
-            text: Text { args: [inputs], named: [tag] }
+            text: "{inputs}, tag={tag}"
         }

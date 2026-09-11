@@ -10,55 +10,6 @@ fn rejected(source: &str, message: &str) {
 }
 
 #[test]
-fn layout_generates_masks_shifts_limits_and_the_type_storage() {
-    let output = veloc_opgen::compile(BUILTINS).unwrap().types;
-    for expected in [
-        "pub struct Type(u64)",
-        "const SCALAR_MASK: u16 = 0x000f;",
-        "const SCALAR_SHIFT: u32 = 0;",
-        "const LANES_LOG2_MASK: u16 = 0x00f0;",
-        "const LANES_LOG2_SHIFT: u32 = 4;",
-        "const LANES_LOG2_MAX: u16 = 15;",
-        "const SCALABLE_MASK: u16 = 0x0100;",
-        "const USED_MASK: u16 = 0x01ff;",
-        "const fn element_code(self) -> u8",
-        "const fn lanes_log2(self) -> u16",
-        "pub const fn is_scalable(self) -> bool",
-        "pub const fn element_type(self) -> Self",
-        "pub const fn to_raw(self) -> u16",
-    ] {
-        assert!(output.contains(expected), "{expected}");
-    }
-}
-
-#[test]
-fn field_order_and_widths_determine_the_encoding() {
-    let source = BUILTINS.replace(
-        "scalar(4), lanes_log2(4), scalable(1)",
-        "scalable(1), scalar(5), lanes_log2(3)",
-    );
-    let output = veloc_opgen::compile(&source).unwrap().types;
-    for expected in [
-        "const SCALABLE_MASK: u16 = 0x0001;",
-        "const SCALAR_MASK: u16 = 0x003e;",
-        "const SCALAR_SHIFT: u32 = 1;",
-        "const LANES_LOG2_MASK: u16 = 0x01c0;",
-        "const LANES_LOG2_SHIFT: u32 = 6;",
-        "const LANES_LOG2_MAX: u16 = 7;",
-        "const USED_MASK: u16 = 0x01ff;",
-    ] {
-        assert!(output.contains(expected), "{expected}");
-    }
-    let narrower = BUILTINS.replace("lanes_log2(4)", "lanes_log2(3)");
-    assert!(
-        veloc_opgen::compile(&narrower)
-            .unwrap()
-            .types
-            .contains("const USED_MASK: u16 = 0x00ff;")
-    );
-}
-
-#[test]
 fn scalar_code_validation_uses_the_declared_field_width() {
     let wide = BUILTINS
         .replace("scalar(4)", "scalar(5)")

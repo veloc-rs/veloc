@@ -175,7 +175,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 format Custom { fields: [pool_id(ConstantPoolId)], opcode: fixed(Example) }
 op Example(@data: Bytes) -> Vector {
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
-    text: Text { args: [bytes(data)] }, memory: NONE,
+    text: "{data:bytes}", memory: NONE,
     constraints: [len(data) == min_bytes(result_type(0)), all(data, |i| i)]
 }
 
@@ -185,7 +185,7 @@ op Example(@data: Bytes) -> Vector {
 format Custom { fields: [pool_id(ConstantPoolId)], opcode: fixed(Example) }
 op Example(@data: Bytes) -> () {
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
-    text: Text { args: [bytes(data)] }, memory: NONE,
+    text: "{data:bytes}", memory: NONE,
     constraints: [len(data) == min_bytes(result_type(0)), all(data, |i| i < 2 * lanes(result_type(0)))]
 }
 
@@ -204,7 +204,7 @@ format PtrIndex {
 op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
     mnemonic: "ptr-index",
     storage: PtrIndex { ptr: ptr, index: index, imm_id: imm },
-    text: Text { args: [ptr, index], named: [default(imm.scale, 1), default(imm.offset, 0)] },
+    text: "{ptr}, {index}, scale={imm.scale}, offset={imm.offset}",
     memory: NONE,
     constraints: [require(imm.unknown != 0, "ptr-index scale must be non-zero")]
 }

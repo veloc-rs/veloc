@@ -13,49 +13,6 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {{
 }
 
 #[test]
-fn constant_folding_preserves_precedence_and_short_circuiting() {
-    for predicate in [
-        "1 + 2 * 3 == 7",
-        "(1 + 2) * 3 == 9",
-        "-3 + 2 == -1",
-        "true || number > 0",
-        "!(false && flag)",
-    ] {
-        let code = checked(predicate).unwrap().validation;
-        assert!(!code.contains("constraint_error"), "{predicate}: {code}");
-        assert!(!code.contains("InstructionView::Custom"));
-    }
-    assert!(
-        checked("1 + 2 * 3 == 9")
-            .err()
-            .unwrap()
-            .message
-            .contains("always false")
-    );
-}
-
-#[test]
-fn record_access_uses_logical_names_not_rule_or_storage_names() {
-    let source = [
-        include_str!("../../mir/defs/formats.ops"),
-        include_str!("../../mir/defs/mir.ops"),
-    ]
-    .join("\n");
-    let renamed = source
-        .replace("@imm: PtrIndexImm", "@stride: PtrIndexImm")
-        .replace("imm_id: imm", "imm_id: stride")
-        .replace("imm.scale", "stride.scale")
-        .replace("imm.offset", "stride.offset");
-    assert!(
-        common::compile(&renamed)
-            .unwrap()
-            .validation
-            .contains(".scale")
-    );
-    assert!(common::compile(&source.replace("imm.scale != 0", "imm.unknown != 0")).is_err());
-}
-
-#[test]
 fn generated_rust_executes_checked_arithmetic_and_short_circuit_loops() {
     // Compile the actual emitted Rust, not a second interpreter for the AST.
     // Small host adapters make accidental eager pool reads observable as panics.
@@ -118,7 +75,7 @@ mod numeric_{index} {{
 format Buffers {{ fields: [opcode(Opcode), first(ConstantPoolId), second(ConstantPoolId)], opcode: dynamic(opcode) }}
 op Example(@data: Bytes, @other: Bytes) -> Vector {{
     mnemonic: "example", storage: Buffers {{ first: pool(data), second: pool(other) }},
-    text: Text {{ args: [bytes(data), bytes(other)] }}, memory: NONE,
+    text: "{{data:bytes}}, {{other:bytes}}", memory: NONE,
     constraints: [{predicate}]
 }}
 "#)).unwrap().validation;

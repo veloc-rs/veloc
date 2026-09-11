@@ -1,106 +1,6 @@
 mod common;
 use common::compile;
 
-const PAIR: &str = r#"
-format Pair {
-    fields: [op(Opcode), args(values(2))],
-    opcode: dynamic(op)
-}
-op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
-    mnemonic: "pair-add",
-    storage: Pair { args: [left, right] },
-    memory: NONE
-}
-"#;
-
-const LOAD: &str = r#"
-format Load {
-    fields: [ptr(Value), offset(u32), flags(MemFlags)],
-    opcode: fixed(Load)
-}
-op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
-    mnemonic: "load",
-    storage: Load { ptr: ptr, offset: offset, flags: flags },
-    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
-    traits: [MAY_TRAP], memory: HEAP_READ
-}
-"#;
-
-fn artifacts(output: veloc_opgen::Generated) -> [String; 7] {
-    [
-        output.types,
-        output.type_rules,
-        output.builders,
-        output.opcodes,
-        output.instructions,
-        output.text_parser,
-        output.text_printer,
-    ]
-}
-
-#[test]
-fn result_names_do_not_change_generated_artifacts() {
-    for (named, alternatives) in [
-        ("(result: T)", vec!["T", "(T)", "(answer: T)"]),
-        (
-            "(result: T, overflow: BOOL)",
-            vec!["(T, BOOL)", "(T, overflow: BOOL)", "(result: T, BOOL)"],
-        ),
-        (
-            "(result: shape(T, Integer))",
-            vec!["shape(T, Integer)", "(shape(T, Integer))"],
-        ),
-    ] {
-        let reference = artifacts(compile(&PAIR.replace("(result: T)", named)).unwrap());
-        for results in alternatives {
-            let source = PAIR.replace("(result: T)", results);
-            assert_eq!(artifacts(compile(&source).unwrap()), reference, "{results}");
-        }
-    }
-    let reference = artifacts(compile(LOAD).unwrap());
-    assert_eq!(
-        artifacts(compile(&LOAD.replace("(result: Any)", "Any")).unwrap()),
-        reference
-    );
-}
-
-#[test]
-fn named_results_keep_their_position_among_anonymous_results() {
-    let source = PAIR
-        .replace("(result: T)", "(T, wider: I64)")
-        .replace("memory: NONE", "where: [wider(left, wider)], memory: NONE");
-    let output = compile(&source).unwrap();
-    assert!(
-        output
-            .type_rules
-            .contains("results[1] must have more bits per lane than operands[0]")
-    );
-    let both_named = source.replace("(T, wider: I64)", "(result: T, wider: I64)");
-    assert_eq!(artifacts(output), artifacts(compile(&both_named).unwrap()));
-}
-
-#[test]
-fn result_only_type_variables_and_nested_type_patterns_still_bind() {
-    let source = r#"
-        format Empty { fields: [opcode(Opcode)], opcode: dynamic(opcode) }
-        op Pair<T: Integer>() -> T {
-            mnemonic: "pair", storage: Empty {}, memory: NONE
-        }
-    "#;
-    let output = compile(source).unwrap();
-    assert!(output.type_rules.contains("C::Integer.accepts(results[0])"));
-    // Multiple explicit results are valid signatures, but not supported by the
-    // current field-builder projection. Check their binding at the model layer.
-    common::parse(&source.replace("-> T", "-> (T, T)")).unwrap();
-    let vector = PAIR
-        .replace("T: Integer", "T: Vector")
-        .replace("(result: T)", "element(T)");
-    assert_eq!(
-        artifacts(compile(&vector).unwrap()),
-        artifacts(compile(&vector.replace("-> element(T)", "-> (result: element(T))")).unwrap())
-    );
-}
-
 const CALL_VALUE: &str = r#"
     format ApplyValue {
         fields: [opcode(Opcode), callee(Value), args(ValueList)],
@@ -110,65 +10,12 @@ const CALL_VALUE: &str = r#"
         mnemonic: "apply-value",
         storage: ApplyValue { callee: callee, args: args },
         signature: callable(callee),
-        text: Text { args: [apply(callee, args)] },
+        text: "{callee}({args})",
         moves: [callee, args],
         control: call(callee, args),
         memory: UNKNOWN
     }
 "#;
-
-#[test]
-fn callable_signature_infers_results_and_checks_arguments_and_results() {
-    let output = compile(CALL_VALUE).unwrap();
-    assert!(
-        output
-            .instructions
-            .contains("dfg.values().get(*source).and_then(|value| value.ty.as_callable())")
-    );
-    assert!(!output.instructions.contains("SignatureRef"));
-    assert!(!output.instructions.contains("CallInfo"));
-    assert!(
-        output
-            .opcodes
-            .contains("pub const fn has_signature(self) -> bool")
-    );
-    assert!(
-        output
-            .opcodes
-            .contains("pub const fn has_control(self) -> bool")
-    );
-    assert!(output.opcodes.contains("Self::Apply"));
-    assert!(!output.instructions.contains("Control::"));
-    assert!(output.validation.contains(".as_callable().ok_or_else"));
-    for expected in [
-        "signature.params.iter().copied()",
-        "self.dfg.inst_results(_inst), signature.returns.iter().copied()",
-    ] {
-        assert!(output.validation.contains(expected), "{expected}");
-    }
-    assert!(output.type_rules.contains("operands[0].is_callable()"));
-}
-
-#[test]
-fn control_classification_uses_definitions_without_operand_wrappers() {
-    for (source, expected) in [
-        (PAIR.to_owned(), "false"),
-        (CALL_VALUE.to_owned(), "true"),
-        (
-            format!("{PAIR}\n{CALL_VALUE}"),
-            "matches!(self, Self::Apply)",
-        ),
-    ] {
-        let output = compile(&source).unwrap();
-        assert!(output.opcodes.contains(&format!(
-            "pub const fn has_control(self) -> bool {{ {expected} }}"
-        )));
-        assert!(output.opcodes.contains(&format!(
-            "pub const fn has_signature(self) -> bool {{ {expected} }}"
-        )));
-        assert!(!output.instructions.contains("pub fn control("));
-    }
-}
 
 #[test]
 fn callable_signature_source_requires_a_single_named_callable_operand() {

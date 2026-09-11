@@ -32,7 +32,7 @@ fn pointer_access_size_comes_from_the_target_data_layout() {
             r#"
 local function load_pointer(ptr) -> ptr
 block0(v0: ptr):
-  v1: ptr = load.align4 v0
+  v1: ptr = load.align4 v0, offset=0
   return v1
 "#,
         )

@@ -132,52 +132,46 @@ fn runtime_layout_contracts_reject_missing_and_extra_properties() {
 
 #[test]
 fn text_projections_cover_every_logical_parameter_once() {
-    for args in ["[lhs]", "[lhs, lhs]", "[lhs, missing]"] {
+    for args in ["{lhs}", "{lhs}, {lhs}", "{lhs}, {missing}"] {
         rejected(
             &changed_record(
                 "op",
                 "IAdd",
                 "storage: Binary { args: [lhs, rhs] },",
-                &format!("storage: Binary {{ args: [lhs, rhs] }}, text: Text {{ args: {args} }},"),
+                &format!("storage: Binary {{ args: [lhs, rhs] }}, text: \"{args}\","),
             ),
             "",
         );
     }
     rejected(
-        &changed_record("op", "Load", "args: [ptr]", "args: [ptr, offset]"),
+        &changed_record("op", "Load", "{ptr}", "{ptr}, {offset}"),
         "offset",
     );
 }
 
 #[test]
 fn typed_text_atoms_do_not_accept_incompatible_fields() {
-    for atom in ["integer(ptr)", "float(ptr)", "bytes(ptr)"] {
-        rejected(
-            &changed_record("op", "Load", "args: [ptr]", &format!("args: [{atom}]")),
-            "",
-        );
+    for atom in ["{ptr:integer}", "{ptr:float}", "{ptr:bytes}"] {
+        rejected(&changed_record("op", "Load", "{ptr}", atom), "");
     }
     for named in [
-        "optional(offset)",
-        "default(offset, -1)",
-        "default(offset, true)",
+        "[offset={offset}]",
+        "offset={offset=-1}",
+        "offset={offset=true}",
     ] {
-        rejected(
-            &changed_record("op", "Load", "default(offset, 0)", named),
-            "",
-        );
+        rejected(&changed_record("op", "Load", "offset={offset}", named), "");
     }
 }
 
 #[test]
 fn compound_property_paths_and_optional_values_are_checked() {
     for (from, to) in [
-        ("optional(mem.mask)", "optional(mem.unknown)"),
-        ("optional(mem.evl)", "optional(mem.offset)"),
-        ("flags: mem.flags", "flags: mem.offset"),
+        ("{mem.mask}", "{mem.unknown}"),
+        ("{mem.evl}", "{mem.offset}"),
+        ("{.mem.flags}", "{.mem.offset}"),
         (
-            "default(mem.offset, 0)",
-            "default(mem.offset, 0), optional(mem.mask)",
+            "offset={mem.offset}",
+            "offset={mem.offset}[, mask={mem.mask}]",
         ),
     ] {
         rejected(&changed_record("op", "Gather", from, to), "");

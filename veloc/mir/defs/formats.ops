@@ -176,7 +176,7 @@ layout VectorOpWithExt {
     fields: [opcode(Opcode), args(ValueList), ext(VectorExtData)],
     opcode: dynamic(opcode),
     format: arity(args, [Unary, Binary, Ternary]),
-    text: Text { args: [args], named: [ext.mask, optional(ext.evl)] },
+    text: "{args}, mask={ext.mask}[, evl={ext.evl}]",
     constraints: [
         require(len(results()) == 1 && all(results(), |t| is_vector(t)), "predicated operation must produce a vector"),
         require(all(results(), |t| is_predicate(type(ext.mask)) && shape(type(ext.mask)) == shape(t)), "mask must match vector shape"),

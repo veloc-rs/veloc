@@ -4,8 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Error;
 use crate::model::{Op, ParamKind, Pattern, TypeDef, TypeList};
-use crate::records::{DefaultValue, PropertyType, RecordDef, numeric_default};
-use crate::syntax::{Kind, Node};
+use crate::records::{DefaultValue, PropertyType, RecordDef};
+use crate::syntax::Kind;
+
+mod template;
 
 #[derive(Debug)]
 pub(super) struct Schema {
@@ -62,7 +64,6 @@ pub(super) struct Named {
 pub(super) enum Mode {
     Required,
     Optional,
-    Default(u32),
 }
 
 struct Leaf {
@@ -133,51 +134,15 @@ pub(super) fn compile(
         defaults: Vec::new(),
     };
     if let Some(node) = &op.text {
-        let Kind::Object(name, fields) = &node.kind else {
-            return Err(checker.error(node.offset, "expected Text { args, named, flags }"));
+        let Kind::Text(text) = &node.kind else {
+            return Err(checker.error(node.offset, "expected a quoted text template"));
         };
-        if name != "Text" {
-            return Err(checker.error(node.offset, "expected Text projection"));
-        }
-        for (key, value) in fields {
-            match key.as_str() {
-                "args" => {
-                    for item in list(value, source)? {
-                        schema.args.push(checker.item(item)?);
-                    }
-                }
-                "named" => {
-                    let mut keys = BTreeSet::new();
-                    for item in list(value, source)? {
-                        let named = checker.named(item)?;
-                        if !keys.insert(named.key.clone()) {
-                            return Err(checker.error(
-                                item.offset,
-                                format!("duplicate named key `{}`", named.key),
-                            ));
-                        }
-                        schema.named.push(named);
-                    }
-                }
-                "flags" => {
-                    let path = path(value, source)?;
-                    if checker.consume(path, value.offset)? != AtomKind::Scalar("MemFlags".into()) {
-                        return Err(
-                            checker.error(value.offset, "text flags must reference MemFlags")
-                        );
-                    }
-                    schema.flags = Some(path.into());
-                }
-                _ => return Err(checker.error(value.offset, format!("unknown Text field `{key}`"))),
-            }
-        }
+        template::compile(&mut checker, &mut schema, text, node.offset)?;
     } else {
         for param in &op.params {
-            let node = Node {
-                offset: op.offset,
-                kind: Kind::Name(param.name.clone()),
-            };
-            schema.args.push(checker.item(&node)?);
+            schema
+                .args
+                .push(Item::Atom(checker.atom(&param.name, None, op.offset)?));
         }
     }
 
@@ -253,17 +218,8 @@ impl Checker<'_> {
         Ok(leaf.kind.clone())
     }
 
-    fn atom(&mut self, node: &Node) -> Result<Atom, Error> {
-        let (path, codec) = match &node.kind {
-            Kind::Name(path) => (path.as_str(), None),
-            Kind::Call(codec, args)
-                if args.len() == 1 && matches!(codec.as_str(), "integer" | "bytes") =>
-            {
-                (path(&args[0], self.source)?, Some(codec.as_str()))
-            }
-            _ => return Err(self.error(node.offset, "expected a field path or typed text atom")),
-        };
-        let kind = self.consume(path, node.offset)?;
+    fn atom(&mut self, path: &str, codec: Option<&str>, offset: usize) -> Result<Atom, Error> {
+        let kind = self.consume(path, offset)?;
         let kind = match (codec, kind) {
             (Some("integer"), AtomKind::Scalar(ty)) if ty == "u64" => AtomKind::Integer,
             (None, AtomKind::Scalar(ty))
@@ -275,13 +231,13 @@ impl Checker<'_> {
             (Some("bytes"), AtomKind::Scalar(ty)) if ty == "Bytes" => AtomKind::Bytes,
             (Some(codec), _) => {
                 return Err(self.error(
-                    node.offset,
+                    offset,
                     format!("text codec `{codec}` is incompatible with `{path}`"),
                 ));
             }
             (None, AtomKind::Scalar(ty)) if !simple_scalar(&ty) => {
                 return Err(self.error(
-                    node.offset,
+                    offset,
                     format!("property `{path}` of type `{ty}` needs an explicit text projection"),
                 ));
             }
@@ -291,168 +247,6 @@ impl Checker<'_> {
             path: path.into(),
             kind,
         })
-    }
-
-    fn item(&mut self, node: &Node) -> Result<Item, Error> {
-        match &node.kind {
-            Kind::Call(name, args) if name == "apply" => {
-                if args.len() != 2 {
-                    return Err(
-                        self.error(node.offset, "apply requires a callable value and arguments")
-                    );
-                }
-                let callee = self.atom(&args[0])?;
-                let values = self.atom(&args[1])?;
-                if callee.kind != AtomKind::Value || values.kind != AtomKind::Values {
-                    return Err(
-                        self.error(node.offset, "apply requires a callable value and arguments")
-                    );
-                }
-                Ok(Item::Invoke {
-                    callee,
-                    args: values,
-                    signature: CallSignature::Value,
-                })
-            }
-            Kind::Call(name, args) if name == "space" => {
-                if args.len() != 2 {
-                    return Err(self.error(node.offset, "space requires two single-token atoms"));
-                }
-                let lhs = self.atom(&args[0])?;
-                let rhs = self.atom(&args[1])?;
-                if !single_token(&lhs.kind) || !single_token(&rhs.kind) {
-                    return Err(self.error(node.offset, "space requires two single-token atoms"));
-                }
-                Ok(Item::Space(
-                    Box::new(Item::Atom(lhs)),
-                    Box::new(Item::Atom(rhs)),
-                ))
-            }
-            Kind::Call(name, args) if name == "invoke" => {
-                if args.len() != 3 {
-                    return Err(self.error(
-                        node.offset,
-                        "invoke requires callee, values and a signature source",
-                    ));
-                }
-                let callee = self.atom(&args[0])?;
-                let values = self.atom(&args[1])?;
-                if !matches!(&callee.kind, AtomKind::Value)
-                    && !matches!(&callee.kind, AtomKind::Scalar(ty) if matches!(ty.as_str(), "FuncId" | "Intrinsic"))
-                {
-                    return Err(self.error(
-                        node.offset,
-                        "invoke callee must be a value, FuncId or Intrinsic",
-                    ));
-                }
-                if values.kind != AtomKind::Values {
-                    return Err(self.error(node.offset, "invoke arguments must be values"));
-                }
-                let signature = match &args[2].kind {
-                    Kind::Call(name, source) if name == "function" => {
-                        if source.len() != 1
-                            || path(&source[0], self.source)? != callee.path
-                            || callee.kind != AtomKind::Scalar("FuncId".into())
-                        {
-                            return Err(self.error(
-                                args[2].offset,
-                                "function signature must reference the FuncId callee",
-                            ));
-                        }
-                        CallSignature::Function
-                    }
-                    _ => {
-                        let atom = self.atom(&args[2])?;
-                        if atom.kind != AtomKind::Scalar("SigId".into()) {
-                            return Err(
-                                self.error(args[2].offset, "invoke signature must be a SigId")
-                            );
-                        }
-                        CallSignature::Field(atom)
-                    }
-                };
-                Ok(Item::Invoke {
-                    callee,
-                    args: values,
-                    signature,
-                })
-            }
-            _ => {
-                let atom = self.atom(node)?;
-                if atom.kind == AtomKind::OptionalValue {
-                    return Err(self.error(
-                        node.offset,
-                        "optional values require an optional named field",
-                    ));
-                }
-                Ok(Item::Atom(atom))
-            }
-        }
-    }
-
-    fn named(&mut self, node: &Node) -> Result<Named, Error> {
-        let (atom, mode) = match &node.kind {
-            Kind::Call(name, args) if name == "optional" && args.len() == 1 => {
-                let atom = self.atom(&args[0])?;
-                if atom.kind != AtomKind::OptionalValue {
-                    return Err(
-                        self.error(node.offset, "optional named fields require optional(Value)")
-                    );
-                }
-                (atom, Mode::Optional)
-            }
-            Kind::Call(name, args) if name == "default" && args.len() == 2 => {
-                let atom = self.atom(&args[0])?;
-                let Kind::Number(value) = args[1].kind else {
-                    return Err(
-                        self.error(args[1].offset, "text default must be an unsigned integer")
-                    );
-                };
-                if !matches!(&atom.kind, AtomKind::Scalar(ty) if numeric_default(&PropertyType::Named(ty.clone()), value))
-                {
-                    return Err(self.error(
-                        node.offset,
-                        "text default is incompatible with the field type",
-                    ));
-                }
-                (atom, Mode::Default(value))
-            }
-            _ => {
-                let atom = self.atom(node)?;
-                if atom.kind == AtomKind::OptionalValue || atom.kind == AtomKind::Values {
-                    return Err(self.error(
-                        node.offset,
-                        "named fields require a bounded atom or explicit optional value",
-                    ));
-                }
-                (atom, Mode::Required)
-            }
-        };
-        let key = atom
-            .path
-            .rsplit('.')
-            .next()
-            .expect("field path has a component")
-            .into();
-        Ok(Named { atom, key, mode })
-    }
-}
-
-fn list<'a>(node: &'a Node, source: &str) -> Result<&'a [Node], Error> {
-    match &node.kind {
-        Kind::List(items) => Ok(items),
-        _ => Err(Error::at(source, node.offset, "expected text item list")),
-    }
-}
-
-fn path<'a>(node: &'a Node, source: &str) -> Result<&'a str, Error> {
-    match &node.kind {
-        Kind::Name(path) => Ok(path),
-        _ => Err(Error::at(
-            source,
-            node.offset,
-            "expected logical field path",
-        )),
     }
 }
 
@@ -602,9 +396,15 @@ mod tests {
         assert!(matches!(&schema.args[0], Item::Atom(Atom { path, .. }) if path == "lhs"));
         assert!(matches!(&schema.args[1], Item::Atom(Atom { path, .. }) if path == "rhs"));
         for text in [
-            "Text { args: [lhs] }",
-            "Text { args: [lhs, lhs] }",
-            "Text { args: [lhs, missing] }",
+            r#""{lhs}""#,
+            r#""{lhs}, {lhs}""#,
+            r#""{lhs}, {missing}""#,
+            r#""{lhs}{rhs}""#,
+            r#""{lhs}; {rhs}""#,
+            r#""{lhs}, {rhs""#,
+            r#""{lhs}, {rhs},""#,
+            r#""{lhs}, rhs={rhs} trailing""#,
+            r#""left={lhs}, {rhs}""#,
             "Other { args: [lhs, rhs] }",
             "Text { args: [lhs, rhs], extra: lhs }",
         ] {
@@ -621,7 +421,7 @@ mod tests {
             ("integer", "u64", AtomKind::Integer),
             ("bytes", "Bytes", AtomKind::Bytes),
         ] {
-            let text = format!("Text {{ args: [{codec}(arg)] }}");
+            let text = format!(r#""{{arg:{codec}}}""#);
             let mut operation = op(&[("arg", ty)], Some(&text));
             operation.signature.results =
                 TypeList::Fixed(vec![Pattern::Class(crate::fixtures::set("ScalarFloat"))]);
@@ -636,7 +436,7 @@ mod tests {
     #[test]
     fn record_leaves_are_consumed_or_initialized_from_defaults() {
         let params = [("args", "values"), ("ext", "Config")];
-        let text = "Text { args: [args], named: [ext.mask, optional(ext.evl)], flags: ext.flags }";
+        let text = r#""{.ext.flags} {args}, mask={ext.mask}[, evl={ext.evl}]""#;
         let schema = compile(&op(&params, Some(text)), &[record()], "").unwrap();
         assert_eq!(schema.flags.as_deref(), Some("ext.flags"));
         assert_eq!(schema.named[0].key, "mask");
@@ -645,11 +445,11 @@ mod tests {
             matches!(&schema.defaults[..], [(path, DefaultValue::Number(1))] if path == "ext.scale")
         );
         for text in [
-            "Text { args: [args] }",
-            "Text { args: [args], named: [ext.unknown] }",
-            "Text { args: [args], named: [ext.mask], flags: ext.scale }",
-            "Text { args: [args], named: [ext.mask, optional(ext.scale)] }",
-            "Text { args: [args], named: [ext.mask, default(ext.scale, 256)] }",
+            r#""{args}""#,
+            r#""{args}, unknown={ext.unknown}""#,
+            r#""{.ext.scale} {args}, mask={ext.mask}""#,
+            r#""{args}, mask={ext.mask}[, scale={ext.scale}]""#,
+            r#""{args}, mask={ext.mask}, scale={ext.scale=256}""#,
         ] {
             assert!(
                 compile(&op(&params, Some(text)), &[record()], "").is_err(),
@@ -713,9 +513,9 @@ mod tests {
     fn named_keys_and_consumption_are_unambiguous() {
         let params = [("mask", "value"), ("ext", "Config")];
         for text in [
-            "Text { named: [mask, ext.mask] }",
-            "Text { args: [mask], named: [ext.mask, ext.mask] }",
-            "Text { args: [mask], named: [ext.mask, ext.evl] }",
+            r#""mask={mask}, mask={ext.mask}""#,
+            r#""{mask}, mask={ext.mask}, mask={ext.mask}""#,
+            r#""{mask}, mask={ext.mask}, evl={ext.evl}""#,
         ] {
             assert!(
                 compile(&op(&params, Some(text)), &[record()], "").is_err(),
@@ -723,29 +523,18 @@ mod tests {
             );
         }
         let params = [("value", "u32")];
-        for text in [
-            "Text { named: [optional(value)] }",
-            "Text { named: [default(value, true)] }",
-        ] {
+        for text in [r#""[, value={value}]""#, r#""value={value=true}""#] {
             assert!(compile(&op(&params, Some(text)), &[], "").is_err());
         }
-        let schema = compile(
-            &op(&params, Some("Text { named: [default(value, 7)] }")),
-            &[],
-            "",
-        )
-        .unwrap();
-        assert!(matches!(schema.named[0].mode, Mode::Default(7)));
+        let schema = compile(&op(&params, Some(r#""value={value}""#)), &[], "").unwrap();
+        assert!(matches!(schema.named[0].mode, Mode::Required));
     }
 
     #[test]
     fn function_signature_projection_reuses_the_callee() {
         let params = [("target", "FuncId"), ("args", "values")];
         let schema = compile(
-            &op(
-                &params,
-                Some("Text { args: [invoke(target, args, function(target))] }"),
-            ),
+            &op(&params, Some(r#""{target}({args}) : {function(target)}""#)),
             &[],
             "",
         )
@@ -758,10 +547,10 @@ mod tests {
             }
         ));
         for text in [
-            "Text { args: [invoke(target, args)] }",
-            "Text { args: [invoke(target, args, function(args))] }",
-            "Text { args: [invoke(target, args, function())] }",
-            "Text { args: [invoke(target, args, function(target, target))] }",
+            r#""{target}({args})""#,
+            r#""{target}({args}) : {function(args)}""#,
+            r#""{target}({args}) : {function()}""#,
+            r#""{target}({args}) : {function(target, target)}""#,
         ] {
             assert!(
                 compile(&op(&params, Some(text)), &[], "").is_err(),
@@ -771,10 +560,7 @@ mod tests {
         let params = [("target", "value"), ("args", "values")];
         assert!(
             compile(
-                &op(
-                    &params,
-                    Some("Text { args: [invoke(target, args, function(target))] }")
-                ),
+                &op(&params, Some(r#""{target}({args}) : {function(target)}""#)),
                 &[],
                 "",
             )
@@ -785,12 +571,7 @@ mod tests {
     #[test]
     fn variadic_and_compound_items_have_decodable_boundaries() {
         let params = [("callee", "value"), ("args", "values"), ("sig", "SigId")];
-        let schema = compile(
-            &op(&params, Some("Text { args: [invoke(callee, args, sig)] }")),
-            &[],
-            "",
-        )
-        .unwrap();
+        let schema = compile(&op(&params, Some(r#""{callee}({args}) : {sig}""#)), &[], "").unwrap();
         assert!(matches!(
             &schema.args[0],
             Item::Invoke {
@@ -799,11 +580,11 @@ mod tests {
             }
         ));
         for text in [
-            "Text { args: [callee, args, sig] }",
-            "Text { args: [space(callee, args), sig] }",
-            "Text { args: [space(callee, sig), args] }",
-            "Text { args: [invoke(sig, args, callee)] }",
-            "Text { args: [invoke(callee, sig, args)] }",
+            r#""{callee}, {args}, {sig}""#,
+            r#""{callee} {args}, {sig}""#,
+            r#""{callee} {sig}, {args}""#,
+            r#""{sig}({args}) : {callee}""#,
+            r#""{callee}({sig}) : {args}""#,
         ] {
             assert!(
                 compile(&op(&params, Some(text)), &[], "").is_err(),
@@ -811,12 +592,7 @@ mod tests {
             );
         }
         let params = [("cc", "IntCC"), ("lhs", "value"), ("rhs", "value")];
-        let schema = compile(
-            &op(&params, Some("Text { args: [space(cc, lhs), rhs] }")),
-            &[],
-            "",
-        )
-        .unwrap();
+        let schema = compile(&op(&params, Some(r#""{cc} {lhs}, {rhs}""#)), &[], "").unwrap();
         assert!(matches!(schema.args[0], Item::Space(..)));
     }
 }

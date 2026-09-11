@@ -61,14 +61,14 @@ block0(v0: ptr, v1: i{width}):
 export function previous(ptr, i64) -> i64
 block0(v0: ptr, v1: i64):
   v2: ptr = ptr-offset v0, -8
-  store v1, v2
-  v3: i64 = load v2
+  store v1, v2, offset=0
+  v3: i64 = load v2, offset=0
   return v3
 
 export function pointer_slot(ptr, ptr) -> ptr
 block0(v0: ptr, v1: ptr):
-  store v1, v0
-  v2: ptr = load v0
+  store v1, v0, offset=0
+  v2: ptr = load v0, offset=0
   return v2
 ";
     harness += "extern uint64_t previous(void *, uint64_t);
@@ -236,7 +236,7 @@ import function fill(ptr, i64) -> void
 export function address(i64) -> i64
   ss0: size 16
 block0(v0: i64):
-  v1: ptr = stack-addr ss0
+  v1: ptr = stack-addr ss0, offset=0
   call fill(v1, v0) : (ptr, i64) -> void
   v2: i64 = stack-load ss0, offset=8
   return v2

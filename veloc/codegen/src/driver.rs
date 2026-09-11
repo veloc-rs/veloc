@@ -446,7 +446,7 @@ mod memory_tests {
                 r#"
 local function access(ptr) -> i64
 block0(v0: ptr):
-  v1: i64 = load.volatile v0
+  v1: i64 = load.volatile v0, offset=0
   return v1
 "#,
             )
@@ -499,8 +499,8 @@ export function access(ptr, i64) -> i64
 block0(v0: ptr, v1: i64):
   store.volatile.align8 v1, v0, offset=8
   v2: i64 = load.volatile.align8 v0, offset=8
-  stack-store v2, ss0
-  v3: i64 = stack-load ss0
+  stack-store v2, ss0, offset=0
+  v3: i64 = stack-load ss0, offset=0
   return v3
 "#,
             )

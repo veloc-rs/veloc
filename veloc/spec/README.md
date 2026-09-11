@@ -399,7 +399,7 @@ op ExtendU<T: Integer | BOOL | vectors(BOOL)>(arg: T) -> (result: shape(T, Integ
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
-    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    text: "{.flags} {ptr}, offset={offset}",
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 ```
@@ -618,50 +618,49 @@ storage layout:
 op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
     mnemonic: "store",
     storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
-    text: Text {
-        args: [value, ptr],
-        named: [default(offset, 0)],
-        flags: flags
-    },
+    text: "{.flags} {value}, {ptr}, offset={offset}",
     traits: [MAY_TRAP], memory: HEAP_WRITE
 }
 ```
 
-The same projection generates both directions. `args` are positional atoms;
-`named` fields use `name=value`. An ordinary atom derives its reader/writer from
-the logical type. `integer(value)` preserves integer bit patterns with signed
-text; `float(value)` preserves raw hexadecimal floating-point bits, including
-NaN payloads; `bytes(data)` is hexadecimal byte text. Atom parsing does not receive
-result types: float text is decoded as a raw u64, while the Fconst type contract
-and its definition-owned constraint validate the result type and f32 payload
-width. Malformed hexadecimal text and payloads exceeding u64 remain parse errors.
-Printing still receives the first result type to select the canonical hexadecimal
-width. `space(kind, lhs)` composes
-the comparison spelling `eq v0`. Invocation syntax is composed with
-`invoke(func_id, args, function(func_id))` or `invoke(ptr, args, sig_id)`.
-Both require a textual signature: `call callee(v0) : (i32) -> i32`. The
-`function(callee)` projection reads/writes the referenced function signature;
-it does not add a redundant property to Call storage. The parser checks that
-this textual declaration agrees with the function symbol. Checking argument
-and result values against the signature remains the validator\'s job. Calls
-print the full signature independently of their explicitly typed SSA results.
-Variadic values and
-successors retain their generic comma-list and bracketed-list syntax.
+The template generates both the parser and canonical printer at build time;
+there is no runtime template interpreter. Without an explicit template, logical
+parameters retain their declaration order.
 
-`default(offset, 0)` accepts an omitted value and omits it when printing zero.
-`optional(mem.mask)` is an optional SSA value in a structured property record.
-`flags: flags` or `flags: mem.flags` reads and writes mnemonic suffix flags.
-Nested paths refer to checked record fields; they are not unchecked Rust
-expressions. Each operation's projection defines its accepted named fields, so
-strided memory accepts `stride`, while gather/scatter accept `index` and `scale`.
-Unsupported fields are rejected rather than parsed and silently discarded.
+- `{field}` selects a logical parameter; `{record.field}` selects a record leaf.
+- `{kind} {lhs}, {rhs}` spells a comparison such as `eq v0, v1`.
+- `offset={offset}` is required even when the offset is zero.
+- `[, mask={mem.mask}]` is optional only because the field is an optional SSA
+  value. Ordinary numeric fields do not have text defaults or optional groups.
+- `{.flags}` or `{.mem.flags}`, at the start of a template, binds mnemonic
+  suffix flags. Empty flags produce no suffix.
+- `{data:bytes}` selects hexadecimal byte text; `{value:integer}` selects
+  signed bit-pattern text for a u64 property. Most atoms infer their codec from
+  the logical property type, including Int, Float and VectorConst.
 
-Text projections must account for logical data, apart from declared record
-defaults. Unknown or duplicate references, incompatible atom types and invalid
-optional/default annotations are definition errors. Ordinary formats do not
-also select a named text codec: that would duplicate the operation's grammar.
-An alternate storage layout instead declares how its shared extension data is
-projected alongside the operation, preserving mask/EVL predication.
+For example, strided loads use:
+
+```text
+text: "{.mem.flags} {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]"
+```
+
+Calls use `{func_id}({args}) : {function(func_id)}` for direct functions,
+`{ptr}({args}) : {sig_id}` for explicit signatures, and `{callee}({args})`
+for callable values. The function signature projection reuses the referenced
+function's signature, without adding a property to instruction storage.
+The parser checks that the textual declaration agrees with the function symbol;
+the validator checks argument and result types.
+
+The grammar is intentionally bounded: positional operands precede named fields,
+and optional groups contain a single named optional SSA value. Named fields may
+be parsed in any order, but print in template order. Variadic values and
+successors retain their comma-list and bracketed-list syntax.
+
+Templates account for logical data apart from declared record defaults for
+unexposed fields. Unknown or duplicate references, incompatible codecs, missing
+fields and invalid optional groups are definition errors. Unsupported input
+fields are rejected, never silently discarded. Alternate storage layouts
+declare their own extension templates, preserving mask/EVL predication.
 
 MIR text uses an on-demand token cursor with source spans and recursive-descent
 parsers for declarations, types, signatures and successor lists. Physical

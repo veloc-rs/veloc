@@ -8,7 +8,7 @@ format CallIndirect {
 op CallIndirect(@sig_id: SigId, args: values, ptr: PTR) -> signature {
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
-    text: Text { args: [invoke(ptr, args, sig_id)] },
+    text: "{ptr}({args}) : {sig_id}",
     signature: sig_id,
     traits: [MAY_TRAP], memory: UNKNOWN
 }
@@ -283,7 +283,7 @@ format Load {
 op Load(ptr: PTR, @ptr: u32, @flags: MemFlags) -> (result: Any) {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
-    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    text: "{.flags} {ptr}, offset={offset}",
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
@@ -297,7 +297,7 @@ format Load {
 op Load(ptr: PTR, @offset: i32, @flags: MemFlags) -> (result: Any) {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
-    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    text: "{.flags} {ptr}, offset={offset}",
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
@@ -311,7 +311,7 @@ format Load {
 op Load(ptr: PTR, @offset: u32, @flags: bool) -> (result: Any) {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
-    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    text: "{.flags} {ptr}, offset={offset}",
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
@@ -325,7 +325,7 @@ format Load {
 op Load(ptr: PTR, offset: I32, @flags: MemFlags) -> (result: Any) {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
-    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    text: "{.flags} {ptr}, offset={offset}",
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
@@ -339,7 +339,7 @@ format Load {
 op Load(@ptr: u32, @offset: u32, @flags: MemFlags) -> (result: Any) {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
-    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    text: "{.flags} {ptr}, offset={offset}",
     traits: [MAY_TRAP], memory: HEAP_READ
 }
 
@@ -353,7 +353,7 @@ format CallIndirect {
 op CallIndirect(@sig_id: SigId, ptr: PTR, args: successor) -> signature {
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
-    text: Text { args: [invoke(ptr, args, sig_id)] },
+    text: "{ptr}({args}) : {sig_id}",
     signature: sig_id,
     traits: [MAY_TRAP], memory: UNKNOWN
 }
@@ -433,6 +433,6 @@ format Load {
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset },
-    text: Text { args: [ptr], named: [default(offset, 0)], flags: flags },
+    text: "{.flags} {ptr}, offset={offset}",
     traits: [MAY_TRAP], memory: HEAP_READ
 }

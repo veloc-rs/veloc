@@ -23,7 +23,7 @@ block0(v0: ptr, v1: i32, v2: f32, v3: i32<4>, v4: mask<4>):
   store.volatile v14, v0, offset=8
   v15: i32 = stack-load ss0, offset=4
   stack-store v15, ss0, offset=8
-  v16: ptr = stack-addr ss0
+  v16: ptr = stack-addr ss0, offset=0
   v17: ptr = ptr-offset v0, -4
   v18: ptr = ptr-index v0, v1, scale=4, offset=-8
   v19: ptr = inttoptr v1
@@ -35,8 +35,8 @@ block0(v0: ptr, v1: i32, v2: f32, v3: i32<4>, v4: mask<4>):
   v25: i32<4> = iadd v3, v8, mask=v4
   v26: i32<4> = load-stride.align4 v0, stride=v1, offset=-16, mask=v4
   store-stride v26, v0, stride=v1, offset=16, mask=v4
-  v27: i32<4> = gather v0, index=v8, scale=4, mask=v4
-  scatter v27, v0, index=v8, scale=4, mask=v4
+  v27: i32<4> = gather v0, index=v8, scale=4, offset=0, mask=v4
+  scatter v27, v0, index=v8, scale=4, offset=0, mask=v4
   nop
   br v12, block1(), block2()
 block1():

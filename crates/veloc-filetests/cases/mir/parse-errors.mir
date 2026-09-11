@@ -450,3 +450,45 @@ block0(v1: i32, v5: i32):
   v9: i32 = iadd.volatile v1, v5
   return
 import function callee(i32) -> i32
+
+
+// ----- required-load-offset
+// run: parse-error
+// check: missing `offset=` field
+local function required_load_offset(ptr) -> i32
+block0(v0: ptr):
+  v1: i32 = load v0
+  return v1
+
+// ----- required-store-offset
+// run: parse-error
+// check: missing `offset=` field
+local function required_store_offset(ptr, i32) -> void
+block0(v0: ptr, v1: i32):
+  store v1, v0
+  return
+
+// ----- required-stack-offset
+// run: parse-error
+// check: missing `offset=` field
+local function required_stack_offset() -> ptr
+  ss0: size 8
+block0():
+  v0: ptr = stack-addr ss0
+  return v0
+
+// ----- required-pointer-scale
+// run: parse-error
+// check: missing `scale=` field
+local function required_pointer_scale(ptr, i32) -> ptr
+block0(v0: ptr, v1: i32):
+  v2: ptr = ptr-index v0, v1, offset=0
+  return v2
+
+// ----- required-pointer-offset
+// run: parse-error
+// check: missing `offset=` field
+local function required_pointer_offset(ptr, i32) -> ptr
+block0(v0: ptr, v1: i32):
+  v2: ptr = ptr-index v0, v1, scale=1
+  return v2

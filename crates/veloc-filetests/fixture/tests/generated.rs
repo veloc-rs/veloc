@@ -609,7 +609,7 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
     let module = module.build();
     let text = module.to_string();
     assert!(text.contains("reverse-text v1, v0"));
-    assert!(!text.contains("amount="));
+    assert!(text.contains("amount=7"));
     veloc_mir::ModuleParser::new()
         .parse(&text)
         .unwrap()

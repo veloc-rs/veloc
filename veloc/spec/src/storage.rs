@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn rejects_format_level_text_definitions() {
-        let source = "format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode), text: Text { args: [args] } }";
+        let source = r#"format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode), text: "{args}" }"#;
         let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
         assert!(error.message.contains("text"));
     }
@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_layout_target() {
-        let source = "layout Extended { fields: [opcode(Opcode), args(ValueList)], opcode: dynamic(opcode), format: arity(args, [Missing]), text: Text { args: [args] } }";
+        let source = r#"layout Extended { fields: [opcode(Opcode), args(ValueList)], opcode: dynamic(opcode), format: arity(args, [Missing]), text: "{args}" }"#;
         let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
         assert!(error.message.contains("unknown format"));
     }
@@ -922,7 +922,7 @@ mod tests {
             format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
             format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
             op Neg(arg: I32) -> (result: I32) { storage: Unary { arg: arg } }
-            layout Pair { fields: [args(values(2))], opcode: fixed(Neg), format: fixed(Binary), text: Text { args: [args] } }
+            layout Pair { fields: [args(values(2))], opcode: fixed(Neg), format: fixed(Binary), text: "{args}" }
         "#;
         let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
         assert!(error.message.contains("requires format `Unary`"));
