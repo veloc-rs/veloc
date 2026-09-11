@@ -12,3 +12,4 @@ pub use lowering::{BlockParamLoweringPass, LegalizePass};
 pub use postisel::PostIselOptimizePass;
 pub use preisel::PreIselPass;
 pub use regalloc::RegisterAllocationPass;
+pub mod schedule;

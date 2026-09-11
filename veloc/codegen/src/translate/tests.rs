@@ -26,6 +26,44 @@ fn module(opcode: Opcode, ty: Type, arity: usize) -> Module {
 }
 
 #[test]
+fn pointer_access_size_comes_from_the_target_data_layout() {
+    let module = ModuleParser::new()
+        .parse(
+            r#"
+local function load_pointer(ptr) -> ptr
+block0(v0: ptr):
+  v1: ptr = load.align4 v0
+  return v1
+"#,
+        )
+        .unwrap();
+    module.validate().unwrap();
+    for pointer_size in [4, 8] {
+        let lir = IRTranslator::new(
+            &module,
+            crate::target::arch::DataLayout {
+                pointer_size,
+                little_endian: true,
+            },
+        )
+        .translate_module()
+        .unwrap();
+        let accesses: alloc::vec::Vec<_> = lir
+            .functions
+            .iter()
+            .flat_map(|(_, f)| {
+                f.blocks
+                    .iter()
+                    .flat_map(move |b| b.insts.iter().filter_map(move |id| f.dfg[*id].memory))
+            })
+            .collect();
+        assert_eq!(accesses.len(), 1);
+        assert_eq!(accesses[0].bytes, u32::from(pointer_size));
+        assert_eq!(accesses[0].alignment, 4);
+    }
+}
+
+#[test]
 fn semantic_lowering_rejects_malformed_arity_and_type_instances() {
     let source = module(Opcode::IAdd, Type::I32, 2);
     for case in 0..7 {
@@ -61,9 +99,15 @@ fn semantic_lowering_rejects_malformed_arity_and_type_instances() {
             _ => unreachable!(),
         }
         assert!(
-            IRTranslator::new(&Module::new(data))
-                .translate_module()
-                .is_err()
+            IRTranslator::new(
+                &Module::new(data),
+                crate::target::arch::DataLayout {
+                    pointer_size: 8,
+                    little_endian: true
+                }
+            )
+            .translate_module()
+            .is_err()
         );
     }
 }
@@ -96,9 +140,15 @@ fn composed_semantic_fallback_still_validates_its_source_contract() {
             _ => unreachable!(),
         }
         assert!(
-            IRTranslator::new(&Module::new(data))
-                .translate_module()
-                .is_err()
+            IRTranslator::new(
+                &Module::new(data),
+                crate::target::arch::DataLayout {
+                    pointer_size: 8,
+                    little_endian: true
+                }
+            )
+            .translate_module()
+            .is_err()
         );
     }
 }

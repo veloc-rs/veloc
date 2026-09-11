@@ -1,4 +1,5 @@
 mod offline {
+    use veloc_mir::{IntCC, Opcode};
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
 // Compare generated evaluation with the former per-fold graph construction path.
@@ -6,11 +7,11 @@ mod offline {
 use std::{hint::black_box, time::Instant};
 
 use smallvec::SmallVec;
-use veloc_mir::constant::Constant;
+use veloc_mir::constant::ScalarConst;
 use veloc_mir::{Opcode, Type};
 use veloc_semantics::{Outcome, Sort, Value};
 
-fn graph(op: Opcode, args: &[Constant], results: &[Type]) -> Option<Vec<Constant>> {
+fn graph(op: Opcode, args: &[ScalarConst], results: &[Type]) -> Option<Vec<ScalarConst>> {
     let types = args.iter().map(|c| c.ty()).collect::<SmallVec<[Type; 4]>>();
     op.validate_types(&types, results).ok()?;
     let sort = |ty: Type| {
@@ -38,9 +39,9 @@ fn graph(op: Opcode, args: &[Constant], results: &[Type]) -> Option<Vec<Constant
         .ok()?;
     let values = args
         .iter()
-        .map(|c| match c {
-            Constant::Bool(b) => Value::Bool(*b),
-            _ => Value::Bv(c.as_i64().unwrap() as u128),
+        .map(|c| match c.as_bool() {
+            Some(b) => Value::Bool(b),
+            None => Value::Bv(c.to_bits() as u128),
         })
         .collect::<SmallVec<[Value; 4]>>();
     let Outcome::Values(values) = function.execute(&values).ok()? else {
@@ -51,9 +52,9 @@ fn graph(op: Opcode, args: &[Constant], results: &[Type]) -> Option<Vec<Constant
             .into_iter()
             .zip(results)
             .map(|(value, &ty)| match value {
-                Value::Bool(b) => Constant::Bool(b),
+                Value::Bool(b) => ScalarConst::from(b),
                 Value::Bv(v) => match ty {
-                    Type::I64 => Constant::I64(v as i64),
+                    Type::I64 => ScalarConst::from(v as i64),
                     _ => unreachable!("benchmark uses i64 results"),
                 },
             })
@@ -75,7 +76,10 @@ fn main() {
             &[Type::I64][..]
         };
         let evaluate = |fast, i| {
-            let args = [Constant::I64(i as i64 ^ i64::MIN), Constant::I64(13)];
+            let args = [
+                ScalarConst::from(i as i64 ^ i64::MIN),
+                ScalarConst::from(13i64),
+            ];
             let (op, args, results) = black_box((op, args, results));
             if fast {
                 veloc_optimizer::rewrite::evaluate(op, &args, results, &[])

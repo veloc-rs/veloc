@@ -101,6 +101,45 @@ pub trait LoweringContext {
 /// Target Machine: 封装特定目标架构的所有组件和策略。
 /// 模仿 LLVM TargetMachine，作为从通用流程获取架构特定逻辑的统一入口。
 pub trait TargetMachine {
+    /// Authoritative control descriptor for a selected target opcode.
+    fn target_control(&self, opcode: u32) -> veloc_lir::ControlFlow;
+
+    fn control_flow(&self, inst: &MachineInst) -> veloc_lir::ControlFlow {
+        match inst.opcode {
+            veloc_lir::MachineOpcode::Invalid => veloc_lir::ControlFlow::Next,
+            veloc_lir::MachineOpcode::Generic(op) => op.control(),
+            veloc_lir::MachineOpcode::Target(op) => self.target_control(op),
+        }
+    }
+
+    /// Unknown operations are scheduling barriers. Costs are estimates, not
+    /// cycle-accurate promises for every CPU implementing an ISA.
+    fn schedule_info(&self, _inst: &MachineInst) -> Option<ScheduleInfo> {
+        None
+    }
+
+    fn is_call(&self, inst: &MachineInst) -> bool {
+        self.control_flow(inst) == veloc_lir::ControlFlow::Call
+    }
+
+    /// Dedicated spill temporaries must not belong to any allocatable set.
+    fn spill_scratch(&self, _class: RegClass) -> &'static [Reg] {
+        &[]
+    }
+
+    fn spill_instruction(
+        &self,
+        _load: bool,
+        _reg: Reg,
+        _base: Reg,
+        _offset: i64,
+        _ty: Type,
+    ) -> crate::error::Result<MachineInst> {
+        Err(crate::error::Error::codegen(
+            "target does not support spill expansion",
+        ))
+    }
+
     /// 获取架构配置
     fn config(&self) -> &TargetConfig;
 
@@ -130,6 +169,14 @@ pub trait TargetMachine {
 
     /// 获取寄存器库选择逻辑
     fn target_regbank_select(&self) -> &dyn crate::regalloc::regbank_select::TargetRegBankSelect;
+}
+
+/// A movable, nontrapping operation. It must not access memory, read flags, or
+/// change control flow. The scheduler preserves the region's final flag writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleInfo {
+    pub latency: u32,
+    pub writes_flags: bool,
 }
 
 /// 机器码发射器接口
@@ -252,6 +299,10 @@ impl GenericInstMetadata {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetInstMetadata {
+    /// Fixed access encoded by this instruction; absence is not an effect proof.
+    pub memory: Option<(veloc_lir::MemoryKind, u32)>,
+    pub flow: veloc_lir::ControlFlow,
+    pub schedule: Option<ScheduleInfo>,
     pub tied_operands: &'static [TargetTiedOperandMetadata],
     pub fixed_uses: &'static [FixedUseConstraint],
     pub implicit_uses: &'static [Reg],
@@ -261,6 +312,9 @@ pub struct TargetInstMetadata {
 
 impl TargetInstMetadata {
     pub const EMPTY: Self = Self {
+        memory: None,
+        flow: veloc_lir::ControlFlow::Next,
+        schedule: None,
         tied_operands: &[],
         fixed_uses: &[],
         implicit_uses: &[],
@@ -289,8 +343,12 @@ pub trait TargetLegalizer: Send + Sync {
 
     /// 应用 target-specific legalization。
     ///
-    /// 只有当 `legalize_action()` 返回 `Some(LegalizeAction::Lower)` 或其他
-    /// 需要目标私有重写的动作时，driver 才会调用这个 hook。
+    /// 只有当 `legalize_action()` 返回 `Some(LegalizeAction::Lower)` 时，
+    /// driver 才会调用这个 hook。
+    ///
+    /// 返回的指令按执行顺序排列，driver 会继续合法化其中的 generic 指令。
+    /// 原地改写时应返回原来的 ID；否则 driver 会使原指令失效。
+    /// 可以追加新块，但不能悄悄修改已处理的其他指令：driver 不会回访它们。
     fn legalize_instruction(
         &self,
         inst_id: veloc_lir::InstId,

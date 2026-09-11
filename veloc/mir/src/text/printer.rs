@@ -15,7 +15,7 @@ pub struct ValueFmt<'a>(&'a DataFlowGraph, Value);
 
 impl Display for ValueFmt<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        let name = &self.0.value_names[self.1];
+        let name = self.0.value_name(self.1);
         if name.is_empty() {
             write!(f, "v{}", self.1.0)
         } else {
@@ -25,7 +25,7 @@ impl Display for ValueFmt<'_> {
 }
 
 pub struct InstPrinter<'a> {
-    dfg: &'a DataFlowGraph,
+    pub(super) dfg: &'a DataFlowGraph,
     module: Option<&'a Module>,
 }
 

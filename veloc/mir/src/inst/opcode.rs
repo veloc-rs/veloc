@@ -38,15 +38,6 @@ pub enum TypeError {
     Relation(&'static str),
 }
 
-fn same_shape(bound: crate::Type, ty: crate::Type) -> bool {
-    if let Some(bound) = bound.as_vector() {
-        ty.as_vector()
-            .is_some_and(|vector| vector.shape() == bound.shape())
-    } else {
-        ty.as_scalar().is_some()
-    }
-}
-
 /// Shared executable rules generated from the definitions.
 mod type_rules {
     include!(concat!(env!("OUT_DIR"), "/type_rules.rs"));

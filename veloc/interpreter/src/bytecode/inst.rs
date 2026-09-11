@@ -743,7 +743,6 @@ define_opcodes! {
     Fconst [Payload64] { dst: Reg, imm64: u64 };
     Fconst32 [Const32] { dst: Reg, bits32: u32 };
     Bconst [Slots] { dst: Reg, val: bool };
-    Vconst [Payload32] { dst: Reg, pool_id: u32 };
 
     // === I32 Arithmetic ===
     I32Add [Slots] { dst: Reg, src1: Reg, src2: Reg };

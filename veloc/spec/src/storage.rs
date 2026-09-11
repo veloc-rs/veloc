@@ -5,7 +5,15 @@ use crate::Error;
 use crate::records::RecordDef;
 use crate::syntax::{Kind, Node, Record};
 
+mod compact;
 mod generate;
+pub(crate) mod operands;
+
+#[derive(Debug)]
+pub(crate) enum Strategy {
+    Packed,
+    Operands(operands::Operands),
+}
 
 pub(crate) fn constructor_name(name: &str) -> String {
     let mut method = String::new();
@@ -32,6 +40,7 @@ pub(crate) struct Format {
 
 #[derive(Debug)]
 pub(crate) struct Storage {
+    pub strategy: Strategy,
     pub formats: Vec<Format>,
     pub instructions: String,
     pub formats_code: String,
@@ -166,6 +175,41 @@ impl Layout {
 /// Compile physical layouts and their logical format/text projections from one
 /// field schema. Opcode/type declarations are checked by the enclosing model.
 pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error> {
+    if let Some(record) = records.iter().find(|r| r.kind == "storage") {
+        if records.iter().filter(|r| r.kind == "storage").count() != 1 || record.name != "Operands"
+        {
+            return Err(Error::at(
+                source,
+                record.offset,
+                "expected one storage Operands declaration",
+            ));
+        }
+        let mut fields = crate::model::Fields::new(source, record.clone());
+        let prefix = if let Some(node) = fields.optional("prefix") {
+            match node.kind {
+                Kind::Text(prefix) => prefix,
+                _ => {
+                    return Err(Error::at(
+                        source,
+                        node.offset,
+                        "expected opcode prefix string",
+                    ));
+                }
+            }
+        } else {
+            String::new()
+        };
+        fields.finish()?;
+        let operands = operands::compile(records, source, prefix)?;
+        return Ok(Storage {
+            strategy: Strategy::Operands(operands),
+            formats: Vec::new(),
+            instructions: String::new(),
+            formats_code: String::new(),
+            records: crate::records::compile(records, source)?,
+            alternatives: Vec::new(),
+        });
+    }
     let properties = crate::records::compile(records, source)?;
     let mut layouts = Vec::new();
     let mut names = BTreeSet::new();
@@ -216,6 +260,7 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
         .collect::<Vec<_>>();
     validate_links(&layouts, &formats, records, source)?;
     Ok(Storage {
+        strategy: Strategy::Packed,
         instructions: crate::records::generate(&properties)
             + &generate::instructions(&layouts, &properties),
         formats_code: generate_formats(&formats),
@@ -436,9 +481,10 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
         "Unary" => (&[("opcode", "Opcode"), ("arg", "Value")], None),
         "Binary" => (&[("opcode", "Opcode"), ("args", "values(2)")], None),
         "Ternary" => (&[("opcode", "Opcode"), ("args", "values(3)")], None),
-        "Iconst" | "Fconst" => (&[("value", "u64")], Some(layout.name.as_str())),
+        "Iconst" => (&[("value", "Int")], Some("Iconst")),
+        "Fconst" => (&[("value", "Float")], Some("Fconst")),
         "Bconst" => (&[("value", "bool")], Some("Bconst")),
-        "Vconst" => (&[("pool_id", "ConstantPoolId")], Some("Vconst")),
+        "Vconst" => (&[("value", "VectorConst")], Some("Vconst")),
         "Load" => (
             &[("ptr", "Value"), ("offset", "u32"), ("flags", "MemFlags")],
             Some("Load"),
@@ -610,6 +656,9 @@ fn field_type(node: &Node, source: &str, records: &[RecordDef]) -> Result<FieldT
                 "Intrinsic",
                 "IntCC",
                 "FloatCC",
+                "Float",
+                "Int",
+                "VectorConst",
                 "u32",
                 "u64",
                 "i32",
@@ -858,7 +907,7 @@ mod tests {
 
     #[test]
     fn rejects_an_opcode_that_violates_an_existing_layout_contract() {
-        let source = "format Iconst { fields: [value(u64)], opcode: fixed(Fconst) }";
+        let source = "format Iconst { fields: [value(Int)], opcode: fixed(Fconst) }";
         let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
         assert!(
             error

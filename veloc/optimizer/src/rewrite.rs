@@ -1,11 +1,11 @@
 //! Generated scalar evaluation and local rewrites; MIR owns only representation.
 use alloc::vec::Vec;
 use smallvec::SmallVec;
-use veloc_mir::constant::Constant;
+use veloc_mir::constant::ScalarConst;
 use veloc_mir::{Function, Inst, InstructionView, IntCC, Opcode, Type, Value};
 
 enum Replacement {
-    Constants(Vec<Constant>),
+    Constants(Vec<ScalarConst>),
     Value(Value),
 }
 
@@ -14,10 +14,10 @@ include!(concat!(env!("OUT_DIR"), "/evaluation.rs"));
 fn match_rule(func: &Function, inst: Inst) -> Option<Replacement> {
     let data = &func.dfg().inst(inst);
     if can_fold(data.opcode()) {
-        let mut args = Some(SmallVec::<[Constant; 4]>::new());
+        let mut args = Some(SmallVec::<[ScalarConst; 4]>::new());
         data.visit_type_operands(|v| {
             if let Some(constants) = &mut args {
-                match func.dfg().as_const(v) {
+                match func.dfg().as_scalar_const(v) {
                     Some(c) => constants.push(c),
                     None => args = None,
                 }
@@ -36,7 +36,7 @@ fn match_rule(func: &Function, inst: Inst) -> Option<Replacement> {
         }
     }
     if let InstructionView::Binary { opcode, args } = data {
-        return algebraic(*opcode, args, &args.map(|v| func.dfg().as_const(v)));
+        return algebraic(*opcode, args, &args.map(|v| func.dfg().as_scalar_const(v)));
     }
     None
 }

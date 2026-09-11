@@ -1,0 +1,15 @@
+// ----- inferred-property-codec
+// run: fixture
+// check: v0: i32<4> = vector-literal splat(-7)
+local function constant() -> i32<4>
+block0():
+  v0: i32<4> = vector-literal splat(-7)
+  return v0
+
+// ----- inherited-property-validation
+// run: fixture-validate-error
+// check: dense vector constant byte count must match its type
+local function constant() -> void
+block0():
+  v0: i32<4> = vector-literal 0x00000000
+  return

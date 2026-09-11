@@ -2,7 +2,7 @@
 
 use crate::dfg::DataFlowGraph;
 use crate::types::{FuncId, StackSlot, Value};
-use crate::{Intrinsic, SigId};
+use crate::{Float, Int, Intrinsic, SigId, VectorConst};
 use core::fmt;
 use cranelift_entity::entity_impl;
 
@@ -18,10 +18,12 @@ pub struct ConstantPoolId(pub u32);
 entity_impl!(ConstantPoolId, "const");
 
 mod storage;
+pub(crate) use storage::FieldPool;
 pub(crate) use storage::StoredInst;
 pub use storage::{Arguments, Successor, SuccessorMut, Successors};
 
-/// Owned instruction draft using the same fields and operand order as the DFG.
+/// Owned logical fields using the same operand order as the DFG.
+/// Persistent fields use a separately generated compact layout.
 /// Constructors guarantee storage shape, not the instruction's type contract.
 #[derive(Debug, Clone)]
 pub struct InstDraft {

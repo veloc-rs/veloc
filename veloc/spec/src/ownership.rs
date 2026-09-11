@@ -61,8 +61,20 @@ pub(crate) fn generate(defs: &Definitions) -> String {
                         {
                             for field in &record.fields {
                                 match &field.ty {
-                                    PropertyType::Named(ty) if ty == "Value" => writeln!(body, "visit(({value}).{}, false)?;", field.name).unwrap(),
-                                    PropertyType::Optional(ty) if ty == "Value" => writeln!(body, "if let Some(value) = ({value}).{} {{ visit(value, false)?; }}", field.name).unwrap(),
+                                    PropertyType::Named(ty) if ty == "Value" => writeln!(
+                                        body,
+                                        "visit(({}).{}, false)?;",
+                                        value.strip_prefix('*').unwrap_or(value),
+                                        field.name
+                                    )
+                                    .unwrap(),
+                                    PropertyType::Optional(ty) if ty == "Value" => writeln!(
+                                        body,
+                                        "if let Some(value) = ({}).{} {{ visit(value, false)?; }}",
+                                        value.strip_prefix('*').unwrap_or(value),
+                                        field.name
+                                    )
+                                    .unwrap(),
                                     _ => {}
                                 }
                             }

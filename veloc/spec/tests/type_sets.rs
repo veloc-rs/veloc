@@ -1,10 +1,10 @@
 mod common;
 
-use common::{BUILTINS, compile_mir};
+use common::{BUILTINS, compile};
 
 fn rejected(source: &str, expected: &str) {
     let result =
-        std::panic::catch_unwind(|| compile_mir(source)).expect("invalid types must not panic");
+        std::panic::catch_unwind(|| compile(source)).expect("invalid types must not panic");
     let error = result.err().expect("invalid types were accepted");
     assert!(error.message.contains(expected), "{error}");
 }
@@ -18,19 +18,19 @@ fn exact_class_members_drive_codegen_and_bitvector_semantics() {
             mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
         }
     "#;
-    let output = compile_mir(source).unwrap();
+    let output = compile(source).unwrap();
     assert!(output.opcodes.contains("3 | 4 => 0x00000001,\n_ => 0,"));
     assert!(output.type_rules.contains("C::Wide.accepts(operands[0])"));
     rejected(
         &source.replace("[I32, I64]", "[I32, F64]"),
         "floating-point execution semantics are not modeled",
     );
-    assert!(compile_mir(&source.replace("[I32, I64]", "[I32X4]")).is_ok());
+    assert!(compile(&source.replace("[I32, I64]", "[I32X4]")).is_ok());
 }
 
 #[test]
 fn vector_declarations_generate_constants_and_exact_type_patterns() {
-    let output = compile_mir(
+    let output = compile(
         r#"
         class Chosen { members: [I32X4, SV4] }
         type SV4 = vector(I32, scalable(4));
@@ -43,12 +43,12 @@ fn vector_declarations_generate_constants_and_exact_type_patterns() {
     assert!(
         output
             .types
-            .contains("pub const SV4: Self = Self::I32.as_scalar().expect(\"checked scalar definition\").vector(4, true)")
+            .contains("pub const SV4: Self = ScalarType::I32.vector(4, true)")
     );
     assert!(
         output
             .types
-            .contains("pub const MV8: Self = Self::BOOL.as_scalar().expect(\"checked scalar definition\").vector(8, false)")
+            .contains("pub const MV8: Self = ScalarType::BOOL.vector(8, false)")
     );
     assert!(output.type_rules.contains("operands[0] == Type::SV4"));
     assert!(output.opcodes.contains("3 => 0x00040004,"));
@@ -65,7 +65,7 @@ fn exact_shapes_detect_impossible_relations_at_definition_time() {
         }
     "#;
     rejected(source, "impossible shape constraint");
-    assert!(compile_mir(&source.replace("[I64X2]", "[F32X4]")).is_ok());
+    assert!(compile(&source.replace("[I64X2]", "[F32X4]")).is_ok());
     let scalar = source.replace("[I64X2]", "[I64]");
     rejected(&scalar, "impossible shape constraint");
 }
@@ -117,7 +117,7 @@ fn vector_families_require_scalar_sets_and_preserve_definition_checks() {
     ] {
         rejected(source, error);
     }
-    assert!(compile_mir("class Mixed { members: [I32, ScalarInteger] }").is_ok());
+    assert!(compile("class Mixed { members: [I32, ScalarInteger] }").is_ok());
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn vector_constants_reject_unrepresentable_or_invalid_types() {
         rejected(source, error);
     }
     let narrow = BUILTINS.replace("lanes_log2(4)", "lanes_log2(3)");
-    let error = veloc_opgen::compile_mir(&format!("{narrow}\ntype V = vector(I32, 256);"))
+    let error = veloc_opgen::compile(&format!("{narrow}\ntype V = vector(I32, 256);"))
         .err()
         .unwrap();
     assert!(error.message.contains("vector lanes"));

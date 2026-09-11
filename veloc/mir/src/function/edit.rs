@@ -25,6 +25,12 @@ impl<'a> FunctionEditor<'a> {
         self.func
     }
 
+    /// Intern vector bytes without validation; the validator checks their layout.
+    pub fn dense_constant(&mut self, ty: crate::VectorType, bytes: Vec<u8>) -> crate::VectorConst {
+        let id = crate::inst::ConstantPoolId::insert(&mut self.func.dfg, bytes);
+        crate::VectorConst::dense(ty, id)
+    }
+
     pub fn set_value_type(&mut self, value: Value, ty: Type) {
         self.func.dfg.set_value_type(value, ty);
     }

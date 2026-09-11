@@ -1,0 +1,490 @@
+//! Execute emitted ELF objects, including ABI calls and forced spills.
+#![cfg(all(feature = "std", target_arch = "x86_64", target_os = "linux"))]
+use std::{
+    fs,
+    path::PathBuf,
+    process::Command,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+use veloc_codegen::{CodegenOptions, CodegenPipeline, TargetConfig, create_target_machine};
+use veloc_mir::ModuleParser;
+
+struct Workspace(PathBuf);
+
+#[test]
+fn full_unsigned_memory_offsets_do_not_sign_extend_disp32() {
+    let mut source = String::new();
+    let mut harness = String::from("#include <stdint.h>\n#include <assert.h>\n");
+    for offset in [0x7fff_ffffu32, 0x8000_0000, 0xffff_ffff] {
+        source += &format!(
+            "
+export function offset_{offset}(ptr, i64) -> i64
+block0(v0: ptr, v1: i64):
+  store.volatile v1, v0, offset={offset}
+  v2: i64 = load.volatile v0, offset={offset}
+  return v2
+"
+        );
+        harness += &format!("extern uint64_t offset_{offset}(void *, uint64_t);\n");
+    }
+    harness += "int main(void) { uint64_t value=0;\n";
+    for offset in [0x7fff_ffffu32, 0x8000_0000, 0xffff_ffff] {
+        harness += &format!(
+            "for(uint64_t n=0;n<100;n++) {{
+            void *base=(void *)((uintptr_t)&value-UINT64_C({offset}));
+            assert(offset_{offset}(base,n)==n);
+            assert(value==n);
+        }}\n"
+        );
+    }
+    harness += "}";
+    run(&source, &harness);
+}
+
+#[test]
+fn narrow_memory_and_negative_pointer_offsets_execute() {
+    let mut source = String::new();
+    let mut harness = String::from("#include <stdint.h>\n#include <assert.h>\n");
+    for width in [8, 16] {
+        source += &format!(
+            "
+export function copy{width}(ptr, i{width}) -> i{width}
+block0(v0: ptr, v1: i{width}):
+  store.volatile v1, v0, offset=1
+  v2: i{width} = load.volatile v0, offset=1
+  return v2
+"
+        );
+        harness += &format!("extern uint{width}_t copy{width}(void *, uint{width}_t);\n");
+    }
+    source += "
+export function previous(ptr, i64) -> i64
+block0(v0: ptr, v1: i64):
+  v2: ptr = ptr-offset v0, -8
+  store v1, v2
+  v3: i64 = load v2
+  return v3
+
+export function pointer_slot(ptr, ptr) -> ptr
+block0(v0: ptr, v1: ptr):
+  store v1, v0
+  v2: ptr = load v0
+  return v2
+";
+    harness += "extern uint64_t previous(void *, uint64_t);
+extern void *pointer_slot(void **, void *);
+int main(void) {
+  uint8_t bytes[4]={0xaa,0,0,0xbb};
+  for(uint32_t n=0;n<65536;n++) {
+    bytes[2]=0xcc;
+    assert(copy8(bytes,(uint8_t)n)==(uint8_t)n);
+    assert(bytes[0]==0xaa && bytes[1]==(uint8_t)n && bytes[2]==0xcc && bytes[3]==0xbb);
+    assert(copy16(bytes,(uint16_t)n)==(uint16_t)n);
+    assert(bytes[0]==0xaa && bytes[1]==(uint8_t)n && bytes[2]==(uint8_t)(n>>8) && bytes[3]==0xbb);
+  }
+  uint64_t words[2]={0,123};
+  assert(previous(&words[1],42)==42);
+  assert(words[0]==42 && words[1]==123);
+  void *slot=0;
+  assert(pointer_slot(&slot,words)==words && slot==words);
+}";
+    run(&source, &harness);
+}
+
+#[test]
+fn extension_encodings_match_system_assembler_for_every_register_pair() {
+    use veloc_codegen::target::x86_64::{X86_64CodeEmitter, isle::*};
+    use veloc_lir::{
+        MachineFunction, MachineInst, MachineOpcode, Writable, stages::PrologueEpilogueInserted,
+    };
+    let regs = [
+        REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI, REG_R8, REG_R9,
+        REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15,
+    ];
+    let bytes = [
+        "al", "cl", "dl", "bl", "spl", "bpl", "sil", "dil", "r8b", "r9b", "r10b", "r11b", "r12b",
+        "r13b", "r14b", "r15b",
+    ];
+    let words = [
+        "ax", "cx", "dx", "bx", "sp", "bp", "si", "di", "r8w", "r9w", "r10w", "r11w", "r12w",
+        "r13w", "r14w", "r15w",
+    ];
+    let dwords = [
+        "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d",
+        "r12d", "r13d", "r14d", "r15d",
+    ];
+    let qwords = [
+        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
+        "r13", "r14", "r15",
+    ];
+    let f = MachineFunction::<PrologueEpilogueInserted>::new("encoding".into());
+    let mut emitter = veloc_codegen::Emitter::new();
+    let mut assembly = String::from(".text\n");
+    let mut cases = Vec::new();
+    for (opcode, mnemonic, sources, destinations) in [
+        (TargetInst::X86Movzx8to32, "movzbl", &bytes, &dwords),
+        (TargetInst::X86Movsx8to32, "movsbl", &bytes, &dwords),
+        (TargetInst::X86Movzx16to32, "movzwl", &words, &dwords),
+        (TargetInst::X86Movsx16to32, "movswl", &words, &dwords),
+        (TargetInst::X86Movsx8to64, "movsbq", &bytes, &qwords),
+        (TargetInst::X86Movsx16to64, "movswq", &words, &qwords),
+    ] {
+        for src in 0..16 {
+            for dst in 0..16 {
+                let line = format!("{mnemonic} %{}, %{}\n", sources[src], destinations[dst]);
+                cases.push((emitter.position(), line.clone()));
+                assembly.push_str(&line);
+                let inst = MachineInst::build_unary(
+                    MachineOpcode::Target(opcode.as_u32()),
+                    Writable(regs[dst]),
+                    regs[src],
+                );
+                opcode
+                    .emit::<X86_64CodeEmitter>(&mut emitter, &inst, &f)
+                    .unwrap();
+            }
+        }
+    }
+    let dir = Workspace::new();
+    fs::write(dir.0.join("reference.s"), assembly).unwrap();
+    for (program, args) in [
+        ("cc", vec!["-c", "reference.s", "-o", "reference.o"]),
+        (
+            "objcopy",
+            vec![
+                "-O",
+                "binary",
+                "--only-section=.text",
+                "reference.o",
+                "reference.bin",
+            ],
+        ),
+    ] {
+        let output = Command::new(program)
+            .args(args)
+            .current_dir(&dir.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let reference = fs::read(dir.0.join("reference.bin")).unwrap();
+    if emitter.data != reference {
+        let offset = emitter
+            .data
+            .iter()
+            .zip(&reference)
+            .position(|(a, b)| a != b)
+            .unwrap_or(emitter.data.len().min(reference.len()));
+        let case = cases
+            .iter()
+            .rev()
+            .find(|(start, _)| *start <= offset)
+            .unwrap();
+        panic!(
+            "encoding differs at byte {offset}, instruction {}: got {:?}, expected {:?}",
+            case.1.trim(),
+            emitter.data.get(offset),
+            reference.get(offset)
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual whole-backend benchmark; run with --release --ignored --nocapture"]
+fn backend_benchmark() {
+    let module = ModuleParser::new()
+        .parse(include_str!("../examples/sum.mir"))
+        .unwrap();
+    module.validate().unwrap();
+    let target = create_target_machine(TargetConfig::default()).unwrap();
+    for optimize in [false, true] {
+        let pipeline = CodegenPipeline::with_options(
+            &*target,
+            CodegenOptions {
+                optimize,
+                ..Default::default()
+            },
+        );
+        let start = std::time::Instant::now();
+        let mut bytes = 0;
+        for _ in 0..200 {
+            let code = pipeline.compile_functions(&module).unwrap();
+            bytes = code.values().map(Vec::len).sum::<usize>();
+            std::hint::black_box(code);
+        }
+        eprintln!(
+            "sum: optimize={optimize}, 200 compilations={:?}, machine_code={bytes} bytes",
+            start.elapsed()
+        );
+    }
+}
+
+#[test]
+fn indirect_calls_and_escaping_stack_addresses() {
+    run(
+        r#"
+export function indirect(ptr, i64) -> i64
+block0(v0: ptr, v1: i64):
+  v2: i64 = call-indirect v0(v1) : (i64) -> i64
+  v3: i64 = iadd v2, v1
+  return v3
+import function fill(ptr, i64) -> void
+export function address(i64) -> i64
+  ss0: size 16
+block0(v0: i64):
+  v1: ptr = stack-addr ss0
+  call fill(v1, v0) : (ptr, i64) -> void
+  v2: i64 = stack-load ss0, offset=8
+  return v2
+"#,
+        r#"
+#include <stdint.h>
+#include <assert.h>
+extern uint64_t indirect(uint64_t (*)(uint64_t), uint64_t), address(uint64_t);
+static uint64_t triple(uint64_t n) { return n*3; }
+void fill(uint64_t *p, uint64_t n) { p[1]=n+42; }
+int main(void) { for(uint64_t n=0;n<100;n++) { assert(indirect(triple,n)==n*4); assert(address(n)==n+42); } }
+"#,
+    );
+}
+impl Workspace {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "veloc-native-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn run(source: &str, harness: &str) {
+    let module = ModuleParser::new().parse(source).unwrap();
+    module.validate().unwrap();
+    let target = create_target_machine(TargetConfig::default()).unwrap();
+    for optimize in [false, true] {
+        let pipeline = CodegenPipeline::with_options(
+            &*target,
+            CodegenOptions {
+                optimize,
+                ..Default::default()
+            },
+        );
+        let object = pipeline.compile_object(&module).unwrap();
+        let dir = Workspace::new();
+        fs::write(dir.0.join("code.o"), object).unwrap();
+        fs::write(dir.0.join("main.c"), harness).unwrap();
+        let link = Command::new("cc")
+            .current_dir(&dir.0)
+            .args(["-O2", "-no-pie", "main.c", "code.o", "-o", "run"])
+            .output()
+            .expect("native tests require a C compiler");
+        assert!(
+            link.status.success(),
+            "{}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let mut child = Command::new(dir.0.join("run"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() > deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("native execution timed out (optimize={optimize})");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "native execution (optimize={optimize}): {:?}\n{}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[test]
+fn incoming_and_outgoing_stack_arguments() {
+    run(
+        r#"
+import function weighted(i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+export function forward(i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64, v6: i64, v7: i64):
+  v8: i64 = call weighted(v7, v6, v5, v4, v3, v2, v1, v0) : (i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+  v9: i64 = iadd v8, v0
+  return v9
+"#,
+        r#"
+#include <stdint.h>
+#include <assert.h>
+extern uint64_t forward(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
+uint64_t weighted(uint64_t a,uint64_t b,uint64_t c,uint64_t d,uint64_t e,uint64_t f,uint64_t g,uint64_t h) {
+ return a+2*b+3*c+4*d+5*e+6*f+7*g+8*h;
+}
+int main(void) { for(uint64_t n=0;n<100;n++) assert(forward(n,2,3,4,5,6,7,8)==weighted(8,7,6,5,4,3,2,n)+n); }
+"#,
+    );
+}
+
+#[test]
+fn loops_branches_and_stack_memory() {
+    run(
+        r#"
+export function sum(i64) -> i64
+block0(v0: i64):
+  v1: i64 = iconst 0
+  v2: i64 = iconst 1
+  jump block1(v0, v1)
+block1(v3: i64, v4: i64):
+  v5: bool = icmp eq v3, v1
+  br v5, block3(v4), block2()
+block2():
+  v6: i64 = iadd v3, v4
+  v7: i64 = isub v3, v2
+  jump block1(v7, v6)
+block3(v8: i64):
+  return v8
+
+export function memory(i64) -> i64
+  ss0: size 16
+block0(v0: i64):
+  stack-store v0, ss0, offset=8
+  v1: i64 = stack-load ss0, offset=8
+  return v1
+"#,
+        r#"
+#include <stdint.h>
+#include <assert.h>
+extern uint64_t sum(uint64_t), memory(uint64_t);
+int main(void) { for(uint64_t n=0;n<200;n++) { assert(sum(n)==n*(n+1)/2); assert(memory(n)==n); } }
+"#,
+    );
+}
+
+#[test]
+fn conditional_edges_do_not_depend_on_block_layout() {
+    run(
+        r#"
+export function choose(i64) -> i64
+block0(v0: i64):
+  v1: i64 = iconst 0
+  v2: i64 = iconst 11
+  v3: i64 = iconst 22
+  v4: bool = icmp eq v0, v1
+  br v4, block2(v2), block3(v3)
+block1():
+  unreachable
+block2(v5: i64):
+  return v5
+block3(v6: i64):
+  return v6
+"#,
+        r#"
+#include <stdint.h>
+#include <assert.h>
+extern uint64_t choose(uint64_t);
+int main(void) { for(uint64_t n=0;n<200;n++) assert(choose(n)==(n==0 ? 11 : 22)); }
+"#,
+    );
+}
+
+#[test]
+fn volatile_memory_accesses_preserve_width_offsets_and_order() {
+    run(
+        r#"
+export function memory_order(ptr, i32) -> i32
+block0(v0: ptr, v1: i32):
+  store.volatile.align4 v1, v0, offset=4
+  v2: i32 = load.volatile.align4 v0, offset=4
+  v3: i32 = iconst 1
+  v4: i32 = iadd v2, v3
+  store.volatile.align4 v4, v0, offset=4
+  return v2
+"#,
+        r#"
+#include <stdint.h>
+#include <assert.h>
+extern uint32_t memory_order(uint32_t *, uint32_t);
+int main(void) {
+  uint32_t words[3] = {0x12345678, 0, 0x87654321};
+  for(uint32_t n=0;n<1000;n++) {
+    assert(memory_order(words,n)==n);
+    assert(words[1]==n+1);
+    assert(words[0]==0x12345678 && words[2]==0x87654321);
+  }
+}
+"#,
+    );
+}
+
+#[test]
+fn calls_and_high_register_pressure() {
+    let mut source = String::from(
+        "import function smash(i64) -> i64\nexport function pressure(i64) -> i64\nblock0(v0: i64):\n",
+    );
+    for i in 0..24 {
+        source += &format!(
+            "  v{}: i64 = iconst {}\n  v{}: i64 = imul v0, v{}\n",
+            2 * i + 1,
+            i + 3,
+            2 * i + 2,
+            2 * i + 1
+        );
+    }
+    source += "  v49: i64 = call smash(v0) : (i64) -> i64\n";
+    for i in 0..24 {
+        source += &format!("  v{}: i64 = iadd v{}, v{}\n", 50 + i, 49 + i, 2 * i + 2);
+    }
+    source += "  return v73\n";
+    run(
+        &source,
+        r#"
+#include <stdint.h>
+#include <assert.h>
+extern uint64_t pressure(uint64_t);
+__attribute__((noinline)) uint64_t smash(uint64_t x) {
+  uint64_t y=x+17;
+  __asm__ volatile("xor %%rax,%%rax; xor %%rcx,%%rcx; xor %%rdx,%%rdx; xor %%rsi,%%rsi; xor %%rdi,%%rdi; xor %%r8,%%r8; xor %%r9,%%r9; xor %%r10,%%r10; xor %%r11,%%r11"
+    : : : "rax","rcx","rdx","rsi","rdi","r8","r9","r10","r11","cc");
+  return y;
+}
+int main(void) { for(uint64_t n=0;n<200;n++) assert(pressure(n)==n*348+n+17); }
+"#,
+    );
+}
+
+#[test]
+fn floating_values_survive_calls() {
+    run(
+        r#"
+import function twice(f64) -> f64
+export function floats(f64) -> f64
+block0(v0: f64):
+  v1: f64 = call twice(v0) : (f64) -> f64
+  v2: f64 = fadd v0, v1
+  return v2
+"#,
+        r#"
+#include <assert.h>
+extern double floats(double);
+__attribute__((noinline)) double twice(double x) { return x*2; }
+int main(void) { for(int n=-100;n<100;n++) assert(floats(n*0.25)==n*0.75); }
+"#,
+    );
+}

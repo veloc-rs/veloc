@@ -36,7 +36,7 @@ impl Control {
         }
         for arg in &self.args {
             if !op
-                .packing
+                .bindings()
                 .values()
                 .any(|b| matches!(b,Binding::Name(name) if name == arg))
             {

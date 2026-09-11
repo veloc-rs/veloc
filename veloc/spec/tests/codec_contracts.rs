@@ -1,5 +1,5 @@
 mod common;
-use common::compile_mir;
+use common::compile;
 
 const FORMATS: &str = include_str!("../../mir/defs/formats.ops");
 
@@ -32,7 +32,7 @@ fn changed_record(kind: &str, name: &str, from: &str, to: &str) -> String {
 }
 
 fn rejected(source: &str, expected: &str) {
-    let error = match compile_mir(source) {
+    let error = match compile(source) {
         Ok(_) => panic!("invalid definition was accepted:\n{source}"),
         Err(error) => error,
     };
@@ -78,7 +78,7 @@ fn existing_runtime_layouts_keep_their_public_field_names() {
 #[test]
 fn runtime_layout_contracts_check_property_types_and_operand_order() {
     for (layout, from, to) in [
-        ("Iconst", "value(u64)", "value(u32)"),
+        ("Iconst", "value(Int)", "value(u32)"),
         ("Bconst", "value(bool)", "value(u64)"),
         ("Load", "offset(u32)", "offset(i32)"),
         (
@@ -118,8 +118,8 @@ fn runtime_layout_contracts_check_fixed_and_variadic_groups() {
 #[test]
 fn runtime_layout_contracts_reject_missing_and_extra_properties() {
     for (layout, from, to) in [
-        ("Iconst", "fields: [value(u64)]", "fields: []"),
-        ("Iconst", "value(u64)", "value(u64), unused(u32)"),
+        ("Iconst", "fields: [value(Int)]", "fields: []"),
+        ("Iconst", "value(Int)", "value(Int), unused(u32)"),
         ("Load", ", flags(MemFlags)", ""),
         ("CallIndirect", ", sig_id(SigId)", ""),
     ] {
@@ -209,7 +209,7 @@ fn signature_results_require_a_typed_signature_source() {
 
 #[test]
 fn existing_predication_has_a_checked_supported_adapter() {
-    assert!(compile_mir(&definitions()).is_ok());
+    assert!(compile(&definitions()).is_ok());
     for (from, to) in [
         ("ext(VectorExtData)", "config(VectorExtData)"),
         ("ext(VectorExtData)", "ext(VectorMemOptions)"),
@@ -249,7 +249,7 @@ fn custom_value_formats_allow_custom_field_names() {
             traits: [], memory: NONE
         }
     "#;
-    assert!(compile_mir(source).is_ok());
+    assert!(compile(source).is_ok());
 }
 
 #[test]

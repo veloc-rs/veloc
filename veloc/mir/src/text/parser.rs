@@ -432,10 +432,18 @@ pub(super) struct OperandParser<'a> {
 }
 
 impl OperandParser<'_> {
+    pub(super) fn dense_constant(
+        &mut self,
+        ty: crate::VectorType,
+        bytes: Vec<u8>,
+    ) -> crate::VectorConst {
+        self.func.edit().dense_constant(ty, bytes)
+    }
+
     fn instruction(&mut self, input: &mut Cursor<'_>, block: Block) -> ParseResult<()> {
         let results = self.parse_results(input)?;
         let (opcode, flags) = parse_instruction_header(input)?;
-        let data = self.parse(opcode, flags, input)?;
+        let data = self.parse(opcode, flags, input, results.first().map(|(_, ty)| *ty))?;
         let inst = self.func.edit().append_inst(block, data, &[]);
         self.func.dfg.bind_results(inst, &results);
         Ok(())
@@ -813,7 +821,7 @@ fn set_value_name(value: Value, text: &str, func: &mut Function) {
     } else {
         text
     };
-    func.dfg.value_names[value] = name.to_string();
+    func.dfg.set_value_name(value, name);
 }
 
 include!(concat!(env!("OUT_DIR"), "/text_parser.rs"));
@@ -821,7 +829,7 @@ include!(concat!(env!("OUT_DIR"), "/text_parser.rs"));
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::atom::{AtomCodec, Bytes, Decimal, FloatBits, IntegerBits};
+    use crate::text::atom::{AtomCodec, Bytes, Decimal, IntegerBits};
     use crate::text::printer::InstPrinter;
     use core::{borrow::Borrow, fmt::Debug};
 
@@ -839,8 +847,16 @@ mod tests {
     }
 
     fn parse<C: AtomCodec>(cx: &mut OperandParser<'_>, text: &str) -> ParseResult<C::Owned> {
+        parse_typed::<C>(cx, text, None)
+    }
+
+    fn parse_typed<C: AtomCodec>(
+        cx: &mut OperandParser<'_>,
+        text: &str,
+        ty: Option<Type>,
+    ) -> ParseResult<C::Owned> {
         let mut input = Cursor::new(text);
-        let value = C::parse(cx, &mut input)?;
+        let value = C::parse(cx, &mut input, ty)?;
         input.finish()?;
         Ok(value)
     }
@@ -849,7 +865,7 @@ mod tests {
     where
         C::Owned: Debug + PartialEq + for<'a> Borrow<C::View<'a>>,
     {
-        let value = parse::<C>(cx, text).unwrap();
+        let value = parse_typed::<C>(cx, text, ty).unwrap();
         let mut printed = String::new();
         C::print(
             &InstPrinter::new(&cx.func.dfg, None),
@@ -858,7 +874,7 @@ mod tests {
             ty,
         )
         .unwrap();
-        assert_eq!(parse::<C>(cx, &printed).unwrap(), value);
+        assert_eq!(parse_typed::<C>(cx, &printed, ty).unwrap(), value);
         printed
     }
 
@@ -890,36 +906,23 @@ mod tests {
     }
 
     #[test]
-    fn float_codec_decodes_raw_bits_and_formats_by_result_type() {
+    fn float_codec_preserves_precision_and_exact_bits() {
         with_parser(|cx| {
             for (ty, bits) in [
                 (Type::F32, "0x7fc00001"),
                 (Type::F32, "0x80000000"),
                 (Type::F64, "0x7ff8000000000042"),
             ] {
-                assert_eq!(round_trip::<FloatBits>(cx, bits, Some(ty)), bits);
+                assert_eq!(round_trip::<crate::Float>(cx, bits, Some(ty)), bits);
             }
             for ty in [None, Some(Type::I32)] {
-                assert!(
-                    FloatBits::print(
-                        &InstPrinter::new(&cx.func.dfg, None),
-                        &mut String::new(),
-                        &0,
-                        ty
-                    )
-                    .is_err()
-                );
+                assert!(parse_typed::<crate::Float>(cx, "0x0", ty).is_err());
             }
-            assert_eq!(parse::<FloatBits>(cx, "0x100000000").unwrap(), 0x100000000);
-            assert!(
-                FloatBits::print(
-                    &InstPrinter::new(&cx.func.dfg, None),
-                    &mut String::new(),
-                    &0x100000000,
-                    Some(Type::F32)
-                )
-                .is_err()
+            assert_eq!(
+                parse_typed::<crate::Float>(cx, "0x100000000", Some(Type::F64)).unwrap(),
+                crate::Float::from_f64_bits(0x100000000)
             );
+            assert!(parse_typed::<crate::Float>(cx, "0x100000000", Some(Type::F32)).is_err());
         });
     }
 
@@ -940,14 +943,14 @@ mod tests {
             for text in ["later()", "later() : () ->"] {
                 let mut input = Cursor::new(text);
                 assert!(
-                    cx.parse(Opcode::Call, MemFlags::empty(), &mut input)
+                    cx.parse(Opcode::Call, MemFlags::empty(), &mut input, None)
                         .is_err()
                 );
                 assert!(cx.module.functions.is_empty());
                 assert!(cx.functions.entries.is_empty());
             }
             let mut input = Cursor::new("later() : () -> i32");
-            cx.parse(Opcode::Call, MemFlags::empty(), &mut input)
+            cx.parse(Opcode::Call, MemFlags::empty(), &mut input, None)
                 .unwrap();
             assert_eq!(cx.module.functions.len(), 1);
             let function = &cx.module.functions[FuncId(0)];

@@ -12,10 +12,17 @@ const PROPERTIES: &[&str] = &[
     "Intrinsic",
     "IntCC",
     "FloatCC",
+    "Float",
+    "Int",
+    "VectorConst",
     "u32",
     "u64",
     "i32",
     "bool",
+    "i64",
+    "f64",
+    "Block",
+    "SymbolId",
 ];
 
 pub(super) fn parse(
@@ -36,22 +43,41 @@ pub(super) fn parse(
         slots,
     } = signature(source, record.offset, sig, storage_defs, type_defs)?;
     let mut fields = Fields::new(source, record);
-    let mnemonic_node = fields.take("mnemonic")?;
-    let Kind::Text(mnemonic) = mnemonic_node.kind else {
-        return Err(fields.error("mnemonic must be a quoted string"));
+    let mnemonic = match fields.optional("mnemonic") {
+        Some(Node {
+            kind: Kind::Text(name),
+            ..
+        }) => name,
+        Some(_) => return Err(fields.error("mnemonic must be a quoted string")),
+        None => match &storage_defs.strategy {
+            storage::Strategy::Operands(operands) => operands.mnemonic(&fields.name),
+            storage::Strategy::Packed => return Err(fields.error("missing field `mnemonic`")),
+        },
     };
     let storage = fields.take("storage")?;
-    let Kind::Object(format, mappings) = storage.kind else {
-        return Err(Error::at(
-            source,
-            storage.offset,
-            "expected a storage mapping",
-        ));
+    let (format, projection) = match &storage_defs.strategy {
+        storage::Strategy::Packed => {
+            let Kind::Object(format, mappings) = storage.kind else {
+                return Err(Error::at(
+                    source,
+                    storage.offset,
+                    "expected a storage mapping",
+                ));
+            };
+            let mut packing = BTreeMap::new();
+            for (field, node) in mappings {
+                packing.insert(field, binding(source, node)?);
+            }
+            (format, Projection::Packed(packing))
+        }
+        storage::Strategy::Operands(operands) => {
+            let format = name(source, storage)?;
+            let flow = fields.optional("flow");
+            let projection =
+                operands.project(source, fields.offset, &format, &params, &types, flow)?;
+            (format, Projection::Operands(projection))
+        }
     };
-    let mut packing = BTreeMap::new();
-    for (field, node) in mappings {
-        packing.insert(field, binding(source, node)?);
-    }
     let signature_source = fields
         .optional("signature")
         .map(|node| match node.kind {
@@ -132,6 +158,22 @@ pub(super) fn parse(
         .map(|n| builtins.traits(source, n))
         .transpose()?
         .unwrap_or_default();
+    if let Projection::Operands(projection) = &projection {
+        let required: &[&str] = match projection.flow.as_str() {
+            "Jump" | "Return" => &["TERMINATOR"],
+            "Trap" => &["TERMINATOR", "ABORT", "MAY_TRAP"],
+            "Call" => &["MAY_TRAP"],
+            _ => &[],
+        };
+        for &name in required {
+            if !builtins.has_trait(name) {
+                return Err(fields.error(format!("flow requires undeclared trait `{name}`")));
+            }
+            if !traits.iter().any(|t| t == name) {
+                traits.push(name.into());
+            }
+        }
+    }
     let constraints = fields
         .optional("constraints")
         .map(|node| list(source, node))
@@ -209,7 +251,7 @@ pub(super) fn parse(
         format,
         signature: types,
         params,
-        packing,
+        projection,
         signature_source,
         control,
         moves,
@@ -372,7 +414,40 @@ fn signature(
                         },
                     );
                 }
-                patterns.push(pattern(source, result.ty, &mut variables, types)?);
+                let pat = if let Kind::Call(kind, args) = &result.ty.kind
+                    && kind == "type"
+                {
+                    let [
+                        Node {
+                            kind: Kind::Name(name),
+                            ..
+                        },
+                    ] = args.as_slice()
+                    else {
+                        return Err(Error::at(
+                            source,
+                            result.offset,
+                            "type expects a typed property parameter",
+                        ));
+                    };
+                    let param = params.iter().find(|p| p.name == *name);
+                    let set = param
+                        .and_then(|p| match &p.kind {
+                            ParamKind::Property(ty) => types.property_types(ty),
+                            _ => None,
+                        })
+                        .ok_or_else(|| {
+                            Error::at(
+                                source,
+                                result.offset,
+                                "type expects a typed property parameter",
+                            )
+                        })?;
+                    Pattern::Property(name.clone(), set)
+                } else {
+                    pattern(source, result.ty, &mut variables, types)?
+                };
+                patterns.push(pat);
             }
             TypeList::Fixed(patterns)
         }
@@ -439,7 +514,7 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
         .filter(|f| !matches!(&f.ty, FieldType::Named(ty) if ty == "Opcode"))
         .map(|f| f.name.as_str())
         .collect();
-    for field in op.packing.keys() {
+    for field in op.bindings().keys() {
         if !fields.contains(field.as_str()) {
             return Err(fail(format!(
                 "unknown storage field `{field}` in `{}`",
@@ -470,7 +545,7 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
             continue;
         }
         let binding = op
-            .packing
+            .bindings()
             .get(&field.name)
             .ok_or_else(|| fail(format!("missing storage field `{}`", field.name)))?;
         match (binding, &field.ty) {
@@ -576,7 +651,7 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
                         )));
                     }
                     if !op
-                        .packing
+                        .bindings()
                         .values()
                         .any(|binding| matches!(binding, Binding::Name(name) if name == param))
                     {

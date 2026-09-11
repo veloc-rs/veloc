@@ -370,7 +370,11 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().fconst(0, ty);
+        let zero = if is_64 {
+            self.builder.ins().f64const(0.0)
+        } else {
+            self.builder.ins().f32const(0.0)
+        };
         let l_is_zero = self.builder.ins().fcmp(FloatCC::Eq, l, zero);
         let r_is_zero = self.builder.ins().fcmp(FloatCC::Eq, r, zero);
         let both_zero = self.builder.ins().iand(l_is_zero, r_is_zero);
@@ -417,12 +421,21 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().iconst(0, ty);
+        let zero = self
+            .builder
+            .ins()
+            .iconst(veloc_mir::Int::from_bits(ty, 0).expect("integer constant type"));
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
-        let neg_one = self.builder.ins().iconst(-1i64 as u64, ty);
+        let neg_one = self
+            .builder
+            .ins()
+            .iconst(veloc_mir::Int::from_bits(ty, -1i64 as u64).expect("integer constant type"));
         let min_val = if is_64 { i64::MIN } else { i32::MIN as i64 };
-        let min = self.builder.ins().iconst(min_val as u64, ty);
+        let min = self
+            .builder
+            .ins()
+            .iconst(veloc_mir::Int::from_bits(ty, min_val as u64).expect("integer constant type"));
         let is_min = self.builder.ins().icmp(IntCC::Eq, l, min);
         let is_neg_one = self.builder.ins().icmp(IntCC::Eq, r, neg_one);
         let is_overflow = self.builder.ins().iand(is_min, is_neg_one);
@@ -439,7 +452,10 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().iconst(0, ty);
+        let zero = self
+            .builder
+            .ins()
+            .iconst(veloc_mir::Int::from_bits(ty, 0).expect("integer constant type"));
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
         let res = self.builder.ins().idiv_u(l, r);
@@ -454,12 +470,21 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().iconst(0, ty);
+        let zero = self
+            .builder
+            .ins()
+            .iconst(veloc_mir::Int::from_bits(ty, 0).expect("integer constant type"));
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
-        let neg_one = self.builder.ins().iconst(-1i64 as u64, ty);
+        let neg_one = self
+            .builder
+            .ins()
+            .iconst(veloc_mir::Int::from_bits(ty, -1i64 as u64).expect("integer constant type"));
         let min_val = if is_64 { i64::MIN } else { i32::MIN as i64 };
-        let min = self.builder.ins().iconst(min_val as u64, ty);
+        let min = self
+            .builder
+            .ins()
+            .iconst(veloc_mir::Int::from_bits(ty, min_val as u64).expect("integer constant type"));
         let is_min = self.builder.ins().icmp(IntCC::Eq, l, min);
         let is_neg_one = self.builder.ins().icmp(IntCC::Eq, r, neg_one);
         let is_overflow = self.builder.ins().iand(is_min, is_neg_one);
@@ -468,7 +493,9 @@ impl<'a> WasmTranslator<'a> {
         self.builder.if_else(
             is_overflow,
             |b| {
-                let zero_res = b.ins().iconst(0, ty);
+                let zero_res = b
+                    .ins()
+                    .iconst(veloc_mir::Int::from_bits(ty, 0).expect("integer constant type"));
                 b.def_var(res_var, zero_res);
             },
             |b| {
@@ -489,7 +516,10 @@ impl<'a> WasmTranslator<'a> {
         };
         let r = self.pop();
         let l = self.pop();
-        let zero = self.builder.ins().iconst(0, ty);
+        let zero = self
+            .builder
+            .ins()
+            .iconst(veloc_mir::Int::from_bits(ty, 0).expect("integer constant type"));
         let is_zero = self.builder.ins().icmp(IntCC::Eq, r, zero);
         self.trap_if(is_zero, TrapCode::IntegerDivideByZero);
         let res = self.builder.ins().irem_u(l, r);

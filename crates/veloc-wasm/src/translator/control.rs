@@ -383,7 +383,7 @@ impl<'a> WasmTranslator<'a> {
                     self.builder
                         .ins()
                         .load(entry_ptr_addr, 0, MemFlags::default(), VelocType::PTR);
-                let zero = self.builder.ins().iconst(0, VelocType::I64);
+                let zero = self.builder.ins().i64const((0) as i64);
                 let zero_ptr = self.builder.ins().inttoptr(zero);
                 let is_not_null = self.builder.ins().icmp(IntCC::Ne, entry_ptr, zero_ptr);
                 let trap_null_block = self.builder.create_block();
@@ -403,10 +403,7 @@ impl<'a> WasmTranslator<'a> {
                     MemFlags::new().with_alignment(16),
                     VelocType::I32,
                 );
-                let expected_sig_id = self
-                    .builder
-                    .ins()
-                    .iconst((sig.hash_u64() as u32) as u64, VelocType::I32);
+                let expected_sig_id = self.builder.ins().i32const((sig.hash_u64() as u32) as i32);
                 let sig_matches =
                     self.builder
                         .ins()

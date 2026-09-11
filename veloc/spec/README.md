@@ -5,19 +5,29 @@ IR containers; `veloc-mir/build.rs` currently uses its MIR emitter. HIR is reser
 for a future structured representation. The machine-facing IR is LIR, in
 `veloc-lir`; bytecode is a separate execution format.
 
-The MIR definitions live in `veloc/mir/defs/`:
+Shared vocabulary lives in `veloc/defs/`: `types.ops`, `builtins.ops` and
+`comparisons.ops`, imported by `prelude.ops`. MIR owns its packed
+`formats.ops` and logical `mir.ops`; LIR owns `generic.ops` with operand-array
+formats and logical operations. Each consumer has a `defs/module.ops` entry:
 
-- `types.ops`: compact type encoding, scalar definitions, named vectors and type sets.
-- `builtins.ops`: flag sets for traits/memory regions and named memory effects.
-- `comparisons.ops`: integer and floating-point condition-code semantics.
-- `formats.ops`: compact storage layouts, structured property records and
-  alternate-layout projections.
-- `mir.ops`: logical operation signatures, storage mappings, effects, constraints
-  semantic expressions and bidirectional text projections.
+```text
+import "../../defs/prelude.ops";
+import "formats.ops";
+import "mir.ops";
+```
 
-Callers supply these files as one definition unit; the compiler does not inject
-an implicit MIR vocabulary. `build.rs` tracks each file and maps diagnostics back
-to its original location.
+`Source::load(path)` resolves relative imports against the importing file,
+deduplicates canonical files, rejects cycles and requires imports before
+declarations. Its `dependencies()` includes requested and canonical paths for
+Cargo rebuild tracking; `parse()` and `compile()` report physical file locations.
+Files are parsed independently, so syntax cannot cross import boundaries.
+String-based `parse/compile` remain available for self-contained definitions;
+they do not resolve imports or inject an implicit vocabulary.
+
+There is one checked `Definitions` model. `storage Operands` selects machine
+operand-array emission; packed storage emits MIR views and pools. Storage
+projections differ, but signatures, type expressions and semantic checking are
+shared. Unsupported projection capabilities fail during generation.
 
 ## Runtime organization
 
@@ -887,8 +897,10 @@ liveness. Those mechanisms can use the edit boundary without becoming IR storage
 requirements. Runtime and memory improvements require measurement.
 
 Codegen joins checked direct MIR primitive applications with the reviewed LIR
-bindings in `lir/defs/generic.rs` at build time. The same declaration supplies
-the generic opcode enum and build-only bindings. The result is a direct
+semantics in `lir/defs/generic.ops` at build time. Both definition modules use
+the shared `parse/compile` API and checked operation model; operand-array storage
+emission is separate from MIR's packed SSA projection. The same definitions supply opcode/schema mappings,
+builders, decoders, control behavior and build-only primitive bindings. The result is a direct
 `Opcode -> Option<GenericOpcode>` match, not an `OpSpec` semantic lookup. Composed,
 reordered, property-dependent, trapping and multi-result recipes do not qualify;
 contextual lowering remains explicit. The bindings are contracts, not proofs of
@@ -903,6 +915,7 @@ do not imply an automatic rule-proof pipeline or runtime solver calls.
 
 ```rust
 mod offline {
+    use veloc_mir::{Opcode, IntCC};
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
 let add = offline::SPECS.iter().find(|s| s.opcode == veloc_mir::Opcode::IAdd).unwrap();

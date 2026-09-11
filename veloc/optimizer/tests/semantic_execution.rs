@@ -1,7 +1,8 @@
 mod offline {
+    use veloc_mir::{IntCC, Opcode};
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
-use veloc_mir::constant::Constant;
+use veloc_mir::constant::ScalarConst;
 use veloc_mir::{IntCC, Opcode, Type};
 use veloc_semantics::{Outcome, Sort, Trap, Value};
 
@@ -78,10 +79,10 @@ fn shifts_rotations_counts_and_eqz_fold_from_definitions() {
         let max = (1i128 << (bits - 1)) - 1;
         let mask = (1u128 << bits) - 1;
         let constant = |v: i128| match bits {
-            8 => Constant::I8(v as i8),
-            16 => Constant::I16(v as i16),
-            32 => Constant::I32(v as i32),
-            64 => Constant::I64(v as i64),
+            8 => ScalarConst::from(v as i8),
+            16 => ScalarConst::from(v as i16),
+            32 => ScalarConst::from(v as i32),
+            64 => ScalarConst::from(v as i64),
             _ => unreachable!(),
         };
         for x in [min, -7, -1, 0, 1, 7, max] {
@@ -111,7 +112,7 @@ fn shifts_rotations_counts_and_eqz_fold_from_definitions() {
             }
             assert_eq!(
                 constant(x).unary_op(Opcode::IEqz),
-                Some(Constant::Bool(x == 0))
+                Some(ScalarConst::from(x == 0))
             );
         }
         assert_eq!(constant(min).binary_op(constant(-1), Opcode::IDivS), None);
@@ -181,8 +182,8 @@ fn generated_integer_comparisons_match_rust_for_all_i8_pairs() {
                     IntCC::GeU => (lhs as u8) >= rhs as u8,
                 };
                 assert_eq!(
-                    Constant::I8(lhs).icmp(Constant::I8(rhs), cc),
-                    Some(Constant::Bool(expected))
+                    ScalarConst::from(lhs).icmp(ScalarConst::from(rhs), cc),
+                    Some(ScalarConst::from(expected))
                 );
             }
         }
@@ -194,22 +195,27 @@ fn mixed_width_and_boolean_constants_use_typed_results() {
     for (op, input, ty, expected) in [
         (
             Opcode::ExtendS,
-            Constant::I8(-1),
+            ScalarConst::from(-1i8),
             Type::I64,
-            Constant::I64(-1),
+            ScalarConst::from(-1i64),
         ),
         (
             Opcode::ExtendU,
-            Constant::I8(-1),
+            ScalarConst::from(-1i8),
             Type::I64,
-            Constant::I64(255),
+            ScalarConst::from(255i64),
         ),
-        (Opcode::Wrap, Constant::I64(511), Type::I8, Constant::I8(-1)),
+        (
+            Opcode::Wrap,
+            ScalarConst::from(511i64),
+            Type::I8,
+            ScalarConst::from(-1i8),
+        ),
         (
             Opcode::ExtendU,
-            Constant::Bool(true),
+            ScalarConst::from(true),
             Type::I32,
-            Constant::I32(1),
+            ScalarConst::from(1i32),
         ),
     ] {
         assert_eq!(
@@ -218,25 +224,35 @@ fn mixed_width_and_boolean_constants_use_typed_results() {
         );
     }
     assert_eq!(
-        Constant::Bool(true).binary_op(Constant::Bool(false), Opcode::IAnd),
-        Some(Constant::Bool(false))
+        ScalarConst::from(true).binary_op(ScalarConst::from(false), Opcode::IAnd),
+        Some(ScalarConst::from(false))
     );
     assert_eq!(
-        veloc_optimizer::rewrite::evaluate(Opcode::ExtendS, &[Constant::I64(1)], &[Type::I8], &[]),
+        veloc_optimizer::rewrite::evaluate(
+            Opcode::ExtendS,
+            &[ScalarConst::from(1i64)],
+            &[Type::I8],
+            &[]
+        ),
         None
     );
     assert_eq!(
-        veloc_optimizer::rewrite::evaluate(Opcode::Wrap, &[Constant::I8(1)], &[Type::I64], &[]),
+        veloc_optimizer::rewrite::evaluate(
+            Opcode::Wrap,
+            &[ScalarConst::from(1i8)],
+            &[Type::I64],
+            &[]
+        ),
         None
     );
     assert_eq!(
         veloc_optimizer::rewrite::evaluate(
             Opcode::IAddWithOverflow,
-            &[Constant::I8(127), Constant::I8(1)],
+            &[ScalarConst::from(127i8), ScalarConst::from(1i8)],
             &[Type::I8, Type::BOOL],
             &[]
         ),
-        Some(vec![Constant::I8(-128), Constant::Bool(true)])
+        Some(vec![ScalarConst::from(-128i8), ScalarConst::from(true)])
     );
 }
 
@@ -261,13 +277,13 @@ fn generated_evaluators_match_graphs_for_all_scalar_signatures() {
             })
             .collect()
     }
-    fn constant(ty: Type, bits: u128) -> Constant {
+    fn constant(ty: Type, bits: u128) -> ScalarConst {
         match ty {
-            Type::I8 => Constant::I8(bits as i8),
-            Type::I16 => Constant::I16(bits as i16),
-            Type::I32 => Constant::I32(bits as i32),
-            Type::I64 => Constant::I64(bits as i64),
-            Type::BOOL => Constant::Bool(bits & 1 != 0),
+            Type::I8 => ScalarConst::from(bits as i8),
+            Type::I16 => ScalarConst::from(bits as i16),
+            Type::I32 => ScalarConst::from(bits as i32),
+            Type::I64 => ScalarConst::from(bits as i64),
+            Type::BOOL => ScalarConst::from(bits & 1 != 0),
             _ => unreachable!(),
         }
     }
@@ -356,9 +372,9 @@ fn generated_evaluators_match_graphs_for_all_scalar_signatures() {
                         .collect::<Vec<_>>();
                     let values = args
                         .iter()
-                        .map(|&c| match c {
-                            Constant::Bool(b) => Value::Bool(b),
-                            _ => Value::Bv(c.as_i64().unwrap() as u128),
+                        .map(|&c| match c.as_bool() {
+                            Some(b) => Value::Bool(b),
+                            None => Value::Bv(c.to_bits() as u128),
                         })
                         .collect::<Vec<_>>();
                     let expected = match function.execute(&values).unwrap() {
@@ -368,7 +384,7 @@ fn generated_evaluators_match_graphs_for_all_scalar_signatures() {
                                 .into_iter()
                                 .zip(outputs)
                                 .map(|(v, &ty)| match v {
-                                    Value::Bool(b) => Constant::Bool(b),
+                                    Value::Bool(b) => ScalarConst::from(b),
                                     Value::Bv(v) => constant(ty, v),
                                 })
                                 .collect::<Vec<_>>(),
@@ -397,7 +413,7 @@ trait Fold {
     where
         Self: Sized;
 }
-fn fold(op: Opcode, args: &[Constant]) -> Option<Constant> {
+fn fold(op: Opcode, args: &[ScalarConst]) -> Option<ScalarConst> {
     let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
     let values = args
         .iter()
@@ -411,7 +427,7 @@ fn fold(op: Opcode, args: &[Constant]) -> Option<Constant> {
         .first()
         .copied()
 }
-impl Fold for Constant {
+impl Fold for ScalarConst {
     fn binary_op(self, other: Self, op: Opcode) -> Option<Self> {
         fold(op, &[self, other])
     }

@@ -26,6 +26,8 @@ use veloc_mir::{FuncId, Function, Module};
 /// 代码生成统计信息
 #[derive(Debug, Clone, Default)]
 pub struct CodegenStats {
+    /// Number of local regions whose instruction order changed.
+    pub scheduled_regions: usize,
     /// 原始指令数
     pub initial_inst_count: usize,
     /// 合法化后指令数
@@ -208,7 +210,7 @@ impl<'a> CodegenPipeline<'a> {
     }
 
     fn translate_module(&self, module: &Module) -> Result<MachineModule> {
-        IRTranslator::new(module).translate_module()
+        IRTranslator::new(module, self.target.desc().data_layout).translate_module()
     }
 
     fn compile_defined_function(
@@ -302,6 +304,10 @@ impl<'a> CodegenPipeline<'a> {
             &mut ctx,
         )?;
         let mut ctx = ctx.into_stage::<PostIselOptimized>();
+        let mut mfunc = mfunc;
+        let mut scheduling = StagePassPipeline::<PostIselOptimized>::new();
+        scheduling.add_pass(crate::passes::schedule::SchedulePass);
+        self.run_stage_pipeline("scheduled", &scheduling, &mut mfunc, &mut ctx)?;
         let mfunc =
             self.apply_stage_transform(&RegisterAllocationPass::new(self.target), mfunc, &mut ctx)?;
 
@@ -400,6 +406,13 @@ impl<'a> CodegenPipeline<'a> {
             emitter.begin_block(&mut output, block, mfunc)?;
             for &inst_id in &block.insts {
                 let inst = &mfunc.dfg[inst_id];
+                if inst.is_generic() || inst.defs().chain(inst.uses()).any(|r| r.is_vreg()) {
+                    return Err(Error::codegen(alloc::format!(
+                        "unlowered instruction reached emission in {}: {:?}",
+                        mfunc.name,
+                        inst
+                    )));
+                }
                 emitter.emit_instruction(&mut output, inst, mfunc)?;
             }
         }
@@ -417,5 +430,124 @@ impl<'a> CodegenPipeline<'a> {
     /// 获取目标机器。
     pub fn target(&self) -> &dyn TargetMachine {
         self.target
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use alloc::string::ToString;
+    use veloc_lir::MemoryKind;
+
+    #[test]
+    fn selection_rejects_a_changed_access_width_or_direction() {
+        let module = veloc_mir::ModuleParser::new()
+            .parse(
+                r#"
+local function access(ptr) -> i64
+block0(v0: ptr):
+  v1: i64 = load.volatile v0
+  return v1
+"#,
+            )
+            .unwrap();
+        module.validate().unwrap();
+        let target = crate::create_target_machine(crate::TargetConfig::default()).unwrap();
+        let pipeline = CodegenPipeline::new(&*target);
+        let translated = pipeline.translate_module(&module).unwrap();
+        let func = module.functions.iter().next().unwrap().1;
+        let sig = module.get_signature(func.signature);
+        for wrong_direction in [false, true] {
+            let mut f = translated.functions.iter().next().unwrap().1.clone();
+            let id = f
+                .blocks
+                .iter()
+                .flat_map(|b| &b.insts)
+                .copied()
+                .find(|id| f.dfg[*id].memory.is_some())
+                .unwrap();
+            let access = f.dfg[id].memory.as_mut().unwrap();
+            if wrong_direction {
+                access.kind = MemoryKind::Write;
+            } else {
+                access.bytes = 4;
+            }
+            let err = pipeline
+                .run_function_pipeline(
+                    f,
+                    sig,
+                    &mut CodegenStats::default(),
+                    &mut FunctionAnalysisCtx::default(),
+                    &mut ModuleAnalysisCtx::default(),
+                )
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("selection changed the memory access"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn access_contracts_survive_the_complete_machine_pipeline() {
+        let module = veloc_mir::ModuleParser::new()
+            .parse(
+                r#"
+export function access(ptr, i64) -> i64
+  ss0: size 8
+block0(v0: ptr, v1: i64):
+  store.volatile.align8 v1, v0, offset=8
+  v2: i64 = load.volatile.align8 v0, offset=8
+  stack-store v2, ss0
+  v3: i64 = stack-load ss0
+  return v3
+"#,
+            )
+            .unwrap();
+        module.validate().unwrap();
+        let target = crate::create_target_machine(crate::TargetConfig::default()).unwrap();
+        for optimize in [false, true] {
+            let pipeline = CodegenPipeline::with_options(
+                &*target,
+                CodegenOptions {
+                    optimize,
+                    ..Default::default()
+                },
+            );
+            let compiled = pipeline
+                .compile_module_artifact(
+                    &module,
+                    &mut CodegenStats::default(),
+                    &mut ModuleAnalysisCtx::default(),
+                )
+                .unwrap();
+            let f = &compiled.functions[0].machine_function;
+            let accesses: Vec<_> = f
+                .blocks
+                .iter()
+                .flat_map(|b| &b.insts)
+                .filter_map(|id| f.dfg[*id].memory)
+                .collect();
+            assert_eq!(accesses.len(), 4);
+            for (access, kind) in accesses.iter().zip([
+                MemoryKind::Write,
+                MemoryKind::Read,
+                MemoryKind::Write,
+                MemoryKind::Read,
+            ]) {
+                assert_eq!(access.kind, kind);
+                assert_eq!(access.bytes, 8);
+            }
+            for access in &accesses[..2] {
+                assert_eq!(access.alignment, 8);
+                assert!(access.volatile);
+                assert!(access.may_trap);
+            }
+            for access in &accesses[2..] {
+                assert!(!access.volatile);
+                assert!(!access.may_trap);
+            }
+        }
     }
 }

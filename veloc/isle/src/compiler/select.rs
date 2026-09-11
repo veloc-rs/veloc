@@ -368,13 +368,8 @@ fn collect_schema_field_conditions(
             field
         )]),
         Pattern::IntConst(value) => Some(vec![format!("{}.{} == {}", schema_var, field, value)]),
-        Pattern::CondCode(cc) => render_cond_code_match(schema_name, *cc).map(|expr| {
-            if schema_name == "ICmp" {
-                vec![format!("{}.{} == Some({})", schema_var, field, expr)]
-            } else {
-                vec![format!("{}.{} == {}", schema_var, field, expr)]
-            }
-        }),
+        Pattern::CondCode(cc) => render_cond_code_match(schema_name, *cc)
+            .map(|expr| vec![format!("{}.{} == {}", schema_var, field, expr)]),
         Pattern::Block(_) => None,
         Pattern::StackSlot(_) | Pattern::Opcode { .. } => None,
         Pattern::Schema { .. } => None,

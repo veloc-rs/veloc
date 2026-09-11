@@ -11,13 +11,14 @@ mod control;
 mod encoding;
 mod evaluate;
 mod format;
+mod generate;
 mod lowering;
-mod mir;
 mod model;
 mod ownership;
 mod packing;
 mod records;
 mod semantic;
+mod source;
 mod storage;
 mod syntax;
 mod text;
@@ -30,6 +31,7 @@ mod types;
 pub use format::format_rust;
 pub use lowering::generate_lowering;
 pub use model::Definitions;
+pub use source::{Source, SourceError};
 
 /// A diagnostic in the definition source (one-based line and column).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Generated MIR, optimizer and offline artifacts; callers choose which to write.
+#[derive(Default)]
 pub struct Generated {
     pub types: String,
     pub type_rules: String,
@@ -77,10 +80,10 @@ pub fn parse(source: &str) -> Result<Definitions, Error> {
     model::parse(source)
 }
 
-/// Generate the compact MIR's layouts, metadata and ergonomic builders.
-pub fn compile_mir(source: &str) -> Result<Generated, Error> {
+/// Compile checked operations using the declared storage strategy.
+pub fn compile(source: &str) -> Result<Generated, Error> {
     let definitions = parse(source)?;
-    mir::generate(&definitions, source)
+    generate::generate(&definitions, source)
 }
 
 #[cfg(test)]
@@ -88,11 +91,11 @@ mod fixtures {
     use super::*;
 
     const BUILTINS: &str = concat!(
-        include_str!("../../mir/defs/types.ops"),
+        include_str!("../../defs/types.ops"),
         "\n",
-        include_str!("../../mir/defs/builtins.ops"),
+        include_str!("../../defs/builtins.ops"),
         "\n",
-        include_str!("../../mir/defs/comparisons.ops")
+        include_str!("../../defs/comparisons.ops")
     );
 
     pub fn builtins() -> builtins::Builtins {
@@ -118,7 +121,7 @@ mod fixtures {
         super::parse(&format!("{BUILTINS}\n{source}"))
     }
 
-    pub fn compile_mir(source: &str) -> Result<Generated, Error> {
-        super::compile_mir(&format!("{BUILTINS}\n{source}"))
+    pub fn compile(source: &str) -> Result<Generated, Error> {
+        super::compile(&format!("{BUILTINS}\n{source}"))
     }
 }

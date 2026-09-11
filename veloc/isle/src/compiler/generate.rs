@@ -97,7 +97,9 @@ fn generate_stack_slot_expr(var_name: &str, operands: &[OperandConstraint], fiel
     match find_operand_info(var_name, operands) {
         Some((index, OperandConstraint::StackSlot(_))) => {
             let access = match field {
-                "base_hw_enc" => "mfunc.stack_frame.slots[slot].base_reg.index() as u64",
+                "base_hw_enc" => {
+                    "mfunc.stack_frame.slots[slot].base.resolve(SPECIAL_REG_FRAME_POINTER).index() as u64"
+                }
                 "offset" => "mfunc.stack_frame.slots[slot].offset as i64",
                 "size" => "mfunc.stack_frame.slots[slot].size as i64",
                 "align" => "mfunc.stack_frame.slots[slot].align as i64",
@@ -447,6 +449,7 @@ pub(crate) fn generate_enum(output: &mut String, final_inst_defs: &HashMap<Strin
         output,
         r#"
 /// 目标架构指令特化
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetInst {{"#
     )
     .unwrap();
@@ -599,9 +602,28 @@ pub(crate) fn generate_target_inst_metadata(
             "TARGET_INST_{}_METADATA",
             sanitize_ident(name).to_ascii_uppercase()
         );
+        let schedule = match inst_def.schedule_latency {
+            Some(latency) => format!(
+                "Some(crate::target::arch::ScheduleInfo {{ latency: {latency}, writes_flags: {} }})",
+                inst_def.clobbers.iter().any(|r| r == "EFLAGS")
+            ),
+            None => "None".into(),
+        };
         writeln!(
             output,
             "pub const {const_name}: TargetInstMetadata = TargetInstMetadata {{"
+        )
+        .unwrap();
+        writeln!(output, "    schedule: {schedule},").unwrap();
+        let memory = match &inst_def.memory {
+            Some((kind, bytes)) => format!("Some((veloc_lir::MemoryKind::{kind}, {bytes}))"),
+            None => "None".into(),
+        };
+        writeln!(output, "    memory: {memory},").unwrap();
+        writeln!(
+            output,
+            "    flow: veloc_lir::ControlFlow::{},",
+            inst_def.flow
         )
         .unwrap();
         writeln!(

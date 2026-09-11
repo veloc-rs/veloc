@@ -1,7 +1,7 @@
 pub mod abi;
 pub mod block_params;
-pub(crate) mod generic_egraph;
 pub mod legalize;
+pub(crate) mod reassociate;
 pub mod regbank;
 
 use crate::error::Result;
@@ -10,7 +10,7 @@ use crate::target::arch::{TargetLegalizer, TargetPassConfig};
 use veloc_lir::MachineFunction;
 use veloc_lir::stages::{LegalizedLir, PreIselPrepared};
 
-use self::generic_egraph::run_generic_pre_isel_egraph_combine;
+use self::reassociate::reassociate;
 
 pub use abi::AbiLoweringPass;
 pub use block_params::BlockParamLoweringPass;
@@ -60,7 +60,7 @@ impl<'a> StageTransformPass<LegalizedLir, PreIselPrepared> for LegalizePass<'a> 
             Self::apply_effect(effect, ctx);
         }
 
-        run_generic_pre_isel_egraph_combine(&mut mfunc, ctx.function_analyses);
+        reassociate(&mut mfunc, ctx.function_analyses);
 
         let abi = AbiLoweringPass::new();
         let (mfunc, effect) = abi.run(mfunc, ctx)?;

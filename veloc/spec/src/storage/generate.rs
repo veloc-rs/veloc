@@ -3,11 +3,11 @@ use super::{Field, FieldType, FormatSource, Layout, OpcodeSource, value_only};
 use crate::records::{PropertyType, RecordDef};
 use std::fmt::Write;
 
-fn record<'a>(field: &Field, records: &'a [RecordDef]) -> Option<&'a RecordDef> {
+pub(super) fn record<'a>(field: &Field, records: &'a [RecordDef]) -> Option<&'a RecordDef> {
     records.iter().find(|r| field.ty.named(&r.name))
 }
 
-fn stored_type(field: &Field, records: &[RecordDef]) -> Option<String> {
+pub(super) fn stored_type(field: &Field, records: &[RecordDef]) -> Option<String> {
     if let Some(record) = record(field, records) {
         return Some(format!("{}Fields", record.name));
     }
@@ -32,7 +32,27 @@ fn view_type(field: &Field) -> String {
     }
 }
 
-fn construct(name: &str, fields: impl Iterator<Item = (String, String)>) -> String {
+/// Decode one logical field from stored metadata and the shared operand reader.
+pub(super) fn read_field(field: &Field, records: &[RecordDef], value: &str) -> String {
+    if record(field, records).is_some() {
+        return format!("{value}.view(&mut reader)");
+    }
+    match field.ty.traversal() {
+        Some("value") => "reader.value()".into(),
+        Some("array") => {
+            let FieldType::Values(n) = field.ty else {
+                unreachable!()
+            };
+            format!("reader.take({n}).try_into().unwrap()")
+        }
+        Some("value_list") => format!("reader.take(*{value} as usize)"),
+        Some("block_call") => format!("reader.edge(*{value})"),
+        Some("jump_table") => format!("reader.edges({value})"),
+        _ => format!("*{value}"),
+    }
+}
+
+pub(super) fn construct(name: &str, fields: impl Iterator<Item = (String, String)>) -> String {
     let fields = fields
         .map(|(name, value)| {
             if name == value {
@@ -241,23 +261,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         writeln!(out, "{pat} => {{").unwrap();
         let mut fields = Vec::new();
         for (i, f) in layout.fields.iter().enumerate() {
-            let expr = if record(f, records).is_some() {
-                format!("_field{i}.view(&mut reader)")
-            } else {
-                match f.ty.traversal() {
-                    Some("value") => "reader.value()".into(),
-                    Some("array") => {
-                        let FieldType::Values(n) = f.ty else {
-                            unreachable!()
-                        };
-                        format!("reader.take({n}).try_into().unwrap()")
-                    }
-                    Some("value_list") => format!("reader.take(*_field{i} as usize)"),
-                    Some("block_call") => format!("reader.edge(*_field{i})"),
-                    Some("jump_table") => format!("reader.edges(_field{i})"),
-                    _ => format!("*_field{i}"),
-                }
-            };
+            let expr = read_field(f, records, &format!("_field{i}"));
             writeln!(out, "let _view{i} = {expr};").unwrap();
             fields.push((f.name.clone(), format!("_view{i}")));
         }
@@ -365,6 +369,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         writeln!(out, "{} => {expr},", layout.pattern()).unwrap();
     }
     out.push_str("} }\n}\n");
+    out.push_str(&super::compact::generate(layouts, records));
     out
 }
 

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{BUILTINS, compile_mir};
+use common::{BUILTINS, compile};
 
 const ADD: &str = r#"
 format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
@@ -11,7 +11,7 @@ class Bits { members: [ScalarInteger] }
 "#;
 
 fn rejected(source: &str, expected: &str) {
-    let result = std::panic::catch_unwind(|| veloc_opgen::compile_mir(source))
+    let result = std::panic::catch_unwind(|| veloc_opgen::compile(source))
         .expect("invalid definitions must produce diagnostics, not panic");
     let error = result.err().expect("definition should be rejected");
     assert!(error.message.contains(expected), "{error}");
@@ -36,7 +36,7 @@ fn builtin_references_are_explicit_not_hidden_mir_defaults() {
 
 #[test]
 fn class_unions_drive_both_generated_contracts_and_semantic_checks() {
-    let output = compile_mir(ADD).unwrap();
+    let output = compile(ADD).unwrap();
     assert!(output.type_rules.contains("C::Bits"));
     assert!(output.opcodes.contains("1..=4 => 0x00000001,"));
     let mixed = ADD.replace(
@@ -48,7 +48,7 @@ fn class_unions_drive_both_generated_contracts_and_semantic_checks() {
         "floating-point execution semantics are not modeled",
     );
     let vectors = ADD.replace("members: [ScalarInteger]", "members: [Integer & Vector]");
-    assert!(compile_mir(&vectors).is_ok());
+    assert!(compile(&vectors).is_ok());
 }
 
 #[test]
@@ -61,20 +61,20 @@ fn class_domains_check_derived_shapes_without_canonical_class_names() {
         }
     "#;
     rejected(&common::source(source), "impossible element constraint");
-    assert!(compile_mir(&source.replace("[ScalarInteger]", "[vectors(ScalarInteger)]")).is_ok());
+    assert!(compile(&source.replace("[ScalarInteger]", "[vectors(ScalarInteger)]")).is_ok());
 }
 
 #[test]
 fn floating_text_uses_domains_instead_of_class_name_allowlists() {
     let source = r#"
         class Floating { members: [ScalarFloat] }
-        format Literal { fields: [opcode(Opcode), value(u64)], opcode: dynamic(opcode) }
-        op Literal(@value: u64) -> (result: Floating) {
+        format Literal { fields: [opcode(Opcode), value(Float)], opcode: dynamic(opcode) }
+        op Literal(@value: Float) -> (result: Floating) {
             mnemonic: "literal", storage: Literal { value: value },
-            text: Text { args: [float(value)] }, memory: NONE
+            memory: NONE
         }
     "#;
-    assert!(compile_mir(source).is_ok());
+    assert!(compile(source).is_ok());
     rejected(
         &common::source(&source.replace("[ScalarFloat]", "[vectors(ScalarFloat)]")),
         "scalar float",
@@ -128,17 +128,9 @@ fn compact_scalar_codes_and_adapter_contracts_are_checked() {
     ] {
         rejected(&BUILTINS.replace(from, to), error);
     }
-    let output = veloc_opgen::compile_mir(BUILTINS).unwrap();
-    assert!(
-        output
-            .types
-            .contains("pub const I8: Self = Self(1 << SCALAR_SHIFT);")
-    );
-    assert!(
-        output
-            .types
-            .contains("pub const PTR: Self = Self(8 << SCALAR_SHIFT);")
-    );
+    let output = veloc_opgen::compile(BUILTINS).unwrap();
+    assert!(output.types.contains("I8 = 1,"));
+    assert!(output.types.contains("PTR = 8,"));
     assert!(output.types.contains("pub const BOOL: Self"));
     assert!(output.types.contains("\"bool\" => Some(Self::BOOL)"));
 }
@@ -148,7 +140,7 @@ fn traits_and_regions_use_declared_storage_and_members() {
     let source = common::source("")
         .replace("MAY_TRAP(2)", "MAY_TRAP(2), EXTRA_FACT(6)")
         .replace("EXTERNAL(4)", "EXTERNAL(4), DEVICE(5)");
-    let output = veloc_opgen::compile_mir(&source).unwrap();
+    let output = veloc_opgen::compile(&source).unwrap();
     assert!(
         output
             .opcodes
@@ -169,7 +161,7 @@ fn traits_and_regions_use_declared_storage_and_members() {
     let source = source
         .replace("storage: u8", "storage: u128")
         .replace("DEVICE(5)", "DEVICE(127)");
-    let output = veloc_opgen::compile_mir(&source).unwrap();
+    let output = veloc_opgen::compile(&source).unwrap();
     let all = (1u128 << 127) | 31;
     assert!(output.opcodes.contains("pub struct MemoryRegions(u128)"));
     assert!(output.opcodes.contains(&format!(
@@ -183,7 +175,7 @@ fn effects_use_declared_regions_and_purity_not_effect_names() {
         "effect PURE {{ reads: [], writes: [] }}\n{}",
         ADD.replace("semantics:", "memory: PURE, semantics:")
     );
-    assert!(compile_mir(&pure).is_ok());
+    assert!(compile(&pure).is_ok());
     rejected(
         &common::source(&pure.replace("reads: []", "reads: [HEAP]")),
         "no memory effects or control flow",
@@ -212,7 +204,7 @@ fn effects_use_declared_regions_and_purity_not_effect_names() {
         &BUILTINS.replace("reads: [ALL]", "reads: [HEAP]"),
         "UNKNOWN must read and write all regions",
     );
-    let output = veloc_opgen::compile_mir(BUILTINS).unwrap();
+    let output = veloc_opgen::compile(BUILTINS).unwrap();
     for (name, read, write) in [
         ("GLOBAL_READ", 4, 0),
         ("GLOBAL_WRITE", 0, 4),

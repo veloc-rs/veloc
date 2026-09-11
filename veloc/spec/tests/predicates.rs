@@ -8,7 +8,7 @@ fn public_predicate_meanings_come_from_defs_not_rust_name_allowlists() {
         "predicate is_integer = Integer;",
         "predicate is_integer = I32 | I64;",
     );
-    let output = veloc_opgen::compile_mir(&changed).unwrap();
+    let output = veloc_opgen::compile(&changed).unwrap();
     let method = output
         .types
         .rsplit("pub const fn is_integer(self)")

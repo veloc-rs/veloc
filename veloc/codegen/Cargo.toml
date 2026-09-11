@@ -11,14 +11,16 @@ cranelift-entity = { workspace = true }
 object = { version = "0.36", features = ["write"] }
 hashbrown = { workspace = true }
 smallvec.workspace = true
-egg = "0.9"
 
 [build-dependencies]
 # 构建时依赖
 veloc-isle = { path = "../isle" }
 veloc-opgen = { workspace = true }
-veloc-semantics = { workspace = true }
 
 [features]
 default = ["std"]
 std = ["veloc-mir/std", "veloc-lir/std"]
+
+[[example]]
+name = "native"
+required-features = ["std"]

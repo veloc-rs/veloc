@@ -1,5 +1,5 @@
 mod common;
-use common::compile_mir;
+use common::compile;
 
 #[test]
 fn every_float_outcome_set_has_the_expected_complement() {
@@ -19,7 +19,7 @@ fn every_float_outcome_set_has_the_expected_complement() {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let output = compile_mir(&format!(
+    let output = compile(&format!(
         "comparison TestCC {{ domain: float, predicates: [{predicates}] }}"
     ))
     .unwrap();

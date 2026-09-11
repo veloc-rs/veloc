@@ -54,3 +54,15 @@ op RefTag(@target: FuncId, @tag: u32) -> () {
     mnemonic: "ref-tag", storage: RefTag { target: target, tag: tag },
     text: Text { args: [space(target, tag)] }, memory: NONE
 }
+// ----- out-of-line-reference
+// run: fixture
+// check: wide-ref later : () -> i32, 1, 2
+local function caller() -> void
+block0():
+  wide-ref later : () -> i32, 1, 2
+  return
+
+local function later() -> i32
+block0():
+  v0: i32 = iconst 7
+  return v0

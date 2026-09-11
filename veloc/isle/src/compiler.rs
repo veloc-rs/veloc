@@ -12,6 +12,9 @@ pub(crate) struct FinalInstDef {
     implicit_uses: Vec<String>,
     implicit_defs: Vec<String>,
     clobbers: Vec<String>,
+    schedule_latency: Option<u32>,
+    flow: String,
+    memory: Option<(String, u32)>,
     emit: Vec<EmitExpr>,
     is_pseudo: bool,
 }
@@ -175,6 +178,9 @@ fn instantiate_templates(
                                 .collect();
                         }
 
+                        inst.schedule_latency = inst.schedule_latency.or(t_def.schedule_latency);
+                        inst.flow = inst.flow.or_else(|| t_def.flow.clone());
+                        inst.memory = inst.memory.or_else(|| t_def.memory.clone());
                         if inst.clobbers.is_empty() {
                             inst.clobbers = t_def.clobbers.clone();
                         }
@@ -194,6 +200,9 @@ fn instantiate_templates(
                         implicit_uses: inst.implicit_uses,
                         implicit_defs: inst.implicit_defs,
                         clobbers: inst.clobbers,
+                        schedule_latency: inst.schedule_latency,
+                        flow: inst.flow.clone().unwrap_or_else(|| "Next".into()),
+                        memory: inst.memory.clone(),
                         emit: inst.emit,
                         is_pseudo: false,
                     },
@@ -207,6 +216,9 @@ fn instantiate_templates(
                         implicit_uses: inst.implicit_uses.clone(),
                         implicit_defs: inst.implicit_defs.clone(),
                         clobbers: inst.clobbers.clone(),
+                        schedule_latency: inst.schedule_latency,
+                        flow: inst.flow.clone().unwrap_or_else(|| "Next".into()),
+                        memory: inst.memory.clone(),
                         emit: Vec::new(),
                         is_pseudo: true,
                     },
@@ -224,6 +236,28 @@ pub fn compile(input: &str, arch: &str) -> Result<String, String> {
     let module = parse_input(&input)?;
     let (extractors, templates, macros) = collect_definitions(&module);
     let final_inst_defs = instantiate_templates(&module, &templates);
+    for (name, inst) in &final_inst_defs {
+        if inst.schedule_latency.is_some()
+            && (inst.memory.is_some()
+                || inst.flow != "Next"
+                || inst.is_pseudo
+                || !inst.implicit_uses.is_empty()
+                || !inst.implicit_defs.is_empty()
+                || inst.clobbers.iter().any(|reg| reg != "EFLAGS")
+                || inst.operands.iter().any(|op| {
+                    matches!(
+                        op,
+                        OperandConstraint::Block(_)
+                            | OperandConstraint::Global(_)
+                            | OperandConstraint::StackSlot(_)
+                    )
+                }))
+        {
+            return Err(format!(
+                "{name}: scheduled instructions must have explicit register dependencies and no control/stack operands; only EFLAGS clobbers are supported"
+            ));
+        }
+    }
     let needs_positional_helpers = select::module_has_positional_rules(&module);
     let needs_source_defs_helper =
         select::module_needs_source_defs_helper(&module, &final_inst_defs);

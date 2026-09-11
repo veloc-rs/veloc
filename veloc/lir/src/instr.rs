@@ -109,14 +109,20 @@ pub struct VRegData {
     pub bank: Option<RegisterBank>, // 寄存器库，在合法化/指令选择阶段确定
 }
 
-macro_rules! define_generic_opcodes {
-    ($($opcode:ident $(=> $semantic:ident)?),* $(,)?) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        #[allow(non_camel_case_types)]
-        pub enum GenericOpcode { $($opcode,)* }
-    };
+/// Control transfer independent of instruction encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlFlow {
+    Next,
+    /// A conditional transfer with a path continuing at the next instruction.
+    Branch,
+    /// All paths transfer to explicit successors; no fallthrough.
+    Jump,
+    Return,
+    Call,
+    Trap,
 }
-include!("../defs/generic.rs");
+
+include!(concat!(env!("OUT_DIR"), "/instructions.rs"));
 
 /// 机器指令操作码
 #[derive(Debug, Clone)]
@@ -192,158 +198,6 @@ impl MachineOperand {
     }
 }
 
-macro_rules! define_mir_ops {
-    (
-        $(
-            $schema:ident => $struct_name:ident / $accessor:ident {
-                opcodes: [$($opcode:path),+ $(,)?],
-                builders: {
-                    $($builder_spec:tt)*
-                },
-                len: $len_kind:ident($($len_args:expr),*),
-                len_message: $len_message:literal,
-                fields: {
-                    $( $field:ident : $field_ty:ty = $decoder:ident($index:expr, $message:literal) ),* $(,)?
-                }
-            }
-        )*
-    ) => {
-        $(
-            #[derive(Debug, Clone, PartialEq)]
-            pub struct $struct_name {
-                $( pub $field: $field_ty, )*
-            }
-        )*
-
-        /// 通用 LIR 指令的 schema 分类。
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum GenericInstSchema {
-            $(
-                $schema,
-            )*
-        }
-
-        #[derive(Debug, Clone, PartialEq)]
-        pub enum DecodedGenericInst {
-            $(
-                $schema($struct_name),
-            )*
-        }
-
-        fn simple_generic_schema_for_opcode(opcode: GenericOpcode) -> Option<GenericInstSchema> {
-            match opcode {
-                $(
-                    $( $opcode )|+ => Some(GenericInstSchema::$schema),
-                )*
-                _ => None,
-            }
-        }
-
-        fn decode_simple_generic(
-            inst: &MachineInst,
-            schema: GenericInstSchema,
-        ) -> crate::error::Result<DecodedGenericInst> {
-            match schema {
-                $(
-                    GenericInstSchema::$schema => inst.$accessor().map(DecodedGenericInst::$schema),
-                )*
-            }
-        }
-
-        impl MachineInst {
-            $(
-                define_mir_ops!(@emit_builders $($builder_spec)*);
-
-                pub fn $accessor(&self) -> crate::error::Result<$struct_name> {
-                    self.expect_schema(GenericInstSchema::$schema)?;
-                    define_mir_ops!(@check_len self, $len_kind, ($($len_args),*), $len_message);
-                    Ok($struct_name {
-                        $( $field: self.$decoder($index, $message)?, )*
-                    })
-                }
-            )*
-        }
-
-        impl GenericInstSchema {
-            pub fn for_opcode(opcode: GenericOpcode) -> Option<Self> {
-                simple_generic_schema_for_opcode(opcode)
-            }
-        }
-    };
-
-    (@emit_builders) => {};
-
-    (@emit_builders
-        $builder:ident => $builder_opcode:path => (
-            $( $arg:ident : $arg_ty:ty => $operand_kind:ident ),* $(,)?
-        );
-        $($rest:tt)*
-    ) => {
-        pub fn $builder($($arg: $arg_ty),*) -> Self {
-            Self {
-                opcode: MachineOpcode::Generic($builder_opcode),
-                operands: smallvec::smallvec![
-                    $( define_mir_ops!(@build_operand $operand_kind $arg) ),*
-                ],
-            }
-        }
-
-        define_mir_ops!(@emit_builders $($rest)*);
-    };
-
-    (@emit_builders
-        $item:item
-        $($rest:tt)*
-    ) => {
-        $item
-        define_mir_ops!(@emit_builders $($rest)*);
-    };
-
-    (@check_len $self:ident, exact, ($expected:expr), $message:expr) => {
-        $self.expect_len($expected, $message)?;
-    };
-
-    (@check_len $self:ident, one_of, ($first:expr, $second:expr), $message:expr) => {
-        if !($self.operands.len() == $first || $self.operands.len() == $second) {
-            return Err($self.decode_error($message));
-        }
-    };
-
-    (@check_len $self:ident, any, (), $message:expr) => {};
-
-    (@build_operand Def $arg:ident) => {
-        MachineOperand::Def($arg)
-    };
-    (@build_operand Use $arg:ident) => {
-        MachineOperand::Use($arg)
-    };
-    (@build_operand TiedDefUse $arg:ident) => {
-        MachineOperand::TiedDefUse($arg)
-    };
-    (@build_operand Imm $arg:ident) => {
-        MachineOperand::Imm($arg)
-    };
-    (@build_operand FImm $arg:ident) => {
-        MachineOperand::FImm($arg)
-    };
-    (@build_operand Block $arg:ident) => {
-        MachineOperand::Block($arg)
-    };
-    (@build_operand StackSlot $arg:ident) => {
-        MachineOperand::StackSlot($arg)
-    };
-    (@build_operand Global $arg:ident) => {
-        MachineOperand::Global($arg)
-    };
-    (@build_operand IntCC $arg:ident) => {
-        MachineOperand::CondCode(CondCode::Int($arg))
-    };
-    (@build_operand FloatCC $arg:ident) => {
-        MachineOperand::CondCode(CondCode::Float($arg))
-    };
-
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallCallee {
     Direct(SymbolId),
@@ -363,518 +217,94 @@ pub struct CallInst<'a> {
     pub info: &'a CallInfo,
 }
 
-define_mir_ops! {
-    UnaryReg => UnaryRegInst / as_unary_reg {
-        opcodes: [
-            GenericOpcode::G_ANYEXT,
-            GenericOpcode::G_NEG,
-            GenericOpcode::G_ABS,
-            GenericOpcode::G_FNEG,
-            GenericOpcode::G_FABS,
-            GenericOpcode::G_FSQRT,
-            GenericOpcode::G_CTPOP,
-            GenericOpcode::G_CTLZ,
-            GenericOpcode::G_CTTZ,
-            GenericOpcode::G_CTLZ_ZERO_UNDEF,
-            GenericOpcode::G_CTTZ_ZERO_UNDEF,
-            GenericOpcode::G_TRUNC,
-            GenericOpcode::G_ZEXT,
-            GenericOpcode::G_SEXT,
-            GenericOpcode::G_FPTOSI,
-            GenericOpcode::G_FPTOUI,
-            GenericOpcode::G_SITOFP,
-            GenericOpcode::G_UITOFP,
-            GenericOpcode::G_FPTRUNC,
-            GenericOpcode::G_FPEXT,
-            GenericOpcode::G_BITCAST,
-            GenericOpcode::G_INTTOPTR,
-            GenericOpcode::G_PTRTOINT,
-            GenericOpcode::G_COPY,
-            GenericOpcode::G_IEQZ,
-        ],
-        builders: {
-            build_copy => GenericOpcode::G_COPY => (
-                def: Writable<Reg> => Def,
-                src: Reg => Use
-            );
-            /// 构建一元操作指令
-            pub fn build_unary(opcode: MachineOpcode, def: Writable<Reg>, src: Reg) -> Self {
-                Self {
-                    opcode,
-                    operands: smallvec::smallvec![MachineOperand::Def(def), MachineOperand::Use(src)],
-                }
-            }
-        },
-        len: exact(2),
-        len_message: "unary instruction expects def/use operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "operand 0 must be a def"),
-            src: Reg = expect_use_reg(1, "operand 1 must be a use"),
+// Variable-arity calls/returns and target-independent construction helpers.
+impl MachineInst {
+    /// 构建一元操作指令
+    pub fn build_unary(opcode: MachineOpcode, def: Writable<Reg>, src: Reg) -> Self {
+        Self {
+            memory: None,
+            opcode,
+            operands: smallvec::smallvec![MachineOperand::Def(def), MachineOperand::Use(src)],
         }
     }
-    BinaryReg => BinaryRegInst / as_binary_reg {
-        opcodes: [
-            GenericOpcode::G_ADD,
-            GenericOpcode::G_SUB,
-            GenericOpcode::G_MUL,
-            GenericOpcode::G_SMIN,
-            GenericOpcode::G_SMAX,
-            GenericOpcode::G_UMIN,
-            GenericOpcode::G_UMAX,
-            GenericOpcode::G_SADDSAT,
-            GenericOpcode::G_UADDSAT,
-            GenericOpcode::G_SSUBSAT,
-            GenericOpcode::G_USUBSAT,
-            GenericOpcode::G_SDIV,
-            GenericOpcode::G_UDIV,
-            GenericOpcode::G_SREM,
-            GenericOpcode::G_UREM,
-            GenericOpcode::G_FADD,
-            GenericOpcode::G_FSUB,
-            GenericOpcode::G_FMUL,
-            GenericOpcode::G_FDIV,
-            GenericOpcode::G_AND,
-            GenericOpcode::G_OR,
-            GenericOpcode::G_XOR,
-            GenericOpcode::G_SHL,
-            GenericOpcode::G_LSHR,
-            GenericOpcode::G_ASHR,
-            GenericOpcode::G_ROTL,
-            GenericOpcode::G_ROTR,
-            GenericOpcode::G_PTR_ADD,
-            GenericOpcode::G_UMULH,
-            GenericOpcode::G_SMULH,
-        ],
-        builders: {
-            /// 构建三地址二元操作指令
-            pub fn build_binary(
-                opcode: MachineOpcode,
-                def: Writable<Reg>,
-                src0: Reg,
-                src1: Reg,
-            ) -> Self {
-                Self {
-                    opcode,
-                    operands: smallvec::smallvec![
-                        MachineOperand::Def(def),
-                        MachineOperand::Use(src0),
-                        MachineOperand::Use(src1)
-                    ],
-                }
-            }
 
-            /// 构建两地址二元指令 (如 x86 的 add eax, ecx)
-            pub fn build_tied_binary(
-                opcode: MachineOpcode,
-                def_use: Writable<Reg>,
-                src: Reg,
-            ) -> Self {
-                Self {
-                    opcode,
-                    operands: smallvec::smallvec![
-                        MachineOperand::TiedDefUse(def_use),
-                        MachineOperand::Use(src)
-                    ],
-                }
-            }
-        },
-        len: exact(3),
-        len_message: "binary instruction expects def/use/use operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "operand 0 must be a def"),
-            lhs: Reg = expect_use_reg(1, "operand 1 must be a use"),
-            rhs: Reg = expect_use_reg(2, "operand 2 must be a use"),
+    /// 构建三地址二元操作指令
+    pub fn build_binary(opcode: MachineOpcode, def: Writable<Reg>, src0: Reg, src1: Reg) -> Self {
+        Self {
+            memory: None,
+            opcode,
+            operands: smallvec::smallvec![
+                MachineOperand::Def(def),
+                MachineOperand::Use(src0),
+                MachineOperand::Use(src1)
+            ],
         }
     }
-    BinaryRegWithFlags => BinaryRegWithFlagsInst / as_binary_reg_with_flags {
-        opcodes: [
-            GenericOpcode::G_UADDO,
-            GenericOpcode::G_SADDO,
-            GenericOpcode::G_USUBO,
-            GenericOpcode::G_SSUBO,
-            GenericOpcode::G_UADDE,
-            GenericOpcode::G_SADDE,
-            GenericOpcode::G_USUBE,
-            GenericOpcode::G_SSUBE,
-            GenericOpcode::G_UMULO,
-            GenericOpcode::G_SMULO,
-        ],
-        builders: {
-            build_uaddo => GenericOpcode::G_UADDO => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use);
-            build_saddo => GenericOpcode::G_SADDO => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use);
-            build_usubo => GenericOpcode::G_USUBO => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use);
-            build_ssubo => GenericOpcode::G_SSUBO => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use);
-            build_uadde => GenericOpcode::G_UADDE => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use, carry_in: Reg => Use);
-            build_sadde => GenericOpcode::G_SADDE => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use, carry_in: Reg => Use);
-            build_usube => GenericOpcode::G_USUBE => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use, carry_in: Reg => Use);
-            build_ssube => GenericOpcode::G_SSUBE => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use, carry_in: Reg => Use);
-            build_umulo => GenericOpcode::G_UMULO => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use);
-            build_smulo => GenericOpcode::G_SMULO => (dst: Writable<Reg> => Def, flag: Writable<Reg> => Def, lhs: Reg => Use, rhs: Reg => Use);
-        },
-        len: one_of(4, 5),
-        len_message: "binary-with-flags instruction expects def/def/use/use or def/def/use/use/use operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "binary-with-flags operand 0 must be a def"),
-            flag: Reg = expect_def_reg(1, "binary-with-flags operand 1 must be a def"),
-            lhs: Reg = expect_use_reg(2, "binary-with-flags operand 2 must be a use"),
-            rhs: Reg = expect_use_reg(3, "binary-with-flags operand 3 must be a use"),
-            carry_in: Option<Reg> = expect_optional_use_reg(4, "binary-with-flags operand 4 must be a use"),
-        }
-    }
-    Load => LoadInst / as_load {
-        opcodes: [GenericOpcode::G_LOAD],
-        builders: {
-            build_load => GenericOpcode::G_LOAD => (
-                def: Writable<Reg> => Def,
-                ptr: Reg => Use
-            );
-        },
-        len: exact(2),
-        len_message: "load expects def/use operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "load operand 0 must be a def"),
-            base: Reg = expect_use_reg(1, "load operand 1 must be a base register"),
-        }
-    }
-    LoadOffset => LoadOffsetInst / as_load_offset {
-        opcodes: [GenericOpcode::G_OFFSET_LOAD],
-        builders: {
-            build_load_offset => GenericOpcode::G_OFFSET_LOAD => (
-                def: Writable<Reg> => Def,
-                ptr: Reg => Use,
-                offset: i64 => Imm
-            );
-        },
-        len: exact(3),
-        len_message: "load offset expects def/use/imm operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "load offset operand 0 must be a def"),
-            base: Reg = expect_use_reg(1, "load offset operand 1 must be a base register"),
-            offset: i64 = expect_imm(2, "load offset operand 2 must be an immediate offset"),
-        }
-    }
-    IndexedLoad => IndexedLoadInst / as_indexed_load {
-        opcodes: [GenericOpcode::G_INDEXED_LOAD],
-        builders: {
-            build_indexed_load => GenericOpcode::G_INDEXED_LOAD => (
-                def: Writable<Reg> => Def,
-                writeback_ptr: Writable<Reg> => TiedDefUse,
-                ptr: Reg => Use,
-                offset: i64 => Imm
-            );
-        },
-        len: exact(4),
-        len_message: "indexed load expects def/tied-def/use/imm operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "indexed load operand 0 must be a def"),
-            wb_dst: Reg = expect_tied_def_reg(1, "indexed load operand 1 must be a tied def"),
-            base: Reg = expect_use_reg(2, "indexed load operand 2 must be a base register"),
-            offset: i64 = expect_imm(3, "indexed load operand 3 must be an immediate offset"),
-        }
-    }
-    Store => StoreInst / as_store {
-        opcodes: [GenericOpcode::G_STORE],
-        builders: {
-            build_store => GenericOpcode::G_STORE => (
-                src: Reg => Use,
-                ptr: Reg => Use
-            );
-        },
-        len: exact(2),
-        len_message: "store expects use/use operands",
-        fields: {
-            src: Reg = expect_use_reg(0, "store value register not found"),
-            base: Reg = expect_use_reg(1, "store base register not found"),
-        }
-    }
-    StackLoad => StackLoadInst / as_stack_load {
-        opcodes: [GenericOpcode::G_STACK_LOAD],
-        builders: {
-            build_stack_load => GenericOpcode::G_STACK_LOAD => (
-                def: Writable<Reg> => Def,
-                slot: StackSlot => StackSlot
-            );
-        },
-        len: exact(2),
-        len_message: "stack load expects def/stackslot operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "stack load operand 0 must be a def"),
-            slot: StackSlot = expect_stackslot(1, "stack load operand 1 must be a stack slot"),
-        }
-    }
-    StackStore => StackStoreInst / as_stack_store {
-        opcodes: [GenericOpcode::G_STACK_STORE],
-        builders: {
-            build_stack_store => GenericOpcode::G_STACK_STORE => (
-                src: Reg => Use,
-                slot: StackSlot => StackSlot
-            );
-        },
-        len: exact(2),
-        len_message: "stack store expects use/stackslot operands",
-        fields: {
-            src: Reg = expect_use_reg(0, "stack store operand 0 must be a value register"),
-            slot: StackSlot = expect_stackslot(1, "stack store operand 1 must be a stack slot"),
-        }
-    }
-    StoreOffset => StoreOffsetInst / as_store_offset {
-        opcodes: [GenericOpcode::G_OFFSET_STORE],
-        builders: {
-            build_store_offset => GenericOpcode::G_OFFSET_STORE => (
-                src: Reg => Use,
-                ptr: Reg => Use,
-                offset: i64 => Imm
-            );
-        },
-        len: exact(3),
-        len_message: "store offset expects use/use/imm operands",
-        fields: {
-            src: Reg = expect_use_reg(0, "store offset operand 0 must be a value register"),
-            base: Reg = expect_use_reg(1, "store offset operand 1 must be a base register"),
-            offset: i64 = expect_imm(2, "store offset operand 2 must be an immediate offset"),
-        }
-    }
-    IndexedStore => IndexedStoreInst / as_indexed_store {
-        opcodes: [GenericOpcode::G_INDEXED_STORE],
-        builders: {
-            build_indexed_store => GenericOpcode::G_INDEXED_STORE => (
-                writeback_ptr: Writable<Reg> => TiedDefUse,
-                src: Reg => Use,
-                ptr: Reg => Use,
-                offset: i64 => Imm
-            );
-        },
-        len: exact(4),
-        len_message: "indexed store expects tied-def/use/use/imm operands",
-        fields: {
-            wb_dst: Reg = expect_tied_def_reg(0, "indexed store operand 0 must be a tied def"),
-            src: Reg = expect_use_reg(1, "indexed store operand 1 must be a value register"),
-            base: Reg = expect_use_reg(2, "indexed store operand 2 must be a base register"),
-            offset: i64 = expect_imm(3, "indexed store operand 3 must be an immediate offset"),
-        }
-    }
-    Constant => ConstantInst / as_constant {
-        opcodes: [GenericOpcode::G_CONSTANT],
-        builders: {
-            build_constant => GenericOpcode::G_CONSTANT => (
-                def: Writable<Reg> => Def,
-                imm: i64 => Imm
-            );
-        },
-        len: exact(2),
-        len_message: "constant expects def/imm operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "constant operand 0 must be a def"),
-            imm: i64 = expect_imm(1, "constant operand 1 must be an immediate"),
-        }
-    }
-    FloatConstant => FConstantInst / as_fconstant {
-        opcodes: [GenericOpcode::G_FCONSTANT],
-        builders: {
-            build_fconstant => GenericOpcode::G_FCONSTANT => (
-                def: Writable<Reg> => Def,
-                fimm: f64 => FImm
-            );
-        },
-        len: exact(2),
-        len_message: "fconstant expects def/fimm operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "fconstant operand 0 must be a def"),
-            imm: f64 = expect_fimm(1, "fconstant operand 1 must be a floating immediate"),
-        }
-    }
-    Branch => BranchInst / as_branch {
-        opcodes: [GenericOpcode::G_BR],
-        builders: {
-            build_br => GenericOpcode::G_BR => (
-                target: Block => Block
-            );
-        },
-        len: exact(1),
-        len_message: "branch expects one block operand",
-        fields: {
-            target: Block = expect_block(0, "branch operand 0 must be a block"),
-        }
-    }
-    BranchCond => BranchCondInst / as_branch_cond {
-        opcodes: [GenericOpcode::G_BRCOND],
-        builders: {
-            build_br_cond => GenericOpcode::G_BRCOND => (
-                cond: Reg => Use,
-                then_blk: Block => Block,
-                else_blk: Block => Block
-            );
-        },
-        len: exact(3),
-        len_message: "conditional branch expects use/block/block operands",
-        fields: {
-            cond: Reg = expect_use_reg(0, "branch operand 0 must be a condition register"),
-            then_blk: Block = expect_block(1, "branch operand 1 must be the then block"),
-            else_blk: Block = expect_block(2, "branch operand 2 must be the else block"),
-        }
-    }
-    BranchTable => BranchTableInst / as_branch_table {
-        opcodes: [GenericOpcode::G_BRJT],
-        builders: {
-            build_br_jt => GenericOpcode::G_BRJT => (
-                index: Reg => Use
-            );
-        },
-        len: exact(1),
-        len_message: "branch table expects one index register operand",
-        fields: {
-            index: Reg = expect_use_reg(0, "branch table operand 0 must be an index register"),
-        }
-    }
-    Select => SelectInst / as_select {
-        opcodes: [GenericOpcode::G_SELECT],
-        builders: {
-            build_select => GenericOpcode::G_SELECT => (
-                def: Writable<Reg> => Def,
-                cond: Reg => Use,
-                v1: Reg => Use,
-                v2: Reg => Use
-            );
-        },
-        len: exact(4),
-        len_message: "select expects def/use/use/use operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "select operand 0 must be a def"),
-            cond: Reg = expect_use_reg(1, "select operand 1 must be a condition"),
-            v1: Reg = expect_use_reg(2, "select operand 2 must be a use"),
-            v2: Reg = expect_use_reg(3, "select operand 3 must be a use"),
-        }
-    }
-    ICmp => ICmpInst / as_icmp {
-        opcodes: [GenericOpcode::G_ICMP],
-        builders: {
-            build_icmp => GenericOpcode::G_ICMP => (
-                def: Writable<Reg> => Def,
-                src0: Reg => Use,
-                src1: Reg => Use,
-                cc: IntCC => IntCC
-            );
-        },
-        len: one_of(2, 4),
-        len_message: "icmp expects def/use or def/use/use/condcode operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "icmp operand 0 must be a def"),
-            lhs: Reg = expect_use_reg(1, "icmp operand 1 must be a use"),
-            rhs: Option<Reg> = expect_optional_use_reg(2, "icmp operand 2 must be a use"),
-            cc: Option<IntCC> = expect_optional_intcc(3, "icmp operand 3 must be an integer condition code"),
-        }
-    }
-    FCmp => FCmpInst / as_fcmp {
-        opcodes: [GenericOpcode::G_FCMP],
-        builders: {
-            build_fcmp => GenericOpcode::G_FCMP => (
-                def: Writable<Reg> => Def,
-                src0: Reg => Use,
-                src1: Reg => Use,
-                cc: FloatCC => FloatCC
-            );
-        },
-        len: exact(4),
-        len_message: "fcmp expects def/use/use/condcode operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "fcmp operand 0 must be a def"),
-            lhs: Reg = expect_use_reg(1, "fcmp operand 1 must be a use"),
-            rhs: Reg = expect_use_reg(2, "fcmp operand 2 must be a use"),
-            cc: FloatCC = expect_floatcc(3, "fcmp operand 3 must be a float condition code"),
-        }
-    }
-    Arg => ArgInst / as_arg {
-        opcodes: [GenericOpcode::G_ARG],
-        builders: {
-            build_arg => GenericOpcode::G_ARG => (
-                def: Writable<Reg> => Def,
-                index: i64 => Imm
-            );
-        },
-        len: exact(2),
-        len_message: "arg expects def/imm operands",
-        fields: {
-            dst: Reg = expect_def_reg(0, "arg operand 0 must be a def"),
-            index: usize = expect_nonnegative_imm_usize(1, "arg operand 1 must be a non-negative immediate index"),
-        }
-    }
-    Return => RetInst / as_ret {
-        opcodes: [GenericOpcode::G_RET],
-        builders: {
-            /// 构建返回指令
-            pub fn build_ret(results: SmallVec<[Reg; 2]>) -> Self {
-                let mut operands = SmallVec::new();
-                for res in results {
-                    operands.push(MachineOperand::Use(res));
-                }
-                Self {
-                    opcode: MachineOpcode::Generic(GenericOpcode::G_RET),
-                    operands,
-                }
-            }
-        },
-        len: any(),
-        len_message: "return accepts zero or more use operands",
-        fields: {
-            values: SmallVec<[Reg; 2]> = collect_use_regs_from(0, "return operands must all be use registers"),
-        }
-    }
-    Unreachable => UnreachableInst / as_unreachable {
-        opcodes: [GenericOpcode::G_UNREACHABLE],
-        builders: {
-            build_unreachable => GenericOpcode::G_UNREACHABLE => ();
-        },
-        len: exact(0),
-        len_message: "unreachable expects no operands",
-        fields: {}
-    }
-    Call => CallShapeInst / as_call_shape_data {
-        opcodes: [GenericOpcode::G_CALL, GenericOpcode::G_CALLIND],
-        builders: {
-            /// 构建直接调用指令。
-            pub fn build_call<D, A>(defs: D, callee: SymbolId, args: A) -> Self
-            where
-                D: IntoIterator<Item = Writable<Reg>>,
-                A: IntoIterator<Item = Reg>,
-            {
-                let mut operands = SmallVec::new();
-                for def in defs {
-                    operands.push(MachineOperand::Def(def));
-                }
-                operands.push(MachineOperand::Global(callee));
-                for arg in args {
-                    operands.push(MachineOperand::Use(arg));
-                }
-                Self {
-                    opcode: MachineOpcode::Generic(GenericOpcode::G_CALL),
-                    operands,
-                }
-            }
 
-            /// 构建间接调用指令。
-            pub fn build_call_indirect<D, A>(defs: D, callee: Reg, args: A) -> Self
-            where
-                D: IntoIterator<Item = Writable<Reg>>,
-                A: IntoIterator<Item = Reg>,
-            {
-                let mut operands = SmallVec::new();
-                for def in defs {
-                    operands.push(MachineOperand::Def(def));
-                }
-                operands.push(MachineOperand::Use(callee));
-                for arg in args {
-                    operands.push(MachineOperand::Use(arg));
-                }
-                Self {
-                    opcode: MachineOpcode::Generic(GenericOpcode::G_CALLIND),
-                    operands,
-                }
-            }
-        },
-        len: any(),
-        len_message: "call accepts defs + callee + args",
-        fields: {
-            shape: CallShape = decode_call_shape_field(0, "call operands are malformed"),
+    /// 构建两地址二元指令 (如 x86 的 add eax, ecx)
+    pub fn build_tied_binary(opcode: MachineOpcode, def_use: Writable<Reg>, src: Reg) -> Self {
+        Self {
+            memory: None,
+            opcode,
+            operands: smallvec::smallvec![
+                MachineOperand::TiedDefUse(def_use),
+                MachineOperand::Use(src)
+            ],
+        }
+    }
+
+    /// 构建返回指令
+    pub fn build_ret(results: SmallVec<[Reg; 2]>) -> Self {
+        let mut operands = SmallVec::new();
+        for res in results {
+            operands.push(MachineOperand::Use(res));
+        }
+        Self {
+            memory: None,
+            opcode: MachineOpcode::Generic(GenericOpcode::G_RET),
+            operands,
+        }
+    }
+
+    /// 构建直接调用指令。
+    pub fn build_call<D, A>(defs: D, callee: SymbolId, args: A) -> Self
+    where
+        D: IntoIterator<Item = Writable<Reg>>,
+        A: IntoIterator<Item = Reg>,
+    {
+        let mut operands = SmallVec::new();
+        for def in defs {
+            operands.push(MachineOperand::Def(def));
+        }
+        operands.push(MachineOperand::Global(callee));
+        for arg in args {
+            operands.push(MachineOperand::Use(arg));
+        }
+        Self {
+            memory: None,
+            opcode: MachineOpcode::Generic(GenericOpcode::G_CALL),
+            operands,
+        }
+    }
+
+    /// 构建间接调用指令。
+    pub fn build_call_indirect<D, A>(defs: D, callee: Reg, args: A) -> Self
+    where
+        D: IntoIterator<Item = Writable<Reg>>,
+        A: IntoIterator<Item = Reg>,
+    {
+        let mut operands = SmallVec::new();
+        for def in defs {
+            operands.push(MachineOperand::Def(def));
+        }
+        operands.push(MachineOperand::Use(callee));
+        for arg in args {
+            operands.push(MachineOperand::Use(arg));
+        }
+        Self {
+            memory: None,
+            opcode: MachineOpcode::Generic(GenericOpcode::G_CALLIND),
+            operands,
         }
     }
 }
@@ -882,33 +312,32 @@ define_mir_ops! {
 /// 机器指令
 #[derive(Debug, Clone)]
 pub struct MachineInst {
+    pub memory: Option<crate::MemoryAccess>,
     pub opcode: MachineOpcode,
     pub operands: SmallVec<[MachineOperand; 4]>,
 }
 
 impl MachineInst {
+    pub fn with_memory(mut self, access: crate::MemoryAccess) -> Self {
+        self.memory = Some(access);
+        self
+    }
+
     /// 构建复杂指令或变长参数指令
     pub fn build_generic(opcode: MachineOpcode, operands: SmallVec<[MachineOperand; 4]>) -> Self {
-        // 验证操作数顺序：Def 必须在 Use 之前
-        let mut seen_non_def = false;
-        for op in &operands {
-            if op.is_def() {
-                if seen_non_def {
-                    panic!(
-                        "Invalid MachineInst: all Def operands must come before Use operands. Opcode: {:?}",
-                        opcode
-                    );
-                }
-            } else {
-                seen_non_def = true;
-            }
+        // Explicit operand order belongs to the instruction schema. Implicit
+        // ABI uses/defs can follow encoded operands and are not encoding fields.
+        Self {
+            opcode,
+            operands,
+            memory: None,
         }
-        Self { opcode, operands }
     }
 
     /// 创建一个无效指令占位符
     pub fn invalid() -> Self {
         Self {
+            memory: None,
             opcode: MachineOpcode::Invalid,
             operands: SmallVec::new(),
         }
@@ -956,8 +385,7 @@ impl MachineInst {
 
     /// 返回该通用 LIR 指令对应的 schema。
     pub fn generic_schema(&self) -> Option<GenericInstSchema> {
-        self.generic_opcode()
-            .and_then(GenericInstSchema::for_opcode)
+        self.generic_opcode().map(GenericInstSchema::for_opcode)
     }
 
     /// 按 schema 解码通用 LIR 指令。
@@ -986,14 +414,6 @@ impl MachineInst {
                 "opcode {:?} does not have a registered schema",
                 self.opcode
             ))),
-        }
-    }
-
-    fn expect_len(&self, expected: usize, message: &str) -> crate::error::Result<()> {
-        if self.operands.len() == expected {
-            Ok(())
-        } else {
-            Err(self.decode_error(message))
         }
     }
 
@@ -1069,15 +489,10 @@ impl MachineInst {
         }
     }
 
-    fn expect_optional_intcc(
-        &self,
-        index: usize,
-        message: &str,
-    ) -> crate::error::Result<Option<IntCC>> {
+    fn expect_intcc(&self, index: usize, message: &str) -> crate::error::Result<IntCC> {
         match self.operands.get(index) {
-            None => Ok(None),
-            Some(MachineOperand::CondCode(CondCode::Int(cc))) => Ok(Some(*cc)),
-            Some(_) => Err(self.decode_error(message)),
+            Some(MachineOperand::CondCode(CondCode::Int(cc))) => Ok(*cc),
+            _ => Err(self.decode_error(message)),
         }
     }
 
@@ -1239,22 +654,14 @@ mod tests {
             FloatCC::Lt,
         );
 
-        assert_eq!(
-            unary.as_icmp().unwrap(),
-            ICmpInst {
-                dst: Reg::new_vreg(0),
-                lhs: Reg::new_vreg(1),
-                rhs: None,
-                cc: None,
-            }
-        );
+        assert!(unary.as_icmp().is_err());
         assert_eq!(
             binary.as_icmp().unwrap(),
             ICmpInst {
                 dst: Reg::new_vreg(2),
                 lhs: Reg::new_vreg(3),
-                rhs: Some(Reg::new_vreg(4)),
-                cc: Some(IntCC::Eq),
+                rhs: Reg::new_vreg(4),
+                cc: IntCC::Eq,
             }
         );
         assert_eq!(
@@ -1278,7 +685,7 @@ mod tests {
         );
         let br = MachineInst::build_br(Block::from_u32(7));
         let br_cond =
-            MachineInst::build_br_cond(Reg::new_vreg(4), Block::from_u32(8), Block::from_u32(9));
+            MachineInst::build_brcond(Reg::new_vreg(4), Block::from_u32(8), Block::from_u32(9));
 
         assert_eq!(
             select.as_select().unwrap(),

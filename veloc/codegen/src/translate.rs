@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use alloc::format;
-use hashbrown::HashMap;
+use cranelift_entity::PrimaryMap;
 use veloc_lir::stages::RawLir;
 use veloc_lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
@@ -21,6 +21,7 @@ mod tests;
 /// IR 到 LIR 的翻译器
 pub struct IRTranslator<'a> {
     module: &'a Module,
+    layout: crate::target::arch::DataLayout,
 }
 
 /// 翻译上下文，用于在翻译过程中共享状态
@@ -28,7 +29,8 @@ struct TranslationContext<'a> {
     func: &'a Function,
     mmodule: &'a mut MachineModule,
     mfunc: MachineFunction<RawLir>,
-    value_map: HashMap<Value, Reg>,
+    value_map: PrimaryMap<Value, Reg>,
+    slots: PrimaryMap<veloc_mir::StackSlot, veloc_lir::StackSlot>,
 }
 
 struct TranslatedInst {
@@ -52,15 +54,53 @@ impl From<MachineInst> for TranslatedInst {
 }
 
 impl<'a> IRTranslator<'a> {
-    pub fn new(module: &'a Module) -> Self {
-        Self { module }
+    fn stack_access(
+        ctx: &mut TranslationContext<'_>,
+        slot: veloc_mir::StackSlot,
+        offset: u32,
+    ) -> Result<veloc_lir::StackSlot> {
+        let id = ctx.slots[slot];
+        if offset == 0 {
+            return Ok(id);
+        }
+        let mut access = ctx.mfunc.stack_frame.slots[id].clone();
+        access.offset = i32::try_from(i64::from(access.offset) + i64::from(offset))
+            .map_err(|_| Error::codegen("stack offset exceeds target displacement range"))?;
+        Ok(ctx.mfunc.stack_frame.slots.push(access))
+    }
+
+    pub fn new(module: &'a Module, layout: crate::target::arch::DataLayout) -> Self {
+        Self { module, layout }
+    }
+
+    fn memory_access(
+        &self,
+        kind: veloc_lir::MemoryKind,
+        ty: veloc_mir::Type,
+        flags: veloc_mir::MemFlags,
+        may_trap: bool,
+    ) -> Result<veloc_lir::MemoryAccess> {
+        let bytes = if ty.is_ptr() {
+            u32::from(self.layout.pointer_size)
+        } else {
+            ty.fixed_size_bytes().ok_or_else(|| {
+                Error::translate(format!(
+                    "memory access requires a fixed machine representation: {ty:?}"
+                ))
+            })?
+        };
+        let mut access = veloc_lir::MemoryAccess::new(kind, bytes);
+        access.alignment = flags.alignment();
+        access.volatile = flags.is_volatile();
+        access.may_trap = may_trap;
+        Ok(access)
     }
 
     /// 为函数参数生成 G_ARG 指令
     fn lower_arguments(&self, ctx: &mut TranslationContext, mblock: &mut MachineBlock) {
         use veloc_lir::Writable;
         for (idx, &param_val) in ctx.func.params().iter().enumerate() {
-            let vreg = ctx.value_map[&param_val];
+            let vreg = ctx.value_map[param_val];
             let arg_inst = MachineInst::build_arg(Writable(vreg), idx as i64);
             Self::emit_inst(ctx, mblock, arg_inst);
         }
@@ -122,13 +162,20 @@ impl<'a> IRTranslator<'a> {
             func,
             mmodule,
             mfunc: MachineFunction::<RawLir>::new(func.name.clone()),
-            value_map: HashMap::new(),
+            value_map: PrimaryMap::with_capacity(func.dfg().values().len()),
+            slots: PrimaryMap::with_capacity(func.stack_slots.len()),
         };
+
+        for (_, slot) in &func.stack_slots {
+            let lowered = ctx.mfunc.alloc_stack_slot(slot.size, 16);
+            ctx.slots.push(lowered);
+        }
 
         // 1. 预分配所有 Value 对应的 VReg
         for (val, data) in func.dfg().values() {
-            let vreg = ctx.mfunc.alloc_vreg(data.ty.clone());
-            ctx.value_map.insert(val, vreg);
+            let vreg = ctx.mfunc.alloc_vreg(data.ty);
+            let mapped = ctx.value_map.push(vreg);
+            debug_assert_eq!(mapped, val);
         }
 
         // 2. 翻译基本块和指令
@@ -137,7 +184,7 @@ impl<'a> IRTranslator<'a> {
             mblock.params = func.layout().blocks()[block_id]
                 .params
                 .iter()
-                .map(|value| ctx.value_map[value])
+                .map(|value| ctx.value_map[*value])
                 .collect();
 
             // 如果是入口块，先处理函数参数
@@ -157,11 +204,9 @@ impl<'a> IRTranslator<'a> {
             ctx.mfunc.blocks.push(mblock);
         }
 
-        for &param in func.params() {
-            if let Some(&reg) = ctx.value_map.get(&param) {
-                ctx.mfunc.params.push(reg);
-            }
-        }
+        ctx.mfunc
+            .params
+            .extend(func.params().iter().map(|&param| ctx.value_map[param]));
 
         Ok(ctx.mfunc)
     }
@@ -182,7 +227,7 @@ impl<'a> IRTranslator<'a> {
         let results = ctx.func.dfg().inst_results(inst_id);
         let mut defs = SmallVec::<[MachineOperand; 4]>::new();
         for &res in results {
-            let vreg = ctx.value_map[&res];
+            let vreg = ctx.value_map[res];
             defs.push(MachineOperand::Def(Writable(vreg)));
         }
 
@@ -215,16 +260,50 @@ impl<'a> IRTranslator<'a> {
                 // which widths and vector shapes the backend can implement.
                 defs.extend(
                     args.iter()
-                        .map(|arg| MachineOperand::Use(ctx.value_map[arg])),
+                        .map(|arg| MachineOperand::Use(ctx.value_map[*arg])),
                 );
                 return Ok(MachineInst::build_generic(MachineOpcode::Generic(opcode), defs).into());
             }
         }
 
         match inst_data {
+            InstructionView::StackAddr { slot, offset } => {
+                let slot = Self::stack_access(ctx, *slot, *offset)?;
+                Ok(MachineInst::build_stack_addr(defs[0].as_writable().unwrap(), slot).into())
+            }
+            InstructionView::StackLoad { slot, offset } => {
+                let slot = Self::stack_access(ctx, *slot, *offset)?;
+                let dst = defs[0].as_writable().unwrap();
+                let access = self.memory_access(
+                    veloc_lir::MemoryKind::Read,
+                    ctx.mfunc.vreg_data(dst.to_reg()).ty,
+                    veloc_mir::MemFlags::new(),
+                    false,
+                )?;
+                Ok(MachineInst::build_stack_load(dst, slot)
+                    .with_memory(access)
+                    .into())
+            }
+            InstructionView::StackStore {
+                slot,
+                value,
+                offset,
+            } => {
+                let slot = Self::stack_access(ctx, *slot, *offset)?;
+                let src = ctx.value_map[*value];
+                let access = self.memory_access(
+                    veloc_lir::MemoryKind::Write,
+                    ctx.mfunc.vreg_data(src).ty,
+                    veloc_mir::MemFlags::new(),
+                    false,
+                )?;
+                Ok(MachineInst::build_stack_store(src, slot)
+                    .with_memory(access)
+                    .into())
+            }
             InstructionView::Binary { opcode, args } => {
-                let src0 = ctx.value_map[&args[0]];
-                let src1 = ctx.value_map[&args[1]];
+                let src0 = ctx.value_map[args[0]];
+                let src1 = ctx.value_map[args[1]];
 
                 let m_opcode = match opcode {
                     Opcode::IDivS => MachineOpcode::Generic(GenericOpcode::G_SDIV),
@@ -248,7 +327,7 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionView::Unary { opcode, arg } => {
-                let src = ctx.value_map[arg];
+                let src = ctx.value_map[*arg];
 
                 let m_opcode = match opcode {
                     // The MIR contract spells negation as `0 - arg`. This
@@ -279,8 +358,8 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionView::IntCompare { kind, args } => {
-                let src0 = ctx.value_map[&args[0]];
-                let src1 = ctx.value_map[&args[1]];
+                let src0 = ctx.value_map[args[0]];
+                let src1 = ctx.value_map[args[1]];
 
                 Ok(
                     MachineInst::build_icmp(defs[0].as_writable().unwrap(), src0, src1, *kind)
@@ -289,8 +368,8 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionView::FloatCompare { kind, args } => {
-                let src0 = ctx.value_map[&args[0]];
-                let src1 = ctx.value_map[&args[1]];
+                let src0 = ctx.value_map[args[0]];
+                let src1 = ctx.value_map[args[1]];
 
                 Ok(
                     MachineInst::build_fcmp(defs[0].as_writable().unwrap(), src0, src1, *kind)
@@ -298,36 +377,58 @@ impl<'a> IRTranslator<'a> {
                 )
             }
 
-            InstructionView::Load { ptr, offset, .. } => {
-                let base = ctx.value_map[ptr];
-                Ok(MachineInst::build_load_offset(
+            InstructionView::Load { ptr, offset, flags } => {
+                let base = ctx.value_map[*ptr];
+                let access = self.memory_access(
+                    veloc_lir::MemoryKind::Read,
+                    ctx.mfunc
+                        .vreg_data(defs[0].as_writable().unwrap().to_reg())
+                        .ty,
+                    *flags,
+                    true,
+                )?;
+                Ok(MachineInst::build_offset_load(
                     defs[0].as_writable().unwrap(),
                     base,
                     *offset as i64,
                 )
+                .with_memory(access)
                 .into())
             }
 
             InstructionView::Store {
-                ptr, value, offset, ..
+                ptr,
+                value,
+                offset,
+                flags,
             } => {
-                let val = ctx.value_map[value];
-                let base = ctx.value_map[ptr];
-                Ok(MachineInst::build_store_offset(val, base, *offset as i64).into())
+                let val = ctx.value_map[*value];
+                let base = ctx.value_map[*ptr];
+                let access = self.memory_access(
+                    veloc_lir::MemoryKind::Write,
+                    ctx.mfunc.vreg_data(val).ty,
+                    *flags,
+                    true,
+                )?;
+                Ok(MachineInst::build_offset_store(val, base, *offset as i64)
+                    .with_memory(access)
+                    .into())
             }
 
-            InstructionView::Iconst { value: imm } => {
-                Ok(MachineInst::build_constant(defs[0].as_writable().unwrap(), *imm as i64).into())
-            }
+            InstructionView::Iconst { value: imm } => Ok(MachineInst::build_constant(
+                defs[0].as_writable().unwrap(),
+                imm.signed(),
+            )
+            .into()),
 
             InstructionView::Fconst { value } => {
                 let dst = defs[0].as_writable().unwrap();
                 let dst_ty = ctx.mfunc.vreg_data(dst.to_reg()).ty;
 
                 let (bits_ty, bits_imm) = if dst_ty == veloc_mir::Type::F32 {
-                    (veloc_mir::Type::I32, (*value as u32) as i64)
+                    (veloc_mir::Type::I32, value.to_bits() as u32 as i64)
                 } else if dst_ty == veloc_mir::Type::F64 {
-                    (veloc_mir::Type::I64, *value as i64)
+                    (veloc_mir::Type::I64, value.to_bits() as i64)
                 } else {
                     return Err(Error::translate(format!(
                         "Unsupported float constant type: {:?}",
@@ -352,7 +453,7 @@ impl<'a> IRTranslator<'a> {
                 let args = dest
                     .args
                     .iter()
-                    .map(|value| ctx.value_map[value])
+                    .map(|value| ctx.value_map[*value])
                     .collect::<SmallVec<[Reg; 2]>>();
                 let inst = MachineInst::build_br(target);
                 if args.is_empty() {
@@ -370,19 +471,19 @@ impl<'a> IRTranslator<'a> {
                 then_dest,
                 else_dest,
             } => {
-                let cond_vreg = ctx.value_map[condition];
+                let cond_vreg = ctx.value_map[*condition];
                 let then_args = then_dest
                     .args
                     .iter()
-                    .map(|value| ctx.value_map[value])
+                    .map(|value| ctx.value_map[*value])
                     .collect::<SmallVec<[Reg; 2]>>();
                 let else_args = else_dest
                     .args
                     .iter()
-                    .map(|value| ctx.value_map[value])
+                    .map(|value| ctx.value_map[*value])
                     .collect::<SmallVec<[Reg; 2]>>();
 
-                let inst = MachineInst::build_br_cond(cond_vreg, then_dest.block, else_dest.block);
+                let inst = MachineInst::build_brcond(cond_vreg, then_dest.block, else_dest.block);
                 if then_args.is_empty() && else_args.is_empty() {
                     Ok(inst.into())
                 } else {
@@ -397,7 +498,7 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionView::BrTable { index, .. } => {
-                let idx_vreg = ctx.value_map[index];
+                let idx_vreg = ctx.value_map[*index];
                 let InstructionView::BrTable { table, .. } = inst_data else {
                     unreachable!();
                 };
@@ -405,12 +506,16 @@ impl<'a> IRTranslator<'a> {
                     .iter()
                     .map(|call| BrTableTarget {
                         block: call.block,
-                        args: call.args.iter().map(|value| ctx.value_map[value]).collect(),
+                        args: call
+                            .args
+                            .iter()
+                            .map(|value| ctx.value_map[*value])
+                            .collect(),
                     })
                     .collect();
 
                 Ok(TranslatedInst::with_extra(
-                    MachineInst::build_br_jt(idx_vreg),
+                    MachineInst::build_brjt(idx_vreg),
                     InstExtra::BrTable(BrTableInfo { targets }),
                 ))
             }
@@ -419,7 +524,7 @@ impl<'a> IRTranslator<'a> {
                 let ret_values = *values;
                 let mut rets = SmallVec::new();
                 for &v in ret_values {
-                    let vreg = ctx.value_map[&v];
+                    let vreg = ctx.value_map[v];
                     rets.push(vreg);
                 }
                 Ok(MachineInst::build_ret(rets).into())
@@ -435,7 +540,7 @@ impl<'a> IRTranslator<'a> {
                 let call_inst = MachineInst::build_call(
                     defs.iter().map(|operand| operand.as_writable().unwrap()),
                     sym_id,
-                    call_args.iter().map(|value| ctx.value_map[value]),
+                    call_args.iter().map(|value| ctx.value_map[*value]),
                 );
                 let sig_id = callee.signature;
                 let call_info = CallInfo {
@@ -452,8 +557,8 @@ impl<'a> IRTranslator<'a> {
                 let call_args = *args;
                 let call_inst = MachineInst::build_call_indirect(
                     defs.iter().map(|operand| operand.as_writable().unwrap()),
-                    ctx.value_map[ptr],
-                    call_args.iter().map(|value| ctx.value_map[value]),
+                    ctx.value_map[*ptr],
+                    call_args.iter().map(|value| ctx.value_map[*value]),
                 );
                 let call_info = CallInfo {
                     sig: self.module.get_signature(*sig_id).clone(),
@@ -466,9 +571,9 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionView::Ternary { opcode, args } => {
-                let v0 = ctx.value_map[&args[0]];
-                let v1 = ctx.value_map[&args[1]];
-                let v2 = ctx.value_map[&args[2]];
+                let v0 = ctx.value_map[args[0]];
+                let v1 = ctx.value_map[args[1]];
+                let v2 = ctx.value_map[args[2]];
 
                 match opcode {
                     Opcode::Select => {
@@ -485,7 +590,7 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionView::IntToPtr { arg } => {
-                let src = ctx.value_map[arg];
+                let src = ctx.value_map[*arg];
                 Ok(MachineInst::build_unary(
                     MachineOpcode::Generic(GenericOpcode::G_INTTOPTR),
                     defs[0].as_writable().unwrap(),
@@ -495,7 +600,7 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionView::PtrToInt { arg } => {
-                let src = ctx.value_map[arg];
+                let src = ctx.value_map[*arg];
                 Ok(MachineInst::build_unary(
                     MachineOpcode::Generic(GenericOpcode::G_PTRTOINT),
                     defs[0].as_writable().unwrap(),
@@ -507,7 +612,7 @@ impl<'a> IRTranslator<'a> {
             InstructionView::PtrOffset { ptr, offset } => {
                 use veloc_lir::Writable;
 
-                let addr = ctx.value_map[ptr];
+                let addr = ctx.value_map[*ptr];
                 if *offset == 0 {
                     Ok(MachineInst::build_copy(defs[0].as_writable().unwrap(), addr).into())
                 } else {
@@ -518,25 +623,16 @@ impl<'a> IRTranslator<'a> {
                         MachineInst::build_constant(Writable(off_reg), *offset as i64),
                     );
 
-                    let ptr_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
-                    Self::emit_inst(
-                        ctx,
-                        mblock,
-                        MachineInst::build_binary(
-                            MachineOpcode::Generic(GenericOpcode::G_PTR_ADD),
-                            Writable(ptr_reg),
-                            addr,
-                            off_reg,
-                        ),
-                    );
-
-                    Ok(MachineInst::build_copy(defs[0].as_writable().unwrap(), ptr_reg).into())
+                    Ok(
+                        MachineInst::build_ptr_add(defs[0].as_writable().unwrap(), addr, off_reg)
+                            .into(),
+                    )
                 }
             }
 
             InstructionView::PtrIndex { ptr, index, imm_id } => {
-                let base_ptr = ctx.value_map[ptr];
-                let idx = ctx.value_map[index];
+                let base_ptr = ctx.value_map[*ptr];
+                let idx = ctx.value_map[*index];
                 let imm = *imm_id;
 
                 // 1. scale index: idx * scale

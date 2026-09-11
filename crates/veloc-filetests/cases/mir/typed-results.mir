@@ -71,7 +71,7 @@ block0(v0: i32):
 // check: Arity { results: true, expected: 1, got: 0
 local function bad() -> void
 block0():
-  iconst 1
+  bconst true
   return
 
 // ----- extra-result-belongs-to-validator

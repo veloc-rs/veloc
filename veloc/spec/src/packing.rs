@@ -1,9 +1,10 @@
 //! Typed projections between logical parameters and physical instruction fields.
 
 use crate::Error;
-use crate::model::{Binding, Op, Param, ParamKind, TypeDef, TypeList};
+use crate::model::{Binding, Definitions, Op, Param, ParamKind, TypeDef, TypeList};
 use crate::storage::{Alternative, FieldType, Format};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write;
 
 /// Construct physical storage from already typed logical locals.
 pub(crate) fn constructor(
@@ -17,7 +18,7 @@ pub(crate) fn constructor(
         let value = if matches!(&field.ty, FieldType::Named(ty) if ty == "Opcode") {
             format!("crate::Opcode::{}", op.name)
         } else {
-            match &op.packing[&field.name] {
+            match &op.bindings()[&field.name] {
                 Binding::Name(name) => {
                     let value = local(name);
                     if field.ty.named("BlockCall") {
@@ -77,7 +78,7 @@ pub(crate) fn projections(
             continue;
         }
         let value = field(&storage.name);
-        match &op.packing[&storage.name] {
+        match &op.bindings()[&storage.name] {
             Binding::Name(name) => {
                 locals.push((name.clone(), value));
             }
@@ -151,7 +152,7 @@ pub(crate) fn alternate(op: &Op, alt: &Alternative, source: &str) -> Result<(Op,
                 relations: Vec::new(),
             },
             params,
-            packing,
+            projection: crate::model::Projection::Packed(packing),
             signature_source: None,
             control: None,
             text: Some(alt.text.clone()),
@@ -186,7 +187,8 @@ mod tests {
         for (name, logical, pooled) in [
             ("PtrIndex", "imm", false),
             ("LoadStride", "mem", false),
-            ("Vconst", "bytes", true),
+            ("Vconst", "value", false),
+            ("Shuffle", "mask", true),
         ] {
             let op = defs.ops.iter().find(|op| op.name == name).unwrap();
             let format = defs
@@ -236,4 +238,161 @@ mod tests {
             && expr.starts_with("(")
             && expr.ends_with(").0")));
     }
+}
+
+pub(crate) fn accessors(defs: &Definitions) -> String {
+    let mut output = String::from(
+        "impl<'a> crate::InstructionView<'a> {\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, mut f: impl FnMut(crate::Successor<'a>)) {\nself.try_visit_successors::<core::convert::Infallible>(|edge| { f(edge); Ok(()) }).unwrap_or_else(|never| match never {});\n}\n/// Visit successors in storage order, stopping at the first error.\npub fn try_visit_successors<E>(&self, mut f: impl FnMut(crate::Successor<'a>) -> core::result::Result<(), E>) -> core::result::Result<(), E> {\n        match self {\n",
+    );
+    for format in &defs.storage.formats {
+        let edges: Vec<_> = format.fields.iter().filter(|field| {
+            matches!(&field.ty, FieldType::Named(ty) if matches!(ty.as_str(), "BlockCall" | "JumpTable"))
+        }).collect();
+        if edges.is_empty() {
+            continue;
+        }
+        let bindings = edges
+            .iter()
+            .enumerate()
+            .map(|(index, field)| format!("{}: edge{index}", field.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            output,
+            "            crate::InstructionView::{} {{ {bindings}, .. }} => {{",
+            format.name
+        )
+        .unwrap();
+        for (index, field) in edges.iter().enumerate() {
+            if matches!(&field.ty, FieldType::Named(ty) if ty == "JumpTable") {
+                writeln!(
+                    output,
+                    "                for call in edge{index}.iter() {{ f(call)?; }}"
+                )
+                .unwrap();
+            } else {
+                writeln!(output, "                f(*edge{index})?;").unwrap();
+            }
+        }
+        output.push_str("            },\n");
+    }
+    output.push_str("            _ => {},\n        }\nOk(())\n    }\n}\n");
+    output
+}
+
+pub(crate) fn builder(
+    op: &Op,
+    format: &crate::storage::Format,
+    records: &[crate::records::RecordDef],
+    source: &str,
+) -> Result<Option<String>, Error> {
+    let fail = |message| Error::at(source, op.offset, message);
+    let ty = &op.signature;
+    let Some(results) = ty.results.patterns() else {
+        // Signature- and context-selected results need the module's help.
+        return Ok(None);
+    };
+    if op
+        .params
+        .iter()
+        .any(|param| matches!(param.kind, ParamKind::Successor | ParamKind::Successors))
+    {
+        return Ok(None);
+    }
+    let name = op.method_name();
+    crate::model::identifier(source, op.offset, &name)?;
+    if matches!(
+        name.as_str(),
+        "block"
+            | "builder"
+            | "param"
+            | "params"
+            | "value_type"
+            | "emit"
+            | "insert_inferred"
+            | "insert"
+            | "constant"
+            | "dense_const"
+    ) {
+        return Err(fail(format!(
+            "operation `{}` conflicts with an InstBuilder method",
+            op.mnemonic
+        )));
+    }
+    let inferred = crate::type_rules::result_exprs(ty);
+    let typed = inferred.is_none();
+    if typed && results.len() != 1 {
+        return Err(fail(
+            "field builder requires exactly one explicit result".into(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    if typed {
+        names.insert("ty".to_owned());
+    }
+    let mut params = String::from("&mut self");
+    let mut add_param = |name: String, ty: &str| -> Result<(), Error> {
+        if !names.insert(name.clone()) {
+            return Err(fail(format!("conflicting generated parameter `{name}`")));
+        }
+        write!(params, ", {name}: {ty}").unwrap();
+        Ok(())
+    };
+    for param in &op.params {
+        let ty = match &param.kind {
+            ParamKind::Value => "crate::Value".to_owned(),
+            ParamKind::Values => "&[crate::Value]".to_owned(),
+            ParamKind::Property(ty) if ty == "Bytes" => "alloc::vec::Vec<u8>".into(),
+            ParamKind::Property(ty) if records.iter().any(|record| record.name == *ty) => {
+                format!("crate::inst::{ty}")
+            }
+            ParamKind::Property(ty) => FieldType::Named(ty.clone()).qualified_type(),
+            ParamKind::Successor | ParamKind::Successors => {
+                unreachable!("contextual builder was excluded")
+            }
+        };
+        add_param(param.name.clone(), &ty)?;
+    }
+    if typed {
+        params.push_str(", ty: crate::Type");
+    }
+    let constructor =
+        crate::packing::constructor(op, format, "self.builder().func_mut().dfg", str::to_owned);
+    let result_types = if let Some(inferred) = inferred {
+        let operands = op
+            .params
+            .iter()
+            .filter(|p| p.kind == ParamKind::Value)
+            .collect::<Vec<_>>();
+        inferred.iter().map(|r| match r {
+            crate::type_rules::ResultExpr::Property(name) => format!("{name}.ty()"),
+            crate::type_rules::ResultExpr::Exact(ty) => format!("crate::Type::{ty}"),
+            crate::type_rules::ResultExpr::Operand(index) => format!("self.value_type({})", operands[*index].name),
+            crate::type_rules::ResultExpr::Element(index) => format!("self.value_type({}).as_vector().expect(\"result element type requires a vector operand\").element_type().as_type()", operands[*index].name),
+        }).collect::<Vec<_>>().join(", ")
+    } else {
+        "ty".into()
+    };
+    let (ret, body) = match results.len() {
+        0 => (String::new(), "self.insert(data, &types);".to_owned()),
+        1 => (
+            " -> crate::Value".to_owned(),
+            "let [result] = self.emit(data, types);\n        result".to_owned(),
+        ),
+        count => {
+            let types = vec!["crate::Value"; count].join(", ");
+            let names = (0..count)
+                .map(|i| format!("result{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            (
+                format!(" -> ({types})"),
+                format!("let [{names}] = self.emit(data, types);\n        ({names})"),
+            )
+        }
+    };
+    Ok(Some(format!(
+        "    /// Build `{}` without validating its type contract.\n    pub fn {name}({params}){ret} {{\n        let (data, types) = ({constructor}, [{result_types}]);\n        {body}\n    }}\n",
+        op.mnemonic
+    )))
 }

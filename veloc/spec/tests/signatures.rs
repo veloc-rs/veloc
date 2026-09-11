@@ -1,5 +1,5 @@
 mod common;
-use common::compile_mir;
+use common::compile;
 
 const PAIR: &str = r#"
 format Pair {
@@ -51,19 +51,15 @@ fn result_names_do_not_change_generated_artifacts() {
             vec!["shape(T, Integer)", "(shape(T, Integer))"],
         ),
     ] {
-        let reference = artifacts(compile_mir(&PAIR.replace("(result: T)", named)).unwrap());
+        let reference = artifacts(compile(&PAIR.replace("(result: T)", named)).unwrap());
         for results in alternatives {
             let source = PAIR.replace("(result: T)", results);
-            assert_eq!(
-                artifacts(compile_mir(&source).unwrap()),
-                reference,
-                "{results}"
-            );
+            assert_eq!(artifacts(compile(&source).unwrap()), reference, "{results}");
         }
     }
-    let reference = artifacts(compile_mir(LOAD).unwrap());
+    let reference = artifacts(compile(LOAD).unwrap());
     assert_eq!(
-        artifacts(compile_mir(&LOAD.replace("(result: Any)", "Any")).unwrap()),
+        artifacts(compile(&LOAD.replace("(result: Any)", "Any")).unwrap()),
         reference
     );
 }
@@ -73,17 +69,14 @@ fn named_results_keep_their_position_among_anonymous_results() {
     let source = PAIR
         .replace("(result: T)", "(T, wider: I64)")
         .replace("memory: NONE", "where: [wider(left, wider)], memory: NONE");
-    let output = compile_mir(&source).unwrap();
+    let output = compile(&source).unwrap();
     assert!(
         output
             .type_rules
             .contains("results[1] must have more bits per lane than operands[0]")
     );
     let both_named = source.replace("(T, wider: I64)", "(result: T, wider: I64)");
-    assert_eq!(
-        artifacts(output),
-        artifacts(compile_mir(&both_named).unwrap())
-    );
+    assert_eq!(artifacts(output), artifacts(compile(&both_named).unwrap()));
 }
 
 #[test]
@@ -94,7 +87,7 @@ fn result_only_type_variables_and_nested_type_patterns_still_bind() {
             mnemonic: "pair", storage: Empty {}, memory: NONE
         }
     "#;
-    let output = compile_mir(source).unwrap();
+    let output = compile(source).unwrap();
     assert!(output.type_rules.contains("C::Integer.accepts(results[0])"));
     // Multiple explicit results are valid signatures, but not supported by the
     // current field-builder projection. Check their binding at the model layer.
@@ -103,10 +96,8 @@ fn result_only_type_variables_and_nested_type_patterns_still_bind() {
         .replace("T: Integer", "T: Vector")
         .replace("(result: T)", "element(T)");
     assert_eq!(
-        artifacts(compile_mir(&vector).unwrap()),
-        artifacts(
-            compile_mir(&vector.replace("-> element(T)", "-> (result: element(T))")).unwrap()
-        )
+        artifacts(compile(&vector).unwrap()),
+        artifacts(compile(&vector.replace("-> element(T)", "-> (result: element(T))")).unwrap())
     );
 }
 
@@ -128,7 +119,7 @@ const CALL_VALUE: &str = r#"
 
 #[test]
 fn callable_signature_infers_results_and_checks_arguments_and_results() {
-    let output = compile_mir(CALL_VALUE).unwrap();
+    let output = compile(CALL_VALUE).unwrap();
     assert!(
         output
             .instructions
@@ -168,7 +159,7 @@ fn control_classification_uses_definitions_without_operand_wrappers() {
             "matches!(self, Self::Apply)",
         ),
     ] {
-        let output = compile_mir(&source).unwrap();
+        let output = compile(&source).unwrap();
         assert!(output.opcodes.contains(&format!(
             "pub const fn has_control(self) -> bool {{ {expected} }}"
         )));
@@ -226,7 +217,7 @@ fn callable_signature_source_requires_a_single_named_callable_operand() {
             "signature source requires signature results",
         ),
     ] {
-        let error = compile_mir(&source.replace(from, to)).err().unwrap();
+        let error = compile(&source.replace(from, to)).err().unwrap();
         assert!(error.message.contains(expected), "{to}: {error}");
     }
 }
@@ -241,7 +232,7 @@ fn callable_control_preserves_result_terminator_and_effect_contracts() {
         ("call(callee, args)", "tail_call_value(callee, args)"),
         ("call(callee, args)", "call(args, callee)"),
     ] {
-        let error = compile_mir(&CALL_VALUE.replace(from, to)).err().unwrap();
+        let error = compile(&CALL_VALUE.replace(from, to)).err().unwrap();
         assert!(error.message.contains("control interface"), "{to}: {error}");
     }
     for legacy in [
@@ -249,7 +240,7 @@ fn callable_control_preserves_result_terminator_and_effect_contracts() {
         "invoke(callee, args)",
         "cancel(callee)",
     ] {
-        let error = compile_mir(&CALL_VALUE.replace("call(callee, args)", legacy))
+        let error = compile(&CALL_VALUE.replace("call(callee, args)", legacy))
             .err()
             .unwrap();
         assert!(

@@ -19,8 +19,12 @@ impl TargetFrameLowering for X86_64FrameLowering {
         let mut used_callee_saved = Vec::new();
         for block in &mfunc.blocks {
             for &inst_id in &block.insts {
-                for reg in mfunc.dfg[inst_id].defs().chain(mfunc.dfg[inst_id].uses()) {
-                    if preserved_regs.contains(&reg) && !used_callee_saved.contains(&reg) {
+                for reg in mfunc.dfg[inst_id].defs() {
+                    if reg != generated::REG_RBP
+                        && reg != generated::REG_RSP
+                        && preserved_regs.contains(&reg)
+                        && !used_callee_saved.contains(&reg)
+                    {
                         used_callee_saved.push(reg);
                     }
                 }

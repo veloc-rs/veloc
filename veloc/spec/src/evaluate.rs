@@ -16,7 +16,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error
     let mut code = String::from(
         "// @generated from checked operation semantics.\n\
          #[allow(unused_variables, unreachable_patterns)]\n\
-         pub fn evaluate(opcode: Opcode, args: &[Constant], results: &[Type], properties: &[IntCC]) -> Option<Vec<Constant>> {\n\
+         pub fn evaluate(opcode: Opcode, args: &[ScalarConst], results: &[Type], properties: &[IntCC]) -> Option<Vec<ScalarConst>> {\n\
          match opcode {\n",
     );
     let mut supported = Vec::new();
@@ -43,7 +43,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error
             let args = variants[..inputs]
                 .iter()
                 .enumerate()
-                .map(|(i, v)| format!("Constant::{v}(a{i})"))
+                .map(|(i, _)| format!("a{i}"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let results = scalars[inputs..]
@@ -55,7 +55,18 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error
                 .map(|i| format!("p{i}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(arms, "([{args}], [{results}], [{properties}]) => {{").unwrap();
+            let guard = scalars[..inputs]
+                .iter()
+                .enumerate()
+                .map(|(i, s)| format!("a{i}.ty() == Type::{}", s.exact()))
+                .collect::<Vec<_>>()
+                .join(" && ");
+            let guard = if guard.is_empty() {
+                String::new()
+            } else {
+                format!(" if {guard}")
+            };
+            writeln!(arms, "([{args}], [{results}], [{properties}]){guard} => {{").unwrap();
             emit(defs, sem, &instance, &variants[inputs..], &mut arms);
             arms.push_str("},\n");
         }
@@ -95,7 +106,7 @@ fn properties(defs: &Definitions, source: &str) -> Result<String, Error> {
         let mut fields = Vec::new();
         for property in &sem.properties {
             let field = op
-                .packing
+                .bindings()
                 .iter()
                 .find_map(|(field, binding)| match binding {
                     Binding::Name(name) if name == property => Some(field),
@@ -156,7 +167,7 @@ fn emit(
         let (ty, expression) = match step {
             Step::Input(input) => {
                 let ty = instance.sorts[*input as usize];
-                (ty, format!("(*a{input} as u128) & {}u128", mask(ty)))
+                (ty, format!("u128::from(a{input}.to_bits())"))
             }
             Step::Const { value, ty } => {
                 let ty = sort(*ty);
@@ -231,10 +242,10 @@ fn emit(
         .zip(results)
         .map(|(i, variant)| {
             if variant == "Bool" {
-                format!("Constant::Bool(s{i} != 0)")
+                format!("ScalarConst::from(s{i} != 0)")
             } else {
                 format!(
-                    "Constant::{variant}(s{i} as {})",
+                    "ScalarConst::from(s{i} as {})",
                     variant.to_ascii_lowercase()
                 )
             }
@@ -267,7 +278,7 @@ fn comparison(p: IntPredicate, bits: u16, lhs: u16, rhs: u16) -> String {
 
 fn algebraic_rules(defs: &Definitions) -> String {
     let mut code = String::from(
-        "#[allow(unused_variables, unreachable_patterns)] fn algebraic(op: Opcode, args: &[Value; 2], constants: &[Option<Constant>; 2]) -> Option<Replacement> { match op {\n",
+        "#[allow(unused_variables, unreachable_patterns)] fn algebraic(op: Opcode, args: &[Value; 2], constants: &[Option<ScalarConst>; 2]) -> Option<Replacement> { match op {\n",
     );
     for op in &defs.ops {
         let Some(sem) = &op.semantics else { continue };
@@ -293,24 +304,22 @@ fn algebraic_rules(defs: &Definitions) -> String {
             .into_iter()
             .map(|(variant, bits)| {
                 let raw = value.eval(bits).unwrap();
-                let literal = match bits {
-                    8 => (raw as i8).to_string(),
-                    16 => (raw as i16).to_string(),
-                    32 => (raw as i32).to_string(),
-                    64 => (raw as i64).to_string(),
-                    _ => (raw & 1 != 0).to_string(),
-                };
-                format!("Constant::{variant}({literal})")
+                let ty = if variant == "Bool" { "BOOL" } else { variant };
+                format!("(c.ty() == Type::{ty} && c.to_bits() == {raw}u64)")
             })
             .collect::<Vec<_>>()
-            .join(" | ");
+            .join(" || ");
             for i in 0..2 {
                 let result = if absorbing {
                     "Replacement::Constants(alloc::vec![c])".into()
                 } else {
                     format!("Replacement::Value(args[{}])", 1 - i)
                 };
-                writeln!(code, "if let Some(c) = constants[{i}] && matches!(c, {patterns}) {{ return Some({result}); }}").unwrap();
+                writeln!(
+                    code,
+                    "if let Some(c) = constants[{i}] && ({patterns}) {{ return Some({result}); }}"
+                )
+                .unwrap();
             }
         }
         if op.traits.iter().any(|t| t == "IDEMPOTENT") {

@@ -385,18 +385,18 @@ fn generate_init_expr(
     let mut stack = Vec::new();
     for op in expr {
         match op {
-            GlobalInit::I32Const(v) => stack.push(ins.iconst(*v as u64, VelocType::I32)),
-            GlobalInit::I64Const(v) => stack.push(ins.iconst(*v as u64, VelocType::I64)),
+            GlobalInit::I32Const(v) => stack.push(ins.i32const((*v) as i32)),
+            GlobalInit::I64Const(v) => stack.push(ins.i64const((*v) as i64)),
             GlobalInit::F32Const(v) => {
-                let b = ins.iconst(*v as u64, VelocType::I32);
+                let b = ins.i32const((*v) as i32);
                 stack.push(ins.reinterpret(b, VelocType::F32))
             }
             GlobalInit::F64Const(v) => {
-                let b = ins.iconst(*v as u64, VelocType::I64);
+                let b = ins.i64const((*v) as i64);
                 stack.push(ins.reinterpret(b, VelocType::F64))
             }
             GlobalInit::RefNull => {
-                let null_ptr = ins.iconst(0, VelocType::I64);
+                let null_ptr = ins.i64const((0) as i64);
                 stack.push(ins.inttoptr(null_ptr))
             }
             GlobalInit::RefFunc(idx) => {
@@ -440,7 +440,7 @@ fn generate_init_expr(
             }
         }
     }
-    stack.pop().unwrap_or_else(|| ins.iconst(0, VelocType::I64))
+    stack.pop().unwrap_or_else(|| ins.i64const((0) as i64))
 }
 
 fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmMetadata) {
@@ -531,7 +531,7 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
                     _ => res_val,
                 }
             } else {
-                ins.iconst(0, VelocType::I64)
+                ins.i64const((0) as i64)
             };
             ins.ret(&[ret_bits]);
             builder.seal_all_blocks();
@@ -568,7 +568,7 @@ fn generate_veloc_init(
     for i in 0..metadata.tables.len() {
         if let Some(init_ops) = &metadata.tables[i].init {
             let val = generate_init_expr(&mut ins, init_ops, vmctx, offsets, metadata);
-            let table_idx = ins.iconst(i as u64, VelocType::I32);
+            let table_idx = ins.i32const((i) as i32);
             ins.call(runtime.init_table, &[vmctx, table_idx, val]);
         }
     }
@@ -584,7 +584,7 @@ fn generate_veloc_init(
         } else {
             offset
         };
-        let element_idx = ins.iconst(i as u64, VelocType::I32);
+        let element_idx = ins.i32const((i) as i32);
         ins.call(
             runtime.init_table_element,
             &[vmctx, element_idx, offset_i32],
@@ -604,7 +604,7 @@ fn generate_veloc_init(
         } else {
             offset
         };
-        let data_idx = ins.iconst(i as u64, VelocType::I32);
+        let data_idx = ins.i32const((i) as i32);
         ins.call(runtime.init_memory_data, &[vmctx, data_idx, offset_i32]);
 
         ins.call(runtime.data_drop, &[vmctx, data_idx]);
@@ -613,7 +613,7 @@ fn generate_veloc_init(
     // 4. Drop declarative segments
     for (i, element) in metadata.elements.iter().enumerate() {
         if element.is_declared {
-            let element_idx = ins.iconst(i as u64, VelocType::I32);
+            let element_idx = ins.i32const((i) as i32);
             ins.call(runtime.elem_drop, &[vmctx, element_idx]);
         }
     }

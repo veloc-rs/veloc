@@ -1,0 +1,557 @@
+// Operand-array storage is independent of operation semantics and type contracts.
+storage Operands { prefix: "G_" }
+
+format UnaryReg {
+    fields: [dst(Def), src(Use)]
+}
+
+format BinaryReg {
+    fields: [dst(Def), lhs(Use), rhs(Use)]
+}
+
+format BinaryRegWithFlags {
+    fields: [dst(Def), flag(Def), lhs(Use), rhs(Use), carry_in(OptionalUse)],
+    lengths: [4, 5]
+}
+
+format Load {
+    fields: [dst(Def), base(Use)]
+}
+
+format LoadOffset {
+    fields: [dst(Def), base(Use), offset(Imm)]
+}
+
+format IndexedLoad {
+    fields: [dst(Def), wb_dst(TiedDefUse), base(Use), offset(Imm)]
+}
+
+format Store {
+    fields: [src(Use), base(Use)]
+}
+
+format StackLoad {
+    fields: [dst(Def), slot(StackSlot)]
+}
+
+format StackAddr {
+    fields: [dst(Def), slot(StackSlot)]
+}
+
+format StackStore {
+    fields: [src(Use), slot(StackSlot)]
+}
+
+format StoreOffset {
+    fields: [src(Use), base(Use), offset(Imm)]
+}
+
+format IndexedStore {
+    fields: [wb_dst(TiedDefUse), src(Use), base(Use), offset(Imm)]
+}
+
+format Constant {
+    fields: [dst(Def), imm(Imm)]
+}
+
+format FloatConstant {
+    fields: [dst(Def), imm(FImm)],
+    view: FConstantInst,
+    accessor: as_fconstant
+}
+
+format Branch {
+    fields: [target(Block)]
+}
+
+format BranchCond {
+    fields: [cond(Use), then_blk(Block), else_blk(Block)]
+}
+
+format BranchTable {
+    fields: [index(Use)]
+}
+
+format Select {
+    fields: [dst(Def), cond(Use), v1(Use), v2(Use)]
+}
+
+format ICmp {
+    fields: [dst(Def), lhs(Use), rhs(Use), cc(IntCC)],
+    accessor: as_icmp
+}
+
+format FCmp {
+    fields: [dst(Def), lhs(Use), rhs(Use), cc(FloatCC)],
+    accessor: as_fcmp
+}
+
+format Arg {
+    fields: [dst(Def), index(Index)]
+}
+
+format Return {
+    fields: [values(Uses)],
+    view: RetInst,
+    accessor: as_ret
+}
+
+format Unreachable {
+    fields: []
+}
+
+format Call {
+    fields: [shape(CallShape)],
+    view: CallShapeInst,
+    accessor: as_call_shape_data
+}
+
+// Logical signatures use the same operation model and type checker as every IR.
+
+op G_ADD<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    semantics: bv.add(lhs, rhs)
+}
+
+op G_SUB<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    semantics: bv.sub(lhs, rhs)
+}
+
+op G_MUL<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    semantics: bv.mul(lhs, rhs)
+}
+
+op G_SDIV<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE,
+    traits: [MAY_TRAP]
+}
+
+op G_UDIV<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE,
+    traits: [MAY_TRAP]
+}
+
+op G_SREM<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE,
+    traits: [MAY_TRAP]
+}
+
+op G_UREM<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE,
+    traits: [MAY_TRAP]
+}
+
+op G_NEG<T: Integer>(src: T) -> T {
+    storage: UnaryReg,
+    semantics: bv.neg(src)
+}
+
+op G_FADD<T: Float>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_FSUB<T: Float>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_FMUL<T: Float>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_FDIV<T: Float>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_FNEG<T: Float>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_FABS<T: Float>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_FSQRT<T: Float>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_AND<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    semantics: bv.and(lhs, rhs)
+}
+
+op G_OR<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    semantics: bv.or(lhs, rhs)
+}
+
+op G_XOR<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    semantics: bv.xor(lhs, rhs)
+}
+
+op G_CTPOP<T: Integer>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_CTLZ<T: Integer>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_CTTZ<T: Integer>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_SHL<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_LSHR<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_ASHR<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_ROTL<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_ROTR<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_ICMP<T: ScalarInteger | PTR>(lhs: T, rhs: T, @cc: IntCC) -> BOOL {
+    storage: ICmp,
+    memory: NONE
+}
+
+op G_FCMP<T: ScalarFloat>(lhs: T, rhs: T, @cc: FloatCC) -> BOOL {
+    storage: FCmp,
+    memory: NONE
+}
+
+op G_IEQZ(src: Integer) -> BOOL {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_ANYEXT(src: Integer) -> Integer {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_ABS<T: Integer>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_SMIN<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_SMAX<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_UMIN<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_UMAX<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_UADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_SADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_USUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_SSUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_UADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_SADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_USUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_SSUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_UMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_SMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    storage: BinaryRegWithFlags,
+    memory: NONE
+}
+
+op G_UMULH<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_SMULH<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_CTLZ_ZERO_UNDEF<T: Integer>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_CTTZ_ZERO_UNDEF<T: Integer>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_SADDSAT<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_UADDSAT<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_SSUBSAT<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_USUBSAT<T: Integer>(lhs: T, rhs: T) -> T {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_LOAD(base: PTR) -> Any {
+    storage: Load,
+    memory: UNKNOWN
+}
+
+op G_STORE(src: Any, base: PTR) -> () {
+    storage: Store,
+    memory: UNKNOWN
+}
+
+op G_PTR_ADD(lhs: PTR, rhs: ScalarInteger) -> PTR {
+    storage: BinaryReg,
+    memory: NONE
+}
+
+op G_STACK_LOAD(@slot: StackSlot) -> Any {
+    storage: StackLoad,
+    memory: STACK_READ
+}
+
+op G_STACK_STORE(src: Any, @slot: StackSlot) -> () {
+    storage: StackStore,
+    memory: STACK_WRITE
+}
+
+op G_STACK_ADDR(@slot: StackSlot) -> PTR {
+    storage: StackAddr,
+    memory: NONE
+}
+
+op G_OFFSET_LOAD(base: PTR, @offset: i64) -> Any {
+    storage: LoadOffset,
+    memory: UNKNOWN
+}
+
+op G_OFFSET_STORE(src: Any, base: PTR, @offset: i64) -> () {
+    storage: StoreOffset,
+    memory: UNKNOWN
+}
+
+op G_INDEXED_LOAD(wb_dst: PTR, base: PTR, @offset: i64) -> (Any, PTR) {
+    storage: IndexedLoad,
+    memory: UNKNOWN
+}
+
+op G_INDEXED_STORE(wb_dst: PTR, src: Any, base: PTR, @offset: i64) -> PTR {
+    storage: IndexedStore,
+    memory: UNKNOWN
+}
+
+op G_CONSTANT(@imm: i64) -> ScalarInteger {
+    storage: Constant,
+    memory: NONE
+}
+
+op G_FCONSTANT(@imm: f64) -> ScalarFloat {
+    storage: FloatConstant,
+    memory: NONE
+}
+
+op G_TRUNC(src: Integer) -> Integer {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_ZEXT(src: Integer) -> Integer {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_SEXT(src: Integer) -> Integer {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_FPTOSI(src: Float) -> Integer {
+    storage: UnaryReg,
+    memory: NONE,
+    traits: [MAY_TRAP]
+}
+
+op G_FPTOUI(src: Float) -> Integer {
+    storage: UnaryReg,
+    memory: NONE,
+    traits: [MAY_TRAP]
+}
+
+op G_SITOFP(src: Integer) -> Float {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_UITOFP(src: Integer) -> Float {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_FPTRUNC(src: Float) -> Float {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_FPEXT(src: Float) -> Float {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_BITCAST(src: Any) -> Any {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_INTTOPTR(src: ScalarInteger) -> PTR {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_PTRTOINT(src: PTR) -> ScalarInteger {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_BR(@target: Block) -> () {
+    storage: Branch,
+    flow: Jump,
+    memory: NONE
+}
+
+op G_BRCOND(cond: BOOL, @then_blk: Block, @else_blk: Block) -> () {
+    storage: BranchCond,
+    flow: Jump,
+    memory: NONE
+}
+
+op G_BRJT(index: ScalarInteger) -> () {
+    storage: BranchTable,
+    flow: Jump,
+    memory: NONE
+}
+
+op G_RET(values: values) -> () {
+    storage: Return,
+    flow: Return,
+    memory: NONE
+}
+
+op G_CALL(@callee: SymbolId, args: values) -> signature {
+    storage: Call,
+    flow: Call,
+    memory: UNKNOWN
+}
+
+op G_CALLIND(callee: PTR, args: values) -> signature {
+    storage: Call,
+    flow: Call,
+    memory: UNKNOWN
+}
+
+op G_ARG(@index: i64) -> Any {
+    storage: Arg,
+    memory: NONE
+}
+
+op G_SELECT<T: Any>(cond: BOOL, v1: T, v2: T) -> T {
+    storage: Select,
+    memory: NONE
+}
+
+op G_COPY<T: Any>(src: T) -> T {
+    storage: UnaryReg,
+    memory: NONE
+}
+
+op G_UNREACHABLE() -> () {
+    storage: Unreachable,
+    flow: Trap,
+    memory: NONE
+}

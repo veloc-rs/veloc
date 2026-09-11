@@ -48,7 +48,6 @@ pub(super) enum AtomKind {
     Scalar(String),
     OptionalValue,
     Integer,
-    Float,
     Bytes,
 }
 
@@ -75,7 +74,7 @@ struct Checker<'a> {
     source: &'a str,
     leaves: BTreeMap<String, Leaf>,
     used: BTreeSet<String>,
-    float: bool,
+    typed: BTreeSet<String>,
 }
 
 pub(super) fn compile(
@@ -88,7 +87,7 @@ pub(super) fn compile(
         source,
         leaves: BTreeMap::new(),
         used: BTreeSet::new(),
-        float: false,
+        typed: BTreeSet::new(),
     };
     for param in &op.params {
         if let ParamKind::Property(ty) = &param.kind
@@ -197,11 +196,23 @@ pub(super) fn compile(
             "top-level values must be the only positional item",
         ));
     }
-    if checker.float && !float_result(&op.signature, types) {
-        return Err(checker.error(
-            op.offset,
-            "float text atoms require a scalar float first result",
-        ));
+    for ty in &checker.typed {
+        let description = match ty.as_str() {
+            "Float" => "scalar float",
+            "Int" => "scalar integer",
+            "VectorConst" => "vector",
+            _ => unreachable!("typed text property"),
+        };
+        let allowed = types.property_types(ty).expect("typed text property");
+        if !result_in_set(&op.signature, types, &allowed) {
+            return Err(checker.error(
+                op.offset,
+                format!(
+                    "{} text atoms require a {description} first result",
+                    description.strip_prefix("scalar ").unwrap_or(description)
+                ),
+            ));
+        }
     }
     for (path, leaf) in checker.leaves {
         if checker.used.contains(&path) {
@@ -246,7 +257,7 @@ impl Checker<'_> {
         let (path, codec) = match &node.kind {
             Kind::Name(path) => (path.as_str(), None),
             Kind::Call(codec, args)
-                if args.len() == 1 && matches!(codec.as_str(), "integer" | "float" | "bytes") =>
+                if args.len() == 1 && matches!(codec.as_str(), "integer" | "bytes") =>
             {
                 (path(&args[0], self.source)?, Some(codec.as_str()))
             }
@@ -255,9 +266,11 @@ impl Checker<'_> {
         let kind = self.consume(path, node.offset)?;
         let kind = match (codec, kind) {
             (Some("integer"), AtomKind::Scalar(ty)) if ty == "u64" => AtomKind::Integer,
-            (Some("float"), AtomKind::Scalar(ty)) if ty == "u64" => {
-                self.float = true;
-                AtomKind::Float
+            (None, AtomKind::Scalar(ty))
+                if matches!(ty.as_str(), "Float" | "Int" | "VectorConst") =>
+            {
+                self.typed.insert(ty.clone());
+                AtomKind::Scalar(ty)
             }
             (Some("bytes"), AtomKind::Scalar(ty)) if ty == "Bytes" => AtomKind::Bytes,
             (Some(codec), _) => {
@@ -455,11 +468,16 @@ fn simple_scalar(ty: &str) -> bool {
             | "Intrinsic"
             | "IntCC"
             | "FloatCC"
+            | "Int"
             | "StackSlot"
     )
 }
 
-fn float_result(signature: &TypeDef, types: &crate::types::Types) -> bool {
+fn result_in_set(
+    signature: &TypeDef,
+    types: &crate::types::Types,
+    allowed: &crate::type_set::TypeSet,
+) -> bool {
     let Some(result) = signature
         .results
         .patterns()
@@ -467,17 +485,19 @@ fn float_result(signature: &TypeDef, types: &crate::types::Types) -> bool {
     else {
         return false;
     };
-    let scalar_float = |set: &crate::type_set::TypeSet| set.subset_of(&types.scalar_floats);
+    let accepts = |set: &crate::type_set::TypeSet| set.subset_of(allowed);
     match result {
-        Pattern::Exact(ty) => types.exact[ty].subset_of(&types.scalar_floats),
-        Pattern::Class(class) | Pattern::Bind(_, class) => scalar_float(class),
+        Pattern::Exact(ty) => accepts(&types.exact[ty]),
+        Pattern::Class(class) | Pattern::Bind(_, class) | Pattern::Property(_, class) => {
+            accepts(class)
+        }
         Pattern::Same(slot) => {
             let operands = match &signature.operands {
                 TypeList::Fixed(operands) | TypeList::Variadic(operands) => operands.as_slice(),
                 TypeList::Signature => &[],
             };
             operands.iter().any(|pattern| {
-                matches!(pattern, Pattern::Bind(other, class) if slot == other && scalar_float(class))
+                matches!(pattern, Pattern::Bind(other, class) if slot == other && accepts(class))
             })
         }
         _ => false,
@@ -485,10 +505,8 @@ fn float_result(signature: &TypeDef, types: &crate::types::Types) -> bool {
 }
 
 fn single_token(kind: &AtomKind) -> bool {
-    matches!(
-        kind,
-        AtomKind::Value | AtomKind::Integer | AtomKind::Float | AtomKind::Bytes
-    ) || matches!(kind, AtomKind::Scalar(ty) if !matches!(ty.as_str(), "SigId" | "FuncId"))
+    matches!(kind, AtomKind::Value | AtomKind::Integer | AtomKind::Bytes)
+        || matches!(kind, AtomKind::Scalar(ty) if !matches!(ty.as_str(), "SigId" | "FuncId" | "VectorConst"))
 }
 
 #[cfg(test)]
@@ -536,7 +554,7 @@ mod tests {
                     },
                 })
                 .collect(),
-            packing: BTreeMap::new(),
+            projection: crate::model::Projection::Packed(BTreeMap::new()),
             signature_source: None,
             control: None,
             text,
@@ -601,7 +619,6 @@ mod tests {
     fn codecs_require_their_declared_logical_property_types() {
         for (codec, ty, expected) in [
             ("integer", "u64", AtomKind::Integer),
-            ("float", "u64", AtomKind::Float),
             ("bytes", "Bytes", AtomKind::Bytes),
         ] {
             let text = format!("Text {{ args: [{codec}(arg)] }}");
@@ -643,7 +660,7 @@ mod tests {
 
     #[test]
     fn floating_atoms_require_a_statically_scalar_float_first_result() {
-        let mut operation = op(&[("arg", "u64")], Some("Text { args: [float(arg)] }"));
+        let mut operation = op(&[("arg", "Float")], None);
         for result in [
             Pattern::Class(crate::fixtures::set("ScalarFloat")),
             Pattern::Exact("F32".into()),
@@ -678,12 +695,12 @@ mod tests {
         ]
         .join("\n");
         let bad = definitions.replacen(
-            "op Fconst(@value: u64) -> ScalarFloat",
-            "op Fconst(@value: u64) -> ScalarInteger",
+            "op Fconst(@value: Float) -> type(value)",
+            "op Fconst(@value: Float) -> ScalarInteger",
             1,
         );
         assert_ne!(bad, definitions);
-        let error = crate::fixtures::compile_mir(&bad)
+        let error = crate::fixtures::compile(&bad)
             .err()
             .expect("unparseable float projection");
         assert!(

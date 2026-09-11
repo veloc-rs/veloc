@@ -109,9 +109,6 @@ impl<'a> InstPrinter<'a> {
             DecodedInstruction::Bconst { dst, val } => {
                 write!(f, " {}, {}", dst, val)
             }
-            DecodedInstruction::Vconst { dst, pool_id } => {
-                write!(f, " {}, pool[{}]", dst, pool_id)
-            }
 
             // Binary operations (3 registers)
             DecodedInstruction::I32Add { dst, src1, src2 }

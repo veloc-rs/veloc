@@ -107,7 +107,7 @@ impl<'a> WasmTranslator<'a> {
             Operator::MemorySize { mem, .. } => {
                 let (_, len_var) = self.memory_vars[mem as usize];
                 let size_bytes = self.builder.use_var(len_var);
-                let page_size = self.builder.ins().iconst(65536, VelocType::I64);
+                let page_size = self.builder.ins().i64const((65536) as i64);
                 let size_pages = self.builder.ins().idiv_u(size_bytes, page_size);
                 let size_i32 = self.builder.ins().wrap(size_pages, VelocType::I32);
                 self.stack.push(size_i32);
@@ -115,7 +115,7 @@ impl<'a> WasmTranslator<'a> {
             Operator::MemoryGrow { mem, .. } => {
                 let delta = self.pop();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let mem_idx = self.builder.ins().iconst(mem as u64, VelocType::I32);
+                let mem_idx = self.builder.ins().i32const((mem) as i32);
                 let call_inst = self
                     .builder
                     .ins()
@@ -129,8 +129,8 @@ impl<'a> WasmTranslator<'a> {
                 let src = self.pop_i32();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let mem_idx = self.builder.ins().iconst(mem as u64, VelocType::I32);
-                let data_idx = self.builder.ins().iconst(data_index as u64, VelocType::I32);
+                let mem_idx = self.builder.ins().i32const((mem) as i32);
+                let data_idx = self.builder.ins().i32const((data_index) as i32);
                 self.builder.ins().call(
                     self.runtime.memory_init,
                     &[vmctx, mem_idx, data_idx, dst, src, len],
@@ -138,7 +138,7 @@ impl<'a> WasmTranslator<'a> {
             }
             Operator::DataDrop { data_index } => {
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let data_idx = self.builder.ins().iconst(data_index as u64, VelocType::I32);
+                let data_idx = self.builder.ins().i32const((data_index) as i32);
                 self.builder
                     .ins()
                     .call(self.runtime.data_drop, &[vmctx, data_idx]);
@@ -148,8 +148,8 @@ impl<'a> WasmTranslator<'a> {
                 let src = self.pop_i32();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let dst_mem_val = self.builder.ins().iconst(dst_mem as u64, VelocType::I32);
-                let src_mem_val = self.builder.ins().iconst(src_mem as u64, VelocType::I32);
+                let dst_mem_val = self.builder.ins().i32const((dst_mem) as i32);
+                let src_mem_val = self.builder.ins().i32const((src_mem) as i32);
                 self.builder.ins().call(
                     self.runtime.memory_copy,
                     &[vmctx, dst_mem_val, src_mem_val, dst, src, len],
@@ -160,7 +160,7 @@ impl<'a> WasmTranslator<'a> {
                 let val = self.pop_i32();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let mem_idx = self.builder.ins().iconst(mem as u64, VelocType::I32);
+                let mem_idx = self.builder.ins().i32const((mem) as i32);
                 self.builder
                     .ins()
                     .call(self.runtime.memory_fill, &[vmctx, mem_idx, dst, val, len]);
@@ -296,10 +296,7 @@ impl<'a> WasmTranslator<'a> {
         let length = self.builder.use_var(len_var);
         let addr_i64 = self.addr_to_i64(addr);
         let total_offset_imm = offset.wrapping_add(access_size as u64);
-        let total_offset = self
-            .builder
-            .ins()
-            .iconst(total_offset_imm as u64, VelocType::I64);
+        let total_offset = self.builder.ins().i64const((total_offset_imm) as i64);
         let effective_end = self.builder.ins().iadd(addr_i64, total_offset);
         let is_oob = self.builder.ins().icmp(IntCC::GtU, effective_end, length);
         self.trap_if(is_oob, TrapCode::MemoryOutOfBounds);

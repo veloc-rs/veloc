@@ -151,8 +151,8 @@ op Add<T: I32 | F64>(lhs: T, rhs: T) -> T {
 // ----- semantics-and-text-codecs-use-resolved-inline-constraints-3
 // run: opgen-error
 // check: float text atoms require a scalar float first result
-format Literal { fields: [opcode(Opcode), value(u64)], opcode: dynamic(opcode) }
-op Literal<T: Float & Vector>(@value: u64) -> T {
+format Literal { fields: [opcode(Opcode), value(Float)], opcode: dynamic(opcode) }
+op Literal<T: Float & Vector>(@value: Float) -> T {
     mnemonic: "literal", storage: Literal { value: value },
-    text: Text { args: [float(value)] }, memory: NONE
+    memory: NONE
 }

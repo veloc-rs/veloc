@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use crate::Error;
 use crate::comparisons::Comparison;
-use crate::model::{Definitions, Op, ParamKind, Pattern};
+use crate::model::{Definitions, Op, Param, ParamKind, Pattern, TypeDef};
 use crate::records::PropertyType;
 use crate::storage::Storage;
 use crate::syntax::{Kind, Node};
@@ -23,6 +23,7 @@ enum Sort {
     Optional(Box<Sort>),
     Enum(String),
     Record(String),
+    Property(String),
     Sequence(Box<Sort>),
 }
 
@@ -55,6 +56,8 @@ enum TermKind {
 
 #[derive(Debug, Clone, Copy)]
 enum Query {
+    IsDense,
+    Bytes,
     TypeOf,
     Len,
     Lanes,
@@ -104,9 +107,36 @@ pub(crate) fn check(
     types: &Types,
     comparisons: &[Comparison],
 ) -> Result<Vec<Constraint>, Error> {
+    check_in(
+        source,
+        nodes,
+        Scope {
+            params: &op.params,
+            signature: Some(&op.signature),
+        },
+        storage,
+        types,
+        comparisons,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct Scope<'a> {
+    params: &'a [Param],
+    signature: Option<&'a TypeDef>,
+}
+
+fn check_in(
+    source: &str,
+    nodes: Vec<Node>,
+    scope: Scope<'_>,
+    storage: &Storage,
+    types: &Types,
+    comparisons: &[Comparison],
+) -> Result<Vec<Constraint>, Error> {
     let mut checker = Checker {
         source,
-        op,
+        scope,
         storage,
         types,
         comparisons,
@@ -152,7 +182,7 @@ pub(crate) fn check(
 
 struct Checker<'a> {
     source: &'a str,
-    op: &'a Op,
+    scope: Scope<'a>,
     storage: &'a Storage,
     types: &'a Types,
     comparisons: &'a [Comparison],
@@ -161,6 +191,15 @@ struct Checker<'a> {
 }
 
 impl Checker<'_> {
+    fn instruction_context(&self, offset: usize) -> Result<&TypeDef, Error> {
+        self.scope.signature.ok_or_else(|| {
+            self.error(
+                offset,
+                "property constraints cannot depend on instruction or module context",
+            )
+        })
+    }
+
     fn error(&self, offset: usize, message: impl Into<String>) -> Error {
         Error::at(self.source, offset, message)
     }
@@ -181,6 +220,7 @@ impl Checker<'_> {
             "Value" => Sort::Value,
             "FuncId" | "SigId" => Sort::Handle(name.into()),
             "Bytes" => Sort::Sequence(Box::new(Sort::Int)),
+            "VectorConst" | "Float" | "Int" => Sort::Property(name.into()),
             name if self.storage.records.iter().any(|r| r.name == name) => {
                 Sort::Record(name.into())
             }
@@ -203,7 +243,7 @@ impl Checker<'_> {
         }
         if self.types.exact.contains_key(name)
             && !self.locals.contains_key(name)
-            && !self.op.params.iter().any(|param| param.name == name)
+            && !self.scope.params.iter().any(|param| param.name == name)
         {
             return Ok(Term::new(Sort::Type, TermKind::Type(name.into())));
         }
@@ -212,7 +252,7 @@ impl Checker<'_> {
         let mut value = if let Some((id, sort)) = self.locals.get(root) {
             Term::new(sort.clone(), TermKind::Bound(*id))
         } else if let Some((index, param)) = self
-            .op
+            .scope
             .params
             .iter()
             .enumerate()
@@ -358,9 +398,11 @@ impl Checker<'_> {
                 }
             }
             Kind::Call(name, args) if name == "results" && args.is_empty() => {
+                self.instruction_context(offset)?;
                 Term::new(Sort::Sequence(Box::new(Sort::Type)), TermKind::Results)
             }
             Kind::Call(name, args) if name == "current_signature" && args.is_empty() => {
+                self.instruction_context(offset)?;
                 Term::new(Sort::Signature, TermKind::CurrentSignature)
             }
             Kind::Call(name, args) if matches!(name.as_str(), "prefix" | "suffix" | "matches") => {
@@ -395,8 +437,7 @@ impl Checker<'_> {
                     return Err(self.error(offset, "result_type expects a constant result index"));
                 };
                 let patterns = self
-                    .op
-                    .signature
+                    .instruction_context(offset)?
                     .results
                     .patterns()
                     .ok_or_else(|| self.error(offset, "result_type requires fixed results"))?;
@@ -444,6 +485,8 @@ impl Checker<'_> {
             Kind::Call(name, args) => {
                 let query = match name.as_str() {
                     "type" => Query::TypeOf,
+                    "is_dense" => Query::IsDense,
+                    "bytes" => Query::Bytes,
                     "len" => Query::Len,
                     "lanes" => Query::Lanes,
                     "min_bytes" => Query::MinBytes,
@@ -472,7 +515,16 @@ impl Checker<'_> {
                 };
                 let value = self.term(arg)?;
                 let sort = match query {
+                    Query::IsDense | Query::Bytes => {
+                        self.expect(offset, &value, &Sort::Property("VectorConst".into()))?;
+                        if matches!(query, Query::IsDense) {
+                            Sort::Bool
+                        } else {
+                            Sort::Sequence(Box::new(Sort::Int))
+                        }
+                    }
                     Query::Signature => {
+                        self.instruction_context(offset)?;
                         if !matches!(&value.sort, Sort::Type | Sort::Handle(_)) {
                             return Err(self.error(
                                 offset,
@@ -490,7 +542,11 @@ impl Checker<'_> {
                         Sort::Shape
                     }
                     Query::TypeOf => {
-                        self.expect(offset, &value, &Sort::Value)?;
+                        if !matches!(value.sort, Sort::Value | Sort::Property(_)) {
+                            return Err(
+                                self.error(offset, "type expects an SSA value or typed property")
+                            );
+                        }
                         Sort::Type
                     }
                     Query::Len => {
@@ -509,13 +565,16 @@ impl Checker<'_> {
                     }
                 };
                 let known = if let Query::TypeOf = query {
-                    if let TermKind::Param(index) = value.kind {
-                        let index = operand_index(self.op, index);
-                        let patterns = match &self.op.signature.operands {
-                            crate::model::TypeList::Fixed(p)
-                            | crate::model::TypeList::Variadic(p) => p,
-                            _ => unreachable!("operand type prefix"),
-                        };
+                    if let TermKind::Param(index) = value.kind
+                        && value.sort == Sort::Value
+                    {
+                        let index = operand_index(self.scope.params, index);
+                        let patterns =
+                            match &self.scope.signature.expect("SSA type context").operands {
+                                crate::model::TypeList::Fixed(p)
+                                | crate::model::TypeList::Variadic(p) => p,
+                                _ => unreachable!("operand type prefix"),
+                            };
                         patterns
                             .get(index)
                             .and_then(|pattern| self.possible(pattern))
@@ -550,13 +609,20 @@ impl Checker<'_> {
             }
             Pattern::Exact(name) => self.types.exact.get(name).cloned(),
             Pattern::Same(slot) => {
-                let patterns = match &self.op.signature.operands {
+                let patterns = match &self.scope.signature.expect("SSA type context").operands {
                     crate::model::TypeList::Fixed(p) | crate::model::TypeList::Variadic(p) => p,
                     _ => return None,
                 };
                 patterns
                     .iter()
-                    .chain(self.op.signature.results.patterns().unwrap_or(&[]))
+                    .chain(
+                        self.scope
+                            .signature
+                            .expect("bound type context")
+                            .results
+                            .patterns()
+                            .unwrap_or(&[]),
+                    )
                     .find_map(|p| {
                         if let Pattern::Bind(id, set) = p
                             && id == slot
@@ -604,8 +670,8 @@ impl Checker<'_> {
     }
 }
 
-fn operand_index(op: &Op, param: usize) -> usize {
-    op.params[..param]
+fn operand_index(params: &[Param], param: usize) -> usize {
+    params[..param]
         .iter()
         .filter(|p| p.kind == ParamKind::Value)
         .count()
@@ -628,13 +694,22 @@ fn describe(node: &Node) -> String {
 }
 
 struct Emitter<'a> {
-    op: &'a Op,
+    scope: Scope<'a>,
     projections: BTreeMap<String, String>,
     error: String,
     storage_used: std::cell::Cell<bool>,
+    dfg: &'a str,
 }
 
 impl Emitter<'_> {
+    fn required(&self, value: String) -> String {
+        if self.scope.signature.is_some() {
+            format!("{value}.ok_or_else(|| {})?", self.error)
+        } else {
+            format!("{value}.ok_or({})?", self.error)
+        }
+    }
+
     fn operand(&self, term: &Term) -> String {
         let code = self.term(term);
         if matches!(
@@ -661,7 +736,7 @@ impl Emitter<'_> {
             TermKind::Enum(ty, value) => format!("crate::{ty}::{value}"),
             TermKind::Param(index) => {
                 self.storage_used.set(true);
-                numeric(self.projections[&self.op.params[*index].name].clone())
+                numeric(self.projections[&self.scope.params[*index].name].clone())
             }
             TermKind::Bound(id) => numeric(format!("_v{id}")),
             TermKind::Member(value, field) => {
@@ -687,7 +762,7 @@ impl Emitter<'_> {
                 } else {
                     format!("{index}..")
                 };
-                format!("({sequence}).get({range}).ok_or_else(|| {})?", self.error)
+                self.required(format!("({sequence}).get({range})"))
             }
             TermKind::Matches(values, types) => format!(
                 "{{ let values = {}; let types = {}; values.len() == types.len() && values.iter().zip(types.iter()).all(|(&v, &ty)| self.dfg.value_type(v) == ty) }}",
@@ -695,11 +770,9 @@ impl Emitter<'_> {
                 self.term(types)
             ),
             TermKind::Unary("!", value) => format!("!({})", self.term(value)),
-            TermKind::Unary("-", value) => format!(
-                "({}).checked_neg().ok_or_else(|| {})?",
-                self.term(value),
-                self.error
-            ),
+            TermKind::Unary("-", value) => {
+                self.required(format!("({}).checked_neg()", self.term(value)))
+            }
             TermKind::Unary(_, _) => unreachable!("checked unary operator"),
             TermKind::Binary(op, lhs, rhs) => match *op {
                 "+" | "-" | "*" => {
@@ -709,21 +782,24 @@ impl Emitter<'_> {
                         "-" => "checked_sub",
                         _ => "checked_mul",
                     };
-                    format!("({lhs}).{method}({rhs}).ok_or_else(|| {})?", self.error)
+                    self.required(format!("({lhs}).{method}({rhs})"))
                 }
                 _ => format!("{} {op} {}", self.operand(lhs), self.operand(rhs)),
             },
             TermKind::Query(query, value) => {
                 if let Query::TypeOf = query
                     && let TermKind::Param(index) = value.kind
-                    && matches!(&self.op.signature.operands, crate::model::TypeList::Fixed(p) | crate::model::TypeList::Variadic(p) if operand_index(self.op, index) < p.len())
+                    && value.sort == Sort::Value
+                    && matches!(&self.scope.signature.expect("SSA type context").operands, crate::model::TypeList::Fixed(p) | crate::model::TypeList::Variadic(p) if operand_index(self.scope.params, index) < p.len())
                 {
-                    return format!("_operands[{}]", operand_index(self.op, index));
+                    return format!("_operands[{}]", operand_index(self.scope.params, index));
                 }
                 let known_valid = value.types.is_some();
                 let sort = &value.sort;
                 let value = self.term(value);
                 match query {
+                    Query::IsDense => format!("({value}).is_dense()"),
+                    Query::Bytes => self.required(format!("({value}).bytes({})", self.dfg)),
                     Query::Signature => {
                         let id = match sort {
                             Sort::Handle(name) if name == "FuncId" => format!(
@@ -743,10 +819,12 @@ impl Emitter<'_> {
                     }
                     Query::Params => format!("({value}).params.as_slice()"),
                     Query::Returns => format!("({value}).returns.as_slice()"),
-                    Query::Shape => format!(
-                        "({value}).as_vector().ok_or_else(|| {})?.shape()",
-                        self.error
-                    ),
+                    Query::Shape => {
+                        format!(
+                            "{}.shape()",
+                            self.required(format!("({value}).as_vector()"))
+                        )
+                    }
                     Query::IsPredicate => format!("({value}).is_predicate()"),
                     Query::IsCallable => format!("({value}).is_callable()"),
                     Query::IsOwned => format!("({value}).is_owned()"),
@@ -757,7 +835,13 @@ impl Emitter<'_> {
                         "matches!(({value}).as_callable(), Some((_, crate::CallableKind::Shared)))"
                     ),
                     Query::IsCompact => format!("({value}).is_compact()"),
-                    Query::TypeOf => format!("self.dfg.value_type({value})"),
+                    Query::TypeOf => {
+                        if matches!(sort, Sort::Property(_)) {
+                            format!("({value}).ty()")
+                        } else {
+                            format!("self.dfg.value_type({value})")
+                        }
+                    }
                     Query::Len => format!("({value}).len() as i128"),
                     Query::Lanes if known_valid => format!("i128::from(({value}).lane_count())"),
                     Query::Lanes => format!(
@@ -765,8 +849,8 @@ impl Emitter<'_> {
                         self.error
                     ),
                     Query::MinBytes => format!(
-                        "i128::from(({value}).min_size_bytes().ok_or_else(|| {})?)",
-                        self.error
+                        "i128::from({})",
+                        self.required(format!("({value}).min_size_bytes()"))
                     ),
                     Query::IsFixed => {
                         format!("({value}).as_vector().is_some_and(|v| v.is_fixed())")
@@ -843,12 +927,111 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error
         .unwrap();
     }
     out.push_str("        }\n    }\n}\n");
+    for property in &defs.properties {
+        out.push_str(&property_validator(defs, property, source)?);
+    }
+    Ok(out)
+}
+
+fn property_validator(
+    defs: &Definitions,
+    property: &crate::model::Property,
+    source: &str,
+) -> Result<String, Error> {
+    let params = [Param {
+        name: "value".into(),
+        kind: ParamKind::Property(property.name.clone()),
+    }];
+    let scope = Scope {
+        params: &params,
+        signature: None,
+    };
+    let constraints = check_in(
+        source,
+        property.constraints.clone(),
+        scope,
+        &defs.storage,
+        &defs.types,
+        &defs.comparisons,
+    )?;
+    let mut out = format!(
+        "impl crate::{} {{\n/// Validate the property contract declared in defs. Construction does not run this scan.\npub fn validate(self, dfg: &crate::dfg::DataFlowGraph) -> core::result::Result<(), &'static str> {{\nlet _ = dfg;\n",
+        property.name
+    );
+    for constraint in constraints {
+        let emitter = Emitter {
+            scope,
+            projections: BTreeMap::from([("value".into(), "self".into())]),
+            error: format!("{:?}", constraint.text),
+            storage_used: std::cell::Cell::new(false),
+            dfg: "dfg",
+        };
+        writeln!(
+            out,
+            "if !({}) {{ return Err({}); }}",
+            emitter.term(&constraint.condition),
+            emitter.error
+        )
+        .unwrap();
+    }
+    out.push_str("Ok(())\n}\n}\n");
     Ok(out)
 }
 
 fn emit_body(defs: &Definitions, op: &Op, format: &crate::storage::Format) -> String {
     let mut body = String::new();
     let mut storage_used = false;
+    for param in &op.params {
+        if let ParamKind::Property(ty) = &param.kind
+            && defs.properties.iter().any(|p| p.name == *ty)
+        {
+            let projections = crate::packing::projections(
+                op,
+                format,
+                "&self.dfg",
+                |name| {
+                    format!(
+                        "*_f{}",
+                        format.fields.iter().position(|f| f.name == name).unwrap()
+                    )
+                },
+                |v| format!("{v}.expect(\"checked property storage\")"),
+            );
+            let value = &projections
+                .iter()
+                .find(|(p, _)| *p == param.name)
+                .unwrap()
+                .1;
+            writeln!(body, "({value}).validate(&self.dfg).map_err(|error| self.constraint_error(_inst, error))?;").unwrap();
+            storage_used = true;
+        }
+    }
+    for (index, pattern) in op
+        .signature
+        .results
+        .patterns()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
+        if let Pattern::Property(name, _) = pattern {
+            let projections = crate::packing::projections(
+                op,
+                format,
+                "&self.dfg",
+                |name| {
+                    format!(
+                        "*_f{}",
+                        format.fields.iter().position(|f| f.name == name).unwrap()
+                    )
+                },
+                |v| format!("{v}.expect(\"checked property storage\")"),
+            );
+            let value = &projections.iter().find(|(p, _)| p == name).unwrap().1;
+            writeln!(body, "if _results[{index}] != ({value}).ty() {{ return Err(self.constraint_error(_inst, {:?})); }}", format!("result {index} must have the type of `{name}`")).unwrap();
+            storage_used = true;
+        }
+    }
     if let Some(source) = &op.signature_source {
         use crate::model::SignatureSource;
         let error = "self.constraint_error(_inst, \"missing function or signature\")";
@@ -888,7 +1071,7 @@ fn emit_body(defs: &Definitions, op: &Op, format: &crate::storage::Format) -> St
         storage_used = true;
     }
     // table(cases, default) requires a default in its physical sequence.
-    for (field, binding) in &op.packing {
+    for (field, binding) in op.bindings() {
         if matches!(binding, crate::model::Binding::Table { .. }) {
             let index = format.fields.iter().position(|f| f.name == *field).unwrap();
             writeln!(body, "if _f{index}.is_empty() {{ return Err(self.constraint_error(_inst, \"branch table must contain a default destination\")); }}").unwrap();
@@ -915,10 +1098,14 @@ fn emit_body(defs: &Definitions, op: &Op, format: &crate::storage::Format) -> St
         .into_iter()
         .collect();
         let emitter = Emitter {
-            op,
+            scope: Scope {
+                params: &op.params,
+                signature: Some(&op.signature),
+            },
             projections,
             error,
             storage_used: std::cell::Cell::new(false),
+            dfg: "&self.dfg",
         };
         let condition = emitter.term(&constraint.condition);
         storage_used |= emitter.storage_used.get();

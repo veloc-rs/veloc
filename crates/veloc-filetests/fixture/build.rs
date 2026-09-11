@@ -1,21 +1,12 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
-    let mut source = String::new();
-    for path in [
-        "../../../veloc/mir/defs/types.ops",
-        "../../../veloc/mir/defs/builtins.ops",
-        "../../../veloc/mir/defs/comparisons.ops",
-        "../../../veloc/mir/defs/formats.ops",
-        "../../../veloc/mir/defs/mir.ops",
-        "extra.ops",
-    ] {
-        println!("cargo:rerun-if-changed={path}");
-        source.push_str(&fs::read_to_string(path).unwrap());
-        source.push('\n');
+    let source = veloc_opgen::Source::load("module.ops").expect("load fixture definitions");
+    for path in source.dependencies() {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
-    let output = veloc_opgen::compile_mir(&source).expect("compile fixture MIR");
-    let definitions = veloc_opgen::parse(&source).unwrap();
+    let output = source.compile().expect("compile fixture MIR");
+    let definitions = source.parse().expect("check fixture definitions");
     let lowering = veloc_opgen::generate_lowering(
         &definitions,
         &[

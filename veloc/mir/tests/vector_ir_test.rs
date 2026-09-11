@@ -16,7 +16,7 @@ fn generated_pool_builders_use_logical_parameters() {
         builder.init_entry_block();
         let ptr = builder.func_param(0);
         let indices = builder.func_param(1);
-        let constant = builder.ins().vconst(vec![0; 16], Type::I32X4);
+        let constant = builder.ins().i32x4const([0; 4]);
         let shuffled = builder.ins().shuffle(constant, indices, vec![0, 2, 4, 6]);
         builder.ins().scatter(
             ptr,
@@ -173,7 +173,8 @@ fn test_vector_with_mask_evl() {
     let vec_b = builder.ins().splat(scalar_b, scalable_v4i32);
 
     let mask_ty = Type::new_mask(4, true).unwrap();
-    let mask = builder.ins().vconst(vec![u8::MAX; 4], mask_ty);
+    let enabled = builder.ins().bconst(true);
+    let mask = builder.ins().splat(enabled, mask_ty);
     let avl = builder.ins().i64const(16);
     let vl = builder.ins().setvl(avl);
 

@@ -1,4 +1,5 @@
 use crate::Error;
+pub(crate) mod emit;
 use crate::model::{Op, Param, ParamKind, Pattern, Semantic, SemanticStep};
 use crate::syntax::{Kind, Node};
 use veloc_semantics::{
@@ -677,7 +678,7 @@ mod tests {
             control: None,
             text: None,
             params,
-            packing: Default::default(),
+            projection: crate::model::Projection::Packed(Default::default()),
             traits: vec![],
             memory: "NONE".into(),
             constraints: vec![],

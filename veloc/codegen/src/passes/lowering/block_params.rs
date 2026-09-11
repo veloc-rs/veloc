@@ -94,7 +94,7 @@ impl BlockParamLoweringPass {
         let else_blk =
             Self::redirect_edge(cursor.mfunc_mut(), scratch, branch.else_blk, &else_args)?;
 
-        cursor.replace_current(MachineInst::build_br_cond(branch.cond, then_blk, else_blk));
+        cursor.replace_current(MachineInst::build_brcond(branch.cond, then_blk, else_blk));
         Ok(())
     }
 
@@ -437,7 +437,7 @@ mod tests {
         push_block(&mut mfunc, then_blk, &[param]);
         push_block(&mut mfunc, else_blk, &[]);
 
-        let br = mfunc.alloc_inst(MachineInst::build_br_cond(cond, then_blk, else_blk));
+        let br = mfunc.alloc_inst(MachineInst::build_brcond(cond, then_blk, else_blk));
         mfunc.set_inst_extra(
             br,
             InstExtra::BranchCond(veloc_lir::BranchCondInfo {
@@ -480,7 +480,7 @@ mod tests {
         push_block(&mut mfunc, target0, &[param]);
         push_block(&mut mfunc, target1, &[]);
 
-        let jt = mfunc.alloc_inst(MachineInst::build_br_jt(idx));
+        let jt = mfunc.alloc_inst(MachineInst::build_brjt(idx));
         mfunc.set_inst_extra(
             jt,
             InstExtra::BrTable(BrTableInfo {

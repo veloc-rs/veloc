@@ -1,0 +1,4 @@
+// Shared type and operation vocabulary, independent of any instruction storage.
+import "types.ops";
+import "builtins.ops";
+import "comparisons.ops";

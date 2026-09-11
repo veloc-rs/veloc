@@ -48,6 +48,10 @@
 (def-macro needs-rex ($r $b)
     (bit-or (bit3 $r) (bit3 $b)))
 
+;; Byte sources 4..7 mean SPL/BPL/SIL/DIL only with a REX prefix.
+(def-macro needs-rex-byte ($r $b)
+    (bit-or (needs-rex $r $b) (bit-and $b 4)))
+
 ;; -----------------------------------------------------------------------------
 ;; 3.  (Instruction Templates)
 ;; -----------------------------------------------------------------------------
@@ -187,7 +191,7 @@
 (def-template Movzx8to32rr ()
     (operands (def $dst) (use $src))
     (encode
-        (if (needs-rex (hw-enc $dst) (hw-enc $src))
+        (if (needs-rex-byte (hw-enc $dst) (hw-enc $src))
             (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
         (byte 0x0F)
         (byte 0xB6)
@@ -196,7 +200,6 @@
 (def-template Movzx16to32rr ()
     (operands (def $dst) (use $src))
     (encode
-        (byte 0x66)
         (if (needs-rex (hw-enc $dst) (hw-enc $src))
             (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
         (byte 0x0F)
@@ -206,7 +209,7 @@
 (def-template Movsx8to32rr ()
     (operands (def $dst) (use $src))
     (encode
-        (if (needs-rex (hw-enc $dst) (hw-enc $src))
+        (if (needs-rex-byte (hw-enc $dst) (hw-enc $src))
             (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
         (byte 0x0F)
         (byte 0xBE)
@@ -215,7 +218,6 @@
 (def-template Movsx16to32rr ()
     (operands (def $dst) (use $src))
     (encode
-        (byte 0x66)
         (if (needs-rex (hw-enc $dst) (hw-enc $src))
             (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
         (byte 0x0F)
@@ -233,7 +235,6 @@
 (def-template Movsx16to64rr ()
     (operands (def $dst) (use $src))
     (encode
-        (byte 0x66)
         (byte (rex-w (hw-enc $dst) (hw-enc $src)))
         (byte 0x0F)
         (byte 0xBF)
@@ -246,22 +247,37 @@
         (byte 0x63)
         (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
 
-(def-template XmmMovScalarrr ($prefix)
-    (operands (def (tied $dst $src1)) (use $src2))
+(def-template Copy32rr ()
+    (operands (def $dst) (use $src))
     (encode
-        (if (needs-rex (hw-enc $src2) (hw-enc $dst))
-            (byte (rex-rr (hw-enc $src2) (hw-enc $dst))))
+        (if (needs-rex (hw-enc $src) (hw-enc $dst))
+            (byte (rex-rr (hw-enc $src) (hw-enc $dst))))
+        (byte 0x89)
+        (byte (modrm-rr (hw-enc $src) (hw-enc $dst)))))
+
+(def-template Copy64rr ()
+    (operands (def $dst) (use $src))
+    (encode
+        (byte (rex-w (hw-enc $src) (hw-enc $dst)))
+        (byte 0x89)
+        (byte (modrm-rr (hw-enc $src) (hw-enc $dst)))))
+
+(def-template XmmMovScalarrr ($prefix)
+    (operands (def $dst) (use $src2))
+    (encode
         (byte $prefix)
+        (if (needs-rex (hw-enc $dst) (hw-enc $src2))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $src2))))
         (byte 0x0F)
         (byte 0x10)
-        (byte (modrm-rr (hw-enc $src2) (hw-enc $dst)))))
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src2)))))
 
 (def-template MovdToXmmrr ()
     (operands (def $dst) (use $src))
     (encode
+        (byte 0x66)
         (if (needs-rex (hw-enc $dst) (hw-enc $src))
             (byte (rex-rr (hw-enc $dst) (hw-enc $src))))
-        (byte 0x66)
         (byte 0x0F)
         (byte 0x6E)
         (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
@@ -269,9 +285,9 @@
 (def-template MovdFromXmmrr ()
     (operands (def $dst) (use $src))
     (encode
+        (byte 0x66)
         (if (needs-rex (hw-enc $src) (hw-enc $dst))
             (byte (rex-rr (hw-enc $src) (hw-enc $dst))))
-        (byte 0x66)
         (byte 0x0F)
         (byte 0x7E)
         (byte (modrm-rr (hw-enc $src) (hw-enc $dst)))))
@@ -338,6 +354,7 @@
 
 ;; 基址 + disp32 内存寻址。统一使用 SIB + disp32，避免处理 [rbp]/[r13]/[rsp]/[r12] 特例。
 (def-template Load8U32m ()
+    (memory Read 1)
     (operands (def $dst) (use $base) (imm $off))
     (encode
         (if (needs-rex (hw-enc $dst) (hw-enc $base))
@@ -349,6 +366,7 @@
         (imm32 $off)))
 
 (def-template Load16U32m ()
+    (memory Read 2)
     (operands (def $dst) (use $base) (imm $off))
     (encode
         (if (needs-rex (hw-enc $dst) (hw-enc $base))
@@ -360,6 +378,7 @@
         (imm32 $off)))
 
 (def-template Load32m ()
+    (memory Read 4)
     (operands (def $dst) (use $base) (imm $off))
     (encode
         (if (needs-rex (hw-enc $dst) (hw-enc $base))
@@ -370,6 +389,7 @@
         (imm32 $off)))
 
 (def-template Load64m ()
+    (memory Read 8)
     (operands (def $dst) (use $base) (imm $off))
     (encode
         (byte (rex-w (hw-enc $dst) (hw-enc $base)))
@@ -379,11 +399,12 @@
         (imm32 $off)))
 
 (def-template LoadF32m ()
+    (memory Read 4)
     (operands (def $dst) (use $base) (imm $off))
     (encode
+        (byte 0xF3)
         (if (needs-rex (hw-enc $dst) (hw-enc $base))
             (byte (rex-rr (hw-enc $dst) (hw-enc $base))))
-        (byte 0xF3)
         (byte 0x0F)
         (byte 0x10)
         (byte (modrm 0b10 (hw-enc $dst) 0b100))
@@ -391,11 +412,12 @@
         (imm32 $off)))
 
 (def-template LoadF64m ()
+    (memory Read 8)
     (operands (def $dst) (use $base) (imm $off))
     (encode
+        (byte 0xF2)
         (if (needs-rex (hw-enc $dst) (hw-enc $base))
             (byte (rex-rr (hw-enc $dst) (hw-enc $base))))
-        (byte 0xF2)
         (byte 0x0F)
         (byte 0x10)
         (byte (modrm 0b10 (hw-enc $dst) 0b100))
@@ -403,6 +425,7 @@
         (imm32 $off)))
 
 (def-template Store8m ()
+    (memory Write 1)
     (operands (use $src) (use $base) (imm $off))
     (encode
         (if (needs-rex (hw-enc $src) (hw-enc $base))
@@ -413,6 +436,7 @@
         (imm32 $off)))
 
 (def-template Store16m ()
+    (memory Write 2)
     (operands (use $src) (use $base) (imm $off))
     (encode
         (byte 0x66)
@@ -424,6 +448,7 @@
         (imm32 $off)))
 
 (def-template Store32m ()
+    (memory Write 4)
     (operands (use $src) (use $base) (imm $off))
     (encode
         (if (needs-rex (hw-enc $src) (hw-enc $base))
@@ -434,6 +459,7 @@
         (imm32 $off)))
 
 (def-template Store64m ()
+    (memory Write 8)
     (operands (use $src) (use $base) (imm $off))
     (encode
         (byte (rex-w (hw-enc $src) (hw-enc $base)))
@@ -443,11 +469,12 @@
         (imm32 $off)))
 
 (def-template StoreF32m ()
+    (memory Write 4)
     (operands (use $src) (use $base) (imm $off))
     (encode
+        (byte 0xF3)
         (if (needs-rex (hw-enc $src) (hw-enc $base))
             (byte (rex-rr (hw-enc $src) (hw-enc $base))))
-        (byte 0xF3)
         (byte 0x0F)
         (byte 0x11)
         (byte (modrm 0b10 (hw-enc $src) 0b100))
@@ -455,11 +482,12 @@
         (imm32 $off)))
 
 (def-template StoreF64m ()
+    (memory Write 8)
     (operands (use $src) (use $base) (imm $off))
     (encode
+        (byte 0xF2)
         (if (needs-rex (hw-enc $src) (hw-enc $base))
             (byte (rex-rr (hw-enc $src) (hw-enc $base))))
-        (byte 0xF2)
         (byte 0x0F)
         (byte 0x11)
         (byte (modrm 0b10 (hw-enc $src) 0b100))
@@ -468,6 +496,7 @@
 
 ;; StackSlot-backed memory operands.
 (def-template Load8U32Stackm ()
+    (memory Read 1)
     (operands (def $dst) (stackslot $slot))
     (encode
         (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
@@ -479,6 +508,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template Load16U32Stackm ()
+    (memory Read 2)
     (operands (def $dst) (stackslot $slot))
     (encode
         (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
@@ -490,6 +520,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template Load32Stackm ()
+    (memory Read 4)
     (operands (def $dst) (stackslot $slot))
     (encode
         (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
@@ -500,6 +531,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template Load64Stackm ()
+    (memory Read 8)
     (operands (def $dst) (stackslot $slot))
     (encode
         (byte (rex-w (hw-enc $dst) (slot-base-hw-enc $slot)))
@@ -509,11 +541,12 @@
         (imm32 (slot-offset $slot))))
 
 (def-template LoadF32Stackm ()
+    (memory Read 4)
     (operands (def $dst) (stackslot $slot))
     (encode
+        (byte 0xF3)
         (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
             (byte (rex-rr (hw-enc $dst) (slot-base-hw-enc $slot))))
-        (byte 0xF3)
         (byte 0x0F)
         (byte 0x10)
         (byte (modrm 0b10 (hw-enc $dst) 0b100))
@@ -521,11 +554,12 @@
         (imm32 (slot-offset $slot))))
 
 (def-template LoadF64Stackm ()
+    (memory Read 8)
     (operands (def $dst) (stackslot $slot))
     (encode
+        (byte 0xF2)
         (if (needs-rex (hw-enc $dst) (slot-base-hw-enc $slot))
             (byte (rex-rr (hw-enc $dst) (slot-base-hw-enc $slot))))
-        (byte 0xF2)
         (byte 0x0F)
         (byte 0x10)
         (byte (modrm 0b10 (hw-enc $dst) 0b100))
@@ -533,6 +567,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template Store8Stackm ()
+    (memory Write 1)
     (operands (use $src) (stackslot $slot))
     (encode
         (if (needs-rex (hw-enc $src) (slot-base-hw-enc $slot))
@@ -543,6 +578,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template Store16Stackm ()
+    (memory Write 2)
     (operands (use $src) (stackslot $slot))
     (encode
         (byte 0x66)
@@ -554,6 +590,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template Store32Stackm ()
+    (memory Write 4)
     (operands (use $src) (stackslot $slot))
     (encode
         (if (needs-rex (hw-enc $src) (slot-base-hw-enc $slot))
@@ -564,6 +601,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template Store64Stackm ()
+    (memory Write 8)
     (operands (use $src) (stackslot $slot))
     (encode
         (byte (rex-w (hw-enc $src) (slot-base-hw-enc $slot)))
@@ -573,6 +611,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template StoreF32Stackm ()
+    (memory Write 4)
     (operands (use $src) (stackslot $slot))
     (encode
         (byte 0xF3)
@@ -585,6 +624,7 @@
         (imm32 (slot-offset $slot))))
 
 (def-template StoreF64Stackm ()
+    (memory Write 8)
     (operands (use $src) (stackslot $slot))
     (encode
         (byte 0xF2)
@@ -601,33 +641,33 @@
 ;; -----------------------------------------------------------------------------
 
 ;; 32 
-(def-inst X86Add32 (template BinOp32rr 0x01))
-(def-inst X86Sub32 (template BinOp32rr 0x29))
-(def-inst X86And32 (template BinOp32rr 0x21))
-(def-inst X86Or32  (template BinOp32rr 0x09))
-(def-inst X86Xor32 (template BinOp32rr 0x31))
-(def-inst X86Cmp32 (template Cmp32rr))
-(def-inst X86Cmp32ri (template Cmp32ri))
-(def-inst X86Test32 (template Test32rr))
+(def-inst X86Add32 (schedule 1) (template BinOp32rr 0x01))
+(def-inst X86Sub32 (schedule 1) (template BinOp32rr 0x29))
+(def-inst X86And32 (schedule 1) (template BinOp32rr 0x21))
+(def-inst X86Or32 (schedule 1)  (template BinOp32rr 0x09))
+(def-inst X86Xor32 (schedule 1) (template BinOp32rr 0x31))
+(def-inst X86Cmp32 (schedule 1) (template Cmp32rr))
+(def-inst X86Cmp32ri (schedule 1) (template Cmp32ri))
+(def-inst X86Test32 (schedule 1) (template Test32rr))
 (def-inst X86Ucomiss (template Ucomissrr))
 
 ;; 64 
-(def-inst X86Add64 (template BinOp64rr 0x01))
-(def-inst X86Sub64 (template BinOp64rr 0x29))
-(def-inst X86Add64ri (template BinOp64ri 0x81 0)) ;; 0x81 /0
-(def-inst X86Sub64ri (template BinOp64ri 0x81 5)) ;; 0x81 /5
-(def-inst X86And64 (template BinOp64rr 0x21))
-(def-inst X86And32ri (template BinOp32ri 0x81 4)) ;; 0x81 /4
-(def-inst X86And64ri (template BinOp64ri 0x81 4)) ;; 0x81 /4
-(def-inst X86Or64  (template BinOp64rr 0x09))
-(def-inst X86Xor64 (template BinOp64rr 0x31))
-(def-inst X86Cmp64 (template Cmp64rr))
-(def-inst X86Test64 (template Test64rr))
+(def-inst X86Add64 (schedule 1) (template BinOp64rr 0x01))
+(def-inst X86Sub64 (schedule 1) (template BinOp64rr 0x29))
+(def-inst X86Add64ri (schedule 1) (template BinOp64ri 0x81 0)) ;; 0x81 /0
+(def-inst X86Sub64ri (schedule 1) (template BinOp64ri 0x81 5)) ;; 0x81 /5
+(def-inst X86And64 (schedule 1) (template BinOp64rr 0x21))
+(def-inst X86And32ri (schedule 1) (template BinOp32ri 0x81 4)) ;; 0x81 /4
+(def-inst X86And64ri (schedule 1) (template BinOp64ri 0x81 4)) ;; 0x81 /4
+(def-inst X86Or64 (schedule 1)  (template BinOp64rr 0x09))
+(def-inst X86Xor64 (schedule 1) (template BinOp64rr 0x31))
+(def-inst X86Cmp64 (schedule 1) (template Cmp64rr))
+(def-inst X86Test64 (schedule 1) (template Test64rr))
 (def-inst X86Ucomisd (template Ucomisdrr))
 
 ;; 
-(def-inst X86IMul32 (template IMul32rr))
-(def-inst X86IMul64 (template IMul64rr))
+(def-inst X86IMul32 (schedule 3) (template IMul32rr))
+(def-inst X86IMul64 (schedule 3) (template IMul64rr))
 
 ;; 
 (def-inst X86Shl32Cl (template Shift32cl 4))
@@ -642,22 +682,23 @@
 (def-inst X86Sar64ri (template Shift64ri 7))
 
 ;; 
-(def-inst X86Mov32 (template BinOp32rr 0x89))
-(def-inst X86Mov64 (template BinOp64rr 0x89))
-(def-inst X86Movss (template XmmMovScalarrr 0xF3))
-(def-inst X86Movsd (template XmmMovScalarrr 0xF2))
-(def-inst X86MovdToXmm (template MovdToXmmrr))
-(def-inst X86MovdFromXmm (template MovdFromXmmrr))
-(def-inst X86MovqToXmm (template MovqToXmmrr))
-(def-inst X86MovqFromXmm (template MovqFromXmmrr))
-(def-inst X86Movzx8to32 (template Movzx8to32rr))
-(def-inst X86Movzx16to32 (template Movzx16to32rr))
-(def-inst X86Movsx8to32 (template Movsx8to32rr))
-(def-inst X86Movsx16to32 (template Movsx16to32rr))
-(def-inst X86Movsx8to64 (template Movsx8to64rr))
-(def-inst X86Movsx16to64 (template Movsx16to64rr))
-(def-inst X86Movsxd32to64 (template Movsxd32to64rr))
+(def-inst X86Mov32 (schedule 1) (template Copy32rr))
+(def-inst X86Mov64 (schedule 1) (template Copy64rr))
+(def-inst X86Movss (schedule 1) (template XmmMovScalarrr 0xF3))
+(def-inst X86Movsd (schedule 1) (template XmmMovScalarrr 0xF2))
+(def-inst X86MovdToXmm (schedule 1) (template MovdToXmmrr))
+(def-inst X86MovdFromXmm (schedule 1) (template MovdFromXmmrr))
+(def-inst X86MovqToXmm (schedule 1) (template MovqToXmmrr))
+(def-inst X86MovqFromXmm (schedule 1) (template MovqFromXmmrr))
+(def-inst X86Movzx8to32 (schedule 1) (template Movzx8to32rr))
+(def-inst X86Movzx16to32 (schedule 1) (template Movzx16to32rr))
+(def-inst X86Movsx8to32 (schedule 1) (template Movsx8to32rr))
+(def-inst X86Movsx16to32 (schedule 1) (template Movsx16to32rr))
+(def-inst X86Movsx8to64 (schedule 1) (template Movsx8to64rr))
+(def-inst X86Movsx16to64 (schedule 1) (template Movsx16to64rr))
+(def-inst X86Movsxd32to64 (schedule 1) (template Movsxd32to64rr))
 (def-inst X86Mov32Imm
+    (schedule 1)
     (operands (def $dst) (imm $imm))
     (encode
         (if (needs-rex 0 (hw-enc $dst))
@@ -665,6 +706,7 @@
         (byte (bit-or 0xB8 (low3 (hw-enc $dst))))
         (imm32 $imm)))
 (def-inst X86Mov64Imm32
+    (schedule 1)
     (operands (def $dst) (imm $imm))
     (encode
         (byte (rex-w 0 (hw-enc $dst)))
@@ -672,6 +714,7 @@
         (byte (modrm-rr 0 (hw-enc $dst)))
         (imm32 $imm)))
 (def-inst X86Mov64Imm64
+    (schedule 1)
     (operands (def $dst) (imm $imm))
     (encode
         (byte (rex-w 0 (hw-enc $dst)))
@@ -720,29 +763,35 @@
 
 ;; 
 (def-inst X86Call
+    (flow Call)
     (operands (global $target))
     (encode
         (byte 0xE8)
         (rel32 $target)))
 (def-inst X86CallReg
+    (flow Call)
     (operands (use $target))
     (encode
         (byte (rex-w 0 (hw-enc $target)))
         (byte 0xFF)
         (byte (modrm-rr 2 (hw-enc $target)))))
 (def-inst X86Ret
+    (flow Return)
     (encode (byte 0xC3)))
 (def-inst X86Ud2
+    (flow Trap)
     (encode
         (byte 0x0F)
         (byte 0x0B)))
 (def-inst X86Jmp
+    (flow Jump)
     (operands (block $target))
     (encode
         (byte 0xE9)
         (rel32 $target)))
 
 (def-inst X86Jcc
+    (flow Branch)
     (operands (use $cond) (block $target))
     (clobbers EFLAGS)
     (encode
@@ -754,6 +803,7 @@
         (byte 0x85)
         (rel32 $target)))
 (def-inst X86Je
+    (flow Branch)
     (operands (block $target))
     (clobbers EFLAGS)
     (encode
@@ -833,3 +883,37 @@
     (implicit-defs EDX)
     (encode (byte 0x99))
 )
+(def-template ScalarFloatOp ($prefix $opcode)
+    (operands (def (tied $dst $lhs)) (use $rhs))
+    (encode
+        (byte $prefix)
+        (if (needs-rex (hw-enc $dst) (hw-enc $rhs))
+            (byte (rex-rr (hw-enc $dst) (hw-enc $rhs))))
+        (byte 0x0F)
+        (byte $opcode)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $rhs)))))
+
+(def-inst X86FAdd32 (template ScalarFloatOp 0xF3 0x58))
+
+(def-inst X86FAdd64 (template ScalarFloatOp 0xF2 0x58))
+
+(def-inst X86FSub32 (template ScalarFloatOp 0xF3 0x5C))
+
+(def-inst X86FSub64 (template ScalarFloatOp 0xF2 0x5C))
+
+(def-inst X86FMul32 (template ScalarFloatOp 0xF3 0x59))
+
+(def-inst X86FMul64 (template ScalarFloatOp 0xF2 0x59))
+
+(def-inst X86FDiv32 (template ScalarFloatOp 0xF3 0x5E))
+
+(def-inst X86FDiv64 (template ScalarFloatOp 0xF2 0x5E))
+
+(def-inst X86LeaStack
+    (operands (def $dst) (stackslot $slot))
+    (encode
+        (byte (rex-w (hw-enc $dst) (slot-base-hw-enc $slot)))
+        (byte 0x8D)
+        (byte (modrm 0b10 (hw-enc $dst) 0b100))
+        (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
+        (imm32 (slot-offset $slot))))

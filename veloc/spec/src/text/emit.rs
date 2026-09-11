@@ -217,7 +217,6 @@ fn codec(kind: &AtomKind) -> String {
         AtomKind::Successor => "crate::BlockCall".into(),
         AtomKind::Successors => "super::atom::Successors".into(),
         AtomKind::Integer => "super::atom::IntegerBits".into(),
-        AtomKind::Float => "super::atom::FloatBits".into(),
         AtomKind::Bytes => "super::atom::Bytes".into(),
         AtomKind::Scalar(ty) => match ty.as_str() {
             "u8" | "u32" | "u64" | "i32" => format!("super::atom::Decimal<{ty}>"),
@@ -245,7 +244,7 @@ fn parse_atom(atom: &Atom) -> String {
 
 fn parse_atom_with(atom: &Atom, codec: &str) -> String {
     format!(
-        "<{} as super::atom::AtomCodec>::parse(self, input).map_err(|e| e.context({:?}))?",
+        "<{} as super::atom::AtomCodec>::parse(self, input, ty).map_err(|e| e.context({:?}))?",
         codec,
         format!("operand `{}`", atom.path)
     )

@@ -19,6 +19,12 @@ pub struct Definitions {
     pub(crate) types: Types,
     pub(crate) storage: storage::Storage,
     pub(crate) ops: Vec<Op>,
+    pub(crate) properties: Vec<Property>,
+}
+
+pub(crate) struct Property {
+    pub name: String,
+    pub constraints: Vec<Node>,
 }
 
 impl Definitions {
@@ -26,7 +32,23 @@ impl Definitions {
         self.ops.len()
     }
     pub fn format_count(&self) -> usize {
-        self.storage.formats.len()
+        match &self.storage.strategy {
+            storage::Strategy::Packed => self.storage.formats.len(),
+            storage::Strategy::Operands(operands) => operands.format_count(),
+        }
+    }
+
+    /// Direct, reviewed primitive contracts shared by all storage strategies.
+    pub fn primitive_bindings(&self) -> Vec<(BvOp, &str)> {
+        self.ops
+            .iter()
+            .filter_map(|op| {
+                op.semantics
+                    .as_ref()?
+                    .primitive()
+                    .map(|primitive| (primitive, op.name.as_str()))
+            })
+            .collect()
     }
 }
 
@@ -55,6 +77,8 @@ impl TypeList {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Pattern {
+    /// A typed property's type; the set permits type-only validation as well.
+    Property(String, TypeSet),
     Callable,
     Class(TypeSet),
     Exact(String),
@@ -85,7 +109,7 @@ pub(crate) struct Op {
     pub format: String,
     pub signature: TypeDef,
     pub params: Vec<Param>,
-    pub packing: BTreeMap<String, Binding>,
+    pub projection: Projection,
     pub signature_source: Option<SignatureSource>,
     pub control: Option<crate::control::Control>,
     pub moves: Vec<String>,
@@ -96,6 +120,27 @@ pub(crate) struct Op {
     pub identity: Option<BvConst>,
     pub absorbing: Option<BvConst>,
     pub semantics: Option<Semantic>,
+}
+
+pub(crate) enum Projection {
+    Packed(BTreeMap<String, Binding>),
+    Operands(crate::storage::operands::Projection),
+}
+
+impl Op {
+    pub(crate) fn bindings(&self) -> &BTreeMap<String, Binding> {
+        match &self.projection {
+            Projection::Packed(bindings) => bindings,
+            Projection::Operands(_) => panic!("packed emitter requires field bindings"),
+        }
+    }
+
+    pub(crate) fn operands(&self) -> &crate::storage::operands::Projection {
+        match &self.projection {
+            Projection::Operands(projection) => projection,
+            Projection::Packed(_) => panic!("operand emitter requires an operand projection"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -166,6 +211,10 @@ struct Variable {
 
 pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
     let records = crate::syntax::parse(source)?;
+    from_records(source, records)
+}
+
+pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definitions, Error> {
     let mut names = BTreeSet::new();
     for record in &records {
         if !names.insert((record.kind.clone(), record.name.clone())) {
@@ -183,8 +232,19 @@ pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
     let comparisons = crate::comparisons::compile(&records, source)?;
     let storage = storage::compile(&records, source)?;
     let mut ops = Vec::new();
+    let mut properties = Vec::new();
     for record in records {
         match record.kind.as_str() {
+            "property" => {
+                if !matches!(record.name.as_str(), "VectorConst" | "Int" | "Float") {
+                    return Err(Error::at(source, record.offset, "unknown typed property"));
+                }
+                let name = record.name.clone();
+                let mut fields = Fields::new(source, record);
+                let constraints = list(source, fields.take("constraints")?)?;
+                fields.finish()?;
+                properties.push(Property { name, constraints });
+            }
             "op" => ops.push(operation::parse(
                 source,
                 record,
@@ -193,7 +253,7 @@ pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
                 &builtins,
                 &comparisons,
             )?),
-            "format" | "layout" | "record" | "encoding" | "comparison" => {}
+            "format" | "layout" | "record" | "encoding" | "comparison" | "storage" => {}
             kind if Builtins::is_definition(kind) => {}
             kind if Types::is_definition(kind) => {}
             _ => {
@@ -212,6 +272,7 @@ pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
         types,
         storage,
         ops,
+        properties,
     };
     definitions.validate(source)?;
     Ok(definitions)
@@ -241,29 +302,31 @@ impl Definitions {
                     op.mnemonic
                 )));
             }
-            let format = self
-                .storage
-                .formats
-                .iter()
-                .find(|f| f.name == op.format)
-                .ok_or_else(|| fail(format!("unknown format `{}`", op.format)))?;
-            if let Some(fixed) = &format.fixed_opcode
-                && fixed != &op.name
-            {
-                return Err(fail(format!(
-                    "format `{}` has fixed opcode `{fixed}`, not `{}`",
-                    op.format, op.name
-                )));
-            }
-            let ty = &op.signature;
-            operation::validate_packing(source, op, format)?;
-            match (format.arity, &ty.operands) {
-                (Some(arity), TypeList::Fixed(patterns)) if arity == patterns.len() => {}
-                (None, TypeList::Variadic(_)) => {}
-                _ => {
-                    return Err(fail(
-                        "storage operands do not match the logical signature".into(),
-                    ));
+            if let storage::Strategy::Packed = self.storage.strategy {
+                let format = self
+                    .storage
+                    .formats
+                    .iter()
+                    .find(|f| f.name == op.format)
+                    .ok_or_else(|| fail(format!("unknown format `{}`", op.format)))?;
+                if let Some(fixed) = &format.fixed_opcode
+                    && fixed != &op.name
+                {
+                    return Err(fail(format!(
+                        "format `{}` has fixed opcode `{fixed}`, not `{}`",
+                        op.format, op.name
+                    )));
+                }
+                let ty = &op.signature;
+                operation::validate_packing(source, op, format)?;
+                match (format.arity, &ty.operands) {
+                    (Some(arity), TypeList::Fixed(patterns)) if arity == patterns.len() => {}
+                    (None, TypeList::Variadic(_)) => {}
+                    _ => {
+                        return Err(fail(
+                            "storage operands do not match the logical signature".into(),
+                        ));
+                    }
                 }
             }
             if (op.identity.is_some()

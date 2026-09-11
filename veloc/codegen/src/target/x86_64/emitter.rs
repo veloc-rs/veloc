@@ -45,6 +45,16 @@ impl TargetEmitter for X86_64CodeEmitter {
             }
             MachineOpcode::Target(target_inst_code) => {
                 let target = crate::target::x86_64::isle::TargetInst::from_u32(*target_inst_code);
+                if let Some(access) = inst.memory {
+                    let shape = super::isle::target_inst_metadata(target).memory;
+                    if shape != Some((access.kind, access.bytes))
+                        || !access.alignment.is_power_of_two()
+                    {
+                        return Err(crate::Error::codegen(
+                            "emitted instruction violates its memory access contract",
+                        ));
+                    }
+                }
                 target
                     .emit::<Self>(emitter, inst, mfunc)
                     .unwrap_or_else(|err| {

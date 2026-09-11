@@ -1,0 +1,14 @@
+export function sum(i64) -> i64
+block0(v0: i64):
+  v1: i64 = iconst 0
+  v2: i64 = iconst 1
+  jump block1(v0, v1)
+block1(v3: i64, v4: i64):
+  v5: bool = icmp eq v3, v1
+  br v5, block3(v4), block2()
+block2():
+  v6: i64 = iadd v3, v4
+  v7: i64 = isub v3, v2
+  jump block1(v7, v6)
+block3(v8: i64):
+  return v8

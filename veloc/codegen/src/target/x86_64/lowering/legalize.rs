@@ -19,7 +19,7 @@ impl TargetLegalizer for X86_64Legalizer {
         inst: &MachineInst,
         mfunc: &MachineFunction<LegalizedLir>,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
-        crate::legalize_matcher!(inst, mfunc, {
+        let action = crate::legalize_matcher!(inst, mfunc, {
             G_ARG => {
                 [def(any), imm] => legal,
             };
@@ -66,16 +66,25 @@ impl TargetLegalizer for X86_64Legalizer {
                     if same_types(0, 2, 3) => legal,
             };
             G_LOAD => {
-                [def(scalar_numeric(32, 64)), use(PTR)] => legal,
+                [def(scalar_value(8, 16, 32, 64)), use(PTR)] => legal,
+            };
+            G_STACK_LOAD => {
+                [def(scalar_value(8, 16, 32, 64)), stackslot] => legal,
+            };
+            G_STACK_ADDR => {
+                [def(PTR), stackslot] => legal,
+            };
+            G_STACK_STORE => {
+                [use(scalar_value(8, 16, 32, 64)), stackslot] => legal,
             };
             G_STORE => {
-                [use(scalar_numeric(32, 64)), use(PTR)] => legal,
+                [use(scalar_value(8, 16, 32, 64)), use(PTR)] => legal,
             };
             G_OFFSET_LOAD => {
-                [def(scalar_numeric(32, 64)), use(PTR), imm] => legal,
+                [def(scalar_value(8, 16, 32, 64)), use(PTR), imm] => legal,
             };
             G_OFFSET_STORE => {
-                [use(scalar_numeric(32, 64)), use(PTR), imm] => legal,
+                [use(scalar_value(8, 16, 32, 64)), use(PTR), imm] => legal,
             };
             G_INDEXED_LOAD => {
                 [def(scalar_numeric(32, 64)), tied(PTR), use(PTR), imm] => legal,
@@ -86,8 +95,11 @@ impl TargetLegalizer for X86_64Legalizer {
             G_CONSTANT => {
                 [def(int_or_ptr_scalar(32, 64)), imm] => legal,
             };
+            G_PTR_ADD => {
+                [def(PTR), use(PTR), use(I64)] => legal,
+            };
             G_COPY => {
-                [def(scalar_value(32, 64)), use(scalar_value(32, 64))]
+                [def(scalar_value(8, 16, 32, 64)), use(scalar_value(8, 16, 32, 64))]
                     if same_types(0, 1) => legal,
             };
             G_BITCAST => {
@@ -110,7 +122,18 @@ impl TargetLegalizer for X86_64Legalizer {
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64))]
                     if same_types(0, 1) => lower,
             };
-        })
+        })?;
+        if action == Some(LegalizeAction::Legal) {
+            let offset = match inst.generic_opcode() {
+                Some(GenericOpcode::G_OFFSET_LOAD) => Some(inst.as_load_offset()?.offset),
+                Some(GenericOpcode::G_OFFSET_STORE) => Some(inst.as_store_offset()?.offset),
+                _ => None,
+            };
+            if offset.is_some_and(|offset| i32::try_from(offset).is_err()) {
+                return Ok(Some(LegalizeAction::Lower));
+            }
+        }
+        Ok(action)
     }
 
     fn legalize_instruction(
@@ -122,6 +145,35 @@ impl TargetLegalizer for X86_64Legalizer {
         let opcode = mfunc.dfg[inst_id].generic_opcode();
         if let Some(opcode) = opcode {
             match opcode {
+                GenericOpcode::G_OFFSET_LOAD | GenericOpcode::G_OFFSET_STORE => {
+                    let inst = mfunc.dfg[inst_id].clone();
+                    let (base, offset, value) = if opcode == GenericOpcode::G_OFFSET_LOAD {
+                        let load = inst.as_load_offset()?;
+                        (load.base, load.offset, load.dst)
+                    } else {
+                        let store = inst.as_store_offset()?;
+                        (store.base, store.offset, store.src)
+                    };
+                    // x86 disp32 sign-extends. Materialize the full displacement
+                    // before the access rather than silently truncating it.
+                    let displacement = mfunc.alloc_vreg(Type::I64);
+                    let address = mfunc.alloc_vreg(Type::PTR);
+                    let constant = mfunc
+                        .alloc_inst(MachineInst::build_constant(Writable(displacement), offset));
+                    let add = mfunc.alloc_inst(MachineInst::build_ptr_add(
+                        Writable(address),
+                        base,
+                        displacement,
+                    ));
+                    let mut access = if opcode == GenericOpcode::G_OFFSET_LOAD {
+                        MachineInst::build_offset_load(Writable(value), address, 0)
+                    } else {
+                        MachineInst::build_offset_store(value, address, 0)
+                    };
+                    access.memory = inst.memory;
+                    mfunc.replace_inst(inst_id, access);
+                    return Ok(LegalizeResult::Replace(alloc::vec![constant, add, inst_id]));
+                }
                 GenericOpcode::G_CTPOP | GenericOpcode::G_CTLZ | GenericOpcode::G_CTTZ => {
                     let inst = mfunc.dfg[inst_id].clone();
                     let unary = inst.as_unary_reg().unwrap_or_else(|err| {

@@ -3,37 +3,11 @@ use std::{env, fs, path::PathBuf};
 fn main() {
     println!("cargo:rerun-if-changed=../../rustfmt.toml");
     println!("cargo:rerun-if-env-changed=RUSTFMT");
-    let mut source = String::new();
-    let mut locations = Vec::new();
-    let mut line = 1;
-    for path in [
-        "defs/types.ops",
-        "defs/builtins.ops",
-        "defs/comparisons.ops",
-        "defs/formats.ops",
-        "defs/mir.ops",
-    ] {
-        println!("cargo:rerun-if-changed={path}");
-        let input = fs::read_to_string(path).unwrap_or_else(|err| panic!("{path}: {err}"));
-        let end = line + input.bytes().filter(|&b| b == b'\n').count() + 1;
-        locations.push((path, line..end));
-        line = end;
-        source.push_str(&input);
-        source.push('\n');
+    let source = veloc_opgen::Source::load("defs/module.ops").expect("load MIR definitions");
+    for path in source.dependencies() {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
-    let output = veloc_opgen::compile_mir(&source).unwrap_or_else(|err| {
-        let (path, lines) = locations
-            .iter()
-            .find(|(_, lines)| lines.contains(&err.line))
-            // A missing closing delimiter can point just beyond the last line.
-            .unwrap_or_else(|| locations.last().expect("at least one definition input"));
-        panic!(
-            "{path}:{}:{}: {}",
-            err.line - lines.start + 1,
-            err.column,
-            err.message
-        );
-    });
+    let output = source.compile().expect("compile MIR definitions");
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
     let mut rust_files = Vec::new();
     for (name, text) in [

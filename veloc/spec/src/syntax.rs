@@ -61,12 +61,94 @@ pub(crate) struct Record {
     pub signature: Option<Signature>,
 }
 
+impl Record {
+    /// Relocate an independently parsed file into the compilation's source map.
+    pub(crate) fn relocate(&mut self, base: usize) {
+        self.offset += base;
+        for node in self.fields.values_mut() {
+            node.relocate(base);
+        }
+        if let Some(signature) = &mut self.signature {
+            for param in signature.generics.iter_mut().chain(&mut signature.params) {
+                param.offset += base;
+                param.ty.relocate(base);
+            }
+            if let Results::Fixed(results) = &mut signature.results {
+                for result in results {
+                    result.offset += base;
+                    result.ty.relocate(base);
+                }
+            }
+        }
+    }
+}
+
+impl Node {
+    fn relocate(&mut self, base: usize) {
+        self.offset += base;
+        match &mut self.kind {
+            Kind::List(nodes)
+            | Kind::Call(_, nodes)
+            | Kind::Union(nodes)
+            | Kind::Intersection(nodes) => {
+                for node in nodes {
+                    node.relocate(base);
+                }
+            }
+            Kind::Object(_, fields) => {
+                for node in fields.values_mut() {
+                    node.relocate(base);
+                }
+            }
+            Kind::Unary(_, node) | Kind::Lambda(_, node) => node.relocate(base),
+            Kind::Binary(_, lhs, rhs) => {
+                lhs.relocate(base);
+                rhs.relocate(base);
+            }
+            Kind::Name(_) | Kind::Text(_) | Kind::Number(_) | Kind::Integer(_) => {}
+        }
+    }
+}
+
+pub(crate) struct Import {
+    pub range: std::ops::Range<usize>,
+    pub path: String,
+}
+
+/// Imports form a file preamble; strings and comments use the normal lexer.
+pub(crate) fn imports(source: &str) -> Result<Vec<Import>, Error> {
+    let mut parser = Parser { source, offset: 0 };
+    let mut imports = Vec::new();
+    while parser.peek().is_some() {
+        let start = parser.offset;
+        if parser.name()? != "import" {
+            break;
+        }
+        let node = parser.atom(0, false)?;
+        let Kind::Text(path) = node.kind else {
+            return Err(parser.error(node.offset, "import requires a quoted relative path"));
+        };
+        parser.expect(b';')?;
+        imports.push(Import {
+            range: start..parser.offset,
+            path,
+        });
+    }
+    Ok(imports)
+}
+
 pub(crate) fn parse(source: &str) -> Result<Vec<Record>, Error> {
     let mut parser = Parser { source, offset: 0 };
     let mut records = Vec::new();
     while parser.peek().is_some() {
         let offset = parser.offset;
         let kind = parser.name()?;
+        if kind == "import" {
+            return Err(parser.error(
+                offset,
+                "imports require Source::load and must precede declarations",
+            ));
+        }
         let name = parser.name()?;
         let signature = if kind == "op" {
             Some(parser.signature()?)

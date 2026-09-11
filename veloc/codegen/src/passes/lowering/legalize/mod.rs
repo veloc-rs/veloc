@@ -2,6 +2,9 @@ pub mod info;
 
 pub use info::*;
 
+#[cfg(test)]
+mod tests;
+
 use crate::error::{Error, Result};
 use crate::target::arch::TargetLegalizer;
 use veloc_lir::stages::LegalizedLir;
@@ -17,60 +20,62 @@ impl<'a> Legalizer<'a> {
     }
 
     pub fn legalize(&self, mfunc: &mut MachineFunction<LegalizedLir>) -> Result<()> {
-        let num_blocks = mfunc.blocks.len();
-        for i in 0..num_blocks {
-            mfunc
-                .rewrite_block(i, |cursor| {
-                    let inst_id = cursor.current_inst_id();
-                    if cursor.current_inst().is_invalid() {
-                        cursor.remove_current();
-                        return Ok(());
+        // Process expansions in program order, including generic instructions
+        // produced by other rules. A single forward scan is not a legalizer.
+        const MAX_REWRITES: usize = 1024;
+        let mut pending = alloc::vec::Vec::new();
+        let mut block = 0;
+        while block < mfunc.blocks.len() {
+            mfunc.rewrite_block(block, |cursor| {
+                pending.clear();
+                pending.push(cursor.current_inst_id());
+                cursor.remove_current();
+                let mut rewrites = 0;
+                while let Some(id) = pending.pop() {
+                    let inst = &cursor.mfunc().dfg[id];
+                    if inst.is_invalid() {
+                        continue;
                     }
-
-                    if cursor.current_inst().generic_opcode().is_none() {
-                        cursor.keep_current();
-                        return Ok(());
+                    if inst.generic_opcode().is_none() {
+                        cursor.emit_existing_before(id);
+                        continue;
                     }
-
-                    let action = {
-                        let inst = cursor.current_inst();
-                        self.target.legalize_action(inst, cursor.mfunc())?
-                    };
-
-                    match action {
+                    match self.target.legalize_action(inst, cursor.mfunc())? {
                         None => {
-                            let (opcode, operands) =
-                                self.inst_signature_context(cursor.current_inst(), cursor.mfunc())?;
+                            let (opcode, operands) = self.inst_signature_context(inst, cursor.mfunc())?;
                             return Err(Error::codegen(alloc::format!(
-                                "missing legalization rule for {:?} with signature {:?}",
-                                opcode, operands
+                                "missing legalization rule for {opcode:?} with signature {operands:?}"
                             )));
                         }
-                        Some(LegalizeAction::Legal) => {
-                            cursor.keep_current();
-                        }
+                        Some(LegalizeAction::Legal) => cursor.emit_existing_before(id),
                         Some(LegalizeAction::Lower) => {
-                            let LegalizeResult::Replace(output) = self
-                                .target
-                                .legalize_instruction(inst_id, cursor.mfunc_mut())?;
-                            cursor.remove_current();
-                            for new_id in output {
-                                cursor.emit_existing_before(new_id);
+                            if rewrites == MAX_REWRITES {
+                                return Err(Error::codegen(alloc::format!(
+                                    "legalization did not converge after {MAX_REWRITES} rewrites: {:?}",
+                                    inst.opcode
+                                )));
                             }
+                            rewrites += 1;
+                            let LegalizeResult::Replace(output) =
+                                self.target.legalize_instruction(id, cursor.mfunc_mut())?;
+                            // Rules may rewrite the same ID in place. Preserve it
+                            // in that case and check its new form on the worklist.
+                            if !output.contains(&id) {
+                                cursor.mfunc_mut().invalidate_inst(id);
+                            }
+                            pending.extend(output.into_iter().rev());
                         }
                         Some(LegalizeAction::WidenScalar { to }) => {
-                            let (opcode, operands) =
-                                self.inst_signature_context(cursor.current_inst(), cursor.mfunc())?;
+                            let (opcode, operands) = self.inst_signature_context(inst, cursor.mfunc())?;
                             return Err(Error::codegen(alloc::format!(
-                                "widen-scalar legalization is not implemented yet for {:?} with signature {:?} (target {:?})",
-                                opcode, operands, to
+                                "widen-scalar legalization is not implemented yet for {opcode:?} with signature {operands:?} (target {to:?})"
                             )));
                         }
                     }
-
-                    Ok(())
-                })
-                ?;
+                }
+                Ok(())
+            })?;
+            block += 1;
         }
         Ok(())
     }

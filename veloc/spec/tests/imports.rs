@@ -1,0 +1,186 @@
+//! Exercise the filesystem entry point, checked models and generated artifacts.
+mod common;
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use veloc_opgen::Source;
+
+struct Files(PathBuf);
+impl Files {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "veloc-opgen-imports-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let files = Self(path);
+        files.write("prelude.ops", common::BUILTINS);
+        files
+    }
+    fn write(&self, name: &str, text: &str) {
+        std::fs::write(self.0.join(name), text).unwrap();
+    }
+    fn load(&self, name: &str) -> Result<Source, veloc_opgen::SourceError> {
+        Source::load(self.0.join(name))
+    }
+}
+impl Drop for Files {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn diamond_imports_generate_each_definition_once() {
+    let files = Files::new();
+    files.write(
+        "shared.ops",
+        "// no final newline\nclass Small { members: [I8, I16] }",
+    );
+    files.write(
+        "left.ops",
+        "import \"prelude.ops\";\nimport \"shared.ops\";\n",
+    );
+    files.write("right.ops", "import \"./shared.ops\";\n");
+    files.write(
+        "root.ops",
+        "// import \"not-a-dependency\";\nimport \"left.ops\";\nimport \"right.ops\";\n",
+    );
+    let source = files.load("root.ops").unwrap();
+    let generated = source.compile().unwrap();
+    assert_eq!(generated.opcodes.matches("pub const Small:").count(), 1);
+    for name in [
+        "root.ops",
+        "left.ops",
+        "right.ops",
+        "shared.ops",
+        "prelude.ops",
+    ] {
+        assert!(source.dependencies().any(|path| path == files.0.join(name)));
+    }
+    assert!(
+        !source
+            .dependencies()
+            .any(|path| path.ends_with("not-a-dependency"))
+    );
+}
+
+#[test]
+fn model_errors_retain_imported_file_line_and_column() {
+    let files = Files::new();
+    files.write(
+        "bad.ops",
+        "// 类型定义\nclass Broken { members: [Missing] }",
+    );
+    files.write("root.ops", "import \"prelude.ops\";\nimport \"bad.ops\";");
+    let source = files.load("root.ops").unwrap();
+    let error = source.parse().err().unwrap();
+    assert_eq!(error.path, files.0.join("bad.ops"));
+    assert_eq!(error.diagnostic.line, 2);
+    assert!(error.diagnostic.column > 1);
+    assert!(error.diagnostic.message.contains("Missing"));
+}
+
+#[test]
+fn imported_files_are_syntactically_independent() {
+    let files = Files::new();
+    files.write("bad.ops", "class Broken {\n");
+    files.write("root.ops", "import \"bad.ops\";\n}");
+    let error = files.load("root.ops").err().unwrap();
+    // The root is also malformed. Neither file may complete the other's braces.
+    assert!(error.diagnostic.message.contains("expected"));
+    files.write("root.ops", "import \"bad.ops\";\n");
+    let error = files.load("root.ops").err().unwrap();
+    assert_eq!(error.path, files.0.join("bad.ops"));
+    assert_eq!(error.diagnostic.line, 2);
+    assert!(error.diagnostic.message.contains("imported from"));
+}
+
+#[test]
+fn cycles_missing_files_and_late_imports_have_diagnostics() {
+    let files = Files::new();
+    files.write("a.ops", "import \"b.ops\";");
+    files.write("b.ops", "import \"./a.ops\";");
+    let error = files.load("a.ops").err().unwrap();
+    assert!(error.to_string().contains("import cycle"));
+    assert!(error.to_string().contains("b.ops"));
+    files.write("missing.ops", "\nimport \"missing-target.ops\";");
+    let error = files.load("missing.ops").err().unwrap();
+    assert!(error.to_string().contains("missing-target.ops"));
+    assert!(error.to_string().contains("missing.ops:2:1"));
+    files.write(
+        "late.ops",
+        "class A { members: [I8] }\nimport \"prelude.ops\";",
+    );
+    assert!(
+        files
+            .load("late.ops")
+            .err()
+            .unwrap()
+            .diagnostic
+            .message
+            .contains("precede")
+    );
+    assert!(
+        veloc_opgen::parse("import \"prelude.ops\";")
+            .err()
+            .unwrap()
+            .message
+            .contains("Source::load")
+    );
+}
+
+#[test]
+fn import_strings_are_not_a_second_ad_hoc_lexer() {
+    let files = Files::new();
+    files.write("space name.ops", "import \"prelude.ops\";");
+    files.write("root.ops", "import \"space name.ops\";\n");
+    files.load("root.ops").unwrap().compile().unwrap();
+    for text in [
+        "import prelude;",
+        "import \"\";",
+        "import \"/absolute.ops\";",
+        "import \"prelude.ops\"",
+    ] {
+        files.write("invalid.ops", text);
+        assert!(files.load("invalid.ops").is_err(), "{text}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_identity_and_dependencies_are_both_preserved() {
+    let files = Files::new();
+    std::os::unix::fs::symlink(Path::new("prelude.ops"), files.0.join("alias.ops")).unwrap();
+    files.write("root.ops", "import \"prelude.ops\";\nimport \"alias.ops\";");
+    let source = files.load("root.ops").unwrap();
+    source.compile().unwrap();
+    assert!(
+        source
+            .dependencies()
+            .any(|path| path.ends_with("alias.ops"))
+    );
+    assert!(
+        source
+            .dependencies()
+            .any(|path| path.ends_with("prelude.ops"))
+    );
+}
+
+#[test]
+fn production_entry_points_generate_the_same_runtime_contracts() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mir = Source::load(root.join("mir/defs/module.ops")).unwrap();
+    let lir = Source::load(root.join("lir/defs/module.ops")).unwrap();
+    assert!(mir.compile().unwrap().opcodes.contains("pub enum Opcode"));
+    assert!(
+        lir.compile()
+            .unwrap()
+            .instructions
+            .contains("pub enum GenericOpcode")
+    );
+    assert_eq!(lir.parse().unwrap().primitive_bindings().len(), 7);
+    assert!(mir.dependencies().any(|p| p.ends_with("defs/types.ops")));
+}

@@ -169,14 +169,19 @@ fn lower_callsite<S>(
         cursor.emit_before(inst);
     }
 
+    cursor.emit_existing_before(inst_id);
+    cursor.remove_current();
+    cursor.mfunc_mut().stack_frame.arg_size = cursor
+        .mfunc()
+        .stack_frame
+        .arg_size
+        .max(plan.stack_arg_bytes);
+
     for (dst, assignment) in shape.defs.iter().copied().zip(plan.returns.iter()) {
         let inst =
             build_load_from_assignment(target, cursor.mfunc_mut(), assignment, dst, "call return");
         cursor.emit_before(inst);
     }
-
-    cursor.emit_existing_before(inst_id);
-    cursor.remove_current();
 }
 
 fn lower_return<S>(
@@ -230,7 +235,7 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
         ctx: &mut FunctionPassContext<'_, LegalizedLir>,
     ) -> Result<(MachineFunction<LegalizedLir>, PassEffect)> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
-        mfunc.stack_frame.arg_size = plan.stack_arg_bytes;
+        mfunc.stack_frame.arg_size = 0;
         lower_formal_arguments(ctx.target, &mut mfunc, &plan);
 
         let func_name = mfunc.name.clone();

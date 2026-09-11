@@ -1,5 +1,5 @@
 //! Physical storage and borrowed successor groups. No nested SSA-value pools.
-use super::InstFields;
+use super::{InstFields, PackedFields};
 use crate::{Block, BlockCall, Value};
 
 pub type Arguments = smallvec::SmallVec<[Value; 4]>;
@@ -7,7 +7,59 @@ pub type Arguments = smallvec::SmallVec<[Value; 4]>;
 #[derive(Debug, Clone)]
 pub(crate) struct StoredInst {
     pub operands: crate::dfg::OperandRange,
-    pub fields: InstFields,
+    pub fields: PackedFields,
+}
+
+pub(crate) use crate::constant::{ScalarBits, VectorBits};
+
+/// Only out-of-line layouts occupy slots. Replacement and erasure recycle them.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FieldPool {
+    slots: alloc::vec::Vec<FieldSlot>,
+    free: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+enum FieldSlot {
+    Live(InstFields),
+    Free(Option<u32>),
+}
+
+impl FieldPool {
+    pub fn insert(&mut self, fields: InstFields) -> u32 {
+        if let Some(id) = self.free {
+            let FieldSlot::Free(next) = self.slots[id as usize] else {
+                unreachable!("free field slot")
+            };
+            self.free = next;
+            self.slots[id as usize] = FieldSlot::Live(fields);
+            id
+        } else {
+            let id = self.slots.len().try_into().expect("too many field slots");
+            self.slots.push(FieldSlot::Live(fields));
+            id
+        }
+    }
+
+    pub fn get(&self, id: u32) -> &InstFields {
+        let FieldSlot::Live(fields) = &self.slots[id as usize] else {
+            unreachable!("live field slot")
+        };
+        fields
+    }
+
+    pub fn get_mut(&mut self, id: u32) -> &mut InstFields {
+        let FieldSlot::Live(fields) = &mut self.slots[id as usize] else {
+            unreachable!("live field slot")
+        };
+        fields
+    }
+
+    pub fn remove(&mut self, id: u32) {
+        assert!(matches!(self.slots[id as usize], FieldSlot::Live(_)));
+        self.slots[id as usize] = FieldSlot::Free(self.free);
+        self.free = Some(id);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +88,73 @@ impl Edges {
             entries,
             len: values.len() - start,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Float, InstDraft, Int, Opcode, Type, VectorConst};
+
+    #[test]
+    fn persistent_layout_and_pool_costs() {
+        assert_eq!(size_of::<ScalarBits>(), 9);
+        assert_eq!(size_of::<VectorBits>(), 11);
+        assert_eq!(size_of::<PackedFields>(), 16);
+        assert_eq!(size_of::<StoredInst>(), 24);
+        // A cold instruction pays for this slot in addition to its 24-byte header.
+        assert_eq!(size_of::<FieldSlot>(), 32);
+    }
+
+    #[test]
+    fn fields_roundtrip_and_recycle_without_changing_drafts() {
+        let a = BlockCall::new(Block(1), &[Value(2), Value(3)]);
+        let b = BlockCall::new(Block(2), &[Value(4)]);
+        let vector = VectorConst::splat((-7i32).into(), 4, true).unwrap();
+        let drafts = [
+            InstDraft::binary(Opcode::IAdd, [Value(0), Value(1)]),
+            InstDraft::iconst(Int::from_bits(Type::I64, u64::MAX).unwrap()),
+            InstDraft::fconst(Float::from_f32_bits(0x7fa12345)),
+            InstDraft::fconst(Float::from_f64_bits(0x8000000000000000)),
+            InstDraft::vconst(vector),
+            InstDraft::vconst(VectorConst::dense(
+                Type::I32X4.as_vector().unwrap(),
+                super::super::ConstantPoolId(u32::MAX),
+            )),
+            InstDraft::call(crate::FuncId(3), &[Value(0), Value(1)]),
+            InstDraft::br(Value(0), a.as_view(), b.as_view()),
+            InstDraft::br_table(Value(0), [a.as_view(), b.as_view()]),
+        ];
+        let mut pool = FieldPool::default();
+        for draft in drafts {
+            let expected = format!("{:?}", draft.as_view());
+            let opcode = draft.opcode();
+            let InstDraft { fields, operands } = draft;
+            let packed = fields.pack(&mut pool);
+            assert_eq!(
+                matches!(packed, PackedFields::OutOfLine(_)),
+                opcode == Opcode::BrTable
+            );
+            assert_eq!(packed.opcode(&pool), opcode);
+            let view = packed.view(&operands, &pool);
+            assert_eq!(format!("{view:?}"), expected);
+            assert_eq!(format!("{:?}", view.to_draft().as_view()), expected);
+            let mut cloned = pool.clone();
+            packed.release(&mut pool);
+            // Cloning a DFG's pool must not share mutable slots with the original.
+            assert_eq!(format!("{:?}", packed.view(&operands, &cloned)), expected);
+            packed.release(&mut cloned);
+        }
+        // Only the branch table needs a slot; constants remain inline too.
+        assert_eq!(pool.slots.len(), 1);
+        for _ in 0..100 {
+            let packed = InstDraft::br_table(Value(0), [a.as_view(), b.as_view()])
+                .fields
+                .pack(&mut pool);
+            assert!(matches!(packed, PackedFields::OutOfLine(0)));
+            packed.release(&mut pool);
+        }
+        assert_eq!(pool.slots.len(), 1);
     }
 }
 

@@ -1,0 +1,61 @@
+// ----- dense
+// run: roundtrip
+// check: v0: i32<4> = vconst 0x01000000feffffff0300000004000000
+local function dense() -> i32<4>
+block0():
+  v0: i32<4> = vconst 0x01000000feffffff0300000004000000
+  return v0
+
+// ----- splats
+// run: roundtrip
+// check: v0: i32<4> = vconst splat(-7)
+// check: v1: f32<scalable 4> = vconst splat(0x7fa12345)
+// check: v2: mask<4> = vconst splat(true)
+// check: v3: f64<2> = vconst splat(0x8000000000000000)
+local function splats() -> void
+block0():
+  v0: i32<4> = vconst splat(-7)
+  v1: f32<scalable 4> = vconst splat(0x7fa12345)
+  v2: bool<4> = vconst splat(true)
+  v3: f64<2> = vconst splat(0x8000000000000000)
+  return
+
+// ----- scalable-dense
+// run: validate-error
+// check: dense vector constant requires a fixed type
+local function bad() -> void
+block0():
+  v0: i32<scalable 4> = vconst 0x00000000000000000000000000000000
+  return
+
+// ----- invalid-boolean-lane
+// run: validate-error
+// check: boolean constant lanes must be zero or one
+local function bad() -> void
+block0():
+  v0: bool<4> = vconst 0x00010200
+  return
+
+// ----- missing-result
+// run: parse-error
+// check: vector constant requires a vector result type
+local function bad() -> void
+block0():
+  vconst splat(7)
+  return
+
+// ----- scalar-result
+// run: parse-error
+// check: vector constant requires a vector result type
+local function bad() -> void
+block0():
+  v0: i32 = vconst splat(7)
+  return
+
+// ----- invalid-float-bits
+// run: parse-error
+// check: f32 bit pattern does not fit in 32 bits
+local function bad() -> void
+block0():
+  v0: f32<4> = vconst splat(0x100000000)
+  return

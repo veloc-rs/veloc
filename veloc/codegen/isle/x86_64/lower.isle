@@ -967,9 +967,9 @@ end
     (cost 1))
 (select-rule
     (match (schema BranchCond G_BRCOND (cond $cond) (then_blk $then) (else_blk $else) @n))
-    (emit (X86Jcc $cond $then))
+    (emit (seq (X86Jcc $cond $then) (X86Jmp $else)))
     (covers (@n))
-    (cost 1))
+    (cost 2))
 (select-rule
     (match (schema Return G_RET @n))
     (emit (X86Ret))
@@ -1024,5 +1024,59 @@ end
 (select-rule
     (match (schema BinaryReg G_UREM (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
     (emit (seq (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs)))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_FADD (dst (FPR32 $dst)) (lhs (FPR32 $lhs)) (rhs (FPR32 $rhs)) @n))
+    (emit (X86FAdd32 $rhs))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_FADD (dst (FPR64 $dst)) (lhs (FPR64 $lhs)) (rhs (FPR64 $rhs)) @n))
+    (emit (X86FAdd64 $rhs))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_FSUB (dst (FPR32 $dst)) (lhs (FPR32 $lhs)) (rhs (FPR32 $rhs)) @n))
+    (emit (X86FSub32 $rhs))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_FSUB (dst (FPR64 $dst)) (lhs (FPR64 $lhs)) (rhs (FPR64 $rhs)) @n))
+    (emit (X86FSub64 $rhs))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_FMUL (dst (FPR32 $dst)) (lhs (FPR32 $lhs)) (rhs (FPR32 $rhs)) @n))
+    (emit (X86FMul32 $rhs))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_FMUL (dst (FPR64 $dst)) (lhs (FPR64 $lhs)) (rhs (FPR64 $rhs)) @n))
+    (emit (X86FMul64 $rhs))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_FDIV (dst (FPR32 $dst)) (lhs (FPR32 $lhs)) (rhs (FPR32 $rhs)) @n))
+    (emit (X86FDiv32 $rhs))
+    (covers (@n))
+    (cost 1))
+
+(select-rule
+    (match (schema BinaryReg G_FDIV (dst (FPR64 $dst)) (lhs (FPR64 $lhs)) (rhs (FPR64 $rhs)) @n))
+    (emit (X86FDiv64 $rhs))
+    (covers (@n))
+    (cost 1))
+;; Symbolic frame address; the physical frame base is resolved during emission.
+(select-rule
+    (match (schema StackAddr G_STACK_ADDR (dst (GPTR $dst)) (slot $slot) @n))
+    (emit (X86LeaStack $dst $slot))
     (covers (@n))
     (cost 1))

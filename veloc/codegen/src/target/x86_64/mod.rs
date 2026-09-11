@@ -5,6 +5,7 @@
 pub mod emitter;
 pub mod isle;
 pub mod lowering;
+mod machine;
 
 pub use emitter::X86_64CodeEmitter;
 pub use lowering::{
@@ -136,6 +137,36 @@ impl X86_64TargetMachine {
 }
 
 impl TargetMachine for X86_64TargetMachine {
+    fn schedule_info(
+        &self,
+        inst: &veloc_lir::MachineInst,
+    ) -> Option<crate::target::arch::ScheduleInfo> {
+        machine::schedule_info(inst)
+    }
+
+    fn target_control(&self, opcode: u32) -> veloc_lir::ControlFlow {
+        isle::target_inst_metadata(isle::TargetInst::from_u32(opcode)).flow
+    }
+
+    fn spill_scratch(&self, class: RegClass) -> &'static [veloc_lir::Reg] {
+        match class {
+            RegClass::GPR => &[isle::REG_R10, isle::REG_R11],
+            RegClass::FPR => &[isle::REG_XMM14, isle::REG_XMM15],
+            _ => &[],
+        }
+    }
+
+    fn spill_instruction(
+        &self,
+        load: bool,
+        reg: veloc_lir::Reg,
+        base: veloc_lir::Reg,
+        offset: i64,
+        ty: veloc_mir::Type,
+    ) -> crate::error::Result<veloc_lir::MachineInst> {
+        machine::spill_instruction(load, reg, base, offset, ty)
+    }
+
     fn config(&self) -> &TargetConfig {
         &self.config
     }

@@ -53,8 +53,8 @@ impl<'a> WasmTranslator<'a> {
                 let src = self.pop_i32();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let table_idx = self.builder.ins().iconst(table as u64, VelocType::I32);
-                let elem_idx = self.builder.ins().iconst(elem_index as u64, VelocType::I32);
+                let table_idx = self.builder.ins().i32const((table) as i32);
+                let elem_idx = self.builder.ins().i32const((elem_index) as i32);
                 self.builder.ins().call(
                     self.runtime.table_init,
                     &[vmctx, table_idx, elem_idx, dst, src, len],
@@ -68,8 +68,8 @@ impl<'a> WasmTranslator<'a> {
                 let src = self.pop_i32();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let dst_table_val = self.builder.ins().iconst(dst_table as u64, VelocType::I32);
-                let src_table_val = self.builder.ins().iconst(src_table as u64, VelocType::I32);
+                let dst_table_val = self.builder.ins().i32const((dst_table) as i32);
+                let src_table_val = self.builder.ins().i32const((src_table) as i32);
                 self.builder.ins().call(
                     self.runtime.table_copy,
                     &[vmctx, dst_table_val, src_table_val, dst, src, len],
@@ -79,7 +79,7 @@ impl<'a> WasmTranslator<'a> {
                 let delta = self.pop_i32();
                 let init_val = self.pop();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let table_idx = self.builder.ins().iconst(table as u64, VelocType::I32);
+                let table_idx = self.builder.ins().i32const((table) as i32);
                 let call_inst = self.builder.ins().call(
                     self.runtime.table_grow,
                     &[vmctx, table_idx, init_val, delta],
@@ -99,14 +99,14 @@ impl<'a> WasmTranslator<'a> {
                 let val = self.pop();
                 let dst = self.pop_i32();
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let table_idx = self.builder.ins().iconst(table as u64, VelocType::I32);
+                let table_idx = self.builder.ins().i32const((table) as i32);
                 self.builder
                     .ins()
                     .call(self.runtime.table_fill, &[vmctx, table_idx, dst, val, len]);
             }
             Operator::ElemDrop { elem_index } => {
                 let vmctx = self.vmctx.expect("vmctx not set");
-                let elem_idx = self.builder.ins().iconst(elem_index as u64, VelocType::I32);
+                let elem_idx = self.builder.ins().i32const((elem_index) as i32);
                 self.builder
                     .ins()
                     .call(self.runtime.elem_drop, &[vmctx, elem_idx]);

@@ -1,7 +1,7 @@
 mod common;
 
 fn checked(predicate: &str) -> Result<veloc_opgen::Generated, veloc_opgen::Error> {
-    common::compile_mir(&format!(
+    common::compile(&format!(
         r#"
 format Custom {{ fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }}
 op Example(@number: u64, @flag: bool) -> ScalarInteger {{
@@ -47,12 +47,12 @@ fn record_access_uses_logical_names_not_rule_or_storage_names() {
         .replace("imm.scale", "stride.scale")
         .replace("imm.offset", "stride.offset");
     assert!(
-        common::compile_mir(&renamed)
+        common::compile(&renamed)
             .unwrap()
             .validation
             .contains(".scale")
     );
-    assert!(common::compile_mir(&source.replace("imm.scale != 0", "imm.unknown != 0")).is_err());
+    assert!(common::compile(&source.replace("imm.scale != 0", "imm.unknown != 0")).is_err());
 }
 
 #[test]
@@ -114,7 +114,7 @@ mod numeric_{index} {{
     .iter()
     .enumerate()
     {
-        let validation = common::compile_mir(&format!(r#"
+        let validation = common::compile(&format!(r#"
 format Buffers {{ fields: [opcode(Opcode), first(ConstantPoolId), second(ConstantPoolId)], opcode: dynamic(opcode) }}
 op Example(@data: Bytes, @other: Bytes) -> Vector {{
     mnemonic: "example", storage: Buffers {{ first: pool(data), second: pool(other) }},

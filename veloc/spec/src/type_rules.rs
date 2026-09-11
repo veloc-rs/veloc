@@ -11,6 +11,7 @@ type Bindings = BTreeMap<u8, String>;
 
 fn pattern(p: &Pattern, classes: &Classes) -> String {
     match p {
+        Pattern::Property(name, _) => format!("type({name})"),
         Pattern::Callable => "Callable".into(),
         Pattern::Class(class) => classes.describe(class).into(),
         Pattern::Exact(ty) => ty.clone(),
@@ -28,34 +29,7 @@ pub(crate) fn generate(
     validation: &mut String,
     instructions: &mut String,
 ) {
-    let mut ids = BTreeMap::new();
-    let mut groups: Vec<Vec<&str>> = Vec::new();
-    for op in &defs.ops {
-        let ty = &op.signature;
-        // Structural equality preserves all checks and diagnostic positions.
-        let next = groups.len();
-        let id = *ids.entry(ty).or_insert(next);
-        if id == next {
-            emit_rule(id, ty, classes, validation);
-            groups.push(Vec::new());
-        }
-        groups[id].push(&op.name);
-    }
-    validation.push_str("impl crate::Opcode {\n");
-    validation.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), crate::inst::TypeError> {\n    match self {\n");
-    for (id, names) in groups.iter().enumerate() {
-        let arms = names
-            .iter()
-            .map(|name| format!("Self::{name}"))
-            .collect::<Vec<_>>()
-            .join(" | ");
-        writeln!(
-            validation,
-            "        {arms} => validate_{id}(operands, results),"
-        )
-        .unwrap();
-    }
-    validation.push_str("    }\n}\n}\n");
+    let (ids, groups) = validation_rules(defs, classes, "crate::Opcode", validation);
     // Only the dynamic construction path needs opcode dispatch. Generated
     // builders use the same result expressions directly on their arguments.
     instructions.push_str("impl crate::InstructionView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch (self.opcode(), self) {\n");
@@ -68,40 +42,98 @@ pub(crate) fn generate(
             }
             continue;
         }
+        if signature
+            .results
+            .patterns()
+            .is_some_and(|p| p.iter().any(|p| matches!(p, Pattern::Property(..))))
+        {
+            for op in defs.ops.iter().filter(|op| &op.signature == *signature) {
+                let format = defs
+                    .storage
+                    .formats
+                    .iter()
+                    .find(|f| f.name == op.format)
+                    .unwrap();
+                let fields = format
+                    .fields
+                    .iter()
+                    .map(|f| format!("{}: _{}", f.name, f.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(
+                    instructions,
+                    "(crate::Opcode::{}, Self::{} {{ {fields} }}) => {{",
+                    op.name, op.format
+                )
+                .unwrap();
+                let projections = crate::packing::projections(
+                    op,
+                    format,
+                    "dfg",
+                    |f| format!("*_{f}"),
+                    |v| format!("{v}.ok_or(\"missing property storage\")?"),
+                );
+                emit_results(signature, instructions, |name| {
+                    let value = &projections.iter().find(|(p, _)| p == name).unwrap().1;
+                    format!("({value}).ty()")
+                });
+                instructions.push_str("},\n");
+            }
+            continue;
+        }
         let arms = groups[*id]
             .iter()
             .map(|name| format!("crate::Opcode::{name}"))
             .collect::<Vec<_>>()
             .join(" | ");
         writeln!(instructions, "({arms}, _) => {{").unwrap();
-        if let Some(results) = result_exprs(signature) {
-            if results.iter().any(|r| !matches!(r, ResultExpr::Exact(_))) {
-                instructions.push_str("let mut operands = smallvec::SmallVec::<[Type; 4]>::new();\nself.visit_type_operands(|value| operands.push(dfg.value_type(value)));\n");
+        emit_results(signature, instructions, |_| {
+            unreachable!("property results emitted per operation")
+        });
+        instructions.push_str("},\n");
+    }
+    if defs.storage.formats.len() > 1
+        && defs.ops.iter().any(|op| {
+            op.signature_source.is_some()
+                || op
+                    .signature
+                    .results
+                    .patterns()
+                    .is_some_and(|p| p.iter().any(|p| matches!(p, Pattern::Property(..))))
+        })
+    {
+        instructions.push_str(
+            "_ => Err(\"result type source is stored in an incompatible instruction format\"),\n",
+        );
+    }
+    instructions.push_str("}\n}\n}\n");
+}
+
+fn emit_results(signature: &TypeDef, instructions: &mut String, property: impl Fn(&str) -> String) {
+    if let Some(results) = result_exprs(signature) {
+        if results
+            .iter()
+            .any(|r| matches!(r, ResultExpr::Operand(_) | ResultExpr::Element(_)))
+        {
+            instructions.push_str("let mut operands = smallvec::SmallVec::<[Type; 4]>::new();\nself.visit_type_operands(|value| operands.push(dfg.value_type(value)));\n");
+        }
+        let operand = |index: usize| {
+            if index == 0 {
+                "operands.first()".to_owned()
+            } else {
+                format!("operands.get({index})")
             }
-            let operand = |index: usize| {
-                if index == 0 {
-                    "operands.first()".to_owned()
-                } else {
-                    format!("operands.get({index})")
-                }
-            };
-            let expressions = results.iter().map(|r| match r {
+        };
+        let expressions = results.iter().map(|r| match r {
+                ResultExpr::Property(name) => property(name),
                 ResultExpr::Exact(ty) => format!("Type::{ty}"),
                 ResultExpr::Operand(index) => format!("*{}.filter(|ty| ty.is_valid()).ok_or(\"result type requires a known operand type\")?", operand(*index)),
                 ResultExpr::Element(index) => format!("{}.and_then(|ty| ty.as_vector()).ok_or(\"result element type requires a known vector operand\")?.element_type().as_type()", operand(*index)),
             }).collect::<Vec<_>>().join(", ");
-            writeln!(instructions, "Ok(smallvec::smallvec![{expressions}])").unwrap();
-        } else {
-            instructions.push_str("if explicit.is_empty() { return Err(\"requires an explicit result type\"); }\nOk(smallvec::SmallVec::from_slice(explicit))\n");
-        }
-        instructions.push_str("},\n");
+        writeln!(instructions, "Ok(smallvec::smallvec![{expressions}])").unwrap();
+    } else {
+        instructions.push_str("if explicit.is_empty() { return Err(\"requires an explicit result type\"); }\nOk(smallvec::SmallVec::from_slice(explicit))\n");
     }
-    if defs.storage.formats.len() > 1 && defs.ops.iter().any(|op| op.signature_source.is_some()) {
-        instructions.push_str(
-            "_ => Err(\"signature source is stored in an incompatible instruction format\"),\n",
-        );
-    }
-    instructions.push_str("}\n}\n}\n");
 }
 
 fn signature_results(op: &Op, out: &mut String) {
@@ -121,7 +153,7 @@ fn signature_results(op: &Op, out: &mut String) {
         ),
     };
     let field = op
-        .packing
+        .bindings()
         .iter()
         .find_map(|(field, binding)| {
             matches!(binding, Binding::Name(param) if param == name).then_some(field)
@@ -132,6 +164,7 @@ fn signature_results(op: &Op, out: &mut String) {
 
 /// Build-time expressions, never emitted as runtime descriptors.
 pub(crate) enum ResultExpr {
+    Property(String),
     Exact(String),
     Operand(usize),
     Element(usize),
@@ -154,6 +187,7 @@ pub(crate) fn result_exprs(ty: &TypeDef) -> Option<Vec<ResultExpr>> {
         .patterns()?
         .iter()
         .map(|p| match p {
+            Pattern::Property(name, _) => Some(ResultExpr::Property(name.clone())),
             Pattern::Exact(ty) => Some(ResultExpr::Exact(ty.clone())),
             Pattern::Same(var) | Pattern::Bind(var, _) => {
                 bindings.get(var).copied().map(ResultExpr::Operand)
@@ -207,7 +241,9 @@ fn check_list(
         let value = format!("{values}[{index}]");
         let condition = match p {
             Pattern::Callable => format!("{value}.is_callable()"),
-            Pattern::Class(class) => format!("{}.accepts({value})", classes.reference(class)),
+            Pattern::Class(class) | Pattern::Property(_, class) => {
+                format!("{}.accepts({value})", classes.reference(class))
+            }
             Pattern::Exact(ty) => format!("{value} == Type::{ty}"),
             Pattern::Bind(var, class) => {
                 let class = format!("{}.accepts({value})", classes.reference(class));
@@ -228,7 +264,7 @@ fn check_list(
                 binding(bindings, *var)
             ),
             Pattern::ShapeOf(var, class) => format!(
-                "{}.accepts({value}) && super::same_shape({}, {value})",
+                "{}.accepts({value}) && same_shape({}, {value})",
                 classes.reference(class),
                 binding(bindings, *var)
             ),
@@ -291,4 +327,52 @@ fn emit_rule(id: usize, ty: &TypeDef, classes: &Classes, out: &mut String) {
     check_results(&mut validate, ty, &bindings, classes);
     validate.push_str("    Ok(())\n");
     function(out, &format!("validate_{id}"), ty, &validate);
+}
+
+pub(crate) fn generate_validation(
+    defs: &Definitions,
+    classes: &Classes,
+    opcode: &str,
+    out: &mut String,
+) {
+    validation_rules(defs, classes, opcode, out);
+}
+
+fn validation_rules<'a>(
+    defs: &'a Definitions,
+    classes: &Classes,
+    opcode: &str,
+    validation: &mut String,
+) -> (BTreeMap<&'a TypeDef, usize>, Vec<Vec<&'a str>>) {
+    validation.push_str("#[allow(dead_code)]\nfn same_shape(bound: Type, ty: Type) -> bool {\nif let Some(bound) = bound.as_vector() {\nty.as_vector().is_some_and(|vector| vector.shape() == bound.shape())\n} else { ty.as_scalar().is_some() }\n}\n");
+    let mut ids = BTreeMap::new();
+    let mut groups: Vec<Vec<&str>> = Vec::new();
+    for op in &defs.ops {
+        let ty = &op.signature;
+        // Structural equality preserves all checks and diagnostic positions.
+        let next = groups.len();
+        let id = *ids.entry(ty).or_insert(next);
+        if id == next {
+            emit_rule(id, ty, classes, validation);
+            groups.push(Vec::new());
+        }
+        groups[id].push(&op.name);
+    }
+    writeln!(validation, "impl {opcode} {{").unwrap();
+    validation.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), super::TypeError> {\n    match self {\n");
+    for (id, names) in groups.iter().enumerate() {
+        let arms = names
+            .iter()
+            .map(|name| format!("Self::{name}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        writeln!(
+            validation,
+            "        {arms} => validate_{id}(operands, results),"
+        )
+        .unwrap();
+    }
+    validation.push_str("    }\n}\n}\n");
+
+    (ids, groups)
 }

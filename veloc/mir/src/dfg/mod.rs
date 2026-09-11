@@ -1,9 +1,10 @@
-use super::inst::{ConstantPoolId, Inst, InstDraft, InstFields, InstructionView, StoredInst};
+use super::inst::{
+    ConstantPoolId, FieldPool, Inst, InstDraft, InstructionView, PackedFields, StoredInst,
+};
 use crate::constant::Constant;
 use crate::types::{Block, Type, Value, ValueData, ValueDef, ValueList, ValueListPool};
-use alloc::string::String;
+use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
 
@@ -15,8 +16,10 @@ pub use operands::{Use, Uses};
 #[derive(Debug, Clone)]
 pub struct DataFlowGraph {
     instructions: PrimaryMap<Inst, StoredInst>,
+    fields: FieldPool,
     pub(crate) values: PrimaryMap<Value, ValueData>,
-    pub value_names: SecondaryMap<Value, String>,
+    // Debug names are sparse metadata, not one String header per preceding value.
+    value_names: HashMap<Value, Box<str>>,
     inst_results: SecondaryMap<Inst, ValueList>,
     value_list_pool: ValueListPool,
     operands: operands::Operands,
@@ -29,15 +32,17 @@ impl DataFlowGraph {
     /// Finalize parser-local function identities without touching SSA operands.
     pub(crate) fn remap_functions(&mut self, map: &[crate::FuncId]) {
         for (_, inst) in &mut self.instructions {
-            inst.fields.map_functions(|id| map[id.0 as usize]);
+            inst.fields
+                .map_functions(&mut self.fields, |id| map[id.0 as usize]);
         }
     }
 
     pub fn new() -> Self {
         Self {
             instructions: PrimaryMap::new(),
+            fields: FieldPool::default(),
             values: PrimaryMap::new(),
-            value_names: SecondaryMap::new(),
+            value_names: HashMap::new(),
             inst_results: SecondaryMap::new(),
             value_list_pool: ValueListPool::new(),
             operands: operands::Operands::default(),
@@ -48,17 +53,14 @@ impl DataFlowGraph {
 
     /// 为指令添加多个结果值（支持多返回值）
     pub fn append_results(&mut self, inst: Inst, types: &[Type]) -> ValueList {
-        let values: Vec<Value> = types
-            .iter()
-            .map(|ty| {
-                self.values.push(ValueData {
-                    ty: *ty,
-                    def: ValueDef::Inst(inst),
-                })
+        assert!(self.inst_results(inst).is_empty(), "results already bound");
+        let values = types.iter().map(|&ty| {
+            self.values.push(ValueData {
+                ty,
+                def: ValueDef::Inst(inst),
             })
-            .collect();
-
-        let list = self.make_value_list(&values);
+        });
+        let list = ValueList::from_iter(values, &mut self.value_list_pool);
         self.inst_results[inst] = list;
         list
     }
@@ -80,23 +82,15 @@ impl DataFlowGraph {
         if from == to {
             return;
         }
-        let mut old = self.inst_results(from).to_vec();
-        let index = old
+        let index = self
+            .inst_results(from)
             .iter()
             .position(|&v| v == value)
             .expect("result missing from definition");
-        old.remove(index);
-        let mut new = self.inst_results(to).to_vec();
-        assert!(!new.contains(&value), "duplicate result");
-        new.push(value);
-        self.inst_results[from] = self.make_value_list(&old);
-        self.inst_results[to] = self.make_value_list(&new);
+        assert!(!self.inst_results(to).contains(&value), "duplicate result");
+        self.inst_results[from].remove(index, &mut self.value_list_pool);
+        self.inst_results[to].push(value, &mut self.value_list_pool);
         self.values[value].def = ValueDef::Inst(to);
-    }
-
-    /// 从切片创建 ValueList
-    fn make_value_list(&mut self, values: &[Value]) -> ValueList {
-        ValueList::from_slice(values, &mut self.value_list_pool)
     }
 
     pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
@@ -107,21 +101,18 @@ impl DataFlowGraph {
     }
 
     pub fn opcode(&self, inst: Inst) -> crate::Opcode {
-        self.instructions[inst].fields.opcode()
+        self.instructions[inst].fields.opcode(&self.fields)
     }
 
     pub fn inst(&self, inst: Inst) -> InstructionView<'_> {
         let data = &self.instructions[inst];
-        data.fields.view(self.operands.get(data.operands))
+        data.fields
+            .view(self.operands.get(data.operands), &self.fields)
     }
 
-    /// Copy an instruction into an independent draft without decoding its fields.
+    /// Decode persistent storage into an independently editable draft.
     pub fn draft(&self, inst: Inst) -> InstDraft {
-        let data = &self.instructions[inst];
-        InstDraft {
-            fields: data.fields.clone(),
-            operands: crate::inst::Arguments::from_slice(self.operands.get(data.operands)),
-        }
+        self.inst(inst).to_draft()
     }
 
     pub fn instructions(&self) -> impl ExactSizeIterator<Item = (Inst, InstructionView<'_>)> {
@@ -135,6 +126,7 @@ impl DataFlowGraph {
             fields,
             operands: values,
         } = data;
+        let fields = fields.pack(&mut self.fields);
         let inst = self.instructions.push(StoredInst {
             fields,
             operands: OperandRange::default(),
@@ -162,6 +154,18 @@ impl DataFlowGraph {
         self.values[val].ty
     }
 
+    pub fn value_name(&self, value: Value) -> &str {
+        self.value_names.get(&value).map_or("", AsRef::as_ref)
+    }
+
+    pub fn set_value_name(&mut self, value: Value, name: &str) {
+        if name.is_empty() {
+            self.value_names.remove(&value);
+        } else {
+            self.value_names.insert(value, name.into());
+        }
+    }
+
     pub fn values(&self) -> &PrimaryMap<Value, ValueData> {
         &self.values
     }
@@ -182,38 +186,38 @@ impl DataFlowGraph {
         }
     }
 
+    /// Read a scalar literal without traversing expression graphs.
+    pub fn as_scalar_const(&self, val: Value) -> Option<crate::ScalarConst> {
+        let inst = self.value_inst(val)?;
+        let value = match self.inst(inst) {
+            InstructionView::Iconst { value } => value.into(),
+            InstructionView::Fconst { value } => value.into(),
+            InstructionView::Bconst { value } => crate::ScalarConst::from(value),
+            _ => return None,
+        };
+        (self.value_type(val) == value.ty()).then_some(value)
+    }
+
     pub fn as_const(&self, val: Value) -> Option<Constant> {
-        if let ValueDef::Inst(inst) = self.value_def(val) {
-            let ty = self.value_type(val);
-            match &self.inst(inst) {
-                InstructionView::Iconst { value } => {
-                    let val = *value as i64;
-                    if ty == Type::I8 {
-                        Some(Constant::I8(val as i8))
-                    } else if ty == Type::I16 {
-                        Some(Constant::I16(val as i16))
-                    } else if ty == Type::I32 {
-                        Some(Constant::I32(val as i32))
-                    } else if ty == Type::I64 {
-                        Some(Constant::I64(val))
-                    } else {
-                        None
-                    }
+        if let Some(value) = self.as_scalar_const(val) {
+            return Some(value.into());
+        }
+        let ty = self.value_type(val);
+        match self.inst(self.value_inst(val)?) {
+            InstructionView::Vconst { value } => (value.ty() == ty).then(|| value.into()),
+            InstructionView::Unary {
+                opcode: crate::Opcode::Splat,
+                arg,
+            } => {
+                let vector = ty.as_vector()?;
+                let scalar = self.as_scalar_const(arg)?;
+                if scalar.ty() != vector.element_type().as_type() {
+                    return None;
                 }
-                InstructionView::Fconst { value } => {
-                    if ty == Type::F32 {
-                        Some(Constant::F32(f32::from_bits(*value as u32)))
-                    } else if ty == Type::F64 {
-                        Some(Constant::F64(f64::from_bits(*value)))
-                    } else {
-                        None
-                    }
-                }
-                InstructionView::Bconst { value } => Some(Constant::Bool(*value)),
-                _ => None,
+                crate::VectorConst::splat(scalar, vector.lane_count(), vector.is_scalable())
+                    .map(Into::into)
             }
-        } else {
-            None
+            _ => None,
         }
     }
 
@@ -228,8 +232,9 @@ impl DataFlowGraph {
     fn clear_inst(&mut self, inst: Inst) {
         self.operands
             .release(core::mem::take(&mut self.instructions[inst].operands));
-        self.instructions[inst].fields = InstFields::Nop;
-        self.inst_results[inst] = ValueList::default();
+        self.instructions[inst].fields.release(&mut self.fields);
+        self.instructions[inst].fields = PackedFields::Nop;
+        self.inst_results[inst].clear(&mut self.value_list_pool);
     }
 
     /// Erase a closed set, including mutually dependent dead instructions.
@@ -254,6 +259,8 @@ impl DataFlowGraph {
             fields,
             operands: values,
         } = data;
+        self.instructions[inst].fields.release(&mut self.fields);
+        let fields = fields.pack(&mut self.fields);
         self.operands
             .release(core::mem::take(&mut self.instructions[inst].operands));
         let operands = self.operands.alloc(inst, &values);

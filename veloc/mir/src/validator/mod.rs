@@ -282,11 +282,14 @@ mod tests {
         {
             let mut builder = module.builder(id);
             builder.init_entry_block();
-            let value = builder.ins().vconst(vec![0; 16], Type::I32X4);
+            let value = builder.ins().i32x4const([0; 4]);
             let inst = builder.func().dfg.value_inst(value).unwrap();
             builder.func_mut().dfg.replace_inst(
                 inst,
-                crate::InstDraft::vconst(crate::inst::ConstantPoolId(u32::MAX)),
+                crate::InstDraft::vconst(crate::VectorConst::dense(
+                    Type::I32X4.as_vector().unwrap(),
+                    crate::inst::ConstantPoolId(u32::MAX),
+                )),
             );
             builder.ins().ret(&[]);
         }

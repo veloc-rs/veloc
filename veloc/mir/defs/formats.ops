@@ -1,3 +1,12 @@
+// Typed property contracts run during validation, not construction.
+property VectorConst {
+    constraints: [
+        require(!is_dense(value) || is_fixed(type(value)), "dense vector constant requires a fixed type"),
+        require(!is_dense(value) || len(bytes(value)) == min_bytes(type(value)), "dense vector constant byte count must match its type"),
+        require(!is_dense(value) || !is_predicate(type(value)) || all(bytes(value), |byte| byte <= 1), "boolean constant lanes must be zero or one")
+    ]
+}
+
 // Logical records. SSA fields are extracted into the instruction's operands.
 record PtrIndexImm {
     fields: [offset(i32, 0), scale(u32, 1)]
@@ -29,11 +38,11 @@ format Ternary {
     opcode: dynamic(opcode)
 }
 format Iconst {
-    fields: [value(u64)],
+    fields: [value(Int)],
     opcode: fixed(Iconst)
 }
 format Fconst {
-    fields: [value(u64)],
+    fields: [value(Float)],
     opcode: fixed(Fconst)
 }
 format Bconst {
@@ -41,7 +50,7 @@ format Bconst {
     opcode: fixed(Bconst)
 }
 format Vconst {
-    fields: [pool_id(ConstantPoolId)],
+    fields: [value(VectorConst)],
     opcode: fixed(Vconst)
 }
 format Load {

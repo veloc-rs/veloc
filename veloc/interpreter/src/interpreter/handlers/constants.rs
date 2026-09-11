@@ -17,7 +17,4 @@ define_register_handlers! {
     Bconst { dst, val } => {
         set!(dst, InterpreterValue::bool(val))
     }
-    Vconst { dst, pool_id } => {
-        todo!("Vector constants")
-    }
 }

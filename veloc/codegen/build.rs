@@ -3,28 +3,17 @@ use std::fs;
 use std::path::PathBuf;
 use veloc_isle::compile;
 
-// The same declarations generate the runtime enum and these build-only bindings.
-macro_rules! define_generic_opcodes {
-    ($($opcode:ident $(=> $semantic:ident)?),* $(,)?) => {
-        const BINDINGS: &[(veloc_semantics::BvOp, &str)] = &[
-            $($( (veloc_semantics::BvOp::$semantic, stringify!($opcode)), )?)*
-        ];
-    };
-}
-include!("../lir/defs/generic.rs");
-
 fn generate_lowering() -> PathBuf {
-    println!("cargo:rerun-if-changed=../lir/defs/generic.rs");
-    let mut source = String::new();
-    for name in ["types", "builtins", "comparisons", "formats", "mir"] {
-        let path = format!("../mir/defs/{name}.ops");
-        println!("cargo:rerun-if-changed={path}");
-        source.push_str(&fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}")));
-        source.push('\n');
+    let source = veloc_opgen::Source::load("../mir/defs/module.ops").expect("load MIR definitions");
+    let lir_source =
+        veloc_opgen::Source::load("../lir/defs/module.ops").expect("load LIR definitions");
+    for path in source.dependencies().chain(lir_source.dependencies()) {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
-    let defs = veloc_opgen::parse(&source).expect("valid MIR definitions");
-    let code =
-        veloc_opgen::generate_lowering(&defs, BINDINGS).expect("valid LIR primitive bindings");
+    let defs = source.parse().expect("check MIR definitions");
+    let lir = lir_source.parse().expect("check LIR definitions");
+    let code = veloc_opgen::generate_lowering(&defs, &lir.primitive_bindings())
+        .expect("valid LIR primitive bindings");
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
     let path = dir.join("mir_lowering.rs");
     fs::write(&path, code).expect("write direct lowering");

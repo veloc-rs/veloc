@@ -293,7 +293,7 @@ fn try_emit_inline_intrinsic(
 fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
     use IrOpcode::*;
     let idata = &func.dfg().inst(user_inst);
-    let constant = func.dfg().as_const(val);
+    let constant = func.dfg().as_scalar_const(val);
 
     match idata {
         InstructionView::Binary { opcode, args } => {
@@ -305,7 +305,10 @@ fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
             }
 
             // Binary instructions in our bytecode only support integer immediates.
-            if constant.and_then(|c| c.as_i64()).is_none() {
+            if constant
+                .and_then(|c| c.as_int().map(|v| v.signed()))
+                .is_none()
+            {
                 return false;
             }
 
@@ -462,12 +465,26 @@ impl<'a> Compiler<'a> {
             let rhs_fused = self.mapper.fused_values.contains(&args[1]);
 
             if rhs_fused {
-                let imm = self.func.dfg().as_const(args[1]).unwrap().as_i64().unwrap();
+                let imm = self
+                    .func
+                    .dfg()
+                    .as_scalar_const(args[1])
+                    .unwrap()
+                    .as_int()
+                    .map(|v| v.signed())
+                    .unwrap();
                 let lhs = self.mapper.reg(args[0]);
                 let dst = self.mapper.reg(res);
                 imm_f(&mut self.code, dst, lhs, imm);
             } else if commutative && lhs_fused {
-                let imm = self.func.dfg().as_const(args[0]).unwrap().as_i64().unwrap();
+                let imm = self
+                    .func
+                    .dfg()
+                    .as_scalar_const(args[0])
+                    .unwrap()
+                    .as_int()
+                    .map(|v| v.signed())
+                    .unwrap();
                 let rhs = self.mapper.reg(args[1]);
                 let dst = self.mapper.reg(res);
                 imm_f(&mut self.code, dst, rhs, imm);
@@ -904,8 +921,12 @@ impl<'a> Compiler<'a> {
         let to_ty = self.val_ty(res);
 
         // Try to handle constant operands first (fusion)
-        if let Some(c) = self.func.dfg().as_const(arg) {
-            if let Some(val) = c.as_i64().or_else(|| c.as_bool().map(|b| b as i64)) {
+        if let Some(c) = self.func.dfg().as_scalar_const(arg) {
+            if let Some(val) = c
+                .as_int()
+                .map(|v| v.signed())
+                .or_else(|| c.as_bool().map(|b| b as i64))
+            {
                 match opcode {
                     IrOpcode::ExtendS => {
                         let res_val = match from_ty {
@@ -939,7 +960,7 @@ impl<'a> Compiler<'a> {
             } else {
                 match opcode {
                     IrOpcode::FloatDemote => {
-                        if let Some(f64_val) = c.as_f64() {
+                        if let Some(f64_val) = c.as_float().and_then(|v| v.as_f64()) {
                             let f = f64_val as f32;
                             let dst = self.mapper.reg(res);
                             emit_auto::Fconst(&mut self.code, dst, f.to_bits() as u64);
@@ -947,7 +968,7 @@ impl<'a> Compiler<'a> {
                         }
                     }
                     IrOpcode::FloatPromote => {
-                        if let Some(f32_val) = c.as_f32() {
+                        if let Some(f32_val) = c.as_float().and_then(|v| v.as_f32()) {
                             let f = f32_val as f64;
                             let dst = self.mapper.reg(res);
                             emit_auto::Fconst(&mut self.code, dst, f.to_bits());
@@ -1334,18 +1355,16 @@ impl<'a> Compiler<'a> {
                 let res = self.func.dfg().first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
                     let dst = self.mapper.reg(res);
-                    emit_auto::Iconst(&mut self.code, dst, *value);
+                    emit_auto::Iconst(&mut self.code, dst, value.to_bits());
                 }
             }
             InstructionView::Fconst { value } => {
                 let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
-                emit_auto::Fconst(&mut self.code, dst, *value);
+                emit_auto::Fconst(&mut self.code, dst, value.to_bits());
             }
-            InstructionView::Vconst { pool_id } => {
-                let res = self.func.dfg().first_result(inst).unwrap();
-                let dst = self.mapper.reg(res);
-                emit::Vconst(&mut self.code, dst, pool_id.as_u32());
+            InstructionView::Vconst { .. } => {
+                unreachable!("vector constants are rejected before bytecode compilation")
             }
             InstructionView::Bconst { value } => {
                 let res = self.func.dfg().first_result(inst).unwrap();
@@ -1554,7 +1573,7 @@ mod tests {
                 })
                 .collect();
 
-            let initial = builder.ins().iconst(0, Type::I32);
+            let initial = builder.ins().i32const((0) as i32);
             builder.ins().jump(blocks[0], &[initial]);
 
             for (index, &block) in blocks.iter().enumerate() {
@@ -1563,7 +1582,7 @@ mod tests {
                 let param = builder.block_params(block)[0];
 
                 if let Some(&next_block) = blocks.get(index + 1) {
-                    let one = builder.ins().iconst(1, Type::I32);
+                    let one = builder.ins().i32const((1) as i32);
                     let next = builder.ins().iadd(param, one);
                     builder.ins().jump(next_block, &[next]);
                 } else {

@@ -97,7 +97,7 @@ impl Type {
             return None;
         }
         let ty = Self(raw as u64);
-        let Some(scalar) = Self::from_scalar_code(ty.element_code()) else {
+        let Some(scalar) = ScalarType::from_code(ty.element_code()) else {
             return None;
         };
         let lanes_log2 = ty.lanes_log2();
@@ -276,23 +276,6 @@ impl fmt::Display for Type {
     }
 }
 
-/// A validated scalar Type, including pointers. This is a view, not another
-/// type encoding. A scalar has no vector shape:
-///
-/// ```compile_fail
-/// let scalar = veloc_mir::Type::I32.as_scalar().unwrap();
-/// scalar.shape();
-/// ```
-///
-/// Vector construction requires a scalar view, not an arbitrary Type:
-///
-/// ```compile_fail
-/// veloc_mir::Type::I32.vector(4, false);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct ScalarType(Type);
-
 /// A validated fixed or scalable vector Type, including boolean masks.
 /// Construction requires a checked conversion:
 ///
@@ -315,11 +298,12 @@ pub struct VectorType(Type);
 impl Type {
     /// Check validity and scalar shape once, then expose scalar-only operations.
     pub const fn as_scalar(self) -> Option<ScalarType> {
-        // Use structural shape, not a user-declared predicate's type set.
-        if self.is_compact() && self.is_valid() && self.lanes_log2() == 0 {
-            Some(ScalarType(self))
-        } else {
+        // Only the scalar field may be set: reject vector/structural tags and
+        // unused encoding bits before decoding. Never truncate an arbitrary Type.
+        if self.0 & !(SCALAR_MASK as u64) != 0 {
             None
+        } else {
+            ScalarType::from_code(self.element_code())
         }
     }
 
@@ -334,15 +318,6 @@ impl Type {
 }
 
 impl ScalarType {
-    pub const fn as_type(self) -> Type {
-        self.0
-    }
-
-    /// Layout-independent scalar code for compact backend metadata.
-    pub const fn code(self) -> u8 {
-        self.0.element_code()
-    }
-
     /// Form a vector. Pointers, invalid lane counts and unrepresentable shapes
     /// are rejected; the scalar receiver is already known to be valid.
     ///
@@ -352,8 +327,18 @@ impl ScalarType {
     /// let vector = scalar.vector(4, false).unwrap();
     /// assert_eq!(vector.as_type(), Type::I32X4);
     /// ```
+    ///
+    /// A scalar has no vector shape, and vector construction requires a scalar:
+    ///
+    /// ```compile_fail
+    /// veloc_mir::ScalarType::I32.shape();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// veloc_mir::Type::I32.vector(4, false);
+    /// ```
     pub const fn vector(self, lanes: u16, scalable: bool) -> Option<VectorType> {
-        if lanes < 2 || !lanes.is_power_of_two() || !self.0.can_vectorize() {
+        if lanes < 2 || !lanes.is_power_of_two() || !self.can_vectorize() {
             return None;
         }
         let log2_lanes = lanes.trailing_zeros() as u16;
@@ -362,7 +347,7 @@ impl ScalarType {
         }
         let scalable_bit = if scalable { SCALABLE_MASK } else { 0 };
         Some(VectorType(Type(
-            self.0.0 | ((log2_lanes << LANES_LOG2_SHIFT) | scalable_bit) as u64,
+            self.as_type().0 | ((log2_lanes << LANES_LOG2_SHIFT) | scalable_bit) as u64,
         )))
     }
 }
@@ -373,7 +358,7 @@ impl VectorType {
     }
 
     pub const fn element_type(self) -> ScalarType {
-        ScalarType(self.0.element_type())
+        ScalarType::from_code(self.0.element_code()).expect("validated vector element")
     }
 
     /// Minimum lane count; scalable vectors have vscale times this many lanes.

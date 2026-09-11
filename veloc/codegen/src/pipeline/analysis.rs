@@ -1,3 +1,4 @@
+use crate::target::arch::TargetMachine;
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use hashbrown::{HashMap, HashSet};
@@ -279,26 +280,41 @@ impl FunctionAnalysisCtx {
         &self.use_def.as_ref().unwrap().value
     }
 
-    pub fn cfg<S>(&mut self, mfunc: &MachineFunction<S>) -> &CfgInfo {
-        let deps = ChangeSet::CFG;
+    pub fn cfg<S>(&mut self, mfunc: &MachineFunction<S>, target: &dyn TargetMachine) -> &CfgInfo {
+        let deps = ChangeSet::CFG
+            | ChangeSet::BLOCK_LAYOUT
+            | ChangeSet::INST_OPERANDS
+            | ChangeSet::INST_SEMANTICS
+            | ChangeSet::SELECTED_OPCODES;
         let stale = self
             .cfg
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
-            self.cfg = Some(AnalysisCache::new(self.revision, compute_cfg(mfunc)));
+            self.cfg = Some(AnalysisCache::new(
+                self.revision,
+                compute_cfg(mfunc, target),
+            ));
         }
         &self.cfg.as_ref().unwrap().value
     }
 
-    pub fn dominators<S>(&mut self, mfunc: &MachineFunction<S>) -> &DominatorTree {
-        let deps = ChangeSet::CFG;
+    pub fn dominators<S>(
+        &mut self,
+        mfunc: &MachineFunction<S>,
+        target: &dyn TargetMachine,
+    ) -> &DominatorTree {
+        let deps = ChangeSet::CFG
+            | ChangeSet::BLOCK_LAYOUT
+            | ChangeSet::INST_OPERANDS
+            | ChangeSet::INST_SEMANTICS
+            | ChangeSet::SELECTED_OPCODES;
         let stale = self
             .dominators
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
-            let cfg = self.cfg(mfunc).clone();
+            let cfg = self.cfg(mfunc, target).clone();
             self.dominators = Some(AnalysisCache::new(
                 self.revision,
                 compute_dominators(mfunc, &cfg),
@@ -307,14 +323,22 @@ impl FunctionAnalysisCtx {
         &self.dominators.as_ref().unwrap().value
     }
 
-    pub fn post_dominators<S>(&mut self, mfunc: &MachineFunction<S>) -> &PostDominatorTree {
-        let deps = ChangeSet::CFG;
+    pub fn post_dominators<S>(
+        &mut self,
+        mfunc: &MachineFunction<S>,
+        target: &dyn TargetMachine,
+    ) -> &PostDominatorTree {
+        let deps = ChangeSet::CFG
+            | ChangeSet::BLOCK_LAYOUT
+            | ChangeSet::INST_OPERANDS
+            | ChangeSet::INST_SEMANTICS
+            | ChangeSet::SELECTED_OPCODES;
         let stale = self
             .post_dominators
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
-            let cfg = self.cfg(mfunc).clone();
+            let cfg = self.cfg(mfunc, target).clone();
             self.post_dominators = Some(AnalysisCache::new(
                 self.revision,
                 compute_post_dominators(mfunc, &cfg),
@@ -323,14 +347,23 @@ impl FunctionAnalysisCtx {
         &self.post_dominators.as_ref().unwrap().value
     }
 
-    pub fn liveness<S>(&mut self, mfunc: &MachineFunction<S>) -> &LivenessInfo {
-        let deps = ChangeSet::CFG | ChangeSet::INST_OPERANDS | ChangeSet::REGALLOC;
+    pub fn liveness<S>(
+        &mut self,
+        mfunc: &MachineFunction<S>,
+        target: &dyn TargetMachine,
+    ) -> &LivenessInfo {
+        let deps = ChangeSet::CFG
+            | ChangeSet::BLOCK_LAYOUT
+            | ChangeSet::INST_OPERANDS
+            | ChangeSet::INST_SEMANTICS
+            | ChangeSet::SELECTED_OPCODES
+            | ChangeSet::REGALLOC;
         let stale = self
             .liveness
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
-            let cfg = self.cfg(mfunc).clone();
+            let cfg = self.cfg(mfunc, target).clone();
             self.liveness = Some(AnalysisCache::new(
                 self.revision,
                 compute_liveness(mfunc, &cfg),
@@ -339,15 +372,23 @@ impl FunctionAnalysisCtx {
         &self.liveness.as_ref().unwrap().value
     }
 
-    pub fn loop_info<S>(&mut self, mfunc: &MachineFunction<S>) -> &LoopInfo {
-        let deps = ChangeSet::CFG;
+    pub fn loop_info<S>(
+        &mut self,
+        mfunc: &MachineFunction<S>,
+        target: &dyn TargetMachine,
+    ) -> &LoopInfo {
+        let deps = ChangeSet::CFG
+            | ChangeSet::BLOCK_LAYOUT
+            | ChangeSet::INST_OPERANDS
+            | ChangeSet::INST_SEMANTICS
+            | ChangeSet::SELECTED_OPCODES;
         let stale = self
             .loop_info
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
-            let cfg = self.cfg(mfunc).clone();
-            let dom = self.dominators(mfunc).clone();
+            let cfg = self.cfg(mfunc, target).clone();
+            let dom = self.dominators(mfunc, target).clone();
             self.loop_info = Some(AnalysisCache::new(
                 self.revision,
                 compute_loop_info(&cfg, &dom),
@@ -356,14 +397,23 @@ impl FunctionAnalysisCtx {
         &self.loop_info.as_ref().unwrap().value
     }
 
-    pub fn register_pressure<S>(&mut self, mfunc: &MachineFunction<S>) -> &RegisterPressure {
-        let deps = ChangeSet::REGALLOC | ChangeSet::INST_OPERANDS | ChangeSet::BLOCK_LAYOUT;
+    pub fn register_pressure<S>(
+        &mut self,
+        mfunc: &MachineFunction<S>,
+        target: &dyn TargetMachine,
+    ) -> &RegisterPressure {
+        let deps = ChangeSet::CFG
+            | ChangeSet::REGALLOC
+            | ChangeSet::INST_OPERANDS
+            | ChangeSet::INST_SEMANTICS
+            | ChangeSet::SELECTED_OPCODES
+            | ChangeSet::BLOCK_LAYOUT;
         let stale = self
             .register_pressure
             .as_ref()
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
-            let liveness = self.liveness(mfunc).clone();
+            let liveness = self.liveness(mfunc, target).clone();
             self.register_pressure = Some(AnalysisCache::new(
                 self.revision,
                 compute_register_pressure(mfunc, &liveness),
@@ -422,7 +472,7 @@ impl ModuleAnalysisCtx {
     }
 }
 
-fn compute_cfg<S>(mfunc: &MachineFunction<S>) -> CfgInfo {
+fn compute_cfg<S>(mfunc: &MachineFunction<S>, target: &dyn TargetMachine) -> CfgInfo {
     let mut preds: HashMap<Block, Vec<Block>> = HashMap::new();
     let mut succs: HashMap<Block, Vec<Block>> = HashMap::new();
 
@@ -435,27 +485,38 @@ fn compute_cfg<S>(mfunc: &MachineFunction<S>) -> CfgInfo {
 
     for (index, block) in mfunc.blocks.iter().enumerate() {
         let mut block_succs = Vec::new();
-        if let Some(&last_inst_id) = block.insts.last() {
-            let inst = &mfunc.dfg[last_inst_id];
-            if let Ok(br) = inst.as_branch() {
-                block_succs.push(br.target);
-            } else if let Ok(br) = inst.as_branch_cond() {
-                block_succs.push(br.then_blk);
-                block_succs.push(br.else_blk);
-            } else if let Some(veloc_lir::InstExtra::BrTable(info)) = mfunc.inst_extra(last_inst_id)
-            {
-                for target in &info.targets {
-                    block_succs.push(target.block);
+        let mut falls_through = true;
+        for &id in &block.insts {
+            let inst = &mfunc.dfg[id];
+            let flow = target.control_flow(inst);
+            if matches!(
+                flow,
+                veloc_lir::ControlFlow::Branch | veloc_lir::ControlFlow::Jump
+            ) {
+                for operand in &inst.operands {
+                    if let veloc_lir::MachineOperand::Block(target) = operand {
+                        block_succs.push(*target);
+                    }
                 }
-            } else if !matches!(inst.generic_opcode(), Some(veloc_lir::GenericOpcode::G_RET)) {
-                if let Some(next) = block_order.get(index + 1).copied() {
-                    block_succs.push(next);
+                if let Some(veloc_lir::InstExtra::BrTable(info)) = mfunc.inst_extra(id) {
+                    block_succs.extend(info.targets.iter().map(|target| target.block));
                 }
             }
-        } else if let Some(next) = block_order.get(index + 1).copied() {
-            block_succs.push(next);
+            if matches!(
+                flow,
+                veloc_lir::ControlFlow::Jump
+                    | veloc_lir::ControlFlow::Return
+                    | veloc_lir::ControlFlow::Trap
+            ) {
+                falls_through = false;
+                break;
+            }
         }
-
+        if falls_through {
+            if let Some(next) = block_order.get(index + 1).copied() {
+                block_succs.push(next);
+            }
+        }
         block_succs.sort();
         block_succs.dedup();
         succs.insert(block.id, block_succs.clone());
@@ -646,9 +707,33 @@ fn compute_register_pressure<S>(
 #[cfg(test)]
 mod tests {
     use super::{ChangeSet, FunctionAnalysisCtx};
+    use crate::target::arch::TargetConfig;
+    use crate::target::x86_64::X86_64TargetMachine;
     use veloc_lir::stages::RawLir;
-    use veloc_lir::{MachineBlock, MachineFunction, MachineInst, Writable};
+    use veloc_lir::{MachineBlock, MachineFunction, MachineInst};
     use veloc_mir::{Block, Type};
+
+    #[test]
+    fn generic_control_comes_from_definitions_not_layout_or_last_instruction() {
+        let mut f = MachineFunction::<RawLir>::new("control".into());
+        for id in 0..4 {
+            f.blocks.push(MachineBlock::new(Block(id)));
+        }
+        f.alloc_inst_and_append_to_block(0, MachineInst::build_unreachable());
+        // Dead instructions cannot introduce successors after a trap.
+        f.alloc_inst_and_append_to_block(0, MachineInst::build_br(Block(2)));
+        f.alloc_inst_and_append_to_block(
+            1,
+            MachineInst::build_brcond(veloc_lir::Reg::new_vreg(0), Block(0), Block(3)),
+        );
+        f.alloc_inst_and_append_to_block(2, MachineInst::build_ret(smallvec::smallvec![]));
+        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let mut analyses = FunctionAnalysisCtx::default();
+        let cfg = analyses.cfg(&f, &target);
+        assert!(cfg.succs(Block(0)).is_empty());
+        assert_eq!(cfg.succs(Block(1)), &[Block(0), Block(3)]);
+        assert!(cfg.succs(Block(2)).is_empty());
+    }
 
     #[test]
     fn changeset_cfg_implies_block_layout() {
@@ -658,32 +743,122 @@ mod tests {
     }
 
     #[test]
-    fn use_def_change_does_not_invalidate_cfg() {
-        let mut mfunc = MachineFunction::<RawLir>::new("test".into());
-        mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
-        let a = mfunc.alloc_vreg(Type::I64);
-        let b = mfunc.alloc_vreg(Type::I64);
-        let copy = mfunc.alloc_inst(MachineInst::build_copy(Writable(a), b));
-        mfunc.append_inst_id_to_block(0, copy);
-
+    fn selected_control_distinguishes_branch_fallthrough_and_terminal_transfer() {
+        use crate::target::x86_64::isle::TargetInst;
+        use veloc_lir::{MachineOpcode, MachineOperand};
+        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let mut f = MachineFunction::<RawLir>::new("selected".into());
+        for id in 0..8 {
+            f.blocks.push(MachineBlock::new(Block(id)));
+        }
+        let mut emit = |block, op: TargetInst, targets: &[u32]| {
+            f.alloc_inst_and_append_to_block(
+                block,
+                MachineInst::build_generic(
+                    MachineOpcode::Target(op.as_u32()),
+                    targets
+                        .iter()
+                        .map(|&b| MachineOperand::Block(Block(b)))
+                        .collect(),
+                ),
+            );
+        };
+        emit(0, TargetInst::X86Ret, &[]);
+        emit(0, TargetInst::X86Jmp, &[7]); // Dead after return.
+        emit(1, TargetInst::X86Ud2, &[]);
+        emit(2, TargetInst::X86Jmp, &[0]);
+        emit(3, TargetInst::X86Je, &[0]);
+        emit(3, TargetInst::X86Jmp, &[2]); // No edge to layout block 4.
+        emit(4, TargetInst::X86Je, &[1]); // False path falls through to 5.
+        emit(5, TargetInst::X86Call, &[]); // Calls return to the next instruction.
+        emit(6, TargetInst::X86Ret, &[]);
         let mut analyses = FunctionAnalysisCtx::default();
-        let cfg_before = analyses.cfg(&mfunc) as *const _;
+        let cfg = analyses.cfg(&f, &target);
+        assert!(cfg.succs(Block(0)).is_empty());
+        assert!(cfg.succs(Block(1)).is_empty());
+        assert_eq!(cfg.succs(Block(2)), &[Block(0)]);
+        assert_eq!(cfg.succs(Block(3)), &[Block(0), Block(2)]);
+        assert_eq!(cfg.succs(Block(4)), &[Block(1), Block(5)]);
+        assert_eq!(cfg.succs(Block(5)), &[Block(6)]);
+        assert!(cfg.succs(Block(6)).is_empty());
+        assert!(cfg.succs(Block(7)).is_empty());
+    }
+
+    #[test]
+    fn layout_and_opcode_changes_invalidate_control_analyses() {
+        use crate::target::x86_64::isle::TargetInst;
+        use veloc_lir::MachineOpcode;
+        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let mut f = MachineFunction::<RawLir>::new("layout".into());
+        for id in 0..3 {
+            f.blocks.push(MachineBlock::new(Block(id)));
+        }
+        let mut analyses = FunctionAnalysisCtx::default();
+        assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(1)]);
+        f.blocks.swap(1, 2);
+        analyses.apply(ChangeSet::BLOCK_LAYOUT);
+        assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(2)]);
+        f.alloc_inst_and_append_to_block(
+            0,
+            MachineInst::build_generic(
+                MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
+                smallvec::smallvec![],
+            ),
+        );
+        analyses.apply(ChangeSet::SELECTED_OPCODES);
+        assert!(analyses.cfg(&f, &target).succs(Block(0)).is_empty());
+    }
+
+    #[test]
+    fn branch_operand_change_invalidates_cfg_and_liveness() {
+        let mut f = MachineFunction::<RawLir>::new("control".into());
+        for id in 0..3 {
+            f.blocks.push(MachineBlock::new(Block(id)));
+        }
+        let value = f.alloc_vreg(Type::I64);
+        let jump = f.alloc_inst_and_append_to_block(0, MachineInst::build_br(Block(1)));
+        f.alloc_inst_and_append_to_block(1, MachineInst::build_ret(smallvec::smallvec![value]));
+        f.alloc_inst_and_append_to_block(2, MachineInst::build_ret(smallvec::smallvec![]));
+        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let mut analyses = FunctionAnalysisCtx::default();
+        assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(1)]);
+        assert!(
+            analyses
+                .liveness(&f, &target)
+                .live_out(Block(0))
+                .unwrap()
+                .contains(&value)
+        );
+        f.dfg[jump] = MachineInst::build_br(Block(2));
         analyses.apply(ChangeSet::INST_OPERANDS);
-        let cfg_after = analyses.cfg(&mfunc) as *const _;
-        assert_eq!(cfg_before, cfg_after);
+        assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(2)]);
+        assert!(
+            !analyses
+                .liveness(&f, &target)
+                .live_out(Block(0))
+                .unwrap()
+                .contains(&value)
+        );
     }
 
     #[test]
     fn cfg_change_invalidates_cfg_and_dependents() {
+        let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut mfunc = MachineFunction::<RawLir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(1)));
         let mut analyses = FunctionAnalysisCtx::default();
-        let succs_before = analyses.cfg(&mfunc).succs(Block::from_u32(0)).len();
+        let succs_before = analyses
+            .cfg(&mfunc, &target)
+            .succs(Block::from_u32(0))
+            .len();
         analyses.apply(ChangeSet::CFG);
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(2)));
-        let succs_after = analyses.cfg(&mfunc).succs(Block::from_u32(1)).len();
-        let dom = analyses.dominators(&mfunc);
+        let succs_after = analyses
+            .cfg(&mfunc, &target)
+            .succs(Block::from_u32(1))
+            .len();
+        let dom = analyses.dominators(&mfunc, &target);
         assert_eq!(succs_before, 1);
         assert_eq!(succs_after, 1);
         assert!(dom.dominates(Block::from_u32(0), Block::from_u32(2)));
@@ -691,12 +866,13 @@ mod tests {
 
     #[test]
     fn stack_frame_change_does_not_invalidate_cfg() {
+        let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut mfunc = MachineFunction::<RawLir>::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         let mut analyses = FunctionAnalysisCtx::default();
-        let cfg_before = analyses.cfg(&mfunc) as *const _;
+        let cfg_before = analyses.cfg(&mfunc, &target) as *const _;
         analyses.apply(ChangeSet::STACK_FRAME);
-        let cfg_after = analyses.cfg(&mfunc) as *const _;
+        let cfg_after = analyses.cfg(&mfunc, &target) as *const _;
         assert_eq!(cfg_before, cfg_after);
     }
 }

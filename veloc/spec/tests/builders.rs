@@ -1,5 +1,5 @@
 mod common;
-use common::compile_mir;
+use common::compile;
 
 #[test]
 fn property_order_follows_the_logical_signature_not_storage() {
@@ -21,7 +21,7 @@ fn property_order_follows_the_logical_signature_not_storage() {
             traits: [MAY_TRAP], memory: HEAP_WRITE
         }
     "#;
-    let output = compile_mir(source).unwrap();
+    let output = compile(source).unwrap();
     assert!(output.builders.contains(
         "pub fn load(&mut self, flags: crate::MemFlags, address: crate::Value, displacement: u32, ty: crate::Type) -> crate::Value"
     ));
@@ -43,7 +43,7 @@ fn contextual_selection_does_not_depend_on_the_method_name() {
             mnemonic: "connect-edge", storage: Jump { dest: dest }, traits: [TERMINATOR], memory: NONE
         }
     "#;
-    let output = compile_mir(source).unwrap();
+    let output = compile(source).unwrap();
     assert!(!output.builders.contains("pub fn connect_edge("));
     assert!(!output.builders.contains("self.push("));
 }

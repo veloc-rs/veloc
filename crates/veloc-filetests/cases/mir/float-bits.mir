@@ -38,8 +38,8 @@ block0():
   v0: f32 = fconst 0xffffffff
   return v0
 
-// ----- f32-overflow-is-a-validation-error
-// run: validate-error
+// ----- f32-overflow-is-a-syntax-error
+// run: parse-error
 // check: f32 bit pattern does not fit in 32 bits
 local function bits() -> f32
 block0():
@@ -56,19 +56,17 @@ block0():
   v1: f64 = fconst 0xffffffffffffffff
   return v0, v1
 
-// ----- non-float-result-is-a-validation-error
-// run: validate-error
-// check: fconst type scheme violation
-// check: results: true, index: 0
-// check: got: I32
+// ----- non-float-result-cannot-determine-precision
+// run: parse-error
+// check: floating constant requires an f32 or f64 result type
 local function bits() -> i32
 block0():
   v0: i32 = fconst 0x0
   return v0
 
-// ----- missing-result-is-a-validation-error
-// run: validate-error
-// check: Arity { results: true, expected: 1, got: 0
+// ----- missing-result-cannot-determine-precision
+// run: parse-error
+// check: floating constant requires an f32 or f64 result type
 local function bits() -> void
 block0():
   fconst 0x0

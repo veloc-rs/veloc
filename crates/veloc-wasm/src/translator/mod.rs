@@ -291,7 +291,7 @@ impl<'a> WasmTranslator<'a> {
                 self.stack.push(v);
             }
             Operator::RefNull { .. } => {
-                let v = self.builder.ins().iconst(0, VelocType::I64);
+                let v = self.builder.ins().i64const((0) as i64);
                 let null_ptr = self.builder.ins().inttoptr(v);
                 self.stack.push(null_ptr);
             }
@@ -412,8 +412,8 @@ impl<'a> WasmTranslator<'a> {
         match ty {
             VelocType::I32 => {
                 if v_ty == VelocType::BOOL {
-                    let one = self.builder.ins().iconst(1, VelocType::I32);
-                    let zero = self.builder.ins().iconst(0, VelocType::I32);
+                    let one = self.builder.ins().i32const((1) as i32);
+                    let zero = self.builder.ins().i32const((0) as i32);
                     self.builder.ins().select(v, one, zero)
                 } else if v_ty == VelocType::I64 || v_ty == VelocType::PTR {
                     self.builder.ins().wrap(v, VelocType::I32)
@@ -423,8 +423,8 @@ impl<'a> WasmTranslator<'a> {
             }
             VelocType::I64 => {
                 if v_ty == VelocType::BOOL {
-                    let one = self.builder.ins().iconst(1, VelocType::I64);
-                    let zero = self.builder.ins().iconst(0, VelocType::I64);
+                    let one = self.builder.ins().i64const((1) as i64);
+                    let zero = self.builder.ins().i64const((0) as i64);
                     self.builder.ins().select(v, one, zero)
                 } else if v_ty == VelocType::I32 {
                     self.builder.ins().extendu(v, VelocType::I64)
@@ -473,14 +473,16 @@ impl<'a> WasmTranslator<'a> {
         if ty == VelocType::BOOL {
             self.builder.ins().bconst(false)
         } else if ty == VelocType::PTR {
-            let z = self.builder.ins().iconst(0, VelocType::I64);
+            let z = self.builder.ins().i64const((0) as i64);
             self.builder.ins().inttoptr(z)
         } else if ty == VelocType::F32 {
             self.builder.ins().f32const(0.0)
         } else if ty == VelocType::F64 {
             self.builder.ins().f64const(0.0)
         } else {
-            self.builder.ins().iconst(0, ty)
+            self.builder
+                .ins()
+                .iconst(veloc_mir::Int::from_bits(ty, 0).expect("integer constant type"))
         }
     }
 
@@ -521,7 +523,7 @@ impl<'a> WasmTranslator<'a> {
 
     fn trap(&mut self, code: crate::vm::TrapCode) {
         let vmctx = self.vmctx.expect("vmctx not set");
-        let trap_code = self.builder.ins().iconst(code as u64, VelocType::I32);
+        let trap_code = self.builder.ins().i32const((code) as i32);
         self.builder
             .ins()
             .call(self.runtime.trap_handler, &[vmctx, trap_code]);

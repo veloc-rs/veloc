@@ -13,3 +13,9 @@ smallvec = { workspace = true }
 [features]
 default = ["std"]
 std = ["veloc-mir/std"]
+
+[build-dependencies]
+veloc-opgen = { workspace = true }
+
+[dev-dependencies]
+veloc-semantics = { workspace = true }

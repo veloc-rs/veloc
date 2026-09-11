@@ -72,7 +72,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-8
 // run: opgen-error
-// check: constraint expects Value, got Int
+// check: type expects an SSA value or typed property
 format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -172,9 +172,9 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- pool-properties-and-lexical-binders-are-generic-1
 // run: opgen-error
 // check: constraint expects Bool, got Int
-format Vconst { fields: [pool_id(ConstantPoolId)], opcode: fixed(Vconst) }
-op Vconst(@data: Bytes) -> Vector {
-    mnemonic: "vconst", storage: Vconst { pool_id: pool(data) },
+format Custom { fields: [pool_id(ConstantPoolId)], opcode: fixed(Example) }
+op Example(@data: Bytes) -> Vector {
+    mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: Text { args: [bytes(data)] }, memory: NONE,
     constraints: [len(data) == min_bytes(result_type(0)), all(data, |i| i)]
 }
@@ -182,9 +182,9 @@ op Vconst(@data: Bytes) -> Vector {
 // ----- pool-properties-and-lexical-binders-are-generic-2
 // run: opgen-error
 // check: result_type index is out of bounds
-format Vconst { fields: [pool_id(ConstantPoolId)], opcode: fixed(Vconst) }
-op Vconst(@data: Bytes) -> () {
-    mnemonic: "vconst", storage: Vconst { pool_id: pool(data) },
+format Custom { fields: [pool_id(ConstantPoolId)], opcode: fixed(Example) }
+op Example(@data: Bytes) -> () {
+    mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: Text { args: [bytes(data)] }, memory: NONE,
     constraints: [len(data) == min_bytes(result_type(0)), all(data, |i| i < 2 * lanes(result_type(0)))]
 }

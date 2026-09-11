@@ -51,6 +51,20 @@ pub(crate) struct Types {
 }
 
 impl Types {
+    /// Result domains supplied by typed literal properties, independent of class names.
+    pub(crate) fn property_types(&self, name: &str) -> Option<TypeSet> {
+        match name {
+            "Float" => Some(self.scalar_floats.clone()),
+            "Int" => {
+                let mut set = self.integers.clone();
+                set.retain_shapes(1);
+                Some(set)
+            }
+            "VectorConst" => Some(self.lanes.vectors(self.max_exponent)),
+            _ => None,
+        }
+    }
+
     pub fn compile(
         records: &[Record],
         source: &str,

@@ -176,18 +176,20 @@ fn generated_integer_constant_builder_preserves_bit_patterns() {
     builder.init_entry_block();
 
     let bits = 0xfedc_ba98_7654_3210;
-    let raw = builder.ins().iconst(bits, Type::I64);
+    let raw = builder
+        .ins()
+        .iconst(veloc_mir::Int::from_bits(Type::I64, bits).expect("integer constant type"));
     let negative = builder.ins().i32const(-1);
     let minimum = builder.ins().i64const(i64::MIN);
     let dfg = builder.func().dfg();
     for (result, expected_bits, expected_type) in [
         (raw, bits, Type::I64),
-        (negative, u64::MAX, Type::I32),
+        (negative, u32::MAX as u64, Type::I32),
         (minimum, 1 << 63, Type::I64),
     ] {
         assert!(matches!(
             dfg.inst(dfg.value_inst(result).unwrap()),
-            InstructionView::Iconst { value } if value == expected_bits
+            InstructionView::Iconst { value } if value.to_bits() == expected_bits
         ));
         assert_eq!(dfg.value_type(result), expected_type);
     }
@@ -195,4 +197,126 @@ fn generated_integer_constant_builder_preserves_bit_patterns() {
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
     module.validate().unwrap();
+}
+
+#[test]
+fn constants_share_scalar_storage_and_materialize_vectors() {
+    use veloc_mir::{ConstData, Constant, Float, Int, ScalarConst, VectorConst};
+    assert_eq!(size_of::<Int>(), size_of::<ScalarConst>());
+    assert_eq!(size_of::<Float>(), size_of::<ScalarConst>());
+    for (ty, width) in [
+        (Type::I8, 8),
+        (Type::I16, 16),
+        (Type::I32, 32),
+        (Type::I64, 64),
+    ] {
+        let value = Int::from_bits(ty, u64::MAX).unwrap();
+        assert_eq!(value.signed(), -1);
+        assert_eq!(value.to_bits(), u64::MAX >> (64 - width));
+        assert_eq!(Int::try_from(ScalarConst::from(value)), Ok(value));
+        assert!(Float::try_from(ScalarConst::from(value)).is_err());
+    }
+    assert!(ScalarConst::from_bits(Type::BOOL, 2).is_none());
+    assert!(ScalarConst::from_bits(Type::PTR, 0).is_none());
+    assert!(Int::from_bits(Type::F32, 0).is_none());
+    let nan = Float::from_f32_bits(0x7fa12345);
+    assert_eq!(ScalarConst::from(nan), ScalarConst::from(nan));
+    assert_ne!(ScalarConst::from(0.0f32), ScalarConst::from(-0.0f32));
+    assert_ne!(ScalarConst::from(0.0f32), ScalarConst::from(0.0f64));
+
+    let mut module = ModuleBuilder::new();
+    let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+    let func = module.declare_function("constants".into(), sig, Linkage::Local);
+    let mut builder = module.builder(func);
+    builder.init_entry_block();
+    let dfg = &mut DataFlowGraph::new();
+    let bytes: Vec<_> = [1i32, -2, 3, 4]
+        .into_iter()
+        .flat_map(i32::to_le_bytes)
+        .collect();
+    let make_dense = |ty: Type, bytes: Vec<u8>, dfg: &mut DataFlowGraph| {
+        VectorConst::dense(
+            ty.as_vector().unwrap(),
+            veloc_mir::inst::ConstantPoolId::insert(dfg, bytes),
+        )
+    };
+    let dense = make_dense(Type::I32X4, bytes.clone(), dfg);
+    dense.validate(dfg).unwrap();
+    assert!(matches!(dense.data(), ConstData::Dense(id) if id.get(dfg) == Some(bytes.as_slice())));
+    assert_eq!(make_dense(Type::I32X4, bytes.clone(), dfg), dense);
+    assert!(
+        make_dense(Type::I32X4, vec![0; 3], dfg)
+            .validate(dfg)
+            .is_err()
+    );
+    let scalable = Type::I32
+        .as_scalar()
+        .unwrap()
+        .vector(4, true)
+        .unwrap()
+        .as_type();
+    assert!(
+        make_dense(scalable, vec![0; 16], dfg)
+            .validate(dfg)
+            .is_err()
+    );
+    let mask = Type::new_mask(4, false).unwrap();
+    assert!(
+        make_dense(mask, vec![0, 1, 2, 0], dfg)
+            .validate(dfg)
+            .is_err()
+    );
+    let splat = VectorConst::splat(ScalarConst::from(-7i32), 4, false).unwrap();
+    let scalable_splat = VectorConst::splat(ScalarConst::from(-7i32), 4, true).unwrap();
+    assert_eq!(splat.ty(), Type::I32X4);
+    assert!(VectorConst::splat(ScalarConst::from(7i32), 3, false).is_none());
+    let dense = builder
+        .func_mut()
+        .edit()
+        .dense_constant(Type::I32X4.as_vector().unwrap(), bytes);
+    for value in [
+        Constant::from(nan),
+        dense.into(),
+        splat.into(),
+        scalable_splat.into(),
+    ] {
+        let result = builder.ins().constant(value);
+        assert_eq!(builder.func().dfg().as_const(result), Some(value));
+        assert_eq!(builder.func().dfg().value_type(result), value.ty());
+        if value.as_vector().is_some() {
+            assert!(matches!(
+                builder
+                    .func()
+                    .dfg()
+                    .inst(builder.func().dfg().value_inst(result).unwrap()),
+                InstructionView::Vconst { .. }
+            ));
+        }
+    }
+    builder.ins().ret(&[]);
+    builder.seal_all_blocks();
+    module.validate().unwrap();
+    let text = module.build().to_string();
+    let parsed = veloc_mir::ModuleParser::new().parse(&text).unwrap();
+    parsed.validate().unwrap();
+    assert_eq!(parsed.to_string(), text);
+}
+
+#[test]
+fn vector_constant_construction_defers_data_checks_to_validation() {
+    let mut module = ModuleBuilder::new();
+    let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+    let func = module.declare_function("bad_constant".into(), sig, Linkage::Local);
+    let mut builder = module.builder(func);
+    builder.init_entry_block();
+    let value = builder
+        .func_mut()
+        .edit()
+        .dense_constant(Type::I32X4.as_vector().unwrap(), vec![0; 3]);
+    let result = builder.ins().vconst(value);
+    assert_eq!(builder.func().dfg().value_type(result), Type::I32X4);
+    assert_eq!(builder.func().dfg().as_const(result), Some(value.into()));
+    builder.ins().ret(&[]);
+    builder.seal_all_blocks();
+    assert!(module.validate().is_err());
 }

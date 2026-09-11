@@ -185,6 +185,11 @@ pub struct InstDef {
     pub implicit_uses: Vec<String>,
     pub implicit_defs: Vec<String>,
     pub clobbers: Vec<String>,
+    /// Explicit promise of safe, nontrapping scheduling; absent means barrier.
+    pub schedule_latency: Option<u32>,
+    /// Control transfer; omitted instructions fall through.
+    pub flow: Option<String>,
+    pub memory: Option<(String, u32)>,
     pub emit: Vec<EmitExpr>,
 }
 
@@ -195,6 +200,11 @@ pub struct PseudoInstDef {
     pub implicit_uses: Vec<String>,
     pub implicit_defs: Vec<String>,
     pub clobbers: Vec<String>,
+    /// Explicit promise of safe, nontrapping scheduling; absent means barrier.
+    pub schedule_latency: Option<u32>,
+    /// Control transfer; omitted instructions fall through.
+    pub flow: Option<String>,
+    pub memory: Option<(String, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,6 +215,11 @@ pub struct TemplateDef {
     pub implicit_uses: Vec<String>,
     pub implicit_defs: Vec<String>,
     pub clobbers: Vec<String>,
+    /// Explicit promise of safe, nontrapping scheduling; absent means barrier.
+    pub schedule_latency: Option<u32>,
+    /// Control transfer; omitted instructions fall through.
+    pub flow: Option<String>,
+    pub memory: Option<(String, u32)>,
     pub emit: Vec<EmitExpr>,
 }
 

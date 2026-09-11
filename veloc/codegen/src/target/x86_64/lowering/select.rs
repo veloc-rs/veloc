@@ -27,6 +27,12 @@ impl TargetInstructionSelector for X86_64Selector {
 
         if let MachineOpcode::Generic(_opcode) = inst.opcode {
             match _opcode {
+                GenericOpcode::G_COPY => {
+                    let copy = inst.as_unary_reg()?;
+                    ctx.selected
+                        .push(build_x86_copy_inst(ctx.mfunc, copy.dst, copy.src)?);
+                    return Ok(SelectResult::InPlace);
+                }
                 GenericOpcode::G_FCMP => {
                     let fcmp = inst.as_fcmp().unwrap_or_else(|err| {
                         panic!("invalid fcmp instruction during x86_64 selection: {}", err);
@@ -66,6 +72,60 @@ impl TargetInstructionSelector for X86_64Selector {
             res.unwrap_or_else(|err| panic!("x86_64 generated selector failed: {}", err))
         };
 
+        if matches!(
+            inst.generic_opcode(),
+            Some(GenericOpcode::G_CALL | GenericOpcode::G_CALLIND)
+        ) {
+            use crate::target::arch::{AbiLocation, CallConv, TargetArch};
+            let sig = &ctx.mfunc.call_info(ctx.inst_id).sig;
+            let cc = CallConv::from(sig.call_conv);
+            let plan = cc.plan_callsite(TargetArch::X86_64, &sig.params, &sig.returns)?;
+            let preserved = cc.preserved_regs(TargetArch::X86_64);
+            for selected in ctx.selected.iter_mut() {
+                if !matches!(selected.opcode, MachineOpcode::Target(op) if op == TargetInst::X86Call.as_u32() || op == TargetInst::X86CallReg.as_u32())
+                {
+                    continue;
+                }
+                // Keep ABI register uses/clobbers explicit after G_CALL disappears.
+                for part in plan.args.iter().flat_map(|a| &a.parts) {
+                    if let AbiLocation::Reg(reg) = part.loc {
+                        selected.operands.push(MachineOperand::Use(reg));
+                    }
+                }
+                for reg in generated::PHYS_REG_INFOS {
+                    if !preserved.contains(&reg.preg)
+                        && reg.preg != generated::REG_RSP
+                        && reg.preg != generated::REG_RBP
+                    {
+                        selected
+                            .operands
+                            .push(MachineOperand::Def(Writable(reg.preg)));
+                    }
+                }
+            }
+        }
+        if let Some(access) = inst.memory {
+            let mut memory_inst = None;
+            for (index, selected) in ctx.selected.iter().enumerate() {
+                let MachineOpcode::Target(op) = selected.opcode else {
+                    continue;
+                };
+                if let Some(shape) =
+                    generated::target_inst_metadata(TargetInst::from_u32(op)).memory
+                {
+                    if shape != (access.kind, access.bytes) || memory_inst.replace(index).is_some()
+                    {
+                        return Err(crate::error::Error::codegen(
+                            "selection changed the memory access direction, size or count",
+                        ));
+                    }
+                }
+            }
+            let index = memory_inst.ok_or_else(|| {
+                crate::error::Error::codegen("selection dropped the source memory access")
+            })?;
+            ctx.selected[index].memory = Some(access);
+        }
         Ok(result)
     }
 }

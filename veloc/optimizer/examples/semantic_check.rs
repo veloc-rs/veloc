@@ -1,4 +1,5 @@
 mod offline {
+    use veloc_mir::{IntCC, Opcode};
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
 // Export checks of actual defs-driven semantics. A solver is optional:

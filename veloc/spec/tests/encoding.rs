@@ -3,7 +3,7 @@ mod common;
 use common::{BUILTINS, TYPES};
 
 fn rejected(source: &str, message: &str) {
-    let result = std::panic::catch_unwind(|| veloc_opgen::compile_mir(source))
+    let result = std::panic::catch_unwind(|| veloc_opgen::compile(source))
         .expect("bad encodings must produce diagnostics, not panic");
     let error = result.err().expect("encoding should be rejected");
     assert!(error.message.contains(message), "{error}");
@@ -11,7 +11,7 @@ fn rejected(source: &str, message: &str) {
 
 #[test]
 fn layout_generates_masks_shifts_limits_and_the_type_storage() {
-    let output = veloc_opgen::compile_mir(BUILTINS).unwrap().types;
+    let output = veloc_opgen::compile(BUILTINS).unwrap().types;
     for expected in [
         "pub struct Type(u64)",
         "const SCALAR_MASK: u16 = 0x000f;",
@@ -37,7 +37,7 @@ fn field_order_and_widths_determine_the_encoding() {
         "scalar(4), lanes_log2(4), scalable(1)",
         "scalable(1), scalar(5), lanes_log2(3)",
     );
-    let output = veloc_opgen::compile_mir(&source).unwrap().types;
+    let output = veloc_opgen::compile(&source).unwrap().types;
     for expected in [
         "const SCALABLE_MASK: u16 = 0x0001;",
         "const SCALAR_MASK: u16 = 0x003e;",
@@ -51,7 +51,7 @@ fn field_order_and_widths_determine_the_encoding() {
     }
     let narrower = BUILTINS.replace("lanes_log2(4)", "lanes_log2(3)");
     assert!(
-        veloc_opgen::compile_mir(&narrower)
+        veloc_opgen::compile(&narrower)
             .unwrap()
             .types
             .contains("const USED_MASK: u16 = 0x00ff;")
@@ -64,10 +64,10 @@ fn scalar_code_validation_uses_the_declared_field_width() {
         .replace("scalar(4)", "scalar(5)")
         .replace("I8(1)", "I8(31)");
     assert!(
-        veloc_opgen::compile_mir(&wide)
+        veloc_opgen::compile(&wide)
             .unwrap()
             .types
-            .contains("pub const I8: Self = Self(31 << SCALAR_SHIFT);")
+            .contains("I8 = 31,")
     );
     rejected(&wide.replace("I8(31)", "I8(32)"), "1..=31");
     rejected(&BUILTINS.replace("scalar(4)", "scalar(3)"), "1..=7");
@@ -75,10 +75,10 @@ fn scalar_code_validation_uses_the_declared_field_width() {
 
 #[test]
 fn encodings_are_explicit_and_can_be_forward_referenced() {
-    let builtins = include_str!("../../mir/defs/builtins.ops");
+    let builtins = include_str!("../../defs/builtins.ops");
     rejected(builtins, "missing encoding Type");
-    let first = veloc_opgen::compile_mir(BUILTINS).unwrap();
-    let last = veloc_opgen::compile_mir(&format!("{builtins}\n{TYPES}")).unwrap();
+    let first = veloc_opgen::compile(BUILTINS).unwrap();
+    let last = veloc_opgen::compile(&format!("{builtins}\n{TYPES}")).unwrap();
     assert_eq!(first.types, last.types);
     rejected(&format!("{BUILTINS}\n{TYPES}"), "duplicate encoding");
     rejected(

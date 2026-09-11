@@ -138,14 +138,14 @@ fn execute(mode: &str, source: &str) -> Result<String> {
     match mode {
         "opgen-error" => {
             let builtins = concat!(
-                include_str!("../../veloc/mir/defs/types.ops"),
+                include_str!("../../veloc/defs/types.ops"),
                 "\n",
-                include_str!("../../veloc/mir/defs/builtins.ops"),
+                include_str!("../../veloc/defs/builtins.ops"),
                 "\n",
-                include_str!("../../veloc/mir/defs/comparisons.ops"),
+                include_str!("../../veloc/defs/comparisons.ops"),
                 "\n",
             );
-            rejected(veloc_opgen::compile_mir(&format!("{builtins}{source}")))
+            rejected(veloc_opgen::compile(&format!("{builtins}{source}")))
         }
         "fixture" | "fixture-error" | "fixture-validate-error" => {
             let parsed = veloc_test_mir::ModuleParser::new().parse(source);
@@ -190,7 +190,14 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 "o1" => optimize(&module),
                 "lower-error" => {
                     return rejected(
-                        veloc_codegen::translate::IRTranslator::new(&module).translate_module(),
+                        veloc_codegen::translate::IRTranslator::new(
+                            &module,
+                            veloc_codegen::target::arch::DataLayout {
+                                pointer_size: 8,
+                                little_endian: true,
+                            },
+                        )
+                        .translate_module(),
                     );
                 }
                 "execute" => {
@@ -206,9 +213,15 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                     return Ok(before);
                 }
                 "lower" => {
-                    let lir = veloc_codegen::translate::IRTranslator::new(&module)
-                        .translate_module()
-                        .map_err(|error| error.to_string())?;
+                    let lir = veloc_codegen::translate::IRTranslator::new(
+                        &module,
+                        veloc_codegen::target::arch::DataLayout {
+                            pointer_size: 8,
+                            little_endian: true,
+                        },
+                    )
+                    .translate_module()
+                    .map_err(|error| error.to_string())?;
                     return Ok(lir
                         .func_order
                         .iter()

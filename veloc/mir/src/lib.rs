@@ -16,6 +16,7 @@ pub mod types;
 pub mod validator;
 
 pub use builder::{FunctionBuilder, InstBuilder, ModuleBuilder};
+pub use constant::{ConstData, Constant, Float, Int, ScalarConst, VectorConst};
 pub use error::{Error, Result};
 pub use function::{EdgeRef, Function};
 pub use inst::{

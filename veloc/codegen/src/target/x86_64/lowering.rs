@@ -79,7 +79,7 @@ fn build_x86_copy_inst<S>(
 ) -> Result<MachineInst, crate::error::Error> {
     let ty = x86_copy_type_for_regs(mfunc, dst, src)?;
     let opcode = x86_mov_opcode_for_type(ty)?;
-    Ok(MachineInst::build_tied_binary(
+    Ok(MachineInst::build_unary(
         MachineOpcode::Target(opcode.as_u32()),
         Writable(dst),
         src,
@@ -440,7 +440,7 @@ impl X86_64Lowering {
             Writable(mask),
             cond_i32,
         ));
-        ctx.selected.push(MachineInst::build_tied_binary(
+        ctx.selected.push(MachineInst::build_unary(
             MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
             Writable(diff),
             true_val,
@@ -450,7 +450,7 @@ impl X86_64Lowering {
             Writable(diff),
             false_val,
         ));
-        ctx.selected.push(MachineInst::build_tied_binary(
+        ctx.selected.push(MachineInst::build_unary(
             MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
             Writable(dst),
             false_val,
@@ -480,7 +480,7 @@ impl X86_64Lowering {
         let mask = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
         let diff = self.alloc_gpr_temp(ctx.mfunc, wide_ty);
 
-        ctx.selected.push(MachineInst::build_tied_binary(
+        ctx.selected.push(MachineInst::build_unary(
             MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
             Writable(cond_i64),
             cond_i32,
@@ -495,7 +495,7 @@ impl X86_64Lowering {
             Writable(mask),
             cond_i64,
         ));
-        ctx.selected.push(MachineInst::build_tied_binary(
+        ctx.selected.push(MachineInst::build_unary(
             MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
             Writable(diff),
             true_val,
@@ -505,7 +505,7 @@ impl X86_64Lowering {
             Writable(diff),
             false_val,
         ));
-        ctx.selected.push(MachineInst::build_tied_binary(
+        ctx.selected.push(MachineInst::build_unary(
             MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
             Writable(dst),
             false_val,
@@ -565,7 +565,7 @@ impl X86_64Lowering {
             FloatCC::Eq => {
                 let is_eq = emit_setcc_i32(ctx, TargetInst::X86Sete);
                 let ordered = emit_setcc_i32(ctx, TargetInst::X86Setnp);
-                ctx.selected.push(MachineInst::build_tied_binary(
+                ctx.selected.push(MachineInst::build_unary(
                     MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
                     Writable(fcmp.dst),
                     is_eq,
@@ -579,7 +579,7 @@ impl X86_64Lowering {
             FloatCC::Ne => {
                 let is_ne = emit_setcc_i32(ctx, TargetInst::X86Setne);
                 let unordered = emit_setcc_i32(ctx, TargetInst::X86Setp);
-                ctx.selected.push(MachineInst::build_tied_binary(
+                ctx.selected.push(MachineInst::build_unary(
                     MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
                     Writable(fcmp.dst),
                     is_ne,

@@ -96,20 +96,16 @@ op ClosureDrop(callee: Callable) -> () {
     ]
 }
 
-op Iconst(@value: u64) -> ScalarInteger {
+op Iconst(@value: Int) -> type(value) {
     mnemonic: "iconst",
     storage: Iconst { value: value },
-    text: Text { args: [integer(value)] },
     memory: NONE
 }
 
-op Fconst(@value: u64) -> ScalarFloat {
+op Fconst(@value: Float) -> type(value) {
     mnemonic: "fconst",
     storage: Fconst { value: value },
-    text: Text { args: [float(value)] },
-    memory: NONE,
-    // F64 uses the full u64 payload; F32 requires the upper 32 bits to be zero.
-    constraints: [require(min_bytes(result_type(0)) == 8 || value <= 4294967295, "f32 bit pattern does not fit in 32 bits")]
+    memory: NONE
 }
 
 op Bconst(@value: bool) -> BOOL {
@@ -118,12 +114,10 @@ op Bconst(@value: bool) -> BOOL {
     memory: NONE
 }
 
-op Vconst(@bytes: Bytes) -> Vector {
+op Vconst(@value: VectorConst) -> type(value) {
     mnemonic: "vconst",
-    storage: Vconst { pool_id: pool(bytes) },
-    text: Text { args: [bytes(bytes)] },
-    memory: NONE,
-    constraints: [require(len(bytes) == min_bytes(result_type(0)), "vector constant byte count must match its type")]
+    storage: Vconst { value: value },
+    memory: NONE
 }
 
 op IAdd<T: Integer>(lhs: T, rhs: T) -> T {

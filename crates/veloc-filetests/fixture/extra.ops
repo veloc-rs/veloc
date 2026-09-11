@@ -1,5 +1,14 @@
 // Exercise contracts not represented by production MIR instructions.
 // These have no control lowering interface: validation comes only from defs.
+format VectorLiteral {
+    fields: [payload(VectorConst)], opcode: fixed(VectorLiteral)
+}
+// A different opcode/field name must still inherit the property's codec,
+// result type and validation, without repeating Vconst's rules.
+op VectorLiteral(@data: VectorConst) -> type(data) {
+    mnemonic: "vector-literal", storage: VectorLiteral { payload: data }, memory: NONE
+}
+
 op Rebind(value: Callable) -> Callable {
     mnemonic: "rebind", storage: Unary { arg: value },
     moves: [value], memory: UNKNOWN,
@@ -18,6 +27,14 @@ op Observe(value: Callable) -> () {
 
 format FunctionOperand {
     fields: [op(Opcode), target(FuncId)], opcode: dynamic(op)
+}
+// Too large for inline fields: test symbol remapping through the field pool.
+format WideRef {
+    fields: [target(FuncId), low(u64), high(u64)], opcode: fixed(WideRef)
+}
+op WideRef(@target: FuncId, @low: u64, @high: u64) -> () {
+    mnemonic: "wide-ref", storage: WideRef { target: target, low: low, high: high },
+    memory: NONE
 }
 op FunctionOperand(@target: FuncId) -> () {
     mnemonic: "function-operand", storage: FunctionOperand { target: target },

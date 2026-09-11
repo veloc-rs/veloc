@@ -3,7 +3,7 @@
 extern crate alloc;
 extern crate veloc_test_mir as veloc_mir;
 
-use veloc_mir::constant::Constant;
+use veloc_mir::constant::ScalarConst;
 use veloc_mir::{
     Arguments, BlockCall, CallConv, InstDraft, InstructionView, IntCC, Linkage, ModuleBuilder,
     Opcode, Type, Value,
@@ -13,12 +13,13 @@ use veloc_mir::{
 mod evaluator {
     use super::*;
     enum Replacement {
-        Constants(Vec<Constant>),
+        Constants(Vec<ScalarConst>),
         Value(Value),
     }
     include!(concat!(env!("OUT_DIR"), "/evaluation.rs"));
 }
 mod offline {
+    use veloc_mir::{IntCC, Opcode};
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
 include!(concat!(env!("OUT_DIR"), "/lowering.rs"));
@@ -307,6 +308,66 @@ fn generated_encodings_preserve_neighboring_fields_and_check_ranges() {
 }
 
 #[test]
+fn scalar_enum_is_exhaustive_and_preserves_type_encoding() {
+    use veloc_mir::{CallableKind, ScalarType, SigId};
+
+    // No wildcard: adding a scalar kind must prompt consumers to consider it.
+    fn width(ty: ScalarType) -> Option<u32> {
+        match ty {
+            ScalarType::I8 => Some(8),
+            ScalarType::I16 => Some(16),
+            ScalarType::I32 | ScalarType::F32 => Some(32),
+            ScalarType::I64 | ScalarType::F64 => Some(64),
+            ScalarType::BOOL => Some(1),
+            ScalarType::PTR => None,
+        }
+    }
+
+    assert_eq!(size_of::<ScalarType>(), 1);
+    assert_eq!(size_of::<Option<ScalarType>>(), 1);
+    assert_eq!(size_of::<Type>(), 8);
+    const SCALAR: ScalarType = Type::I32.as_scalar().unwrap();
+    const VECTOR: Type = SCALAR.vector(4, false).unwrap().as_type();
+    assert_eq!(SCALAR, ScalarType::I32);
+    assert_eq!(VECTOR, Type::I32X4);
+    for code in 0..=u8::MAX {
+        let scalar = ScalarType::from_code(code);
+        assert_eq!(
+            Type::from_scalar_code(code),
+            scalar.map(ScalarType::as_type)
+        );
+        if let Some(scalar) = scalar {
+            assert_eq!(scalar.code(), code);
+            assert_eq!(scalar as u8, code);
+            assert_eq!(scalar.as_type().as_scalar(), Some(scalar));
+            assert_eq!(scalar.as_type().element_bits(), width(scalar));
+            for scalable in [false, true] {
+                if let Some(vector) = scalar.vector(4, scalable) {
+                    assert_eq!(vector.element_type(), scalar);
+                    assert_eq!(vector.as_type().as_scalar(), None);
+                } else {
+                    assert_eq!(scalar, ScalarType::PTR);
+                }
+            }
+        }
+    }
+    assert_eq!(ScalarType::from_code(0), None);
+    assert_eq!(Type::INVALID.as_scalar(), None);
+    for kind in [
+        CallableKind::Local,
+        CallableKind::Owned,
+        CallableKind::Shared,
+    ] {
+        assert_eq!(Type::callable(SigId(0), kind).as_scalar(), None);
+    }
+    for raw in 0..=u16::MAX {
+        if let Some(ty) = Type::from_raw(raw) {
+            assert_eq!(ty.as_scalar().is_some(), ty.as_vector().is_none());
+        }
+    }
+}
+
+#[test]
 fn generated_flag_sets_preserve_bits_order_and_set_operations() {
     use veloc_mir::inst::{EmptyFlags, MemoryRegions, OpTraits, TestFlags as F};
     const SELECTED: F = F::HIGH.union(F::LOW_BIT);
@@ -347,7 +408,7 @@ fn construction_does_not_validate_type_contracts() {
         ("binding", "Pattern { results: false, index: 1"),
         ("class", "Pattern { results: false, index: 0"),
         ("explicit", "Pattern { results: true, index: 0"),
-        ("float-bits", "f32 bit pattern does not fit in 32 bits"),
+        ("float-type", "result 0 must have the type of `value`"),
         ("relation", "results[0] must have more bits"),
         ("fixed", "Pattern { results: false, index: 0"),
         ("raw-results", "Pattern { results: true, index: 0"),
@@ -384,9 +445,9 @@ fn construction_does_not_validate_type_contracts() {
                 let result = ins.output(Type::F32);
                 assert_eq!(ins.value_type(result), Type::F32);
             }
-            "float-bits" => {
-                let result = ins.fconst(0x100000000, Type::F32);
-                assert_eq!(ins.value_type(result), Type::F32);
+            "float-type" => {
+                let data = InstDraft::fconst(veloc_mir::Float::from_f64_bits(0));
+                ins.insert(data, &[Type::F32]);
             }
             "relation" => {
                 let result = ins.sized(i);
@@ -439,9 +500,9 @@ fn construction_does_not_validate_type_contracts() {
         drop(builder);
         let error = module.validate().unwrap_err().to_string();
         assert!(error.contains(expected), "{case}: {error}");
-        // The float printer rejects payloads that cannot fit the declared width;
-        // its parser/validator boundary is covered by the float-bits file tests.
-        if !case.starts_with("raw-") && case != "float-bits" {
+        // A Float's precision is supplied by its result annotation in text;
+        // inconsistent typed properties are tested through raw construction.
+        if !case.starts_with("raw-") && case != "float-type" {
             // The textual path constructs the same invalid IR, and only the
             // explicit validator rejects it there as well.
             let text = module.build().to_string();
@@ -625,65 +686,70 @@ fn generated_lowering_only_accepts_direct_nontrapping_primitives() {
 
 #[test]
 fn generated_evaluators_execute_compositions_properties_and_traps() {
-    use Constant::{Bool, I8, I32, I64};
     for (opcode, args, results, properties, expected) in [
         (
             Opcode::Direct,
-            vec![I32(7), I32(3)],
+            vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::I32],
             vec![],
-            Some(vec![I32(4)]),
+            Some(vec![ScalarConst::from(4i32)]),
         ),
         (
             Opcode::Reversed,
-            vec![I32(7), I32(3)],
+            vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::I32],
             vec![],
-            Some(vec![I32(-4)]),
+            Some(vec![ScalarConst::from(-4i32)]),
         ),
         (
             Opcode::Composed,
-            vec![I32(7), I32(3)],
+            vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::I32],
             vec![],
-            Some(vec![I32(9)]),
+            Some(vec![ScalarConst::from(9i32)]),
         ),
         (
             Opcode::Trapping,
-            vec![I32(7), I32(0)],
+            vec![ScalarConst::from(7i32), ScalarConst::from(0i32)],
             vec![Type::I32],
             vec![],
             None,
         ),
         (
             Opcode::Trapping,
-            vec![I32(7), I32(3)],
+            vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::I32],
             vec![],
-            Some(vec![I32(2)]),
+            Some(vec![ScalarConst::from(2i32)]),
         ),
         (
             Opcode::Multiple,
-            vec![I32(7), I32(7)],
+            vec![ScalarConst::from(7i32), ScalarConst::from(7i32)],
             vec![Type::I32, Type::BOOL],
             vec![],
-            Some(vec![I32(14), Bool(true)]),
+            Some(vec![ScalarConst::from(14i32), ScalarConst::from(true)]),
         ),
         (
             Opcode::CompareValue,
-            vec![I32(7), I32(3)],
+            vec![ScalarConst::from(7i32), ScalarConst::from(3i32)],
             vec![Type::BOOL],
             vec![IntCC::GtS],
-            Some(vec![Bool(true)]),
+            Some(vec![ScalarConst::from(true)]),
         ),
         (
             Opcode::ExtendS,
-            vec![I8(-1)],
+            vec![ScalarConst::from(-1i8)],
             vec![Type::I64],
             vec![],
-            Some(vec![I64(-1)]),
+            Some(vec![ScalarConst::from(-1i64)]),
         ),
-        (Opcode::ExtendS, vec![I64(-1)], vec![Type::I8], vec![], None),
+        (
+            Opcode::ExtendS,
+            vec![ScalarConst::from(-1i64)],
+            vec![Type::I8],
+            vec![],
+            None,
+        ),
     ] {
         assert_eq!(
             evaluator::evaluate(opcode, &args, &results, &properties),

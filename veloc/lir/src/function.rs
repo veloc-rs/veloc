@@ -37,9 +37,25 @@ impl MachineBlock {
 }
 
 /// 栈槽数据
+#[derive(Debug, Clone, Copy)]
+pub enum StackBase {
+    /// Symbolic local frame base, resolved by the target at emission.
+    Frame,
+    Reg(Reg),
+}
+
+impl StackBase {
+    pub fn resolve(self, frame: Reg) -> Reg {
+        match self {
+            Self::Frame => frame,
+            Self::Reg(reg) => reg,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StackSlotData {
-    pub base_reg: Reg,
+    pub base: StackBase,
     pub size: u32,
     pub align: u32,
     pub offset: i32,
@@ -50,7 +66,7 @@ pub struct StackSlotData {
 pub struct StackFrame {
     /// 局部变量占用的栈空间
     pub local_size: u32,
-    /// 传入参数占用的栈空间
+    /// 调用其他函数所需的最大传出参数区。
     pub arg_size: u32,
     /// 被调用者保存寄存器占用的空间
     pub callee_saved_size: u32,
@@ -402,17 +418,17 @@ impl<S> MachineFunction<S> {
     }
 
     /// 分配栈槽
-    pub fn alloc_stack_slot(&mut self, base_reg: Reg, size: u32, align: u32) -> StackSlot {
-        let offset = -(self.stack_frame.local_size as i32 + size as i32);
+    pub fn alloc_stack_slot(&mut self, size: u32, align: u32) -> StackSlot {
         self.stack_frame.local_size += size;
         // 对齐
         let misalign = self.stack_frame.local_size % align;
         if misalign != 0 {
             self.stack_frame.local_size += align - misalign;
         }
+        let offset = -(self.stack_frame.local_size as i32);
 
         self.stack_frame.slots.push(StackSlotData {
-            base_reg,
+            base: StackBase::Frame,
             size,
             align,
             offset,
@@ -428,7 +444,7 @@ impl<S> MachineFunction<S> {
         align: u32,
     ) -> StackSlot {
         self.stack_frame.slots.push(StackSlotData {
-            base_reg,
+            base: StackBase::Reg(base_reg),
             size,
             align,
             offset,

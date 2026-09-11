@@ -1120,6 +1120,9 @@ impl<'a> Parser<'a> {
         let mut implicit_uses = Vec::new();
         let mut implicit_defs = Vec::new();
         let mut clobbers = Vec::new();
+        let mut schedule_latency = None;
+        let mut flow = None;
+        let mut memory = None;
         let mut emit = Vec::new();
 
         while let Some((Token::LParen, _)) = self.peek()? {
@@ -1132,6 +1135,9 @@ impl<'a> Parser<'a> {
                 &mut implicit_uses,
                 &mut implicit_defs,
                 &mut clobbers,
+                &mut schedule_latency,
+                &mut flow,
+                &mut memory,
                 &mut emit,
             )?;
             self.expect(Token::RParen)?;
@@ -1144,6 +1150,9 @@ impl<'a> Parser<'a> {
             implicit_uses,
             implicit_defs,
             clobbers,
+            schedule_latency,
+            flow,
+            memory,
             emit,
         }))
     }
@@ -1157,6 +1166,9 @@ impl<'a> Parser<'a> {
         let mut implicit_uses = Vec::new();
         let mut implicit_defs = Vec::new();
         let mut clobbers = Vec::new();
+        let mut schedule_latency = None;
+        let mut flow = None;
+        let mut memory = None;
         let mut emit = Vec::new();
 
         while let Some((Token::LParen, _)) = self.peek()? {
@@ -1184,6 +1196,9 @@ impl<'a> Parser<'a> {
                         &mut implicit_uses,
                         &mut implicit_defs,
                         &mut clobbers,
+                        &mut schedule_latency,
+                        &mut flow,
+                        &mut memory,
                         &mut emit,
                     )?;
                 }
@@ -1198,6 +1213,9 @@ impl<'a> Parser<'a> {
             implicit_uses,
             implicit_defs,
             clobbers,
+            schedule_latency,
+            flow,
+            memory,
             emit,
         }))
     }
@@ -1210,6 +1228,9 @@ impl<'a> Parser<'a> {
         let mut implicit_uses = Vec::new();
         let mut implicit_defs = Vec::new();
         let mut clobbers = Vec::new();
+        let mut schedule_latency = None;
+        let mut flow = None;
+        let mut memory = None;
         let mut emit = Vec::new();
 
         while let Some((Token::LParen, _)) = self.peek()? {
@@ -1222,6 +1243,9 @@ impl<'a> Parser<'a> {
                 &mut implicit_uses,
                 &mut implicit_defs,
                 &mut clobbers,
+                &mut schedule_latency,
+                &mut flow,
+                &mut memory,
                 &mut emit,
             )?;
             self.expect(Token::RParen)?;
@@ -1233,6 +1257,9 @@ impl<'a> Parser<'a> {
             implicit_uses,
             implicit_defs,
             clobbers,
+            schedule_latency,
+            flow,
+            memory,
         }))
     }
 
@@ -1244,9 +1271,58 @@ impl<'a> Parser<'a> {
         implicit_uses: &mut Vec<String>,
         implicit_defs: &mut Vec<String>,
         clobbers: &mut Vec<String>,
+        schedule_latency: &mut Option<u32>,
+        flow: &mut Option<String>,
+        memory: &mut Option<(String, u32)>,
         emit: &mut Vec<EmitExpr>,
     ) -> Result<(), ParseError> {
         match tok {
+            Token::Ident(ref name) if name == "memory" => {
+                let (_, span) = self.next()?.ok_or(ParseError::UnexpectedEof)?;
+                let kind = self.expect_ident()?;
+                let bytes = self.expect_int()?;
+                if memory.is_some()
+                    || !matches!(kind.as_str(), "Read" | "Write")
+                    || !(1..=u32::MAX as i64).contains(&bytes)
+                {
+                    return Err(ParseError::InvalidArgError {
+                        span: span.into(),
+                        name: "memory".into(),
+                        message: "expected one Read/Write access with a positive u32 byte size"
+                            .into(),
+                    });
+                }
+                *memory = Some((kind, bytes as u32));
+            }
+            Token::Ident(ref name) if name == "flow" => {
+                let (_, span) = self.next()?.ok_or(ParseError::UnexpectedEof)?;
+                let value = self.expect_ident()?;
+                if flow.is_some()
+                    || !matches!(
+                        value.as_str(),
+                        "Next" | "Branch" | "Jump" | "Return" | "Call" | "Trap"
+                    )
+                {
+                    return Err(ParseError::InvalidArgError {
+                        span: span.into(),
+                        name: "flow".into(),
+                        message: "expected one of Next, Branch, Jump, Return, Call, Trap".into(),
+                    });
+                }
+                *flow = Some(value);
+            }
+            Token::Ident(ref name) if name == "schedule" => {
+                let (_, span) = self.next()?.ok_or(ParseError::UnexpectedEof)?;
+                let latency = self.expect_int()?;
+                if schedule_latency.is_some() || !(1..=u32::MAX as i64).contains(&latency) {
+                    return Err(ParseError::InvalidArgError {
+                        span: span.into(),
+                        name: "schedule".into(),
+                        message: "expected one positive u32 latency".into(),
+                    });
+                }
+                *schedule_latency = Some(latency as u32);
+            }
             Token::Operands => {
                 self.next()?;
                 while let Some((Token::LParen, _)) = self.peek()? {

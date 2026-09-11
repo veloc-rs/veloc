@@ -8,7 +8,7 @@ block0(v0: f32, v1: f32):
 
 // ----- vector-constant-size
 // run: validate-error
-// check: vector constant byte count must match its type
+// check: dense vector constant byte count must match its type
 local function bad() -> void
 block0():
   v0: i32<4> = vconst 0x00000000

@@ -1,9 +1,9 @@
 mod common;
 
-use common::{BUILTINS, compile_mir};
+use common::{BUILTINS, compile};
 
 fn rejected(source: &str, message: &str) {
-    let error = std::panic::catch_unwind(|| veloc_opgen::compile_mir(source))
+    let error = std::panic::catch_unwind(|| veloc_opgen::compile(source))
         .expect("bad type declarations must not panic")
         .err()
         .expect("bad type declaration was accepted");
@@ -21,36 +21,36 @@ fn type_expressions_support_aliases_forward_references_and_nested_construction()
         class Chosen { members: [WORD, WORDS] }
         predicate is_chosen = Chosen;
     "#;
-    let output = compile_mir(source).unwrap();
+    let output = compile(source).unwrap();
     assert!(output.types.contains("pub const WORD: Self = Self::I32;"));
     assert!(
         output
             .types
-            .contains("pub const WORDS: Self = Self::I32.as_scalar().expect(\"checked scalar definition\").vector(4, false)")
+            .contains("pub const WORDS: Self = ScalarType::I32.vector(4, false)")
     );
     assert!(
         output
             .types
-            .contains("pub const COPY: Self = Self::I32.as_scalar().expect(\"checked scalar definition\").vector(4, false)")
+            .contains("pub const COPY: Self = ScalarType::I32.vector(4, false)")
     );
     assert!(
         output
             .types
-            .contains("pub const MASK: Self = Self::BOOL.as_scalar().expect(\"checked scalar definition\").vector(8, true)")
+            .contains("pub const MASK: Self = ScalarType::BOOL.vector(8, true)")
     );
     let equivalent = source
         .replace("vector(WORD, 4)", "vector(int(32), 4)")
         .replace("type WORD = LATER;", "type WORD = int(32);");
-    let equivalent = compile_mir(&equivalent).unwrap();
+    let equivalent = compile(&equivalent).unwrap();
     assert_eq!(output.types, equivalent.types);
     assert_eq!(output.opcodes, equivalent.opcodes);
     let reversed = source.lines().rev().collect::<Vec<_>>().join("\n");
-    assert_eq!(output.types, compile_mir(&reversed).unwrap().types);
+    assert_eq!(output.types, compile(&reversed).unwrap().types);
 }
 
 #[test]
 fn aliases_work_in_operation_signatures_and_set_expressions() {
-    let output = compile_mir(
+    let output = compile(
         r#"
         type WORD = I32;
         type WIDE = vector(WORD, scalable(4));
@@ -139,12 +139,8 @@ fn encoding_bindings_are_separate_checked_and_not_assigned_to_aliases() {
     let alias = format!("{}\ntype BYTE = I8;", BUILTINS.replace("I8(1)", "BYTE(1)"));
     rejected(&alias, "requires name `I8`");
 
-    let output = veloc_opgen::compile_mir(&BUILTINS.replace("I32(3)", "I32(9)")).unwrap();
-    assert!(
-        output
-            .types
-            .contains("pub const I32: Self = Self(9 << SCALAR_SHIFT);")
-    );
+    let output = veloc_opgen::compile(&BUILTINS.replace("I32(3)", "I32(9)")).unwrap();
+    assert!(output.types.contains("I32 = 9,"));
     assert!(output.types.contains("9 => Some(Self::I32)"));
 }
 
