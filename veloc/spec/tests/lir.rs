@@ -1,9 +1,8 @@
 mod common;
 
 const BINARY: &str =
-    "storage Operands { prefix: \"G_\" }\nformat Binary { fields: [dst(Def), lhs(Use), rhs(Use)] }";
-const ADD: &str =
-    "op G_SUM<T: Integer>(lhs: T, rhs: T) -> T { storage: Binary, semantics: bv.add(lhs, rhs) }";
+    "storage Operands { prefix: \"G_\" }\nrecord Binary { dst: Def, lhs: Use, rhs: Use }";
+const ADD: &str = "op G_SUM<T: Integer>(lhs: T, rhs: T) -> T { meta: OpInfo {}, storage: Binary, semantics: bv.add(lhs, rhs) }";
 
 #[test]
 fn invalid_definitions_fail_before_emission() {
@@ -44,20 +43,20 @@ fn invalid_definitions_fail_before_emission() {
         ),
         (format!("{BINARY} {ADD} {ADD}"), "duplicate op"),
         (
-            "storage Operands {} format Bad { fields: [dst(Def), dst(Use)] }".into(),
+            "storage Operands {} record Bad { dst: Def, dst: Use }".into(),
             "duplicate field",
         ),
         (
-            "storage Operands {} format Bad { fields: [values(Uses), dst(Def)] }".into(),
+            "storage Operands {} record Bad { values: Uses, dst: Def }".into(),
             "entire operand sequence",
         ),
         (
-            "storage Operands {} format Bad { fields: [dst(Def)], lengths: [0] }".into(),
-            "operand counts",
+            "storage Operands {} record Bad { dst: Def } layout Bad { lengths: [0] }".into(),
+            "unknown field",
         ),
         (
-            "storage Operands {} format Bad { fields: [dst(Def)], lengths: [1, 1] }".into(),
-            "operand counts",
+            "storage Operands {} record Bad { dst: Def } layout Bad { lengths: [1, 1] }".into(),
+            "unknown field",
         ),
         (
             format!(

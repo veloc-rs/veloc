@@ -11,16 +11,19 @@ flags OpTraits {
     separator: ", "
 }
 
-flags MemoryRegions {
+// Known memory behaviors. Unknown information is not a member of this set.
+flags MemoryEffects {
     storage: u8,
-    members: [MEMORY(0), EXTERNAL(1)],
-    separator: ","
+    members: [READ(0), WRITE(1), ALLOCATE(2), FREE(3)],
+    separator: ", "
 }
 
-effect NONE { reads: [], writes: [] }
-effect UNKNOWN { reads: [ALL], writes: [ALL], allocates: true, frees: true }
 
-// All pointer-addressable storage shares one resource; alias analysis refines it.
-effect READ { reads: [MEMORY], writes: [] }
-effect WRITE { reads: [], writes: [MEMORY] }
-effect ALLOCATE { reads: [], writes: [], allocates: true }
+// Ordinary data declarations, usable in metadata or instruction properties.
+enum MemoryEffect {
+    variants: [Known(MemoryEffects), Unknown]
+}
+record OpInfo {
+    traits: OpTraits,
+    memory: MemoryEffect,
+}

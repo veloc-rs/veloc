@@ -3,8 +3,9 @@ mod common;
 use common::compile;
 
 const PAIR: &str = r#"
-format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+record Pair { args: values(2) }
 op Add<T: DOMAIN>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
 "#;

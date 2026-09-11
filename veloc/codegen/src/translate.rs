@@ -60,24 +60,31 @@ impl<'a> IRTranslator<'a> {
 
     fn memory_access(
         &self,
-        kind: veloc_lir::MemoryKind,
-        ty: veloc_mir::Type,
-        flags: veloc_mir::MemFlags,
-        may_trap: bool,
+        func: &Function,
+        inst: veloc_mir::Inst,
     ) -> Result<veloc_lir::MemoryAccess> {
-        let bytes = if ty.is_ptr() {
-            u32::from(self.layout.pointer_size)
-        } else {
-            ty.fixed_size_bytes().ok_or_else(|| {
+        let source = func
+            .memory_access(inst)
+            .expect("memory lowering requires an access contract");
+        let bytes = source
+            .bytes(Some(u32::from(self.layout.pointer_size)))
+            .ok_or_else(|| {
                 Error::translate(format!(
-                    "memory access requires a fixed machine representation: {ty:?}"
+                    "memory access requires a fixed machine representation: {:?}",
+                    source.ty
                 ))
-            })?
+            })?;
+        let kind = if source.stored.is_some() {
+            veloc_lir::MemoryKind::Write
+        } else {
+            veloc_lir::MemoryKind::Read
         };
         let mut access = veloc_lir::MemoryAccess::new(kind, bytes);
-        access.alignment = flags.alignment();
-        access.volatile = flags.is_volatile();
-        access.may_trap = may_trap;
+        access.alignment = source.flags.alignment();
+        access.volatile = source.flags.is_volatile();
+        access.may_trap = func
+            .stack_access(source, Some(u32::from(self.layout.pointer_size)))
+            .is_none();
         Ok(access)
     }
 
@@ -358,16 +365,9 @@ impl<'a> IRTranslator<'a> {
                 )
             }
 
-            InstructionView::Load { ptr, offset, flags } => {
+            InstructionView::Load { ptr, offset, .. } => {
                 let base = ctx.value_map[*ptr];
-                let access = self.memory_access(
-                    veloc_lir::MemoryKind::Read,
-                    ctx.mfunc
-                        .vreg_data(defs[0].as_writable().unwrap().to_reg())
-                        .ty,
-                    *flags,
-                    true,
-                )?;
+                let access = self.memory_access(ctx.func, inst_id)?;
                 Ok(MachineInst::build_offset_load(
                     defs[0].as_writable().unwrap(),
                     base,
@@ -378,19 +378,11 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstructionView::Store {
-                ptr,
-                value,
-                offset,
-                flags,
+                ptr, value, offset, ..
             } => {
                 let val = ctx.value_map[*value];
                 let base = ctx.value_map[*ptr];
-                let access = self.memory_access(
-                    veloc_lir::MemoryKind::Write,
-                    ctx.mfunc.vreg_data(val).ty,
-                    *flags,
-                    true,
-                )?;
+                let access = self.memory_access(ctx.func, inst_id)?;
                 Ok(MachineInst::build_offset_store(val, base, *offset as i64)
                     .with_memory(access)
                     .into())

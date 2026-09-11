@@ -1,0 +1,44 @@
+// ----- aligned-derived-address
+// run: execute
+// check: returned: [0x2a]
+local function main() -> i32
+block0():
+  p: ptr = alloca size=128, align=64
+  q: ptr = ptr-offset p, 64
+  x: i32 = iconst 42
+  store.align64 x, q, offset=0
+  y: i32 = load.align64 p, offset=64
+  return y
+
+// ----- call-mutates-local-object
+// run: execute
+// check: returned: [0x2a]
+local function main() -> i32
+block0():
+  p: ptr = alloca size=4, align=4
+  x: i32 = iconst 1
+  store x, p, offset=0
+  call mutate(p) : (ptr) -> void
+  y: i32 = load p, offset=0
+  return y
+local function mutate(ptr) -> void
+block0(p: ptr):
+  x: i32 = iconst 42
+  store x, p, offset=0
+  return
+
+// ----- distinct-objects
+// run: execute
+// check: returned: [0x2b]
+local function main() -> i32
+block0():
+  p: ptr = alloca size=4, align=4
+  q: ptr = alloca size=4, align=4
+  x: i32 = iconst 42
+  z: i32 = iconst 1
+  store x, p, offset=0
+  store z, q, offset=0
+  y: i32 = load p, offset=0
+  w: i32 = load q, offset=0
+  sum: i32 = iadd y, w
+  return sum

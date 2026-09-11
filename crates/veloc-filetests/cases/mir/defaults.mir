@@ -1,10 +1,10 @@
 // run: roundtrip
 // not: .align1
 // check: : i32 = load v0, offset=0
-// check: store v4, v0, offset=0
-// check: : i32 = stack-load ss0, offset=0
-// check: stack-store v5, ss0, offset=0
-// check: : ptr = stack-addr ss0, offset=0
+// check: store v5, v0, offset=0
+// check: : i32 = load ss0.v4, offset=0
+// check: store v6, ss0.v4, offset=0
+// check: : ptr = ptr-offset ss0.v4, 0
 // check: : ptr = ptr-index v0, v1, scale=1, offset=0
 // check: mask=v3, evl=v1
 // check: mask=v3, evl=v1
@@ -13,13 +13,14 @@
 // check: mask=v3, evl=v1
 // not: .align1
 export function defaults(ptr, i32, i32<4>, mask<4>) -> void
-  ss0: size 32
+
 block0(v0: ptr, v1: i32, v2: i32<4>, v3: mask<4>):
+  ss0: ptr = alloca size=32, align=8
   v4: i32 = load.align1 v0, offset=0
   store v4, v0, offset=0
-  v5: i32 = stack-load ss0, offset=0
-  stack-store v5, ss0, offset=0
-  v6: ptr = stack-addr ss0, offset=0
+  v5: i32 = load ss0, offset=0
+  store v5, ss0, offset=0
+  v6: ptr = ptr-offset ss0, 0
   v7: ptr = ptr-index v0, v1, scale=1, offset=0
   v8: i32<4> = load-stride v0, stride=v1, offset=0, mask=v3, evl=v1
   store-stride v8, v0, stride=v1, offset=0, mask=v3, evl=v1

@@ -1,0 +1,38 @@
+// ----- no-duplicate-memory-summary
+// run: opgen-error
+// check: access already defines the complete memory effect
+record Read { ptr: Value, offset: u32 }
+op Read(ptr: PTR, @offset: u32) -> I32 {
+    meta: OpInfo { memory: Known([READ]) },
+    mnemonic: "read", storage: Read { ptr: ptr, offset: offset },
+access: read(ptr, offset), }
+
+// ----- address-must-be-a-pointer
+// run: opgen-error
+// check: access address must have type PTR
+record Read { ptr: Value, offset: u32 }
+op Read(ptr: I32, @offset: u32) -> I32 {
+    meta: OpInfo {},
+    mnemonic: "read", storage: Read { ptr: ptr, offset: offset },
+    access: read(ptr, offset)
+}
+
+// ----- read-needs-a-unique-result
+// run: opgen-error
+// check: read access requires exactly one result
+record Read { ptr: Value, offset: u32 }
+op Read(ptr: PTR, @offset: u32) -> (I32, I32) {
+    meta: OpInfo {},
+    mnemonic: "read", storage: Read { ptr: ptr, offset: offset },
+    access: read(ptr, offset)
+}
+
+// ----- flags-cannot-be-guessed
+// run: opgen-error
+// check: a layout has at most one memory flags source
+record Read { ptr: Value, offset: u32, a: MemFlags, b: MemFlags }
+op Read(ptr: PTR, @offset: u32, @a: MemFlags, @b: MemFlags) -> I32 {
+    meta: OpInfo {},
+    mnemonic: "read", storage: Read { ptr: ptr, offset: offset, a: a, b: b },
+    access: read(ptr, offset)
+}

@@ -361,7 +361,7 @@ impl Interpreter {
 
         self.frames.push(StackFrame {
             scope: self.next_scope,
-            stack_mark: stack_base,
+            stack_mark: stack_checkpoint,
             roots_pc: 0,
             module,
             func,
@@ -402,6 +402,7 @@ impl Interpreter {
         let next_func = program
             .compiled_func(target_module, target_func)
             .map_err(|_| DispatchExit::InvalidFunction(target_module, target_func))?;
+        let stack_checkpoint = self.stack_top;
         let total_size: usize = next_func.stack_size;
         let Some(next_stack_base) = self.alloc_stack_frame(total_size, next_func.stack_align)
         else {
@@ -428,7 +429,7 @@ impl Interpreter {
             InterpreterValue::none(),
         );
         frame.stack_base = next_stack_base;
-        frame.stack_mark = next_stack_base;
+        frame.stack_mark = stack_checkpoint;
         self.next_scope += 1;
         frame.scope = self.next_scope;
         frame.roots_pc = 0;

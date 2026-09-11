@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Error;
+use crate::data::Value;
 use crate::model::{Op, ParamKind, Pattern, TypeDef, TypeList};
-use crate::records::{DefaultValue, PropertyType, RecordDef};
+use crate::records::{PropertyType, RecordDef};
 use crate::syntax::Kind;
 
 mod template;
@@ -14,7 +15,7 @@ pub(super) struct Schema {
     pub args: Vec<Item>,
     pub named: Vec<Named>,
     pub flags: Option<String>,
-    pub defaults: Vec<(String, DefaultValue)>,
+    pub bindings: Vec<(String, Value)>,
 }
 
 #[derive(Debug)]
@@ -66,14 +67,9 @@ pub(super) enum Mode {
     Optional,
 }
 
-struct Leaf {
-    kind: AtomKind,
-    default: Option<DefaultValue>,
-}
-
 struct Checker<'a> {
     source: &'a str,
-    leaves: BTreeMap<String, Leaf>,
+    leaves: BTreeMap<String, AtomKind>,
     used: BTreeSet<String>,
     typed: BTreeSet<String>,
 }
@@ -101,13 +97,9 @@ pub(super) fn compile(
                     PropertyType::Optional(ty) if ty == "Value" => AtomKind::OptionalValue,
                     _ => return Err(checker.error(op.offset, "unsupported optional property")),
                 };
-                checker.leaves.insert(
-                    format!("{}.{}", param.name, field.name),
-                    Leaf {
-                        kind,
-                        default: field.default.clone(),
-                    },
-                );
+                checker
+                    .leaves
+                    .insert(format!("{}.{}", param.name, field.name), kind);
             }
             continue;
         }
@@ -118,20 +110,14 @@ pub(super) fn compile(
             ParamKind::Successors => AtomKind::Successors,
             ParamKind::Property(ty) => AtomKind::Scalar(ty.clone()),
         };
-        checker.leaves.insert(
-            param.name.clone(),
-            Leaf {
-                kind,
-                default: None,
-            },
-        );
+        checker.leaves.insert(param.name.clone(), kind);
     }
 
     let mut schema = Schema {
         args: Vec::new(),
         named: Vec::new(),
         flags: None,
-        defaults: Vec::new(),
+        bindings: Vec::new(),
     };
     if let Some(node) = &op.text {
         let Kind::Text(text) = &node.kind else {
@@ -179,19 +165,13 @@ pub(super) fn compile(
             ));
         }
     }
-    for (path, leaf) in checker.leaves {
-        if checker.used.contains(&path) {
-            continue;
-        }
-        match leaf.default {
-            Some(default) => schema.defaults.push((path, default)),
-            None => {
-                return Err(Error::at(
-                    source,
-                    op.offset,
-                    format!("text projection does not consume `{path}`"),
-                ));
-            }
+    for path in checker.leaves.keys() {
+        if !checker.used.contains(path) {
+            return Err(Error::at(
+                source,
+                op.offset,
+                format!("text projection does not consume `{path}`"),
+            ));
         }
     }
     Ok(schema)
@@ -215,7 +195,7 @@ impl Checker<'_> {
                 format!("text field `{path}` is consumed more than once"),
             ));
         }
-        Ok(leaf.kind.clone())
+        Ok(leaf.clone())
     }
 
     fn atom(&mut self, path: &str, codec: Option<&str>, offset: usize) -> Result<Atom, Error> {
@@ -314,7 +294,7 @@ mod tests {
 
     fn op(params: &[(&str, &str)], text: Option<&str>) -> Op {
         let text = text.map(|text| {
-            let source = format!("format Holder {{ text: {text} }}");
+            let source = format!("fixture Holder {{ text: {text} }}");
             crate::syntax::parse(&source)
                 .unwrap()
                 .pop()
@@ -324,10 +304,10 @@ mod tests {
                 .unwrap()
         });
         Op {
-            moves: Vec::new(),
             offset: 0,
             name: "Test".into(),
             mnemonic: "test".into(),
+            meta: crate::data::Value::Record("OpInfo".into(), Default::default()),
             format: "Test".into(),
             signature: TypeDef {
                 operands: TypeList::Fixed(vec![]),
@@ -337,6 +317,7 @@ mod tests {
             params: params
                 .iter()
                 .map(|(name, kind)| Param {
+                    moves: false,
                     name: (*name).into(),
                     kind: match *kind {
                         "value" => ParamKind::Value,
@@ -352,7 +333,7 @@ mod tests {
             control: None,
             text,
             traits: vec![],
-            memory: "NONE".into(),
+            memory: crate::builtins::Effect::Known(Vec::new()),
             access: None,
             constraints: vec![],
             identity: None,
@@ -368,22 +349,18 @@ mod tests {
                 RecordField {
                     name: "mask".into(),
                     ty: PropertyType::Named("Value".into()),
-                    default: None,
                 },
                 RecordField {
                     name: "evl".into(),
                     ty: PropertyType::Optional("Value".into()),
-                    default: Some(DefaultValue::None),
                 },
                 RecordField {
                     name: "scale".into(),
                     ty: PropertyType::Named("u8".into()),
-                    default: Some(DefaultValue::Number(1)),
                 },
                 RecordField {
                     name: "flags".into(),
                     ty: PropertyType::Named("MemFlags".into()),
-                    default: Some(DefaultValue::Empty),
                 },
             ],
         }
@@ -434,16 +411,14 @@ mod tests {
     }
 
     #[test]
-    fn record_leaves_are_consumed_or_initialized_from_defaults() {
+    fn record_leaves_require_explicit_text_or_fixed_bindings() {
         let params = [("args", "values"), ("ext", "Config")];
-        let text = r#""{.ext.flags} {args}, mask={ext.mask}[, evl={ext.evl}]""#;
+        let text = r#""{ext.scale=1} {.ext.flags} {args}, mask={ext.mask}[, evl={ext.evl}]""#;
         let schema = compile(&op(&params, Some(text)), &[record()], "").unwrap();
         assert_eq!(schema.flags.as_deref(), Some("ext.flags"));
         assert_eq!(schema.named[0].key, "mask");
         assert!(matches!(schema.named[1].mode, Mode::Optional));
-        assert!(
-            matches!(&schema.defaults[..], [(path, DefaultValue::Number(1))] if path == "ext.scale")
-        );
+        assert!(matches!(&schema.bindings[..], [(path, Value::Number(1))] if path == "ext.scale"));
         for text in [
             r#""{args}""#,
             r#""{args}, unknown={ext.unknown}""#,

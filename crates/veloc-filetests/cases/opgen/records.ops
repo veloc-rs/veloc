@@ -1,0 +1,69 @@
+// ----- legacy-record-fields-are-rejected
+// run: opgen-error
+// check: expected data type name
+record Settings { fields: [budget(u8, 1)] }
+
+// ----- record-defaults-are-rejected
+// run: opgen-error
+// check: expected `,`
+record Settings { budget: u8 = 1 }
+
+// ----- optional-fields-must-be-explicit
+// run: opgen-error
+// check: missing field `budget`
+record Settings { budget: optional(u32) }
+record Work {  }
+op Work() -> () {
+    meta: Settings {}, mnemonic: "work", storage: Work {}
+}
+
+// ----- fixed-text-binding-is-range-checked
+// run: opgen-error
+// check: fixed text binding requires an in-range integer literal
+record Settings { scale: u8 }
+record Work { settings: Settings }
+op Work(@settings: Settings) -> () {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "work", storage: Work { settings: settings },
+    text: "{settings.scale=256}"
+}
+
+// ----- fixed-text-binding-cannot-also-consume-input
+// run: opgen-error
+// check: text field `settings.scale` is consumed more than once
+record Settings { scale: u8 }
+record Work { settings: Settings }
+op Work(@settings: Settings) -> () {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "work", storage: Work { settings: settings },
+    text: "{settings.scale=1} {settings.scale}"
+}
+
+
+// ----- record-without-instruction-use-is-plain-data
+// run: opgen
+// check: pub struct Operands
+// check: pub budget: u32
+record Operands { budget: u32 }
+
+// ----- legacy-format-declaration-is-rejected
+// run: opgen-error
+// check: unknown definition kind `format`
+format Pair {}
+
+// ----- opcode-is-not-a-record-type
+// run: opgen-error
+// check: unknown data type `Opcode`
+record Pair { opcode: Opcode, args: values(2) }
+
+// ----- alternate-layout-requires-a-record
+// run: opgen-error
+// check: unknown layout record `Alternate`
+record Pair { args: values(2) }
+layout Alternate { format: fixed(Pair), text: "{args}" }
+
+// ----- lir-layout-requires-a-record
+// run: opgen-error
+// check: layout `Missing` requires a record declaration
+storage Operands {}
+layout Missing { accessor: missing }

@@ -33,8 +33,9 @@ type validation. Construction does not run validation.
 
 ```text
 storage Operands { prefix: "G_" }
-format BinaryReg { fields: [dst(Def), lhs(Use), rhs(Use)] }
+record BinaryReg { dst: Def, lhs: Use, rhs: Use }
 op G_ADD<T: Integer>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     storage: BinaryReg,
     semantics: bv.add(lhs, rhs)
 }

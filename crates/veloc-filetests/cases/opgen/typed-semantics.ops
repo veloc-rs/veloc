@@ -1,8 +1,9 @@
 // ----- comparison-properties-are-bound-by-name-not-ssa-position-1
 // run: opgen-error
 // check: unknown integer comparison property `missing`
-format Compare { fields: [opcode(Opcode), cc(IntCC), args(values(2))], opcode: dynamic(opcode) }
+record Compare { cc: IntCC, args: values(2) }
 op Test<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
+    meta: OpInfo {},
     mnemonic: "test", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.cmp(missing, lhs, rhs)
 }
@@ -10,8 +11,9 @@ op Test<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
 // ----- comparison-properties-are-bound-by-name-not-ssa-position-2
 // run: opgen-error
 // check: unknown semantic value `condition`
-format Compare { fields: [opcode(Opcode), cc(IntCC), args(values(2))], opcode: dynamic(opcode) }
+record Compare { cc: IntCC, args: values(2) }
 op Test<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
+    meta: OpInfo {},
     mnemonic: "test", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.add(condition, lhs)
 }
@@ -19,8 +21,9 @@ op Test<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
 // ----- multiple-results-require-matching-sorts-and-counts-1
 // run: opgen-error
 // check: invalid semantic types [Bv(Width(8)), Bv(Width(8))] -> [Bv(Width(8)), Bool]: expected bool, got bv8
-format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+record Binary { args: values(2) }
 op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    meta: OpInfo {},
     mnemonic: "pair", storage: Binary { args: [lhs, rhs] },
     semantics: [bv.add(lhs, rhs), bv.add(lhs, rhs)]
 }
@@ -28,8 +31,9 @@ op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
 // ----- multiple-results-require-matching-sorts-and-counts-2
 // run: opgen-error
 // check: semantic result count does not match signature
-format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+record Binary { args: values(2) }
 op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    meta: OpInfo {},
     mnemonic: "pair", storage: Binary { args: [lhs, rhs] },
     semantics: bv.add(lhs, rhs)
 }
@@ -37,8 +41,9 @@ op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
 // ----- traps-are-typed-behavior-not-input-assumptions-1
 // run: opgen-error
 // check: invalid semantic types [Bv(Width(8)), Bv(Width(8))] -> [Bv(Width(8))]: expected bool, got bv8
-format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+record Binary { args: values(2) }
 op Divide<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "divide", storage: Binary { args: [lhs, rhs] },
     semantics: bv.udiv(lhs, rhs),
     traps: [DivisionByZero(rhs)]
@@ -47,8 +52,9 @@ op Divide<T: ScalarInteger>(lhs: T, rhs: T) -> T {
 // ----- traps-are-typed-behavior-not-input-assumptions-2
 // run: opgen-error
 // check: unknown trap `UnknownTrap`
-format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+record Binary { args: values(2) }
 op Divide<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "divide", storage: Binary { args: [lhs, rhs] },
     semantics: bv.udiv(lhs, rhs),
     traps: [UnknownTrap(bv.eq(rhs, bv.zero()))]
@@ -57,8 +63,9 @@ op Divide<T: ScalarInteger>(lhs: T, rhs: T) -> T {
 // ----- traps-are-typed-behavior-not-input-assumptions-3
 // run: opgen-error
 // check: trap guards require executable semantics
-format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+record Binary { args: values(2) }
 op Divide<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "divide", storage: Binary { args: [lhs, rhs] },
 
     traps: [DivisionByZero(bv.eq(rhs, bv.zero()))]
@@ -67,8 +74,9 @@ op Divide<T: ScalarInteger>(lhs: T, rhs: T) -> T {
 // ----- widths-are-checked-against-every-signature-instance-1
 // run: opgen-error
 // check: invalid semantic types [Bv(Width(16))] -> [Bv(Width(8))]: cannot extend bv16 to bv8
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+record Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+    meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     where: [narrower(arg, result)], semantics: bv.sext(arg, result(0))
 }
@@ -76,8 +84,9 @@ op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
 // ----- widths-are-checked-against-every-signature-instance-2
 // run: opgen-error
 // check: expected 2 results, got 1
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+record Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+    meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     where: [wider(arg, result)], semantics: bv.sext(arg, result(1))
 }
@@ -85,8 +94,9 @@ op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
 // ----- widths-are-checked-against-every-signature-instance-3
 // run: opgen-error
 // check: expected type(operand) or result(index)
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+record Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+    meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     where: [wider(arg, result)], semantics: bv.sext(arg, type(missing))
 }
@@ -94,8 +104,9 @@ op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
 // ----- widths-are-checked-against-every-signature-instance-4
 // run: opgen-error
 // check: invalid semantic types [Bv(Width(8))] -> [Bv(Width(16))]: expected bv16, got bv8
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+record Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+    meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     where: [wider(arg, result)], semantics: arg
 }
@@ -103,8 +114,9 @@ op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
 // ----- widths-are-checked-against-every-signature-instance-5
 // run: opgen-error
 // check: semantic recipes require a shared lane shape
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+record Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: I32X4) {
+    meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     where: [wider(arg, result)], semantics: bv.sext(arg, result(0))
 }

@@ -9,169 +9,173 @@ property VectorConst {
 
 // Logical records. SSA fields are extracted into the instruction's operands.
 record PtrIndexImm {
-    fields: [offset(i32, 0), scale(u32, 1)]
+    offset: i32,
+    scale: u32,
 }
 record VectorMemOptions {
-    fields: [
-        offset(i32, 0), flags(MemFlags, empty), scale(u8, 1),
-        mask(optional(Value), none), evl(optional(Value), none)
-    ]
+    offset: i32,
+    flags: MemFlags,
+    scale: u8,
+    mask: optional(Value),
+    evl: optional(Value),
 }
 record VectorExtData {
-    fields: [mask(Value), evl(optional(Value), none)]
+    mask: Value,
+    evl: optional(Value),
 }
 
 // Fields describe logical groups, not physical storage. All SSA inputs,
 // including successor arguments and record inputs, occupy one operand range.
 // values(N) is fixed-arity; ValueList is variadic.
+// An op's storage mapping selects a record as an instruction layout.
+// Opcode fields are inferred from its users, never part of the record itself.
 
-format Unary {
-    fields: [opcode(Opcode), arg(Value)],
-    opcode: dynamic(opcode)
+record Unary {
+    arg: Value,
 }
-format Binary {
-    fields: [opcode(Opcode), args(values(2))],
-    opcode: dynamic(opcode)
+record Binary {
+    args: values(2),
 }
-format Ternary {
-    fields: [opcode(Opcode), args(values(3))],
-    opcode: dynamic(opcode)
+record Ternary {
+    args: values(3),
 }
-format Iconst {
-    fields: [value(Int)],
-    opcode: fixed(Iconst)
+record Iconst {
+    value: Int,
 }
-format Fconst {
-    fields: [value(Float)],
-    opcode: fixed(Fconst)
+record Fconst {
+    value: Float,
 }
-format Bconst {
-    fields: [value(bool)],
-    opcode: fixed(Bconst)
+record Bconst {
+    value: bool,
 }
-format Vconst {
-    fields: [value(VectorConst)],
-    opcode: fixed(Vconst)
+record Vconst {
+    value: VectorConst,
 }
-format Load {
-    fields: [ptr(Value), offset(u32), flags(MemFlags)],
-    opcode: fixed(Load)
+record Load {
+    ptr: Value,
+    offset: u32,
+    flags: MemFlags,
 }
-format Store {
-    fields: [ptr(Value), value(Value), offset(u32), flags(MemFlags)],
-    opcode: fixed(Store)
+record Store {
+    ptr: Value,
+    value: Value,
+    offset: u32,
+    flags: MemFlags,
 }
-format Alloca {
-    fields: [size(u32), align(u32)],
-    opcode: fixed(Alloca)
+record Alloca {
+    size: u32,
+    align: u32,
 }
-format PtrOffset {
-    fields: [ptr(Value), offset(i32)],
-    opcode: fixed(PtrOffset)
+record PtrOffset {
+    ptr: Value,
+    offset: i32,
 }
-format PtrIndex {
-    fields: [ptr(Value), index(Value), imm_id(PtrIndexImm)],
-    opcode: fixed(PtrIndex)
+record PtrIndex {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
 }
-format IntToPtr {
-    fields: [arg(Value)],
-    opcode: fixed(IntToPtr)
+record IntToPtr {
+    arg: Value,
 }
-format PtrToInt {
-    fields: [arg(Value)],
-    opcode: fixed(PtrToInt)
+record PtrToInt {
+    arg: Value,
 }
-format Call {
-    fields: [func_id(FuncId), args(ValueList)],
-    opcode: fixed(Call)
+record Call {
+    func_id: FuncId,
+    args: ValueList,
 }
-format ClosureNew {
-    fields: [func_id(FuncId), captures(ValueList), cleanup(FuncId)],
-    opcode: fixed(ClosureNew)
+record ClosureNew {
+    func_id: FuncId,
+    captures: ValueList,
+    cleanup: FuncId,
 }
-format Closure {
-    fields: [opcode(Opcode), func_id(FuncId), captures(ValueList)],
-    opcode: dynamic(opcode)
+record Closure {
+    func_id: FuncId,
+    captures: ValueList,
 }
-format TailCall {
-    fields: [func_id(FuncId), args(ValueList)],
-    opcode: fixed(TailCall)
+record TailCall {
+    func_id: FuncId,
+    args: ValueList,
 }
-format CallValue {
-    fields: [opcode(Opcode), callee(Value), args(ValueList)],
-    opcode: dynamic(opcode)
+record CallValue {
+    callee: Value,
+    args: ValueList,
 }
-format CallIndirect {
-    fields: [ptr(Value), args(ValueList), sig_id(SigId)],
-    opcode: fixed(CallIndirect)
+record CallIndirect {
+    ptr: Value,
+    args: ValueList,
+    sig_id: SigId,
 }
-format CallIntrinsic {
-    fields: [intrinsic(Intrinsic), args(ValueList), sig_id(SigId)],
-    opcode: fixed(CallIntrinsic)
+record CallIntrinsic {
+    intrinsic: Intrinsic,
+    args: ValueList,
+    sig_id: SigId,
 }
-format Jump {
-    fields: [dest(BlockCall)],
-    opcode: fixed(Jump)
+record Jump {
+    dest: BlockCall,
 }
-format Br {
-    fields: [condition(Value), then_dest(BlockCall), else_dest(BlockCall)],
-    opcode: fixed(Br)
+record Br {
+    condition: Value,
+    then_dest: BlockCall,
+    else_dest: BlockCall,
 }
-format BrTable {
-    fields: [index(Value), table(JumpTable)],
-    opcode: fixed(BrTable)
+record BrTable {
+    index: Value,
+    table: JumpTable,
 }
-format Return {
-    fields: [values(ValueList)],
-    opcode: fixed(Return)
+record Return {
+    values: ValueList,
 }
-format IntCompare {
-    fields: [kind(IntCC), args(values(2))],
-    opcode: fixed(Icmp)
+record IntCompare {
+    kind: IntCC,
+    args: values(2),
 }
-format FloatCompare {
-    fields: [kind(FloatCC), args(values(2))],
-    opcode: fixed(Fcmp)
+record FloatCompare {
+    kind: FloatCC,
+    args: values(2),
 }
-format VectorLoadStrided {
-    fields: [ptr(Value), stride(Value), ext(VectorMemOptions)],
-    opcode: fixed(LoadStride)
+record VectorLoadStrided {
+    ptr: Value,
+    stride: Value,
+    ext: VectorMemOptions,
 }
-format VectorStoreStrided {
-    fields: [args(values(3)), ext(VectorMemOptions)],
-    opcode: fixed(StoreStride)
+record VectorStoreStrided {
+    args: values(3),
+    ext: VectorMemOptions,
 }
-format VectorGather {
-    fields: [ptr(Value), index(Value), ext(VectorMemOptions)],
-    opcode: fixed(Gather)
+record VectorGather {
+    ptr: Value,
+    index: Value,
+    ext: VectorMemOptions,
 }
-format VectorScatter {
-    fields: [args(values(3)), ext(VectorMemOptions)],
-    opcode: fixed(Scatter)
+record VectorScatter {
+    args: values(3),
+    ext: VectorMemOptions,
 }
-format Shuffle {
-    fields: [args(values(2)), mask(ConstantPoolId)],
-    opcode: fixed(Shuffle)
+record Shuffle {
+    args: values(2),
+    mask: ConstantPoolId,
 }
-format Unreachable {
-    fields: [],
-    opcode: fixed(Unreachable)
+record Unreachable {
+
 }
-format Nop {
-    fields: [],
-    opcode: fixed(Nop)
+record Nop {
+
 }
 
 // Predication adds auxiliary operands while keeping the operation's
 // logical Unary/Binary/Ternary format and type rules.
+record VectorOpWithExt {
+    args: ValueList,
+    ext: VectorExtData,
+}
 layout VectorOpWithExt {
-    fields: [opcode(Opcode), args(ValueList), ext(VectorExtData)],
-    opcode: dynamic(opcode),
     format: arity(args, [Unary, Binary, Ternary]),
     text: "{args}, mask={ext.mask}[, evl={ext.evl}]",
     constraints: [
         require(len(results()) == 1 && all(results(), |t| is_vector(t)), "predicated operation must produce a vector"),
         require(all(results(), |t| is_predicate(type(ext.mask)) && shape(type(ext.mask)) == shape(t)), "mask must match vector shape"),
         require(all(ext.evl, |v| type(v) == I32), "EVL must be i32")
-    ]
+    ],
 }

@@ -11,7 +11,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
             if !op.constraints.is_empty()
                 || op.text.is_some()
                 || op.access.is_some()
-                || !op.moves.is_empty()
+                || op.params.iter().any(|p| p.moves)
                 || op.control.is_some()
                 || op.signature_source.is_some()
             {
@@ -33,7 +33,13 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         );
         type_rules.push_str("}\n");
         return Ok(Generated {
-            instructions: storage.generate(defs),
+            instructions: crate::builtin_gen::contracts(&defs.builtins)
+                + &defs.data.generate(
+                    &storage.record_names(),
+                    crate::metadata::record_type(&defs.ops),
+                )
+                + &storage.generate(defs)
+                + &crate::metadata::generate(&defs.ops, "GenericOpcode", ""),
             type_rules,
             semantics: crate::semantic::emit::generate(defs),
             ..Generated::default()
@@ -42,7 +48,16 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
     let classes = crate::type_gen::Classes::new(defs);
     let mut type_rules = String::from(HEADER);
     type_rules.push_str("use super::TypeClass as C;\nuse crate::Type;\n");
-    let mut instructions = defs.storage.instructions.clone();
+    let mut instructions = defs.data.generate(
+        &defs
+            .storage
+            .formats
+            .iter()
+            .map(|f| f.name.clone())
+            .chain(defs.storage.alternatives.iter().map(|a| a.name.clone()))
+            .collect::<Vec<_>>(),
+        crate::metadata::record_type(&defs.ops),
+    ) + &defs.storage.instructions;
     instructions.push_str(&crate::packing::accessors(defs));
     instructions.push_str(&crate::ownership::generate(defs));
     instructions.push_str(&crate::memory::generate(defs));
@@ -56,6 +71,26 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         ops.push_str(&comparison.generate());
     }
     ops.push_str(&opcode_enum(defs, "Opcode"));
+    if let Some(ty) = crate::metadata::record_type(&defs.ops) {
+        writeln!(ops, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct OpSpec {{ pub mnemonic: &'static str, pub format: OpFormat, pub meta: crate::inst::{ty} }}").unwrap();
+        writeln!(ops, "impl Opcode {{ pub const fn meta(self) -> &'static crate::inst::{ty} {{ &self.spec().meta }} }}").unwrap();
+        let record = defs.data.records.iter().find(|r| r.name == ty).unwrap();
+        for (method, ty, fallback) in [
+            ("traits", "OpTraits", "OpTraits::empty()"),
+            (
+                "memory_effect",
+                "MemoryEffect",
+                "crate::inst::MemoryEffect::Unknown",
+            ),
+        ] {
+            let expression = record
+                .fields
+                .iter()
+                .find(|f| f.ty == crate::records::PropertyType::Named(ty.into()))
+                .map_or_else(|| fallback.to_owned(), |f| format!("self.meta.{}", f.name));
+            writeln!(ops, "impl OpSpec {{ pub const fn {method}(&self) -> crate::inst::{ty} {{ {expression} }} }}").unwrap();
+        }
+    }
     ops.push_str("impl Opcode {\n    pub const ALL: &'static [Self] = &[\n");
     for op in &defs.ops {
         writeln!(ops, "        Self::{},", op.name).unwrap();
@@ -77,15 +112,10 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
             op.format
         )
         .unwrap();
-        ops.push_str("                    traits: crate::inst::OpTraits::empty()");
-        for prop in &op.traits {
-            write!(ops, ".union(crate::inst::OpTraits::{prop})").unwrap();
-        }
-        ops.push_str(",\n");
         writeln!(
             ops,
-            "                    memory_effect: crate::inst::MemoryEffect::{},",
-            op.memory
+            "                    meta: {},",
+            op.meta.rust("crate::inst::")
         )
         .unwrap();
         ops.push_str("                };\n                &SPEC\n            },\n");

@@ -3,10 +3,11 @@ mod common;
 fn checked(predicate: &str) -> Result<veloc_opgen::Generated, veloc_opgen::Error> {
     common::compile(&format!(
         r#"
-format Custom {{ fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }}
+record Custom {{ bits: u64, yes: bool }}
 op Example(@number: u64, @flag: bool) -> ScalarInteger {{
+    meta: OpInfo {{ memory: Known([]) }},
     mnemonic: "example", storage: Custom {{ bits: number, yes: flag }},
-    memory: NONE, constraints: [{predicate}]
+     constraints: [{predicate}]
 }}
 "#
     ))
@@ -48,7 +49,7 @@ mod dfg {
 mod numeric_{index} {{
     use super::*;
     enum Opcode {{ Example }}
-    enum ViewData {{ Custom {{ opcode: Opcode, bits: u64, yes: bool }} }}
+    enum ViewData {{ Custom {{ bits: u64, yes: bool }} }}
     type InstructionView<'a> = ViewData;
     impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
     struct Function;
@@ -57,7 +58,7 @@ mod numeric_{index} {{
     #[test] fn execute() {{
         let f = Function;
         for ((bits, yes), expected) in [(3, false), (3, true), (u64::MAX, false), (u64::MAX, true)].into_iter().zip({expected:?}) {{
-            assert_eq!(f.validate_constraints(&(), 0, &ViewData::Custom {{ opcode: Opcode::Example, bits, yes }}, &[], &[]).is_ok(), expected);
+            assert_eq!(f.validate_constraints(&(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[]).is_ok(), expected);
         }}
     }}
 }}
@@ -71,26 +72,31 @@ mod numeric_{index} {{
     .iter()
     .enumerate()
     {
-        let validation = common::compile(&format!(r#"
-format Buffers {{ fields: [opcode(Opcode), first(ConstantPoolId), second(ConstantPoolId)], opcode: dynamic(opcode) }}
+        let validation = common::compile(&format!(
+            r#"
+record Buffers {{ first: ConstantPoolId, second: ConstantPoolId }}
 op Example(@data: Bytes, @other: Bytes) -> Vector {{
+    meta: OpInfo {{ memory: Known([]) }},
     mnemonic: "example", storage: Buffers {{ first: pool(data), second: pool(other) }},
-    text: "{{data:bytes}}, {{other:bytes}}", memory: NONE,
+    text: "{{data:bytes}}, {{other:bytes}}",
     constraints: [{predicate}]
 }}
-"#)).unwrap().validation;
+"#
+        ))
+        .unwrap()
+        .validation;
         code.push_str(&format!(r#"
 mod sequences_{index} {{
     use super::*;
     enum Opcode {{ Example }}
     type InstructionView<'a> = ViewData;
-    enum ViewData {{ Buffers {{ opcode: Opcode, first: inst::ConstantPoolId, second: inst::ConstantPoolId }} }}
+    enum ViewData {{ Buffers {{ first: inst::ConstantPoolId, second: inst::ConstantPoolId }} }}
     impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
     struct Function {{ dfg: Vec<Vec<u8>> }}
     impl Function {{ fn constraint_error(&self, _: Inst, message: &str) -> String {{ message.into() }} }}
     {validation}
     #[test] fn execute() {{
-        let data = ViewData::Buffers {{ opcode: Opcode::Example, first: inst::ConstantPoolId(0), second: inst::ConstantPoolId(99) }};
+        let data = ViewData::Buffers {{ first: inst::ConstantPoolId(0), second: inst::ConstantPoolId(99) }};
         let f = Function {{ dfg: vec![vec![0, 1]] }};
         assert_eq!(f.validate_constraints(&(), 0, &data, &[], &[]).is_ok(), {valid});
         let empty = Function {{ dfg: vec![vec![]] }};

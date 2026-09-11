@@ -2,19 +2,18 @@ mod common;
 use common::compile;
 
 const CALL_VALUE: &str = r#"
-    format ApplyValue {
-        fields: [opcode(Opcode), callee(Value), args(ValueList)],
-        opcode: dynamic(opcode)
+    record ApplyValue {
+        callee: Value,
+        args: ValueList,
     }
-    op Apply(callee: Callable, args: values) -> signature {
+    op Apply(move callee: Callable, move args: values) -> signature {
+    meta: OpInfo { memory: Unknown },
         mnemonic: "apply-value",
         storage: ApplyValue { callee: callee, args: args },
         signature: callable(callee),
         text: "{callee}({args})",
-        moves: [callee, args],
         control: call(callee, args),
-        memory: UNKNOWN
-    }
+        }
 "#;
 
 #[test]
@@ -74,8 +73,8 @@ fn callable_control_preserves_result_terminator_and_effect_contracts() {
     for (from, to) in [
         ("-> signature", "-> ()"),
         ("callee: Callable", "callee: PTR"),
-        ("memory: UNKNOWN", "memory: NONE"),
-        ("memory: UNKNOWN", "traits: [TERMINATOR], memory: UNKNOWN"),
+        ("memory: Unknown", "memory: Known([])"),
+        ("memory: Unknown", "traits: [TERMINATOR], memory: Unknown"),
         ("call(callee, args)", "tail_call_value(callee, args)"),
         ("call(callee, args)", "call(args, callee)"),
     ] {

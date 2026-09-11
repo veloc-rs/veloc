@@ -76,7 +76,6 @@ fn definition_owned_records_flatten_operands_in_field_order() {
     let mut dfg = DataFlowGraph::new();
     for optional in [None, Some(Value(1))] {
         let inst = dfg.create_inst(InstDraft::grouped(
-            Opcode::Grouped,
             Value(0),
             TestOperands {
                 token: Value(1),
@@ -369,7 +368,7 @@ fn scalar_enum_is_exhaustive_and_preserves_type_encoding() {
 
 #[test]
 fn generated_flag_sets_preserve_bits_order_and_set_operations() {
-    use veloc_mir::inst::{EmptyFlags, MemoryRegions, OpTraits, TestFlags as F};
+    use veloc_mir::inst::{EmptyFlags, MemoryEffect, MemoryEffects, OpTraits, TestFlags as F};
     const SELECTED: F = F::HIGH.union(F::LOW_BIT);
     const {
         assert!(F::ALL.contains(SELECTED));
@@ -383,24 +382,68 @@ fn generated_flag_sets_preserve_bits_order_and_set_operations() {
         assert!(EmptyFlags::ALL.is_empty());
     }
     assert_eq!(size_of::<F>(), 16);
-    assert_eq!(size_of::<MemoryRegions>(), 1);
     assert_eq!(size_of::<OpTraits>(), 2);
     assert_eq!(F::HIGH.union(F::LOW_BIT).union(F::MIDDLE), F::ALL);
     assert_eq!(F::ALL.to_string(), "high / low-bit / middle");
     assert_eq!(SELECTED.to_string(), "high / low-bit");
     assert_eq!(F::empty().to_string(), "none");
     assert_eq!(EmptyFlags::ALL.to_string(), "none");
+    const EFFECT: MemoryEffect = Opcode::EffectSet.spec().memory_effect();
     assert_eq!(
-        MemoryRegions::MEMORY
-            .union(MemoryRegions::EXTERNAL)
-            .to_string(),
-        "memory,external"
+        EFFECT,
+        MemoryEffect::Known(MemoryEffects::READ.union(MemoryEffects::WRITE))
+    );
+    assert_eq!(EFFECT.to_string(), "read, write");
+    assert_eq!(
+        Opcode::Nop.spec().memory_effect(),
+        MemoryEffect::Known(MemoryEffects::empty())
+    );
+    assert_eq!(
+        Opcode::Load.spec().memory_effect(),
+        MemoryEffect::Known(MemoryEffects::READ)
+    );
+    assert_eq!(Opcode::Call.spec().memory_effect(), MemoryEffect::Unknown);
+    assert_ne!(
+        MemoryEffect::Known(MemoryEffects::ALL),
+        MemoryEffect::Unknown
     );
     assert_eq!(
         OpTraits::TERMINATOR
             .union(OpTraits::COMMUTATIVE)
             .to_string(),
         "terminator, commutative"
+    );
+}
+
+#[test]
+fn declaration_records_enums_and_flags_construct_explicit_values() {
+    use veloc_mir::inst::{TestFlags, TestMetadata, TestPolicy, TestSettings};
+    let meta = TestMetadata {
+        settings: TestSettings {
+            enabled: true,
+            policy: TestPolicy::Prefer(TestFlags::HIGH.union(TestFlags::LOW_BIT)),
+        },
+        fallback: Some(TestPolicy::Automatic),
+    };
+    assert!(meta.settings.enabled);
+    assert_eq!(
+        meta.settings.policy,
+        TestPolicy::Prefer(TestFlags::HIGH.union(TestFlags::LOW_BIT))
+    );
+    assert_eq!(meta.fallback, Some(TestPolicy::Automatic));
+    assert!(core::ptr::eq(
+        Opcode::IAdd.meta(),
+        &Opcode::IAdd.spec().meta
+    ));
+    assert!(
+        Opcode::IAdd
+            .meta()
+            .traits
+            .contains(veloc_mir::inst::OpTraits::COMMUTATIVE)
+    );
+    assert_eq!(
+        Opcode::IAdd.meta().memory,
+        veloc_mir::inst::MemoryEffect::Known(veloc_mir::inst::MemoryEffects::empty())
     );
 }
 
@@ -541,7 +584,7 @@ fn result_resolution_only_requires_construction_inputs() {
         data.result_types(&dfg, &module, &[]).unwrap().as_slice(),
         &[Type::I8]
     );
-    let output = InstDraft::empty(Opcode::Output);
+    let output = InstDraft::empty();
     assert!(output.result_types(&dfg, &module, &[]).is_err());
     assert_eq!(
         output
@@ -761,7 +804,7 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
     }
     assert!(!evaluator::can_fold(Opcode::VectorOnly));
     assert!(!evaluator::can_fold(Opcode::Difference));
-    let compare = InstDraft::compare(Opcode::CompareValue, IntCC::GtS, [Value(0), Value(1)]);
+    let compare = InstDraft::compare(IntCC::GtS, [Value(0), Value(1)]);
     assert_eq!(
         evaluator::properties(&compare.as_view()).as_slice(),
         &[IntCC::GtS]
@@ -874,7 +917,6 @@ fn draft_successor_growth_preserves_record_inputs_and_following_fields() {
     let mut dfg = DataFlowGraph::new();
     for optional in [None, Some(Value(1))] {
         let mut draft = InstDraft::routed(
-            Opcode::Routed,
             Value(3),
             TestOperands {
                 token: Value(0),
@@ -914,4 +956,23 @@ fn draft_successor_growth_preserves_record_inputs_and_following_fields() {
         assert_eq!(dfg.draft(inst).operands(), expected);
         dfg.check_uses().unwrap();
     }
+}
+
+#[test]
+fn a_record_can_be_both_instruction_storage_and_plain_data() {
+    use veloc_mir::dfg::DataFlowGraph;
+    use veloc_mir::inst::LiteralPayload;
+
+    let mut dfg = DataFlowGraph::new();
+    let payload = LiteralPayload { bits: 42 };
+    let direct = dfg.create_inst(InstDraft::literal_payload(payload.bits));
+    let nested = dfg.create_inst(InstDraft::wrapped_payload(payload));
+    assert_eq!(dfg.inst(direct).opcode(), Opcode::Payload);
+    assert_eq!(dfg.inst(nested).opcode(), Opcode::Wrapped);
+    assert!(matches!(dfg.inst(nested),
+        InstructionView::WrappedPayload { inner } if inner == payload));
+    assert_eq!(
+        core::mem::size_of::<LiteralPayload>(),
+        core::mem::size_of::<u32>()
+    );
 }

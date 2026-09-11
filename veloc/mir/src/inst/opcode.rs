@@ -3,6 +3,8 @@
 //! Layouts, type checks and operation tables are compiled from `defs/*.ops`.
 //! Their shared runtime support lives alongside the generated definitions.
 
+use super::MemoryEffect;
+
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
 
 impl MemFlags {
@@ -43,155 +45,111 @@ mod type_rules {
     include!(concat!(env!("OUT_DIR"), "/type_rules.rs"));
 }
 
-/// Memory behavior of an operation. Reads and writes are kept separately so
-/// consumers do not have to collapse all memory operations into "impure".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemoryEffect {
-    pub reads: MemoryRegions,
-    pub writes: MemoryRegions,
-    pub volatile: bool,
-    pub atomic: bool,
-    pub allocates: bool,
-    pub frees: bool,
-}
-
 impl MemoryEffect {
-    pub const fn new(reads: MemoryRegions, writes: MemoryRegions) -> Self {
-        Self {
-            reads,
-            writes,
-            volatile: false,
-            atomic: false,
-            allocates: false,
-            frees: false,
-        }
-    }
-
-    pub const fn with_lifetime(mut self, allocates: bool, frees: bool) -> Self {
-        self.allocates = allocates;
-        self.frees = frees;
-        self
-    }
-
-    pub const fn with_volatile(mut self) -> Self {
-        self.volatile = true;
-        self
-    }
-
-    pub const fn with_atomic(mut self) -> Self {
-        self.atomic = true;
-        self
+    pub const fn is_unknown(self) -> bool {
+        matches!(self, Self::Unknown)
     }
 
     pub const fn is_none(self) -> bool {
-        self.reads.is_empty()
-            && self.writes.is_empty()
-            && !self.volatile
-            && !self.atomic
-            && !self.allocates
-            && !self.frees
+        matches!(self, Self::Known(effects) if effects.is_empty())
+    }
+
+    const fn may(self, effect: MemoryEffects) -> bool {
+        match self {
+            Self::Known(effects) => effects.intersects(effect),
+            Self::Unknown => true,
+        }
     }
 
     pub const fn may_read(self) -> bool {
-        !self.reads.is_empty()
+        self.may(MemoryEffects::READ)
+    }
+    pub const fn may_write(self) -> bool {
+        self.may(MemoryEffects::WRITE)
+    }
+    pub const fn may_allocate(self) -> bool {
+        self.may(MemoryEffects::ALLOCATE)
+    }
+    pub const fn may_free(self) -> bool {
+        self.may(MemoryEffects::FREE)
     }
 
-    pub const fn may_write(self) -> bool {
-        !self.writes.is_empty()
+    /// Unused abstract objects can be removed; new or unmodeled effects cannot.
+    pub const fn can_erase(self) -> bool {
+        matches!(self, Self::Known(effects)
+            if MemoryEffects::READ.union(MemoryEffects::ALLOCATE).contains(effects))
     }
 
     pub const fn has_side_effects(self) -> bool {
-        self.may_write() || self.volatile || self.atomic || self.allocates || self.frees
+        !matches!(self, Self::Known(effects) if MemoryEffects::READ.contains(effects))
     }
 
-    /// Conservative conflict query suitable for generic motion/scheduling.
+    /// Only memory interference; movement also requires control/trap/ordering checks.
     pub const fn conflicts_with(self, other: Self) -> bool {
-        (self.frees && !other.is_none())
-            || (other.frees && !self.is_none())
-            || (self.allocates && other.allocates)
-            || self.writes.intersects(other.reads.union(other.writes))
-            || other.writes.intersects(self.reads)
-            || (self.volatile && !other.is_none())
-            || (other.volatile && !self.is_none())
-            || (self.atomic && !other.is_none())
-            || (other.atomic && !self.is_none())
+        if self.is_none() || other.is_none() {
+            return false;
+        }
+        let supported = MemoryEffects::READ
+            .union(MemoryEffects::WRITE)
+            .union(MemoryEffects::ALLOCATE)
+            .union(MemoryEffects::FREE);
+        match (self, other) {
+            (Self::Known(lhs), Self::Known(rhs))
+                if supported.contains(lhs) && supported.contains(rhs) =>
+            {
+                self.may_free()
+                    || other.may_free()
+                    || (self.may_allocate() && other.may_allocate())
+                    || (self.may_write() && (other.may_read() || other.may_write()))
+                    || (other.may_write() && self.may_read())
+            }
+            _ => true,
+        }
     }
 }
 
 impl core::fmt::Display for MemoryEffect {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if self.is_none() {
-            return f.write_str("none");
+        match self {
+            Self::Known(effects) => effects.fmt(f),
+            Self::Unknown => f.write_str("unknown"),
         }
-        let mut separator = "";
-        if self.may_read() {
-            write!(f, "read({})", self.reads)?;
-            separator = ", ";
-        }
-        if self.may_write() {
-            write!(f, "{}write({})", separator, self.writes)?;
-            separator = ", ";
-        }
-        if self.volatile {
-            write!(f, "{}volatile", separator)?;
-            separator = ", ";
-        }
-        if self.atomic {
-            write!(f, "{}atomic", separator)?;
-            separator = ", ";
-        }
-        if self.allocates {
-            write!(f, "{}allocate", separator)?;
-            separator = ", ";
-        }
-        if self.frees {
-            write!(f, "{}free", separator)?;
-        }
-        Ok(())
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpSpec {
-    pub mnemonic: &'static str,
-    pub format: OpFormat,
-    pub traits: OpTraits,
-    pub memory_effect: MemoryEffect,
 }
 
 impl OpSpec {
     pub const fn is_pure(&self) -> bool {
-        self.memory_effect.is_none() && !self.is_terminator() && !self.may_trap()
+        self.memory_effect().is_none() && !self.is_terminator() && !self.may_trap()
     }
 
     pub const fn is_terminator(&self) -> bool {
-        self.traits.contains(OpTraits::TERMINATOR)
+        self.traits().contains(OpTraits::TERMINATOR)
     }
 
     pub const fn has_side_effects(&self) -> bool {
-        self.is_terminator() || self.may_trap() || self.memory_effect.has_side_effects()
+        self.is_terminator() || self.may_trap() || self.memory_effect().has_side_effects()
     }
 
     pub const fn is_commutative(&self) -> bool {
-        self.traits.contains(OpTraits::COMMUTATIVE)
+        self.traits().contains(OpTraits::COMMUTATIVE)
     }
 
     pub const fn is_associative(&self) -> bool {
-        self.traits.contains(OpTraits::ASSOCIATIVE)
+        self.traits().contains(OpTraits::ASSOCIATIVE)
     }
 
     pub const fn is_idempotent(&self) -> bool {
-        self.traits.contains(OpTraits::IDEMPOTENT)
+        self.traits().contains(OpTraits::IDEMPOTENT)
     }
 
     pub const fn may_trap(&self) -> bool {
-        self.traits.contains(OpTraits::MAY_TRAP)
+        self.traits().contains(OpTraits::MAY_TRAP)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::MemoryEffect;
+    use super::{MemoryEffect, MemoryEffects};
     use crate::{FloatCC, IntCC, Opcode, Type};
 
     #[test]
@@ -250,12 +208,30 @@ mod tests {
     }
 
     #[test]
-    fn memory_effects_preserve_region_information() {
-        assert!(MemoryEffect::READ.conflicts_with(MemoryEffect::WRITE));
-        assert!(MemoryEffect::READ.with_volatile().has_side_effects());
-        assert!(MemoryEffect::UNKNOWN.conflicts_with(MemoryEffect::READ));
-        assert_eq!(MemoryEffect::READ.reads, super::MemoryRegions::MEMORY);
-        assert_eq!(MemoryEffect::WRITE.writes, super::MemoryRegions::MEMORY);
+    fn unknown_effects_remain_conservative() {
+        assert!(
+            MemoryEffect::Known(MemoryEffects::READ)
+                .conflicts_with(MemoryEffect::Known(MemoryEffects::WRITE))
+        );
+        assert!(MemoryEffect::Unknown.has_side_effects());
+        assert!(MemoryEffect::Unknown.conflicts_with(MemoryEffect::Known(MemoryEffects::READ)));
+        assert!(MemoryEffect::Unknown.is_unknown());
+        assert!(MemoryEffect::Unknown.may_allocate());
+        assert!(MemoryEffect::Unknown.may_free());
+        assert!(MemoryEffect::Unknown.may_read());
+        assert!(MemoryEffect::Unknown.may_write());
+        assert!(!MemoryEffect::Unknown.can_erase());
+        assert!(!MemoryEffect::Unknown.is_none());
+        assert!(
+            !MemoryEffect::Known(MemoryEffects::READ)
+                .conflicts_with(MemoryEffect::Known(MemoryEffects::READ))
+        );
+        assert_eq!(MemoryEffect::Unknown.to_string(), "unknown");
+        assert_eq!(MemoryEffect::Known(MemoryEffects::READ).to_string(), "read");
+        assert_eq!(
+            MemoryEffect::Known(MemoryEffects::WRITE).to_string(),
+            "write"
+        );
     }
 
     #[test]
@@ -341,11 +317,9 @@ mod tests {
 
     #[test]
     fn generated_flag_names_preserve_display_order() {
-        use super::{MemoryRegions, OpTraits};
+        use super::OpTraits;
         use alloc::string::ToString;
 
-        assert_eq!(MemoryRegions::ALL.to_string(), "memory,external");
-        assert_eq!(MemoryRegions::NONE.to_string(), "none");
         let traits = OpTraits::TERMINATOR
             .union(OpTraits::COMMUTATIVE)
             .union(OpTraits::MAY_TRAP)

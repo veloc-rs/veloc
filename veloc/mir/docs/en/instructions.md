@@ -25,7 +25,6 @@ Veloc IR (Intermediate Representation) is a low-level intermediate representatio
 | `Inst` | Instruction identifier |
 | `Value` | SSA value identifier |
 | `Block` | Basic block identifier |
-| `StackSlot` | Stack slot identifier |
 | `FuncId` | Function identifier |
 | `SigId` | Function signature identifier |
 | `BlockCall` | Block call (with arguments) |
@@ -108,42 +107,12 @@ Veloc IR (Intermediate Representation) is a low-level intermediate representatio
 
 ---
 
-#### `StackLoad`
-| Attribute | Description |
-|-----------|-------------|
-| **Operands** | `slot: StackSlot`, `offset: u32` |
-| **Return Type** | `ty` |
-| **Description** | Load value from stack slot |
+#### `Alloca`
 
-**Constraints:**
-- `slot` must be a valid stack slot declared by the current function
-- `offset + sizeof(ty)` must be within the stack slot size
-- `ty` supports: `I8`, `I16`, `I32`, `I64`, `F32`, `F64`
-
----
-
-#### `StackStore`
-| Attribute | Description |
-|-----------|-------------|
-| **Operands** | `slot: StackSlot`, `value: Value`, `offset: u32` |
-| **Return Type** | `Void` |
-| **Description** | Store value to stack slot |
-
-**Constraints:**
-- `slot` must be a valid stack slot declared by the current function
-- `offset + sizeof(value)` must be within the stack slot size
-
----
-
-#### `StackAddr`
-| Attribute | Description |
-|-----------|-------------|
-| **Operands** | `slot: StackSlot`, `offset: u32` |
-| **Return Type** | `Ptr` |
-| **Description** | Get address of stack slot (`&slot[offset]`) |
-
-**Constraints:**
-- `slot` must be a valid stack slot declared by the current function
+Creates a fresh local object with positive `size: u32` and power-of-two
+`align: u32`, returning `PTR`. Access it with ordinary `Load` and `Store`.
+Current backends require entry-block placement. See [memory contracts](../../MEMORY.md)
+for lifetime, resource-exhaustion and optimization rules.
 
 ---
 

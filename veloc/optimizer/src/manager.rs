@@ -26,6 +26,8 @@ impl PassManager {
     pub fn new_o1() -> Self {
         let mut pm = Self::new(OptConfig::new(true));
         pm.add_function_pass(crate::SimplifyPass);
+        pm.add_function_pass(crate::passes::function::MemoryPass);
+        pm.add_function_pass(crate::SimplifyPass);
         pm.add_function_pass(dce::DcePass);
         pm
     }

@@ -40,9 +40,8 @@ enum Role {
 }
 
 impl Role {
-    fn parse(source: &str, node: Node) -> Result<Self, Error> {
-        let offset = node.offset;
-        Ok(match model::name(source, node)?.as_str() {
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
             "Def" => Self::Def,
             "Use" => Self::Use,
             "TiedDefUse" => Self::TiedDefUse,
@@ -56,7 +55,7 @@ impl Role {
             "Index" => Self::Index,
             "Uses" => Self::Uses,
             "CallShape" => Self::CallShape,
-            _ => return Err(Error::at(source, offset, "unknown machine operand role")),
+            _ => return None,
         })
     }
 
@@ -129,6 +128,10 @@ impl Role {
     }
 }
 
+pub(crate) fn is_role(name: &str) -> bool {
+    Role::from_name(name).is_some()
+}
+
 fn finish(source: &str, record: &Record) -> Result<(), Error> {
     if let Some((key, value)) = record.fields.first_key_value() {
         return Err(Error::at(
@@ -156,31 +159,70 @@ fn snake(name: &str) -> String {
     out
 }
 
-pub(crate) fn compile(records: &[Record], source: &str, prefix: String) -> Result<Operands, Error> {
+pub(crate) fn compile(
+    records: &[Record],
+    source: &str,
+    prefix: String,
+    data: &crate::data::Types,
+) -> Result<Operands, Error> {
+    for binding in records.iter().filter(|r| r.kind == "layout") {
+        if !data.records.iter().any(|r| r.name == binding.name) {
+            return Err(Error::at(
+                source,
+                binding.offset,
+                format!("layout `{}` requires a record declaration", binding.name),
+            ));
+        }
+    }
     let mut formats = BTreeMap::new();
     let mut symbols = BTreeSet::new();
-    for mut record in records.iter().filter(|r| r.kind == "format").cloned() {
-        model::identifier(source, record.offset, &record.name)?;
-        let node = record
+    for shape in &data.records {
+        let users = records.iter().filter(|r| r.kind == "op").any(|op| {
+            matches!(
+                op.fields.get("storage"),
+                Some(Node { kind: Kind::Name(name), .. }) if name == &shape.name
+            )
+        });
+        let roles = shape
             .fields
-            .remove("fields")
-            .ok_or_else(|| Error::at(source, record.offset, "format requires fields"))?;
-        let mut fields = Vec::new();
-        let mut names = BTreeSet::new();
-        for field in model::list(source, node)? {
-            let Kind::Call(name, mut args) = field.kind else {
-                return Err(Error::at(source, field.offset, "expected field(Role)"));
-            };
-            model::identifier(source, field.offset, &name)?;
-            if args.len() != 1 || !names.insert(name.clone()) {
-                return Err(Error::at(
-                    source,
-                    field.offset,
-                    "duplicate field or invalid role arguments",
-                ));
-            }
-            fields.push((name, Role::parse(source, args.remove(0))?));
+            .iter()
+            .any(|f| matches!(&f.ty, crate::records::PropertyType::Named(ty) if is_role(ty)));
+        let binding = records
+            .iter()
+            .find(|r| r.kind == "layout" && r.name == shape.name);
+        if !users && !roles && binding.is_none() {
+            continue;
         }
+        let mut record = binding.cloned().unwrap_or_else(|| Record {
+            name: shape.name.clone(),
+            kind: "layout".into(),
+            offset: records
+                .iter()
+                .find(|r| r.kind == "record" && r.name == shape.name)
+                .expect("checked record")
+                .offset,
+            fields: BTreeMap::new(),
+            signature: None,
+        });
+        let fields = shape
+            .fields
+            .iter()
+            .map(|f| {
+                let crate::records::PropertyType::Named(ty) = &f.ty else {
+                    return Err(Error::at(
+                        source,
+                        record.offset,
+                        "expected machine operand role",
+                    ));
+                };
+                Ok((
+                    f.name.clone(),
+                    Role::from_name(ty).ok_or_else(|| {
+                        Error::at(source, record.offset, "unknown machine operand role")
+                    })?,
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         let variable = fields.iter().any(|(_, r)| r.variable());
         if variable && (fields.len() != 1) {
             return Err(Error::at(
@@ -189,40 +231,14 @@ pub(crate) fn compile(records: &[Record], source: &str, prefix: String) -> Resul
                 "variable codec must describe the entire operand sequence",
             ));
         }
-        let lengths = if let Some(node) = record.fields.remove("lengths") {
-            if variable {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "variable codec cannot have fixed lengths",
-                ));
-            }
-            let lengths = model::list(source, node)?
-                .into_iter()
-                .map(|node| match node.kind {
-                    Kind::Number(n) => Ok(n as usize),
-                    _ => Err(Error::at(source, node.offset, "expected operand count")),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let required = fields
-                .iter()
-                .rposition(|(_, r)| !r.optional())
-                .map_or(0, |i| i + 1);
-            if lengths.is_empty()
-                || lengths.iter().any(|&n| n < required || n > fields.len())
-                || lengths.iter().copied().collect::<BTreeSet<_>>().len() != lengths.len()
-            {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "invalid or duplicate operand counts",
-                ));
-            }
-            lengths
-        } else if variable {
+        let lengths = if variable {
             Vec::new()
         } else {
-            vec![fields.len()]
+            let required = fields
+                .iter()
+                .rposition(|(_, role)| !role.optional())
+                .map_or(0, |i| i + 1);
+            (required..=fields.len()).collect()
         };
         let view = record
             .fields
@@ -268,6 +284,9 @@ pub(crate) fn compile(records: &[Record], source: &str, prefix: String) -> Resul
     Ok(Operands { formats, prefix })
 }
 impl Operands {
+    pub(crate) fn record_names(&self) -> Vec<String> {
+        self.formats.keys().cloned().collect()
+    }
     pub(crate) fn format_count(&self) -> usize {
         self.formats.len()
     }
@@ -449,7 +468,7 @@ impl Operands {
                 "let valid_len = match self.generic_opcode().expect(\"schema checked\") {\n",
             );
             for inst in defs.ops.iter().filter(|i| i.format == f.name) {
-                let lengths = vec![inst.operands().arity];
+                let lengths = [inst.operands().arity];
                 writeln!(
                     out,
                     "GenericOpcode::{} => matches!(self.operands.len(), {}),",

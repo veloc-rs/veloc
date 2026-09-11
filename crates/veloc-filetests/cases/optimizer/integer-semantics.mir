@@ -1,0 +1,16 @@
+// run: o1
+// check: $(sat=sat\.v\d+): i8 = iconst 127
+// check: $(product=product\.v\d+): i8 = iconst -128
+// check: $(overflow=overflow\.v\d+): bool = bconst true
+// check: return $sat, $product, $overflow
+// not: iadd-sat-s
+// not: imul-with-overflow
+local function main() -> (i8, i8, bool)
+block0():
+  hi: i8 = iconst 127
+  one: i8 = iconst 1
+  lo: i8 = iconst -128
+  neg: i8 = iconst -1
+  sat: i8 = iadd-sat-s hi, one
+  (product: i8, overflow: bool) = imul-with-overflow lo, neg
+  return sat, product, overflow

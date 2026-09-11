@@ -2,7 +2,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
-use crate::syntax::{Kind, Record};
+use crate::syntax::{Kind, Node, Record};
 use crate::{Error, model};
 
 #[derive(Debug, Clone)]
@@ -15,30 +15,103 @@ pub(crate) struct RecordDef {
 pub(crate) struct RecordField {
     pub name: String,
     pub ty: PropertyType,
-    pub default: Option<DefaultValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PropertyType {
     Named(String),
     Optional(String),
+    Values(usize),
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum DefaultValue {
-    Number(u32),
-    None,
-    Empty,
-}
-
-impl DefaultValue {
-    pub(crate) fn rust(&self) -> String {
+impl PropertyType {
+    pub fn rust(&self) -> String {
         match self {
-            Self::Number(n) => n.to_string(),
-            Self::None => "None".into(),
-            Self::Empty => "crate::MemFlags::empty()".into(),
+            Self::Named(ty) => ty.clone(),
+            Self::Optional(ty) => format!("Option<{ty}>"),
+            Self::Values(n) => format!("[Value; {n}]"),
         }
     }
+}
+
+pub(crate) fn field_type(
+    records: &[Record],
+    source: &str,
+    node: Node,
+) -> Result<PropertyType, Error> {
+    if let Kind::Call(kind, args) = &node.kind
+        && kind == "values"
+    {
+        if let [
+            Node {
+                kind: Kind::Number(n),
+                ..
+            },
+        ] = args.as_slice()
+            && (1..=255).contains(n)
+        {
+            return Ok(PropertyType::Values(*n as usize));
+        }
+        return Err(Error::at(
+            source,
+            node.offset,
+            "operand group size must be in 1..=255",
+        ));
+    }
+    let optional = matches!(&node.kind, Kind::Call(name, _) if name == "optional");
+    let inner = if optional {
+        let Kind::Call(_, ref args) = node.kind else {
+            unreachable!()
+        };
+        if args.len() != 1 {
+            return Err(Error::at(source, node.offset, "optional requires one type"));
+        }
+        &args[0]
+    } else {
+        &node
+    };
+    let Kind::Name(ty) = &inner.kind else {
+        return Err(Error::at(source, node.offset, "expected data type name"));
+    };
+    if !matches!(
+        ty.as_str(),
+        "i32"
+            | "i64"
+            | "f64"
+            | "u32"
+            | "u64"
+            | "u8"
+            | "bool"
+            | "Value"
+            | "ValueList"
+            | "BlockCall"
+            | "JumpTable"
+            | "FuncId"
+            | "SigId"
+            | "ConstantPoolId"
+            | "Intrinsic"
+            | "IntCC"
+            | "FloatCC"
+            | "Int"
+            | "Float"
+            | "VectorConst"
+            | "SymbolId"
+    ) && !crate::storage::operands::is_role(ty)
+        && !records.iter().any(|r| {
+            r.name == *ty && matches!(r.kind.as_str(), "record" | "enum" | "flags" | "encoding")
+        })
+    {
+        return Err(Error::at(
+            source,
+            inner.offset,
+            format!("unknown data type `{ty}`"),
+        ));
+    }
+    Ok(if optional {
+        PropertyType::Optional(ty.clone())
+    } else {
+        PropertyType::Named(ty.clone())
+    })
 }
 
 pub(crate) fn compile(records: &[Record], source: &str) -> Result<Vec<RecordDef>, Error> {
@@ -50,88 +123,25 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Vec<RecordDef>
         if !names.insert(&record.name) {
             return Err(fail("duplicate property record"));
         }
-        for key in record.fields.keys() {
-            if key != "fields" {
-                return Err(fail("unknown property record field"));
-            }
-        }
-        let Some(fields) = record.fields.get("fields") else {
-            return Err(fail("record has no fields"));
-        };
-        let Kind::List(fields) = &fields.kind else {
-            return Err(fail("expected record field list"));
-        };
-        let mut members = Vec::new();
-        let mut seen = BTreeSet::new();
-        for field in fields {
-            let fail = |msg: &str| Error::at(source, field.offset, msg);
-            let Kind::Call(name, args) = &field.kind else {
-                return Err(fail("expected field(type, default?)"));
-            };
-            model::identifier(source, field.offset, name)?;
-            if !seen.insert(name.clone()) {
-                return Err(fail("duplicate property field"));
-            }
-            if !(1..=2).contains(&args.len()) {
-                return Err(fail("expected field(type, default?)"));
-            }
-            let ty = match &args[0].kind {
-                Kind::Name(ty)
-                    if matches!(
-                        ty.as_str(),
-                        "i32" | "u32" | "u64" | "u8" | "bool" | "Value" | "MemFlags"
-                    ) =>
-                {
-                    PropertyType::Named(ty.clone())
-                }
-                Kind::Call(kind, args) if kind == "optional" && args.len() == 1 => {
-                    let Kind::Name(ty) = &args[0].kind else {
-                        return Err(fail("expected optional value type"));
-                    };
-                    if ty != "Value" {
-                        return Err(fail("only optional(Value) is supported"));
-                    }
-                    PropertyType::Optional(ty.clone())
-                }
-                _ => return Err(fail("unsupported property field type")),
-            };
-            let default = match args.get(1).map(|n| &n.kind) {
-                None => None,
-                Some(Kind::Number(n)) if numeric_default(&ty, *n) => Some(DefaultValue::Number(*n)),
-                Some(Kind::Name(n)) if n == "none" && matches!(ty, PropertyType::Optional(_)) => {
-                    Some(DefaultValue::None)
-                }
-                Some(Kind::Name(n))
-                    if n == "empty" && ty == PropertyType::Named("MemFlags".into()) =>
-                {
-                    Some(DefaultValue::Empty)
-                }
-                _ => return Err(fail("default is incompatible with property field type")),
-            };
-            members.push(RecordField {
-                name: name.clone(),
-                ty,
-                default,
-            });
-        }
+        // The syntax map supports duplicate detection; source offsets retain declaration order.
+        let mut fields = record.fields.iter().collect::<Vec<_>>();
+        fields.sort_by_key(|(_, node)| node.offset);
+        let members = fields
+            .into_iter()
+            .map(|(name, node)| {
+                model::identifier(source, node.offset, name)?;
+                Ok(RecordField {
+                    name: name.clone(),
+                    ty: field_type(records, source, node.clone())?,
+                })
+            })
+            .collect::<Result<_, Error>>()?;
         result.push(RecordDef {
             name: record.name.clone(),
             fields: members,
         });
     }
     Ok(result)
-}
-
-pub(crate) fn numeric_default(ty: &PropertyType, n: u32) -> bool {
-    match ty {
-        PropertyType::Named(ty) => match ty.as_str() {
-            "u8" => u8::try_from(n).is_ok(),
-            "i32" => i32::try_from(n).is_ok(),
-            "u32" | "u64" => true,
-            _ => false,
-        },
-        _ => false,
-    }
 }
 
 pub(crate) fn generate(records: &[RecordDef]) -> String {
@@ -144,31 +154,10 @@ pub(crate) fn generate(records: &[RecordDef]) -> String {
         )
         .unwrap();
         for field in &record.fields {
-            let ty = match &field.ty {
-                PropertyType::Named(ty) => ty.clone(),
-                PropertyType::Optional(ty) => format!("Option<{ty}>"),
-            };
+            let ty = field.ty.rust();
             writeln!(out, "pub {}: {ty},", field.name).unwrap();
         }
         out.push_str("}\n");
-        if record.fields.iter().all(|f| f.default.is_some()) {
-            writeln!(
-                out,
-                "impl Default for {} {{ fn default() -> Self {{ Self {{",
-                record.name
-            )
-            .unwrap();
-            for field in &record.fields {
-                writeln!(
-                    out,
-                    "{}: {},",
-                    field.name,
-                    field.default.as_ref().unwrap().rust()
-                )
-                .unwrap();
-            }
-            out.push_str("} } }\n");
-        }
     }
     out
 }
@@ -179,18 +168,29 @@ mod tests {
 
     const RECORDS: &str = r#"
         record PtrIndexImm {
-            fields: [offset(i32, 0), scale(u32, 1)]
+            offset: i32,
+            scale: u32,
         }
         record VectorExtData {
-            fields: [mask(Value), evl(optional(Value), none)]
+            mask: Value,
+            evl: optional(Value),
         }
         record VectorMemOptions {
-            fields: [offset(i32, 0), flags(MemFlags, empty), scale(u8, 1), mask(optional(Value), none), evl(optional(Value), none)]
+            offset: i32,
+            flags: MemFlags,
+            scale: u8,
+            mask: optional(Value),
+            evl: optional(Value),
         }
     "#;
 
     fn checked(source: &str) -> Result<Vec<RecordDef>, Error> {
-        compile(&crate::syntax::parse(source)?, source)
+        {
+            let source =
+                format!("encoding MemFlags {{ fields: [volatile(1)], storage: u16 }}\n{source}");
+            crate::data::Types::compile(&crate::syntax::parse(&source)?, &source)
+                .map(|types| types.records)
+        }
     }
 
     fn rejected(source: &str, message: &str) {
@@ -203,28 +203,21 @@ mod tests {
         assert_eq!(checked(RECORDS).unwrap().len(), 3);
         assert!(checked(&RECORDS.replace("record PtrIndexImm", "record Other")).is_ok());
         assert!(
-            checked(&RECORDS.replace("mask(Value)", "mask(Value), passthrough(Value)")).is_ok()
+            checked(&RECORDS.replace("mask: Value", "mask: Value, passthrough: Value")).is_ok()
         );
         rejected(
-            &RECORDS.replace("scale(u32, 1)", "scale(u8, 256)"),
-            "default is incompatible",
-        );
-        rejected(
-            &RECORDS.replace("mask(Value)", "mask(Value), mask(Value)"),
-            "duplicate property field",
+            &RECORDS.replace("mask: Value", "mask: Value, mask: Value"),
+            "duplicate field",
         );
     }
 
     #[test]
-    fn field_order_and_defaults_are_owned_by_the_definition() {
-        let source = RECORDS.replace(
-            "offset(i32, 0), scale(u32, 1)",
-            "scale(u32, 4), offset(i32, 17)",
-        );
-        let records = checked(&source).unwrap();
-        assert_eq!(records[0].fields[0].name, "scale");
+    fn field_order_follows_declarations_not_names() {
+        let source = "record Pair { z: u32, a: i32 }";
+        let records = checked(source).unwrap();
+        assert_eq!(records[0].fields[0].name, "z");
         let code = generate(&records);
-        assert!(code.contains("scale: 4"));
-        assert!(code.contains("offset: 17"));
+        assert!(code.find("pub z:").unwrap() < code.find("pub a:").unwrap());
+        assert!(!code.contains("impl Default"));
     }
 }

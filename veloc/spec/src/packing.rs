@@ -134,6 +134,7 @@ pub(crate) fn alternate(op: &Op, alt: &Alternative, source: &str) -> Result<(Op,
             ),
         };
         params.push(Param {
+            moves: false,
             name: field.name.clone(),
             kind,
         });
@@ -141,10 +142,10 @@ pub(crate) fn alternate(op: &Op, alt: &Alternative, source: &str) -> Result<(Op,
     }
     Ok((
         Op {
-            moves: Vec::new(),
             offset: alt.text.offset,
             name: op.name.clone(),
             mnemonic: op.mnemonic.clone(),
+            meta: op.meta.clone(),
             format: alt.name.clone(),
             signature: TypeDef {
                 operands: TypeList::Fixed(Vec::new()),
@@ -157,7 +158,7 @@ pub(crate) fn alternate(op: &Op, alt: &Alternative, source: &str) -> Result<(Op,
             control: None,
             text: Some(alt.text.clone()),
             traits: Vec::new(),
-            memory: "NONE".into(),
+            memory: crate::builtins::Effect::Known(Vec::new()),
             access: None,
             constraints: Vec::new(),
             identity: None,
@@ -167,78 +168,9 @@ pub(crate) fn alternate(op: &Op, alt: &Alternative, source: &str) -> Result<(Op,
         Format {
             name: alt.name.clone(),
             arity: None,
-            fixed_opcode: None,
             fields: alt.fields.clone(),
         },
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_immutable_bytes_are_interned() {
-        let source = [
-            include_str!("../../mir/defs/formats.ops"),
-            include_str!("../../mir/defs/mir.ops"),
-        ]
-        .join("\n");
-        let defs = crate::fixtures::parse(&source).unwrap();
-        for (name, logical, pooled) in [
-            ("PtrIndex", "imm", false),
-            ("LoadStride", "mem", false),
-            ("Vconst", "value", false),
-            ("Shuffle", "mask", true),
-        ] {
-            let op = defs.ops.iter().find(|op| op.name == name).unwrap();
-            let format = defs
-                .storage
-                .formats
-                .iter()
-                .find(|f| f.name == op.format)
-                .unwrap();
-            let packed = constructor(op, format, "dfg", str::to_owned);
-            assert_eq!(packed.contains("::insert("), pooled, "{packed}");
-            let locals = projections(op, format, "dfg", str::to_owned, |value| {
-                format!("{value}.ok_or(invalid)?")
-            });
-            let (_, expr) = locals.iter().find(|(name, _)| name == logical).unwrap();
-            assert_eq!(expr.contains("::get("), pooled, "{expr}");
-        }
-    }
-
-    #[test]
-    fn jump_table_projection_splits_default_from_cases() {
-        let source = [
-            include_str!("../../mir/defs/formats.ops"),
-            include_str!("../../mir/defs/mir.ops"),
-        ]
-        .join("\n");
-        let defs = crate::fixtures::parse(&source).unwrap();
-        let op = defs.ops.iter().find(|op| op.name == "BrTable").unwrap();
-        let format = defs
-            .storage
-            .formats
-            .iter()
-            .find(|format| format.name == op.format)
-            .unwrap();
-        assert!(
-            constructor(op, format, "dfg", str::to_owned)
-                .contains("chain(core::iter::once((default).as_view()))")
-        );
-        let locals = projections(op, format, "dfg", str::to_owned, |value| {
-            format!("{value}.ok_or(invalid)?")
-        });
-        assert!(
-            locals
-                .iter()
-                .any(|(name, expr)| name == "cases" && expr.ends_with(").1"))
-        );
-        assert!(locals.iter().any(|(name, expr)| name == "default"
-            && expr.starts_with("(")
-            && expr.ends_with(").0")));
-    }
 }
 
 pub(crate) fn accessors(defs: &Definitions) -> String {
@@ -396,4 +328,72 @@ pub(crate) fn builder(
         "    /// Build `{}` without validating its type contract.\n    pub fn {name}({params}){ret} {{\n        let (data, types) = ({constructor}, [{result_types}]);\n        {body}\n    }}\n",
         op.mnemonic
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_immutable_bytes_are_interned() {
+        let source = [
+            include_str!("../../mir/defs/formats.ops"),
+            include_str!("../../mir/defs/mir.ops"),
+        ]
+        .join("\n");
+        let defs = crate::fixtures::parse(&source).unwrap();
+        for (name, logical, pooled) in [
+            ("PtrIndex", "imm", false),
+            ("LoadStride", "mem", false),
+            ("Vconst", "value", false),
+            ("Shuffle", "mask", true),
+        ] {
+            let op = defs.ops.iter().find(|op| op.name == name).unwrap();
+            let format = defs
+                .storage
+                .formats
+                .iter()
+                .find(|f| f.name == op.format)
+                .unwrap();
+            let packed = constructor(op, format, "dfg", str::to_owned);
+            assert_eq!(packed.contains("::insert("), pooled, "{packed}");
+            let locals = projections(op, format, "dfg", str::to_owned, |value| {
+                format!("{value}.ok_or(invalid)?")
+            });
+            let (_, expr) = locals.iter().find(|(name, _)| name == logical).unwrap();
+            assert_eq!(expr.contains("::get("), pooled, "{expr}");
+        }
+    }
+
+    #[test]
+    fn jump_table_projection_splits_default_from_cases() {
+        let source = [
+            include_str!("../../mir/defs/formats.ops"),
+            include_str!("../../mir/defs/mir.ops"),
+        ]
+        .join("\n");
+        let defs = crate::fixtures::parse(&source).unwrap();
+        let op = defs.ops.iter().find(|op| op.name == "BrTable").unwrap();
+        let format = defs
+            .storage
+            .formats
+            .iter()
+            .find(|format| format.name == op.format)
+            .unwrap();
+        assert!(
+            constructor(op, format, "dfg", str::to_owned)
+                .contains("chain(core::iter::once((default).as_view()))")
+        );
+        let locals = projections(op, format, "dfg", str::to_owned, |value| {
+            format!("{value}.ok_or(invalid)?")
+        });
+        assert!(
+            locals
+                .iter()
+                .any(|(name, expr)| name == "cases" && expr.ends_with(").1"))
+        );
+        assert!(locals.iter().any(|(name, expr)| name == "default"
+            && expr.starts_with("(")
+            && expr.ends_with(").0")));
+    }
 }

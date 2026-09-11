@@ -66,6 +66,31 @@ impl Parser<'_, '_> {
     }
 
     fn parse(&mut self, schema: &mut Schema) -> Result<(), Error> {
+        // A fixed binding consumes a logical field but emits no text. Unlike a
+        // record default, it belongs to this projection and must match on print.
+        while self.rest.trim_start().starts_with('{') {
+            let Some(end) = self.rest.find('}') else {
+                break;
+            };
+            if !self.rest[..end].contains('=') {
+                break;
+            }
+            let hole = self.hole()?;
+            let (path, literal) = hole.split_once('=').unwrap();
+            let path = path.trim();
+            let kind = self.checker.consume(path, self.offset)?;
+            let value = match (kind, literal.trim().parse::<u32>()) {
+                (AtomKind::Scalar(ty), Ok(n)) if crate::data::fits_number(&ty, n) => {
+                    Value::Number(n)
+                }
+                _ => {
+                    return Err(
+                        self.error("fixed text binding requires an in-range integer literal")
+                    );
+                }
+            };
+            schema.bindings.push((path.into(), value));
+        }
         // Flags belong to the opcode suffix, before all operands.
         if self.rest.trim_start().starts_with("{.") {
             let field = self.hole()?;

@@ -301,6 +301,9 @@ impl Checker<'_> {
             let sort = match &field.ty {
                 PropertyType::Named(ty) => self.property(offset, ty)?,
                 PropertyType::Optional(ty) => Sort::Optional(Box::new(self.property(offset, ty)?)),
+                PropertyType::Values(_) => {
+                    return Err(self.error(offset, "nested fixed SSA arrays are not supported"));
+                }
             };
             value = Term::new(sort, TermKind::Member(Box::new(value), member.into()));
         }
@@ -948,6 +951,7 @@ fn property_validator(
     source: &str,
 ) -> Result<String, Error> {
     let params = [Param {
+        moves: false,
         name: "value".into(),
         kind: ParamKind::Property(property.name.clone()),
     }];

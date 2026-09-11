@@ -234,11 +234,12 @@ block0(v0: ptr, v1: i64):
   return v3
 import function fill(ptr, i64) -> void
 export function address(i64) -> i64
-  ss0: size 16
+
 block0(v0: i64):
-  v1: ptr = stack-addr ss0, offset=0
+  ss0: ptr = alloca size=16, align=8
+  v1: ptr = ptr-offset ss0, 0
   call fill(v1, v0) : (ptr, i64) -> void
-  v2: i64 = stack-load ss0, offset=8
+  v2: i64 = load ss0, offset=8
   return v2
 "#,
         r#"
@@ -362,10 +363,11 @@ block3(v8: i64):
   return v8
 
 export function memory(i64) -> i64
-  ss0: size 16
+
 block0(v0: i64):
-  stack-store v0, ss0, offset=8
-  v1: i64 = stack-load ss0, offset=8
+  ss0: ptr = alloca size=16, align=8
+  store v0, ss0, offset=8
+  v1: i64 = load ss0, offset=8
   return v1
 "#,
         r#"

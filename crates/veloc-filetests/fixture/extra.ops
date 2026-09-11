@@ -1,76 +1,87 @@
 // Exercise contracts not represented by production MIR instructions.
 // These have no control lowering interface: validation comes only from defs.
-format VectorLiteral {
-    fields: [payload(VectorConst)], opcode: fixed(VectorLiteral)
+record VectorLiteral {
+    payload: VectorConst,
 }
 // A different opcode/field name must still inherit the property's codec,
 // result type and validation, without repeating Vconst's rules.
 op VectorLiteral(@data: VectorConst) -> type(data) {
-    mnemonic: "vector-literal", storage: VectorLiteral { payload: data }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "vector-literal", storage: VectorLiteral { payload: data }, }
 
-op Rebind(value: Callable) -> Callable {
+op Rebind(move value: Callable) -> Callable {
+    meta: OpInfo { memory: Unknown },
     mnemonic: "rebind", storage: Unary { arg: value },
-    moves: [value], memory: UNKNOWN,
+
     constraints: [require(type(value) == result_type(0), "rebind type mismatch")]
 }
-format MoveBranch {
-    fields: [value(Value), dest(BlockCall)], opcode: fixed(MoveBranch)
+record MoveBranch {
+    value: Value,
+    dest: BlockCall,
 }
-op MoveBranch(value: Callable, dest: successor) -> () {
+op MoveBranch(move value: Callable, dest: successor) -> () {
+    meta: OpInfo { traits: [TERMINATOR], memory: Unknown },
     mnemonic: "move-branch", storage: MoveBranch { value: value, dest: dest },
-    moves: [value], traits: [TERMINATOR], memory: UNKNOWN
 }
 op Observe(value: Callable) -> () {
-    mnemonic: "observe", storage: Unary { arg: value }, memory: UNKNOWN
-}
+    meta: OpInfo { memory: Unknown },
+mnemonic: "observe", storage: Unary { arg: value }, }
 
-format FunctionOperand {
-    fields: [op(Opcode), target(FuncId)], opcode: dynamic(op)
+record FunctionOperand {
+    target: FuncId,
 }
 // Too large for inline fields: test symbol remapping through the field pool.
-format WideRef {
-    fields: [target(FuncId), low(u64), high(u64)], opcode: fixed(WideRef)
+record WideRef {
+    target: FuncId,
+    low: u64,
+    high: u64,
 }
 op WideRef(@target: FuncId, @low: u64, @high: u64) -> () {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "wide-ref", storage: WideRef { target: target, low: low, high: high },
-    memory: NONE
 }
 op FunctionOperand(@target: FuncId) -> () {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "function-operand", storage: FunctionOperand { target: target },
-    text: "{target}", memory: NONE
-}
-format ExplicitCall {
-    fields: [op(Opcode), target(FuncId), args(ValueList), sig(SigId)], opcode: dynamic(op)
+text: "{target}", }
+record ExplicitCall {
+    target: FuncId,
+    args: ValueList,
+    sig: SigId,
 }
 op ExplicitCall(@target: FuncId, args: values, @sig: SigId) -> signature {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "explicit-call", storage: ExplicitCall { target: target, args: args, sig: sig },
     signature: sig,
-    text: "{target}({args}) : {sig}", memory: NONE
-}
+text: "{target}({args}) : {sig}", }
 
 record TestOperands {
-    fields: [token(Value), optional(optional(Value), none), tag(u32, 9)]
+    token: Value,
+    optional: optional(Value),
+    tag: u32,
 }
-format Grouped {
-    fields: [op(Opcode), before(Value), group(TestOperands), after(Value)],
-    opcode: dynamic(op)
+record Grouped {
+    before: Value,
+    group: TestOperands,
+    after: Value,
 }
 op Grouped(before: I32, after: I32, @group: TestOperands) -> I32 {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "grouped", storage: Grouped { before: before, group: group, after: after },
     text: "{before}, {after}, token={group.token}[, optional={group.optional}], tag={group.tag}",
-    memory: NONE
 }
 
-format Routed {
-    fields: [op(Opcode), operands(Value), group(TestOperands), dest(BlockCall), tail(VectorExtData)],
-    opcode: dynamic(op)
+record Routed {
+    operands: Value,
+    group: TestOperands,
+    dest: BlockCall,
+    tail: VectorExtData,
 }
 op Routed(input: I32, @group: TestOperands, @tail: VectorExtData, dest: successor) -> () {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "routed",
     storage: Routed { operands: input, group: group, dest: dest, tail: tail },
     text: "{input}, {dest}, token={group.token}[, optional={group.optional}], tag={group.tag}, mask={tail.mask}[, evl={tail.evl}]",
-    memory: NONE
 }
 
 flags TestFlags {
@@ -80,62 +91,66 @@ flags TestFlags {
 }
 flags EmptyFlags { storage: u8, members: [], separator: "," }
 
-format Quinary { fields: [opcode(Opcode), args(values(5))], opcode: dynamic(opcode) }
-format Empty { fields: [opcode(Opcode)], opcode: dynamic(opcode) }
+record Quinary { args: values(5) }
+record Empty {  }
 
 op Many<A: Any, B: Any, C: Any, D: Any, E: Any>(a: A, b: B, c: C, d: D, e: E) -> (E, A) {
-    mnemonic: "many", storage: Quinary { args: [a, b, c, d, e] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "many", storage: Quinary { args: [a, b, c, d, e] }, }
 op ThreeResults<A: Any, B: Any>(a: A, b: B) -> (B, A, BOOL) {
-    mnemonic: "three-results", storage: Binary { args: [a, b] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "three-results", storage: Binary { args: [a, b] }, }
 op Output<T: Integer>() -> T {
-    mnemonic: "output", storage: Empty {}, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "output", storage: Empty {}, }
 op Sized<T: Scalar>(arg: T) -> (result: I8) {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "sized", storage: Unary { arg: arg },
-    where: [wider(arg, result)], memory: NONE
-}
+where: [wider(arg, result)], }
 op First<T: Integer>(lhs: T, rhs: T) -> T {
-    mnemonic: "first", storage: Binary { args: [lhs, rhs] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "first", storage: Binary { args: [lhs, rhs] }, }
 op Second<U: Integer>(a: U, b: U) -> U {
-    mnemonic: "second", storage: Binary { args: [a, b] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "second", storage: Binary { args: [a, b] }, }
 op FloatOnly<U: Float>(a: U, b: U) -> U {
-    mnemonic: "float-only", storage: Binary { args: [a, b] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "float-only", storage: Binary { args: [a, b] }, }
 
-format Pair { fields: [op(Opcode), inputs(values(2))], opcode: dynamic(op) }
-format FieldPair { fields: [op(Opcode), right(Value), left(Value)], opcode: dynamic(op) }
-format Triple { fields: [op(Opcode), args(values(3))], opcode: dynamic(op) }
-format Immediate { fields: [op(Opcode), value(Value), displacement(i32)], opcode: dynamic(op) }
-format Compare { fields: [op(Opcode), cc(IntCC), args(values(2))], opcode: dynamic(op) }
+record Pair { inputs: values(2) }
+record FieldPair { right: Value, left: Value }
+record Triple { args: values(3) }
+record Immediate { value: Value, displacement: i32 }
+record Compare { cc: IntCC, args: values(2) }
 
 op Difference<T: Integer>(left: T, right: T) -> T {
-    mnemonic: "difference", storage: Pair { inputs: [left, right] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "difference", storage: Pair { inputs: [left, right] }, }
 op ReverseText<T: Integer>(left: T, right: T) -> T {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "reverse-text", storage: FieldPair { right: left, left: right },
-    text: "{right}, {left}", memory: NONE
-}
+text: "{right}, {left}", }
 op SelectType<T: Integer>(lhs: T, rhs: T) -> Integer {
-    mnemonic: "select-type", storage: Pair { inputs: [lhs, rhs] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "select-type", storage: Pair { inputs: [lhs, rhs] }, }
 op WidePair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, wide: I64) {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "wide-pair", storage: Pair { inputs: [lhs, rhs] },
-    where: [wider(lhs, wide)], memory: NONE
-}
+where: [wider(lhs, wide)], }
 op Triple<T: Integer>(base: T, index: T, increment: T) -> T {
-    mnemonic: "triple", storage: Triple { args: [base, index, increment] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "triple", storage: Triple { args: [base, index, increment] }, }
 op Offset(arg: PTR, @amount: i32) -> PTR {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "offset", storage: Immediate { value: arg, displacement: amount },
-    text: "{arg}, amount={amount}", memory: NONE
+text: "{arg}, amount={amount}", }
+record Extended {
+    inputs: ValueList,
+    tag: u32,
 }
 layout Extended {
-    fields: [op(Opcode), inputs(ValueList), tag(u32)], opcode: dynamic(op),
-    format: arity(inputs, [Pair]), text: "{inputs}, tag={tag}"
+    format: arity(inputs, [Pair]),
+    text: "{inputs}, tag={tag}",
 }
 
 predicate is_wide = Scalar & (I32 | I64);
@@ -144,39 +159,46 @@ class Chosen { members: [I32X4 | SV4] }
 type SV4 = vector(I32, scalable(4));
 class Wide { members: [I32 | I64] }
 op Named<T: Wide>(lhs: T, rhs: T) -> T {
-    mnemonic: "named", storage: Binary { args: [lhs, rhs] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "named", storage: Binary { args: [lhs, rhs] }, }
 op Inline<T: (I64 | I32) & Scalar>(lhs: T, rhs: T) -> T {
-    mnemonic: "inline", storage: Binary { args: [lhs, rhs] }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "inline", storage: Binary { args: [lhs, rhs] }, }
 op Lane<T: vectors(I32 | I64)>(arg: T) -> element(T) {
-    mnemonic: "lane", storage: Unary { arg: arg }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "lane", storage: Unary { arg: arg }, }
 op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Scalar) {
-    mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "convert", storage: Unary { arg: arg }, }
 
 op Direct<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "direct", storage: Binary { args: [lhs, rhs] }, semantics: bv.sub(lhs, rhs)
 }
 op Reversed<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "reversed", storage: Binary { args: [lhs, rhs] }, semantics: bv.sub(rhs, lhs)
 }
 op Composed<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "composed", storage: Binary { args: [lhs, rhs] }, semantics: bv.add(lhs, bv.sub(rhs, bv.one()))
 }
 op Trapping<T: ScalarInteger>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "trapping", storage: Binary { args: [lhs, rhs] }, semantics: bv.udiv(lhs, rhs),
     traps: [DivisionByZero(bv.eq(rhs, bv.zero()))]
 }
 op Multiple<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+    meta: OpInfo {},
     mnemonic: "multiple", storage: Binary { args: [lhs, rhs] }, semantics: [bv.add(lhs, rhs), bv.eq(lhs, rhs)]
 }
 op CompareValue<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
+    meta: OpInfo {},
     mnemonic: "compare-value", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.cmp(condition, lhs, rhs)
 }
 op VectorOnly<T: vectors(ScalarInteger)>(arg: T) -> T {
+    meta: OpInfo {},
     mnemonic: "vector-only", storage: Unary { arg: arg }, semantics: bv.sub(bv.zero(), arg)
 }
 
@@ -195,3 +217,33 @@ encoding PackedRecord {
     fields: [enabled(1), count(3), tag(4)]
 }
 encoding WideRecord { storage: u128, fields: [value(128)] }
+
+// No Rust cases know these types or their enum variants.
+enum TestPolicy { variants: [Automatic, Prefer(TestFlags)] }
+record TestSettings {
+    enabled: bool,
+    policy: TestPolicy,
+}
+record TestMetadata {
+    settings: TestSettings,
+    fallback: optional(TestPolicy),
+}
+
+// Deliberately reverse declaration order to exercise canonical set emission.
+record EffectSet {  }
+op EffectSet() -> () {
+    meta: OpInfo { memory: Known([WRITE, READ]) },
+mnemonic: "effect-set", storage: EffectSet {}, }
+
+// One field declaration can serve as both a primary layout and a nested property.
+record LiteralPayload { bits: u32 }
+record WrappedPayload { inner: LiteralPayload }
+op Payload(@bits: u32) -> I32 {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "payload", storage: LiteralPayload { bits: bits }
+}
+op Wrapped(@inner: LiteralPayload) -> I32 {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "wrapped", storage: WrappedPayload { inner: inner },
+    text: "{inner.bits}"
+}

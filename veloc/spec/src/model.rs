@@ -15,6 +15,7 @@ mod operation;
 pub struct Definitions {
     pub(crate) encoding: crate::encoding::TypeEncoding,
     pub(crate) builtins: Builtins,
+    pub(crate) data: crate::data::Types,
     pub(crate) comparisons: Vec<crate::comparisons::Comparison>,
     pub(crate) types: Types,
     pub(crate) storage: storage::Storage,
@@ -106,16 +107,16 @@ pub(crate) struct Op {
     pub offset: usize,
     pub name: String,
     pub mnemonic: String,
+    pub meta: crate::data::Value,
     pub format: String,
     pub signature: TypeDef,
     pub params: Vec<Param>,
     pub projection: Projection,
     pub signature_source: Option<SignatureSource>,
     pub control: Option<crate::control::Control>,
-    pub moves: Vec<String>,
     pub text: Option<Node>,
     pub traits: Vec<String>,
-    pub memory: String,
+    pub memory: crate::builtins::Effect,
     pub access: Option<crate::memory::Access>,
     pub constraints: Vec<crate::constraints::Constraint>,
     pub identity: Option<BvConst>,
@@ -159,6 +160,7 @@ pub(crate) enum SignatureSource {
 }
 
 pub(crate) struct Param {
+    pub moves: bool,
     pub name: String,
     pub kind: ParamKind,
 }
@@ -231,7 +233,8 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
     let types = Types::compile(&records, source, &encoding)?;
     let builtins = Builtins::compile(&records, source)?;
     let comparisons = crate::comparisons::compile(&records, source)?;
-    let storage = storage::compile(&records, source)?;
+    let data = crate::data::Types::compile(&records, source)?;
+    let storage = storage::compile(&records, source, &data)?;
     let mut ops = Vec::new();
     let mut properties = Vec::new();
     for record in records {
@@ -253,8 +256,9 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 &types,
                 &builtins,
                 &comparisons,
+                &data,
             )?),
-            "format" | "layout" | "record" | "encoding" | "comparison" | "storage" => {}
+            "layout" | "record" | "enum" | "encoding" | "comparison" | "storage" => {}
             kind if Builtins::is_definition(kind) => {}
             kind if Types::is_definition(kind) => {}
             _ => {
@@ -269,6 +273,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
     let definitions = Definitions {
         encoding,
         builtins,
+        data,
         comparisons,
         types,
         storage,
@@ -284,6 +289,15 @@ impl Definitions {
         let mut mnemonics = BTreeSet::new();
         let mut methods = BTreeMap::new();
         for op in &self.ops {
+            if let crate::data::Value::Record(ty, _) = &op.meta
+                && Some(ty.as_str()) != crate::metadata::record_type(&self.ops)
+            {
+                return Err(Error::at(
+                    source,
+                    op.offset,
+                    "all operations in a unit must use the same metadata record type",
+                ));
+            }
             let fail = |message| Error::at(source, op.offset, message);
             if !mnemonics.insert(&op.mnemonic) {
                 return Err(fail(format!("duplicate mnemonic `{}`", op.mnemonic)));
@@ -310,14 +324,6 @@ impl Definitions {
                     .iter()
                     .find(|f| f.name == op.format)
                     .ok_or_else(|| fail(format!("unknown format `{}`", op.format)))?;
-                if let Some(fixed) = &format.fixed_opcode
-                    && fixed != &op.name
-                {
-                    return Err(fail(format!(
-                        "format `{}` has fixed opcode `{fixed}`, not `{}`",
-                        op.format, op.name
-                    )));
-                }
                 let ty = &op.signature;
                 operation::validate_packing(source, op, format)?;
                 match (format.arity, &ty.operands) {
@@ -341,7 +347,7 @@ impl Definitions {
                     "algebraic shortcuts require associative and commutative operations".into(),
                 ));
             }
-            crate::semantic::validate(source, op, &self.types, &self.builtins)?;
+            crate::semantic::validate(source, op, &self.types)?;
         }
         Ok(())
     }
@@ -540,14 +546,13 @@ mod tests {
     use crate::fixtures::parse;
 
     const SOURCE: &str = r#"
-        format Binary {
-            fields: [opcode(Opcode), args(values(2))],
-            opcode: dynamic(opcode)
+        record Binary {
+            args: values(2),
         }
         op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    meta: OpInfo { traits: [], memory: Known([]) },
             mnemonic: "i-add", storage: Binary { args: [lhs, rhs] },
-            traits: [], memory: NONE
-        }
+             }
     "#;
 
     #[test]
@@ -561,7 +566,7 @@ mod tests {
     fn rejects_normalized_method_name_collisions() {
         let source = format!(
             "{SOURCE}\n\
-             op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {{ mnemonic: \"i_add\", storage: Binary {{ args: [lhs, rhs] }}, traits: [], memory: NONE }}"
+             op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {{ meta: OpInfo {{ traits: [], memory: Known([]) }}, mnemonic: \"i_add\", storage: Binary {{ args: [lhs, rhs] }},  }}"
         );
         let error = match parse(&source) {
             Ok(_) => panic!("colliding generated method names were accepted"),
@@ -573,8 +578,7 @@ mod tests {
     #[test]
     fn removed_builder_fields_are_unknown_fields() {
         for builder in ["iadd", "iadd(args)"] {
-            let source =
-                SOURCE.replace("memory: NONE", &format!("memory: NONE, builder: {builder}"));
+            let source = SOURCE.replace("mnemonic:", &format!("builder: {builder}, mnemonic:"));
             let error = match parse(&source) {
                 Ok(_) => panic!("removed builder field was accepted"),
                 Err(error) => error,

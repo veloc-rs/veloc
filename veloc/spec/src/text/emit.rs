@@ -104,8 +104,14 @@ pub(super) fn parse(
             }
         }
     }
-    for (path, default) in &schema.defaults {
-        writeln!(out, "let {} = {};", leaf(op, path), default.rust()).unwrap();
+    for (path, value) in &schema.bindings {
+        writeln!(
+            out,
+            "let {} = {};",
+            leaf(op, path),
+            value.rust("crate::inst::")
+        )
+        .unwrap();
     }
     for param in &op.params {
         if let ParamKind::Property(ty) = &param.kind
@@ -297,12 +303,12 @@ pub(super) fn print(
     ) {
         writeln!(out, "let {} = {expr};", local(op, &name)).unwrap();
     }
-    for (path, default) in &schema.defaults {
+    for (path, value) in &schema.bindings {
         writeln!(
             out,
             "if {} != {} {{ return Err(core::fmt::Error); }}",
             local(op, path),
-            default.rust()
+            value.rust("crate::inst::")
         )
         .unwrap();
     }

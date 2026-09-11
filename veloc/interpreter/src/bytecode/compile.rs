@@ -1373,10 +1373,47 @@ impl<'a> Compiler<'a> {
                 let dst = self.mapper.reg(res);
                 emit::StackAddr(&mut self.code, dst, self.stack.offsets[inst]);
             }
-            InstructionView::Load { ptr, offset, .. } => self.emit_load(inst, *ptr, *offset as u32),
+            InstructionView::Load { ptr, offset, .. } => {
+                let access = self.func.memory_access(inst).expect("load access contract");
+                if !access.flags.is_volatile()
+                    && let Some((object, offset)) = self
+                        .func
+                        .stack_access(access, Some(core::mem::size_of::<usize>() as u32))
+                {
+                    let dst = self.mapper.reg(self.func.dfg().first_result(inst).unwrap());
+                    emit::StackLoad(
+                        &mut self.code,
+                        dst,
+                        access.ty,
+                        self.stack.offsets[object] + offset,
+                    );
+                } else {
+                    self.emit_load(inst, *ptr, *offset);
+                }
+            }
             InstructionView::Store {
                 ptr, value, offset, ..
-            } => self.emit_store(*ptr, *value, *offset as u32),
+            } => {
+                let access = self
+                    .func
+                    .memory_access(inst)
+                    .expect("store access contract");
+                if !access.flags.is_volatile()
+                    && let Some((object, offset)) = self
+                        .func
+                        .stack_access(access, Some(core::mem::size_of::<usize>() as u32))
+                {
+                    let src = self.mapper.reg(*value);
+                    emit::StackStore(
+                        &mut self.code,
+                        src,
+                        access.ty,
+                        self.stack.offsets[object] + offset,
+                    );
+                } else {
+                    self.emit_store(*ptr, *value, *offset);
+                }
+            }
             InstructionView::Jump { dest } => self.emit_jump(*dest),
             InstructionView::Br {
                 condition,

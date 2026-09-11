@@ -2,8 +2,9 @@
 // run: opgen-error
 // check: floating-point execution semantics are not modeled
 class Wide { members: [I32, F64] }
-format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+record Pair { args: values(2) }
 op Add<T: Wide>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
 
@@ -12,20 +13,20 @@ op Add<T: Wide>(lhs: T, rhs: T) -> T {
 // check: impossible shape constraint on type variable `T`
 class V4 { members: [I32X4] }
 class V2 { members: [I64X2] }
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+record Unary { arg: Value }
 op Convert<T: V4>(arg: T) -> shape(T, V2) {
-    mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "convert", storage: Unary { arg: arg }, }
 
 // ----- exact-shapes-detect-impossible-relations-at-definition-time-2
 // run: opgen-error
 // check: impossible shape constraint on type variable `T`
 class V4 { members: [I32X4] }
 class V2 { members: [I64] }
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+record Unary { arg: Value }
 op Convert<T: V4>(arg: T) -> shape(T, V2) {
-    mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
-}
+    meta: OpInfo { memory: Known([]) },
+mnemonic: "convert", storage: Unary { arg: arg }, }
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-1
 // run: opgen-error

@@ -3,12 +3,11 @@
 // check: : i32<4> = iadd
 // check: : i32 = extractelement
 // check: : i32<4> = insertelement
-// check: : f32 = reduce-sum
 // check: : f32 = reduce-add
 // check: : f32 = reduce-min
 // check: : f32 = reduce-max
 // check: : i32<4> = shuffle
-local function vectors(i32, f32, i32<4>) -> (i32<4>, i32, f32, f32, f32, f32)
+local function vectors(i32, f32, i32<4>) -> (i32<4>, i32, f32, f32, f32)
 block0(v0: i32, v1: f32, v2: i32<4>):
   v3: i32<4> = splat v0
   v4: i32<4> = iadd v3, v2
@@ -17,16 +16,14 @@ block0(v0: i32, v1: f32, v2: i32<4>):
   v5: i32 = extractelement v4, v13
   v6: i32<4> = insertelement v4, v0, v14
   v7: f32<4> = splat v1
-  v8: f32 = reduce-sum v7
   v9: f32 = reduce-add v7
   v10: f32 = reduce-min v7
   v11: f32 = reduce-max v7
   v12: i32<4> = shuffle v4, v6, mask=0x00070104
-  return v12, v5, v8, v9, v10, v11
+  return v12, v5, v9, v10, v11
 
-local function scalable(i64, i32, mask<scalable 4>) -> i32<scalable 4>
-block0(v0: i64, v1: i32, v2: mask<scalable 4>):
-  v3: i32 = setvl v0
+local function scalable(i32, i32, mask<scalable 4>) -> i32<scalable 4>
+block0(v0: i32, v1: i32, v2: mask<scalable 4>):
   v4: i32<scalable 4> = splat v1
-  v5: i32<scalable 4> = iadd v4, v4, mask=v2, evl=v3
+  v5: i32<scalable 4> = iadd v4, v4, mask=v2, evl=v0
   return v5

@@ -55,7 +55,7 @@ impl Control {
             || op.traits.iter().any(|t| t == "TERMINATOR")
                 != matches!(self.kind.as_str(), "tail_call" | "tail_call_value")
             || !op.traits.iter().any(|t| t == "MAY_TRAP")
-            || op.memory == "NONE"
+            || op.memory.is_none()
             || op.semantics.is_some()
         {
             return Err(fail());

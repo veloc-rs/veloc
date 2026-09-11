@@ -32,6 +32,7 @@ pub(super) fn parse(
     type_defs: &Types,
     builtins: &Builtins,
     comparisons: &[crate::comparisons::Comparison],
+    data: &crate::data::Types,
 ) -> Result<Op, Error> {
     let sig = record
         .signature
@@ -100,26 +101,6 @@ pub(super) fn parse(
         .optional("access")
         .map(|node| crate::memory::check(source, node, &params))
         .transpose()?;
-    let moves = fields
-        .optional("moves")
-        .map(|node| {
-            list(source, node)?
-                .into_iter()
-                .map(|node| name(source, node))
-                .collect::<Result<Vec<_>, Error>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let mut seen_moves = BTreeSet::new();
-    for name in &moves {
-        if !seen_moves.insert(name)
-            || !params
-                .iter()
-                .any(|p| p.name == *name && matches!(p.kind, ParamKind::Value | ParamKind::Values))
-        {
-            return Err(fields.error("moves must name distinct value operands; successor arguments transfer on their own edge"));
-        }
-    }
     let control = fields
         .optional("control")
         .map(|node| crate::control::check(source, node, &params))
@@ -157,11 +138,8 @@ pub(super) fn parse(
             });
         }
     }
-    let mut traits = fields
-        .optional("traits")
-        .map(|n| builtins.traits(source, n))
-        .transpose()?
-        .unwrap_or_default();
+    let meta = crate::metadata::Pending::new(source, fields.take("meta")?, data)?;
+    let mut traits = meta.traits(source, data, builtins)?;
     if let Projection::Operands(projection) = &projection {
         let required: &[&str] = match projection.flow.as_str() {
             "Jump" | "Return" => &["TERMINATOR"],
@@ -216,16 +194,23 @@ pub(super) fn parse(
             .ok_or_else(|| fields.error("trap guards require executable semantics"))?;
         crate::semantic::traps(source, node, &params, sem)?;
     }
-    let memory = match fields.optional("memory") {
-        Some(node) => builtins.effect(source, node)?,
-        None if semantics.is_some() => builtins.effect(
-            source,
-            Node {
-                offset: fields.offset,
-                kind: Kind::Name("NONE".into()),
-            },
-        )?,
-        None => return Err(fields.error("unmodeled operations must declare their memory effect")),
+    let declared_memory = meta.memory(source, data, builtins)?;
+    if access.is_some() && meta.explicit_memory() {
+        return Err(fields.error("access already defines the complete memory effect"));
+    }
+    let memory = match access.as_ref() {
+        Some(access) => crate::builtins::Effect::Known(vec![access.effect().into()]),
+        None if semantics.is_some() && !meta.explicit_memory() => {
+            crate::builtins::Effect::Known(Vec::new())
+        }
+        None => match declared_memory {
+            Some(memory) => memory,
+            None if semantics.is_some() => crate::builtins::Effect::Known(Vec::new()),
+            None if !meta.has_memory_field() => crate::builtins::Effect::Unknown,
+            None => {
+                return Err(fields.error("unmodeled operations must declare their memory effect"));
+            }
+        },
     };
     if let Some(semantics) = &semantics {
         if !semantics.traps.is_empty() && !traits.iter().any(|t| t == "MAY_TRAP") {
@@ -248,17 +233,18 @@ pub(super) fn parse(
         }
     }
     fields.finish()?;
+    let meta = meta.finish(source, data, builtins, &traits, &memory)?;
     let mut op = Op {
         offset: fields.offset,
         name: fields.name,
         mnemonic,
+        meta,
         format,
         signature: types,
         params,
         projection,
         signature_source,
         control,
-        moves,
         text,
         traits,
         memory,
@@ -276,7 +262,7 @@ pub(super) fn parse(
         type_defs,
         comparisons,
     )?;
-    crate::memory::validate(source, &op, builtins)?;
+    crate::memory::validate(source, &op)?;
     Ok(op)
 }
 
@@ -296,7 +282,8 @@ fn signature(
     let mut variables = BTreeMap::new();
     for generic in sig.generics {
         identifier(source, generic.offset, &generic.name)?;
-        if generic.property
+        if generic.moves
+            || generic.property
             || types.classes.contains_key(&generic.name)
             || types.exact.contains_key(&generic.name)
         {
@@ -386,7 +373,15 @@ fn signature(
             patterns.push(pattern(source, param.ty, &mut variables, types)?);
             ParamKind::Value
         };
+        if param.moves && !matches!(kind, ParamKind::Value | ParamKind::Values) {
+            return Err(Error::at(
+                source,
+                param.offset,
+                "move requires a value operand; successor arguments transfer on their edge",
+            ));
+        }
         params.push(Param {
+            moves: param.moves,
             name: param.name,
             kind,
         });

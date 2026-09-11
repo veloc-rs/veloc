@@ -12,7 +12,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
             .params
             .iter()
             .any(|p| matches!(p.kind, ParamKind::Successor | ParamKind::Successors));
-        let body = if op.moves.is_empty() && !edges {
+        let body = if !op.params.iter().any(|p| p.moves) && !edges {
             "self.try_visit_operands(|value| visit(value, false))?;".into()
         } else {
             let format = defs
@@ -48,7 +48,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
             );
             for p in &op.params {
                 let value = &projections[&p.name];
-                let consume = op.moves.contains(&p.name);
+                let consume = p.moves;
                 match &p.kind {
                     ParamKind::Value => writeln!(body, "visit({value}, {consume})?;").unwrap(),
                     ParamKind::Values => writeln!(
@@ -99,5 +99,21 @@ pub(crate) fn generate(defs: &Definitions) -> String {
         writeln!(out, "{arms} => {{ {body} }},").unwrap();
     }
     out.push_str("}\nOk(())\n}\n}\n");
+    let moving = defs
+        .ops
+        .iter()
+        .filter(|op| op.params.iter().any(|p| p.moves))
+        .map(|op| format!("Self::{}", op.name))
+        .collect::<Vec<_>>();
+    let query = if moving.is_empty() {
+        "false".to_owned()
+    } else {
+        format!("matches!(self, {})", moving.join(" | "))
+    };
+    writeln!(
+        out,
+        "impl crate::Opcode {{ pub const fn transfers_ownership(self) -> bool {{ {query} }} }}"
+    )
+    .unwrap();
     out
 }

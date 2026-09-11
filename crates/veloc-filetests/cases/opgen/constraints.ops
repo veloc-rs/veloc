@@ -1,191 +1,212 @@
 // ----- constant-folding-preserves-precedence-and-short-circuiting-1
 // run: opgen-error
 // check: constraint is always false: ((1 + (2 * 3)) == 9)
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [1 + 2 * 3 == 9]
+     constraints: [1 + 2 * 3 == 9]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-1
 // run: opgen-error
 // check: constraint expects Int, got Bool
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [number && flag]
+     constraints: [number && flag]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-2
 // run: opgen-error
 // check: constraint expects Int, got Bool
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [number == flag]
+     constraints: [number == flag]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-3
 // run: opgen-error
 // check: unknown constraint name unknown
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [unknown != 0]
+     constraints: [unknown != 0]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-4
 // run: opgen-error
 // check: field access requires a record
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [number.field != 0]
+     constraints: [number.field != 0]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-5
 // run: opgen-error
 // check: all expects a finite sequence
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [all(number, |x| true)]
+     constraints: [all(number, |x| true)]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-6
 // run: opgen-error
 // check: all expects a sequence and |name| predicate
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [all(number, flag)]
+     constraints: [all(number, flag)]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-7
 // run: opgen-error
 // check: len expects a sequence
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [len(flag) == 0]
+     constraints: [len(flag) == 0]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-8
 // run: opgen-error
 // check: type expects an SSA value or typed property
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [type(number) == result_type(0)]
+     constraints: [type(number) == result_type(0)]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-9
 // run: opgen-error
 // check: result_type index is out of bounds
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [result_type(1) == result_type(0)]
+     constraints: [result_type(1) == result_type(0)]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-10
 // run: opgen-error
 // check: unknown comparison variant IntCC.Unknown
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [IntCC.Unknown == IntCC.Eq]
+     constraints: [IntCC.Unknown == IntCC.Eq]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-11
 // run: opgen-error
 // check: constraint expects Enum("IntCC"), got Enum("FloatCC")
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [IntCC.Eq == FloatCC.Eq]
+     constraints: [IntCC.Eq == FloatCC.Eq]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-12
 // run: opgen-error
 // check: unknown constraint operation recurse
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [recurse(number)]
+     constraints: [recurse(number)]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-13
 // run: opgen-error
 // check: constraint expects Int, got Bool
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [flag + flag]
+     constraints: [flag + flag]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-14
 // run: opgen-error
 // check: require expects a predicate and a diagnostic string
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [require(flag)]
+     constraints: [require(flag)]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-15
 // run: opgen-error
 // check: unknown constraint name VectorConstant
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [VectorConstant]
+     constraints: [VectorConstant]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-16
 // run: opgen-error
 // check: unknown constraint operation nonzero
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [nonzero(number)]
+     constraints: [nonzero(number)]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-17
 // run: opgen-error
 // check: constraint arithmetic overflow
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [170141183460469231731687303715884105727 + 1 == 0]
+     constraints: [170141183460469231731687303715884105727 + 1 == 0]
 }
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-18
 // run: opgen-error
 // check: unknown constraint name missing
-format Custom { fields: [opcode(Opcode), bits(u64), yes(bool)], opcode: dynamic(opcode) }
+record Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
-    memory: NONE, constraints: [true || missing > 0]
+     constraints: [true || missing > 0]
 }
 
 // ----- pool-properties-and-lexical-binders-are-generic-1
 // run: opgen-error
 // check: constraint expects Bool, got Int
-format Custom { fields: [pool_id(ConstantPoolId)], opcode: fixed(Example) }
+record Custom { pool_id: ConstantPoolId }
 op Example(@data: Bytes) -> Vector {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
-    text: "{data:bytes}", memory: NONE,
+    text: "{data:bytes}",
     constraints: [len(data) == min_bytes(result_type(0)), all(data, |i| i)]
 }
 
 // ----- pool-properties-and-lexical-binders-are-generic-2
 // run: opgen-error
 // check: result_type index is out of bounds
-format Custom { fields: [pool_id(ConstantPoolId)], opcode: fixed(Example) }
+record Custom { pool_id: ConstantPoolId }
 op Example(@data: Bytes) -> () {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
-    text: "{data:bytes}", memory: NONE,
+    text: "{data:bytes}",
     constraints: [len(data) == min_bytes(result_type(0)), all(data, |i| i < 2 * lanes(result_type(0)))]
 }
 
@@ -193,27 +214,31 @@ op Example(@data: Bytes) -> () {
 // run: opgen-error
 // check: unknown field PtrIndexImm.unknown
 record PtrIndexImm {
-    fields: [offset(i32, 0), scale(u32, 1)]
+    offset: i32,
+    scale: u32,
 }
 
-format PtrIndex {
-    fields: [ptr(Value), index(Value), imm_id(PtrIndexImm)],
-    opcode: fixed(PtrIndex)
+record PtrIndex {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
 }
 
 op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "ptr-index",
     storage: PtrIndex { ptr: ptr, index: index, imm_id: imm },
     text: "{ptr}, {index}, scale={imm.scale}, offset={imm.offset}",
-    memory: NONE,
+
     constraints: [require(imm.unknown != 0, "ptr-index scale must be non-zero")]
 }
 
 // ----- type-queries-use-static-signatures-and-operand-positions-1
 // run: opgen-error
 // check: constraint is always false: is_ptr(type(input))
-format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+record Unary { arg: Value }
 op Example<T: Integer>(input: T) -> T {
-    mnemonic: "example", storage: Unary { arg: input }, memory: NONE,
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "example", storage: Unary { arg: input },
     constraints: [is_ptr(type(input)), lanes(type(input)) > 0]
 }

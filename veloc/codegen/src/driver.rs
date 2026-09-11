@@ -495,12 +495,13 @@ block0(v0: ptr):
             .parse(
                 r#"
 export function access(ptr, i64) -> i64
-  ss0: size 8
+
 block0(v0: ptr, v1: i64):
+  ss0: ptr = alloca size=8, align=8
   store.volatile.align8 v1, v0, offset=8
   v2: i64 = load.volatile.align8 v0, offset=8
-  stack-store v2, ss0, offset=0
-  v3: i64 = stack-load ss0, offset=0
+  store v2, ss0, offset=0
+  v3: i64 = load ss0, offset=0
   return v3
 "#,
             )

@@ -172,12 +172,6 @@ global counter:i32(local) extra
 local function bad()->void
 block0(): extra
 
-// ----- trailing-text-in-stack-slot
-// run: parse-error
-// check: unexpected operand or trailing text
-local function bad()->void
-ss0: size 8 extra
-
 // ----- trailing-text-after-zero-operand-op
 // run: parse-error
 // check: unexpected operand or trailing text

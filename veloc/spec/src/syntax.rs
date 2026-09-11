@@ -29,6 +29,7 @@ pub(crate) struct Parameter {
     pub offset: usize,
     pub name: String,
     pub property: bool,
+    pub moves: bool,
     pub ty: Node,
 }
 
@@ -253,7 +254,11 @@ impl Parser<'_> {
             if property {
                 self.offset += 1;
             }
-            let name = self.name()?;
+            let mut name = self.name()?;
+            let moves = name == "move" && self.peek() != Some(b':');
+            if moves {
+                name = self.name()?;
+            }
             self.expect(b':')?;
             // The model checks that this is a type, not an arbitrary value.
             let ty = self.value(0)?;
@@ -261,6 +266,7 @@ impl Parser<'_> {
                 offset,
                 name,
                 property,
+                moves,
                 ty,
             });
             if self.peek() != Some(end) {

@@ -1,14 +1,15 @@
 // run: roundtrip
 // check: : f32 = fconst 0x3f800000
 // check: : i32<4> = vconst 0x00000000010000000200000003000000
-// check: (sum.v29: i32, overflow.v30: bool) = iadd-with-overflow v1, v5
+// check: (sum.v29: i32, overflow.v30: bool) = iadd-with-overflow v1, v6
 // check: mask=0x00010203
 // check: br-table v1, [block3(v22)], block3(v11)
 global counter: i32 (local)
 
 export function main(ptr, i32, f32, i32<4>, mask<4>) -> i32
-  ss0: size 16
+
 block0(v0: ptr, v1: i32, v2: f32, v3: i32<4>, v4: mask<4>):
+  ss0: ptr = alloca size=16, align=8
   v5: i32 = iconst -7
   v6: f32 = fconst 0x3f800000
   v7: bool = bconst true
@@ -21,9 +22,9 @@ block0(v0: ptr, v1: i32, v2: f32, v3: i32<4>, v4: mask<4>):
   v13: bool = fcmp eq v2, v6
   v14: i32 = load.align4 v0, offset=4
   store.volatile v14, v0, offset=8
-  v15: i32 = stack-load ss0, offset=4
-  stack-store v15, ss0, offset=8
-  v16: ptr = stack-addr ss0, offset=0
+  v15: i32 = load ss0, offset=4
+  store v15, ss0, offset=8
+  v16: ptr = ptr-offset ss0, 0
   v17: ptr = ptr-offset v0, -4
   v18: ptr = ptr-index v0, v1, scale=4, offset=-8
   v19: ptr = inttoptr v1

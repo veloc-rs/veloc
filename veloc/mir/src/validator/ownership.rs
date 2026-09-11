@@ -64,7 +64,7 @@ pub(super) fn validate(func: &Function) -> Result<()> {
             // remaining owned value. No implicit guest cleanup runs on abort.
             let spec = view.opcode().spec();
             if spec.is_terminator()
-                && !spec.traits.contains(crate::inst::OpTraits::ABORT)
+                && !spec.traits().contains(crate::inst::OpTraits::ABORT)
                 && !available.is_empty()
             {
                 return Err(func.constraint_error(

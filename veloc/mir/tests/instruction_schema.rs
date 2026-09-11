@@ -80,7 +80,8 @@ fn memory_view_keeps_auxiliary_operands_separate() {
         flags,
         mask: Some(Value(3)),
         evl: Some(Value(4)),
-        ..VectorMemOptions::default()
+        offset: 0,
+        scale: 1,
     };
     let scatter = InstDraft::vector_scatter(values, ext);
     assert!(scatter.as_view().matches_format(OpFormat::VectorScatter));
@@ -90,7 +91,7 @@ fn memory_view_keeps_auxiliary_operands_separate() {
         [Value(0), Value(1), Value(2), Value(3), Value(4)]
     );
     assert_eq!(scatter.as_view().memory_flags(), Some(flags));
-    assert!(scatter.as_view().memory_effect().volatile);
+    assert!(scatter.as_view().has_volatile_access());
 
     // Fixed operand groups cannot have the wrong length in construction data.
 }
@@ -129,14 +130,11 @@ fn generated_memory_builders_preserve_field_order() {
     builder.init_entry_block();
     let ptr = builder.func_param(0);
     let value = builder.func_param(1);
-    let slot = builder.create_stack_slot(64);
     let flags = MemFlags::new().with_volatile(true).with_alignment(8);
 
     // Both operands are pointers: reversing them would still pass type validation.
     builder.ins().store(ptr, value, 16, flags);
     let loaded = builder.ins().load(ptr, 16, flags, Type::PTR);
-    builder.ins().stack_store(slot, value, 24);
-    let stacked = builder.ins().stack_load(slot, 24, Type::PTR);
 
     let dfg = builder.func().dfg();
     let instructions: Vec<_> = dfg.instructions().map(|(_, data)| data).collect();
@@ -150,17 +148,7 @@ fn generated_memory_builders_preserve_field_order() {
         InstructionView::Load { ptr: actual_ptr, offset: 16, flags: actual_flags }
             if (actual_ptr, actual_flags) == (ptr, flags)
     ));
-    assert!(matches!(
-        instructions[2],
-        InstructionView::StackStore { slot: actual_slot, value: actual_value, offset: 24 }
-            if (actual_slot, actual_value) == (slot, value)
-    ));
-    assert!(matches!(
-        dfg.inst(dfg.value_inst(stacked).unwrap()),
-        InstructionView::StackLoad { slot: actual_slot, offset: 24 } if actual_slot == slot
-    ));
     assert_eq!(dfg.value_type(loaded), Type::PTR);
-    assert_eq!(dfg.value_type(stacked), Type::PTR);
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();

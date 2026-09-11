@@ -19,13 +19,15 @@ pub(crate) fn check(source: &str, node: Node, params: &[Param]) -> Result<Access
         Error::at(
             source,
             node.offset,
-            "expected read(pointer, offset, result) or write(pointer, offset, value)",
+            "expected read(pointer, offset) or write(pointer, offset, value)",
         )
     };
     let Kind::Call(kind, args) = node.kind else {
         return Err(fail());
     };
-    if !matches!(kind.as_str(), "read" | "write") || args.len() != 3 {
+    if !matches!(kind.as_str(), "read" | "write")
+        || args.len() != if kind == "read" { 2 } else { 3 }
+    {
         return Err(fail());
     }
     let names = args
@@ -38,7 +40,6 @@ pub(crate) fn check(source: &str, node: Node, params: &[Param]) -> Result<Access
     let param = |name: &str| params.iter().find(|p| p.name == name).map(|p| &p.kind);
     if param(&names[0]) != Some(&ParamKind::Value)
         || !matches!(param(&names[1]), Some(ParamKind::Property(t)) if matches!(t.as_str(), "u32" | "i32"))
-        || (kind == "read" && names[2] != "result")
         || (kind == "write" && param(&names[2]) != Some(&ParamKind::Value))
     {
         return Err(fail());
@@ -51,22 +52,27 @@ pub(crate) fn check(source: &str, node: Node, params: &[Param]) -> Result<Access
     })
 }
 
-pub(crate) fn validate(
-    source: &str,
-    op: &Op,
-    builtins: &crate::builtins::Builtins,
-) -> Result<(), Error> {
+impl Access {
+    pub(crate) fn effect(&self) -> &'static str {
+        if self.write { "WRITE" } else { "READ" }
+    }
+}
+
+pub(crate) fn validate(source: &str, op: &Op) -> Result<(), Error> {
     if let Some(access) = &op.access {
-        let effect = &builtins.effects[&op.memory];
-        if (access.write && (effect.writes == 0 || effect.reads != 0))
-            || (!access.write && (effect.reads == 0 || effect.writes != 0))
-            || effect.allocates
-            || effect.frees
+        let pointer_index = op
+            .params
+            .iter()
+            .filter(|p| p.kind == ParamKind::Value)
+            .position(|p| p.name == access.ptr)
+            .expect("checked pointer operand");
+        if !matches!(op.signature.operands.patterns().and_then(|p| p.get(pointer_index)),
+            Some(crate::model::Pattern::Exact(name)) if name == "PTR")
         {
             return Err(Error::at(
                 source,
                 op.offset,
-                "access projection must match the declared memory effect",
+                "access address must have type PTR",
             ));
         }
         if !access.write && op.signature.results.patterns().is_none_or(|p| p.len() != 1) {

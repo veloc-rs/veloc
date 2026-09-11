@@ -34,7 +34,6 @@ pub(crate) fn constructor_name(name: &str) -> String {
 pub(crate) struct Format {
     pub name: String,
     pub arity: Option<usize>,
-    pub fixed_opcode: Option<String>,
     pub fields: Vec<Field>,
 }
 
@@ -174,7 +173,11 @@ impl Layout {
 
 /// Compile physical layouts and their logical format/text projections from one
 /// field schema. Opcode/type declarations are checked by the enclosing model.
-pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error> {
+pub(crate) fn compile(
+    records: &[Record],
+    source: &str,
+    data: &crate::data::Types,
+) -> Result<Storage, Error> {
     if let Some(record) = records.iter().find(|r| r.kind == "storage") {
         if records.iter().filter(|r| r.kind == "storage").count() != 1 || record.name != "Operands"
         {
@@ -200,17 +203,17 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
             String::new()
         };
         fields.finish()?;
-        let operands = operands::compile(records, source, prefix)?;
+        let operands = operands::compile(records, source, prefix, data)?;
         return Ok(Storage {
             strategy: Strategy::Operands(operands),
             formats: Vec::new(),
             instructions: String::new(),
             formats_code: String::new(),
-            records: crate::records::compile(records, source)?,
+            records: Vec::new(),
             alternatives: Vec::new(),
         });
     }
-    let properties = crate::records::compile(records, source)?;
+    let properties = data.records.clone();
     let mut layouts = Vec::new();
     let mut names = BTreeSet::new();
     let mut methods: BTreeSet<String> = [
@@ -226,8 +229,31 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
     .into_iter()
     .map(str::to_owned)
     .collect();
-    for record in records {
-        if !matches!(record.kind.as_str(), "format" | "layout") {
+    let mut used = BTreeSet::new();
+    for op in records.iter().filter(|r| r.kind == "op") {
+        if let Some(Node {
+            kind: Kind::Object(name, _),
+            ..
+        }) = op.fields.get("storage")
+        {
+            used.insert(name.clone());
+        }
+    }
+    for layout in records.iter().filter(|r| r.kind == "layout") {
+        used.extend(layout_targets(layout, source)?);
+        if !data.records.iter().any(|r| r.name == layout.name) {
+            return Err(Error::at(
+                source,
+                layout.offset,
+                format!("unknown layout record `{}`", layout.name),
+            ));
+        }
+    }
+    for record in records.iter().filter(|r| r.kind == "record") {
+        let binding = records
+            .iter()
+            .find(|r| r.kind == "layout" && r.name == record.name);
+        if !used.contains(&record.name) && binding.is_none() {
             continue;
         }
         identifier(&record.name, record.offset, source)?;
@@ -243,7 +269,7 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
                 format!("conflicting draft constructor `{method}`"),
             ));
         }
-        layouts.push(parse_layout(record, source, &properties)?);
+        layouts.push(parse_layout(record, binding, records, source, &properties)?);
     }
     let formats = layouts
         .iter()
@@ -251,18 +277,50 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
         .map(|layout| Format {
             name: layout.name.clone(),
             arity: layout.arity(),
-            fixed_opcode: match &layout.opcode {
-                OpcodeSource::Fixed(name) => Some(name.clone()),
-                OpcodeSource::Dynamic(_) => None,
-            },
             fields: layout.fields.clone(),
         })
         .collect::<Vec<_>>();
-    validate_links(&layouts, &formats, records, source)?;
+    validate_links(&layouts, &formats, source)?;
+    // Only records actually used by instruction layouts belong in operand storage.
+    let properties = properties
+        .into_iter()
+        .filter(|r| {
+            layouts
+                .iter()
+                .any(|l| l.fields.iter().any(|f| f.ty.named(&r.name)))
+        })
+        .collect::<Vec<_>>();
+    for record in &properties {
+        for field in &record.fields {
+            use crate::records::PropertyType;
+            let ty = match &field.ty {
+                PropertyType::Named(ty) | PropertyType::Optional(ty) => ty.as_str(),
+                PropertyType::Values(_) => {
+                    return Err(Error::at(
+                        source,
+                        0,
+                        "nested fixed SSA arrays are not supported by operand storage",
+                    ));
+                }
+            };
+            if ty != "Value"
+                && (matches!(field.ty, PropertyType::Optional(_)) || data.contains_value(ty))
+            {
+                return Err(Error::at(
+                    source,
+                    records
+                        .iter()
+                        .find(|r| r.kind == "record" && r.name == record.name)
+                        .unwrap()
+                        .offset,
+                    "operand storage supports direct Value/optional(Value) fields, not nested SSA or optional non-SSA fields",
+                ));
+            }
+        }
+    }
     Ok(Storage {
         strategy: Strategy::Packed,
-        instructions: crate::records::generate(&properties)
-            + &generate::instructions(&layouts, &properties),
+        instructions: generate::instructions(&layouts, &properties),
         formats_code: generate_formats(&formats),
         records: properties,
         alternatives: layouts
@@ -286,90 +344,101 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Storage, Error
     })
 }
 
-fn parse_layout(record: &Record, source: &str, records: &[RecordDef]) -> Result<Layout, Error> {
-    let is_format = record.kind == "format";
-    let allowed: &[&str] = if is_format {
-        &["fields", "opcode"]
-    } else {
-        &["fields", "opcode", "format", "text", "constraints"]
-    };
-    for (name, value) in &record.fields {
-        if !allowed.contains(&name.as_str()) {
-            return Err(Error::at(
-                source,
-                value.offset,
-                format!("unknown layout field `{name}`"),
-            ));
-        }
-    }
-    let mut fields = Vec::new();
-    let mut names = BTreeSet::new();
-    for node in list(required(record, "fields", source)?, source)? {
-        let Kind::Call(name, args) = &node.kind else {
-            return Err(Error::at(source, node.offset, "expected field(type)"));
-        };
-        identifier(name, node.offset, source)?;
-        if !names.insert(name.clone()) {
-            return Err(Error::at(
-                source,
-                node.offset,
-                format!("duplicate storage field `{name}`"),
-            ));
-        }
-        if args.len() != 1 {
-            return Err(Error::at(
-                source,
-                node.offset,
-                "a storage field has exactly one type",
-            ));
-        }
-        fields.push(Field {
-            name: name.clone(),
-            ty: field_type(&args[0], source, records)?,
-        });
-    }
-    let opcode_node = required(record, "opcode", source)?;
-    let (kind, args) = call(opcode_node, source)?;
-    if args.len() != 1 {
-        return Err(Error::at(
+fn layout_targets(layout: &Record, source: &str) -> Result<Vec<String>, Error> {
+    let node = required(layout, "format", source)?;
+    let (kind, args) = call(node, source)?;
+    match (kind, args) {
+        ("fixed", [target]) => Ok(vec![name(target, source)?.to_owned()]),
+        ("arity", [_, targets]) => list(targets, source)?
+            .iter()
+            .map(|n| name(n, source).map(str::to_owned))
+            .collect(),
+        _ => Err(Error::at(
             source,
-            opcode_node.offset,
-            "expected fixed(Opcode) or dynamic(field)",
-        ));
+            node.offset,
+            "expected fixed(Format) or arity(field, [Formats])",
+        )),
     }
-    let opcode_name = name(&args[0], source)?;
-    let opcode = match kind {
-        "fixed" => {
-            identifier(opcode_name, args[0].offset, source)?;
-            OpcodeSource::Fixed(opcode_name.to_owned())
+}
+
+fn parse_layout(
+    record: &Record,
+    binding: Option<&Record>,
+    declarations: &[Record],
+    source: &str,
+    records: &[RecordDef],
+) -> Result<Layout, Error> {
+    let is_format = binding.is_none();
+    let targets = match binding {
+        Some(layout) => layout_targets(layout, source)?,
+        None => vec![record.name.clone()],
+    };
+    let users = declarations
+        .iter()
+        .filter(|r| r.kind == "op")
+        .filter(|op| {
+            matches!(
+                op.fields.get("storage"),
+                Some(Node { kind: Kind::Object(target, _), .. }) if targets.contains(target)
+            )
+        })
+        .collect::<Vec<_>>();
+    let shape = records
+        .iter()
+        .find(|r| r.name == record.name)
+        .expect("checked record");
+    let mut fields = shape
+        .fields
+        .iter()
+        .map(|f| {
+            let ty = match &f.ty {
+                crate::records::PropertyType::Named(name) => FieldType::Named(name.clone()),
+                crate::records::PropertyType::Values(n) => FieldType::Values(*n),
+                crate::records::PropertyType::Optional(_) => {
+                    return Err(Error::at(
+                        source,
+                        record.offset,
+                        "optional primary fields require an operand storage adapter",
+                    ));
+                }
+            };
+            Ok(Field {
+                name: f.name.clone(),
+                ty,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let opcode = if let [op] = users.as_slice() {
+        OpcodeSource::Fixed(op.name.clone())
+    } else {
+        if fields.iter().any(|f| f.name == "opcode") {
+            return Err(Error::at(
+                source,
+                record.offset,
+                "opcode is reserved for the generated instruction tag",
+            ));
         }
-        "dynamic" => {
-            let index = field_index(&fields, opcode_name, &args[0], source)?;
-            if !fields[index].ty.named("Opcode") {
+        fields.insert(
+            0,
+            Field {
+                name: "opcode".into(),
+                ty: FieldType::Named("Opcode".into()),
+            },
+        );
+        OpcodeSource::Dynamic(0)
+    };
+    if let Some(binding) = binding {
+        for (key, node) in &binding.fields {
+            if !matches!(key.as_str(), "format" | "text" | "constraints") {
                 return Err(Error::at(
                     source,
-                    args[0].offset,
-                    "dynamic opcode field must have type Opcode",
+                    node.offset,
+                    format!("unknown layout field `{key}`"),
                 ));
             }
-            OpcodeSource::Dynamic(index)
         }
-        _ => {
-            return Err(Error::at(
-                source,
-                opcode_node.offset,
-                "expected fixed(Opcode) or dynamic(field)",
-            ));
-        }
-    };
-    let opcode_fields = fields.iter().filter(|f| f.ty.named("Opcode")).count();
-    if opcode_fields != usize::from(matches!(opcode, OpcodeSource::Dynamic(_))) {
-        return Err(Error::at(
-            source,
-            record.offset,
-            "each Opcode field must be the dynamic opcode source",
-        ));
     }
+    let record = binding.unwrap_or(record);
     let flags_fields = fields
         .iter()
         .filter(|f| f.ty.named("MemFlags") || f.ty.named("VectorMemOptions"))
@@ -580,11 +649,20 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
         ),
         _ => return Ok(()),
     };
-    let matching_fields = layout.fields.len() == fields.len()
-        && layout
-            .fields
-            .iter()
-            .zip(fields)
+    let actual = layout
+        .fields
+        .iter()
+        .filter(|f| !f.ty.named("Opcode"))
+        .collect::<Vec<_>>();
+    let fields = fields
+        .iter()
+        .filter(|(_, ty)| *ty != "Opcode")
+        .copied()
+        .collect::<Vec<_>>();
+    let matching_fields = actual.len() == fields.len()
+        && actual
+            .into_iter()
+            .zip(&fields)
             .all(|(field, &(name, ty))| field.name == name && field.ty.schema_type() == ty);
     if !matching_fields {
         let expected = fields
@@ -601,20 +679,14 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
             ),
         ));
     }
-    let matching_opcode = match (&layout.opcode, fixed) {
-        (OpcodeSource::Fixed(actual), Some(expected)) => actual == expected,
-        (OpcodeSource::Dynamic(index), None) => layout.fields[*index].name == "opcode",
-        _ => false,
-    };
-    if !matching_opcode {
-        let expected = fixed.map_or("dynamic(opcode)".to_owned(), |name| {
-            format!("fixed({name})")
-        });
+    if let Some(expected) = fixed
+        && !matches!(&layout.opcode, OpcodeSource::Fixed(actual) if actual == expected)
+    {
         return Err(Error::at(
             source,
             layout.offset,
             format!(
-                "layout `{}` opcode contract requires {expected}",
+                "layout `{}` opcode contract requires fixed({expected})",
                 layout.name
             ),
         ));
@@ -629,98 +701,12 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
     Ok(())
 }
 
-fn field_type(node: &Node, source: &str, records: &[RecordDef]) -> Result<FieldType, Error> {
-    match &node.kind {
-        Kind::Name(name)
-            if [
-                "Opcode",
-                "Value",
-                "ValueList",
-                "BlockCall",
-                "JumpTable",
-                "VectorExtData",
-                "VectorMemOptions",
-                "MemFlags",
-                "FuncId",
-                "SigId",
-                "StackSlot",
-                "PtrIndexImm",
-                "ConstantPoolId",
-                "Intrinsic",
-                "IntCC",
-                "FloatCC",
-                "Float",
-                "Int",
-                "VectorConst",
-                "u32",
-                "u64",
-                "i32",
-                "bool",
-            ]
-            .contains(&name.as_str())
-                || records.iter().any(|r| r.name == *name) =>
-        {
-            Ok(FieldType::Named(name.clone()))
-        }
-        Kind::Call(kind, args) if kind == "values" && args.len() == 1 => {
-            let n = number(&args[0], source)?;
-            if n == 0 || n > u8::MAX as usize {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "operand group size must be in 1..=255",
-                ));
-            }
-            Ok(FieldType::Values(n))
-        }
-        _ => Err(Error::at(source, node.offset, "unknown storage field type")),
-    }
-}
-
-fn validate_links(
-    layouts: &[Layout],
-    formats: &[Format],
-    records: &[Record],
-    source: &str,
-) -> Result<(), Error> {
-    let opcodes = records
-        .iter()
-        .filter(|r| r.kind == "op")
-        .map(|r| (r.name.as_str(), r))
-        .collect::<BTreeMap<_, _>>();
+fn validate_links(layouts: &[Layout], formats: &[Format], source: &str) -> Result<(), Error> {
     let formats = formats
         .iter()
         .map(|f| (f.name.as_str(), f))
         .collect::<BTreeMap<_, _>>();
     for layout in layouts {
-        if let OpcodeSource::Fixed(opcode) = &layout.opcode {
-            let Some(record) = opcodes.get(opcode.as_str()) else {
-                return Err(Error::at(
-                    source,
-                    layout.offset,
-                    format!("unknown fixed opcode `{opcode}`"),
-                ));
-            };
-            let storage = required(record, "storage", source)?;
-            let Kind::Object(target, _) = &storage.kind else {
-                return Err(Error::at(
-                    source,
-                    storage.offset,
-                    "expected a storage mapping",
-                ));
-            };
-            let matches = match &layout.format {
-                FormatSource::Fixed(format) => format == target,
-                FormatSource::Arity { formats, .. } => formats.iter().any(|f| f == target),
-            };
-            if !matches {
-                return Err(Error::at(
-                    source,
-                    layout.offset,
-                    format!("fixed opcode `{opcode}` requires format `{target}`"),
-                ));
-            }
-        }
         match &layout.format {
             FormatSource::Fixed(name) => {
                 let Some(format) = formats.get(name.as_str()) else {
@@ -815,13 +801,6 @@ fn name<'a>(node: &'a Node, source: &str) -> Result<&'a str, Error> {
     }
 }
 
-fn number(node: &Node, source: &str) -> Result<usize, Error> {
-    match node.kind {
-        Kind::Number(number) => Ok(number as usize),
-        _ => Err(Error::at(source, node.offset, "expected a number")),
-    }
-}
-
 fn field_index(fields: &[Field], name: &str, node: &Node, source: &str) -> Result<usize, Error> {
     fields.iter().position(|f| f.name == name).ok_or_else(|| {
         Error::at(
@@ -857,67 +836,5 @@ fn identifier(name: &str, offset: usize, source: &str) -> Result<(), Error> {
             offset,
             format!("invalid Rust identifier `{name}`"),
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::compile;
-    use crate::syntax;
-
-    #[test]
-    fn rejects_format_level_text_definitions() {
-        let source = r#"format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode), text: "{args}" }"#;
-        let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
-        assert!(error.message.contains("text"));
-    }
-
-    #[test]
-    fn rejects_missing_or_mistyped_opcode_field() {
-        for fields in ["[arg(Value)]", "[opcode(Value)]"] {
-            let source = format!("format Unary {{ fields: {fields}, opcode: dynamic(opcode) }}");
-            assert!(compile(&syntax::parse(&source).unwrap(), &source).is_err());
-        }
-    }
-
-    #[test]
-    fn rejects_unknown_layout_target() {
-        let source = r#"layout Extended { fields: [opcode(Opcode), args(ValueList)], opcode: dynamic(opcode), format: arity(args, [Missing]), text: "{args}" }"#;
-        let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
-        assert!(error.message.contains("unknown format"));
-    }
-
-    #[test]
-    fn rejects_unknown_fields_and_storage_types() {
-        for source in [
-            "format Unary { fields: [arg(Unrecognized)], opcode: dynamic(arg) }",
-            "format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode), typo: true }",
-            "format Unary { fields: [opcode(Opcode), arg(Value), arg(Value)], opcode: dynamic(opcode) }",
-        ] {
-            assert!(compile(&syntax::parse(source).unwrap(), source).is_err());
-        }
-    }
-
-    #[test]
-    fn rejects_an_opcode_that_violates_an_existing_layout_contract() {
-        let source = "format Iconst { fields: [value(Int)], opcode: fixed(Fconst) }";
-        let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("opcode contract requires fixed(Iconst)")
-        );
-    }
-
-    #[test]
-    fn rejects_alternate_layout_with_wrong_fixed_opcode() {
-        let source = r#"
-            format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
-            format Binary { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
-            op Neg(arg: I32) -> (result: I32) { storage: Unary { arg: arg } }
-            layout Pair { fields: [args(values(2))], opcode: fixed(Neg), format: fixed(Binary), text: "{args}" }
-        "#;
-        let error = compile(&syntax::parse(source).unwrap(), source).unwrap_err();
-        assert!(error.message.contains("requires format `Unary`"));
     }
 }

@@ -8,12 +8,14 @@ mod builtins;
 mod comparisons;
 mod constraints;
 mod control;
+mod data;
 mod encoding;
 mod evaluate;
 mod format;
 mod generate;
 mod lowering;
 mod memory;
+mod metadata;
 mod model;
 mod ownership;
 mod packing;
@@ -98,10 +100,6 @@ mod fixtures {
         "\n",
         include_str!("../../defs/comparisons.ops")
     );
-
-    pub fn builtins() -> builtins::Builtins {
-        super::parse(BUILTINS).unwrap().builtins
-    }
 
     pub fn types() -> types::Types {
         super::parse(BUILTINS).unwrap().types

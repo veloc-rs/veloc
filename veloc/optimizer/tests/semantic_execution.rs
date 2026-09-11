@@ -440,3 +440,57 @@ impl Fold for ScalarConst {
             .copied()
     }
 }
+
+#[test]
+fn signed_saturation_and_overflow_match_widened_arithmetic() {
+    // Exhaust the i8 domain, including zero divisors and MIN * -1 in the
+    // composed multiplication-overflow recipe. Check wider boundary values too.
+    for bits in [8, 16, 32, 64] {
+        let min = -(1i128 << (bits - 1));
+        let max = (1i128 << (bits - 1)) - 1;
+        let values: Vec<i128> = if bits == 8 {
+            (min..=max).collect()
+        } else {
+            vec![min, min + 1, -3, -1, 0, 1, 2, max - 1, max]
+        };
+        let constant = |v: i128| match bits {
+            8 => ScalarConst::from(v as i8),
+            16 => ScalarConst::from(v as i16),
+            32 => ScalarConst::from(v as i32),
+            64 => ScalarConst::from(v as i64),
+            _ => unreachable!(),
+        };
+        let ty = constant(0).ty();
+        for &x in &values {
+            for &y in &values {
+                for (opcode, mathematical, overflow) in [
+                    (Opcode::IAddSatS, x + y, false),
+                    (Opcode::ISubSatS, x - y, false),
+                    (Opcode::ISubWithOverflow, x - y, true),
+                    (Opcode::IMulWithOverflow, x * y, true),
+                ] {
+                    let mut expected = vec![constant(if overflow {
+                        mathematical
+                    } else {
+                        mathematical.clamp(min, max)
+                    })];
+                    let mut types = vec![ty];
+                    if overflow {
+                        types.push(Type::BOOL);
+                        expected.push(ScalarConst::from(mathematical < min || mathematical > max));
+                    }
+                    assert_eq!(
+                        veloc_optimizer::rewrite::evaluate(
+                            opcode,
+                            &[constant(x), constant(y)],
+                            &types,
+                            &[]
+                        ),
+                        Some(expected),
+                        "{opcode:?} i{bits}: {x}, {y}"
+                    );
+                }
+            }
+        }
+    }
+}

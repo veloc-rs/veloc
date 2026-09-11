@@ -69,19 +69,44 @@ impl InstructionView<'_> {
         self.opcode().spec().is_terminator()
     }
 
+    /// Coarse behavior only; per-access volatility is checked separately.
     pub fn memory_effect(&self) -> MemoryEffect {
-        let effect = self.opcode().spec().memory_effect;
-        let flags = self.memory_flags();
-        if flags.is_some_and(|flags| flags.is_volatile()) {
-            effect.with_volatile()
-        } else {
-            effect
-        }
+        self.opcode().spec().memory_effect()
+    }
+
+    pub fn has_volatile_access(&self) -> bool {
+        self.memory_flags().is_some_and(|flags| flags.is_volatile())
+    }
+
+    /// Deletion, speculation and commoning have different preconditions.
+    pub fn can_erase(&self) -> bool {
+        let spec = self.opcode().spec();
+        !spec.is_terminator()
+            && !spec.may_trap()
+            && !self.opcode().transfers_ownership()
+            && !self.has_volatile_access()
+            && self.memory_effect().can_erase()
+    }
+
+    /// Conservative, context-free speculation. Analyses may prove more.
+    pub fn can_speculate(&self) -> bool {
+        self.opcode().spec().is_pure()
+            && !self.opcode().transfers_ownership()
+            && !self.has_volatile_access()
+            && self.memory_effect().is_none()
+    }
+
+    /// Context-free commoning excludes mutable reads and fresh identities.
+    pub fn can_cse(&self) -> bool {
+        self.can_speculate()
     }
 
     pub fn has_side_effects(&self) -> bool {
         let spec = self.opcode().spec();
-        spec.is_terminator() || spec.may_trap() || self.memory_effect().has_side_effects()
+        spec.is_terminator()
+            || spec.may_trap()
+            || self.has_volatile_access()
+            || self.memory_effect().has_side_effects()
     }
 }
 

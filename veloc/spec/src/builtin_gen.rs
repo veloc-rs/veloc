@@ -14,23 +14,25 @@ pub(crate) fn contracts(defs: &Builtins) -> String {
     for (name, set) in &defs.flags {
         flags(&mut out, name, set);
     }
-    out.push_str("impl MemoryEffect {\n");
-    for (name, effect) in &defs.effects {
-        writeln!(
-            out,
-            "pub const {name}: Self = Self::new(MemoryRegions({}), MemoryRegions({})).with_lifetime({}, {});",
-            effect.reads, effect.writes, effect.allocates, effect.frees
-        )
-        .unwrap();
+    out
+}
+
+/// Emit a const expression for members already checked against a flags declaration.
+pub(crate) fn flag_set(ty: &str, members: &[String]) -> String {
+    let Some((first, rest)) = members.split_first() else {
+        return format!("{ty}::empty()");
+    };
+    let mut out = format!("{ty}::{first}");
+    for member in rest {
+        write!(out, ".union({ty}::{member})").unwrap();
     }
-    out.push_str("}\n");
     out
 }
 
 fn flags(out: &mut String, ty: &str, flags: &Flags) {
     writeln!(
         out,
-        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct {ty}({});",
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub struct {ty}({});",
         flags.storage.name()
     )
     .unwrap();

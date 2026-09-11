@@ -1,35 +1,38 @@
 // ----- reject-impure-control-without-effects
 // run: opgen-error
 // check: control interface must bind all parameters directly
-format Apply {
-    fields: [cont(Value), args(ValueList)], opcode: fixed(Apply)
+record Apply {
+    cont: Value,
+    args: ValueList,
 }
 op Apply(cont: Callable, args: values) -> () {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "apply", storage: Apply { cont: cont, args: args },
-    control: tail_call_value(cont, args), memory: NONE
-}
+control: tail_call_value(cont, args), }
 
 // ----- reject-wrong-control-operand-kind
 // run: opgen-error
 // check: invalid control interface or parameter kinds
-format Apply {
-    fields: [cont(Value), args(ValueList)], opcode: fixed(Apply)
+record Apply {
+    cont: Value,
+    args: ValueList,
 }
 op Apply(cont: Callable, args: values) -> () {
+    meta: OpInfo { traits: [TERMINATOR, MAY_TRAP], memory: Unknown },
     mnemonic: "apply", storage: Apply { cont: cont, args: args },
-    control: tail_call(cont, args), traits: [TERMINATOR, MAY_TRAP], memory: UNKNOWN
-}
+control: tail_call(cont, args),  }
 
 // ----- reject-noncallable-tail-call-contract
 // run: opgen-error
 // check: control interface must bind all parameters directly
-format Apply {
-    fields: [cont(Value), args(ValueList)], opcode: fixed(Apply)
+record Apply {
+    cont: Value,
+    args: ValueList,
 }
 op Apply(cont: I32, args: values) -> () {
+    meta: OpInfo { traits: [TERMINATOR, MAY_TRAP], memory: Unknown },
     mnemonic: "apply", storage: Apply { cont: cont, args: args },
-    control: tail_call_value(cont, args), traits: [TERMINATOR, MAY_TRAP], memory: UNKNOWN
-}
+control: tail_call_value(cont, args),  }
 
 // ----- structural-type-name-cannot-be-shadowed
 // run: opgen-error
@@ -38,44 +41,37 @@ class Callable { members: [I32] }
 
 // ----- move-contract-rejects-properties
 // run: opgen-error
-// check: moves must name distinct value operands
-format Take { fields: [function(FuncId)], opcode: fixed(Take) }
-op Take(@function: FuncId) -> () {
+// check: move requires a value operand
+record Take { function: FuncId }
+op Take(@move function: FuncId) -> () {
+    meta: OpInfo { memory: Unknown },
     mnemonic: "take", storage: Take { function: function },
-    moves: [function], memory: UNKNOWN
-}
-
-// ----- move-contract-rejects-duplicates
-// run: opgen-error
-// check: moves must name distinct value operands
-format Take { fields: [value(Value)], opcode: fixed(Take) }
-op Take(value: Callable) -> () {
-    mnemonic: "take", storage: Take { value: value },
-    moves: [value, value], memory: UNKNOWN
 }
 
 // ----- abort-is-an-exit-contract
 // run: opgen-error
 // check: ABORT requires TERMINATOR
-format Stop { fields: [], opcode: fixed(Stop) }
+record Stop {  }
 op Stop() -> () {
-    mnemonic: "stop", storage: Stop {}, traits: [ABORT], memory: NONE
-}
+    meta: OpInfo { traits: [ABORT], memory: Known([]) },
+mnemonic: "stop", storage: Stop {},  }
 
 // ----- signature-query-is-typed
 // run: opgen-error
 // check: signature expects a function, signature ID or callable type
-format Check { fields: [n(u32)], opcode: fixed(Check) }
+record Check { n: u32 }
 op Check(@n: u32) -> () {
-    mnemonic: "check", storage: Check { n: n }, memory: NONE,
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "check", storage: Check { n: n },
     constraints: [len(params(signature(n))) == 0]
 }
 
 // ----- slice-query-is-typed
 // run: opgen-error
 // check: slice expects a sequence
-format Check { fields: [n(u32)], opcode: fixed(Check) }
+record Check { n: u32 }
 op Check(@n: u32) -> () {
-    mnemonic: "check", storage: Check { n: n }, memory: NONE,
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "check", storage: Check { n: n },
     constraints: [len(prefix(n, 0)) == 0]
 }

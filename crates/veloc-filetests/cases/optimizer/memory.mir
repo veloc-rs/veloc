@@ -1,0 +1,74 @@
+// ----- scalar-promotion
+// run: o1
+// check: iconst 42
+// not: alloca
+// not: load
+// not: store
+local function main() -> i32
+block0():
+  p: ptr = alloca size=8, align=8
+  q: ptr = ptr-offset p, 4
+  x: i32 = iconst 42
+  store x, q, offset=0
+  y: i32 = load p, offset=4
+  return y
+
+// ----- unknown-call-is-a-barrier
+// run: o1
+// check: call mutate
+// check: = load
+import function mutate(ptr) -> void
+local function main() -> i32
+block0():
+  p: ptr = alloca size=4, align=4
+  x: i32 = iconst 1
+  store x, p, offset=0
+  call mutate(p) : (ptr) -> void
+  y: i32 = load p, offset=0
+  return y
+
+// ----- volatile-is-observable
+// run: o1
+// check: store.volatile
+// check: load.volatile
+local function main() -> i32
+block0():
+  p: ptr = alloca size=4, align=4
+  x: i32 = iconst 1
+  store.volatile x, p, offset=0
+  y: i32 = load.volatile p, offset=0
+  return y
+
+// ----- partial-overwrite-invalidates-forwarding
+// run: o1
+// check: : i32 = load
+local function main() -> i32
+block0():
+  p: ptr = alloca size=4, align=4
+  x: i32 = iconst 1
+  b: i8 = iconst 2
+  store x, p, offset=0
+  store b, p, offset=1
+  y: i32 = load p, offset=0
+  return y
+
+// ----- out-of-bounds-is-not-eliminated
+// run: o1
+// check: store
+// check: load
+local function main() -> i32
+block0():
+  p: ptr = alloca size=4, align=4
+  x: i32 = iconst 1
+  store x, p, offset=4
+  y: i32 = load p, offset=4
+  return y
+
+// ----- unused-object-is-removable
+// run: o1
+// check: return
+// not: alloca
+local function main() -> void
+block0():
+  p: ptr = alloca size=4096, align=64
+  return

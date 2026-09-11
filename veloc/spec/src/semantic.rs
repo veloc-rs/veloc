@@ -239,17 +239,12 @@ fn expression(
 /// Validate every scalar element type admitted by the signature. The compact
 /// type universe is finite; no solver or sampled-width proof is involved.
 /// Shape-changing operations are not admitted as per-lane semantic recipes.
-pub(crate) fn validate(
-    source: &str,
-    op: &Op,
-    types: &crate::types::Types,
-    builtins: &crate::builtins::Builtins,
-) -> Result<(), Error> {
+pub(crate) fn validate(source: &str, op: &Op, types: &crate::types::Types) -> Result<(), Error> {
     let Some(sem) = &op.semantics else {
         return Ok(());
     };
     let fail = |message| Error::at(source, op.offset, message);
-    if !builtins.effects[&op.memory].is_none() || op.traits.iter().any(|t| t == "TERMINATOR") {
+    if !op.memory.is_none() || op.traits.iter().any(|t| t == "TERMINATOR") {
         return Err(fail(
             "executable semantics require no memory effects or control flow".into(),
         ));
@@ -532,14 +527,17 @@ mod tests {
     fn params() -> Vec<Param> {
         vec![
             Param {
+                moves: false,
                 name: "lhs".into(),
                 kind: ParamKind::Value,
             },
             Param {
+                moves: false,
                 name: "flag".into(),
                 kind: ParamKind::Property("bool".into()),
             },
             Param {
+                moves: false,
                 name: "rhs".into(),
                 kind: ParamKind::Value,
             },
@@ -547,7 +545,7 @@ mod tests {
     }
 
     fn parsed(expression: &str, params: &[Param]) -> Result<Semantic, Error> {
-        let source = format!("format Test {{ semantics: {expression} }}");
+        let source = format!("fixture Test {{ semantics: {expression} }}");
         let mut record = crate::syntax::parse(&source)?.pop().unwrap();
         parse(&source, record.fields.remove("semantics").unwrap(), params)
     }
@@ -638,6 +636,7 @@ mod tests {
         let composed = parsed(
             "bv.sub(bv.zero(), lhs)",
             &[Param {
+                moves: false,
                 name: "lhs".into(),
                 kind: ParamKind::Value,
             }],
@@ -659,15 +658,16 @@ mod tests {
 
     fn unary(operand: Pattern, result: Pattern) -> Op {
         let params = vec![Param {
+            moves: false,
             name: "arg".into(),
             kind: ParamKind::Value,
         }];
         let sem = parsed("bv.neg(arg)", &params).unwrap();
         Op {
-            moves: Vec::new(),
             offset: 0,
             name: "Test".into(),
             mnemonic: "test".into(),
+            meta: crate::data::Value::Record("OpInfo".into(), Default::default()),
             format: "Unary".into(),
             signature: TypeDef {
                 operands: TypeList::Fixed(vec![operand]),
@@ -680,7 +680,7 @@ mod tests {
             params,
             projection: crate::model::Projection::Packed(Default::default()),
             traits: vec![],
-            memory: "NONE".into(),
+            memory: crate::builtins::Effect::Known(Vec::new()),
             access: None,
             constraints: vec![],
             identity: None,
@@ -696,23 +696,11 @@ mod tests {
                 Pattern::Bind(0, crate::fixtures::set(class)),
                 Pattern::Same(0),
             );
-            validate(
-                "",
-                &op,
-                &crate::fixtures::types(),
-                &crate::fixtures::builtins(),
-            )
-            .unwrap();
+            validate("", &op, &crate::fixtures::types()).unwrap();
         }
         for name in ["I8", "I16", "I32", "I64"] {
             let op = unary(Pattern::Exact(name.into()), Pattern::Exact(name.into()));
-            validate(
-                "",
-                &op,
-                &crate::fixtures::types(),
-                &crate::fixtures::builtins(),
-            )
-            .unwrap();
+            validate("", &op, &crate::fixtures::types()).unwrap();
         }
         for (operand, result) in [
             (Pattern::Exact("BOOL".into()), Pattern::Exact("BOOL".into())),
@@ -727,62 +715,24 @@ mod tests {
             ),
         ] {
             let op = unary(operand, result);
-            assert!(
-                validate(
-                    "",
-                    &op,
-                    &crate::fixtures::types(),
-                    &crate::fixtures::builtins()
-                )
-                .is_err()
-            );
+            assert!(validate("", &op, &crate::fixtures::types()).is_err());
         }
     }
 
     #[test]
     fn executable_bitvector_semantics_do_not_claim_effects_or_traps() {
         let mut op = unary(Pattern::Exact("I32".into()), Pattern::Exact("I32".into()));
-        op.memory = "UNKNOWN".into();
-        assert!(
-            validate(
-                "",
-                &op,
-                &crate::fixtures::types(),
-                &crate::fixtures::builtins()
-            )
-            .is_err()
-        );
-        op.memory = "NONE".into();
+        op.memory = crate::builtins::Effect::Unknown;
+        assert!(validate("", &op, &crate::fixtures::types()).is_err());
+        op.memory = crate::builtins::Effect::Known(Vec::new());
         for flag in ["MAY_TRAP", "TERMINATOR"] {
             op.traits = vec![flag.into()];
-            assert!(
-                validate(
-                    "",
-                    &op,
-                    &crate::fixtures::types(),
-                    &crate::fixtures::builtins()
-                )
-                .is_err()
-            );
+            assert!(validate("", &op, &crate::fixtures::types()).is_err());
         }
         op.traits.clear();
         op.signature.results = TypeList::Signature;
-        assert!(
-            validate(
-                "",
-                &op,
-                &crate::fixtures::types(),
-                &crate::fixtures::builtins()
-            )
-            .is_err()
-        );
+        assert!(validate("", &op, &crate::fixtures::types()).is_err());
         op.semantics = None;
-        validate(
-            "",
-            &op,
-            &crate::fixtures::types(),
-            &crate::fixtures::builtins(),
-        )
-        .unwrap();
+        validate("", &op, &crate::fixtures::types()).unwrap();
     }
 }

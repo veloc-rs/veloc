@@ -87,36 +87,6 @@ block0(v14: i32, v0: ptr):
   return
 import function callee(i32) -> i32
 
-// ----- duplicate-3
-// run: parse-error
-// check: duplicate
-local function bad() -> void
-  ss0: size 32
-block0():
-  v15: i32 = stack-load ss0, offset=4, offset=8
-  return
-import function callee(i32) -> i32
-
-// ----- duplicate-4
-// run: parse-error
-// check: duplicate
-local function bad() -> void
-  ss0: size 32
-block0(v15: i32):
-  stack-store v15, ss0, offset=8, offset=4
-  return
-import function callee(i32) -> i32
-
-// ----- duplicate-5
-// run: parse-error
-// check: duplicate
-local function bad() -> void
-  ss0: size 32
-block0():
-  v16: ptr = stack-addr ss0, offset=0, offset=4
-  return
-import function callee(i32) -> i32
-
 // ----- duplicate-6
 // run: parse-error
 // check: duplicate
@@ -249,34 +219,6 @@ import function callee(i32) -> i32
 local function bad(i32) -> void
 block0(v14: i32):
   store.volatile v14
-  return
-import function callee(i32) -> i32
-
-// ----- payload-9
-// run: parse-error
-// check: stack slot
-local function bad() -> void
-block0():
-  v15: i32 = stack-load slot0, offset=4
-  return
-import function callee(i32) -> i32
-
-// ----- payload-10
-// run: parse-error
-// check: stack slot
-local function bad(i32, ptr) -> void
-block0(v15: i32, v0: ptr):
-  stack-store v15, v0, offset=8
-  return
-import function callee(i32) -> i32
-
-// ----- payload-11
-// run: parse-error
-// check: named field
-local function bad(i32) -> void
-  ss0: size 32
-block0(v1: i32):
-  v16: ptr = stack-addr ss0, v1
   return
 import function callee(i32) -> i32
 
@@ -467,15 +409,6 @@ local function required_store_offset(ptr, i32) -> void
 block0(v0: ptr, v1: i32):
   store v1, v0
   return
-
-// ----- required-stack-offset
-// run: parse-error
-// check: missing `offset=` field
-local function required_stack_offset() -> ptr
-  ss0: size 8
-block0():
-  v0: ptr = stack-addr ss0
-  return v0
 
 // ----- required-pointer-scale
 // run: parse-error

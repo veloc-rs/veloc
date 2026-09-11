@@ -41,60 +41,25 @@ fn rejected(source: &str, expected: &str) {
 }
 
 #[test]
-fn existing_runtime_layouts_keep_their_public_field_names() {
-    for record in FORMATS.split("\nformat ").skip(1) {
-        let body = record.split("\n}").next().unwrap();
-        let layout = body.split_whitespace().next().unwrap();
-        let fields = body
-            .split("fields: [")
-            .nth(1)
-            .unwrap()
-            .split(']')
-            .next()
-            .unwrap();
-        for field in fields.split(", ") {
-            if field.is_empty() {
-                continue;
-            }
-            let name = field.split('(').next().unwrap();
-            let source = changed_record(
-                "format",
-                layout,
-                &format!("{name}("),
-                &format!("wrong_{name}("),
-            );
-            let expected = if name == "opcode" {
-                "unknown storage field `opcode`"
-            } else if matches!(layout, "ClosureNew" | "Closure" | "TailCall" | "CallValue") {
-                "unknown storage field"
-            } else {
-                "field contract"
-            };
-            rejected(&source, expected);
-        }
-    }
-}
-
-#[test]
 fn runtime_layout_contracts_check_property_types_and_operand_order() {
     for (layout, from, to) in [
-        ("Iconst", "value(Int)", "value(u32)"),
-        ("Bconst", "value(bool)", "value(u64)"),
-        ("Load", "offset(u32)", "offset(i32)"),
+        ("Iconst", "value: Int", "value: u32"),
+        ("Bconst", "value: bool", "value: u64"),
+        ("Load", "offset: u32", "offset: i32"),
         (
             "Store",
-            "ptr(Value), value(Value)",
-            "value(Value), ptr(Value)",
+            "ptr: Value,\n    value: Value",
+            "value: Value,\n    ptr: Value",
         ),
-        ("IntCompare", "kind(IntCC)", "kind(FloatCC)"),
+        ("IntCompare", "kind: IntCC", "kind: FloatCC"),
         (
             "VectorGather",
-            "ext(VectorMemOptions)",
-            "ext(VectorExtData)",
+            "ext: VectorMemOptions",
+            "ext: VectorExtData",
         ),
     ] {
         rejected(
-            &changed_record("format", layout, from, to),
+            &changed_record("record", layout, from, to),
             "field contract",
         );
     }
@@ -103,13 +68,13 @@ fn runtime_layout_contracts_check_property_types_and_operand_order() {
 #[test]
 fn runtime_layout_contracts_check_fixed_and_variadic_groups() {
     for (layout, from, to) in [
-        ("IntCompare", "args(values(2))", "args(values(3))"),
-        ("VectorStoreStrided", "args(values(3))", "args(values(2))"),
-        ("VectorScatter", "args(values(3))", "args(ValueList)"),
-        ("Shuffle", "args(values(2))", "args(values(3))"),
+        ("IntCompare", "args: values(2)", "args: values(3)"),
+        ("VectorStoreStrided", "args: values(3)", "args: values(2)"),
+        ("VectorScatter", "args: values(3)", "args: ValueList"),
+        ("Shuffle", "args: values(2)", "args: values(3)"),
     ] {
         rejected(
-            &changed_record("format", layout, from, to),
+            &changed_record("record", layout, from, to),
             "field contract",
         );
     }
@@ -118,13 +83,13 @@ fn runtime_layout_contracts_check_fixed_and_variadic_groups() {
 #[test]
 fn runtime_layout_contracts_reject_missing_and_extra_properties() {
     for (layout, from, to) in [
-        ("Iconst", "fields: [value(Int)]", "fields: []"),
-        ("Iconst", "value(Int)", "value(Int), unused(u32)"),
-        ("Load", ", flags(MemFlags)", ""),
-        ("CallIndirect", ", sig_id(SigId)", ""),
+        ("Iconst", "value: Int,", ""),
+        ("Iconst", "value: Int", "value: Int, unused: u32"),
+        ("Load", "    flags: MemFlags,\n", ""),
+        ("CallIndirect", "    sig_id: SigId,\n", ""),
     ] {
         rejected(
-            &changed_record("format", layout, from, to),
+            &changed_record("record", layout, from, to),
             "field contract",
         );
     }
@@ -205,12 +170,12 @@ fn signature_results_require_a_typed_signature_source() {
 fn existing_predication_has_a_checked_supported_adapter() {
     assert!(compile(&definitions()).is_ok());
     for (from, to) in [
-        ("ext(VectorExtData)", "config(VectorExtData)"),
-        ("ext(VectorExtData)", "ext(VectorMemOptions)"),
-        ("ext(VectorExtData)", "ext(VectorExtData), hidden(u32)"),
+        ("ext: VectorExtData", "config: VectorExtData"),
+        ("ext: VectorExtData", "ext: VectorMemOptions"),
+        ("ext: VectorExtData", "ext: VectorExtData, hidden: u32"),
     ] {
         rejected(
-            &changed_record("layout", "VectorOpWithExt", from, to),
+            &changed_record("record", "VectorOpWithExt", from, to),
             "field contract",
         );
     }
@@ -219,13 +184,13 @@ fn existing_predication_has_a_checked_supported_adapter() {
 #[test]
 fn canonical_dynamic_layouts_preserve_their_public_field_contracts() {
     for (layout, from, to) in [
-        ("Unary", "arg(Value)", "operand(Value)"),
-        ("Binary", "args(values(2))", "inputs(values(2))"),
-        ("Ternary", "args(values(3))", "inputs(values(3))"),
-        ("IntToPtr", "arg(Value)", "operand(Value)"),
+        ("Unary", "arg: Value", "operand: Value"),
+        ("Binary", "args: values(2)", "inputs: values(2)"),
+        ("Ternary", "args: values(3)", "inputs: values(3)"),
+        ("IntToPtr", "arg: Value", "operand: Value"),
     ] {
         rejected(
-            &changed_record("format", layout, from, to),
+            &changed_record("record", layout, from, to),
             "field contract",
         );
     }
@@ -234,27 +199,27 @@ fn canonical_dynamic_layouts_preserve_their_public_field_contracts() {
 #[test]
 fn custom_value_formats_allow_custom_field_names() {
     let source = r#"
-        format Pair {
-            fields: [op(Opcode), left(Value), right(Value)],
-            opcode: dynamic(op)
+        record Pair {
+            left: Value,
+            right: Value,
         }
         op Add<T: Integer>(left: T, right: T) -> (result: T) {
+    meta: OpInfo { traits: [], memory: Known([]) },
             mnemonic: "add", storage: Pair { left: left, right: right },
-            traits: [], memory: NONE
-        }
+             }
     "#;
     assert!(compile(source).is_ok());
 }
 
 #[test]
-fn format_level_codec_names_are_not_a_second_text_definition() {
+fn record_fields_do_not_double_as_text_configuration() {
     rejected(
         &changed_record(
-            "format",
+            "record",
             "Iconst",
-            "opcode: fixed(Iconst)",
-            "opcode: fixed(Iconst), text: IntegerConstant",
+            "value: Int",
+            "value: Int, text: IntegerConstant",
         ),
-        "text",
+        "unknown data type",
     );
 }

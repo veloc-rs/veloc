@@ -13,8 +13,9 @@ fn rejected(source: &str, expected: &str) {
 fn exact_class_members_drive_codegen_and_bitvector_semantics() {
     let source = r#"
         class Wide { members: [I32, I64] }
-        format Pair { fields: [opcode(Opcode), args(values(2))], opcode: dynamic(opcode) }
+        record Pair { args: values(2) }
         op Add<T: Wide>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
             mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
         }
     "#;
@@ -32,10 +33,10 @@ fn exact_shapes_detect_impossible_relations_at_definition_time() {
     let source = r#"
         class V4 { members: [I32X4] }
         class V2 { members: [I64X2] }
-        format Unary { fields: [opcode(Opcode), arg(Value)], opcode: dynamic(opcode) }
+        record Unary { arg: Value }
         op Convert<T: V4>(arg: T) -> shape(T, V2) {
-            mnemonic: "convert", storage: Unary { arg: arg }, memory: NONE
-        }
+    meta: OpInfo { memory: Known([]) },
+            mnemonic: "convert", storage: Unary { arg: arg }, }
     "#;
     rejected(source, "impossible shape constraint");
     assert!(compile(&source.replace("[I64X2]", "[F32X4]")).is_ok());

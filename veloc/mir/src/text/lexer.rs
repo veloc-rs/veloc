@@ -21,7 +21,7 @@ pub(super) enum Kind {
     Greater,
     /// `,`: separates list entries, operands and named fields.
     Comma,
-    /// `:`: type/signature annotations and block or stack-slot declarations.
+    /// `:`: type/signature annotations and block declarations.
     Colon,
     /// `=`: result definitions and named operand fields.
     Equal,

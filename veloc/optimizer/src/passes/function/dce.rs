@@ -37,7 +37,7 @@ pub fn run_dce(func: &mut Function, print_removed: bool, metrics: &mut Metrics) 
     // 1. Identify roots: instructions with side effects
     for block in func.layout().block_order() {
         for &inst in &func.layout().blocks()[*block].insts {
-            if func.dfg().inst(inst).has_side_effects() && live_insts.insert(inst) {
+            if !func.dfg().inst(inst).can_erase() && live_insts.insert(inst) {
                 worklist.push(inst);
             }
         }

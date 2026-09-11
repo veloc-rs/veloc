@@ -1,0 +1,23 @@
+// ----- zero-size
+// run: validate-error
+// check: alloca size must be positive
+local function bad() -> void
+block0():
+  p: ptr = alloca size=0, align=8
+  return
+
+// ----- zero-alignment
+// run: validate-error
+// check: alloca alignment must be a power of two
+local function bad() -> void
+block0():
+  p: ptr = alloca size=4, align=0
+  return
+
+// ----- non-power-of-two-alignment
+// run: validate-error
+// check: alloca alignment must be a power of two
+local function bad() -> void
+block0():
+  p: ptr = alloca size=4, align=3
+  return

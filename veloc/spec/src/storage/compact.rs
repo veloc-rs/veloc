@@ -10,7 +10,7 @@ fn size(ty: &str) -> Option<usize> {
     Some(match ty {
         "Opcode" | "IntCC" | "FloatCC" | "bool" | "u8" => 1,
         "MemFlags" | "Intrinsic" => 2,
-        "u32" | "i32" | "FuncId" | "SigId" | "StackSlot" | "ConstantPoolId" => 4,
+        "u32" | "i32" | "FuncId" | "SigId" | "ConstantPoolId" => 4,
         "u64" => 8,
         "Int" | "Float" => 9,
         "VectorConst" => 11,
@@ -62,6 +62,9 @@ fn inline(layout: &Layout, records: &[RecordDef]) -> bool {
             let mut align = 1;
             for member in &r.fields {
                 let s = match &member.ty {
+                    PropertyType::Values(_) => {
+                        unreachable!("nested fixed SSA arrays rejected by storage checking")
+                    }
                     PropertyType::Named(t) if t == "Value" => continue,
                     PropertyType::Optional(_) => 1,
                     PropertyType::Named(t) => match size(t) {

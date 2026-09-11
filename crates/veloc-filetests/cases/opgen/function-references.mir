@@ -47,13 +47,14 @@ import function later() -> i32
 // ----- function-reference-is-not-a-single-token
 // run: opgen-error
 // check: spaced operands require two single-token atoms
-format RefTag {
-    fields: [op(Opcode), target(FuncId), tag(u32)], opcode: dynamic(op)
+record RefTag {
+    target: FuncId,
+    tag: u32,
 }
 op RefTag(@target: FuncId, @tag: u32) -> () {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "ref-tag", storage: RefTag { target: target, tag: tag },
-    text: "{target} {tag}", memory: NONE
-}
+    text: "{target} {tag}", }
 // ----- out-of-line-reference
 // run: fixture
 // check: wide-ref later : () -> i32, 1, 2

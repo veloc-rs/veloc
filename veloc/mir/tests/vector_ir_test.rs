@@ -24,7 +24,10 @@ fn generated_pool_builders_use_logical_parameters() {
             shuffled,
             VectorMemOptions {
                 scale: 4,
-                ..Default::default()
+                offset: 0,
+                flags: veloc_mir::MemFlags::new(),
+                mask: None,
+                evl: None,
             },
         );
         builder.ins().ret(&[shuffled]);
@@ -110,7 +113,7 @@ fn test_vector_reduction_ops() {
     let scalar = builder.ins().f32const(1.0);
     let vec = builder.ins().splat(scalar, v4f32);
 
-    let sum = builder.ins().reduce_sum(vec);
+    let sum = builder.ins().reduce_add(vec);
     let add = builder.ins().reduce_add(vec);
     let min = builder.ins().reduce_min(vec);
     let max = builder.ins().reduce_max(vec);
@@ -175,8 +178,7 @@ fn test_vector_with_mask_evl() {
     let mask_ty = Type::new_mask(4, true).unwrap();
     let enabled = builder.ins().bconst(true);
     let mask = builder.ins().splat(enabled, mask_ty);
-    let avl = builder.ins().i64const(16);
-    let vl = builder.ins().setvl(avl);
+    let vl = builder.ins().i32const(16);
 
     let result = builder.ins().vector_op_ext(
         Opcode::IAdd,
@@ -220,9 +222,18 @@ fn test_gather_load() {
     let idx_val = builder.ins().i64const(0);
     let indices = builder.ins().splat(idx_val, v4i64);
 
-    let loaded = builder
-        .ins()
-        .gather(base_ptr, indices, VectorMemOptions::default(), v4i32);
+    let loaded = builder.ins().gather(
+        base_ptr,
+        indices,
+        VectorMemOptions {
+            offset: 0,
+            flags: veloc_mir::MemFlags::new(),
+            scale: 1,
+            mask: None,
+            evl: None,
+        },
+        v4i32,
+    );
 
     assert_eq!(builder.value_type(loaded), v4i32);
 
@@ -249,32 +260,33 @@ fn test_strided_load_store() {
     let base_ptr = builder.ins().inttoptr(ptr_val);
     let stride = builder.ins().i64const(2);
 
-    let loaded = builder
-        .ins()
-        .load_stride(base_ptr, stride, VectorMemOptions::default(), v8f32);
+    let loaded = builder.ins().load_stride(
+        base_ptr,
+        stride,
+        VectorMemOptions {
+            offset: 0,
+            flags: veloc_mir::MemFlags::new(),
+            scale: 1,
+            mask: None,
+            evl: None,
+        },
+        v8f32,
+    );
 
     assert_eq!(builder.value_type(loaded), v8f32);
 
-    builder
-        .ins()
-        .store_stride(base_ptr, stride, loaded, VectorMemOptions::default());
-
-    builder.ins().ret(&[]);
-    builder.seal_all_blocks();
-}
-
-#[test]
-fn test_setvl() {
-    let mut mb = ModuleBuilder::new();
-    let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
-    let func_id = mb.declare_function("test_setvl".to_string(), sig_id, Linkage::Export);
-    let mut builder = mb.builder(func_id);
-    builder.init_entry_block();
-
-    let avl = builder.ins().i64const(100);
-    let vl = builder.ins().setvl(avl);
-
-    assert_eq!(builder.value_type(vl), Type::I32);
+    builder.ins().store_stride(
+        base_ptr,
+        stride,
+        loaded,
+        VectorMemOptions {
+            offset: 0,
+            flags: veloc_mir::MemFlags::new(),
+            scale: 1,
+            mask: None,
+            evl: None,
+        },
+    );
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();

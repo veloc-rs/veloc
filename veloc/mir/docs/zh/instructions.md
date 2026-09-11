@@ -25,7 +25,6 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 | `Inst` | 指令标识符 |
 | `Value` | SSA 值标识符 |
 | `Block` | 基本块标识符 |
-| `StackSlot` | 栈槽标识符 |
 | `FuncId` | 函数标识符 |
 | `SigId` | 函数签名标识符 |
 | `BlockCall` | 块调用（带参数）|
@@ -108,42 +107,11 @@ Veloc IR（Intermediate Representation）是一种面向栈式虚拟机和寄存
 
 ---
 
-#### `StackLoad`
-| 属性 | 说明 |
-|------|------|
-| **操作数** | `slot: StackSlot`, `offset: u32` |
-| **返回类型** | `ty` |
-| **描述** | 从栈槽加载值 |
+#### `Alloca`
 
-**约束条件：**
-- `slot` 必须是当前函数声明的有效栈槽
-- `offset + sizeof(ty)` 必须在栈槽大小范围内
-- `ty` 支持 `I8`, `I16`, `I32`, `I64`, `F32`, `F64`
-
----
-
-#### `StackStore`
-| 属性 | 说明 |
-|------|------|
-| **操作数** | `slot: StackSlot`, `value: Value`, `offset: u32` |
-| **返回类型** | `Void` |
-| **描述** | 存储值到栈槽 |
-
-**约束条件：**
-- `slot` 必须是当前函数声明的有效栈槽
-- `offset + sizeof(value)` 必须在栈槽大小范围内
-
----
-
-#### `StackAddr`
-| 属性 | 说明 |
-|------|------|
-| **操作数** | `slot: StackSlot`, `offset: u32` |
-| **返回类型** | `Ptr` |
-| **描述** | 获取栈槽的地址（`&slot[offset]`） |
-
-**约束条件：**
-- `slot` 必须是当前函数声明的有效栈槽
+以正数 `size: u32` 和二的幂 `align: u32` 创建新的局部对象，返回 `PTR`。
+使用普通 `Load`、`Store` 访问。当前后端要求分配位于入口块；生命周期、
+资源耗尽和优化规则见[内存契约](../../MEMORY.md)。
 
 ---
 

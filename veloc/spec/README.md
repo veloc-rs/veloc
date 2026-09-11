@@ -84,8 +84,8 @@ Layout constraints describe auxiliary operands such as masks independently of
 the underlying opcode. A signature-selected call's argument/result checks and a
 `table(cases, default)` mapping's required default are derived automatically.
 
-`moves: [operand, operand_list]` declares which non-edge operands transfer
-ownership. Undeclared inputs cannot consume owned values. Successor arguments
+`move operand: Type` or `move args: values` marks a non-edge parameter as
+transferring ownership. Unmarked inputs cannot consume owned values. Successor arguments
 transfer on their own mutually exclusive edges; non-edge inputs execute once
 before the branch. `ABORT` marks an abnormal exit that need not transfer remaining
 owned values and requires `TERMINATOR`. The generated operand visitor feeds one
@@ -287,9 +287,9 @@ Type-set expressions also work directly in operation signatures; a named class
 is just a reusable alias, not a required declaration for every combination:
 
 ```text
-op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T { ... }
-op Gather<T: Integer & Vector>(ptr: PTR, index: T) -> shape(T, Vector) { ... }
-op Convert<T: I32 | I64>(arg: T) -> shape(T, F32 | F64) { ... }
+op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T { meta: OpInfo {}, ... }
+op Gather<T: Integer & Vector>(ptr: PTR, index: T) -> shape(T, Vector) { meta: OpInfo {}, ... }
+op Convert<T: I32 | I64>(arg: T) -> shape(T, F32 | F64) { meta: OpInfo {}, ... }
 ```
 
 `|` means union and `&` means intersection; `&` binds more tightly. Parentheses
@@ -338,12 +338,11 @@ flags OpTraits {
     members: [TERMINATOR(0), COMMUTATIVE(1)],
     separator: ", "
 }
-flags MemoryRegions {
+flags MemoryEffects {
     storage: u8,
-    members: [HEAP(0), STACK(1), GLOBAL(2)],
-    separator: ","
+    members: [READ(0), WRITE(1), ALLOCATE(2), FREE(3)],
+    separator: ", "
 }
-effect GLOBAL_READ { reads: [GLOBAL], writes: [] }
 ```
 
 `flags` declares a named set with unsigned storage (`u8` through `u128`), explicit
@@ -352,22 +351,64 @@ struct, member constants, `NONE`, `ALL`, `empty`, `is_empty`, `union`, `contains
 `intersects` and `Display`. Display follows declaration order, lowercases member
 names and changes underscores to hyphens; the empty set prints `none`.
 Bit positions preserve representation independently of declaration/display order.
-Set names are not restricted to `OpTraits` and `MemoryRegions`; these two are the
-MIR adapter's trait and memory-region vocabularies. The old standalone `trait`
-and `region` declarations are no longer supported.
+Set names are not restricted to `OpTraits`. The old standalone `trait`
+and `region` declarations are no longer supported. Memory effects do not use
+resource flag sets; `MemoryEffects` is a set of behaviors, not resources.
 
 Flag sets and `encoding Type` use the same checked storage and bit-layout code
 for widths, masks, occupied bits and overlap detection. Flags are one-bit fields
 at explicit positions; Type packs multi-bit fields in declaration order. Their
 meaning and generated APIs remain separate: Type is not a set, and its raw APIs
 still require `u16`. Its scalar-code and vector-shape constraints remain in the
-Type adapter. `MemoryEffect` and memory-conflict behavior remain handwritten Rust.
+Type adapter.
 
-Effects refer to the declared `MemoryRegions` set, with
-`[ALL]` denoting all declared regions. The reserved effect `NONE` must be empty;
-`UNKNOWN` must read and write every region. Purity checks inspect the sets, not
-the effect's name. Duplicate members, overlapping bits, out-of-range positions
-and unknown references fail before emission.
+### Typed operation metadata
+
+Records are shared by instruction properties and build-time metadata. Enums
+and flags are ordinary field types, not special operation keywords:
+
+```text
+enum MemoryEffect { variants: [Known(MemoryEffects), Unknown] }
+record OpInfo { traits: OpTraits, memory: MemoryEffect }
+
+op Example() -> () {
+    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ, WRITE]) },
+    mnemonic: "example", storage: Example {}
+}
+```
+
+The generic value checker resolves each field against its declared type. It
+checks enum variants and their payloads, flags membership and duplicates,
+nested records, optional values (`none` / `some(value)`), integer ranges, and
+required fields. A record body consists directly of `name: Type` fields, in
+declaration order. Every field must be supplied when constructing a record,
+including optional fields (use `none` explicitly). Records have no defaults
+and do not generate Rust `Default` implementations. Nested record and enum
+values are checked recursively; inline recursive types are rejected.
+There is no separate metadata schema or runtime attribute dictionary.
+
+Each compilation unit uses one metadata record type, selected by its operations'
+`meta: RecordName { ... }` values. That record may contain arbitrary declared
+fields; it need not be named `OpInfo`. MIR stores it inline in each static
+`OpSpec`, and `Opcode::meta()` borrows that value. LIR emits its own typed
+`GenericOpcode::meta()` table. Neither stores metadata on each instruction.
+
+The operation-contract adapter interprets fields *typed* `OpTraits` and
+`MemoryEffect`, regardless of field names; more than one field of either type
+is ambiguous and rejected. Other fields are just typed data. Semantic laws,
+control interfaces and access contracts populate inferred facts before final
+record checking. A declared access must not duplicate an explicit memory
+summary. If a memory field exists, an unmodeled operation must supply it. A record without a memory contract is conservatively unknown.
+Missing operation traits mean no additional declared traits, not inferred purity.
+
+The former top-level `traits` / `memory` entries and named `effect`
+declarations are rejected. `Known([])` means no memory effects; `Unknown`
+is a separate enum variant, not a flag or every known member combined.
+The `MemoryEffect` enum is generated like any other enum. Trusted Rust queries
+still implement memory interference, deletion and possible behaviors.
+Per-access volatility belongs to `MemFlags`; MIR atomic ordering is not
+currently modeled. Addresses and widths belong to access contracts and alias
+analysis.
 
 This is a vocabulary, not an arbitrary executable extension language. Generic
 type inference, memory-conflict algorithms, primitive bitvector meanings and
@@ -378,31 +419,58 @@ copying their constant names into a second definition whitelist.
 ## Operation signatures
 
 ```text
-format Binary {
-    fields: [opcode(Opcode), args(values(2))],
-    opcode: dynamic(opcode)
+record Binary {
+    args: values(2),
 }
 
 op IAdd<T: Integer>(lhs: T, rhs: T) -> T {
+    meta: OpInfo {},
     mnemonic: "iadd",
     storage: Binary { args: [lhs, rhs] },
     semantics: bv.add(lhs, rhs)
 }
 
 op ExtendU<T: Integer | BOOL | vectors(BOOL)>(arg: T) -> (result: shape(T, Integer)) {
+    meta: OpInfo { memory: Known([]) },
     mnemonic: "extendu",
     storage: Unary { arg: arg },
     where: [wider(arg, result)],
-    memory: NONE
-}
+    }
 
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
+    meta: OpInfo { traits: [MAY_TRAP] },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
-    traits: [MAY_TRAP], memory: HEAP_READ
-}
+    access: read(ptr, offset),
+    }
 ```
+
+`access: read(ptr, offset)` describes a complete ordinary read. Its unique result
+supplies the access type. `access: write(ptr, offset, value)` obtains the access
+type from the stored value. These declarations derive `READ`/`WRITE`; a second
+`memory` declaration is rejected. The address must be a `PTR` operand, and the
+offset must be a signed or unsigned 32-bit property. Packed layouts already
+require at most one `MemFlags` source, so flags need not be repeated. No flags
+means ordinary unaligned, nonvolatile access. Operations with multiple or masked
+accesses currently keep conservative effects rather than pretending that a
+single scalar projection fully describes them.
+
+Ownership transfer is attached to the logical parameter:
+
+```text
+op Call(@func_id: FuncId, move args: values) -> signature {
+    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    mnemonic: "call",
+    storage: Call { func_id: func_id, args: args },
+    signature: function(func_id),
+    text: "{func_id}({args}) : {function(func_id)}",
+     }
+```
+
+`move` consumes owned values; ordinary scalar, pointer and reusable callable
+values remain duplicable. Properties cannot move. Successor arguments transfer
+on the selected edge, without a separate annotation. There is no `moves` list.
 
 SSA operands have names and types in the operation signature. Result names are
 optional: a single result is `-> T`, multiple results are `-> (T, BOOL)`, and
@@ -426,9 +494,17 @@ variable-length `args: values` group and `signature: sig_id`. Direct calls use
 `signature: function(func_id)` to identify the callee's signature. The source of
 dynamic result types is explicit, not inferred from the opcode's name.
 
+A single `record Name { field: Type, ... }` declaration describes both plain
+structured data and instruction storage. `storage: Name { ... }` selects its
+instruction use; there is no separate `format` declaration. The generator
+derives opcode discrimination from the operations using the record: a single
+operation has a fixed opcode; a shared record has a generated opcode parameter.
+Neither form adds a field to the ordinary Rust record when it is also used as
+a nested property or metadata.
+
 The mapping connects logical parameters to generated construction/view fields.
-Every non-opcode field is mapped; fixed groups use `[lhs, rhs]`, and the dynamic
-opcode is supplied by the compiler. Variadic groups use `ValueList` in the
+Every declared field is mapped; fixed groups use `[lhs, rhs]`. The generated
+builder supplies any dynamic opcode. Variadic groups use `ValueList` in the
 schema, but become ordinary slices in views, never a mutable Value-list pool.
 Only byte properties use `pool(bytes)`; records such as `PtrIndexImm` and
 `VectorMemOptions` bind directly. Branch tables use `table(cases, default)`,
@@ -442,7 +518,11 @@ lowering consumers destructure their generated, typed views.
 
 The definition compiler checks references, field coverage, type variables,
 arities, constraints, semantic compatibility and generated method names before
-emitting Rust. Definitions may refer to later layouts. Diagnostics include source
+emitting Rust. Definitions may refer to later records.
+A separate `layout Name { ... }` configures storage-specific projections without
+redeclaring fields: MIR predicated alternatives select canonical formats;
+LIR may override view/accessor names. LIR operand counts follow required and
+trailing optional roles, rather than a second explicit list of lengths. Diagnostics include source
 line and column; the build script maps combined input locations back to the source
 file.
 
@@ -616,11 +696,11 @@ storage layout:
 
 ```text
 op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
+    meta: OpInfo { traits: [MAY_TRAP], memory: Known([WRITE]) },
     mnemonic: "store",
     storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
     text: "{.flags} {value}, {ptr}, offset={offset}",
-    traits: [MAY_TRAP], memory: HEAP_WRITE
-}
+     }
 ```
 
 The template generates both the parser and canonical printer at build time;
@@ -632,6 +712,9 @@ parameters retain their declaration order.
 - `offset={offset}` is required even when the offset is zero.
 - `[, mask={mem.mask}]` is optional only because the field is an optional SSA
   value. Ordinary numeric fields do not have text defaults or optional groups.
+- A leading `{mem.scale=1}` fixes an unprinted integer field for this text
+  projection. Its literal must fit the field type. Parsing supplies that value;
+  printing rejects a different value rather than silently dropping it.
 - `{.flags}` or `{.mem.flags}`, at the start of a template, binds mnemonic
   suffix flags. Empty flags produce no suffix.
 - `{data:bytes}` selects hexadecimal byte text; `{value:integer}` selects
@@ -656,8 +739,9 @@ and optional groups contain a single named optional SSA value. Named fields may
 be parsed in any order, but print in template order. Variadic values and
 successors retain their comma-list and bracketed-list syntax.
 
-Templates account for logical data apart from declared record defaults for
-unexposed fields. Unknown or duplicate references, incompatible codecs, missing
+Templates account for every logical field through an input, an optional field,
+a flags suffix or an explicit fixed binding. Unknown or duplicate references,
+incompatible codecs, missing
 fields and invalid optional groups are definition errors. Unsupported input
 fields are rejected, never silently discarded. Alternate storage layouts
 declare their own extension templates, preserving mask/EVL predication.
@@ -752,8 +836,9 @@ operation or a per-lane operation, not an entire vector, memory or machine-state
 model. Absent expressions mean **unmodeled**,
 not a claim that an operation is pure or verified.
 
-Executable semantic expressions imply `memory: NONE`; unmodeled operations must
-declare their memory effect explicitly. Empty `traits` lists may be omitted.
+Executable semantic expressions infer `MemoryEffect::Known([])`. A complete `access` contract
+also supplies its memory summary; other unmodeled operations must declare their
+memory effect in `meta` explicitly. The metadata traits field may be omitted.
 
 The semantic backend supports modular arithmetic, bitwise operations, comparison,
 selection, shifts, division, bit counts, signed/zero extension, truncation and

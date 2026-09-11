@@ -76,16 +76,14 @@ impl Flags {
 }
 
 #[derive(Debug)]
-pub(crate) struct Effect {
-    pub reads: u128,
-    pub writes: u128,
-    pub allocates: bool,
-    pub frees: bool,
+pub(crate) enum Effect {
+    Known(Vec<String>),
+    Unknown,
 }
 
 impl Effect {
     pub fn is_none(&self) -> bool {
-        self.reads == 0 && self.writes == 0 && !self.allocates && !self.frees
+        matches!(self, Self::Known(members) if members.is_empty())
     }
 }
 
@@ -93,13 +91,11 @@ impl Effect {
 pub(crate) struct Builtins {
     pub encodings: BTreeMap<String, BitLayout>,
     pub flags: BTreeMap<String, Flags>,
-    pub effects: BTreeMap<String, Effect>,
 }
 
 impl Builtins {
     pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
         let mut defs = Self::default();
-        let mut effects = Vec::new();
         for record in records
             .iter()
             .filter(|r| Self::is_definition(&r.kind) && !(r.kind == "encoding" && r.name == "Type"))
@@ -109,13 +105,7 @@ impl Builtins {
                 "flags" | "encoding" => {
                     if matches!(
                         record.name.as_str(),
-                        "Opcode"
-                            | "OpFormat"
-                            | "TypeClass"
-                            | "MemoryEffect"
-                            | "OpSpec"
-                            | "TypeError"
-                            | "type_rules"
+                        "Opcode" | "OpFormat" | "TypeClass" | "OpSpec" | "TypeError" | "type_rules"
                     ) || records.iter().any(|other| {
                         (other.kind == "comparison"
                             || (other.kind != record.kind
@@ -136,71 +126,35 @@ impl Builtins {
                         defs.encodings.insert(record.name.clone(), layout);
                     }
                 }
-                "effect" => {
-                    if record.name != record.name.to_ascii_uppercase() {
-                        return Err(fields.error("effect names must be uppercase"));
-                    }
-                    effects.push((
-                        record.offset,
-                        record.name.clone(),
-                        fields.take("reads")?,
-                        fields.take("writes")?,
-                        fields.optional("allocates"),
-                        fields.optional("frees"),
-                    ));
-                }
                 _ => unreachable!(),
             }
             fields.finish()?;
-        }
-        for (offset, name, reads, writes, allocates, frees) in effects {
-            let effect = Effect {
-                reads: defs.region_set(source, reads)?,
-                writes: defs.region_set(source, writes)?,
-                allocates: effect_bool(source, allocates)?,
-                frees: effect_bool(source, frees)?,
-            };
-            if name == "NONE" && !effect.is_none() {
-                return Err(Error::at(
-                    source,
-                    offset,
-                    "NONE must have no memory effects",
-                ));
-            }
-            if name == "UNKNOWN"
-                && (effect.reads != defs.all_regions() || effect.writes != defs.all_regions())
-            {
-                return Err(Error::at(
-                    source,
-                    offset,
-                    "UNKNOWN must read and write all regions",
-                ));
-            }
-            defs.effects.insert(name, effect);
         }
         Ok(defs)
     }
 
     pub fn is_definition(kind: &str) -> bool {
-        matches!(kind, "flags" | "effect" | "encoding")
+        matches!(kind, "flags" | "encoding")
     }
 
-    pub fn effect(&self, source: &str, node: Node) -> Result<String, Error> {
-        self.reference(source, node, "memory effect", |n| {
-            self.effects.contains_key(n)
-        })
-    }
-
-    pub fn traits(&self, source: &str, node: Node) -> Result<Vec<String>, Error> {
+    pub fn members(&self, source: &str, node: Node, set: &str) -> Result<Vec<String>, Error> {
         let offset = node.offset;
-        let values = list(source, node)?
-            .into_iter()
-            .map(|n| self.reference(source, n, "trait", |n| self.has_trait(n)))
-            .collect::<Result<Vec<_>, _>>()?;
-        if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
-            return Err(Error::at(source, offset, "duplicate trait"));
+        let mut seen = BTreeSet::new();
+        for node in list(source, node)? {
+            let member = self.reference(source, node, set, |name| self.has_flag(set, name))?;
+            if !seen.insert(member) {
+                return Err(Error::at(source, offset, format!("duplicate {set} member")));
+            }
         }
-        Ok(values)
+        // Canonical order comes from the declaration, independent of spelling order.
+        Ok(self
+            .flags
+            .get(set)
+            .into_iter()
+            .flat_map(|flags| &flags.members)
+            .filter(|flag| seen.contains(&flag.name))
+            .map(|flag| flag.name.clone())
+            .collect())
     }
 
     fn reference(
@@ -224,50 +178,13 @@ impl Builtins {
     }
 
     pub fn has_trait(&self, name: &str) -> bool {
+        self.has_flag("OpTraits", name)
+    }
+
+    fn has_flag(&self, set: &str, name: &str) -> bool {
         self.flags
-            .get("OpTraits")
+            .get(set)
             .is_some_and(|flags| flags.members.iter().any(|flag| flag.name == name))
-    }
-
-    fn all_regions(&self) -> u128 {
-        self.flags.get("MemoryRegions").map_or(0, Flags::all)
-    }
-
-    fn region_set(&self, source: &str, node: Node) -> Result<u128, Error> {
-        let mut bits = 0;
-        let mut seen = BTreeSet::new();
-        let values = list(source, node)?;
-        for node in &values {
-            let name = name(source, node.clone())?;
-            if !seen.insert(name.clone()) {
-                return Err(Error::at(source, node.offset, "duplicate memory region"));
-            }
-            let value = if name == "ALL" {
-                if values.len() != 1 {
-                    return Err(Error::at(
-                        source,
-                        node.offset,
-                        "ALL must be the only region",
-                    ));
-                }
-                self.all_regions()
-            } else {
-                let region = self
-                    .flags
-                    .get("MemoryRegions")
-                    .and_then(|flags| flags.members.iter().find(|r| r.name == name))
-                    .ok_or_else(|| {
-                        Error::at(
-                            source,
-                            node.offset,
-                            format!("unknown memory region `{name}`"),
-                        )
-                    })?;
-                1u128 << region.bit
-            };
-            bits |= value;
-        }
-        Ok(bits)
     }
 }
 
@@ -275,20 +192,5 @@ fn number(source: &str, node: Node) -> Result<u32, Error> {
     match node.kind {
         Kind::Number(value) => Ok(value),
         _ => Err(Error::at(source, node.offset, "expected a number")),
-    }
-}
-
-fn effect_bool(source: &str, node: Option<Node>) -> Result<bool, Error> {
-    match node {
-        None => Ok(false),
-        Some(Node {
-            kind: Kind::Name(value),
-            ..
-        }) if value == "true" => Ok(true),
-        Some(Node {
-            kind: Kind::Name(value),
-            ..
-        }) if value == "false" => Ok(false),
-        Some(node) => Err(Error::at(source, node.offset, "expected true or false")),
     }
 }

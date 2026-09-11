@@ -36,11 +36,12 @@ block3(v8: i32):
 // run: execute
 // check: returned: [0x2a]
 local function main() -> i32
-  ss0: size 16
+
 block0():
+  ss0: ptr = alloca size=16, align=8
   v0: i32 = iconst 42
-  stack-store v0, ss0, offset=4
-  v1: i32 = stack-load ss0, offset=4
+  store v0, ss0, offset=4
+  v1: i32 = load ss0, offset=4
   return v1
 
 // ----- preserve-trap
