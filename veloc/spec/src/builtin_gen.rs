@@ -18,8 +18,8 @@ pub(crate) fn contracts(defs: &Builtins) -> String {
     for (name, effect) in &defs.effects {
         writeln!(
             out,
-            "pub const {name}: Self = Self::new(MemoryRegions({}), MemoryRegions({}));",
-            effect.reads, effect.writes
+            "pub const {name}: Self = Self::new(MemoryRegions({}), MemoryRegions({})).with_lifetime({}, {});",
+            effect.reads, effect.writes, effect.allocates, effect.frees
         )
         .unwrap();
     }

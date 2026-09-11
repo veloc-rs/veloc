@@ -202,9 +202,6 @@ impl<'a> FuncPrinter<'a> {
     pub fn print(&self, f: &mut dyn Write) -> Result {
         self.fmt_signature(f)?;
         writeln!(f)?;
-        for (slot, data) in self.func.stack_slots.iter() {
-            writeln!(f, "  {slot}: size {}", data.size)?;
-        }
         for &block in &self.func.layout.block_order {
             self.fmt_block(f, block)?;
         }

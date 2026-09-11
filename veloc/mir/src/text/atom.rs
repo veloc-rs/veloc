@@ -6,8 +6,8 @@ use super::lexer::{Cursor, Kind};
 use super::parser::{self, OperandParser, ParseError};
 use super::printer::InstPrinter;
 use crate::{
-    BlockCall, Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, ScalarType, SigId,
-    StackSlot, Type, Value, VectorConst,
+    BlockCall, Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, ScalarType, SigId, Type,
+    Value, VectorConst,
 };
 use alloc::vec::Vec;
 use core::{fmt, marker::PhantomData, str::FromStr};
@@ -365,28 +365,6 @@ impl AtomCodec for Intrinsic {
         _: Option<Type>,
     ) -> fmt::Result {
         out.write_str(value.name())
-    }
-}
-
-impl AtomCodec for StackSlot {
-    type Owned = StackSlot;
-    type View<'a> = StackSlot;
-
-    fn parse(
-        _: &mut OperandParser<'_>,
-        input: &mut Cursor<'_>,
-        _: Option<Type>,
-    ) -> Result<StackSlot, ParseError> {
-        input.atom(parser::parse_stack_slot_ref)
-    }
-
-    fn print(
-        _: &InstPrinter<'_>,
-        out: &mut dyn fmt::Write,
-        value: &StackSlot,
-        _: Option<Type>,
-    ) -> fmt::Result {
-        write!(out, "{value}")
     }
 }
 

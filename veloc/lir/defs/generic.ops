@@ -394,12 +394,12 @@ op G_PTR_ADD(lhs: PTR, rhs: ScalarInteger) -> PTR {
 
 op G_STACK_LOAD(@slot: StackSlot) -> Any {
     storage: StackLoad,
-    memory: STACK_READ
+    memory: READ
 }
 
 op G_STACK_STORE(src: Any, @slot: StackSlot) -> () {
     storage: StackStore,
-    memory: STACK_WRITE
+    memory: WRITE
 }
 
 op G_STACK_ADDR(@slot: StackSlot) -> PTR {

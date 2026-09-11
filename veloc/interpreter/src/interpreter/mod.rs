@@ -230,8 +230,10 @@ impl Interpreter {
     }
 
     #[inline]
-    fn alloc_stack_frame(&mut self, size: usize) -> Option<usize> {
-        let base = self.stack_top;
+    fn alloc_stack_frame(&mut self, size: usize, align: usize) -> Option<usize> {
+        let start = self.stack_memory.as_ptr() as usize;
+        let address = start.checked_add(self.stack_top)?.checked_add(align - 1)? & !(align - 1);
+        let base = address.checked_sub(start)?;
         let end = base.checked_add(size)?;
         if end > self.stack_memory.len() {
             return None;
@@ -241,21 +243,39 @@ impl Interpreter {
         Some(base)
     }
 
+    fn memory_address<M: VirtualMemory>(
+        &self,
+        mem: &M,
+        addr: usize,
+        bytes: usize,
+    ) -> Option<*mut u8> {
+        let base = self.stack_memory.as_ptr() as usize;
+        if let Some(offset) = addr.checked_sub(base) {
+            if offset <= self.stack_memory.len() {
+                return offset
+                    .checked_add(bytes)
+                    .filter(|end| *end <= self.stack_top)
+                    .map(|_| addr as *mut u8);
+            }
+        }
+        mem.translate_addr(addr, bytes)
+    }
+
     #[inline(always)]
-    unsafe fn load_memory<M, T>(mem: &M, addr: usize) -> Option<T>
+    unsafe fn load_memory<M, T>(&self, mem: &M, addr: usize) -> Option<T>
     where
         M: VirtualMemory,
     {
-        let ptr = mem.translate_addr(addr, core::mem::size_of::<T>())?;
+        let ptr = self.memory_address(mem, addr, core::mem::size_of::<T>())?;
         Some(unsafe { (ptr as *const T).read_unaligned() })
     }
 
     #[inline(always)]
-    unsafe fn store_memory<M, T>(mem: &M, addr: usize, value: T) -> bool
+    unsafe fn store_memory<M, T>(&self, mem: &M, addr: usize, value: T) -> bool
     where
         M: VirtualMemory,
     {
-        let Some(ptr) = mem.translate_addr(addr, core::mem::size_of::<T>()) else {
+        let Some(ptr) = self.memory_address(mem, addr, core::mem::size_of::<T>()) else {
             return false;
         };
         unsafe { (ptr as *mut T).write_unaligned(value) };
@@ -318,8 +338,9 @@ impl Interpreter {
         let dst_checkpoint = self.dst_regs_buffer.len();
         let base = self.value_stack.len();
         let stack_checkpoint = self.stack_top;
-        let total_stack_size: usize = compiled.stack_slots_sizes.iter().sum();
-        let Some(stack_base) = self.alloc_stack_frame(total_stack_size) else {
+        let total_stack_size: usize = compiled.stack_size;
+        let Some(stack_base) = self.alloc_stack_frame(total_stack_size, compiled.stack_align)
+        else {
             return Err(crate::error::Error::StackOverflow);
         };
         let result_types = match self.begin_callables(program, module, func, args) {
@@ -381,8 +402,9 @@ impl Interpreter {
         let next_func = program
             .compiled_func(target_module, target_func)
             .map_err(|_| DispatchExit::InvalidFunction(target_module, target_func))?;
-        let total_size: usize = next_func.stack_slots_sizes.iter().sum();
-        let Some(next_stack_base) = self.alloc_stack_frame(total_size) else {
+        let total_size: usize = next_func.stack_size;
+        let Some(next_stack_base) = self.alloc_stack_frame(total_size, next_func.stack_align)
+        else {
             return Err(DispatchExit::StackOverflow);
         };
         self.frames.push(StackFrame {

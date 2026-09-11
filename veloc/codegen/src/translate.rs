@@ -30,7 +30,7 @@ struct TranslationContext<'a> {
     mmodule: &'a mut MachineModule,
     mfunc: MachineFunction<RawLir>,
     value_map: PrimaryMap<Value, Reg>,
-    slots: PrimaryMap<veloc_mir::StackSlot, veloc_lir::StackSlot>,
+    slots: hashbrown::HashMap<veloc_mir::Inst, veloc_lir::StackSlot>,
 }
 
 struct TranslatedInst {
@@ -54,21 +54,6 @@ impl From<MachineInst> for TranslatedInst {
 }
 
 impl<'a> IRTranslator<'a> {
-    fn stack_access(
-        ctx: &mut TranslationContext<'_>,
-        slot: veloc_mir::StackSlot,
-        offset: u32,
-    ) -> Result<veloc_lir::StackSlot> {
-        let id = ctx.slots[slot];
-        if offset == 0 {
-            return Ok(id);
-        }
-        let mut access = ctx.mfunc.stack_frame.slots[id].clone();
-        access.offset = i32::try_from(i64::from(access.offset) + i64::from(offset))
-            .map_err(|_| Error::codegen("stack offset exceeds target displacement range"))?;
-        Ok(ctx.mfunc.stack_frame.slots.push(access))
-    }
-
     pub fn new(module: &'a Module, layout: crate::target::arch::DataLayout) -> Self {
         Self { module, layout }
     }
@@ -163,12 +148,38 @@ impl<'a> IRTranslator<'a> {
             mmodule,
             mfunc: MachineFunction::<RawLir>::new(func.name.clone()),
             value_map: PrimaryMap::with_capacity(func.dfg().values().len()),
-            slots: PrimaryMap::with_capacity(func.stack_slots.len()),
+            slots: hashbrown::HashMap::new(),
         };
 
-        for (_, slot) in &func.stack_slots {
-            let lowered = ctx.mfunc.alloc_stack_slot(slot.size, 16);
-            ctx.slots.push(lowered);
+        for &block in func.layout().block_order() {
+            for &inst in &func.layout().blocks()[block].insts {
+                if let InstructionView::Alloca { size, align } = func.dfg().inst(inst) {
+                    if Some(block) != func.entry_block {
+                        return Err(Error::translate(
+                            "non-entry alloca requires dynamic stack lowering",
+                        ));
+                    }
+                    if size == 0 || !align.is_power_of_two() || align > 16 {
+                        return Err(Error::translate(
+                            "native alloca requires positive size and power-of-two alignment at most 16",
+                        ));
+                    }
+                    if ctx
+                        .mfunc
+                        .stack_frame
+                        .local_size
+                        .checked_add(size)
+                        .and_then(|n| n.checked_add(align - 1))
+                        .is_none_or(|n| n > i32::MAX as u32)
+                    {
+                        return Err(Error::translate(
+                            "native alloca frame exceeds target displacement range",
+                        ));
+                    }
+                    let slot = ctx.mfunc.alloc_stack_slot(size, align);
+                    ctx.slots.insert(inst, slot);
+                }
+            }
         }
 
         // 1. 预分配所有 Value 对应的 VReg
@@ -267,39 +278,9 @@ impl<'a> IRTranslator<'a> {
         }
 
         match inst_data {
-            InstructionView::StackAddr { slot, offset } => {
-                let slot = Self::stack_access(ctx, *slot, *offset)?;
+            InstructionView::Alloca { .. } => {
+                let slot = ctx.slots[&inst_id];
                 Ok(MachineInst::build_stack_addr(defs[0].as_writable().unwrap(), slot).into())
-            }
-            InstructionView::StackLoad { slot, offset } => {
-                let slot = Self::stack_access(ctx, *slot, *offset)?;
-                let dst = defs[0].as_writable().unwrap();
-                let access = self.memory_access(
-                    veloc_lir::MemoryKind::Read,
-                    ctx.mfunc.vreg_data(dst.to_reg()).ty,
-                    veloc_mir::MemFlags::new(),
-                    false,
-                )?;
-                Ok(MachineInst::build_stack_load(dst, slot)
-                    .with_memory(access)
-                    .into())
-            }
-            InstructionView::StackStore {
-                slot,
-                value,
-                offset,
-            } => {
-                let slot = Self::stack_access(ctx, *slot, *offset)?;
-                let src = ctx.value_map[*value];
-                let access = self.memory_access(
-                    veloc_lir::MemoryKind::Write,
-                    ctx.mfunc.vreg_data(src).ty,
-                    veloc_mir::MemFlags::new(),
-                    false,
-                )?;
-                Ok(MachineInst::build_stack_store(src, slot)
-                    .with_memory(access)
-                    .into())
             }
             InstructionView::Binary { opcode, args } => {
                 let src0 = ctx.value_map[args[0]];

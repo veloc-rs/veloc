@@ -479,35 +479,29 @@ op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
-    traits: [MAY_TRAP], memory: HEAP_READ
+    access: read(ptr, offset, result),
+    traits: [MAY_TRAP], memory: READ
 }
 
 op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
     mnemonic: "store",
     storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
     text: "{.flags} {value}, {ptr}, offset={offset}",
-    traits: [MAY_TRAP], memory: HEAP_WRITE
+    access: write(ptr, offset, value),
+    traits: [MAY_TRAP], memory: WRITE
 }
 
-op StackLoad(@slot: StackSlot, @offset: u32) -> Any {
-    mnemonic: "stack-load",
-    storage: StackLoad { slot: slot, offset: offset },
-    text: "{slot}, offset={offset}",
-    memory: STACK_READ
-}
-
-op StackStore(@slot: StackSlot, value: Any, @offset: u32) -> () {
-    mnemonic: "stack-store",
-    storage: StackStore { slot: slot, value: value, offset: offset },
-    text: "{value}, {slot}, offset={offset}",
-    memory: STACK_WRITE
-}
-
-op StackAddr(@slot: StackSlot, @offset: u32) -> PTR {
-    mnemonic: "stack-addr",
-    storage: StackAddr { slot: slot, offset: offset },
-    text: "{slot}, offset={offset}",
-    memory: NONE
+// A fresh, uninitialized, function-local object on each execution.
+// Allocation failure is observable; allocation is neither pure nor CSE-able.
+op Alloca(@size: u32, @align: u32) -> PTR {
+    mnemonic: "alloca",
+    storage: Alloca { size: size, align: align },
+    text: "size={size}, align={align}",
+    traits: [MAY_TRAP], memory: ALLOCATE,
+    constraints: [
+        require(size > 0, "alloca size must be positive"),
+        require(is_power_of_two(align), "alloca alignment must be a power of two")
+    ]
 }
 
 op PtrOffset(ptr: PTR, @offset: i32) -> PTR {
@@ -679,7 +673,7 @@ op LoadStride(ptr: PTR, stride: ScalarInteger, @mem: VectorMemOptions) -> Vector
     mnemonic: "load-stride",
     storage: VectorLoadStrided { ptr: ptr, stride: stride, ext: mem },
     text: "{.mem.flags} {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
-    traits: [MAY_TRAP], memory: HEAP_READ,
+    traits: [MAY_TRAP], memory: READ,
     constraints: [
         require(all(mem.mask, |v| is_predicate(type(v)) && shape(type(v)) == shape(result_type(0))), "mask must match vector shape"),
         require(all(mem.evl, |v| type(v) == I32), "EVL must be i32")
@@ -690,7 +684,7 @@ op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, @mem: VectorMemOp
     mnemonic: "store-stride",
     storage: VectorStoreStrided { args: [ptr, stride, value], ext: mem },
     text: "{.mem.flags} {value}, {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
-    traits: [MAY_TRAP], memory: HEAP_WRITE,
+    traits: [MAY_TRAP], memory: WRITE,
     constraints: [
         require(all(mem.mask, |v| is_predicate(type(v)) && shape(type(v)) == shape(type(value))), "mask must match vector shape"),
         require(all(mem.evl, |v| type(v) == I32), "EVL must be i32")
@@ -701,7 +695,7 @@ op Gather<T: Integer & Vector>(ptr: PTR, index: T, @mem: VectorMemOptions) -> sh
     mnemonic: "gather",
     storage: VectorGather { ptr: ptr, index: index, ext: mem },
     text: "{.mem.flags} {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
-    traits: [MAY_TRAP], memory: HEAP_READ,
+    traits: [MAY_TRAP], memory: READ,
     constraints: [
         require(all(mem.mask, |v| is_predicate(type(v)) && shape(type(v)) == shape(result_type(0))), "mask must match vector shape"),
         require(all(mem.evl, |v| type(v) == I32), "EVL must be i32")
@@ -712,7 +706,7 @@ op Scatter<T: Integer & Vector>(ptr: PTR, index: T, value: shape(T, Vector), @me
     mnemonic: "scatter",
     storage: VectorScatter { args: [ptr, index, value], ext: mem },
     text: "{.mem.flags} {value}, {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
-    traits: [MAY_TRAP], memory: HEAP_WRITE,
+    traits: [MAY_TRAP], memory: WRITE,
     constraints: [
         require(all(mem.mask, |v| is_predicate(type(v)) && shape(type(v)) == shape(type(value))), "mask must match vector shape"),
         require(all(mem.evl, |v| type(v) == I32), "EVL must be i32")

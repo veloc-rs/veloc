@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, analyze_liveness};
 use veloc_mir::{
     Block, FuncId, Function, Inst, InstructionView, Intrinsic, ModuleId, Opcode as IrOpcode,
-    StackSlot, Successor, Type, Value,
+    Successor, Type, Value,
 };
 
 macro_rules! unary_dispatch_op {
@@ -182,7 +182,8 @@ pub struct CompiledFunction {
     pub(crate) code: Vec<CodeWord>,
     /// Data section: regs for register lists, jump_targets for jump targets
     pub(crate) data_section: DataSection,
-    pub(crate) stack_slots_sizes: Vec<usize>,
+    pub(crate) stack_size: usize,
+    pub(crate) stack_align: usize,
     pub(crate) param_indices: Vec<Reg>,
     pub(crate) register_count: usize,
     pub(crate) roots: alloc::collections::BTreeMap<usize, Vec<Reg>>,
@@ -382,7 +383,7 @@ struct Compiler<'a> {
     mapper: ValueMapper<'a>,
     code: Vec<CodeWord>,
     data_section: DataSection,
-    slot_to_offset: SecondaryMap<StackSlot, u32>,
+    stack: super::stack::StackLayout,
     block_to_pc: SecondaryMap<Block, u32>,
     jump_fixups: Vec<(usize, Block)>,
     br_fixups: Vec<(usize, Block, Block)>,
@@ -396,12 +397,7 @@ impl<'a> Compiler<'a> {
         mapper: ValueMapper<'a>,
         liveness: &'a veloc_analyzer::Liveness,
     ) -> Self {
-        let mut slot_to_offset = SecondaryMap::new();
-        let mut current_offset = 0u32;
-        for (id, data) in &func.stack_slots {
-            slot_to_offset[id] = current_offset;
-            current_offset += data.size;
-        }
+        let stack = super::stack::stack_layout(func).expect("checked stack layout");
 
         Self {
             callable_values: func
@@ -417,7 +413,7 @@ impl<'a> Compiler<'a> {
             mapper,
             code: Vec::new(),
             data_section: DataSection::new(),
-            slot_to_offset,
+            stack,
             block_to_pc: SecondaryMap::new(),
             jump_fixups: Vec::new(),
             br_fixups: Vec::new(),
@@ -1196,12 +1192,8 @@ impl<'a> Compiler<'a> {
             func_id,
             code: self.code,
             data_section: self.data_section,
-            stack_slots_sizes: self
-                .func
-                .stack_slots
-                .iter()
-                .map(|(_, d)| d.size as usize)
-                .collect(),
+            stack_size: self.stack.size,
+            stack_align: self.stack.align,
             param_indices: self.param_indices,
             register_count: self.mapper.next_register as usize,
         }
@@ -1376,29 +1368,10 @@ impl<'a> Compiler<'a> {
             InstructionView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args),
             InstructionView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args),
             InstructionView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args),
-            InstructionView::StackAddr { slot, offset, .. } => {
+            InstructionView::Alloca { .. } => {
                 let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
-                let base_offset = self.slot_to_offset[*slot];
-                emit::StackAddr(&mut self.code, dst, base_offset + *offset);
-            }
-            InstructionView::StackLoad { slot, offset } => {
-                let res = self.func.dfg().first_result(inst).unwrap();
-                let dst = self.mapper.reg(res);
-                let base_offset = self.slot_to_offset[*slot];
-                let ty = self.val_ty(res);
-                emit::StackLoad(&mut self.code, dst, ty, base_offset + *offset);
-            }
-            InstructionView::StackStore {
-                slot,
-                value,
-                offset,
-                ..
-            } => {
-                let base_offset = self.slot_to_offset[*slot];
-                let val_reg = self.mapper.reg(*value);
-                let ty = self.val_ty(*value);
-                emit::StackStore(&mut self.code, val_reg, ty, base_offset + *offset);
+                emit::StackAddr(&mut self.code, dst, self.stack.offsets[inst]);
             }
             InstructionView::Load { ptr, offset, .. } => self.emit_load(inst, *ptr, *offset as u32),
             InstructionView::Store {

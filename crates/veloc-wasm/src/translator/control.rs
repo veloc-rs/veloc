@@ -280,8 +280,8 @@ impl<'a> WasmTranslator<'a> {
                 args.reverse();
                 let results = &sig.results;
                 let multi_ret_slot = if results.len() > 1 {
-                    let slot = self.builder.create_stack_slot((results.len() * 8) as u32);
-                    let result_ptr = self.builder.ins().stack_addr(slot, 0);
+                    let slot = self.builder.entry_alloca((results.len() * 8) as u32, 8);
+                    let result_ptr = slot;
                     args.push(result_ptr);
                     Some(slot)
                 } else {
@@ -308,10 +308,12 @@ impl<'a> WasmTranslator<'a> {
                     let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
                     if let Some(slot) = multi_ret_slot {
                         for (i, &ty) in results.iter().enumerate() {
-                            let bits =
-                                self.builder
-                                    .ins()
-                                    .stack_load(slot, (i * 8) as u32, VelocType::I64);
+                            let bits = self.builder.ins().load(
+                                slot,
+                                (i * 8) as u32,
+                                MemFlags::new(),
+                                VelocType::I64,
+                            );
                             let res_val = self.decode_result_bits(bits, self.val_type_to_veloc(ty));
                             self.stack.push(res_val);
                         }
@@ -327,10 +329,12 @@ impl<'a> WasmTranslator<'a> {
                     let call_inst = self.builder.ins().call(func_id, &args);
                     if let Some(slot) = multi_ret_slot {
                         for (i, &ty) in results.iter().enumerate() {
-                            let bits =
-                                self.builder
-                                    .ins()
-                                    .stack_load(slot, (i * 8) as u32, VelocType::I64);
+                            let bits = self.builder.ins().load(
+                                slot,
+                                (i * 8) as u32,
+                                MemFlags::new(),
+                                VelocType::I64,
+                            );
                             let res_val = self.decode_result_bits(bits, self.val_type_to_veloc(ty));
                             self.stack.push(res_val);
                         }
@@ -435,8 +439,8 @@ impl<'a> WasmTranslator<'a> {
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
                 let multi_ret_slot = if results.len() > 1 {
-                    let slot = self.builder.create_stack_slot((results.len() * 8) as u32);
-                    let result_ptr = self.builder.ins().stack_addr(slot, 0);
+                    let slot = self.builder.entry_alloca((results.len() * 8) as u32, 8);
+                    let result_ptr = slot;
                     args.push(result_ptr);
                     Some(slot)
                 } else {
@@ -445,10 +449,12 @@ impl<'a> WasmTranslator<'a> {
                 let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
                 if let Some(slot) = multi_ret_slot {
                     for (i, &ty) in results.iter().enumerate() {
-                        let bits =
-                            self.builder
-                                .ins()
-                                .stack_load(slot, (i * 8) as u32, VelocType::I64);
+                        let bits = self.builder.ins().load(
+                            slot,
+                            (i * 8) as u32,
+                            MemFlags::new(),
+                            VelocType::I64,
+                        );
                         let res_val = self.decode_result_bits(bits, self.val_type_to_veloc(ty));
                         self.stack.push(res_val);
                     }
@@ -483,8 +489,8 @@ impl<'a> WasmTranslator<'a> {
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
                 let multi_ret_slot = if results.len() > 1 {
-                    let slot = self.builder.create_stack_slot((results.len() * 8) as u32);
-                    let result_ptr = self.builder.ins().stack_addr(slot, 0);
+                    let slot = self.builder.entry_alloca((results.len() * 8) as u32, 8);
+                    let result_ptr = slot;
                     args.push(result_ptr);
                     Some(slot)
                 } else {
@@ -493,10 +499,12 @@ impl<'a> WasmTranslator<'a> {
                 let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
                 if let Some(slot) = multi_ret_slot {
                     for (i, &ty) in results.iter().enumerate() {
-                        let bits =
-                            self.builder
-                                .ins()
-                                .stack_load(slot, (i * 8) as u32, VelocType::I64);
+                        let bits = self.builder.ins().load(
+                            slot,
+                            (i * 8) as u32,
+                            MemFlags::new(),
+                            VelocType::I64,
+                        );
                         let res_val = self.decode_result_bits(bits, self.val_type_to_veloc(ty));
                         self.stack.push(res_val);
                     }

@@ -681,6 +681,7 @@ mod tests {
             projection: crate::model::Projection::Packed(Default::default()),
             traits: vec![],
             memory: "NONE".into(),
+            access: None,
             constraints: vec![],
             identity: None,
             absorbing: None,

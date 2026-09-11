@@ -548,16 +548,12 @@ impl<'a> FuncPrinter<'a> {
             )?;
         }
 
-        // Print stack slots
-        if !self.func.stack_slots_sizes.is_empty() {
-            write!(f, "  stack_slots: [")?;
-            for (i, size) in self.func.stack_slots_sizes.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "ss{}: {}", i, size)?;
-            }
-            writeln!(f, "]")?;
+        if self.func.stack_size != 0 {
+            writeln!(
+                f,
+                "  frame: size={}, align={}",
+                self.func.stack_size, self.func.stack_align
+            )?;
         }
 
         // Print params

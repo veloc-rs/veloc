@@ -6,8 +6,7 @@
 use super::lexer::{Cursor, Kind, Location};
 use crate::{
     Block, BlockCall, CallConv, FuncId, Function, Linkage, MemFlags, Module, ModuleData, Opcode,
-    Result, SigId, Signature, StackSlot, Type, Value, ValueDef, function::StackSlotData,
-    types::ValueData,
+    Result, SigId, Signature, Type, Value, ValueDef, types::ValueData,
 };
 use alloc::{
     format,
@@ -249,11 +248,6 @@ impl FunctionParser {
                 &mut self.symbols,
                 module,
             )?);
-        } else if name.starts_with("ss")
-            && input.peek_kind(1) == Kind::Colon
-            && input.peek_is(2, "size")
-        {
-            parse_stack_slot(input, &mut self.func)?;
         } else {
             let block = self
                 .block
@@ -774,30 +768,6 @@ fn parse_global(
     Ok((name, ty, linkage))
 }
 
-fn parse_stack_slot(input: &mut Cursor<'_>, func: &mut Function) -> ParseResult<()> {
-    let slot = input.atom(parse_stack_slot_ref)?;
-    input.expect(Kind::Colon)?;
-    input.keyword("size")?;
-    let size = input.atom(|text| {
-        text.parse::<u32>()
-            .map_err(|_| "invalid stack slot size".into())
-    })?;
-    while func.stack_slots.len() <= slot.0 as usize {
-        func.stack_slots.push(StackSlotData { size: 0 });
-    }
-    func.stack_slots[slot] = StackSlotData { size };
-    Ok(())
-}
-
-pub(super) fn parse_stack_slot_ref(text: &str) -> core::result::Result<StackSlot, String> {
-    let id = text
-        .strip_prefix("ss")
-        .ok_or_else(|| format!("expected stack slot, found `{text}`"))?
-        .parse::<u32>()
-        .map_err(|_| format!("invalid stack slot `{text}`"))?;
-    Ok(StackSlot(id))
-}
-
 fn parse_value_idx(name: &str) -> Option<u32> {
     name.strip_prefix('v')
         .and_then(|digits| digits.parse().ok())
@@ -900,7 +870,6 @@ mod tests {
             assert!(parse::<bool>(cx, "1").is_err());
             assert_eq!(round_trip::<crate::IntCC>(cx, "eq", None), "eq");
             assert_eq!(round_trip::<crate::FloatCC>(cx, "eq", None), "eq");
-            assert_eq!(round_trip::<StackSlot>(cx, "ss7", None), "ss7");
             assert_eq!(round_trip::<Value>(cx, "v0", None), "v0");
         });
     }

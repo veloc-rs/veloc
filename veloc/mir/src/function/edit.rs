@@ -70,6 +70,15 @@ impl<'a> FunctionEditor<'a> {
         inst
     }
 
+    /// Insert a non-terminator at block entry.
+    pub fn prepend_inst(&mut self, block: Block, data: InstDraft, types: &[Type]) -> Inst {
+        assert!(!data.is_terminator(), "cannot prepend a terminator");
+        let inst = self.func.dfg.create_inst(data);
+        self.func.dfg.append_results(inst, types);
+        self.func.layout.prepend_inst(block, inst);
+        inst
+    }
+
     pub fn insert_after(&mut self, after: Inst, data: InstDraft, types: &[Type]) -> Inst {
         let block = self
             .func

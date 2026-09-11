@@ -357,11 +357,11 @@ impl Interpreter {
         if self.args_buffer.len() != next.param_indices.len() {
             return Err(DispatchExit::InvalidCallable);
         }
-        let size = next.stack_slots_sizes.iter().sum();
+        let size = next.stack_size;
         // Borrowed stack addresses remain valid through a tail transfer. The
         // caller's original mark is restored only when the answer returns.
         let base = self
-            .alloc_stack_frame(size)
+            .alloc_stack_frame(size, next.stack_align)
             .ok_or(DispatchExit::StackOverflow)?;
         self.value_stack.truncate(frame.base);
         self.value_stack

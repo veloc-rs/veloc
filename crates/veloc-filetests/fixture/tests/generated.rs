@@ -391,8 +391,10 @@ fn generated_flag_sets_preserve_bits_order_and_set_operations() {
     assert_eq!(F::empty().to_string(), "none");
     assert_eq!(EmptyFlags::ALL.to_string(), "none");
     assert_eq!(
-        MemoryRegions::HEAP.union(MemoryRegions::STACK).to_string(),
-        "heap,stack"
+        MemoryRegions::MEMORY
+            .union(MemoryRegions::EXTERNAL)
+            .to_string(),
+        "memory,external"
     );
     assert_eq!(
         OpTraits::TERMINATOR

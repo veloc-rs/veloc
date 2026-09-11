@@ -5,79 +5,79 @@ define_memory_handlers! {
     // === Memory Access ===
     I32Load { dst, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        let Some(value) = Interpreter::load_memory::<M, i32>(mem, addr) else {
+        let Some(value) = interpreter.load_memory::<M, i32>(mem, addr) else {
             return DispatchExit::OutOfBounds;
         };
         set!(dst, InterpreterValue::i32(value));
     }
     I64Load { dst, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        let Some(value) = Interpreter::load_memory::<M, i64>(mem, addr) else {
+        let Some(value) = interpreter.load_memory::<M, i64>(mem, addr) else {
             return DispatchExit::OutOfBounds;
         };
         set!(dst, InterpreterValue::i64(value));
     }
     I8Load { dst, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        let Some(value) = Interpreter::load_memory::<M, u8>(mem, addr) else {
+        let Some(value) = interpreter.load_memory::<M, u8>(mem, addr) else {
             return DispatchExit::OutOfBounds;
         };
         set!(dst, InterpreterValue::i64(value as i64));
     }
     I16Load { dst, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        let Some(value) = Interpreter::load_memory::<M, u16>(mem, addr) else {
+        let Some(value) = interpreter.load_memory::<M, u16>(mem, addr) else {
             return DispatchExit::OutOfBounds;
         };
         set!(dst, InterpreterValue::i64(value as i64));
     }
     F32Load { dst, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        let Some(value) = Interpreter::load_memory::<M, f32>(mem, addr) else {
+        let Some(value) = interpreter.load_memory::<M, f32>(mem, addr) else {
             return DispatchExit::OutOfBounds;
         };
         set!(dst, InterpreterValue::f32(value));
     }
     F64Load { dst, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        let Some(value) = Interpreter::load_memory::<M, f64>(mem, addr) else {
+        let Some(value) = interpreter.load_memory::<M, f64>(mem, addr) else {
             return DispatchExit::OutOfBounds;
         };
         set!(dst, InterpreterValue::f64(value));
     }
     I32Store { val, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        if !Interpreter::store_memory(mem, addr, get!(val).unwrap_i32()) {
+        if !interpreter.store_memory(mem, addr, get!(val).unwrap_i32()) {
             return DispatchExit::OutOfBounds;
         }
     }
     I64Store { val, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        if !Interpreter::store_memory(mem, addr, get!(val).unwrap_i64()) {
+        if !interpreter.store_memory(mem, addr, get!(val).unwrap_i64()) {
             return DispatchExit::OutOfBounds;
         }
     }
     I8Store { val, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        if !Interpreter::store_memory(mem, addr, get!(val).unwrap_i64() as u8) {
+        if !interpreter.store_memory(mem, addr, get!(val).unwrap_i64() as u8) {
             return DispatchExit::OutOfBounds;
         }
     }
     I16Store { val, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        if !Interpreter::store_memory(mem, addr, get!(val).unwrap_i64() as u16) {
+        if !interpreter.store_memory(mem, addr, get!(val).unwrap_i64() as u16) {
             return DispatchExit::OutOfBounds;
         }
     }
     F32Store { val, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        if !Interpreter::store_memory(mem, addr, get!(val).unwrap_f32()) {
+        if !interpreter.store_memory(mem, addr, get!(val).unwrap_f32()) {
             return DispatchExit::OutOfBounds;
         }
     }
     F64Store { val, ptr, offset } => {
         let addr = (get!(ptr).0 as usize).wrapping_add(offset as usize);
-        if !Interpreter::store_memory(mem, addr, get!(val).unwrap_f64()) {
+        if !interpreter.store_memory(mem, addr, get!(val).unwrap_f64()) {
             return DispatchExit::OutOfBounds;
         }
     }

@@ -139,7 +139,7 @@ fn compact_scalar_codes_and_adapter_contracts_are_checked() {
 fn traits_and_regions_use_declared_storage_and_members() {
     let source = common::source("")
         .replace("MAY_TRAP(2)", "MAY_TRAP(2), EXTRA_FACT(6)")
-        .replace("EXTERNAL(4)", "EXTERNAL(4), DEVICE(5)");
+        .replace("EXTERNAL(1)", "EXTERNAL(1), DEVICE(2)");
     let output = veloc_opgen::compile(&source).unwrap();
     assert!(
         output
@@ -151,18 +151,18 @@ fn traits_and_regions_use_declared_storage_and_members() {
             .opcodes
             .contains("(Self::EXTRA_FACT, \"extra-fact\")")
     );
-    assert!(output.opcodes.contains("pub const ALL: Self = Self(63)"));
+    assert!(output.opcodes.contains("pub const ALL: Self = Self(7)"));
     assert!(
         output
             .opcodes
-            .contains("pub const UNKNOWN: Self = Self::new(MemoryRegions(63), MemoryRegions(63))")
+            .contains("pub const UNKNOWN: Self = Self::new(MemoryRegions(7), MemoryRegions(7))")
     );
     // The same region/effect adapter must also handle wider declared storage.
     let source = source
         .replace("storage: u8", "storage: u128")
-        .replace("DEVICE(5)", "DEVICE(127)");
+        .replace("DEVICE(2)", "DEVICE(127)");
     let output = veloc_opgen::compile(&source).unwrap();
-    let all = (1u128 << 127) | 31;
+    let all = (1u128 << 127) | 3;
     assert!(output.opcodes.contains("pub struct MemoryRegions(u128)"));
     assert!(output.opcodes.contains(&format!(
         "Self::new(MemoryRegions({all}), MemoryRegions({all}))"
@@ -177,7 +177,7 @@ fn effects_use_declared_regions_and_purity_not_effect_names() {
     );
     assert!(compile(&pure).is_ok());
     rejected(
-        &common::source(&pure.replace("reads: []", "reads: [HEAP]")),
+        &common::source(&pure.replace("reads: []", "reads: [MEMORY]")),
         "no memory effects or control flow",
     );
     for (defs, error) in [
@@ -186,31 +186,26 @@ fn effects_use_declared_regions_and_purity_not_effect_names() {
             "unknown memory region",
         ),
         (
-            "effect BAD { reads: [HEAP, HEAP], writes: [] }",
+            "effect BAD { reads: [MEMORY, MEMORY], writes: [] }",
             "duplicate memory region",
         ),
         (
-            "effect BAD { reads: [ALL, HEAP], writes: [] }",
+            "effect BAD { reads: [ALL, MEMORY], writes: [] }",
             "ALL must be the only region",
         ),
     ] {
         rejected(&common::source(defs), error);
     }
     rejected(
-        &BUILTINS.replace("effect NONE { reads: []", "effect NONE { reads: [HEAP]"),
+        &BUILTINS.replace("effect NONE { reads: []", "effect NONE { reads: [MEMORY]"),
         "NONE must have no memory effects",
     );
     rejected(
-        &BUILTINS.replace("reads: [ALL]", "reads: [HEAP]"),
+        &BUILTINS.replace("reads: [ALL]", "reads: [MEMORY]"),
         "UNKNOWN must read and write all regions",
     );
     let output = veloc_opgen::compile(BUILTINS).unwrap();
-    for (name, read, write) in [
-        ("GLOBAL_READ", 4, 0),
-        ("GLOBAL_WRITE", 0, 4),
-        ("TABLE_READ", 8, 0),
-        ("TABLE_WRITE", 0, 8),
-    ] {
+    for (name, read, write) in [("READ", 1, 0), ("WRITE", 0, 1)] {
         assert!(output.opcodes.contains(&format!(
             "pub const {name}: Self = Self::new(MemoryRegions({read}), MemoryRegions({write}))"
         )));
@@ -228,7 +223,7 @@ fn inferred_traits_must_also_be_declared() {
 
 #[test]
 fn builtin_diagnostics_keep_the_original_record_location() {
-    let source = "\n\nflags MemoryRegions { storage: u8, members: [HEAP(0)], separator: \",\" }\n\neffect NONE { reads: [HEAP], writes: [] }";
+    let source = "\n\nflags MemoryRegions { storage: u8, members: [MEMORY(0)], separator: \",\" }\n\neffect NONE { reads: [MEMORY], writes: [] }";
     let error = veloc_opgen::parse(&format!("{source}\n{}", common::TYPES))
         .err()
         .unwrap();

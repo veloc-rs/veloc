@@ -263,7 +263,6 @@ fn simple_scalar(ty: &str) -> bool {
             | "IntCC"
             | "FloatCC"
             | "Int"
-            | "StackSlot"
     )
 }
 
@@ -354,6 +353,7 @@ mod tests {
             text,
             traits: vec![],
             memory: "NONE".into(),
+            access: None,
             constraints: vec![],
             identity: None,
             absorbing: None,

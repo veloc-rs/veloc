@@ -96,6 +96,10 @@ pub(super) fn parse(
         })
         .transpose()?;
     let text = fields.optional("text");
+    let access = fields
+        .optional("access")
+        .map(|node| crate::memory::check(source, node, &params))
+        .transpose()?;
     let moves = fields
         .optional("moves")
         .map(|node| {
@@ -258,6 +262,7 @@ pub(super) fn parse(
         text,
         traits,
         memory,
+        access,
         constraints: Vec::new(),
         identity,
         absorbing,
@@ -271,6 +276,7 @@ pub(super) fn parse(
         type_defs,
         comparisons,
     )?;
+    crate::memory::validate(source, &op, builtins)?;
     Ok(op)
 }
 

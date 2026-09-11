@@ -7,3 +7,6 @@ pub(crate) use compile::{ControlSite, DataSection, JumpTarget};
 
 pub(crate) use compile::compile_function;
 pub(crate) use inst::{CodeWord, Opcode, OpcodeHandlers, Reg, decode};
+
+mod stack;
+pub(crate) use stack::stack_layout;

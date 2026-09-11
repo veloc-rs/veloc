@@ -116,6 +116,7 @@ pub(crate) struct Op {
     pub text: Option<Node>,
     pub traits: Vec<String>,
     pub memory: String,
+    pub access: Option<crate::memory::Access>,
     pub constraints: Vec<crate::constraints::Constraint>,
     pub identity: Option<BvConst>,
     pub absorbing: Option<BvConst>,

@@ -1,9 +1,8 @@
 //! Functions, block layout and structural editing.
 
 use crate::dfg::DataFlowGraph;
-use crate::{Block, Linkage, SigId, StackSlot, Value};
+use crate::{Block, Linkage, SigId, Value};
 use alloc::string::String;
-use cranelift_entity::PrimaryMap;
 
 mod dominance;
 mod edit;
@@ -13,18 +12,12 @@ pub use edit::{EdgeRef, FunctionEditor};
 pub use layout::{BlockData, Layout};
 
 #[derive(Debug, Clone)]
-pub struct StackSlotData {
-    pub size: u32,
-}
-
-#[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
     pub signature: SigId,
     pub linkage: Linkage,
     pub(crate) dfg: DataFlowGraph,
     pub(crate) layout: Layout,
-    pub stack_slots: PrimaryMap<StackSlot, StackSlotData>,
     pub entry_block: Option<Block>,
 }
 
@@ -36,7 +29,6 @@ impl Function {
             linkage,
             dfg: DataFlowGraph::new(),
             layout: Layout::new(),
-            stack_slots: PrimaryMap::new(),
             entry_block: None,
         }
     }

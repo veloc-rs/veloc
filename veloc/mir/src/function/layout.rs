@@ -62,6 +62,12 @@ impl Layout {
         self.inst_blocks[inst].expand()
     }
 
+    pub(crate) fn prepend_inst(&mut self, block: Block, inst: Inst) {
+        assert!(self.inst_blocks[inst].is_none());
+        self.inst_blocks[inst] = Some(block).into();
+        self.blocks[block].insts.insert(0, inst);
+    }
+
     pub(crate) fn insert_after(&mut self, after: Inst, inst: Inst) {
         let block = self.inst_block(after).expect("anchor not in layout");
         assert!(

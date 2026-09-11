@@ -498,14 +498,7 @@ fn validate_runtime_contract(layout: &Layout, source: &str) -> Result<(), Error>
             ],
             Some("Store"),
         ),
-        "StackLoad" | "StackAddr" => (
-            &[("slot", "StackSlot"), ("offset", "u32")],
-            Some(layout.name.as_str()),
-        ),
-        "StackStore" => (
-            &[("slot", "StackSlot"), ("value", "Value"), ("offset", "u32")],
-            Some("StackStore"),
-        ),
+        "Alloca" => (&[("size", "u32"), ("align", "u32")], Some("Alloca")),
         "PtrOffset" => (&[("ptr", "Value"), ("offset", "i32")], Some("PtrOffset")),
         "PtrIndex" => (
             &[

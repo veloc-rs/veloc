@@ -51,6 +51,8 @@ pub struct MemoryEffect {
     pub writes: MemoryRegions,
     pub volatile: bool,
     pub atomic: bool,
+    pub allocates: bool,
+    pub frees: bool,
 }
 
 impl MemoryEffect {
@@ -60,7 +62,15 @@ impl MemoryEffect {
             writes,
             volatile: false,
             atomic: false,
+            allocates: false,
+            frees: false,
         }
+    }
+
+    pub const fn with_lifetime(mut self, allocates: bool, frees: bool) -> Self {
+        self.allocates = allocates;
+        self.frees = frees;
+        self
     }
 
     pub const fn with_volatile(mut self) -> Self {
@@ -74,7 +84,12 @@ impl MemoryEffect {
     }
 
     pub const fn is_none(self) -> bool {
-        self.reads.is_empty() && self.writes.is_empty() && !self.volatile && !self.atomic
+        self.reads.is_empty()
+            && self.writes.is_empty()
+            && !self.volatile
+            && !self.atomic
+            && !self.allocates
+            && !self.frees
     }
 
     pub const fn may_read(self) -> bool {
@@ -86,12 +101,15 @@ impl MemoryEffect {
     }
 
     pub const fn has_side_effects(self) -> bool {
-        self.may_write() || self.volatile || self.atomic
+        self.may_write() || self.volatile || self.atomic || self.allocates || self.frees
     }
 
     /// Conservative conflict query suitable for generic motion/scheduling.
     pub const fn conflicts_with(self, other: Self) -> bool {
-        self.writes.intersects(other.reads.union(other.writes))
+        (self.frees && !other.is_none())
+            || (other.frees && !self.is_none())
+            || (self.allocates && other.allocates)
+            || self.writes.intersects(other.reads.union(other.writes))
             || other.writes.intersects(self.reads)
             || (self.volatile && !other.is_none())
             || (other.volatile && !self.is_none())
@@ -120,6 +138,14 @@ impl core::fmt::Display for MemoryEffect {
         }
         if self.atomic {
             write!(f, "{}atomic", separator)?;
+            separator = ", ";
+        }
+        if self.allocates {
+            write!(f, "{}allocate", separator)?;
+            separator = ", ";
+        }
+        if self.frees {
+            write!(f, "{}free", separator)?;
         }
         Ok(())
     }
@@ -225,23 +251,11 @@ mod tests {
 
     #[test]
     fn memory_effects_preserve_region_information() {
-        assert!(MemoryEffect::HEAP_READ.conflicts_with(MemoryEffect::HEAP_WRITE));
-        assert!(!MemoryEffect::STACK_READ.conflicts_with(MemoryEffect::HEAP_WRITE));
-        assert!(MemoryEffect::HEAP_READ.with_volatile().has_side_effects());
-        assert!(MemoryEffect::UNKNOWN.conflicts_with(MemoryEffect::STACK_READ));
-        assert!(MemoryEffect::GLOBAL_READ.conflicts_with(MemoryEffect::GLOBAL_WRITE));
-        assert!(MemoryEffect::TABLE_READ.conflicts_with(MemoryEffect::TABLE_WRITE));
-        assert!(!MemoryEffect::GLOBAL_READ.conflicts_with(MemoryEffect::TABLE_WRITE));
-        assert!(MemoryEffect::UNKNOWN.conflicts_with(MemoryEffect::GLOBAL_READ));
-        assert!(MemoryEffect::UNKNOWN.conflicts_with(MemoryEffect::TABLE_READ));
-        assert_eq!(
-            MemoryEffect::GLOBAL_READ.reads,
-            super::MemoryRegions::GLOBAL
-        );
-        assert_eq!(
-            MemoryEffect::TABLE_WRITE.writes,
-            super::MemoryRegions::TABLE
-        );
+        assert!(MemoryEffect::READ.conflicts_with(MemoryEffect::WRITE));
+        assert!(MemoryEffect::READ.with_volatile().has_side_effects());
+        assert!(MemoryEffect::UNKNOWN.conflicts_with(MemoryEffect::READ));
+        assert_eq!(MemoryEffect::READ.reads, super::MemoryRegions::MEMORY);
+        assert_eq!(MemoryEffect::WRITE.writes, super::MemoryRegions::MEMORY);
     }
 
     #[test]
@@ -330,10 +344,7 @@ mod tests {
         use super::{MemoryRegions, OpTraits};
         use alloc::string::ToString;
 
-        assert_eq!(
-            MemoryRegions::ALL.to_string(),
-            "heap,stack,global,table,external"
-        );
+        assert_eq!(MemoryRegions::ALL.to_string(), "memory,external");
         assert_eq!(MemoryRegions::NONE.to_string(), "none");
         let traits = OpTraits::TERMINATOR
             .union(OpTraits::COMMUTATIVE)

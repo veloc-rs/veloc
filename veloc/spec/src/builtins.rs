@@ -79,11 +79,13 @@ impl Flags {
 pub(crate) struct Effect {
     pub reads: u128,
     pub writes: u128,
+    pub allocates: bool,
+    pub frees: bool,
 }
 
 impl Effect {
     pub fn is_none(&self) -> bool {
-        self.reads == 0 && self.writes == 0
+        self.reads == 0 && self.writes == 0 && !self.allocates && !self.frees
     }
 }
 
@@ -143,16 +145,20 @@ impl Builtins {
                         record.name.clone(),
                         fields.take("reads")?,
                         fields.take("writes")?,
+                        fields.optional("allocates"),
+                        fields.optional("frees"),
                     ));
                 }
                 _ => unreachable!(),
             }
             fields.finish()?;
         }
-        for (offset, name, reads, writes) in effects {
+        for (offset, name, reads, writes, allocates, frees) in effects {
             let effect = Effect {
                 reads: defs.region_set(source, reads)?,
                 writes: defs.region_set(source, writes)?,
+                allocates: effect_bool(source, allocates)?,
+                frees: effect_bool(source, frees)?,
             };
             if name == "NONE" && !effect.is_none() {
                 return Err(Error::at(
@@ -269,5 +275,20 @@ fn number(source: &str, node: Node) -> Result<u32, Error> {
     match node.kind {
         Kind::Number(value) => Ok(value),
         _ => Err(Error::at(source, node.offset, "expected a number")),
+    }
+}
+
+fn effect_bool(source: &str, node: Option<Node>) -> Result<bool, Error> {
+    match node {
+        None => Ok(false),
+        Some(Node {
+            kind: Kind::Name(value),
+            ..
+        }) if value == "true" => Ok(true),
+        Some(Node {
+            kind: Kind::Name(value),
+            ..
+        }) if value == "false" => Ok(false),
+        Some(node) => Err(Error::at(source, node.offset, "expected true or false")),
     }
 }

@@ -1,6 +1,6 @@
-use super::function::{Function, StackSlotData};
+use super::function::Function;
 use super::inst::{Inst, InstDraft, VectorExtData};
-use super::types::{Block, BlockCall, FuncId, Signature, StackSlot, Type, Value, Variable};
+use super::types::{Block, BlockCall, FuncId, Signature, Type, Value, Variable};
 use crate::Opcode;
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
 use alloc::vec::Vec;
@@ -140,12 +140,20 @@ impl<'a> FunctionBuilder<'a> {
         BlockCall::new(block, args)
     }
 
-    pub fn create_block(&mut self) -> Block {
-        self.func_mut().layout.create_block()
+    /// Allocate a fixed object once per invocation, even when the builder is
+    /// currently in a loop. This is an explicit placement choice, not hoisting.
+    pub fn entry_alloca(&mut self, size: u32, align: u32) -> Value {
+        let entry = self.func().entry_block.expect("entry block initialized");
+        let inst = self.func_mut().edit().prepend_inst(
+            entry,
+            InstDraft::alloca(size, align),
+            &[Type::PTR],
+        );
+        self.func().dfg().first_result(inst).unwrap()
     }
 
-    pub fn create_stack_slot(&mut self, size: u32) -> StackSlot {
-        self.func_mut().stack_slots.push(StackSlotData { size })
+    pub fn create_block(&mut self) -> Block {
+        self.func_mut().layout.create_block()
     }
 
     pub fn switch_to_block(&mut self, block: Block) {

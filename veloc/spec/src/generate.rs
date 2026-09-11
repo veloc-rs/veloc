@@ -10,6 +10,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
         for op in &defs.ops {
             if !op.constraints.is_empty()
                 || op.text.is_some()
+                || op.access.is_some()
                 || !op.moves.is_empty()
                 || op.control.is_some()
                 || op.signature_source.is_some()
@@ -44,6 +45,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<Generated, Er
     let mut instructions = defs.storage.instructions.clone();
     instructions.push_str(&crate::packing::accessors(defs));
     instructions.push_str(&crate::ownership::generate(defs));
+    instructions.push_str(&crate::memory::generate(defs));
     crate::type_rules::generate(defs, &classes, &mut type_rules, &mut instructions);
 
     let mut ops = String::from(HEADER);

@@ -1,7 +1,7 @@
 //! Instruction kinds, metadata, drafts and borrowed storage views.
 
 use crate::dfg::DataFlowGraph;
-use crate::types::{FuncId, StackSlot, Value};
+use crate::types::{FuncId, Value};
 use crate::{Float, Int, Intrinsic, SigId, VectorConst};
 use core::fmt;
 use cranelift_entity::entity_impl;

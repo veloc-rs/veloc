@@ -13,17 +13,14 @@ flags OpTraits {
 
 flags MemoryRegions {
     storage: u8,
-    members: [HEAP(0), STACK(1), GLOBAL(2), TABLE(3), EXTERNAL(4)],
+    members: [MEMORY(0), EXTERNAL(1)],
     separator: ","
 }
 
 effect NONE { reads: [], writes: [] }
-effect UNKNOWN { reads: [ALL], writes: [ALL] }
-effect HEAP_READ { reads: [HEAP], writes: [] }
-effect HEAP_WRITE { reads: [], writes: [HEAP] }
-effect STACK_READ { reads: [STACK], writes: [] }
-effect STACK_WRITE { reads: [], writes: [STACK] }
-effect GLOBAL_READ { reads: [GLOBAL], writes: [] }
-effect GLOBAL_WRITE { reads: [], writes: [GLOBAL] }
-effect TABLE_READ { reads: [TABLE], writes: [] }
-effect TABLE_WRITE { reads: [], writes: [TABLE] }
+effect UNKNOWN { reads: [ALL], writes: [ALL], allocates: true, frees: true }
+
+// All pointer-addressable storage shares one resource; alias analysis refines it.
+effect READ { reads: [MEMORY], writes: [] }
+effect WRITE { reads: [], writes: [MEMORY] }
+effect ALLOCATE { reads: [], writes: [], allocates: true }

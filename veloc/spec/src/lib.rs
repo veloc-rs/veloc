@@ -13,6 +13,7 @@ mod evaluate;
 mod format;
 mod generate;
 mod lowering;
+mod memory;
 mod model;
 mod ownership;
 mod packing;

@@ -50,11 +50,6 @@ impl BlockCall {
     }
 }
 
-/// A reference to a stack slot.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct StackSlot(pub u32);
-entity_impl!(StackSlot, "ss");
-
 /// A reference to a module identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModuleId(pub u32);

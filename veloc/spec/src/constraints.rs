@@ -56,6 +56,7 @@ enum TermKind {
 
 #[derive(Debug, Clone, Copy)]
 enum Query {
+    IsPowerOfTwo,
     IsDense,
     Bytes,
     TypeOf,
@@ -484,6 +485,7 @@ impl Checker<'_> {
             }
             Kind::Call(name, args) => {
                 let query = match name.as_str() {
+                    "is_power_of_two" => Query::IsPowerOfTwo,
                     "type" => Query::TypeOf,
                     "is_dense" => Query::IsDense,
                     "bytes" => Query::Bytes,
@@ -515,6 +517,10 @@ impl Checker<'_> {
                 };
                 let value = self.term(arg)?;
                 let sort = match query {
+                    Query::IsPowerOfTwo => {
+                        self.expect(offset, &value, &Sort::Int)?;
+                        Sort::Bool
+                    }
                     Query::IsDense | Query::Bytes => {
                         self.expect(offset, &value, &Sort::Property("VectorConst".into()))?;
                         if matches!(query, Query::IsDense) {
@@ -798,6 +804,9 @@ impl Emitter<'_> {
                 let sort = &value.sort;
                 let value = self.term(value);
                 match query {
+                    Query::IsPowerOfTwo => {
+                        format!("({value}) > 0 && (({value}) as u128).is_power_of_two()")
+                    }
                     Query::IsDense => format!("({value}).is_dense()"),
                     Query::Bytes => self.required(format!("({value}).bytes({})", self.dfg)),
                     Query::Signature => {

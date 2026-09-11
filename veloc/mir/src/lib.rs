@@ -10,6 +10,7 @@ pub mod error;
 pub mod function;
 pub mod inst;
 pub mod intrinsic;
+pub mod memory;
 pub mod module;
 pub mod text;
 pub mod types;
@@ -27,6 +28,6 @@ pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
 pub use module::{Global, Linkage, Module, ModuleData};
 pub use text::{ModuleParser, ParseError};
 pub use types::{
-    Block, BlockCall, CallConv, CallableKind, FuncId, ModuleId, ScalarType, SigId, Signature,
-    StackSlot, Type, TypeBits, TypeSize, Value, ValueDef, ValueList, Variable, VectorType,
+    Block, BlockCall, CallConv, CallableKind, FuncId, ModuleId, ScalarType, SigId, Signature, Type,
+    TypeBits, TypeSize, Value, ValueDef, ValueList, Variable, VectorType,
 };
