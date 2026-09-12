@@ -309,7 +309,12 @@ mod tests {
             offset: 0,
             name: "Test".into(),
             mnemonic: "test".into(),
-            meta: crate::model::data::Value::Record("OpInfo".into(), Default::default()),
+            meta: crate::model::metadata::Metadata {
+                name: "OpInfo".into(),
+                checks: Vec::new(),
+                value_only: None,
+                fields: Default::default(),
+            },
             format: "Test".into(),
             signature: TypeDef {
                 operands: TypeList::Fixed(vec![]),
@@ -332,8 +337,7 @@ mod tests {
             projection: crate::model::Projection::Packed(BTreeMap::new()),
             signature_source: None,
             text,
-            traits: vec![],
-            memory: crate::model::builtins::Effect::Known(Vec::new()),
+            traits: BTreeSet::new(),
             interfaces: BTreeMap::new(),
             constraints: vec![],
             identity: None,
@@ -446,8 +450,8 @@ mod tests {
         let mut operation = op(&[("arg", "Float")], None);
         for result in [
             Pattern::Set(crate::fixtures::set("ScalarFloat")),
-            Pattern::Exact("Type.F32".into()),
-            Pattern::Exact("Type.F64".into()),
+            Pattern::Exact("Type::F32".into()),
+            Pattern::Exact("Type::F64".into()),
             Pattern::Bind(0, crate::fixtures::set("ScalarFloat")),
         ] {
             operation.signature.results = TypeList::Fixed(vec![result]);
@@ -458,7 +462,7 @@ mod tests {
             TypeList::Signature,
             TypeList::Fixed(vec![Pattern::Set(crate::fixtures::set("Float"))]),
             TypeList::Fixed(vec![Pattern::Set(crate::fixtures::set("ScalarInteger"))]),
-            TypeList::Fixed(vec![Pattern::Exact("Type.I32".into())]),
+            TypeList::Fixed(vec![Pattern::Exact("Type::I32".into())]),
             TypeList::Fixed(vec![Pattern::Same(0)]),
         ] {
             operation.signature.results = results;
@@ -471,29 +475,6 @@ mod tests {
         operation.signature.operands =
             TypeList::Fixed(vec![Pattern::Bind(0, crate::fixtures::set("Float"))]);
         assert!(compile(&operation, &[], "").is_err());
-
-        let definitions = [
-            include_str!("../../../../mir/defs/formats.ops"),
-            include_str!("../../../../mir/defs/mir.ops"),
-        ]
-        .join("\n")
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("import "))
-        .collect::<Vec<_>>()
-        .join("\n");
-        let bad = definitions.replacen(
-            "op Fconst(value: Float) -> type(value)",
-            "op Fconst(value: Float) -> ScalarInteger",
-            1,
-        );
-        assert_ne!(bad, definitions);
-        let error = crate::fixtures::compile(&bad)
-            .err()
-            .expect("unparseable float projection");
-        assert!(
-            error.message.contains("scalar float first result"),
-            "{error}"
-        );
     }
 
     #[test]

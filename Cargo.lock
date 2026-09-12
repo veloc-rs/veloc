@@ -1668,8 +1668,10 @@ version = "0.1.0"
 dependencies = [
  "veloc-codegen",
  "veloc-interpreter",
+ "veloc-isle",
  "veloc-lir",
  "veloc-mir",
+ "veloc-opgen",
 ]
 
 [[package]]
@@ -1678,7 +1680,6 @@ version = "0.1.0"
 dependencies = [
  "bitvec",
  "cranelift-entity 0.128.3",
- "hashbrown 0.14.5",
  "veloc-mir",
 ]
 
@@ -1686,10 +1687,6 @@ dependencies = [
 name = "veloc-c"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "hashbrown 0.14.5",
- "log",
- "thiserror 2.0.18",
  "veloc-mir",
 ]
 
@@ -1716,10 +1713,12 @@ dependencies = [
  "veloc-analyzer",
  "veloc-codegen",
  "veloc-interpreter",
+ "veloc-isle",
  "veloc-mir",
  "veloc-opgen",
  "veloc-optimizer",
  "veloc-test-mir",
+ "veloc-types",
 ]
 
 [[package]]
@@ -1765,7 +1764,6 @@ dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "smallvec",
- "thiserror 2.0.18",
  "veloc-opgen",
  "veloc-types",
 ]
@@ -1775,7 +1773,6 @@ name = "veloc-opgen"
 version = "0.1.0"
 dependencies = [
  "veloc-semantics",
- "veloc-types",
 ]
 
 [[package]]
@@ -1803,7 +1800,6 @@ dependencies = [
  "anyhow",
  "clap",
  "hashbrown 0.14.5",
- "veloc",
  "veloc-wasm",
  "wasmparser 0.244.0",
  "wast 229.0.0",
@@ -1816,7 +1812,6 @@ dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "smallvec",
- "thiserror 2.0.18",
  "veloc-opgen",
  "veloc-semantics",
  "veloc-types",
@@ -1826,7 +1821,9 @@ dependencies = [
 name = "veloc-types"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "hashbrown 0.14.5",
+ "veloc-opgen",
 ]
 
 [[package]]
@@ -1841,10 +1838,8 @@ dependencies = [
  "futures",
  "hashbrown 0.14.5",
  "libc",
- "log",
  "mmap-rs",
  "veloc",
- "veloc-analyzer",
  "veloc-mir",
  "veloc-optimizer",
  "wasi-cap-std-sync",

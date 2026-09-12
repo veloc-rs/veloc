@@ -156,7 +156,7 @@ pub(crate) fn prepare_alternatives(
             crate::model::Vocabulary {
                 types: &defs.types,
                 data: &defs.data,
-                builtins: &defs.builtins,
+                encodings: &defs.encodings,
                 comparisons: &defs.comparisons,
             },
         )?;
@@ -228,8 +228,7 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
             projection: crate::model::Projection::Packed(packing),
             signature_source: None,
             text: Some(alt.text.clone()),
-            traits: Vec::new(),
-            memory: crate::model::builtins::Effect::Known(Vec::new()),
+            traits: BTreeSet::new(),
             interfaces: BTreeMap::new(),
             constraints: Vec::new(),
             identity: None,
@@ -412,72 +411,4 @@ pub(crate) fn builder(
         "    /// Build `{}` without validating its type contract.\n    pub fn {name}({params}){ret} {{\n        let (data, types) = ({constructor}, [{result_types}]);\n        {body}\n    }}\n",
         op.mnemonic
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_immutable_bytes_are_interned() {
-        let defs = crate::Source::load(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mir/defs/module.ops"),
-        )
-        .unwrap()
-        .parse()
-        .unwrap();
-        for (name, logical, pooled) in [
-            ("PtrIndex", "imm", false),
-            ("LoadStride", "mem", false),
-            ("Vconst", "value", false),
-            ("Shuffle", "mask", true),
-        ] {
-            let op = defs.ops.iter().find(|op| op.name == name).unwrap();
-            let format = defs
-                .storage
-                .formats
-                .iter()
-                .find(|f| f.name == op.format)
-                .unwrap();
-            let packed = constructor(op, format, &op.name, str::to_owned);
-            assert_eq!(packed.contains("::insert("), pooled, "{packed}");
-            let locals = projections(op, format, "dfg", str::to_owned, |value| {
-                format!("{value}.ok_or(invalid)?")
-            });
-            let (_, expr) = locals.iter().find(|(name, _)| name == logical).unwrap();
-            assert_eq!(expr.contains("::get("), pooled, "{expr}");
-        }
-    }
-
-    #[test]
-    fn jump_table_projection_splits_default_from_cases() {
-        let defs = crate::Source::load(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mir/defs/module.ops"),
-        )
-        .unwrap()
-        .parse()
-        .unwrap();
-        let op = defs.ops.iter().find(|op| op.name == "BrTable").unwrap();
-        let format = defs
-            .storage
-            .formats
-            .iter()
-            .find(|format| format.name == op.format)
-            .unwrap();
-        assert!(
-            constructor(op, format, &op.name, str::to_owned)
-                .contains("chain(core::iter::once((default).as_view()))")
-        );
-        let locals = projections(op, format, "dfg", str::to_owned, |value| {
-            format!("{value}.ok_or(invalid)?")
-        });
-        assert!(
-            locals
-                .iter()
-                .any(|(name, expr)| name == "cases" && expr.ends_with(").1"))
-        );
-        assert!(locals.iter().any(|(name, expr)| name == "default"
-            && expr.starts_with("(")
-            && expr.ends_with(").0")));
-    }
 }

@@ -1,6 +1,8 @@
 //! Vector IR Integration Tests
 
-use veloc_mir::{CallConv, Linkage, Opcode, VectorMemOptions, builder::ModuleBuilder, types::Type};
+use veloc_mir::{
+    CallConv, Linkage, Opcode, TypeInfo, VectorMemOptions, builder::ModuleBuilder, types::Type,
+};
 
 #[test]
 fn generated_pool_builders_use_logical_parameters() {

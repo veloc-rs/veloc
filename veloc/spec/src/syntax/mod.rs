@@ -56,6 +56,7 @@ pub enum Results {
 
 #[derive(Debug, Clone)]
 pub struct Signature {
+    pub is_const: bool,
     pub generics: Vec<Parameter>,
     pub params: Vec<Parameter>,
     pub results: Results,

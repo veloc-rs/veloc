@@ -1,0 +1,80 @@
+// Logical domains are definitions; Rust chooses their physical encoding.
+type I8 = int(8);
+type I16 = int(16);
+type I32 = int(32);
+type I64 = int(64);
+type F32 = float(32);
+type F64 = float(64);
+type BOOL = bool;
+type PTR = ptr;
+type I32X4 = vector(I32, 4);
+type I64X2 = vector(I64, 2);
+type F32X4 = vector(F32, 4);
+type F64X2 = vector(F64, 2);
+type I8X16 = vector(I8, 16);
+type I16X8 = vector(I16, 8);
+
+// Rust representation and method interface are declared together.
+// Methods without bodies bind same-named Rust methods; defs bodies expand normally.
+type Type = rust("veloc_types::Type") {
+    trait: rust("veloc_types::traits::TypeInfo"),
+    const fn element_bits(self) -> optional(u32);
+    const fn bit_size(self) -> optional(TypeBits);
+    const fn min_size_bytes(self) -> optional(u32);
+    const fn lanes(self) -> optional(u32);
+    const fn shape(self) -> optional(Shape);
+    const fn is_fixed(self) -> bool;
+    const fn is_scalar(self) -> bool;
+    const fn is_vector(self) -> bool;
+    const fn is_ptr(self) -> bool;
+    const fn is_predicate(self) -> bool;
+    const fn is_callable(self) -> bool;
+    const fn is_owned(self) -> bool;
+    const fn is_local(self) -> bool;
+    const fn is_shared(self) -> bool;
+    const fn is_compact(self) -> bool;
+
+    const fn same_shape(self, other: Type) -> bool {
+        value: (self.is_scalar() && other.is_scalar())
+            || (self.is_vector() && other.is_vector() && self.shape()? == other.shape()?)
+    }
+
+    const fn wider_than(self, other: Type) -> bool {
+        value: self.element_bits()? > other.element_bits()?
+    }
+}
+type TypeBits = rust("veloc_types::TypeBits");
+type Shape = rust("veloc_types::Shape");
+
+// Rust owns the representation; declarations are checked by generated traits.
+type OpTraits = rust("veloc_types::OpTraits") {
+    trait: rust("veloc_types::traits::OpTraits"),
+    analysis: traits,
+    const TERMINATOR: Self;
+    const COMMUTATIVE: Self;
+    const ASSOCIATIVE: Self;
+    const IDEMPOTENT: Self;
+    const MAY_TRAP: Self;
+    const ABORT: Self;
+    const fn empty() -> Self;
+    const fn union(self, other: Self) -> Self;
+    const fn contains(self, other: Self) -> bool;
+}
+type MemoryEffects = rust("veloc_types::MemoryEffects") {
+    trait: rust("veloc_types::traits::MemoryEffects"),
+    const READ: Self;
+    const WRITE: Self;
+    const ALLOCATE: Self;
+    const FREE: Self;
+    const fn empty() -> Self;
+    const fn union(self, other: Self) -> Self;
+}
+type MemoryEffect = rust("veloc_types::MemoryEffect") {
+    trait: rust("veloc_types::traits::MemoryEffect"),
+    analysis: memory(MemoryEffect::NONE),
+    const NONE: Self;
+    const UNKNOWN: Self;
+    const fn known(effects: MemoryEffects) -> Self;
+    const fn is_none(self) -> bool;
+}
+type MemFlags = rust("veloc_types::MemFlags");

@@ -11,7 +11,7 @@ use veloc_lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
     MachineBlock, MachineFunction, MachineInst, MachineModule, MachineOpcode, MachineOperand, Reg,
 };
-use veloc_mir::{Function, InstView, Module, Value};
+use veloc_mir::{Function, InstView, Module, TypeInfo, Value};
 
 mod lower;
 

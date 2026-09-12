@@ -1,5 +1,6 @@
 //! Linear resource flow. Ownership follows CFG edges,
 //! not use counts: two mutually exclusive branches can move the same value.
+use veloc_types::TypeInfo;
 use crate::{Block, Function, Inst, Result, Successor, Value};
 use alloc::{collections::BTreeSet, vec::Vec};
 

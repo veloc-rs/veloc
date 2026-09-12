@@ -26,7 +26,8 @@ pub(super) fn check(
                 "type" if rust_binding(record).is_some() => Space::Data,
                 "type" | "typeset" => Space::Type,
                 "fn" | "extern-fn" => Space::Function,
-                "struct" | "enum" | "flags" | "encoding" | "comparison" | "interface"
+                "const" => Space::Value,
+                "struct" | "enum" | "encoding" | "comparison" | "interface"
                 | "extern-interface" => Space::Data,
                 _ => continue,
             };
@@ -34,7 +35,21 @@ pub(super) fn check(
                 .entry((space, record.name.clone()))
                 .or_default()
                 .insert(file);
-            if matches!(record.kind.as_str(), "enum" | "flags" | "comparison") {
+            if space == Space::Type && record.kind == "type" {
+                symbols
+                    .entry((Space::Type, format!("Type::{}", record.name)))
+                    .or_default()
+                    .insert(file);
+            }
+            if let Some(en) = defs.data.enums.iter().find(|en| en.name == record.name) {
+                for (name, _) in &en.variants {
+                    symbols
+                        .entry((Space::Value, name.clone()))
+                        .or_default()
+                        .insert(file);
+                }
+            }
+            if record.kind == "comparison" {
                 for field in ["variants", "members", "predicates"] {
                     if let Some(Node {
                         kind: Kind::List(items),
@@ -104,6 +119,11 @@ impl Checker<'_> {
     ) -> Result<(), Error> {
         match &node.kind {
             Kind::Name(name) => {
+                if let Some((owner, _)) = name.split_once("::") {
+                    self.name(owner, Space::Data, node.offset, locals)?;
+                    self.name(name, Space::Value, node.offset, locals)?;
+                    self.name(name, Space::Type, node.offset, locals)?;
+                }
                 if let Some(space) = space {
                     self.name(name, space, node.offset, locals)?;
                 } else {
@@ -119,6 +139,9 @@ impl Checker<'_> {
                 }
             }
             Kind::Call(name, args) => {
+                if let Some((owner, _)) = name.split_once("::") {
+                    self.name(owner, Space::Data, node.offset, locals)?;
+                }
                 self.name(name, space.unwrap_or(Space::Function), node.offset, locals)?;
                 if space.is_none() {
                     self.name(name, Space::Value, node.offset, locals)?;
@@ -139,7 +162,7 @@ impl Checker<'_> {
                 {
                     self.name(owner, Space::Data, receiver.offset, locals)?;
                     self.name(
-                        &format!("{owner}.{name}"),
+                        &format!("{owner}::{name}"),
                         Space::Function,
                         node.offset,
                         locals,
@@ -150,7 +173,19 @@ impl Checker<'_> {
                     self.node(arg, None, locals)?;
                 }
             }
-            Kind::Member(receiver, _) => self.node(receiver, None, locals)?,
+            Kind::Member(receiver, name) => {
+                self.node(receiver, None, locals)?;
+                if let Kind::Name(owner) = &receiver.kind
+                    && !locals.contains(owner)
+                {
+                    self.name(
+                        &format!("{owner}::{name}"),
+                        Space::Value,
+                        node.offset,
+                        locals,
+                    )?;
+                }
+            }
             Kind::Object(name, fields) => {
                 self.name(name, Space::Data, node.offset, locals)?;
                 for value in fields.values() {
@@ -265,7 +300,7 @@ impl Checker<'_> {
                     }
                 }
             }
-            "flags" | "encoding" | "comparison" => {}
+            "encoding" | "comparison" => {}
             _ => {
                 for value in record.fields.values() {
                     self.node(value, None, &locals)?;

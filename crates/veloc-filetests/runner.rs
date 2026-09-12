@@ -1,9 +1,10 @@
 //! File-driven tests of public compiler stages. No shell commands in fixtures.
 use std::{fs, path::Path};
+mod compiler;
 
 use filecheck::{CheckerBuilder, NO_VARIABLES};
 use libtest_mimic::{Arguments, Trial};
-use veloc_mir::{Module, ModuleParser};
+use veloc_mir::{Module, ModuleParser, TypeInfo};
 use veloc_optimizer::{Metrics, PassManager, passes::function::simplify::run_simplify};
 
 type Result<T> = std::result::Result<T, String>;
@@ -136,11 +137,11 @@ fn rejected<T, E: std::fmt::Display>(result: std::result::Result<T, E>) -> Resul
 
 fn execute(mode: &str, source: &str) -> Result<String> {
     match mode {
-        "opgen" | "opgen-error" => {
+        "opgen" | "opgen-error" | "opgen-const" | "opgen-const-error" | "opgen-rust-error" => {
             let builtins = concat!(
-                include_str!("../../veloc/defs/types.ops"),
+                include_str!("../../veloc/types/defs/types.ops"),
                 "\n",
-                include_str!("../../veloc/defs/builtins.ops"),
+                include_str!("../../veloc/defs/types.ops"),
                 "\n",
                 include_str!("../../veloc/defs/comparisons.ops"),
                 "\n",
@@ -151,7 +152,29 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 .collect::<Vec<_>>()
                 .join("\n");
             let result = veloc_opgen::compile(&format!("{builtins}\n{source}"));
-            if mode == "opgen-error" {
+            if matches!(
+                mode,
+                "opgen-const" | "opgen-const-error" | "opgen-rust-error"
+            ) {
+                let generated = result.map_err(|e| e.to_string())?;
+                let output = compiler::check(&generated)?;
+                if mode != "opgen-const" {
+                    if output.status.success() {
+                        return Err("expected Rust rejection, but the constants compiled".into());
+                    }
+                    let error = String::from_utf8_lossy(&output.stderr).into_owned();
+                    if mode == "opgen-const-error" && !error.contains("E0080") {
+                        return Err(format!(
+                            "expected a const evaluation failure, not a binding error:\n{error}"
+                        ));
+                    }
+                    Ok(error)
+                } else if output.status.success() {
+                    Ok("constant contracts verified".into())
+                } else {
+                    Err(String::from_utf8_lossy(&output.stderr).into_owned())
+                }
+            } else if mode == "opgen-error" {
                 rejected(result)
             } else {
                 result

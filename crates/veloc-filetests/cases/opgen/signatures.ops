@@ -1,4 +1,4 @@
-// ----- a-fixed-operand-after-a-variadic-group-is-an-explicit-definition-error-1
+// ----- signatures/a-fixed-operand-after-a-variadic-group-is-an-explicit-definition-error-1
 // run: opgen-error
 // check: fixed operands must precede variadic operands and successors
 struct CallIndirect {
@@ -6,260 +6,260 @@ struct CallIndirect {
     args: ValueList,
     sig_id: SigId,
 }
-op CallIndirect(sig_id: SigId, args: values, ptr: Type.PTR) -> signature {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+op CallIndirect(sig_id: SigId, args: values, ptr: Type::PTR) -> signature {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
     text: "{ptr}({args}) : {sig_id}",
     signature: sig_id,
 }
 
-// ----- anonymous-results-have-no-synthetic-names-1
+// ----- signatures/anonymous-results-have-no-synthetic-names-1
 // run: opgen-error
 // check: unknown expression name or operation: result
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> Integer {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
 verify {
         require(result.element_bits()? > left.ty().element_bits()?, "result must have more bits per lane than left");
     } }
 
-// ----- anonymous-results-have-no-synthetic-names-2
+// ----- signatures/anonymous-results-have-no-synthetic-names-2
 // run: opgen-error
 // check: unknown expression name or operation: result0
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> Integer {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
 verify {
         require(result0.element_bits()? > left.ty().element_bits()?, "result0 must have more bits per lane than left");
     } }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-1
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-1
 // run: opgen-error
 // check: expected a name
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) ->  {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
 }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-2
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-2
 // run: opgen-error
 // check: expected `,`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
 }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-3
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-3
 // run: opgen-error
 // check: expected `{`
 struct Pair {
     args: values(2),
 }
-op PairAdd<T: Integer>(left: T, right: T) -> T, Type.BOOL {
-    meta: OpInfo { memory: Known([]) },
+op PairAdd<T: Integer>(left: T, right: T) -> T, Type::BOOL {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-4
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-4
 // run: opgen-error
 // check: expected `,`
 struct Pair {
     args: values(2),
 }
-op PairAdd<T: Integer>(left: T, right: T) -> (T Type.BOOL) {
-    meta: OpInfo { memory: Known([]) },
+op PairAdd<T: Integer>(left: T, right: T) -> (T Type::BOOL) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-5
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-5
 // run: opgen-error
 // check: expected a name
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result:) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-6
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-6
 // run: opgen-error
 // check: expected a result name before ':'
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (shape(T, Integer): T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-7
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-7
 // run: opgen-error
 // check: expected a name
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (@result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-8
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-8
 // run: opgen-error
 // check: unknown type pattern
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> ([T]) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- bare-result-types-leave-the-operation-body-unconsumed-9
+// ----- signatures/bare-result-types-leave-the-operation-body-unconsumed-9
 // run: opgen-error
 // check: expected `{`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> result: T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- generic-declarations-and-type-domains-are-checked-1
+// ----- signatures/generic-declarations-and-type-domains-are-checked-1
 // run: opgen-error
 // check: duplicate type variable `T`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer, T: Float>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- generic-declarations-and-type-domains-are-checked-2
+// ----- signatures/generic-declarations-and-type-domains-are-checked-2
 // run: opgen-error
 // check: unknown type or typeset `Missing`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Missing>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- generic-declarations-and-type-domains-are-checked-3
+// ----- signatures/generic-declarations-and-type-domains-are-checked-3
 // run: opgen-error
 // check: unbound type variable `Undeclared`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: Undeclared) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- generic-declarations-and-type-domains-are-checked-4
+// ----- signatures/generic-declarations-and-type-domains-are-checked-4
 // run: opgen-error
 // check: impossible element constraint on type variable `T`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: ScalarInteger>(left: T, right: element(T)) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- generic-declarations-and-type-domains-are-checked-5
+// ----- signatures/generic-declarations-and-type-domains-are-checked-5
 // run: opgen-error
 // check: impossible vector constraint on type variable `T`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Vector>(left: T, right: vector(T)) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- generic-declarations-and-type-domains-are-checked-6
-// run: opgen-error
-// check: constraint is always false
+// ----- signatures/generic-declarations-and-type-domains-are-checked-6
+// run: opgen-const-error
+// check: no admissible type signature
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: ScalarInteger, U: Vector>(left: T, right: U) -> (result: T) {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- operand-and-result-names-must-be-unique-1
+// ----- signatures/operand-and-result-names-must-be-unique-1
 // run: opgen-error
 // check: duplicate parameter `left`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, left: T) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- operand-and-result-names-must-be-unique-2
+// ----- signatures/operand-and-result-names-must-be-unique-2
 // run: opgen-error
 // check: duplicate parameter or result `left`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (left: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- operand-and-result-names-must-be-unique-3
+// ----- signatures/operand-and-result-names-must-be-unique-3
 // run: opgen-error
 // check: duplicate parameter or result `result`
 struct Pair {
     args: values(2),
 }
-op PairAdd<T: Integer>(left: T, right: T) -> (result: T, result: Type.BOOL) {
-    meta: OpInfo { memory: Known([]) },
+op PairAdd<T: Integer>(left: T, right: T) -> (result: T, result: Type::BOOL) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- operand-and-result-names-must-be-unique-4
+// ----- signatures/operand-and-result-names-must-be-unique-4
 // run: opgen-error
 // check: duplicate parameter `ptr`
 struct Load {
@@ -267,14 +267,14 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: Type.PTR, ptr: u32, flags: MemFlags) -> (result: Any) {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
+op Load(ptr: Type::PTR, ptr: u32, flags: MemFlags) -> (result: Any) {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
      }
 
-// ----- properties-must-match-their-declared-storage-type-and-role-1
+// ----- signatures/properties-must-match-their-declared-storage-type-and-role-1
 // run: opgen-error
 // check: parameter `offset` is incompatible with storage field `offset`
 struct Load {
@@ -282,14 +282,14 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: Type.PTR, offset: i32, flags: MemFlags) -> (result: Any) {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
+op Load(ptr: Type::PTR, offset: i32, flags: MemFlags) -> (result: Any) {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
      }
 
-// ----- properties-must-match-their-declared-storage-type-and-role-2
+// ----- signatures/properties-must-match-their-declared-storage-type-and-role-2
 // run: opgen-error
 // check: parameter `flags` is incompatible with storage field `flags`
 struct Load {
@@ -297,29 +297,29 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: Type.PTR, offset: u32, flags: bool) -> (result: Any) {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
+op Load(ptr: Type::PTR, offset: u32, flags: bool) -> (result: Any) {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
      }
 
-// ----- properties-must-match-their-declared-storage-type-and-role-3
+// ----- signatures/properties-must-match-their-declared-storage-type-and-role-3
 // run: opgen-error
-// check: unknown property type `Type.I32`
+// check: unknown property type `Type::I32`
 struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: Type.PTR, offset: Type.I32, flags: MemFlags) -> (result: Any) {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
+op Load(ptr: Type::PTR, offset: Type::I32, flags: MemFlags) -> (result: Any) {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
      }
 
-// ----- properties-must-match-their-declared-storage-type-and-role-4
+// ----- signatures/properties-must-match-their-declared-storage-type-and-role-4
 // run: opgen-error
 // check: unbound type variable `u32`
 struct Load {
@@ -328,13 +328,13 @@ struct Load {
     flags: MemFlags,
 }
 op Load(ptr: u32, offset: u32, flags: MemFlags) -> (result: Any) {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
      }
 
-// ----- properties-must-match-their-declared-storage-type-and-role-5
+// ----- signatures/properties-must-match-their-declared-storage-type-and-role-5
 // run: opgen-error
 // check: parameter `args` is incompatible with storage field `args`
 struct CallIndirect {
@@ -342,75 +342,75 @@ struct CallIndirect {
     args: ValueList,
     sig_id: SigId,
 }
-op CallIndirect(sig_id: SigId, ptr: Type.PTR, args: successor) -> signature {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+op CallIndirect(sig_id: SigId, ptr: Type::PTR, args: successor) -> signature {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
     text: "{ptr}({args}) : {sig_id}",
     signature: sig_id,
      }
 
-// ----- storage-packing-covers-every-field-and-logical-parameter-once-1
+// ----- signatures/storage-packing-covers-every-field-and-logical-parameter-once-1
 // run: opgen-error
 // check: missing storage field `args`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair {  },
     }
 
-// ----- storage-packing-covers-every-field-and-logical-parameter-once-2
+// ----- signatures/storage-packing-covers-every-field-and-logical-parameter-once-2
 // run: opgen-error
 // check: parameter `left` is stored more than once
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, left] },
     }
 
-// ----- storage-packing-covers-every-field-and-logical-parameter-once-3
+// ----- signatures/storage-packing-covers-every-field-and-logical-parameter-once-3
 // run: opgen-error
 // check: unknown parameter `unknown` in storage mapping
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, unknown] },
     }
 
-// ----- storage-packing-covers-every-field-and-logical-parameter-once-4
+// ----- signatures/storage-packing-covers-every-field-and-logical-parameter-once-4
 // run: opgen-error
 // check: unknown storage field `extra` in `Pair`
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right], extra: left },
     }
 
-// ----- storage-packing-covers-every-field-and-logical-parameter-once-5
+// ----- signatures/storage-packing-covers-every-field-and-logical-parameter-once-5
 // run: opgen-error
 // check: parameter `unused` has no storage mapping
 struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T, unused: T) -> (result: T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
     }
 
-// ----- storage-packing-covers-every-field-and-logical-parameter-once-6
+// ----- signatures/storage-packing-covers-every-field-and-logical-parameter-once-6
 // run: opgen-error
 // check: unbound type variable `MemFlags`
 struct Load {
@@ -418,9 +418,65 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: Type.PTR, offset: u32, flags: MemFlags) -> (result: Any) {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
+op Load(ptr: Type::PTR, offset: u32, flags: MemFlags) -> (result: Any) {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset },
     text: "{.flags} {ptr}, offset={offset}",
      }
+
+// ----- control/control-is-not-a-separate-operation-contract
+// run: opgen-error
+// check: unknown field `control`
+struct Apply { cont: Value, args: ValueList }
+op Apply(cont: Callable, args: values) -> () {
+    meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN },
+    mnemonic: "apply", storage: Apply { cont, args },
+    control: tail_call_value(cont, args),
+}
+
+// ----- control/structural-type-name-cannot-be-shadowed
+// run: opgen-error
+// check: Callable is a reserved structural type name
+typeset Callable = Type::I32;
+
+// ----- control/move-contract-rejects-properties
+// run: opgen-error
+// check: move requires a value operand
+struct Take { function: FuncId }
+op Take(move function: FuncId) -> () {
+    meta: OpInfo { memory: MemoryEffect::UNKNOWN },
+    mnemonic: "take", storage: Take { function: function },
+}
+
+// ----- control/abort-is-an-exit-contract
+// run: opgen-const-error
+// check: ABORT requires TERMINATOR
+struct Stop {  }
+op Stop() -> () {
+    meta: OpInfo { traits: OpTraits::ABORT, memory: MemoryEffect::NONE },
+mnemonic: "stop", storage: Stop {},  }
+
+// ----- control/signature-query-is-typed
+// run: opgen-error
+// check: projection type mismatch: expected Named("FuncId"), found Named("u32")
+struct Check { n: u32 }
+op Check(n: u32) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "check", storage: Check { n: n },
+    verify {
+        len(Module::params(Module::signature(n)?)?) == 0;
+    }
+}
+
+// ----- control/slice-query-is-typed
+// run: opgen-error
+// check: slice expects a sequence
+struct Check { n: u32 }
+op Check(n: u32) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "check", storage: Check { n: n },
+    verify {
+        len(prefix(n, 0)) == 0;
+    }
+}

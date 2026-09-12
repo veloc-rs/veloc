@@ -58,6 +58,15 @@ impl<'a> Parser<'a> {
         while self.token.kind != TokenKind::Eof {
             let offset = self.token.offset;
             let kind = self.name()?;
+            let (kind, is_const) = if kind == "const" {
+                let next = self.name()?;
+                if next != "fn" {
+                    return Err(self.error(offset, "const must qualify a function"));
+                }
+                (next, true)
+            } else {
+                (kind, false)
+            };
             if kind == "import" {
                 if !file.records.is_empty() {
                     return Err(self.error(offset, "imports must precede declarations"));
@@ -71,6 +80,13 @@ impl<'a> Parser<'a> {
                 file.records.extend(self.external(offset)?);
             } else {
                 let mut record = self.declaration(offset, kind)?;
+                if is_const {
+                    record
+                        .signature
+                        .as_mut()
+                        .expect("function signature")
+                        .is_const = true;
+                }
                 let owner = (record.kind == "type" && self.at("{")).then(|| record.name.clone());
                 let methods = if let Some(owner) = owner {
                     self.methods(&owner, &mut record.fields)?
@@ -95,6 +111,35 @@ impl<'a> Parser<'a> {
         while !self.at("}") {
             let offset = self.token.offset;
             let kind = self.name()?;
+            let (kind, is_const) = if kind == "const" {
+                let next = self.name()?;
+                if next != "fn" {
+                    self.expect(":")?;
+                    let ty = self.expression(0, Context::Type)?;
+                    self.expect(";")?;
+                    records.push(Record {
+                        offset,
+                        kind: "const".into(),
+                        name: format!("{owner}::{next}"),
+                        fields: BTreeMap::new(),
+                        signature: Some(Signature {
+                            is_const: true,
+                            generics: Vec::new(),
+                            params: Vec::new(),
+                            results: Results::Fixed(vec![ResultType {
+                                offset,
+                                name: None,
+                                ty,
+                            }]),
+                        }),
+                        body: Some(FunctionBody::Rust { offset, path: None }),
+                    });
+                    continue;
+                }
+                (next, true)
+            } else {
+                (kind, false)
+            };
             if kind != "fn" {
                 self.expect(":")?;
                 let value = self.expression(0, Context::Value)?;
@@ -104,8 +149,9 @@ impl<'a> Parser<'a> {
                 }
                 continue;
             }
-            let name = format!("{owner}.{}", self.name()?);
-            let signature = self.method_signature(Some(owner))?;
+            let name = format!("{owner}::{}", self.name()?);
+            let mut signature = self.method_signature(Some(owner))?;
+            signature.is_const = is_const;
             let body = if self.eat(";")? {
                 FunctionBody::Rust { offset, path: None }
             } else {
@@ -178,7 +224,7 @@ impl<'a> Parser<'a> {
             records.push(Record {
                 offset,
                 kind: "extern-fn".into(),
-                name: format!("{name}.{method}"),
+                name: format!("{name}::{method}"),
                 fields: BTreeMap::new(),
                 signature: Some(signature),
                 body: None,
@@ -269,6 +315,7 @@ impl<'a> Parser<'a> {
             }
         };
         Ok(Signature {
+            is_const: false,
             generics,
             params,
             results,
@@ -340,7 +387,14 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 self.expect(":")?;
-                self.expression(depth, context)?
+                self.expression(
+                    depth,
+                    if name == "meta" {
+                        Context::Expr
+                    } else {
+                        context
+                    },
+                )?
             };
             if fields.insert(name.clone(), node).is_some() {
                 return Err(self.error(offset, format!("duplicate field `{name}`")));
@@ -443,7 +497,7 @@ impl<'a> Parser<'a> {
         let offset = node.offset;
 
         let mut postfix = 0;
-        while self.at("?") || self.at(".") {
+        while self.at("?") || self.at(".") || self.at("::") {
             postfix += 1;
             self.check_depth(depth + postfix, Context::Expr)?;
             if self.eat("?")? {
@@ -451,6 +505,20 @@ impl<'a> Parser<'a> {
                     offset,
                     kind: Kind::Try(Box::new(node)),
                 };
+            } else if self.eat("::")? {
+                let Kind::Name(owner) = node.kind else {
+                    return Err(self.error(offset, ":: requires a type or namespace path"));
+                };
+                let name = format!("{owner}::{}", self.name()?);
+                let kind = if self.eat("(")? {
+                    Kind::Call(
+                        name,
+                        self.sequence(")", |p| p.expression(depth + postfix, context))?,
+                    )
+                } else {
+                    Kind::Name(name)
+                };
+                node = Node { offset, kind };
             } else {
                 self.expect(".")?;
                 let member = self.name()?;

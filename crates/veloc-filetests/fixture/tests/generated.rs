@@ -1,5 +1,6 @@
 //! Compile and execute generated APIs against the real MIR implementation.
 //! File tests cover text/diagnostics; these cover APIs text cannot exercise.
+use veloc_types::TypeInfo;
 extern crate alloc;
 extern crate veloc_test_mir as veloc_mir;
 
@@ -448,33 +449,26 @@ fn scalar_enum_is_exhaustive_and_preserves_type_encoding() {
 }
 
 #[test]
-fn generated_flag_sets_preserve_bits_order_and_set_operations() {
-    use veloc_mir::inst::{EmptyFlags, MemoryEffect, MemoryEffects, OpTraits, TestFlags as F};
-    const SELECTED: F = F::HIGH.union(F::LOW_BIT);
-    const {
-        assert!(F::ALL.contains(SELECTED));
-        assert!(SELECTED.contains(F::HIGH));
-        assert!(!SELECTED.contains(F::ALL));
-        assert!(SELECTED.intersects(F::LOW_BIT.union(F::MIDDLE)));
-        assert!(!SELECTED.intersects(F::MIDDLE));
-        assert!(F::NONE.is_empty());
-        assert!(F::HIGH.contains(F::NONE));
-        assert!(!F::HIGH.intersects(F::NONE));
-        assert!(EmptyFlags::ALL.is_empty());
-    }
-    assert_eq!(size_of::<F>(), 16);
+fn rust_flag_sets_are_used_by_generated_metadata() {
+    use veloc_mir::inst::{MemoryEffect, MemoryEffects, OpTraits};
     assert_eq!(size_of::<OpTraits>(), 2);
-    assert_eq!(F::HIGH.union(F::LOW_BIT).union(F::MIDDLE), F::ALL);
-    assert_eq!(F::ALL.to_string(), "high / low-bit / middle");
-    assert_eq!(SELECTED.to_string(), "high / low-bit");
-    assert_eq!(F::empty().to_string(), "none");
-    assert_eq!(EmptyFlags::ALL.to_string(), "none");
+    assert_eq!(size_of::<MemoryEffects>(), 1);
     const EFFECT: MemoryEffect = Opcode::EffectSet.spec().memory_effect();
     assert_eq!(
         EFFECT,
         MemoryEffect::Known(MemoryEffects::READ.union(MemoryEffects::WRITE))
     );
-    assert_eq!(EFFECT.to_string(), "read, write");
+    assert_eq!(EFFECT.to_string(), "READ | WRITE");
+    assert_eq!(OpTraits::MAY_TRAP.to_string(), "MAY_TRAP");
+    assert_eq!(MemoryEffects::empty().to_string(), "");
+    assert!(MemoryEffects::from_bits(0x80).is_none());
+    let unknown = MemoryEffects::from_bits_retain(0x80);
+    assert_eq!(unknown.to_string(), "0x80");
+    assert_eq!(
+        unknown.union(MemoryEffects::READ).to_string(),
+        "READ | 0x80"
+    );
+    assert!(MemoryEffect::Known(unknown).conflicts_with(MemoryEffect::Known(MemoryEffects::READ)));
     assert_eq!(
         Opcode::Nop.spec().memory_effect(),
         MemoryEffect::Known(MemoryEffects::empty())
@@ -485,31 +479,31 @@ fn generated_flag_sets_preserve_bits_order_and_set_operations() {
     );
     assert_eq!(Opcode::Call.spec().memory_effect(), MemoryEffect::Unknown);
     assert_ne!(
-        MemoryEffect::Known(MemoryEffects::ALL),
+        MemoryEffect::Known(MemoryEffects::all()),
         MemoryEffect::Unknown
     );
     assert_eq!(
         OpTraits::TERMINATOR
             .union(OpTraits::COMMUTATIVE)
             .to_string(),
-        "terminator, commutative"
+        "TERMINATOR | COMMUTATIVE"
     );
 }
 
 #[test]
 fn declaration_records_enums_and_flags_construct_explicit_values() {
-    use veloc_mir::inst::{TestFlags, TestMetadata, TestPolicy, TestSettings};
+    use veloc_mir::inst::{MemoryEffects, TestMetadata, TestPolicy, TestSettings};
     let meta = TestMetadata {
         settings: TestSettings {
             enabled: true,
-            policy: TestPolicy::Prefer(TestFlags::HIGH.union(TestFlags::LOW_BIT)),
+            policy: TestPolicy::Prefer(MemoryEffects::READ.union(MemoryEffects::WRITE)),
         },
         fallback: Some(TestPolicy::Automatic),
     };
     assert!(meta.settings.enabled);
     assert_eq!(
         meta.settings.policy,
-        TestPolicy::Prefer(TestFlags::HIGH.union(TestFlags::LOW_BIT))
+        TestPolicy::Prefer(MemoryEffects::READ.union(MemoryEffects::WRITE))
     );
     assert_eq!(meta.fallback, Some(TestPolicy::Automatic));
     assert!(core::ptr::eq(

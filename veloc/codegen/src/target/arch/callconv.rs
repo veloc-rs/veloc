@@ -7,7 +7,7 @@ use super::types::TargetArch;
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
-use veloc_mir::{Signature, Type};
+use veloc_mir::{Signature, Type, TypeInfo};
 
 /// 调用约定
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -11,7 +11,6 @@ pub(crate) struct Constraint {
     pub condition: Expr,
     pub text: String,
     pub type_only: bool,
-    pub offline: bool,
 }
 
 pub(crate) fn check_property(
@@ -115,6 +114,9 @@ fn property_validator(
     }
     for constraint in &property.constraints {
         let emitter = Emitter {
+            constant: false,
+            const_failure: "panic!(\"invalid constant expression\")",
+            prefix: "crate::inst::",
             instruction: false,
             results: "_results",
             result_values: false,
@@ -264,6 +266,9 @@ fn emit_body(
         .into_iter()
         .collect();
         let emitter = Emitter {
+            constant: false,
+            const_failure: "panic!(\"invalid constant expression\")",
+            prefix: "crate::inst::",
             instruction: true,
             results: "_results",
             result_values: false,

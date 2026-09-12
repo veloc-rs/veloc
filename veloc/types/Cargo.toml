@@ -5,4 +5,8 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
+bitflags = { workspace = true }
 hashbrown = { workspace = true, features = ["ahash", "inline-more"] }
+
+[build-dependencies]
+veloc-opgen = { workspace = true }

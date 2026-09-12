@@ -6,6 +6,7 @@ use crate::Error;
 use crate::model::Fields;
 use crate::syntax::{Kind, Node, Record};
 
+pub(crate) mod cases;
 pub(crate) mod generate;
 mod resolve;
 pub(crate) mod rules;
@@ -66,7 +67,29 @@ impl TypeSet {
     }
 }
 
-pub(crate) use veloc_types::Scalar as Primitive;
+/// Mathematical element domains used by type-set and bit-vector analysis.
+/// This describes a domain, not a runtime type representation or its catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Primitive {
+    Int(u32),
+    Float(u32),
+    Bool,
+    Ptr,
+}
+
+impl Primitive {
+    pub fn element_bits(self) -> Option<u32> {
+        match self {
+            Self::Int(n) | Self::Float(n) => Some(n),
+            Self::Bool => Some(1),
+            Self::Ptr => None,
+        }
+    }
+}
+
+/// An element and a logical shape index: zero is scalar; 1..16 fixed,
+/// 16..32 scalable. These indices only index the generator's type sets.
+pub type TypeKey = (Primitive, u32);
 
 #[derive(Debug)]
 pub(crate) struct Scalar {
@@ -92,11 +115,10 @@ pub(crate) struct Types {
 }
 
 pub(crate) fn rust_type(name: &str) -> String {
-    if let Some(member) = name.strip_prefix("Type.") {
-        format!("crate::Type::{member}")
-    } else {
-        format!("crate::types::{name}")
-    }
+    format!(
+        "crate::types::{}",
+        name.strip_prefix("Type::").unwrap_or(name)
+    )
 }
 
 impl Types {
@@ -137,14 +159,14 @@ impl Types {
             lanes: TypeSet::default(),
             integers: TypeSet::default(),
             scalar_floats: TypeSet::default(),
-            max_exponent: veloc_types::MAX_VECTOR_LANES.trailing_zeros(),
+            max_exponent: 15,
         };
         for scalar in &types.scalars {
             let single = TypeSet::singleton(scalar.ty, 0, false);
             let mut family = single.clone();
             if scalar.ty != Primitive::Ptr {
                 types.lanes.union(&single);
-                family.union(&single.vectors(veloc_types::MAX_VECTOR_LANES.trailing_zeros()));
+                family.union(&single.vectors(15));
             }
             if matches!(scalar.ty, Primitive::Int(_) | Primitive::Bool) {
                 types.integers.union(&family);
@@ -317,9 +339,9 @@ mod tests {
     fn exact_sets_preserve_width_lane_count_and_scalability() {
         let defs = crate::fixtures::parse(
             r#"
-            typeset Wide = Type.I32 | Type.I64;
-            typeset Shapes = Type.I32X4 | SV4;
-            type SV4 = vector(Type.I32, scalable(4));
+            typeset Wide = Type::I32 | Type::I64;
+            typeset Shapes = Type::I32X4 | SV4;
+            type SV4 = vector(Type::I32, scalable(4));
             typeset AllWideVectors = vectors(Wide);
         "#,
         )
@@ -367,9 +389,9 @@ mod tests {
                 (Primitive::Int(64), 4)
             ])
         );
-        set.intersect(&types.exact["Type.I32X4"]);
-        assert_eq!(set, types.exact["Type.I32X4"]);
-        set.intersect(&types.exact["Type.I64X2"]);
+        set.intersect(&types.exact["Type::I32X4"]);
+        assert_eq!(set, types.exact["Type::I32X4"]);
+        set.intersect(&types.exact["Type::I64X2"]);
         assert!(set.is_empty());
     }
 }

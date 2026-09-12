@@ -1,8 +1,20 @@
 //! Shared types, compact representation and interned signature storage.
 //! No dependency on MIR entities, instruction containers or code generation.
 #![no_std]
+#![feature(const_trait_impl, const_cmp, derive_const)]
 
 extern crate alloc;
+extern crate self as veloc_types;
+
+/// Defs-declared contracts, implemented explicitly by the owning Rust types.
+pub mod traits {
+    include!(concat!(env!("OUT_DIR"), "/traits.rs"));
+}
+pub use traits::TypeInfo;
+
+mod effects;
+pub use effects::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
+
 mod signature;
 pub use signature::{CallConv, SigId, Signature, SignatureError, Signatures};
 
@@ -73,7 +85,8 @@ impl TypeSize {
 }
 
 /// Logical bits, preserving runtime scale. Equal minima do not imply equal sizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
+#[derive_const(PartialEq, Eq)]
 pub enum TypeBits {
     Fixed(u32),
     Scalable { min_bits: u32 },

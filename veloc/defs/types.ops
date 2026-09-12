@@ -1,33 +1,5 @@
-// Rust representation and method interface are declared together.
-// Methods without bodies bind same-named Rust methods; defs bodies expand normally.
-type Type = rust("crate::Type") {
-    fn element_bits(self) -> optional(u32);
-    fn bit_size(self) -> optional(TypeBits);
-    fn min_size_bytes(self) -> optional(u32);
-    fn lanes(self) -> optional(u32);
-    fn shape(self) -> optional(Shape);
-    fn is_fixed(self) -> bool;
-    fn is_scalar(self) -> bool;
-    fn is_vector(self) -> bool;
-    fn is_ptr(self) -> bool;
-    fn is_predicate(self) -> bool;
-    fn is_callable(self) -> bool;
-    fn is_owned(self) -> bool;
-    fn is_local(self) -> bool;
-    fn is_shared(self) -> bool;
-    fn is_compact(self) -> bool;
+import "../types/defs/types.ops";
 
-    fn same_shape(self, other: Type) -> bool {
-        value: (self.is_scalar() && other.is_scalar())
-            || (self.is_vector() && other.is_vector() && self.shape()? == other.shape()?)
-    }
-
-    fn wider_than(self, other: Type) -> bool {
-        value: self.element_bits()? > other.element_bits()?
-    }
-}
-type TypeBits = rust("crate::TypeBits");
-type Shape = rust("veloc_types::Shape");
 type Value = rust("crate::Value") {
     field: operand,
     // Fundamental SSA type query; callers use the declared method.
@@ -45,14 +17,59 @@ type JumpTable = rust("crate::inst::Successors") {
     field: list(BlockCall),
 }
 
-// Scalar and named vector constants come from the shared Rust Type catalog.
+// Scalar and named vector constants come from the shared logical type declarations.
 // Members are exact types, other sets, or vectors(set). The latter includes
 // every legal fixed and scalable shape over a set of non-pointer scalar types.
-typeset Any = Scalar | Type.PTR | Vector;
-typeset Scalar = ScalarInteger | ScalarFloat | Type.BOOL;
-typeset ScalarInteger = Type.I8 | Type.I16 | Type.I32 | Type.I64;
-typeset ScalarFloat = Type.F32 | Type.F64;
+typeset Any = Scalar | Type::PTR | Vector;
+typeset Scalar = ScalarInteger | ScalarFloat | Type::BOOL;
+typeset ScalarInteger = Type::I8 | Type::I16 | Type::I32 | Type::I64;
+typeset ScalarFloat = Type::F32 | Type::F64;
 typeset Integer = ScalarInteger | vectors(ScalarInteger);
 typeset Float = ScalarFloat | vectors(ScalarFloat);
 typeset Number = Integer | Float;
 typeset Vector = vectors(Scalar);
+
+// Rust-owned data types used by operation properties and host interfaces.
+type Int = rust("crate::Int") {
+    fn ty(self) -> Type { value: type(self) }
+}
+type Float = rust("crate::Float") {
+    fn ty(self) -> Type { value: type(self) }
+}
+type VectorConst = rust("crate::VectorConst") {
+    fn ty(self) -> Type { value: type(self) }
+}
+type FuncId = rust("crate::FuncId");
+type SigId = rust("crate::SigId");
+type Intrinsic = rust("crate::Intrinsic");
+type ConstantPoolId = rust("crate::inst::ConstantPoolId");
+type SymbolId = rust("crate::SymbolId");
+
+// Shared effect interfaces are imported from the Rust owner.
+
+struct OpInfo {
+    traits: OpTraits,
+    memory: MemoryEffect,
+}
+
+// Reusable checked arithmetic, not a special verifier query.
+fn is_power_of_two(value: u32) -> bool {
+    value: value != 0 && (value & (value - 1)) == 0,
+}
+
+// Read-only host capabilities. Calls are qualified by interface name.
+extern interface Constants {
+    fn is_dense(value: VectorConst) -> bool;
+    fn bytes(value: VectorConst) -> optional(sequence(u8));
+}
+
+extern interface Types {
+    fn signature(ty: Type) -> optional(SigId);
+}
+
+extern interface Module {
+    fn signature(func: FuncId) -> optional(SigId);
+    fn current_signature() -> SigId;
+    fn params(sig: SigId) -> optional(sequence(Type));
+    fn returns(sig: SigId) -> optional(sequence(Type));
+}

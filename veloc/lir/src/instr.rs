@@ -4,6 +4,7 @@ use alloc::string::String;
 use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
 use veloc_mir::{Block, FloatCC, IntCC, Type};
+pub use veloc_types::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
 
 use crate::symbol::SymbolId;
 

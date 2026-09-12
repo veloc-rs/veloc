@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use cranelift_entity::PrimaryMap;
 use hashbrown::HashMap;
-use veloc_mir::{FuncId, Module, ModuleId};
+use veloc_mir::{FuncId, Module, ModuleId, TypeInfo};
 
 /// Main program structure managing all modules and host functions
 pub struct Program {

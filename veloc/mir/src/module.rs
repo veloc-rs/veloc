@@ -1,3 +1,4 @@
+use veloc_types::TypeInfo;
 use crate::function::Function;
 use crate::types::{FuncId, SigId, Signature, Type};
 use alloc::string::String;

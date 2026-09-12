@@ -1,4 +1,5 @@
 //! Exact constants. Scalar views add guarantees, not another representation tag.
+use veloc_types::TypeInfo;
 use crate::{InstWriter, ScalarType, Type, VectorType, dfg::DataFlowGraph, inst::ConstantPoolId};
 
 /// A target-independent scalar bit pattern. Pointer constants are not modeled.

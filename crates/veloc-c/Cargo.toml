@@ -7,10 +7,4 @@ description = "C language compiler frontend for Veloc"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-log = { workspace = true }
-hashbrown = { workspace = true }
-anyhow = { workspace = true }
-thiserror = "2.0"
 veloc-mir = { workspace = true }
-
-[dev-dependencies]

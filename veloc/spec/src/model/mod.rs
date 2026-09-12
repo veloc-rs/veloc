@@ -1,19 +1,17 @@
 //! Checked operation contracts, independent of runtime IR containers.
-pub(crate) mod builtins;
+
 pub(crate) mod comparisons;
 pub(crate) mod constraints;
 pub(crate) mod data;
-mod encoding;
+pub(crate) mod encoding;
 pub(crate) mod expr;
-pub(crate) mod interfaces;
 pub(crate) mod metadata;
-pub(crate) mod ownership;
 pub(crate) mod records;
 use std::collections::{BTreeMap, BTreeSet};
 
 use veloc_semantics::{BvConst, BvOp};
 
-use crate::model::builtins::Builtins;
+use crate::model::encoding::Encodings;
 use crate::syntax::{Kind, Node, Record};
 use crate::types::TypeSet;
 use crate::types::Types;
@@ -23,7 +21,7 @@ mod operation;
 
 /// Checked operation definitions, independent of the runtime MIR.
 pub struct Definitions {
-    pub(crate) builtins: Builtins,
+    pub(crate) encodings: Encodings,
     pub(crate) data: crate::model::data::Types,
     pub(crate) comparisons: Vec<crate::model::comparisons::Comparison>,
     pub(crate) types: Types,
@@ -37,7 +35,7 @@ pub struct Definitions {
 #[derive(Clone, Copy)]
 pub(crate) struct Vocabulary<'a> {
     pub types: &'a Types,
-    pub builtins: &'a Builtins,
+    pub encodings: &'a Encodings,
     pub data: &'a data::Types,
     pub comparisons: &'a [comparisons::Comparison],
 }
@@ -105,15 +103,14 @@ pub(crate) struct Op {
     pub offset: usize,
     pub name: String,
     pub mnemonic: String,
-    pub meta: crate::model::data::Value,
+    pub meta: crate::model::metadata::Metadata,
     pub format: String,
     pub signature: TypeDef,
     pub params: Vec<Param>,
     pub projection: Projection,
     pub signature_source: Option<SignatureSource>,
     pub text: Option<Node>,
-    pub traits: Vec<String>,
-    pub memory: crate::model::builtins::Effect,
+    pub traits: BTreeSet<String>,
     pub interfaces: BTreeMap<String, expr::Expr>,
     pub constraints: Vec<crate::model::constraints::Constraint>,
     pub identity: Option<BvConst>,
@@ -225,8 +222,8 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 format!("duplicate {} `{}`", record.kind, record.name),
             ));
         }
-        if matches!(record.kind.as_str(), "extern-fn" | "fn") {
-            for part in record.name.split('.') {
+        if matches!(record.kind.as_str(), "extern-fn" | "fn" | "const") {
+            for part in record.name.split("::") {
                 identifier(source, record.offset, part)?;
             }
         } else {
@@ -234,13 +231,13 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
         }
     }
     let types = Types::compile(&records, source)?;
-    let builtins = Builtins::compile(&records, source)?;
+    let encodings = encoding::compile(&records, source)?;
     let comparisons = crate::model::comparisons::compile(&records, source)?;
     let data = crate::model::data::Types::compile(&records, source)?;
     let storage = storage::compile(&records, source, &data)?;
     let vocabulary = Vocabulary {
         types: &types,
-        builtins: &builtins,
+        encodings: &encodings,
         data: &data,
         comparisons: &comparisons,
     };
@@ -279,8 +276,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 &mut expressions,
             )?),
             "layout" | "struct" | "enum" | "encoding" | "comparison" | "storage" | "interface"
-            | "fn" | "extern-interface" | "extern-fn" => {}
-            kind if Builtins::is_definition(kind) => {}
+            | "fn" | "const" | "extern-interface" | "extern-fn" => {}
             kind if Types::is_definition(kind) => {}
             _ => {
                 return Err(Error::at(
@@ -292,7 +288,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
         }
     }
     let mut definitions = Definitions {
-        builtins,
+        encodings,
         data,
         comparisons,
         types,
@@ -311,9 +307,7 @@ impl Definitions {
         let mut methods = BTreeMap::new();
         let meta_type = crate::model::metadata::record_type(&self.ops).map(str::to_owned);
         for op in &mut self.ops {
-            if let crate::model::data::Value::Record(ty, _) = &op.meta
-                && Some(ty.as_str()) != meta_type.as_deref()
-            {
+            if Some(op.meta.name.as_str()) != meta_type.as_deref() {
                 return Err(Error::at(
                     source,
                     op.offset,
@@ -358,12 +352,10 @@ impl Definitions {
                     }
                 }
             }
-            if (op.identity.is_some()
-                || op.absorbing.is_some()
-                || op.traits.iter().any(|t| t == "IDEMPOTENT"))
+            if (op.identity.is_some() || op.absorbing.is_some() || op.traits.contains("IDEMPOTENT"))
                 && !["ASSOCIATIVE", "COMMUTATIVE"]
                     .iter()
-                    .all(|required| op.traits.iter().any(|t| t == required))
+                    .all(|name| op.traits.contains(*name))
             {
                 return Err(fail(
                     "algebraic shortcuts require associative and commutative operations".into(),
@@ -388,7 +380,7 @@ fn pattern(
         return Ok(Pattern::Exact(name));
     }
     match node.kind {
-        Kind::Member(..) => Err(Error::at(
+        Kind::Name(ref name) if name.contains("::") => Err(Error::at(
             source,
             node.offset,
             "unknown type constant or undeclared Type",
@@ -570,7 +562,7 @@ mod tests {
             args: values(2),
         }
         op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { traits: [], memory: Known([]) },
+    meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
             mnemonic: "i-add", storage: Binary { args: [lhs, rhs] },
              }
     "#;
@@ -586,7 +578,7 @@ mod tests {
     fn rejects_normalized_method_name_collisions() {
         let source = format!(
             "{SOURCE}\n\
-             op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {{ meta: OpInfo {{ traits: [], memory: Known([]) }}, mnemonic: \"i_add\", storage: Binary {{ args: [lhs, rhs] }},  }}"
+             op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {{ meta: OpInfo {{ traits: OpTraits::empty(), memory: MemoryEffect::NONE }}, mnemonic: \"i_add\", storage: Binary {{ args: [lhs, rhs] }},  }}"
         );
         let error = match parse(&source) {
             Ok(_) => panic!("colliding generated method names were accepted"),

@@ -5,7 +5,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use veloc_lir::{MachineFunction, MachineInst, MachineOperand, Reg};
-use veloc_mir::Type;
+use veloc_mir::{Type, TypeInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegalizeAction {

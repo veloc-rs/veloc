@@ -39,11 +39,10 @@ impl Definitions {
                         "properties, variadic operands or successors require an adapter".into(),
                     );
                 }
-                if !op.memory.is_none()
-                    || op
-                        .traits
+                if op.meta.value_only.is_none()
+                    || ["ABORT", "TERMINATOR"]
                         .iter()
-                        .any(|t| matches!(t.as_str(), "ABORT" | "TERMINATOR"))
+                        .any(|name| op.traits.contains(*name))
                 {
                     return Err("memory or control effects require an adapter".into());
                 }
@@ -85,11 +84,9 @@ impl Definitions {
             })();
             // A primitive describes only the value computation. Never infer a
             // rewrite that drops a memory effect or observable control behavior.
-            let primitive = if op.memory.is_none()
-                && !op
-                    .traits
-                    .iter()
-                    .any(|t| matches!(t.as_str(), "MAY_TRAP" | "ABORT" | "TERMINATOR"))
+            let primitive = if !["MAY_TRAP", "ABORT", "TERMINATOR"]
+                .iter()
+                .any(|name| op.traits.contains(*name))
             {
                 op.semantics.as_ref().and_then(|s| s.primitive())
             } else {

@@ -1,0 +1,170 @@
+// ----- text-generation/incomplete-or-ambiguous-alternates-return-definition-errors-1
+// run: opgen-error
+// check: text projection does not consume `tag`
+struct Pair {
+    inputs: values(2),
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+}
+
+struct Extended {
+    inputs: ValueList,
+    tag: u32,
+}
+layout Extended {
+    format: arity(inputs, [Pair]),
+    text: "{inputs}",
+}
+
+// ----- text-generation/incomplete-or-ambiguous-alternates-return-definition-errors-2
+// run: opgen-error
+// check: optional named fields require optional(Value)
+struct Pair {
+    inputs: values(2),
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+}
+
+struct Extended {
+    inputs: ValueList,
+    tag: u32,
+}
+layout Extended {
+    format: arity(inputs, [Pair]),
+    text: "{inputs}[, tag={tag}]",
+}
+
+// ----- text-generation/incomplete-or-ambiguous-alternates-return-definition-errors-3
+// run: opgen-error
+// check: optional named fields require optional(Value)
+struct Pair {
+    inputs: values(2),
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+}
+
+struct Extended {
+    inputs: ValueList,
+    tag: u32,
+}
+layout Extended {
+    format: arity(inputs, [Pair]),
+    text: "{inputs}[, tag={tag}]",
+}
+
+// ----- text-generation/incomplete-or-ambiguous-alternates-return-definition-errors-4
+// run: opgen-error
+// check: multiple text alternatives need an explicit discriminator
+struct Pair {
+    inputs: values(2),
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+}
+
+struct Extended {
+    inputs: ValueList,
+    tag: u32,
+}
+layout Extended {
+    format: arity(inputs, [Pair]),
+    text: "{inputs}, tag={tag}",
+}
+struct Another {
+    inputs: ValueList,
+    tag: u32,
+}
+layout Another {
+    format: arity(inputs, [Pair]),
+    text: "{inputs}, tag={tag}",
+}
+
+// ----- text-generation/unsupported-alternate-storage-groups-fail-before-rust-emission-1
+// run: opgen-error
+// check: alternate text fields must use named storage types
+struct Pair {
+    inputs: values(2),
+}
+op Difference<T: Integer>(left: T, right: T) -> (result: T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "difference",
+    storage: Pair { inputs: [left, right] },
+}
+
+struct Extended {
+    inputs: values(2),
+    tag: u32,
+}
+layout Extended {
+    format: fixed(Pair),
+    text: "{inputs}, tag={tag}",
+}
+
+// ----- syntax/comments-and-adjacent-delimiters
+// run: opgen
+// check: pub fn example
+struct Example{value:u32,}
+op Example(value:u32,)->Type::I32{
+    meta:OpInfo{memory:MemoryEffect::NONE,}, // 中文注释
+    mnemonic:"example",storage:Example{value:value,},
+    verify {
+        require(value>=0&&value<=4294967295,"valid // not a comment");
+    },
+}
+
+// ----- syntax/an-arrow-is-one-token
+// run: opgen-error
+// check: expected `->`
+op Example() - > () {}
+
+// ----- syntax/constraint-number-range
+// run: opgen-error
+// check: expression integer is out of range
+struct Empty {}
+op Example() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Empty {},
+    verify {
+        170141183460469231731687303715884105728 > 0;
+    }
+}
+
+// ----- syntax/definition-number-range
+// run: opgen-error
+// check: integer is out of range
+encoding TooWide { storage: u64, fields: [bits(4294967296)] }
+
+// ----- syntax/escaped-string-is-not-structural-syntax
+// run: opgen
+// check: pub fn empty
+struct Empty {}
+op Example() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Empty {},
+    verify {
+        require(true, "quotes: \" / slash: \\ / newline: \n / UTF-8: 字符 } ]");
+    },
+}
+
+// ----- syntax/invalid-string-escape
+// run: opgen-error
+// check: invalid string escape
+struct Empty {}
+op Example() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty {},
+    mnemonic: "bad\q"
+}
+
+// ----- syntax/removed-flags-declaration
+// run: opgen-error
+// check: unknown definition kind `flags`
+flags Features { storage: u8, members: [FAST(0)], separator: ", " }

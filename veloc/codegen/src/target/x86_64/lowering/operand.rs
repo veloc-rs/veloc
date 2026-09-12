@@ -3,12 +3,6 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64OperandLowering;
 
-impl X86_64OperandLowering {
-    pub fn new(_cpu: CpuDescription) -> Self {
-        Self
-    }
-}
-
 impl TargetOperandLowering for X86_64OperandLowering {
     fn preselect_operand_constraints(
         &self,

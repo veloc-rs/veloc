@@ -1,86 +1,543 @@
-// ----- lir-mappings-can-reorder-inputs-and-results
+// ----- storage/lir-mappings-can-reorder-inputs-and-results
 // run: opgen
 // check: pub fn build_pair(low: Writable<Reg>, high: Writable<Reg>, first: Reg, second: Reg)
 // check: MachineOperand::Use(second), MachineOperand::Def(high), MachineOperand::Use(first), MachineOperand::Def(low)
 storage Operands { prefix: "G_" }
 struct Pair { right: Use, upper: Def, left: Use, lower: Def }
-op G_PAIR(first: Type.I32, second: Type.I64) -> (low: Type.I32, high: Type.I64) {
-    meta: OpInfo { memory: Known([]) },
+op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I64) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Pair { right: second, upper: high, left: first, lower: low },
 }
 
-// ----- empty-mappings-are-explicit
+// ----- storage/empty-mappings-are-explicit
 // run: opgen
 // check: pub fn build_stop()
 storage Operands { prefix: "G_" }
 struct Empty {}
-op G_STOP() -> () { meta: OpInfo { memory: Known([]) }, storage: Empty {} }
+op G_STOP() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty {} }
 
-// ----- bare-layout-names-are-removed
+// ----- storage/bare-layout-names-are-removed
 // run: opgen-error
 // check: expected storage: Layout
 storage Operands {}
 struct Empty {}
-op Example() -> () { meta: OpInfo { memory: Known([]) }, storage: Empty }
+op Example() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty }
 
-// ----- missing-result-binding
+// ----- storage/missing-result-binding
 // run: opgen-error
 // check: result 0 has no storage mapping
 storage Operands {}
 struct Input { arg: Use }
-op Example(arg: Type.I32) -> (value: Type.I32) { meta: OpInfo { memory: Known([]) }, storage: Input { arg } }
+op Example(arg: Type::I32) -> (value: Type::I32) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Input { arg } }
 
-// ----- repeated-result-binding
+// ----- storage/repeated-result-binding
 // run: opgen-error
 // check: result 'first' is stored more than once
 storage Operands {}
 struct Pair { a: Def, b: Def }
-op Example() -> (first: Type.I32, second: Type.I32) { meta: OpInfo { memory: Known([]) }, storage: Pair { a: first, b: first } }
+op Example() -> (first: Type::I32, second: Type::I32) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Pair { a: first, b: first } }
 
-// ----- repeated-input-binding
+// ----- storage/repeated-input-binding
 // run: opgen-error
 // check: input 'arg' is stored more than once
 storage Operands {}
 struct Pair { a: Use, b: Use }
-op Example(arg: Type.I32) -> () { meta: OpInfo { memory: Known([]) }, storage: Pair { a: arg, b: arg } }
+op Example(arg: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Pair { a: arg, b: arg } }
 
-// ----- definition-fields-cannot-bind-inputs
+// ----- storage/definition-fields-cannot-bind-inputs
 // run: opgen-error
 // check: unknown result 'arg'
 storage Operands {}
 struct Output { dst: Def }
-op Example(arg: Type.I32) -> () { meta: OpInfo { memory: Known([]) }, storage: Output { dst: arg } }
+op Example(arg: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Output { dst: arg } }
 
-// ----- optional-presence-is-not-inferred
+// ----- storage/optional-presence-is-not-inferred
 // run: opgen-error
 // check: expected some(...) storage binding
 storage Operands {}
 struct Maybe { value: OptionalUse }
-op Example(value: Type.I32) -> () { meta: OpInfo { memory: Known([]) }, storage: Maybe { value } }
+op Example(value: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Maybe { value } }
 
-// ----- omitted-operands-must-be-a-suffix
+// ----- storage/omitted-operands-must-be-a-suffix
 // run: opgen-error
 // check: only trailing optional operands may be absent
 storage Operands {}
 struct Pair { optional: OptionalUse, required: Use }
-op Example(value: Type.I32) -> () { meta: OpInfo { memory: Known([]) }, storage: Pair { optional: none, required: value } }
+op Example(value: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Pair { optional: none, required: value } }
 
-// ----- tied-input-and-output-are-explicit
+// ----- storage/tied-input-and-output-are-explicit
 // run: opgen
 // check: pub fn build_update(next: Writable<Reg>)
 // check: MachineOperand::TiedDefUse(next)
 storage Operands { prefix: "G_" }
 struct Update { register: TiedDefUse }
-op G_UPDATE(previous: Type.PTR) -> (next: Type.PTR) { meta: OpInfo { memory: Known([]) }, storage: Update { register: tied(previous, next) } }
+op G_UPDATE(previous: Type::PTR) -> (next: Type::PTR) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Update { register: tied(previous, next) } }
 
-// ----- absent-optional-fields-still-require-a-mapping
+// ----- storage/absent-optional-fields-still-require-a-mapping
 // run: opgen-error
 // check: missing storage field 'value'
 storage Operands {}
 struct Maybe { value: OptionalUse }
-op Example() -> () { meta: OpInfo { memory: Known([]) }, storage: Maybe {} }
+op Example() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Maybe {} }
 
-// ----- declaration-fields-do-not-use-value-shorthand
+// ----- storage/declaration-fields-do-not-use-value-shorthand
 // run: opgen-error
 // check: expected `:`
 struct Bad { value }
+
+// ----- encodings/packed-overflow
+// run: opgen-error
+// check: fit u8
+encoding Packed { storage: u8, fields: [low(4), high(5)] }
+
+// ----- encodings/zero-width
+// run: opgen-error
+// check: positive widths
+encoding Packed { storage: u16, fields: [low(0)] }
+
+// ----- encodings/repeated-field
+// run: opgen-error
+// check: duplicate bit field `low`
+encoding Packed { storage: u16, fields: [low(4), low(4)] }
+
+// ----- encodings/method-conflict
+// run: opgen-error
+// check: duplicate encoding method `is_enabled`
+encoding Packed { storage: u16, fields: [enabled(1), is_enabled(4)] }
+
+// ----- encodings/reserved-method
+// run: opgen-error
+// check: duplicate encoding method `empty`
+encoding Packed { storage: u8, fields: [empty(2)] }
+
+// ----- encodings/unknown-field
+// run: opgen-error
+// check: unknown field `typo`
+encoding Packed { storage: u8, fields: [value(8)], typo: 1 }
+
+// ----- encodings/type-conflict
+// run: opgen-error
+// check: bit layout `Opcode` conflicts
+encoding Opcode { storage: u8, fields: [] }
+
+// ----- records/legacy-struct-fields-are-rejected
+// run: opgen-error
+// check: expected data type name
+struct Settings { fields: [budget(u8, 1)] }
+
+// ----- records/struct-defaults-are-rejected
+// run: opgen-error
+// check: expected `,`
+struct Settings { budget: u8 = 1 }
+
+// ----- records/optional-fields-must-be-explicit
+// run: opgen-error
+// check: missing field `budget`
+struct Settings { budget: optional(u32) }
+struct Work {  }
+op Work() -> () {
+    meta: Settings {}, mnemonic: "work", storage: Work {}
+}
+
+// ----- records/fixed-text-binding-is-range-checked
+// run: opgen-error
+// check: fixed text binding requires an in-range integer literal
+struct Settings { scale: u8 }
+struct Work { settings: Settings }
+op Work(settings: Settings) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "work", storage: Work { settings: settings },
+    text: "{settings.scale=256}"
+}
+
+// ----- records/fixed-text-binding-cannot-also-consume-input
+// run: opgen-error
+// check: text field `settings.scale` is consumed more than once
+struct Settings { scale: u8 }
+struct Work { settings: Settings }
+op Work(settings: Settings) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "work", storage: Work { settings: settings },
+    text: "{settings.scale=1} {settings.scale}"
+}
+
+
+// ----- records/struct-without-instruction-use-is-plain-data
+// run: opgen
+// check: pub struct Operands
+// check: pub budget: u32
+struct Operands { budget: u32 }
+
+// ----- records/legacy-format-declaration-is-rejected
+// run: opgen-error
+// check: unknown definition kind `format`
+format Pair {}
+
+// ----- records/opcode-is-not-a-struct-type
+// run: opgen-error
+// check: unknown data type `Opcode`
+struct Pair { opcode: Opcode, args: values(2) }
+
+// ----- records/alternate-layout-requires-a-struct
+// run: opgen-error
+// check: unknown layout struct `Alternate`
+struct Pair { args: values(2) }
+layout Alternate { format: fixed(Pair), text: "{args}" }
+
+// ----- records/lir-layout-overrides-are-rejected
+// run: opgen-error
+// check: operand views are derived from structs
+storage Operands {}
+layout Missing { accessor: missing }
+
+// ----- packing/writer-method-name-is-reserved
+// run: opgen-error
+// check: conflicting instruction constructor `write`
+struct Write {
+
+}
+op Write() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "write", storage: Write {} }
+
+// ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-1
+// run: opgen-error
+// check: unbound type variable `PtrIndexImm`
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct Indexed {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+}
+op Indexed(ptr: Type::PTR, index: Type::I32, imm: PtrIndexImm) -> (result: Type::PTR) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool() },
+}
+
+// ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-2
+// run: opgen-error
+// check: parameter `imm` is incompatible with storage field `imm_id`
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct Indexed {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+}
+op Indexed(ptr: Type::PTR, index: Type::I32, imm: Bytes) -> (result: Type::PTR) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
+}
+
+// ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-3
+// run: opgen-error
+// check: unbound type variable `PtrIndexImm`
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct Indexed {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+}
+op Indexed(ptr: Type::PTR, index: Type::I32, imm: PtrIndexImm, unused: PtrIndexImm) -> (result: Type::PTR) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
+}
+
+// ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-4
+// run: opgen-error
+// check: parameter `imm` is stored more than once
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct Indexed {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+    other: PtrIndexImm,
+}
+op Indexed(ptr: Type::PTR, index: Type::I32, imm: PtrIndexImm) -> (result: Type::PTR) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm, other: imm },
+}
+
+// ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-5
+// run: opgen-error
+// check: unknown property type `PtrIndexImmId`
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct Indexed {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+}
+op Indexed(ptr: Type::PTR, index: Type::I32, imm: PtrIndexImmId) -> (result: Type::PTR) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
+}
+
+// ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-6
+// run: opgen-error
+// check: parameter `imm` is incompatible with storage field `imm_id`
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct Indexed {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+}
+op Indexed(ptr: Type::PTR, index: Type::I32, imm: ConstantPoolId) -> (result: Type::PTR) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
+}
+
+// ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-7
+// run: opgen-error
+// check: unknown property type `VectorExtId`
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct Indexed {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+}
+op Indexed(ptr: Type::PTR, index: Type::I32, imm: VectorExtId) -> (result: Type::PTR) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
+}
+
+// ----- packing/pool-bindings-are-typed-and-consume-the-complete-struct-8
+// run: opgen-error
+// check: unknown property type `VectorMemExtId`
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct Indexed {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+}
+op Indexed(ptr: Type::PTR, index: Type::I32, imm: VectorMemExtId) -> (result: Type::PTR) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
+}
+
+// ----- packing/pooled-value-lists-and-inline-arrays-keep-distinct-bindings-1
+// run: opgen-error
+// check: storage field `args` requires 3 arguments
+struct Triple { args: values(3) }
+op Triple<T: Integer>(a: T, b: T, c: T) -> (result: T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+mnemonic: "triple", storage: Triple { args: [a, b] }, }
+
+// ----- packing/pooled-value-lists-and-inline-arrays-keep-distinct-bindings-2
+// run: opgen-error
+// check: parameter `a` is stored more than once
+struct Triple { args: values(3) }
+op Triple<T: Integer>(a: T, b: T, c: T) -> (result: T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+mnemonic: "triple", storage: Triple { args: [a, a, c] }, }
+
+// ----- packing/signature-sources-are-explicit-and-match-their-parameter-types-1
+// run: opgen-error
+// check: signature results require an explicit signature source
+struct Invoke {
+    callee: FuncId,
+    args: ValueList,
+}
+op Invoke(callee: FuncId, args: values) -> signature {
+    meta: OpInfo { memory: MemoryEffect::UNKNOWN },
+    mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
+}
+
+// ----- packing/signature-sources-are-explicit-and-match-their-parameter-types-2
+// run: opgen-error
+// check: signature source `callee` must be a SigId property
+struct Invoke {
+    callee: FuncId,
+    args: ValueList,
+}
+op Invoke(callee: FuncId, args: values) -> signature {
+    meta: OpInfo { memory: MemoryEffect::UNKNOWN },
+    mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
+signature: callee, }
+
+// ----- packing/signature-sources-are-explicit-and-match-their-parameter-types-3
+// run: opgen-error
+// check: signature source `missing` must be a FuncId property
+struct Invoke {
+    callee: FuncId,
+    args: ValueList,
+}
+op Invoke(callee: FuncId, args: values) -> signature {
+    meta: OpInfo { memory: MemoryEffect::UNKNOWN },
+    mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
+signature: function(missing), }
+
+// ----- packing/signature-sources-are-explicit-and-match-their-parameter-types-4
+// run: opgen-error
+// check: signature source requires signature results
+struct Invoke {
+    callee: FuncId,
+    args: ValueList,
+}
+op Invoke(callee: FuncId, args: values) -> () {
+    meta: OpInfo { memory: MemoryEffect::UNKNOWN },
+    mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
+signature: function(callee), }
+
+// ----- packing/tables-require-distinct-case-and-default-roles-1
+// run: opgen-error
+// check: expected parameter, array, pool(parameter) or table(cases, default)
+struct Table {
+    index: Value,
+    table: JumpTable,
+}
+op Table(index: Type::I32, cases: successors, default: successor) -> () {
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
+    mnemonic: "table", storage: Table { index: index, table: table(cases) },
+}
+
+// ----- packing/tables-require-distinct-case-and-default-roles-2
+// run: opgen-error
+// check: parameter `cases` is stored more than once
+struct Table {
+    index: Value,
+    table: JumpTable,
+}
+op Table(index: Type::I32, cases: successors, default: successor) -> () {
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
+    mnemonic: "table", storage: Table { index: index, table: table(cases, cases) },
+}
+
+// ----- packing/tables-require-distinct-case-and-default-roles-3
+// run: opgen-error
+// check: parameter `default` is incompatible with storage field `table`
+struct Table {
+    index: Value,
+    table: JumpTable,
+}
+op Table(index: Type::I32, cases: successors, default: successors) -> () {
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
+    mnemonic: "table", storage: Table { index: index, table: table(cases, default) },
+}
+
+// ----- packing/tables-require-distinct-case-and-default-roles-4
+// run: opgen-error
+// check: parameter `cases` is incompatible with storage field `table`
+struct Table {
+    index: Value,
+    table: JumpTable,
+}
+op Table(index: Type::I32, cases: successors, default: successor) -> () {
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
+    mnemonic: "table", storage: Table { index: index, table: cases },
+}
+
+// ----- packing/writer-constructor-name-collision
+// run: opgen-error
+// check: conflicting instruction constructor `a_b`
+struct AB {  }
+op AB() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "ab", storage: AB {} }
+struct A_b {  }
+op A_b() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "a_b", storage: A_b {} }
+
+// ----- packing/writer-constructor-api-collision
+// run: opgen-error
+// check: conflicting instruction constructor `copy`
+struct Copy {  }
+op Copy() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "operands", storage: Copy {} }
+
+// ----- packing/draft-constructor-keyword
+// run: opgen-error
+// check: invalid generated identifier `match`
+struct Match {  }
+op Match() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "match", storage: Match {} }
+
+// ----- packing/field-contract-rejects-cycles
+// run: opgen-error
+// check: cyclic field reference
+type Recursive = rust("crate::Value") { field: list(Recursive), }
+
+// ----- packing/edge-contract-requires-ssa-parameters
+// run: opgen-error
+// check: edge parameters require an SSA operand element
+type Tag = rust("crate::Tag");
+type BadEdge = rust("crate::inst::Successor") { field: edge(Tag), }
+
+// ----- packing/field-contract-rejects-unknown-types
+// run: opgen-error
+// check: field reference requires a declared Rust type
+type Missing = rust("crate::Value") { field: list(NotDeclared), }
+
+// ----- packing/field-contract-rejects-unsupported-nested-rust-views
+// run: opgen-error
+// check: unsupported nested Rust field interface
+type Nested = rust("crate::inst::Arguments") { field: list(list(Value)), }
+
+// ----- packing/field-contract-removes-role-labels
+// run: opgen-error
+// check: unknown field `role`
+type Legacy = rust("crate::Value") { role: ssa, }
+
+// ----- builders/impossible-type-variable-constraints-are-definition-errors-1
+// run: opgen-error
+// check: impossible element constraint on type variable `T`
+struct Pair {
+    args: values(2),
+}
+op Add<T: ScalarInteger>(lhs: T, rhs: T) -> (result: element(T)) {
+    meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
+    mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
+}
+
+// ----- builders/impossible-type-variable-constraints-are-definition-errors-2
+// run: opgen-error
+// check: impossible vector constraint on type variable `T`
+struct Pair {
+    args: values(2),
+}
+op Add<T: Vector>(lhs: T, rhs: T) -> (result: vector(T)) {
+    meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
+    mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
+}
+
+// ----- builders/impossible-type-variable-constraints-are-definition-errors-3
+// run: opgen-const-error
+// check: no admissible type signature
+struct Pair {
+    args: values(2),
+}
+op Add<T: ScalarInteger, U: Vector>(lhs: T, rhs: T) -> (result: U) {
+    verify { require(U.same_shape(T), "input and result must have the same shape"); }
+    meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
+    mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
+}
+
+// ----- builders/normalizing-mnemonics-cannot-create-duplicate-methods-1
+// run: opgen-error
+// check: mnemonics `pair-add` and `pair_add` produce the same method name `pair_add`
+struct Pair {
+    args: values(2),
+}
+op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
+    mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
+}
+
+op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {
+    meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
+mnemonic: "pair_add", storage: Pair { args: [lhs, rhs] },  }

@@ -3,12 +3,6 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64FrameLowering;
 
-impl X86_64FrameLowering {
-    pub fn new(_cpu: CpuDescription) -> Self {
-        Self
-    }
-}
-
 impl TargetFrameLowering for X86_64FrameLowering {
     fn finalize_stack_frame(
         &self,

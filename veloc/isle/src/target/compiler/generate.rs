@@ -310,10 +310,9 @@ fn generate_emit_expr(
                 r#"{{
                     let disp_offset = emitter.position();
                     emitter.write_bytes(&[0, 0, 0, 0]);
-                    let next_offset = emitter.position();
                     match &inst.operands[{index}] {{
                         MachineOperand::Global(target) => {{
-                            emitter.add_global_rel32_fixup(disp_offset, next_offset, target.clone());
+                            emitter.add_global_rel32_fixup(disp_offset, *target);
                         }}
                         _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
                     }}

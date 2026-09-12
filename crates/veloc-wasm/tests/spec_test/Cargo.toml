@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-veloc = { workspace = true }
 veloc-wasm = { workspace = true }
 clap = { workspace = true }
 wast = { workspace = true }

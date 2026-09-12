@@ -8,7 +8,6 @@ rust-version = { workspace = true }
 veloc-types = { workspace = true }
 cranelift-entity = { workspace = true }
 hashbrown = { workspace = true, features = ["ahash", "inline-more"] }
-thiserror = { version = "2.0", default-features = false }
 smallvec = { workspace = true }
 
 [build-dependencies]

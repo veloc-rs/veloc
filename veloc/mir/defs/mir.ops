@@ -4,10 +4,10 @@ import "formats.ops";
 // Storage mappings preserve the current compact MIR layout and SSA traversal order.
 // Structural constraints compile to direct checks, not a runtime rule list.
 
-// Query data, not instruction storage. Value(Type.PTR) checks the logical signature
+// Query data, not instruction storage. Value(Type::PTR) checks the logical signature
 // at definition time; the runtime representation is an ordinary SSA Value.
 interface MemoryAccess {
-    ptr: Value(Type.PTR),
+    ptr: Value(Type::PTR),
     offset: i64,
     ty: Type,
     stored: optional(Value),
@@ -15,17 +15,17 @@ interface MemoryAccess {
     effects: MemoryEffect,
 }
 
-fn ReadAccess(ptr: Value(Type.PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
+fn ReadAccess(ptr: Value(Type::PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
     value: MemoryAccess {
         ptr: ptr, offset: offset, ty: ty, stored: none, flags: flags,
-        effects: Known([READ]),
+        effects: MemoryEffect::known(MemoryEffects::READ),
     },
 }
 
-fn WriteAccess(ptr: Value(Type.PTR), offset: i64, value: Value, flags: MemFlags) -> MemoryAccess {
+fn WriteAccess(ptr: Value(Type::PTR), offset: i64, value: Value, flags: MemFlags) -> MemoryAccess {
     value: MemoryAccess {
         ptr: ptr, offset: offset, ty: value.ty(), stored: some(value), flags: flags,
-        effects: Known([WRITE]),
+        effects: MemoryEffect::known(MemoryEffects::WRITE),
     },
 }
 
@@ -33,74 +33,74 @@ fn WriteAccess(ptr: Value(Type.PTR), offset: i64, value: Value, flags: MemFlags)
 // the resulting callable signature describes the remaining inputs and answer.
 // Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
 op ClosureNew(func_id: FuncId, move captures: values, cleanup: FuncId) -> Callable {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "closure-new",
     storage: ClosureNew { func_id, captures, cleanup },
     text: "{func_id}({captures}) : {function(func_id)}, {cleanup}",
 
     verify {
         require(result_type(0).is_owned(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(Module.params(Module.signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
-        require(suffix(Module.params(Module.signature(func_id)?)?, len(captures)) == Module.params(Types.signature(result_type(0))?)? && Module.returns(Module.signature(func_id)?)? == Module.returns(Types.signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
+        require(matches(captures, prefix(Module::params(Module::signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
+        require(suffix(Module::params(Module::signature(func_id)?)?, len(captures)) == Module::params(Types::signature(result_type(0))?)? && Module::returns(Module::signature(func_id)?)? == Module::returns(Types::signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| !v.ty().is_local() && !v.ty().is_ptr()), "capture would escape a borrow or duplicate an owned environment");
-        require(Module.params(Module.signature(cleanup)?)? == prefix(Module.params(Module.signature(func_id)?)?, len(captures)) && len(Module.returns(Module.signature(cleanup)?)?) == 0, "cleanup must consume the captured parameters and return void");
+        require(Module::params(Module::signature(cleanup)?)? == prefix(Module::params(Module::signature(func_id)?)?, len(captures)) && len(Module::returns(Module::signature(cleanup)?)?) == 0, "cleanup must consume the captured parameters and return void");
     }
 }
 
 op ClosureLocal(func_id: FuncId, captures: values) -> Callable {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "closure-local",
     storage: Closure { func_id, captures },
     text: "{func_id}({captures}) : {function(func_id)}",
 
     verify {
         require(result_type(0).is_local(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(Module.params(Module.signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
-        require(suffix(Module.params(Module.signature(func_id)?)?, len(captures)) == Module.params(Types.signature(result_type(0))?)? && Module.returns(Module.signature(func_id)?)? == Module.returns(Types.signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
+        require(matches(captures, prefix(Module::params(Module::signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
+        require(suffix(Module::params(Module::signature(func_id)?)?, len(captures)) == Module::params(Types::signature(result_type(0))?)? && Module::returns(Module::signature(func_id)?)? == Module::returns(Types::signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| !v.ty().is_owned()), "capture would escape a borrow or duplicate an owned environment");
     }
 }
 
 op ClosureShared(func_id: FuncId, captures: values) -> Callable {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "closure-shared",
     storage: Closure { func_id, captures },
     text: "{func_id}({captures}) : {function(func_id)}",
 
     verify {
         require(result_type(0).is_shared(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(Module.params(Module.signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
-        require(suffix(Module.params(Module.signature(func_id)?)?, len(captures)) == Module.params(Types.signature(result_type(0))?)? && Module.returns(Module.signature(func_id)?)? == Module.returns(Types.signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
+        require(matches(captures, prefix(Module::params(Module::signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
+        require(suffix(Module::params(Module::signature(func_id)?)?, len(captures)) == Module::params(Types::signature(result_type(0))?)? && Module::returns(Module::signature(func_id)?)? == Module::returns(Types::signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| (v.ty().is_compact() && !v.ty().is_ptr()) || v.ty().is_shared()), "capture would escape a borrow or duplicate an owned environment");
     }
 }
 
 op TailCall(func_id: FuncId, move args: values) -> () {
-    meta: OpInfo { traits: [TERMINATOR, MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN },
     mnemonic: "tail-call",
     storage: TailCall { func_id, args },
     text: "{func_id}({args}) : {function(func_id)}",
 
     verify {
-        require(matches(args, Module.params(Module.signature(func_id)?)?), "tail-call parameter type mismatch");
-        require(Module.returns(Module.signature(func_id)?)? == Module.returns(Module.current_signature())?, "tail-call answer type mismatch");
+        require(matches(args, Module::params(Module::signature(func_id)?)?), "tail-call parameter type mismatch");
+        require(Module::returns(Module::signature(func_id)?)? == Module::returns(Module::current_signature())?, "tail-call answer type mismatch");
     }
 }
 
 op TailCallValue(move callee: Callable, move args: values) -> () {
-    meta: OpInfo { traits: [TERMINATOR, MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN },
     mnemonic: "tail-call-value",
     storage: CallValue { callee, args },
     text: "{callee}({args})",
 
     verify {
-        require(matches(args, Module.params(Types.signature(callee.ty())?)?), "tail-call-value parameter type mismatch");
-        require(Module.returns(Types.signature(callee.ty())?)? == Module.returns(Module.current_signature())?, "tail-call-value answer type mismatch");
+        require(matches(args, Module::params(Types::signature(callee.ty())?)?), "tail-call-value parameter type mismatch");
+        require(Module::returns(Types::signature(callee.ty())?)? == Module::returns(Module::current_signature())?, "tail-call-value answer type mismatch");
     }
 }
 
 op CallValue(move callee: Callable, move args: values) -> signature {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-value",
     storage: CallValue { callee, args },
     signature: callable(callee),
@@ -108,7 +108,7 @@ op CallValue(move callee: Callable, move args: values) -> signature {
 }
 
 op ClosureDrop(move callee: Callable) -> () {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "closure-drop",
     storage: Unary { arg: callee },
 
@@ -118,25 +118,25 @@ op ClosureDrop(move callee: Callable) -> () {
 }
 
 op Iconst(value: Int) -> type(value) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "iconst",
     storage: Iconst { value },
 }
 
 op Fconst(value: Float) -> type(value) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fconst",
     storage: Fconst { value },
 }
 
-op Bconst(value: bool) -> Type.BOOL {
-    meta: OpInfo { memory: Known([]) },
+op Bconst(value: bool) -> Type::BOOL {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "bconst",
     storage: Bconst { value },
 }
 
 op Vconst(value: VectorConst) -> type(value) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "vconst",
     storage: Vconst { value },
 }
@@ -192,7 +192,7 @@ op ISubSatS<T: Integer>(lhs: T, rhs: T) -> T {
     )
 }
 
-op IAddWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
+op IAddWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type::BOOL) {
     meta: OpInfo {},
     mnemonic: "iadd-with-overflow",
     storage: Binary { args: [lhs, rhs] },
@@ -203,7 +203,7 @@ op IAddWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
     ]
 }
 
-op ISubWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
+op ISubWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type::BOOL) {
     meta: OpInfo {},
     mnemonic: "isub-with-overflow",
     storage: Binary { args: [lhs, rhs] },
@@ -213,7 +213,7 @@ op ISubWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
     ]
 }
 
-op IMulWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
+op IMulWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type::BOOL) {
     meta: OpInfo {},
     mnemonic: "imul-with-overflow",
     storage: Binary { args: [lhs, rhs] },
@@ -263,104 +263,104 @@ op IRemU<T: Integer>(lhs: T, rhs: T) -> T {
 }
 
 op FAdd<T: Float>(lhs: T, rhs: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fadd",
     storage: Binary { args: [lhs, rhs] },
 }
 
 op FSub<T: Float>(lhs: T, rhs: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fsub",
     storage: Binary { args: [lhs, rhs] },
 }
 
 op FMul<T: Float>(lhs: T, rhs: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fmul",
     storage: Binary { args: [lhs, rhs] },
 }
 
 op FNeg<T: Float>(arg: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fneg",
     storage: Unary { arg },
 }
 
 op FDiv<T: Float>(lhs: T, rhs: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fdiv",
     storage: Binary { args: [lhs, rhs] },
 }
 
 op FMin<T: Float>(lhs: T, rhs: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fmin",
     storage: Binary { args: [lhs, rhs] },
 }
 
 op FMax<T: Float>(lhs: T, rhs: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fmax",
     storage: Binary { args: [lhs, rhs] },
 }
 
 op FCopysign<T: Float>(lhs: T, rhs: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fcopysign",
     storage: Binary { args: [lhs, rhs] },
 }
 
 op FAbs<T: Float>(arg: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fabs",
     storage: Unary { arg },
 }
 
 op FSqrt<T: Float>(arg: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fsqrt",
     storage: Unary { arg },
 }
 
 op FCeil<T: Float>(arg: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fceil",
     storage: Unary { arg },
 }
 
 op FFloor<T: Float>(arg: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "ffloor",
     storage: Unary { arg },
 }
 
 op FTrunc<T: Float>(arg: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "ftrunc",
     storage: Unary { arg },
 }
 
 op FNearest<T: Float>(arg: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fnearest",
     storage: Unary { arg },
 }
 
-op IAnd<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> T {
+op IAnd<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "iand",
     storage: Binary { args: [lhs, rhs] },
     semantics: bv.and(lhs, rhs)
 }
 
-op IOr<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> T {
+op IOr<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "ior",
     storage: Binary { args: [lhs, rhs] },
     semantics: bv.or(lhs, rhs)
 }
 
-op IXor<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> T {
+op IXor<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "ixor",
     storage: Binary { args: [lhs, rhs] },
@@ -429,26 +429,26 @@ op IPopcnt<T: Integer>(arg: T) -> T {
     semantics: bv.popcnt(arg)
 }
 
-op IEqz(arg: ScalarInteger) -> Type.BOOL {
+op IEqz(arg: ScalarInteger) -> Type::BOOL {
     meta: OpInfo {},
     mnemonic: "ieqz",
     storage: Unary { arg },
     semantics: bv.eq(arg, bv.zero())
 }
 
-op Icmp<T: ScalarInteger | Type.PTR>(kind: IntCC, lhs: T, rhs: T) -> Type.BOOL {
+op Icmp<T: ScalarInteger | Type::PTR>(kind: IntCC, lhs: T, rhs: T) -> Type::BOOL {
     meta: OpInfo {},
     mnemonic: "icmp",
     storage: IntCompare { kind, args: [lhs, rhs] },
     text: "{kind} {lhs}, {rhs}",
     semantics: bv.cmp(kind, lhs, rhs),
     verify {
-        require(!lhs.ty().is_ptr() || kind == IntCC.Eq || kind == IntCC.Ne, "pointer comparison only supports eq and ne");
+        require(!lhs.ty().is_ptr() || kind == IntCC::Eq || kind == IntCC::Ne, "pointer comparison only supports eq and ne");
     }
 }
 
-op Fcmp<T: ScalarFloat>(kind: FloatCC, lhs: T, rhs: T) -> Type.BOOL {
-    meta: OpInfo { memory: Known([]) },
+op Fcmp<T: ScalarFloat>(kind: FloatCC, lhs: T, rhs: T) -> Type::BOOL {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "fcmp",
     storage: FloatCompare { kind, args: [lhs, rhs] },
     text: "{kind} {lhs}, {rhs}",
@@ -465,7 +465,7 @@ op ExtendS<T: Integer, U: Integer>(arg: T) -> U {
     semantics: bv.sext(arg, result(0))
 }
 
-op ExtendU<T: Integer | Type.BOOL | vectors(Type.BOOL), U: Integer>(arg: T) -> U {
+op ExtendU<T: Integer | Type::BOOL | vectors(Type::BOOL), U: Integer>(arg: T) -> U {
     meta: OpInfo {},
     mnemonic: "extendu",
     storage: Unary { arg },
@@ -488,7 +488,7 @@ op Wrap<T: Integer, U: Integer>(arg: T) -> U {
 }
 
 op FloatToIntSatS<T: Float, U: Integer>(arg: T) -> U {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "float-to-int-sat-s",
     storage: Unary { arg },
     verify {
@@ -497,7 +497,7 @@ op FloatToIntSatS<T: Float, U: Integer>(arg: T) -> U {
 }
 
 op FloatToIntSatU<T: Float, U: Integer>(arg: T) -> U {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "float-to-int-sat-u",
     storage: Unary { arg },
     verify {
@@ -506,7 +506,7 @@ op FloatToIntSatU<T: Float, U: Integer>(arg: T) -> U {
 }
 
 op FloatToIntS<T: Float, U: Integer>(arg: T) -> U {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     mnemonic: "float-to-int-s",
     storage: Unary { arg },
     verify {
@@ -515,7 +515,7 @@ op FloatToIntS<T: Float, U: Integer>(arg: T) -> U {
 }
 
 op FloatToIntU<T: Float, U: Integer>(arg: T) -> U {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     mnemonic: "float-to-int-u",
     storage: Unary { arg },
     verify {
@@ -524,7 +524,7 @@ op FloatToIntU<T: Float, U: Integer>(arg: T) -> U {
 }
 
 op IntToFloatS<T: Integer, U: Float>(arg: T) -> U {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "int-to-float-s",
     storage: Unary { arg },
     verify {
@@ -533,7 +533,7 @@ op IntToFloatS<T: Integer, U: Float>(arg: T) -> U {
 }
 
 op IntToFloatU<T: Integer, U: Float>(arg: T) -> U {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "int-to-float-u",
     storage: Unary { arg },
     verify {
@@ -541,20 +541,20 @@ op IntToFloatU<T: Integer, U: Float>(arg: T) -> U {
     }
 }
 
-op FloatPromote(arg: Type.F32) -> Type.F64 {
-    meta: OpInfo { memory: Known([]) },
+op FloatPromote(arg: Type::F32) -> Type::F64 {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "float-promote",
     storage: Unary { arg },
 }
 
-op FloatDemote(arg: Type.F64) -> Type.F32 {
-    meta: OpInfo { memory: Known([]) },
+op FloatDemote(arg: Type::F64) -> Type::F32 {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "float-demote",
     storage: Unary { arg },
 }
 
 op Reinterpret(arg: Number) -> (result: Number) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "reinterpret",
     storage: Unary { arg },
     verify {
@@ -562,28 +562,28 @@ op Reinterpret(arg: Number) -> (result: Number) {
     }
 }
 
-op IntToPtr(arg: ScalarInteger) -> Type.PTR {
-    meta: OpInfo { memory: Known([]) },
+op IntToPtr(arg: ScalarInteger) -> Type::PTR {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "inttoptr",
     storage: IntToPtr { arg },
 }
 
-op PtrToInt(arg: Type.PTR) -> ScalarInteger {
-    meta: OpInfo { memory: Known([]) },
+op PtrToInt(arg: Type::PTR) -> ScalarInteger {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "ptrtoint",
     storage: PtrToInt { arg },
 }
 
-op Load(ptr: Type.PTR, offset: u32, flags: MemFlags) -> Any {
-    meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
+op Load(ptr: Type::PTR, offset: u32, flags: MemFlags) -> Any {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(MemoryAccess, effects) },
     mnemonic: "load",
     storage: Load { ptr, offset, flags },
     text: "{.flags} {ptr}, offset={offset}",
     implements: [ReadAccess(ptr, i64(offset), result_type(0), flags)],
 }
 
-op Store(ptr: Type.PTR, value: Any, offset: u32, flags: MemFlags) -> () {
-    meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
+op Store(ptr: Type::PTR, value: Any, offset: u32, flags: MemFlags) -> () {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(MemoryAccess, effects) },
     mnemonic: "store",
     storage: Store { ptr, value, offset, flags },
     text: "{.flags} {value}, {ptr}, offset={offset}",
@@ -593,8 +593,8 @@ op Store(ptr: Type.PTR, value: Any, offset: u32, flags: MemFlags) -> () {
 // A fresh, uninitialized local object, valid until the invocation returns.
 // Physical resource exhaustion is outside MIR equivalence: unused objects may
 // be eliminated, but distinct live objects must not be merged or speculated.
-op Alloca(size: u32, align: u32) -> Type.PTR {
-    meta: OpInfo { memory: Known([ALLOCATE]) },
+op Alloca(size: u32, align: u32) -> Type::PTR {
+    meta: OpInfo { memory: MemoryEffect::known(MemoryEffects::ALLOCATE) },
     mnemonic: "alloca",
     storage: Alloca { size, align },
     text: "size={size}, align={align}",
@@ -605,14 +605,14 @@ op Alloca(size: u32, align: u32) -> Type.PTR {
     }
 }
 
-op PtrOffset(ptr: Type.PTR, offset: i32) -> Type.PTR {
-    meta: OpInfo { memory: Known([]) },
+op PtrOffset(ptr: Type::PTR, offset: i32) -> Type::PTR {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "ptr-offset",
     storage: PtrOffset { ptr, offset },
 }
 
-op PtrIndex(ptr: Type.PTR, index: ScalarInteger, imm: PtrIndexImm) -> Type.PTR {
-    meta: OpInfo { memory: Known([]) },
+op PtrIndex(ptr: Type::PTR, index: ScalarInteger, imm: PtrIndexImm) -> Type::PTR {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "ptr-index",
     storage: PtrIndex { ptr, index, imm_id: imm },
     text: "{ptr}, {index}, scale={imm.scale}, offset={imm.offset}",
@@ -623,91 +623,91 @@ op PtrIndex(ptr: Type.PTR, index: ScalarInteger, imm: PtrIndexImm) -> Type.PTR {
 }
 
 op Call(func_id: FuncId, move args: values) -> signature {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call",
     storage: Call { func_id, args },
     signature: function(func_id),
     text: "{func_id}({args}) : {function(func_id)}",
 }
 
-op CallIndirect(sig_id: SigId, ptr: Type.PTR, move args: values) -> signature {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+op CallIndirect(sig_id: SigId, ptr: Type::PTR, move args: values) -> signature {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr, args, sig_id },
     signature: sig_id,
     text: "{ptr}({args}) : {sig_id}",
 
     verify {
-        require(all(Module.params(sig_id)?, |t| !t.is_callable()) && all(Module.returns(sig_id)?, |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
+        require(all(Module::params(sig_id)?, |t| !t.is_callable()) && all(Module::returns(sig_id)?, |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
     }
 }
 
 op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: values) -> signature {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-intrinsic",
     storage: CallIntrinsic { intrinsic, args, sig_id },
     signature: sig_id,
     text: "{intrinsic}({args}) : {sig_id}",
 
     verify {
-        require(all(Module.params(sig_id)?, |t| !t.is_callable()) && all(Module.returns(sig_id)?, |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
+        require(all(Module::params(sig_id)?, |t| !t.is_callable()) && all(Module::returns(sig_id)?, |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
     }
 }
 
 op Jump(dest: successor) -> () {
-    meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     mnemonic: "jump",
     storage: Jump { dest },
 }
 
-op Br(condition: Type.BOOL, then_dest: successor, else_dest: successor) -> () {
-    meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
+op Br(condition: Type::BOOL, then_dest: successor, else_dest: successor) -> () {
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     mnemonic: "br",
     storage: Br { condition, then_dest, else_dest },
 }
 
-op BrTable(index: Type.I32, cases: successors, default: successor) -> () {
-    meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
+op BrTable(index: Type::I32, cases: successors, default: successor) -> () {
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     mnemonic: "br-table",
     storage: BrTable { index, table: table(cases, default) },
 }
 
 op Return(move values: values) -> () {
-    meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     mnemonic: "return",
     storage: Return { values },
 
     verify {
-        require(matches(values, Module.returns(Module.current_signature())?), "return value type mismatch");
+        require(matches(values, Module::returns(Module::current_signature())?), "return value type mismatch");
     }
 }
 
-op Select<T: Any>(condition: Type.BOOL, if_true: T, if_false: T) -> T {
-    meta: OpInfo { memory: Known([]) },
+op Select<T: Any>(condition: Type::BOOL, if_true: T, if_false: T) -> T {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "select",
     storage: Ternary { args: [condition, if_true, if_false] },
 }
 
 op Unreachable() -> () {
-    meta: OpInfo { traits: [TERMINATOR, MAY_TRAP, ABORT], memory: Known([]) },
+    meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP).union(OpTraits::ABORT), memory: MemoryEffect::NONE },
     mnemonic: "unreachable",
     storage: Unreachable {},
 }
 
 op Nop() -> () {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "nop",
     storage: Nop {},
 }
 
 op Splat<T: Scalar>(arg: T) -> vector(T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "splat",
     storage: Unary { arg },
 }
 
 op Shuffle<T: Vector>(lhs: T, rhs: T, mask: Bytes) -> T {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "shuffle",
     storage: Shuffle { args: [lhs, rhs], mask: pool(mask) },
     text: "{lhs}, {rhs}, mask={mask:bytes}",
@@ -720,14 +720,14 @@ op Shuffle<T: Vector>(lhs: T, rhs: T, mask: Bytes) -> T {
 }
 
 op InsertElement<T: Vector>(vector: T, scalar: element(T), index: ScalarInteger) -> T {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     mnemonic: "insertelement",
     storage: Ternary { args: [vector, scalar, index] },
     // Unsigned index; an index >= the runtime lane count traps.
 }
 
 op ExtractElement<T: Vector>(vector: T, index: ScalarInteger) -> element(T) {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     mnemonic: "extractelement",
     storage: Binary { args: [vector, index] },
     // Unsigned index; an index >= the runtime lane count traps.
@@ -736,7 +736,7 @@ op ExtractElement<T: Vector>(vector: T, index: ScalarInteger) -> element(T) {
 // Add in increasing lane order, starting at lane 0 (no extra zero).
 // Integer addition wraps. Floating addition uses the scalar FAdd contract.
 op ReduceAdd<T: Number & Vector>(arg: T) -> element(T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "reduce-add",
     storage: Unary { arg },
 }
@@ -744,61 +744,61 @@ op ReduceAdd<T: Number & Vector>(arg: T) -> element(T) {
 // Integer extrema use signed comparison. Float extrema propagate NaN;
 // min(-0,+0) is -0, max(-0,+0) is +0. Fold in increasing lane order.
 op ReduceMin<T: Number & Vector>(arg: T) -> element(T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "reduce-min",
     storage: Unary { arg },
 }
 
 op ReduceMax<T: Number & Vector>(arg: T) -> element(T) {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "reduce-max",
     storage: Unary { arg },
 }
 
-op ReduceAnd<T: Integer & Vector | vectors(Type.BOOL)>(arg: T) -> element(T) {
-    meta: OpInfo { memory: Known([]) },
+op ReduceAnd<T: Integer & Vector | vectors(Type::BOOL)>(arg: T) -> element(T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "reduce-and",
     storage: Unary { arg },
 }
 
-op ReduceOr<T: Integer & Vector | vectors(Type.BOOL)>(arg: T) -> element(T) {
-    meta: OpInfo { memory: Known([]) },
+op ReduceOr<T: Integer & Vector | vectors(Type::BOOL)>(arg: T) -> element(T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "reduce-or",
     storage: Unary { arg },
 }
 
-op ReduceXor<T: Integer & Vector | vectors(Type.BOOL)>(arg: T) -> element(T) {
-    meta: OpInfo { memory: Known([]) },
+op ReduceXor<T: Integer & Vector | vectors(Type::BOOL)>(arg: T) -> element(T) {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "reduce-xor",
     storage: Unary { arg },
 }
 
-op LoadStride(ptr: Type.PTR, stride: ScalarInteger, mem: VectorMemOptions) -> Vector {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
+op LoadStride(ptr: Type::PTR, stride: ScalarInteger, mem: VectorMemOptions) -> Vector {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load-stride",
     storage: VectorLoadStrided { ptr, stride, ext: mem },
     text: "{mem.scale=1} {.mem.flags} {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
 
     verify {
         require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == result_type(0).shape()?), "mask must match vector shape");
-        require(all(mem.evl, |v| v.ty() == Type.I32), "EVL must be i32");
+        require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
     }
 }
 
-op StoreStride(ptr: Type.PTR, stride: ScalarInteger, value: Vector, mem: VectorMemOptions) -> () {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([WRITE]) },
+op StoreStride(ptr: Type::PTR, stride: ScalarInteger, value: Vector, mem: VectorMemOptions) -> () {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) },
     mnemonic: "store-stride",
     storage: VectorStoreStrided { args: [ptr, stride, value], ext: mem },
     text: "{mem.scale=1} {.mem.flags} {value}, {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
 
     verify {
         require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == value.ty().shape()?), "mask must match vector shape");
-        require(all(mem.evl, |v| v.ty() == Type.I32), "EVL must be i32");
+        require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
     }
 }
 
-op Gather<T: Integer & Vector, U: Vector>(ptr: Type.PTR, index: T, mem: VectorMemOptions) -> U {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
+op Gather<T: Integer & Vector, U: Vector>(ptr: Type::PTR, index: T, mem: VectorMemOptions) -> U {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "gather",
     storage: VectorGather { ptr, index, ext: mem },
     text: "{.mem.flags} {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
@@ -806,12 +806,12 @@ op Gather<T: Integer & Vector, U: Vector>(ptr: Type.PTR, index: T, mem: VectorMe
     verify {
         require(U.same_shape(T), "index and result must have the same shape");
         require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == result_type(0).shape()?), "mask must match vector shape");
-        require(all(mem.evl, |v| v.ty() == Type.I32), "EVL must be i32");
+        require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
     }
 }
 
-op Scatter<T: Integer & Vector, U: Vector>(ptr: Type.PTR, index: T, value: U, mem: VectorMemOptions) -> () {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([WRITE]) },
+op Scatter<T: Integer & Vector, U: Vector>(ptr: Type::PTR, index: T, value: U, mem: VectorMemOptions) -> () {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) },
     mnemonic: "scatter",
     storage: VectorScatter { args: [ptr, index, value], ext: mem },
     text: "{.mem.flags} {value}, {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
@@ -819,6 +819,6 @@ op Scatter<T: Integer & Vector, U: Vector>(ptr: Type.PTR, index: T, value: U, me
     verify {
         require(U.same_shape(T), "index and value must have the same shape");
         require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == value.ty().shape()?), "mask must match vector shape");
-        require(all(mem.evl, |v| v.ty() == Type.I32), "EVL must be i32");
+        require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
     }
 }

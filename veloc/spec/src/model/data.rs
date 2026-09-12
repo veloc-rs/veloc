@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::Error;
-use crate::model::builtins::Builtins;
+use crate::model::encoding::Encodings;
 use crate::model::records::{PropertyType, RecordDef};
 use crate::model::{Fields, identifier, list};
 use crate::syntax::{Kind, Node, Record};
@@ -24,7 +24,6 @@ pub(crate) fn fits_number(ty: &str, n: i128) -> bool {
 pub(crate) enum Value {
     Number(i128),
     Bool(bool),
-    Flags(String, Vec<String>),
     Record(String, BTreeMap<String, Value>),
     Variant(String, String, Vec<Value>),
     None,
@@ -37,9 +36,6 @@ impl Value {
         match self {
             Self::Number(n) => n.to_string(),
             Self::Bool(b) => b.to_string(),
-            Self::Flags(ty, members) => {
-                crate::model::builtins::flag_set(&format!("{prefix}{ty}"), members)
-            }
             Self::Record(ty, fields) => format!(
                 "{prefix}{ty} {{ {} }}",
                 fields
@@ -92,7 +88,7 @@ impl Types {
         for decl in declarations.iter().filter(|d| {
             matches!(
                 d.kind.as_str(),
-                "struct" | "enum" | "flags" | "encoding" | "comparison"
+                "struct" | "enum" | "encoding" | "comparison"
             ) && !(d.kind == "encoding" && d.name == "Type")
                 || super::records::rust_binding(d).is_some()
         }) {
@@ -190,31 +186,6 @@ impl Types {
         Ok(())
     }
 
-    pub fn record(&self, source: &str, node: Node, builtins: &Builtins) -> Result<Value, Error> {
-        let Kind::Object(ty, _) = &node.kind else {
-            return Err(Error::at(
-                source,
-                node.offset,
-                "meta requires a typed record value",
-            ));
-        };
-        if !self.records.iter().any(|r| r.name == *ty) {
-            return Err(Error::at(
-                source,
-                node.offset,
-                format!("unknown metadata struct `{ty}`"),
-            ));
-        }
-        if self.contains_value(ty) {
-            return Err(Error::at(
-                source,
-                node.offset,
-                "metadata cannot contain SSA Value fields",
-            ));
-        }
-        self.value(source, &PropertyType::Named(ty.clone()), node, builtins)
-    }
-
     /// Records and enums are acyclic after declaration checking.
     pub fn contains_value(&self, ty: &str) -> bool {
         if !self.rust.policy(ty).references.is_data() {
@@ -243,7 +214,7 @@ impl Types {
         source: &str,
         ty: &PropertyType,
         node: Node,
-        builtins: &Builtins,
+        encodings: &Encodings,
     ) -> Result<Value, Error> {
         let fail = || {
             Error::at(
@@ -260,7 +231,7 @@ impl Types {
                         source,
                         &PropertyType::Named(inner.clone()),
                         args[0].clone(),
-                        builtins,
+                        encodings,
                     )?)))
                 }
                 _ => Err(fail()),
@@ -269,11 +240,6 @@ impl Types {
         let PropertyType::Named(ty) = ty else {
             return Err(fail());
         };
-        if builtins.flags.contains_key(ty) {
-            return builtins
-                .members(source, node, ty)
-                .map(|members| Value::Flags(ty.clone(), members));
-        }
         if let Some(record) = self.records.iter().find(|r| r.name == *ty) {
             let Kind::Object(ref name, ref fields) = node.kind else {
                 return Err(fail());
@@ -299,7 +265,7 @@ impl Types {
                         format!("missing field `{}` in {ty}", field.name),
                     )
                 })?;
-                let value = self.value(source, &field.ty, input.clone(), builtins)?;
+                let value = self.value(source, &field.ty, input.clone(), encodings)?;
                 values.insert(field.name.clone(), value);
             }
             return Ok(Value::Record(ty.clone(), values));
@@ -327,7 +293,7 @@ impl Types {
             let values = params
                 .iter()
                 .zip(args)
-                .map(|(ty, arg)| self.value(source, ty, arg, builtins))
+                .map(|(ty, arg)| self.value(source, ty, arg, encodings))
                 .collect::<Result<_, _>>()?;
             return Ok(Value::Variant(ty.clone(), variant, values));
         }
@@ -337,7 +303,7 @@ impl Types {
             Kind::Name(n) if ty == "bool" && matches!(n.as_str(), "true" | "false") => {
                 Ok(Value::Bool(n == "true"))
             }
-            Kind::Name(n) if n == "empty" && builtins.encodings.contains_key(ty) => {
+            Kind::Name(n) if n == "empty" && encodings.contains_key(ty) => {
                 Ok(Value::Empty(ty.clone()))
             }
             _ => Err(fail()),

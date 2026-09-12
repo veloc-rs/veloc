@@ -1,4 +1,5 @@
 //! Module type structure and restrictions on where types may be used.
+use veloc_types::TypeInfo;
 use crate::{CallableKind, ModuleData, Result, Type};
 use alloc::format;
 

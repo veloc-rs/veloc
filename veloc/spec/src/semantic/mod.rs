@@ -1,6 +1,7 @@
 use crate::Error;
+use std::collections::BTreeSet;
 pub(crate) mod emit;
-use crate::model::{Op, Param, ParamKind, Pattern, Semantic, SemanticStep};
+use crate::model::{Op, Param, ParamKind, Semantic, SemanticStep};
 use crate::syntax::{Kind, Node};
 use veloc_semantics::{
     BvConst, BvOp, ComparisonRef, Conversion, IntPredicate, Sort, Trap, TypeRef,
@@ -259,17 +260,17 @@ pub(crate) fn validate(
         return Ok(Vec::new());
     };
     let fail = |message| Error::at(source, op.offset, message);
-    if !op.memory.is_none() || op.traits.iter().any(|t| t == "TERMINATOR") {
+    if op.traits.contains("TERMINATOR") {
         return Err(fail(
-            "executable semantics require no memory effects or control flow".into(),
+            "executable semantics cannot describe control flow".into(),
         ));
     }
-    if op.traits.iter().any(|t| t == "MAY_TRAP") != !sem.traps.is_empty() {
+    if op.traits.contains("MAY_TRAP") != !sem.traps.is_empty() {
         return Err(fail(
             "MAY_TRAP must agree with explicit semantic trap guards".into(),
         ));
     }
-    let (Some(inputs), Some(outputs)) = (
+    let (Some(_inputs), Some(outputs)) = (
         op.signature.operands.patterns(),
         op.signature.results.patterns(),
     ) else {
@@ -284,170 +285,107 @@ pub(crate) fn validate(
     }
     sem.program().validate().map_err(|e| fail(e.to_string()))?;
     let instances = instances(source, op, types)?;
-    for instance in &instances {
-        let (ins, outs) = instance.sorts.split_at(inputs.len());
-        let properties = vec![IntPredicate::new(false, 2); sem.properties.len()];
-        sem.program()
-            .instantiate(ins, outs, &properties)
-            .map_err(|e| fail(format!("invalid semantic types {ins:?} -> {outs:?}: {e}")))?;
-    }
     Ok(instances)
 }
 
-/// Concrete lane signatures shared by semantic validation and code generation.
-/// `scalar` distinguishes genuinely scalar signatures from vector-only recipes.
+/// One candidate lane signature. Rust const predicates select its admissible
+/// shapes; the generator never evaluates foreign type methods.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Instance {
     pub kinds: Vec<crate::types::Primitive>,
     pub sorts: Vec<Sort>,
     pub scalar: bool,
+    pub shapes: Vec<u32>,
+    pub same: Vec<Option<usize>>,
+    pub error: Option<String>,
 }
 
 fn instances(source: &str, op: &Op, types: &crate::types::Types) -> Result<Vec<Instance>, Error> {
-    let constraints: Vec<_> = op.constraints.iter().filter(|c| c.type_only).collect();
+    let constraints: Vec<_> = op
+        .constraints
+        .iter()
+        .filter(|c| c.type_only && !c.condition.is_bool(true))
+        .collect();
     for constraint in &constraints {
-        if !constraint.offline {
+        if !constraint.condition.const_type_query(&op.params) {
             return Err(Error::at(
                 source,
                 op.offset,
-                "type constraint uses a Rust binding without offline evaluation support",
+                "semantic type constraints require const functions",
             ));
         }
     }
+    let deferred = !constraints.is_empty();
     let sem = op.semantics.as_ref().expect("semantic operation");
     let inputs = op.signature.operands.patterns().expect("fixed signature");
-    let outputs = op.signature.results.patterns().expect("fixed signature");
     let fail = |message: String| Error::at(source, op.offset, message);
-    // Pointer values are only modeled for comparisons. Their target width is
-    // bound externally, never silently inferred from the build host.
+    let candidates = crate::types::cases::enumerate(types, &op.signature)
+        .map_err(|m| fail(m.into()))?
+        .ok_or_else(|| fail("shape-changing semantic recipes are not supported".into()))?;
     let mut instances = Vec::new();
-    // Enumerate each independent type variable, not an assumed common shape.
-    // Ordinary checked constraints determine which combinations are admissible.
-    let mut bindings = std::collections::BTreeMap::new();
-    let mut domains = Vec::new();
-    for pattern in inputs.iter().chain(outputs) {
-        let domain = match pattern {
-            Pattern::Set(set) => Domain::Set(set),
-            Pattern::Bind(var, set) => {
-                bindings.insert(*var, domains.len());
-                Domain::Set(set)
+    for crate::types::cases::Case {
+        kinds,
+        shapes,
+        same,
+    } in candidates
+    {
+        if !deferred {
+            for index in 1..shapes.len() {
+                if same[index] == Some(0) {
+                    continue;
+                }
+                if shapes[index] != shapes[0] || shapes[index].count_ones() != 1 {
+                    return Err(fail("semantic recipes require a shared lane shape".into()));
+                }
             }
-            Pattern::Same(var) => Domain::Same(bindings[var]),
-            Pattern::Exact(name) => Domain::Set(&types.exact[name]),
-            _ => {
-                return Err(fail(
-                    "shape-changing semantic recipes are not supported".into(),
-                ));
-            }
+        }
+        let scalar = shapes.iter().all(|shapes| shapes & 1 != 0);
+        let widths: &[u16] = if kinds.contains(&crate::types::Primitive::Ptr) {
+            &[32, 64]
+        } else {
+            &[32]
         };
-        domains.push(domain);
-    }
-    let mut accepted = std::collections::BTreeMap::<Vec<crate::types::Primitive>, bool>::new();
-    enumerate(&domains, &mut Vec::new(), &mut 0, &mut |values| {
-        if !constraints.iter().all(|c| {
-            c.condition
-                .accepts_types(types, &op.params, values, inputs.len())
-        }) {
-            return Ok(());
-        }
-        // A recipe describes one lane. Broadcasts, reductions and permutations
-        // need their own model, even if their widths happen to agree.
-        if values.windows(2).any(|pair| pair[0].1 != pair[1].1) {
-            return Err("semantic recipes require a shared lane shape");
-        }
-        let scalar = values.iter().all(|(_, shape)| *shape == 0);
-        *accepted
-            .entry(values.iter().map(|(code, _)| *code).collect())
-            .or_default() |= scalar;
-        Ok(())
-    })
-    .map_err(|message| fail(message.into()))?;
-    for (kinds, scalar) in accepted {
-        let has_pointer = kinds.contains(&crate::types::Primitive::Ptr);
-        let widths: &[u16] = if has_pointer { &[32, 64] } else { &[32] };
         for &pointer_width in widths {
-            let sorts = kinds
-                .iter()
-                .map(|&kind| {
-                    match kind {
-                        crate::types::Primitive::Int(bits) => {
-                            Ok(Sort::bv(bits as u16).unwrap())
-                        }
-                        crate::types::Primitive::Bool => Ok(Sort::Bool),
-                        crate::types::Primitive::Ptr => {
-                            let comparison_only = sem.steps.iter().all(|step| matches!(
-                                step,
-                                SemanticStep::Input(_) | SemanticStep::Compare {
-                                    kind: ComparisonRef::Property(_), ..
-                                }
-                            ));
-                            if !comparison_only {
-                                return Err(fail(
-                                    "pointer semantics only support comparison properties, not pointer arithmetic".into()
-                                ));
-                            }
-                            Ok(Sort::bv(pointer_width).unwrap())
-                        }
-                        crate::types::Primitive::Float(_) => Err(fail(
-                            "floating-point execution semantics are not modeled".into()
-                        )),
+            let mut error = None;
+            let sorts = kinds.iter().map(|&kind| match kind {
+                crate::types::Primitive::Int(bits) => Sort::bv(bits as u16).unwrap(),
+                crate::types::Primitive::Bool => Sort::Bool,
+                crate::types::Primitive::Ptr => {
+                    if !sem.steps.iter().all(|step| matches!(step,
+                        SemanticStep::Input(_) | SemanticStep::Compare { kind: ComparisonRef::Property(_), .. })) {
+                        error = Some("pointer semantics only support comparison properties, not pointer arithmetic".into());
                     }
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-            let instance = Instance {
+                    Sort::bv(pointer_width).unwrap()
+                }
+                crate::types::Primitive::Float(_) => {
+                    error = Some("floating-point execution semantics are not modeled".into());
+                    Sort::Bool
+                }
+            }).collect::<Vec<_>>();
+            if error.is_none() {
+                let (ins, outs) = sorts.split_at(inputs.len());
+                let properties = vec![IntPredicate::new(false, 2); sem.properties.len()];
+                if let Err(e) = sem.program().instantiate(ins, outs, &properties) {
+                    error = Some(format!("invalid semantic types {ins:?} -> {outs:?}: {e}"));
+                }
+            }
+            if !deferred && let Some(error) = &error {
+                return Err(fail(error.clone()));
+            }
+            instances.push(Instance {
                 kinds: kinds.clone(),
                 sorts,
                 scalar,
-            };
-            instances.push(instance);
+                shapes: shapes.clone(),
+                same: same.clone(),
+                error,
+            });
         }
     }
     if instances.is_empty() {
         return Err(fail("no admissible semantic signature".into()));
     }
     Ok(instances)
-}
-
-/// Signature domains preserve exact generic equality while allowing arbitrary
-/// declared relationships between independent variables to be checked normally.
-enum Domain<'a> {
-    Set(&'a crate::types::TypeSet),
-    Same(usize),
-}
-
-fn enumerate(
-    domains: &[Domain<'_>],
-    values: &mut Vec<(crate::types::Primitive, u32)>,
-    visits: &mut usize,
-    accept: &mut impl FnMut(&[(crate::types::Primitive, u32)]) -> Result<(), &'static str>,
-) -> Result<(), &'static str> {
-    *visits += 1;
-    if *visits > 1_000_000 {
-        return Err("semantic signature has too many type combinations");
-    }
-    let Some(domain) = domains.get(values.len()) else {
-        return accept(values);
-    };
-    match domain {
-        Domain::Same(index) => {
-            values.push(values[*index]);
-            enumerate(domains, values, visits, accept)?;
-            values.pop();
-        }
-        Domain::Set(set) => {
-            for (&code, &mask) in &set.0 {
-                let mut shapes = mask;
-                while shapes != 0 {
-                    let shape = shapes.trailing_zeros();
-                    shapes &= shapes - 1;
-                    values.push((code, shape));
-                    enumerate(domains, values, visits, accept)?;
-                    values.pop();
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Only direct primitive applications inherit reviewed algebraic facts. A
@@ -457,7 +395,7 @@ pub(crate) fn derive(
     source: &str,
     offset: usize,
     semantics: &Semantic,
-    traits: &mut Vec<String>,
+    traits: &mut BTreeSet<String>,
     identity: &mut Option<BvConst>,
     absorbing: &mut Option<BvConst>,
 ) -> Result<(), Error> {
@@ -465,7 +403,7 @@ pub(crate) fn derive(
     let Some(primitive) = semantics.primitive() else {
         if identity.is_some()
             || absorbing.is_some()
-            || traits.iter().any(|name| ALGEBRAIC.contains(&name.as_str()))
+            || ALGEBRAIC.iter().any(|name| traits.contains(*name))
         {
             return Err(Error::at(
                 source,
@@ -481,7 +419,7 @@ pub(crate) fn derive(
         ("ASSOCIATIVE", facts.associative),
         ("IDEMPOTENT", facts.idempotent),
     ] {
-        let declared = traits.iter().any(|value| value == name);
+        let declared = traits.contains(name);
         if declared && !supported {
             return Err(Error::at(
                 source,
@@ -493,7 +431,7 @@ pub(crate) fn derive(
             ));
         }
         if supported && !declared {
-            traits.push(name.into());
+            traits.insert(name.into());
         }
     }
     for (name, declared, expected) in [
@@ -520,7 +458,7 @@ pub(crate) fn derive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{TypeDef, TypeList};
+    use crate::model::{Pattern, TypeDef, TypeList};
 
     fn params() -> Vec<Param> {
         vec![
@@ -597,9 +535,16 @@ mod tests {
     #[test]
     fn direct_primitives_supply_facts_without_repeated_declarations() {
         let sem = parsed("bv.and(lhs, rhs)", &params()).unwrap();
-        let (mut traits, mut identity, mut absorbing) = (vec![], None, None);
+        let (mut traits, mut identity, mut absorbing) = (BTreeSet::new(), None, None);
         derive("", 0, &sem, &mut traits, &mut identity, &mut absorbing).unwrap();
-        assert_eq!(traits, ["COMMUTATIVE", "ASSOCIATIVE", "IDEMPOTENT"]);
+        assert_eq!(
+            traits,
+            BTreeSet::from([
+                "COMMUTATIVE".into(),
+                "ASSOCIATIVE".into(),
+                "IDEMPOTENT".into()
+            ])
+        );
         assert_eq!(identity, Some(BvConst::AllOnes));
         assert_eq!(absorbing, Some(BvConst::Zero));
         derive("", 0, &sem, &mut traits, &mut identity, &mut absorbing).unwrap();
@@ -614,7 +559,7 @@ mod tests {
                 "",
                 0,
                 &parsed("bv.add(lhs, rhs)", &params()).unwrap(),
-                &mut vec![],
+                &mut BTreeSet::new(),
                 &mut identity,
                 &mut None
             )
@@ -625,7 +570,7 @@ mod tests {
                 "",
                 0,
                 &parsed("bv.sub(lhs, rhs)", &params()).unwrap(),
-                &mut vec!["COMMUTATIVE".into()],
+                &mut BTreeSet::from(["COMMUTATIVE".into()]),
                 &mut None,
                 &mut None
             )
@@ -640,13 +585,13 @@ mod tests {
             }],
         )
         .unwrap();
-        assert!(derive("", 0, &composed, &mut vec![], &mut None, &mut None).is_ok());
+        assert!(derive("", 0, &composed, &mut BTreeSet::new(), &mut None, &mut None).is_ok());
         assert!(
             derive(
                 "",
                 0,
                 &composed,
-                &mut vec!["COMMUTATIVE".into()],
+                &mut BTreeSet::from(["COMMUTATIVE".into()]),
                 &mut None,
                 &mut None
             )
@@ -665,7 +610,12 @@ mod tests {
             offset: 0,
             name: "Test".into(),
             mnemonic: "test".into(),
-            meta: crate::model::data::Value::Record("OpInfo".into(), Default::default()),
+            meta: crate::model::metadata::Metadata {
+                name: "OpInfo".into(),
+                checks: Vec::new(),
+                value_only: None,
+                fields: Default::default(),
+            },
             format: "Unary".into(),
             signature: TypeDef {
                 operands: TypeList::Fixed(vec![operand]),
@@ -675,8 +625,7 @@ mod tests {
             text: None,
             params,
             projection: crate::model::Projection::Packed(Default::default()),
-            traits: vec![],
-            memory: crate::model::builtins::Effect::Known(Vec::new()),
+            traits: BTreeSet::new(),
             interfaces: Default::default(),
             constraints: vec![],
             identity: None,
@@ -694,18 +643,18 @@ mod tests {
             );
             validate("", &op, &crate::fixtures::types()).unwrap();
         }
-        for name in ["Type.I8", "Type.I16", "Type.I32", "Type.I64"] {
+        for name in ["Type::I8", "Type::I16", "Type::I32", "Type::I64"] {
             let op = unary(Pattern::Exact(name.into()), Pattern::Exact(name.into()));
             validate("", &op, &crate::fixtures::types()).unwrap();
         }
         for (operand, result) in [
             (
-                Pattern::Exact("Type.BOOL".into()),
-                Pattern::Exact("Type.BOOL".into()),
+                Pattern::Exact("Type::BOOL".into()),
+                Pattern::Exact("Type::BOOL".into()),
             ),
             (
-                Pattern::Exact("Type.I32".into()),
-                Pattern::Exact("Type.I64".into()),
+                Pattern::Exact("Type::I32".into()),
+                Pattern::Exact("Type::I64".into()),
             ),
             (
                 Pattern::Bind(0, crate::fixtures::set("Float")),
@@ -722,19 +671,16 @@ mod tests {
     }
 
     #[test]
-    fn executable_bitvector_semantics_do_not_claim_effects_or_traps() {
+    fn executable_bitvector_semantics_do_not_claim_control_or_traps() {
         let mut op = unary(
-            Pattern::Exact("Type.I32".into()),
-            Pattern::Exact("Type.I32".into()),
+            Pattern::Exact("Type::I32".into()),
+            Pattern::Exact("Type::I32".into()),
         );
-        op.memory = crate::model::builtins::Effect::Unknown;
-        assert!(validate("", &op, &crate::fixtures::types()).is_err());
-        op.memory = crate::model::builtins::Effect::Known(Vec::new());
         for flag in ["MAY_TRAP", "TERMINATOR"] {
-            op.traits = vec![flag.into()];
+            op.traits = BTreeSet::from([flag.into()]);
             assert!(validate("", &op, &crate::fixtures::types()).is_err());
         }
-        op.traits.clear();
+        op.traits = BTreeSet::new();
         op.signature.results = TypeList::Signature;
         assert!(validate("", &op, &crate::fixtures::types()).is_err());
         op.semantics = None;

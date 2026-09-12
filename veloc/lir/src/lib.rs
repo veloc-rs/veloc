@@ -2,6 +2,7 @@
 //! Representation and decoding live here; target algorithms live in codegen.
 
 #![no_std]
+#![feature(const_trait_impl)]
 extern crate alloc;
 
 pub mod error;
@@ -25,7 +26,7 @@ pub use symbol::*;
 pub use use_def::UseDefChain;
 pub use validation::TypeError;
 pub use veloc_mir::Value as ValueId;
-pub use veloc_types::{Type, TypeBits};
+pub use veloc_types::{Type, TypeBits, TypeInfo};
 
 pub mod types {
     include!(concat!(env!("OUT_DIR"), "/types.rs"));

@@ -5,7 +5,7 @@ use crate::bytecode::ControlSite;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 use hashbrown::{HashMap, HashSet};
-use veloc_mir::{CallableKind, FuncId};
+use veloc_mir::{CallableKind, FuncId, TypeInfo};
 
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 

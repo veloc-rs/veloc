@@ -22,11 +22,11 @@ impl std::fmt::Display for SourceError {
 
 impl std::error::Error for SourceError {}
 
-struct File {
-    path: PathBuf,
+pub(crate) struct File {
+    pub(crate) path: PathBuf,
     first_line: usize,
-    records: std::ops::Range<usize>,
-    visible: BTreeSet<usize>,
+    pub(crate) records: std::ops::Range<usize>,
+    pub(crate) visible: BTreeSet<usize>,
 }
 
 pub struct Source {
@@ -60,6 +60,19 @@ impl Source {
     /// symlink also invalidates Cargo's build-script cache.
     pub fn dependencies(&self) -> impl Iterator<Item = &Path> {
         self.dependencies.iter().map(PathBuf::as_path)
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+    pub(crate) fn records(&self) -> &[syntax::Record] {
+        &self.records
+    }
+    pub(crate) fn files(&self) -> &[File] {
+        &self.files
+    }
+    pub fn interfaces(&self, namespace: &str) -> Result<String, SourceError> {
+        crate::interfaces::generate(self, namespace).map_err(|e| self.locate(e))
     }
 
     pub fn parse(&self) -> Result<Definitions, SourceError> {

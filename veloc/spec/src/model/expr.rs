@@ -2,7 +2,7 @@
 //! constructors; domain-specific queries and helper functions live in defs.
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Param, ParamKind, Pattern, TypeDef, builtins::Builtins, data, records::PropertyType};
+use super::{Param, ParamKind, Pattern, TypeDef, data, encoding::Encodings, records::PropertyType};
 use crate::types::TypeSet;
 mod evaluate;
 
@@ -139,6 +139,49 @@ pub(crate) enum ExprKind {
 }
 
 impl Expr {
+    pub(crate) fn is_const(&self) -> bool {
+        self.const_safe(false)
+    }
+
+    pub(crate) fn const_type_query(&self, params: &[Param]) -> bool {
+        self.type_only(params) && self.const_safe(true)
+    }
+
+    fn const_safe(&self, types: bool) -> bool {
+        use ExprKind as E;
+        let safe = |expr: &Self| expr.const_safe(types);
+        match &self.kind {
+            E::Constant(_) | E::Integer(_) | E::Type(_) | E::Parameter(_) | E::Bound(_) => true,
+            E::Results | E::ResultType(_) | E::Query(Query::TypeOf, _) => types,
+            E::Rust(binding, args) => binding.is_const && args.iter().all(safe),
+            E::Unary(_, v)
+            | E::Convert(v)
+            | E::Some(v)
+            | E::Try(v)
+            | E::Field(v, _)
+            | E::Query(Query::Len, v) => safe(v),
+            E::Binary(_, a, b) | E::All(a, _, b) => safe(a) && safe(b),
+            E::Record(fields) => fields.values().all(safe),
+            E::Variant(_, args) | E::Array(args) => args.iter().all(safe),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn literal(
+        ty: &PropertyType,
+        value: data::Value,
+        rust: &super::records::RustTypes,
+    ) -> Self {
+        Self::new(Ty::property(ty, rust), ExprKind::Constant(value))
+    }
+
+    pub(crate) fn const_rust(&self, prefix: &str) -> String {
+        let mut emitter = Emitter::query(BTreeMap::new());
+        emitter.constant = true;
+        emitter.prefix = prefix;
+        emitter.term(self)
+    }
+
     /// Helpers have already been expanded, so nested calls need no separate
     /// dependency registry. The emitted trait calls enforce the host contract.
     pub(crate) fn uses_host(&self) -> bool {
@@ -264,14 +307,6 @@ impl Expr {
                     .iter()
                     .map(|v| v.expand(args, locals, next))
                     .collect::<Vec<_>>();
-                if let [arg] = args.as_slice()
-                    && let Some(known) = arg
-                        .types
-                        .as_ref()
-                        .and_then(|set| known_rust(binding, set, &self.ty))
-                {
-                    return known;
-                }
                 ExprKind::Rust(binding.clone(), args)
             }
             ExprKind::Host(method, values) => ExprKind::Host(
@@ -332,18 +367,15 @@ pub(crate) struct Interface {
 }
 #[derive(Clone)]
 pub(crate) struct RustCall {
+    pub constant: bool,
+    is_const: bool,
     path: String,
-    evaluation: Option<RustEval>,
-}
-
-#[derive(Clone)]
-enum RustEval {
-    Query(TypeQuery),
-    Predicate(TypeSet),
+    method: Option<(String, String)>,
 }
 
 #[derive(Clone)]
 struct Function {
+    constant: bool,
     params: Vec<Ty>,
     result: Ty,
     body: Expr,
@@ -362,13 +394,15 @@ pub(crate) struct Library {
     pub(crate) interfaces: BTreeMap<String, Interface>,
     functions: BTreeMap<String, Function>,
     hosts: BTreeMap<String, HostMethod>,
+    methods: String,
+    bindings: String,
 }
 
 struct Checker<'a> {
     source: &'a str,
     library: &'a mut Library,
     data: &'a data::Types,
-    builtins: &'a Builtins,
+    encodings: &'a Encodings,
     types: &'a crate::types::Types,
     comparisons: &'a [super::comparisons::Comparison],
     declarations: &'a [Record],
@@ -415,6 +449,13 @@ fn operands(
 }
 
 impl Library {
+    pub(crate) fn method_code(&self) -> String {
+        format!(
+            "pub mod type_methods {{\n{}\n}}\n{}",
+            self.methods, self.bindings
+        )
+    }
+
     pub(crate) fn host_code(&self, types: &super::records::RustTypes) -> String {
         use std::fmt::Write;
         let mut groups = BTreeMap::<&str, Vec<&HostMethod>>::new();
@@ -454,7 +495,7 @@ impl Library {
     ) -> Result<Vec<super::constraints::Constraint>, Error> {
         let super::Vocabulary {
             types,
-            builtins,
+            encodings,
             data,
             comparisons,
         } = vocabulary;
@@ -486,7 +527,7 @@ impl Library {
             source,
             library: self,
             data,
-            builtins,
+            encodings,
             types,
             comparisons,
             declarations: &[],
@@ -519,13 +560,8 @@ impl Library {
             };
             let mut condition =
                 checker.expr(condition, Some(&Ty::named("bool")), &env, signature)?;
-            if let Some(Node {
-                kind: Kind::Name(b),
-                ..
-            }) = condition.constant_node(checker.types, node.offset)
-                && matches!(b.as_str(), "true" | "false")
-            {
-                condition = Expr::boolean(b == "true");
+            if let Some(value) = condition.literal_bool(checker.types) {
+                condition = Expr::boolean(value);
             }
             if condition.is_bool(false) {
                 return Err(Error::at(
@@ -536,7 +572,6 @@ impl Library {
             }
             result.push(super::constraints::Constraint {
                 type_only: condition.type_only(params),
-                offline: condition.offline_supported(),
                 condition,
                 text,
             });
@@ -581,16 +616,19 @@ impl Library {
     ) -> Result<Self, Error> {
         let super::Vocabulary {
             data,
-            builtins,
+            encodings,
             types,
             comparisons,
         } = vocabulary;
-        let mut library = Self::default();
+        let mut library = Self {
+            methods: crate::interfaces::declarations(declarations, source, "crate::type_methods")?,
+            ..Self::default()
+        };
         let mut checker = Checker {
             source,
             library: &mut library,
             data,
-            builtins,
+            encodings,
             types,
             declarations,
             comparisons,
@@ -605,8 +643,7 @@ impl Library {
             ) || data.rust.contains(&declaration.name)
                 || data.records.iter().any(|r| r.name == declaration.name)
                 || data.enums.iter().any(|e| e.name == declaration.name)
-                || builtins.flags.contains_key(&declaration.name)
-                || builtins.encodings.contains_key(&declaration.name)
+                || encodings.contains_key(&declaration.name)
             {
                 return Err(Error::at(
                     source,
@@ -640,7 +677,7 @@ impl Library {
             if !declarations.iter().any(|d| {
                 d.kind == "extern-fn"
                     && d.name
-                        .split_once('.')
+                        .split_once("::")
                         .is_some_and(|(name, _)| name == owner.name)
             }) {
                 return Err(Error::at(
@@ -653,7 +690,7 @@ impl Library {
         for declaration in declarations.iter().filter(|d| d.kind == "extern-fn") {
             let (interface, name) = declaration
                 .name
-                .split_once('.')
+                .split_once("::")
                 .expect("parsed external method");
             let signature = declaration.signature.as_ref().unwrap();
             let Results::Fixed(results) = &signature.results else {
@@ -697,7 +734,10 @@ impl Library {
                 .hosts
                 .insert(declaration.name.clone(), method);
         }
-        for declaration in declarations.iter().filter(|d| d.kind == "fn") {
+        for declaration in declarations
+            .iter()
+            .filter(|d| matches!(d.kind.as_str(), "fn" | "const"))
+        {
             checker.function(&declaration.name, declaration.offset)?;
         }
         Ok(library)
@@ -713,7 +753,7 @@ impl Library {
     ) -> Result<BTreeMap<String, Expr>, Error> {
         let super::Vocabulary {
             types,
-            builtins,
+            encodings,
             data,
             comparisons,
         } = vocabulary;
@@ -726,7 +766,7 @@ impl Library {
             source,
             library: self,
             data,
-            builtins,
+            encodings,
             types,
             declarations: &[],
             comparisons,
@@ -770,7 +810,7 @@ impl Library {
     ) -> Result<(), Error> {
         let super::Vocabulary {
             data,
-            builtins,
+            encodings,
             types,
             comparisons,
         } = vocabulary;
@@ -778,7 +818,7 @@ impl Library {
             source,
             library: self,
             data,
-            builtins,
+            encodings,
             types,
             declarations: &[],
             comparisons,
@@ -803,15 +843,15 @@ impl Library {
                 || matches!(&node.kind, Kind::Call(name,_) if name == "field" || checker.library.functions.contains_key(name))
             {
                 let expr = checker.expr(node, None, env, None)?;
-                *node = expr
-                    .constant_node(checker.types, node.offset)
-                    .ok_or_else(|| {
-                        Error::at(
-                            checker.source,
-                            node.offset,
-                            "metadata projection must be compile-time constant",
-                        )
-                    })?;
+                if let Some(value) = expr.constant_node(checker.types, node.offset) {
+                    *node = value;
+                } else if !expr.is_const() {
+                    return Err(Error::at(
+                        checker.source,
+                        node.offset,
+                        "metadata projection must be compile-time constant",
+                    ));
+                }
             } else {
                 match &mut node.kind {
                     Kind::Object(_, fields) => {
@@ -830,6 +870,50 @@ impl Library {
             Ok(())
         }
         visit(&mut checker, node, bindings)
+    }
+
+    pub fn metadata_field(
+        &mut self,
+        source: &str,
+        node: &Node,
+        ty: &PropertyType,
+        env: &BTreeMap<String, Expr>,
+        vocabulary: super::Vocabulary<'_>,
+    ) -> Result<Expr, Error> {
+        let super::Vocabulary {
+            data,
+            encodings,
+            types,
+            comparisons,
+        } = vocabulary;
+        let mut checker = Checker {
+            source,
+            library: self,
+            data,
+            encodings,
+            types,
+            declarations: &[],
+            comparisons,
+            active: BTreeSet::new(),
+            verification: false,
+            next_local: 0,
+        };
+        let expr = checker.expr(node, Some(&Ty::property(ty, &data.rust)), env, None)?;
+        if !expr.is_const() {
+            return Err(Error::at(
+                source,
+                node.offset,
+                "metadata projection must be compile-time constant",
+            ));
+        }
+        if let Some(value) = expr.constant_node(types, node.offset) {
+            return Ok(Expr::literal(
+                ty,
+                data.value(source, ty, value, encodings)?,
+                &data.rust,
+            ));
+        }
+        Ok(expr)
     }
 }
 
@@ -937,6 +1021,28 @@ impl Checker<'_> {
         Ok(expr)
     }
 
+    fn associated(&mut self, offset: usize, owner: &str, field: &str) -> Result<Expr, Error> {
+        if let Some(comparison) = self.comparisons.iter().find(|c| c.name == owner) {
+            if !comparison.has_variant(field) {
+                return Err(Error::at(self.source, offset, "unknown comparison variant"));
+            }
+            return Ok(Expr::new(
+                Ty::named(owner),
+                ExprKind::Variant(field.into(), Vec::new()),
+            ));
+        }
+        let name = format!("{owner}::{field}");
+        let function = self.function(&name, offset)?;
+        if !function.constant {
+            return Err(Error::at(
+                self.source,
+                offset,
+                "associated member requires a constant; use () to call a function",
+            ));
+        }
+        Ok(function.body)
+    }
+
     fn member(
         &mut self,
         offset: usize,
@@ -945,18 +1051,6 @@ impl Checker<'_> {
         env: &BTreeMap<String, Expr>,
         signature: Option<&TypeDef>,
     ) -> Result<Expr, Error> {
-        if let Kind::Name(root) = &receiver.kind
-            && !env.contains_key(root)
-            && let Some(comparison) = self.comparisons.iter().find(|c| c.name == *root)
-        {
-            if !comparison.has_variant(field) {
-                return Err(Error::at(self.source, offset, "unknown comparison variant"));
-            }
-            return Ok(Expr::new(
-                Ty::named(root),
-                ExprKind::Variant(field.into(), Vec::new()),
-            ));
-        }
         let value = self.expr(receiver, None, env, signature)?;
         let Ty::Named(name) = &value.ty else {
             return Err(Error::at(
@@ -1077,8 +1171,7 @@ impl Checker<'_> {
                     || self.data.records.iter().any(|r| r.name == *name)
                     || self.data.enums.iter().any(|e| e.name == *name)
                     || self.comparisons.iter().any(|c| c.name == *name)
-                    || self.builtins.flags.contains_key(name)
-                    || self.builtins.encodings.contains_key(name)
+                    || self.encodings.contains_key(name)
                     || self
                         .declarations
                         .iter()
@@ -1162,7 +1255,7 @@ impl Checker<'_> {
         let declaration = self
             .declarations
             .iter()
-            .find(|d| d.kind == "fn" && d.name == name)
+            .find(|d| matches!(d.kind.as_str(), "fn" | "const") && d.name == name)
             .cloned()
             .ok_or_else(|| {
                 Error::at(
@@ -1218,22 +1311,27 @@ impl Checker<'_> {
                 "function requires one result type and no generics",
             ));
         }
-        let result = self.ty(&results[0].ty)?;
+        let owner = name.split_once("::").map(|(owner, _)| owner);
+        fn resolve_self(node: &Node, owner: Option<&str>) -> Node {
+            let mut node = node.clone();
+            match &mut node.kind {
+                Kind::Name(name) if name == "Self" => {
+                    if let Some(owner) = owner {
+                        *name = owner.into();
+                    }
+                }
+                Kind::Call(_, args) => {
+                    for arg in args {
+                        *arg = resolve_self(arg, owner);
+                    }
+                }
+                _ => {}
+            }
+            node
+        }
+        let result = self.ty(&resolve_self(&results[0].ty, owner))?;
         let mut params = Vec::new();
         let mut env = BTreeMap::new();
-        let owner = name.split_once('.').map(|(owner, _)| owner);
-        if let Some(owner) = owner {
-            let valid = signature.params.first().is_some_and(|p| {
-                p.name == "self" && matches!(&p.ty.kind, Kind::Name(ty) if ty == owner)
-            });
-            if !valid {
-                return Err(Error::at(
-                    self.source,
-                    offset,
-                    "method requires self as its first parameter",
-                ));
-            }
-        }
         for param in signature.params {
             if param.name != "self" || owner.is_none() {
                 super::identifier(self.source, param.offset, &param.name)?;
@@ -1245,7 +1343,7 @@ impl Checker<'_> {
                     "projection parameters are plain immutable values",
                 ));
             }
-            let ty = self.ty(&param.ty)?;
+            let ty = self.ty(&resolve_self(&param.ty, owner))?;
             let expr = Expr {
                 types: None,
                 ty: ty.clone(),
@@ -1276,28 +1374,23 @@ impl Checker<'_> {
                     format!(
                         "{}::{}",
                         self.data.rust.rust(owner),
-                        name.rsplit('.').next().unwrap()
+                        name.rsplit("::").next().unwrap()
                     )
                 };
                 super::records::rust_path(self.source, offset, &path)?;
-                let evaluation = TypeQuery::rust(&path).map(RustEval::Query).or_else(|| {
-                    path.strip_prefix("crate::types::")
-                        .and_then(|name| self.types.predicates.get(name))
-                        .cloned()
-                        .map(RustEval::Predicate)
-                });
-                let expected = evaluation.as_ref().map(|e| match e {
-                    RustEval::Query(query) => query.result(),
-                    RustEval::Predicate(_) => Ty::named("bool"),
-                });
-                if let Some(expected) = expected
-                    && (params != [Ty::named("Type")] || result != expected)
-                {
-                    return Err(Error::at(
-                        self.source,
-                        offset,
-                        "Rust type-query signature mismatch",
-                    ));
+                if owner.is_none() {
+                    use std::fmt::Write;
+                    writeln!(
+                        self.library.bindings,
+                        "const _: fn({}) -> {} = {path};",
+                        params
+                            .iter()
+                            .map(|t| t.rust(&self.data.rust))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        result.rust(&self.data.rust)
+                    )
+                    .unwrap();
                 }
                 let args = params
                     .iter()
@@ -1306,14 +1399,39 @@ impl Checker<'_> {
                     .collect();
                 Expr::new(
                     result.clone(),
-                    ExprKind::Rust(RustCall { path, evaluation }, args),
+                    ExprKind::Rust(
+                        RustCall {
+                            constant: declaration.kind == "const",
+                            is_const: signature.is_const,
+                            path,
+                            method: owner.map(|owner| {
+                                (
+                                    format!(
+                                        "<{} as {}>",
+                                        self.data.rust.rust(owner),
+                                        self.data.rust.method_trait(owner, signature.is_const)
+                                    ),
+                                    name.rsplit("::").next().unwrap().into(),
+                                )
+                            }),
+                        },
+                        args,
+                    ),
                 )
             }
             crate::syntax::FunctionBody::Value(value) => {
                 self.expr(&value, Some(&result), &env, None)?
             }
         };
+        if signature.is_const && !body.is_const() {
+            return Err(Error::at(
+                self.source,
+                declaration.offset,
+                "const function calls a runtime-only operation",
+            ));
+        }
         let function = Function {
+            constant: declaration.kind == "const",
             params,
             result,
             body,
@@ -1332,28 +1450,6 @@ impl Checker<'_> {
         env: &BTreeMap<String, Expr>,
         signature: Option<&TypeDef>,
     ) -> Result<Expr, Error> {
-        if let Kind::Name(owner) = &receiver.kind
-            && !env.contains_key(owner)
-        {
-            let name = format!("{owner}.{method}");
-            if self.library.hosts.contains_key(&name)
-                || self.library.functions.contains_key(&name)
-                || self
-                    .declarations
-                    .iter()
-                    .any(|d| d.kind == "fn" && d.name == name)
-            {
-                return self.expr(
-                    &Node {
-                        offset,
-                        kind: Kind::Call(name, args.to_vec()),
-                    },
-                    None,
-                    env,
-                    signature,
-                );
-            }
-        }
         let value = self.expr(receiver, None, env, signature)?;
         let owner = match &value.ty {
             Ty::Named(name) => name.as_str(),
@@ -1366,7 +1462,7 @@ impl Checker<'_> {
                 ));
             }
         };
-        let function = self.function(&format!("{owner}.{method}"), offset)?;
+        let function = self.function(&format!("{owner}::{method}"), offset)?;
         self.call(function, vec![value], args, offset, env, signature)
     }
 
@@ -1379,6 +1475,13 @@ impl Checker<'_> {
         env: &BTreeMap<String, Expr>,
         signature: Option<&TypeDef>,
     ) -> Result<Expr, Error> {
+        if function.constant {
+            return Err(Error::at(
+                self.source,
+                offset,
+                "associated constants are values, not functions",
+            ));
+        }
         if function.params.len() != checked.len() + args.len() {
             return Err(Error::at(
                 self.source,
@@ -1409,13 +1512,16 @@ impl Checker<'_> {
         let fail = |message: &str| Error::at(self.source, node.offset, message);
         let expr = match &node.kind {
             _ if self.types.exact_name(node).is_some()
-                && !matches!(&node.kind, Kind::Name(name) if env.contains_key(name))
-                && !matches!(&node.kind, Kind::Member(receiver, _) if matches!(&receiver.kind, Kind::Name(name) if env.contains_key(name))) =>
+                && !matches!(&node.kind, Kind::Name(name) if env.contains_key(name)) =>
             {
                 let name = self.types.exact_name(node).unwrap();
                 let mut expr = Expr::new(Ty::named("Type"), ExprKind::Type(name.clone()));
                 expr.types = self.types.exact.get(&name).cloned();
                 expr
+            }
+            Kind::Name(name) if name.contains("::") => {
+                let (owner, field) = name.rsplit_once("::").unwrap();
+                self.associated(node.offset, owner, field)?
             }
             Kind::Method(receiver, method, args) => {
                 self.method(node.offset, receiver, method, args, env, signature)?
@@ -1605,7 +1711,7 @@ impl Checker<'_> {
                     || self
                         .declarations
                         .iter()
-                        .any(|d| d.kind == "fn" && d.name == *name) =>
+                        .any(|d| matches!(d.kind.as_str(), "fn" | "const") && d.name == *name) =>
             {
                 let function = self.function(name, node.offset)?;
                 self.call(function, Vec::new(), args, node.offset, env, signature)?
@@ -1698,7 +1804,7 @@ impl Checker<'_> {
                         self.source,
                         &PropertyType::Named(name.clone()),
                         node.clone(),
-                        self.builtins,
+                        self.encodings,
                     )?;
                     Expr {
                         types: None,
@@ -1725,27 +1831,6 @@ pub(crate) enum Query {
     Len,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum TypeQuery {
-    Lanes,
-    MinBytes,
-    ElementBits,
-    BitSize,
-    IsFixed,
-    Shape,
-    IsCallable,
-    IsOwned,
-    IsLocal,
-    IsShared,
-    IsCompact,
-    IsScalar,
-    IsVector,
-    IsInteger,
-    IsFloat,
-    IsPtr,
-    IsPredicate,
-}
-
 pub(crate) struct Emitter<'a> {
     pub projections: BTreeMap<String, String>,
     pub error: Option<String>,
@@ -1755,6 +1840,9 @@ pub(crate) struct Emitter<'a> {
     pub result_values: bool,
     pub operand_types: BTreeMap<String, String>,
     pub instruction: bool,
+    pub constant: bool,
+    pub const_failure: &'a str,
+    pub prefix: &'a str,
 }
 
 impl<'a> Emitter<'a> {
@@ -1768,9 +1856,18 @@ impl<'a> Emitter<'a> {
             result_values: true,
             operand_types: BTreeMap::new(),
             instruction: false,
+            constant: false,
+            const_failure: "panic!(\"invalid constant expression\")",
+            prefix: "",
         }
     }
     fn required(&self, value: String) -> String {
+        if self.constant {
+            return format!(
+                "(match {value} {{ Some(value) => value, None => {} }})",
+                self.const_failure
+            );
+        }
         match &self.error {
             None => format!("{value}?"),
             Some(error) if self.instruction => format!("{value}.ok_or_else(|| {error})?"),
@@ -1793,14 +1890,20 @@ impl<'a> Emitter<'a> {
         let receiver = self.dfg.strip_prefix('&').unwrap_or(self.dfg);
         let numeric = |code: String| {
             if term.ty == Ty::named("i128") {
-                format!("i128::from({code})")
+                if self.constant {
+                    format!("(({code}) as i128)")
+                } else {
+                    format!("i128::from({code})")
+                }
             } else {
                 code
             }
         };
         match &term.kind {
             ExprKind::Constant(data::Value::Bool(value)) => value.to_string(),
-            ExprKind::Constant(value) => value.rust(if self.error.is_some() {
+            ExprKind::Constant(value) => value.rust(if !self.prefix.is_empty() {
+                self.prefix
+            } else if self.error.is_some() {
                 "crate::inst::"
             } else {
                 ""
@@ -1893,10 +1996,15 @@ impl<'a> Emitter<'a> {
                 }
             }
 
+            ExprKind::Convert(e) if self.constant => {
+                format!("(({}) as {})", self.term(e), term.ty.name())
+            }
             ExprKind::Convert(e) => format!("{}::from({})", term.ty.name(), self.term(e)),
             ExprKind::Record(fields) => format!(
                 "{}{} {{ {} }}",
-                if self.error.is_some() {
+                if !self.prefix.is_empty() {
+                    self.prefix
+                } else if self.error.is_some() {
                     "crate::inst::"
                 } else {
                     ""
@@ -1909,7 +2017,12 @@ impl<'a> Emitter<'a> {
                     .join(", ")
             ),
             ExprKind::Variant(name, args) => {
-                let path = format!("crate::inst::{}::{name}", term.ty.name());
+                let prefix = if self.constant {
+                    self.prefix
+                } else {
+                    "crate::inst::"
+                };
+                let path = format!("{prefix}{}::{name}", term.ty.name());
                 if args.is_empty() {
                     path
                 } else {
@@ -1923,14 +2036,23 @@ impl<'a> Emitter<'a> {
                 }
             }
             ExprKind::Try(e) => self.required(format!("({})", self.term(e))),
-            ExprKind::Rust(binding, args) => format!(
-                "{}({})",
-                binding.path,
-                args.iter()
-                    .map(|arg| self.term(arg))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            ExprKind::Rust(binding, args) => {
+                let path = binding.method.as_ref().map_or_else(
+                    || binding.path.clone(),
+                    |(owner, method)| format!("{owner}::{method}"),
+                );
+                if binding.constant {
+                    path
+                } else {
+                    format!(
+                        "{path}({})",
+                        args.iter()
+                            .map(|arg| self.term(arg))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            }
             ExprKind::Host(method, args) => format!(
                 "crate::host::traits::{}::{}(&_host{})",
                 method.interface,
@@ -1947,6 +2069,20 @@ impl<'a> Emitter<'a> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            ExprKind::All(sequence, id, body)
+                if self.constant && matches!(sequence.ty, Ty::Optional(_)) =>
+            {
+                format!(
+                    "(match {} {{ Some(_v{id}) => {}, None => true }})",
+                    self.term(sequence),
+                    self.term(body)
+                )
+            }
+            ExprKind::All(sequence, id, body) if self.constant => format!(
+                "{{ let seq{id} = {}; let mut i{id} = 0; let mut ok{id} = true; while i{id} < seq{id}.len() {{ let _v{id} = seq{id}[i{id}]; if !({}) {{ ok{id} = false; break; }} i{id} += 1; }} ok{id} }}",
+                self.term(sequence),
+                self.term(body)
+            ),
             ExprKind::All(sequence, id, body) => format!(
                 "{{ let mut ok{id} = true; for &_v{id} in ({}).iter() {{ if !({}) {{ ok{id} = false; break; }} }} ok{id} }}",
                 self.term(sequence),
@@ -1954,60 +2090,4 @@ impl<'a> Emitter<'a> {
             ),
         }
     }
-}
-
-impl TypeQuery {
-    // These typed adapters call the shared kernel; they do not redefine its semantics.
-    // This small trusted kernel has matching runtime emission and offline evaluation.
-    // User-visible method names and signatures are declared in defs.
-    fn result(self) -> Ty {
-        match self {
-            Self::Shape => Ty::Optional(Box::new(Ty::named("Shape"))),
-            Self::BitSize => Ty::Optional(Box::new(Ty::named("TypeBits"))),
-            Self::Lanes | Self::MinBytes | Self::ElementBits => {
-                Ty::Optional(Box::new(Ty::named("u32")))
-            }
-            _ => Ty::named("bool"),
-        }
-    }
-    fn rust(name: &str) -> Option<Self> {
-        match name {
-            "crate::Type::lanes" => Some(Self::Lanes),
-            "crate::Type::min_size_bytes" => Some(Self::MinBytes),
-            "crate::Type::element_bits" => Some(Self::ElementBits),
-            "crate::Type::bit_size" => Some(Self::BitSize),
-            "crate::Type::is_fixed" => Some(Self::IsFixed),
-            "crate::Type::shape" => Some(Self::Shape),
-            "crate::Type::is_callable" => Some(Self::IsCallable),
-            "crate::Type::is_owned" => Some(Self::IsOwned),
-            "crate::Type::is_local" => Some(Self::IsLocal),
-            "crate::Type::is_shared" => Some(Self::IsShared),
-            "crate::Type::is_compact" => Some(Self::IsCompact),
-            "crate::Type::is_scalar" => Some(Self::IsScalar),
-            "crate::Type::is_vector" => Some(Self::IsVector),
-            "crate::Type::is_integer" => Some(Self::IsInteger),
-            "crate::Type::is_float" => Some(Self::IsFloat),
-            "crate::Type::is_ptr" => Some(Self::IsPtr),
-            "crate::Type::is_predicate" => Some(Self::IsPredicate),
-
-            _ => None,
-        }
-    }
-}
-fn known_rust(binding: &RustCall, set: &TypeSet, ty: &Ty) -> Option<Expr> {
-    let evaluation = binding.evaluation.as_ref()?;
-    let mut answer = None;
-    for (&code, &shapes) in &set.0 {
-        for shape in 0..32 {
-            if shapes & (1 << shape) == 0 {
-                continue;
-            }
-            let value = evaluation.evaluate(code, shape)?;
-            if answer.as_ref().is_some_and(|old| old != &value) {
-                return None;
-            }
-            answer = Some(value);
-        }
-    }
-    answer?.expression(ty)
 }

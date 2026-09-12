@@ -3,9 +3,9 @@ import "../../defs/prelude.ops";
 // Typed property contracts run during validation, not construction.
 property VectorConst {
     verify {
-        require(!Constants.is_dense(value) || value.ty().is_fixed(), "dense vector constant requires a fixed type");
-        require(!Constants.is_dense(value) || len(Constants.bytes(value)?) == value.ty().min_size_bytes()?, "dense vector constant byte count must match its type");
-        require(!Constants.is_dense(value) || !value.ty().is_predicate() || all(Constants.bytes(value)?, |byte| byte <= 1), "boolean constant lanes must be zero or one");
+        require(!Constants::is_dense(value) || value.ty().is_fixed(), "dense vector constant requires a fixed type");
+        require(!Constants::is_dense(value) || len(Constants::bytes(value)?) == value.ty().min_size_bytes()?, "dense vector constant byte count must match its type");
+        require(!Constants::is_dense(value) || !value.ty().is_predicate() || all(Constants::bytes(value)?, |byte| byte <= 1), "boolean constant lanes must be zero or one");
     }
 }
 
@@ -178,6 +178,6 @@ layout VectorOpWithExt {
     verify {
         require(len(results()) == 1 && all(results(), |t| t.is_vector()), "predicated operation must produce a vector");
         require(all(results(), |t| ext.mask.ty().is_predicate() && ext.mask.ty().shape()? == t.shape()?), "mask must match vector shape");
-        require(all(ext.evl, |v| v.ty() == Type.I32), "EVL must be i32");
+        require(all(ext.evl, |v| v.ty() == Type::I32), "EVL must be i32");
     }
 }

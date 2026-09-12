@@ -5,6 +5,5 @@ edition = "2024"
 
 [dependencies]
 veloc-mir = { workspace = true }
-hashbrown = { workspace = true }
 bitvec = { workspace = true }
 cranelift-entity = { workspace = true }

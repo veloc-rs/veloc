@@ -17,11 +17,47 @@ struct Format {
 }
 pub(crate) struct Projection {
     pub arity: usize,
-    pub flow: String,
+    pub flow: Flow,
     // Builder parameters are logical results followed by logical inputs.
     args: Vec<Argument>,
     // Expressions in physical field order, resolved from explicit bindings.
     fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flow {
+    Next,
+    Jump,
+    Return,
+    Call,
+    Trap,
+}
+
+impl Flow {
+    fn parse(source: &str, node: Option<Node>) -> Result<Self, Error> {
+        let Some(node) = node else {
+            return Ok(Self::Next);
+        };
+        let offset = node.offset;
+        match model::name(source, node)?.as_str() {
+            "Next" => Ok(Self::Next),
+            "Jump" => Ok(Self::Jump),
+            "Return" => Ok(Self::Return),
+            "Call" => Ok(Self::Call),
+            "Trap" => Ok(Self::Trap),
+            _ => Err(Error::at(source, offset, "unknown control flow kind")),
+        }
+    }
+
+    pub fn traits(self) -> impl Iterator<Item = String> {
+        let names: &[&str] = match self {
+            Self::Next => &[],
+            Self::Jump | Self::Return => &["TERMINATOR"],
+            Self::Call => &["MAY_TRAP"],
+            Self::Trap => &["TERMINATOR", "ABORT", "MAY_TRAP"],
+        };
+        names.iter().map(|name| (*name).to_owned())
+    }
 }
 
 struct Argument {
@@ -285,13 +321,7 @@ impl Operands {
             .formats
             .get(format)
             .ok_or_else(|| fail("unknown operand format"))?;
-        let flow = flow
-            .map(|n| model::name(source, n))
-            .transpose()?
-            .unwrap_or_else(|| "Next".into());
-        if !matches!(flow.as_str(), "Next" | "Jump" | "Return" | "Call" | "Trap") {
-            return Err(fail("unknown control flow kind"));
-        }
+        let flow = Flow::parse(source, flow)?;
         for (field, node) in mappings {
             if !shape.fields.iter().any(|(name, _)| name == field) {
                 return Err(Error::at(
@@ -370,7 +400,7 @@ impl Operands {
                             "call requires a callee and variadic arguments",
                         ));
                     };
-                    if signature.results != TypeList::Signature || flow != "Call" {
+                    if signature.results != TypeList::Signature || flow != Flow::Call {
                         return Err(fail(
                             "call storage requires signature results and Call flow",
                         ));
@@ -421,7 +451,7 @@ impl Operands {
         for inst in &defs.ops {
             writeln!(
                 out,
-                "Self::{} => ControlFlow::{},",
+                "Self::{} => ControlFlow::{:?},",
                 inst.name,
                 inst.operands().flow
             )

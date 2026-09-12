@@ -33,7 +33,7 @@ use veloc_lir::{
     GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
     Reg, VReg, Writable,
 };
-use veloc_mir::{FloatCC, IntCC, Type};
+use veloc_mir::{FloatCC, IntCC, Type, TypeInfo};
 
 /// x86_64 专属的 Context 扩展 (架构私有)
 pub trait X86LoweringContext: LoweringContext {

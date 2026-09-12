@@ -23,6 +23,7 @@ struct Operation {
 }
 
 struct Case {
+    index: usize,
     instance: Instance,
     scalars: Vec<usize>,
     variants: Vec<String>,
@@ -34,8 +35,8 @@ impl Plan {
         for (opcode, op) in defs.ops.iter().enumerate() {
             let Some(sem) = &op.semantics else { continue };
             let mut cases = Vec::new();
-            for instance in &sem.instances {
-                if !instance.scalar {
+            for (index, instance) in sem.instances.iter().enumerate() {
+                if !instance.scalar || instance.error.is_some() {
                     continue;
                 }
                 let scalars = instance
@@ -57,6 +58,7 @@ impl Plan {
                     continue;
                 };
                 cases.push(Case {
+                    index,
                     instance: instance.clone(),
                     scalars,
                     variants,
@@ -133,17 +135,33 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
                 .map(|(i, s)| format!("a{i}.ty() == Type::{}", s.exact()))
                 .collect::<Vec<_>>()
                 .join(" && ");
+            let enabled = format!(
+                "veloc_mir::inst::semantic_cases::{}[{}]",
+                op.name, case.index
+            );
             let guard = if guard.is_empty() {
-                String::new()
+                format!(" if {enabled}")
             } else {
-                format!(" if {guard}")
+                format!(" if {enabled} && {guard}")
             };
             writeln!(arms, "([{args}], [{results}], [{properties}]){guard} => {{").unwrap();
             emit(defs, sem, instance, &variants[inputs..], &mut arms);
             arms.push_str("},\n");
         }
         if !arms.is_empty() {
-            supported.push(format!("Opcode::{}", op.name));
+            supported.push(format!(
+                "Opcode::{} => {},",
+                op.name,
+                prepared
+                    .cases
+                    .iter()
+                    .map(|case| format!(
+                        "veloc_mir::inst::semantic_cases::{}[{}]",
+                        op.name, case.index
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" || ")
+            ));
             writeln!(
                 code,
                 "Opcode::{} => match (args, results, properties) {{\n{arms}_ => None,\n}},",
@@ -156,7 +174,7 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
     let supported = if supported.is_empty() {
         "false".into()
     } else {
-        format!("matches!(opcode, {})", supported.join(" | "))
+        format!("match opcode {{ {} _ => false }}", supported.join("\n"))
     };
     writeln!(code, "/// Whether this opcode has a generated scalar constant evaluator.\npub const fn can_fold(opcode: Opcode) -> bool {{ {supported} }}").unwrap();
     code.push_str(&properties(defs, plan));
@@ -340,7 +358,7 @@ fn algebraic_rules(defs: &Definitions) -> String {
         if sem.primitive().is_none()
             || (op.identity.is_none()
                 && op.absorbing.is_none()
-                && !op.traits.iter().any(|t| t == "IDEMPOTENT"))
+                && !op.traits.contains("IDEMPOTENT"))
         {
             continue;
         }
@@ -375,7 +393,7 @@ fn algebraic_rules(defs: &Definitions) -> String {
                 .unwrap();
             }
         }
-        if op.traits.iter().any(|t| t == "IDEMPOTENT") {
+        if op.traits.contains("IDEMPOTENT") {
             code.push_str("if args[0] == args[1] { return Some(Replacement::Value(args[0])); }\n");
         }
         code.push_str("None\n},\n");

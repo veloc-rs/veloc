@@ -3,25 +3,9 @@
 //! Layouts, type checks and operation tables are compiled from `defs/*.ops`.
 //! Their shared runtime support lives alongside the generated definitions.
 
-use super::MemoryEffect;
+pub use veloc_types::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
 
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
-
-impl MemFlags {
-    pub const fn new() -> Self {
-        Self::empty()
-    }
-
-    pub fn with_alignment(self, align: u32) -> Self {
-        assert!(align.is_power_of_two(), "Alignment must be a power of 2");
-        let log2 = align.trailing_zeros().min(Self::ALIGNMENT_LOG2_MAX as u32) as u16;
-        self.with_alignment_log2(log2)
-    }
-
-    pub fn alignment(&self) -> u32 {
-        1 << self.alignment_log2()
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeError {
@@ -43,78 +27,6 @@ pub enum TypeError {
 /// Shared executable rules generated from the definitions.
 mod type_rules {
     include!(concat!(env!("OUT_DIR"), "/type_rules.rs"));
-}
-
-impl MemoryEffect {
-    pub const fn is_unknown(self) -> bool {
-        matches!(self, Self::Unknown)
-    }
-
-    pub const fn is_none(self) -> bool {
-        matches!(self, Self::Known(effects) if effects.is_empty())
-    }
-
-    const fn may(self, effect: MemoryEffects) -> bool {
-        match self {
-            Self::Known(effects) => effects.intersects(effect),
-            Self::Unknown => true,
-        }
-    }
-
-    pub const fn may_read(self) -> bool {
-        self.may(MemoryEffects::READ)
-    }
-    pub const fn may_write(self) -> bool {
-        self.may(MemoryEffects::WRITE)
-    }
-    pub const fn may_allocate(self) -> bool {
-        self.may(MemoryEffects::ALLOCATE)
-    }
-    pub const fn may_free(self) -> bool {
-        self.may(MemoryEffects::FREE)
-    }
-
-    /// Unused abstract objects can be removed; new or unmodeled effects cannot.
-    pub const fn can_erase(self) -> bool {
-        matches!(self, Self::Known(effects)
-            if MemoryEffects::READ.union(MemoryEffects::ALLOCATE).contains(effects))
-    }
-
-    pub const fn has_side_effects(self) -> bool {
-        !matches!(self, Self::Known(effects) if MemoryEffects::READ.contains(effects))
-    }
-
-    /// Only memory interference; movement also requires control/trap/ordering checks.
-    pub const fn conflicts_with(self, other: Self) -> bool {
-        if self.is_none() || other.is_none() {
-            return false;
-        }
-        let supported = MemoryEffects::READ
-            .union(MemoryEffects::WRITE)
-            .union(MemoryEffects::ALLOCATE)
-            .union(MemoryEffects::FREE);
-        match (self, other) {
-            (Self::Known(lhs), Self::Known(rhs))
-                if supported.contains(lhs) && supported.contains(rhs) =>
-            {
-                self.may_free()
-                    || other.may_free()
-                    || (self.may_allocate() && other.may_allocate())
-                    || (self.may_write() && (other.may_read() || other.may_write()))
-                    || (other.may_write() && self.may_read())
-            }
-            _ => true,
-        }
-    }
-}
-
-impl core::fmt::Display for MemoryEffect {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Known(effects) => effects.fmt(f),
-            Self::Unknown => f.write_str("unknown"),
-        }
-    }
 }
 
 impl OpSpec {
@@ -149,6 +61,7 @@ impl OpSpec {
 
 #[cfg(test)]
 mod tests {
+    use veloc_types::TypeInfo;
     use super::{MemoryEffect, MemoryEffects};
     use crate::{FloatCC, IntCC, Opcode, Type};
 
@@ -227,10 +140,10 @@ mod tests {
                 .conflicts_with(MemoryEffect::Known(MemoryEffects::READ))
         );
         assert_eq!(MemoryEffect::Unknown.to_string(), "unknown");
-        assert_eq!(MemoryEffect::Known(MemoryEffects::READ).to_string(), "read");
+        assert_eq!(MemoryEffect::Known(MemoryEffects::READ).to_string(), "READ");
         assert_eq!(
             MemoryEffect::Known(MemoryEffects::WRITE).to_string(),
-            "write"
+            "WRITE"
         );
     }
 
@@ -316,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_flag_names_preserve_display_order() {
+    fn flag_names_preserve_display_order() {
         use super::OpTraits;
         use alloc::string::ToString;
 
@@ -327,9 +240,9 @@ mod tests {
             .union(OpTraits::IDEMPOTENT);
         assert_eq!(
             traits.to_string(),
-            "terminator, commutative, associative, idempotent, may-trap"
+            "TERMINATOR | COMMUTATIVE | ASSOCIATIVE | IDEMPOTENT | MAY_TRAP"
         );
-        assert_eq!(OpTraits::empty().to_string(), "none");
+        assert_eq!(OpTraits::empty().to_string(), "");
     }
 
     #[test]

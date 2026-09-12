@@ -16,7 +16,7 @@ use veloc_lir::stages::{
     LegalizedLir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedLir,
 };
 pub use veloc_lir::{InstId, MachineFunction, MachineInst, Reg, VReg};
-use veloc_mir::Type;
+use veloc_mir::{Type, TypeInfo};
 
 pub use abi::{
     AbiAssignment, AbiClassifierEntry, AbiClassifierFn, AbiDescriptor, AbiLocation, AbiPart,

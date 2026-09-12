@@ -12,6 +12,7 @@ use veloc_lir::{
     GenericOpcode, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg,
     UseDefChain, Writable,
 };
+use veloc_mir::TypeInfo;
 
 #[cfg(all(test, feature = "std"))]
 #[path = "reassociate_bench.rs"]

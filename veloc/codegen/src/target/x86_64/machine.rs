@@ -2,7 +2,7 @@
 use super::isle::TargetInst;
 use crate::target::arch::ScheduleInfo;
 use veloc_lir::{MachineInst, MachineOpcode, MachineOperand, Reg, Writable};
-use veloc_mir::Type;
+use veloc_mir::{Type, TypeInfo};
 
 pub(super) fn schedule_info(inst: &MachineInst) -> Option<ScheduleInfo> {
     if inst.memory.is_some() {

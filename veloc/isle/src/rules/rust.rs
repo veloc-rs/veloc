@@ -61,6 +61,7 @@ impl Program {
         for (root, rule) in &self.rules {
             writeln!(code, "// {}", rule.name.replace(['\n', '\r'], " ")).unwrap();
             writeln!(code, "{} => {{", opcode(root, source)?).unwrap();
+            writeln!(code, "const {{ assert!({}.is_value_only(), \"source memory or control effects require an adapter\"); }}", opcode(root, source)?).unwrap();
             let mut destinations = BTreeMap::new();
             for (i, &value) in rule.outputs.iter().enumerate() {
                 destinations.entry(value).or_insert(i);
@@ -69,6 +70,7 @@ impl Program {
                 writeln!(code, "let v{i} = ctx.input({i});").unwrap();
             }
             for inst in &rule.insts {
+                writeln!(code, "const {{ assert!({}.is_value_only(), \"target memory or control effects require an adapter\"); }}", opcode(&inst.op, target)?).unwrap();
                 for &value in &inst.results {
                     if let Some(&result) = destinations.get(&value) {
                         writeln!(code, "let v{value} = ctx.result({result});").unwrap();

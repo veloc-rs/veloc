@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use veloc_lir::RegisterBank;
-use veloc_mir::Type;
+use veloc_mir::{Type, TypeInfo};
 
 /// 目标架构标识
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

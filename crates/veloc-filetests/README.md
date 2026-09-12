@@ -5,6 +5,8 @@ Run the file regressions and the generated-API execution tests:
 ```sh
 cargo test -p veloc-filetests -p veloc-test-mir
 cargo test -p veloc-filetests --test files opgen/
+cargo test -p veloc-filetests --test opgen
+cargo test -p veloc-filetests --test opgen contracts::
 cargo test -p veloc-filetests --test files mir/callables.mir
 cargo test -p veloc-filetests --test files optimizer/simplify
 cargo test --workspace
@@ -58,10 +60,9 @@ the presence of an opcode. Assertions belong in `//` comments.
 | `fixture-error` | Require a parser diagnostic from that test MIR |
 | `fixture-validate-error` | Parsing succeeds, but test MIR validation fails |
 
-The `.ops` driver prepends MIR's `types.ops`, `builtins.ops` and
-`comparisons.ops`. Input files explicitly supply their operation/storage records.
+The `.ops` driver prepends the shared `types.ops` and `comparisons.ops`. Input files explicitly supply their operation/storage records.
 This driver is for definitions using the standard type encoding; low-level
-encoding changes and definition-order metamorphic tests stay in `veloc/spec`.
+encoding changes and definition-order metamorphic tests live in the `opgen` Rust suite.
 
 `execute` currently calls a parameterless `main`, compares scalar return bits
 using their declared widths, and allows stack memory but no external memory.
@@ -77,6 +78,21 @@ cases compare behavior before and after O1; round-trip and rejection cases check
 the inferred callable signature and ownership diagnostics. The model and current
 backend limits are described in [the callable documentation](../../veloc/mir/docs/callables.md).
 
+## Test organization
+
+Group tests by a complete contract or workflow, not by each method or flag.
+Related positive and negative variants belong in one table-driven Rust test;
+keep the input and expected diagnostic in assertion failures. The `opgen` suite
+has four modules: `types`, `contracts`, `imports`, and `execution`, sharing one
+`common` module. It includes standalone Rust compilation and formatting tests
+as well as runtime-backed generation tests.
+
+The `.ops` corpus is grouped into types, signatures, constraints, storage, text,
+interfaces, semantics, and diagnostics. Individual cases retain their names and
+independent execution, so regrouping files does not hide later failures behind
+an earlier assertion. Private invariant tests stay next to their implementation;
+native execution and frontend suites retain separate entry points.
+
 ## Generator coverage
 
 `fixture/extra.ops` extends production MIR with unusual contracts: custom field
@@ -84,7 +100,7 @@ names, reversed text order, multiple results, result-only bindings, alternate
 storage, predicates and composite semantics. `fixture` compiles the **real MIR
 sources** against those definitions; it does not copy the runtime or mock types.
 Its integration tests execute generated builders, predicates, comparison
-transforms and evaluators. Typed lowering rules are covered by veloc-isle's execution tests. No generated handler IDs
+transforms and evaluators. Typed lowering rules are covered by the `rules` integration test in this crate. No generated handler IDs
 are inspected. Ordinary builds of `veloc-mir` do not generate this fixture.
 
 Keep small Rust tests for API-only invariants, exhaustive/property-style checks,

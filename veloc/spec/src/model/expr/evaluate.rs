@@ -1,21 +1,29 @@
-//! Build-time evaluation of the same expressions emitted into type validators.
-//! Only constraints independent of SSA identities, properties and host queries
-//! are evaluated here. Undefined queries/arithmetic reject an instantiation.
+//! Fold only definition-owned literals and expressions.
+//! Foreign methods remain opaque and are evaluated by the generated Rust.
 use super::*;
 use crate::types::Types;
 
 impl Expr {
-    /// Evaluate through the same typed interpreter as offline constraints.
+    /// Fold defs-owned expressions without consulting foreign query tables.
     pub(crate) fn constant_node(&self, types: &Types, offset: usize) -> Option<Node> {
         Evaluator {
             types,
-            operands: BTreeMap::new(),
-            results: None,
             locals: BTreeMap::new(),
         }
         .eval(self)
         .ok()?
         .node(types, offset)
+    }
+
+    pub(crate) fn literal_bool(&self, types: &Types) -> Option<bool> {
+        let mut evaluator = Evaluator {
+            types,
+            locals: BTreeMap::new(),
+        };
+        match evaluator.eval(self).ok()? {
+            Value::Bool(value) => Some(value),
+            _ => None,
+        }
     }
 
     pub(crate) fn type_only(&self, params: &[Param]) -> bool {
@@ -47,57 +55,6 @@ impl Expr {
             | ExprKind::Operand(_) => false,
         }
     }
-
-    pub(crate) fn offline_supported(&self) -> bool {
-        match &self.kind {
-            ExprKind::Rust(binding, args) => {
-                binding.evaluation.is_some() && args.iter().all(Self::offline_supported)
-            }
-            ExprKind::Host(..) => false,
-            ExprKind::Unary(_, v)
-            | ExprKind::Query(_, v)
-            | ExprKind::Convert(v)
-            | ExprKind::Some(v)
-            | ExprKind::Try(v)
-            | ExprKind::Field(v, _) => v.offline_supported(),
-            ExprKind::Binary(_, a, b)
-            | ExprKind::Slice(a, b, _)
-            | ExprKind::All(a, _, b)
-            | ExprKind::Matches(a, b) => a.offline_supported() && b.offline_supported(),
-            ExprKind::Record(fields) => fields.values().all(Self::offline_supported),
-            ExprKind::Array(values) | ExprKind::Variant(_, values) => {
-                values.iter().all(Self::offline_supported)
-            }
-            _ => true,
-        }
-    }
-
-    pub(crate) fn accepts_types(
-        &self,
-        types: &Types,
-        params: &[Param],
-        values: &[(crate::types::Primitive, u32)],
-        inputs: usize,
-    ) -> bool {
-        // Called only for constraints classified as type-only during checking.
-        let operands = params
-            .iter()
-            .filter(|p| p.kind == ParamKind::Value)
-            .zip(values)
-            .map(|(p, &(code, shape))| (p.name.as_str(), Value::Type(code, shape)))
-            .collect();
-        let results = values[inputs..]
-            .iter()
-            .map(|&(code, shape)| Value::Type(code, shape))
-            .collect();
-        let mut evaluator = Evaluator {
-            types,
-            operands,
-            results: Some(results),
-            locals: BTreeMap::new(),
-        };
-        matches!(evaluator.eval(self), Ok(Value::Bool(true)))
-    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -105,8 +62,6 @@ pub(super) enum Value {
     Int(i128),
     Bool(bool),
     Type(crate::types::Primitive, u32),
-    Shape(veloc_types::Shape),
-    Bits(veloc_types::TypeBits),
     Sequence(Vec<Value>),
     Record(String, BTreeMap<String, Value>),
     Variant(String, String, Vec<Value>),
@@ -153,37 +108,10 @@ impl Value {
             ),
             Self::Optional(Some(v)) => Kind::Call("some".into(), vec![v.node(types, offset)?]),
             Self::Optional(None) => Kind::Name("none".into()),
-            Self::Literal(data::Value::Flags(_, members)) => Kind::List(
-                members
-                    .into_iter()
-                    .map(|name| Node {
-                        offset,
-                        kind: Kind::Name(name),
-                    })
-                    .collect(),
-            ),
             Self::Literal(data::Value::Empty(_)) => Kind::Name("empty".into()),
             Self::Literal(_) => unreachable!("structured literals were converted to values"),
-            Self::Shape(_) | Self::Bits(_) => return None,
         };
         Some(Node { offset, kind })
-    }
-
-    pub(super) fn expression(self, ty: &Ty) -> Option<Expr> {
-        let kind = match self {
-            Self::Int(v) => ExprKind::Integer(v),
-            Self::Bool(v) => return Some(Expr::boolean(v)),
-            Self::Optional(Some(v)) => {
-                let Ty::Optional(inner) = ty else {
-                    unreachable!("typed optional query")
-                };
-                ExprKind::Some(Box::new(v.expression(inner)?))
-            }
-            // Keep absent/structured results as typed calls in generated Rust;
-            // bare None would lose its type through fallible-expression expansion.
-            _ => return None,
-        };
-        Some(Expr::new(ty.clone(), kind))
     }
 
     fn from_literal(value: &data::Value) -> Self {
@@ -219,8 +147,6 @@ use EvalError::{Invalid, Unknown};
 
 struct Evaluator<'a> {
     types: &'a Types,
-    operands: BTreeMap<&'a str, Value>,
-    results: Option<Vec<Value>>,
     locals: BTreeMap<usize, Value>,
 }
 
@@ -247,41 +173,15 @@ impl Evaluator<'_> {
                 assert!(set.0.len() == 1 && shapes.count_ones() == 1, "exact type");
                 V::Type(code, shapes.trailing_zeros())
             }
-            E::Results => V::Sequence(self.results.clone().ok_or(Unknown)?),
-            E::ResultType(index) => self
-                .results
-                .as_ref()
-                .ok_or(Unknown)?
-                .get(*index)
-                .ok_or(Invalid)?
-                .clone(),
+            E::Results | E::ResultType(_) | E::Query(Query::TypeOf, _) => return Err(Unknown),
             E::Bound(id) => self.locals.get(id).ok_or(Unknown)?.clone(),
-            E::Query(Query::TypeOf, value) => {
-                let E::Operand(name) = &value.kind else {
-                    return Err(Unknown);
-                };
-                self.operands.get(name.as_str()).ok_or(Unknown)?.clone()
-            }
             E::Query(Query::Len, value) => {
                 let V::Sequence(values) = self.eval(value)? else {
                     unreachable!("checked sequence length")
                 };
                 V::Int(values.len() as i128)
             }
-            E::Rust(binding, args) => {
-                let [arg] = args.as_slice() else {
-                    return Err(Unknown);
-                };
-                let V::Type(code, shape) = self.eval(arg)? else {
-                    return Err(Unknown);
-                };
-                binding
-                    .evaluation
-                    .as_ref()
-                    .ok_or(Unknown)?
-                    .evaluate(code, shape)
-                    .ok_or(Invalid)?
-            }
+            E::Rust(..) => return Err(Unknown),
             E::Unary(op, value) => match (*op, self.eval(value)?) {
                 ("!", V::Bool(value)) => V::Bool(!value),
                 ("-", V::Int(value)) => V::Int(value.checked_neg().ok_or(Invalid)?),
@@ -398,53 +298,5 @@ impl Evaluator<'_> {
             return Err(Invalid);
         }
         Ok(value)
-    }
-}
-
-/// Convert a checked member of the defs type universe into shared concrete facts.
-/// Logical scalar kinds and shape masks are converted to the shared Rust type.
-fn type_query(query: TypeQuery, code: crate::types::Primitive, shape: u32) -> Option<Value> {
-    let scalar = veloc_types::ScalarType::from_element(code)?;
-    let ty = if shape == 0 {
-        scalar.as_type()
-    } else {
-        scalar
-            .vector(1u16.checked_shl(shape % 16)?, shape >= 16)?
-            .as_type()
-    };
-    let optional = |value: Option<Value>| Value::Optional(value.map(Box::new));
-    Some(match query {
-        TypeQuery::ElementBits => optional(ty.element_bits().map(|v| Value::Int(v.into()))),
-        TypeQuery::Lanes => optional(ty.lanes().map(|v| Value::Int(v.into()))),
-        TypeQuery::MinBytes => optional(ty.min_size_bytes().map(|v| Value::Int(v.into()))),
-        TypeQuery::BitSize => optional(ty.bit_size().map(Value::Bits)),
-        TypeQuery::Shape => optional(ty.shape().map(Value::Shape)),
-        TypeQuery::IsFixed => Value::Bool(ty.is_fixed()),
-        TypeQuery::IsCallable => Value::Bool(ty.is_callable()),
-        TypeQuery::IsOwned => Value::Bool(ty.is_owned()),
-        TypeQuery::IsLocal => Value::Bool(ty.is_local()),
-        TypeQuery::IsShared => Value::Bool(ty.is_shared()),
-        TypeQuery::IsCompact => Value::Bool(true),
-        TypeQuery::IsScalar => Value::Bool(ty.is_scalar()),
-        TypeQuery::IsVector => Value::Bool(ty.is_vector()),
-        TypeQuery::IsInteger => Value::Bool(ty.is_integer()),
-        TypeQuery::IsFloat => Value::Bool(ty.is_float()),
-        TypeQuery::IsPtr => Value::Bool(ty.is_ptr()),
-        TypeQuery::IsPredicate => Value::Bool(ty.is_predicate()),
-    })
-}
-
-impl RustEval {
-    pub(super) fn evaluate(&self, code: crate::types::Primitive, shape: u32) -> Option<Value> {
-        match self {
-            Self::Query(query) => type_query(*query, code, shape),
-            // Membership is computed from the same checked set that generates
-            // the runtime predicate, including user-defined predicates.
-            Self::Predicate(set) => Some(Value::Bool(
-                set.0
-                    .get(&code)
-                    .is_some_and(|mask| mask & (1 << shape) != 0),
-            )),
-        }
     }
 }

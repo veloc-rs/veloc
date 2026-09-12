@@ -217,7 +217,7 @@ fn check_list(
     for (index, p) in patterns.iter().enumerate() {
         let value = format!("{values}[{index}]");
         let condition = match p {
-            Pattern::Callable => format!("{value}.is_callable()"),
+            Pattern::Callable => format!("veloc_types::traits::TypeInfo::is_callable({value})"),
             Pattern::Set(set) | Pattern::Property(_, set) => {
                 format!("{}.accepts({value})", sets.reference(set))
             }

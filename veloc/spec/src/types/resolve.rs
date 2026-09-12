@@ -1,4 +1,5 @@
-//! Resolve named compositions over the shared Rust type catalog.
+//! Resolve logical scalar domains, aliases and vector compositions.
+use super::{Primitive as Element, TypeKey};
 use crate::types::{Scalar, TypeSet};
 use crate::{
     Error,
@@ -6,47 +7,75 @@ use crate::{
     syntax::{Kind, Node, Record},
 };
 use std::collections::BTreeMap;
-use veloc_types::{ScalarType, Type};
 
 pub(crate) struct Declarations {
     pub scalars: Vec<Scalar>,
     pub exact: BTreeMap<String, TypeSet>,
 }
 
-// Keep the receiver in the AST so file-local import checks still see Type.
 pub(crate) fn name(node: &Node) -> Option<String> {
     match &node.kind {
         Kind::Name(name) => Some(name.clone()),
-        Kind::Member(receiver, member) if matches!(&receiver.kind, Kind::Name(name) if name == "Type") => {
-            Some(format!("Type.{member}"))
-        }
         _ => None,
     }
 }
 
 pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, Error> {
-    let bound = records.iter().any(|r| {
-        r.kind == "type" && r.name == "Type" && crate::model::records::rust_binding(r).is_some()
-    });
-    let mut resolved = if bound {
-        Type::NAMED
-            .iter()
-            .map(|&(name, ty)| (format!("Type.{name}"), ty))
-            .collect()
-    } else {
-        BTreeMap::new()
-    };
-    let scalars = if bound {
-        ScalarType::ALL
-            .iter()
-            .map(|&scalar| Scalar {
-                name: format!("{:?}", scalar.as_type()),
-                ty: scalar.element(),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let mut resolved = BTreeMap::new();
+    let mut scalars = Vec::new();
+    for record in records
+        .iter()
+        .filter(|r| r.kind == "type" && crate::model::records::rust_binding(r).is_none())
+    {
+        let node = &record.fields["expr"];
+        let scalar = match &node.kind {
+            Kind::Name(name) if name == "bool" => Some(Element::Bool),
+            Kind::Name(name) if name == "ptr" => Some(Element::Ptr),
+            Kind::Call(name, args) if matches!(name.as_str(), "int" | "float") => {
+                let [
+                    Node {
+                        kind: Kind::Number(bits),
+                        ..
+                    },
+                ] = args.as_slice()
+                else {
+                    return Err(Error::at(
+                        source,
+                        node.offset,
+                        "scalar type expects a bit width",
+                    ));
+                };
+                if *bits == 0 || *bits > 128 {
+                    return Err(Error::at(
+                        source,
+                        node.offset,
+                        "scalar width must be in 1..=128",
+                    ));
+                }
+                Some(if name == "int" {
+                    Element::Int(*bits)
+                } else {
+                    Element::Float(*bits)
+                })
+            }
+            _ => None,
+        };
+        if let Some(ty) = scalar {
+            if scalars.iter().any(|scalar: &Scalar| scalar.ty == ty) {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "duplicate scalar domain; use a type alias",
+                ));
+            }
+            scalars.push(Scalar {
+                name: record.name.clone(),
+                ty,
+            });
+            resolved.insert(record.name.clone(), (ty, 0));
+            resolved.insert(format!("Type::{}", record.name), (ty, 0));
+        }
+    }
     let mut pending = BTreeMap::new();
     for record in records
         .iter()
@@ -58,13 +87,16 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, 
         }
         let expr = fields.take("expr")?;
         fields.finish()?;
-        pending.insert(record.name.clone(), expr);
+        if !resolved.contains_key(&record.name) {
+            pending.insert(record.name.clone(), expr);
+        }
     }
     while !pending.is_empty() {
         let before = pending.len();
         for alias in pending.keys().cloned().collect::<Vec<_>>() {
             if let Some(ty) = resolve(source, &pending[&alias], &resolved, &pending)? {
                 pending.remove(&alias);
+                resolved.insert(format!("Type::{alias}"), ty);
                 resolved.insert(alias, ty);
             }
         }
@@ -79,18 +111,8 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, 
     }
     let exact = resolved
         .into_iter()
-        .map(|(name, ty)| {
-            let (exponent, scalable) = ty
-                .as_vector()
-                .map(|v| {
-                    let (lanes, scalable) = v.shape();
-                    (lanes.trailing_zeros(), scalable)
-                })
-                .unwrap_or((0, false));
-            (
-                name,
-                TypeSet::singleton(ty.element().expect("compact type"), exponent, scalable),
-            )
+        .map(|(name, (element, shape))| {
+            (name, TypeSet::singleton(element, shape % 16, shape >= 16))
         })
         .collect();
     Ok(Declarations { scalars, exact })
@@ -99,15 +121,15 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, 
 fn resolve(
     source: &str,
     node: &Node,
-    resolved: &BTreeMap<String, Type>,
+    resolved: &BTreeMap<String, TypeKey>,
     pending: &BTreeMap<String, Node>,
-) -> Result<Option<Type>, Error> {
+) -> Result<Option<TypeKey>, Error> {
     let fail = |message| Error::at(source, node.offset, message);
     if let Some(name) = name(node) {
         if let Some(&ty) = resolved.get(&name) {
             return Ok(Some(ty));
         }
-        if pending.contains_key(&name) {
+        if pending.contains_key(name.strip_prefix("Type::").unwrap_or(&name)) {
             return Ok(None);
         }
         return Err(fail(format!("unknown type `{name}`")));
@@ -141,13 +163,20 @@ fn resolve(
     let Some(element) = resolve(source, element, resolved, pending)? else {
         return Ok(None);
     };
-    let scalar = element
-        .as_scalar()
-        .ok_or_else(|| fail("vector element must be a scalar type".into()))?;
+    if element.1 != 0 {
+        return Err(fail("vector element must be a scalar type".into()));
+    }
     let lanes = u16::try_from(lanes)
         .map_err(|_| fail("vector lanes exceed the supported type domain".into()))?;
-    scalar
-        .vector(lanes, scalable)
-        .map(|v| Some(v.as_type()))
-        .ok_or_else(|| fail("invalid vector lanes or element type".into()))
+    if !lanes.is_power_of_two() || lanes <= 1 {
+        return Err(fail("invalid vector lanes or element type".into()));
+    }
+    let key = (
+        element.0,
+        lanes.trailing_zeros() + if scalable { 16 } else { 0 },
+    );
+    if key.0 == Element::Ptr {
+        return Err(fail("invalid vector lanes or element type".into()));
+    }
+    Ok(Some(key))
 }

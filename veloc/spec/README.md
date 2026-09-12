@@ -1,12 +1,31 @@
 # Operation definitions
 
 `veloc-opgen` is the build-time definition compiler. It is independent of runtime
-IR containers; `veloc-mir/build.rs` currently uses its MIR emitter. HIR is reserved
+IR containers and `veloc-types` (including test dependencies); `veloc-mir/build.rs` uses its MIR emitter. HIR is reserved
 for a future structured representation. The machine-facing IR is LIR, in
 `veloc-lir`; bytecode is a separate execution format.
 
-Shared vocabulary lives in `veloc/defs/`: `types.ops`, `builtins.ops` and
-`comparisons.ops`, imported by `prelude.ops`. MIR owns its packed
+Rust methods are declared on their types. A `trait: rust("owner::traits::TypeInfo")`
+binding selects the owning trait; `Source::interfaces(namespace)` emits its
+signature, never a forwarding implementation. The owning crate uses opgen in
+its build script and writes the Rust implementation itself. Free functions may
+still bind a Rust path directly; methods use their declared trait.
+
+Opgen never loads a runtime type catalog or calls a foreign Rust function.
+Logical scalar/vector domains are declared in ops. Associated constants and
+`const fn` calls remain typed expressions in generated Rust, where rustc checks
+their signatures, evaluates static metadata and selects admissible semantic
+specializations. There is no `bindings.rs`, query registry or foreign-value schema.
+The generic semantic expression library remains a normal dependency.
+
+Integration tests live in `crates/veloc-filetests/tests/opgen/`, grouped into
+types, operation contracts, imports, and generated-code execution. Standalone
+Rust host and formatting checks share this suite; private invariant tests stay
+beside the implementation.
+File tests distinguish definition errors from Rust type errors and const-evaluation
+failures; moving a check to rustc does not remove its negative test.
+
+Shared vocabulary lives in `veloc/defs/`: `types.ops` and `comparisons.ops`, imported by `prelude.ops`. MIR owns its packed
 `formats.ops` and logical `mir.ops`; LIR owns `generic.ops` with operand-array
 formats and logical operations. Each consumer has a `defs/module.ops` entry:
 
@@ -27,7 +46,7 @@ cross import boundaries.
 
 Each file sees its own declarations and its transitive imports, not unrelated
 files loaded by an entry module. For example, `mir.ops` imports `formats.ops`,
-which imports the shared prelude; `builtins.ops` imports `types.ops` for `Type`.
+which imports the shared prelude. Shared Rust bindings live together in `types.ops`.
 Rust data types such as `Type` and `Float` need an explicit declaration or import.
 IR type sets and Rust data types occupy distinct namespaces: importing the
 `Float` set does not import the Rust `Float` property type. Primitive syntax types
@@ -51,7 +70,7 @@ let plan = source.plan()?;      // resolve and check the selected output
 let generated = plan.generate(); // infallible emission; reusable
 ```
 
-String input has the same `plan(text)?` entry. Existing `compile` entry points
+String input uses `plan(text)?`. Existing `compile` entry points
 compose planning and generation. `parse` checks the definition model without
 emitting storage code; it is not a promise that every output supports every
 contract. Property validators are checked there, independently of output choice.
@@ -115,7 +134,7 @@ from the crate root.
 Generated Rust artifacts follow their consumers, not the input file boundaries:
 
 - `types.rs`: compact type encoding, constants and type helpers.
-- `opcodes.rs`: opcode metadata, formats, type sets, flags and comparisons.
+- `opcodes.rs`: opcode metadata, formats, type sets, packed encodings and comparisons.
 - `instructions.rs`: storage, writers, views, accessors and result type inference.
 - `builders.rs`: operation-specific `InstBuilder` methods.
 - `type_rules.rs`: type validation dispatch and shared signature checks.
@@ -164,17 +183,16 @@ A Rust-bound type can declare its methods alongside its representation:
 
 ```text
 type Type = rust("crate::Type") {
-    fn element_bits(self) -> optional(u32);
-    fn wider_than(self, other: Type) -> bool {
+    const fn element_bits(self) -> optional(u32);
+    const fn wider_than(self, other: Type) -> bool {
         value: self.element_bits()? > other.element_bits()?
     }
 }
 ```
 
-A declaration without a body binds the same-named Rust associated method.
-A defs body is checked and inlined into the shared expression tree. An explicit
-`= rust("crate::path::function");` binding can adapt naming; its first argument
-is the receiver. The same binding syntax is available for free functions.
+A declaration without a body binds the same-named method in the generated trait.
+A defs body is checked and inlined into the shared expression tree. Free functions
+can use `= rust("crate::path::function");`; methods use the type's trait binding.
 There is no separate `impl` or `intrinsic` declaration mechanism.
 `Value`, `Int`, `Float` and `VectorConst` declare `ty()` in their type blocks.
 Their defs bodies use the fundamental `type(self)` query: SSA values need a DFG
@@ -183,21 +201,46 @@ and projection expressions call `value.ty()`; the result-pattern
 `-> type(property)` and semantic sort reference `type(operand)` are separate
 grammatical uses and remain unchanged.
 
-Every method must be declared. Calls are resolved by the nominal receiver type,
-not by a global method-name whitelist. Defs checks arguments/results against the
-declaration; compiling generated Rust checks the actual Rust interface.
+Every method must be declared, for every Rust-bound type, not just `Type`.
+Calls are resolved by the nominal receiver type, not a global method-name whitelist.
+Rust-bound method declarations generate per-type traits in `type_methods`, unless
+an explicit trait path selects another owner. The Rust owner implements these
+traits explicitly; opgen does not generate forwarding implementations. Rust
+checks every declared signature, including unused methods. Defs-body methods
+expand normally and need no external implementation; data-only types need no
+empty trait.
+
+`const fn` methods generate a `pub const trait`; the owner supplies a `const impl`
+and enables nightly `const_trait_impl`. If a type also has runtime-only methods,
+they remain in the ordinary trait and the constant methods use a separate trait
+with a `Const` suffix. This avoids requiring runtime methods to be const. Free
+functions also accept `const fn ... = rust("...");`.
+
+Metadata supports pure expression syntax, for example
+`count: Type::I64.element_bits()? + 1`. Defs-owned literals and expressions can be
+folded by opgen, but foreign constant calls remain typed expressions until rustc
+evaluates the generated static initializer. No query registration is needed.
+Runtime-only calls are rejected in metadata and in `const fn` bodies. `?` and
+checked arithmetic become const-compatible matches with a diagnostic panic on
+failure, so absent values and overflow fail compilation instead of falling back
+to runtime computation. Generated const trait calls require `const_trait_impl`
+in the consuming crate; const equality on Rust types may additionally require
+const comparison support from that type and the toolchain.
 Free functions and methods share argument checking and normalize their expanded
 body to the declared return type. Field access and calls use structural postfix
-syntax: `object.field`, `object.method(args)`, and `Interface.method(args)`.
+syntax: `object.field`, `object.method(args)`, and `Interface::method(args)`.
+Associated constants use `Type::BOOL` or `MemoryEffect::NONE`; `.` never resolves
+an associated member.
 Parentheses and whitespace do not change name resolution.
 Bound functions are trusted pure, deterministic, read-only operations. Context
 capabilities still use host interfaces; these declarations do not inject module
 state or turn arbitrary Rust code into an offline evaluator.
 
 The no_std `veloc-types` crate owns the shared `Type`, checked scalar/vector
-views, physical encoding and size queries. MIR re-exports these types; opgen uses
-the same constructors and queries directly. There is no second facts-only Type
-or build dependency from veloc-types back to opgen.
+views, physical encoding and size queries. MIR re-exports these types. Its build
+script uses opgen to generate interface declarations without needing a type
+catalog. The logical definitions are shared with IR generation; opgen itself does
+not link the runtime type crate.
 
 Signature stores are context-local and append-only. Each signature stores its
 parameters and returns in one buffer; the interning index stores only IDs.
@@ -207,17 +250,17 @@ signature graph once into a program-wide canonical store; runtime comparisons
 use remapped IDs instead of walking nested signatures. Raw IDs from different
 stores must never be compared without remapping or structural comparison.
 
-Offline Rust-call adapters only convert arguments/results and invoke that kernel.
-Predicate adapters use the same exact sets as generated runtime predicates,
-including user-defined predicates. An unregistered Rust binding can be emitted
-for runtime checks, but a type-only constraint using it is rejected when preparing
-offline semantic instances; it is never silently ignored. No arbitrary Rust
-function is executed merely by interpreting a path string.
+Semantic specialization enumerates logical element kinds and shape domains,
+then emits Rust const predicates over those candidates. Unsupported semantic
+signatures are rejected only if the Rust predicate admits them. Const assertions
+also reject empty admissible domains. The resulting boolean tables guard generated
+evaluator arms; constant folding does not instantiate a semantic expression graph.
+Type-only semantic predicates must be const-capable. Runtime-only predicates
+remain valid for ordinary validation, but cannot filter an offline semantic domain.
 
-Constant metadata and concrete type constraints share one typed evaluator,
-including checked arithmetic and short circuiting. Missing inputs prevent
-constant folding; undefined computations reject a concrete instantiation.
-Constraint dependencies and offline support are classified once when checked.
+Definition-owned arithmetic and boolean expressions can still be folded directly.
+Foreign Rust calls are never interpreted by the generator. Static metadata, type
+constraints and semantic candidate checks reuse the typed expression emitter.
 Semantic instances are prepared during validation and reused by code generation;
 independent type variables are enumerated separately and predicates filter their
 combinations. Per-lane recipes reject any admitted shape-changing combination;
@@ -235,7 +278,7 @@ extern interface Module {
     fn params(sig: SigId) -> optional(sequence(Type));
 }
 fn parameter_count(func: FuncId) -> i128 {
-    value: len(Module.params(Module.signature(func)?)?)
+    value: len(Module::params(Module::signature(func)?)?)
 }
 ```
 
@@ -255,7 +298,7 @@ expression uses it, and emits statically resolved trait calls. Rust checks that
 the adapter implements every interface actually called. No separate capability
 list duplicates the adapter's implementations.
 
-For example, a query using `Module.params` requires its Rust adapter to implement
+For example, a query using `Module::params` requires its Rust adapter to implement
 `Module`. MIR's instruction validator supplies module state; its ordinary
 property and instruction-query adapters do not. Using that interface there
 therefore fails when compiling generated Rust, not while checking the defs.
@@ -284,15 +327,15 @@ expression language applies to operations and alternate storage layouts:
 
 ```text
 verify {
-    require(matches(args, Module.params(Module.signature(function)?)?), "argument types differ");
-    require(Module.returns(Module.signature(function)?)? == Module.returns(Module.current_signature())?, "answer types differ");
+    require(matches(args, Module::params(Module::signature(function)?)?), "argument types differ");
+    require(Module::returns(Module::signature(function)?)? == Module::returns(Module::current_signature())?, "answer types differ");
     require(all(options.evl, |v| v.ty() == I32), "EVL must be i32");
 }
 ```
 
-`Module.signature` maps a `FuncId` to an optional `SigId`; `Types.signature`
-extracts a signature ID from a callable type. `Module.params` and
-`Module.returns` borrow type sequences. Callers handle their optional results
+`Module::signature` maps a `FuncId` to an optional `SigId`; `Types::signature`
+extracts a signature ID from a callable type. `Module::params` and
+`Module::returns` borrow type sequences. Callers handle their optional results
 with `?`; `results()` exposes the instruction's result types. `matches` compares SSA value types with a type sequence without allocating.
 `prefix(sequence, count)` and `suffix(sequence, count)` use checked slicing.
 `all` supports both sequences and optional values (absence satisfies the predicate).
@@ -344,29 +387,34 @@ model does not specify floating-point exceptions or memory behavior.
 
 ## Packed encodings
 
-`encoding` declares sequential bit fields, shared by compact types and memory
-attributes. For example, `builtins.ops` defines:
+`encoding` declares sequential bit fields for defs-owned packed data. For example:
 
 ```text
-encoding MemFlags {
+encoding Options {
     storage: u16,
-    fields: [alignment_log2(4), volatile(1)]
+    fields: [count(4), enabled(1)]
 }
 ```
 
 Ordinary encodings generate a private integer representation, zero initialization
 (`empty`/`Default`), and const field accessors. One-bit fields generate
-`is_volatile()` and `with_volatile(bool)`; wider fields generate
-`alignment_log2()`, `with_alignment_log2(value)` and `ALIGNMENT_LOG2_MAX`.
+`is_enabled()` and `with_enabled(bool)`; wider fields generate
+`count()`, `with_count(value)` and `COUNT_MAX`.
 Setters preserve neighboring fields and assert that values fit instead of
 silently truncating them. Storage supports `u8` through `u128`. Widths, duplicate
 fields and generated method conflicts are checked before code generation.
 Unlike flag sets, packed structs do not expose `union` or `contains`.
 
-Rust implements semantic wrappers such as `MemFlags::with_alignment`: validating
-power-of-two alignment, converting to log2 and conservatively clamping to the
-declared field limit. Type encoding is instead an implementation detail of
-`veloc-types`, not a configurable definition-language encoding.
+Shared contracts `MemFlags`, `OpTraits`, `MemoryEffects` and `MemoryEffect` are
+defined in `veloc-types` and explicitly bound in `types.ops`. Their representation,
+display and behavioral rules live together in Rust. Ops declare the constants and
+methods they use, and generated traits enforce this interface. Opgen never reads
+`bitflags::Flags::FLAGS` or interprets a Rust enum. Each operation declares its
+traits and memory behavior through ordinary typed expressions.
+
+`MemFlags::with_alignment` validates power-of-two alignment, converts it to log2
+and conservatively clamps it to the compact field limit. Neither this layout nor
+the shared `Type` encoding is configured in defs.
 
 ## Shared type representation
 
@@ -375,12 +423,13 @@ payload; callables use a disjoint ownership tag and a context-local signature
 ID. Scalar codes, masks, shifts, construction and decoding live together in Rust.
 Invalid or reserved raw encodings are rejected.
 
-Defs declare logical scalar/vector types, aliases and exact sets. Generated
-aliases and named vectors are module constants (`types::I32X4`); custom
-predicates are free functions (`types::is_chosen(ty)`). They do not generate
-inherent implementations on the shared Type. Standard classification methods
-belong to Rust. Ordinary `encoding` declarations still describe packed data
-such as memory flags, but there is no specialized `encoding Type` mechanism.
+Defs declare logical scalar domains, aliases and exact type sets. Scalar and
+common vector constants are associated constants (`Type::I32`, `Type::I32X4`);
+defs refer to them as `Type::I32` and `Type::I32X4` after importing `Type`.
+Custom aliases generate module constants, and custom predicates generate free
+functions (`types::is_chosen(ty)`). Standard classification and representation
+remain in Rust. Ordinary `encoding` declarations describe defs-owned packed
+data, not `Type` or the shared memory contracts.
 
 Callable operations use ordinary signatures, `move` parameters, `verify`
 predicates and explicit metadata. Their definitions declare `MAY_TRAP`, and tail
@@ -404,45 +453,32 @@ metadata or validate arguments. `Opcode::has_signature()` classifies operations
 with such a declaration without unpacking their operands. Invalid source handles
 still report inference errors; complete type validation remains a separate stage.
 
-The `codes` table assigns each primitive scalar its stable backend code separately
-from its type expression. Codes must be nonzero, unique and fit the scalar field.
-Each entry must reference a declared scalar under its canonical MIR adapter name;
-unknown types, vectors, duplicate entries and missing primitive codes are errors.
-Aliases reuse the canonical type's encoding instead of acquiring a second code.
-
 ## Types and type sets
 
 ```text
-type I32 = int(32);
-type BOOL = bool();
-type PTR = ptr();
-type I32X4 = vector(I32, 4);
-type SV4 = vector(I32, scalable(4));
-type WORD = I32;
+import "../../defs/types.ops";
+
+type SV4 = vector(Type::I32, scalable(4));
+type WORD = Type::I32;
 type WORDS = vector(WORD, 4);
-typeset WideInteger = I32 | I64;
+typeset WideInteger = Type::I32 | Type::I64;
 typeset WideVectors = vectors(WideInteger);
-typeset ChosenShapes = I32X4 | SV4;
+typeset ChosenShapes = Type::I32X4 | SV4;
 ```
 
-`type Name = expression;` declares one concrete IR type (or binds a Rust data type). Constructors are
-interpreted by the semantic checker, not special cases in the grammar. Supported
-constructors are `int(bits)`, `float(bits)`, `bool()`, `ptr()` and
-`vector(element, lanes)`; `scalable(lanes)` is a vector shape expression. Type
-names must be uppercase Rust constant names. Expressions support aliases, forward
-references and nested construction, such as `vector(int(32), 4)`. Cyclic aliases,
-unknown constructors, wrong arity and vector-of-vector types are rejected.
-`vector(...)` constructs one type; `vectors(set)` constructs a type set.
+`type NAME = expression;` declares one concrete IR type alias. The supported
+constructor is `vector(element, lanes)`; `scalable(lanes)` denotes a scalable
+shape. Alias names must be uppercase Rust constant names. Aliases support
+forward references; cycles, unknown members, wrong arity and vector-of-vector
+types are rejected. `vector(...)` constructs one type; `vectors(set)` constructs
+a type set.
 
-Type expressions generate compact-code decoding, text names, element widths
-and exact `Type` constants. IR storage and interpreter metadata use a single
-`Type` representation. Codes remain stable; this
-change does not widen the 16-bit `Type` representation. The MIR codec adapter
-currently supports integer lanes of 8/16/32/64 bits, float lanes of 32/64 bits,
-`Bool` (one logical bit, one storage byte), and target-sized `Ptr`. It checks
-canonical names against kind/width so changing a declaration cannot silently
-contradict typed codec/target adapters. New primitive kinds or widths still need
-those adapters to be extended.
+Logical scalar domains use `int(bits)`, `float(bits)`, `bool` and `ptr`.
+Their declarations live beside the Rust interface in `veloc/types/defs/types.ops`.
+Rust owns codes and physical representations. Generated constant assertions
+require those representations to agree with the declared scalar domains.
+Vector aliases emit calls to Rust's checked constructor. None of these methods
+run inside opgen. New primitive kinds still require semantic and target support.
 
 Construct vectors through a checked scalar view:
 `Type::I32.as_scalar()?.vector(4, false)?.as_type()`. Obtain a vector's scalar
@@ -533,32 +569,30 @@ errors. Defining a predicate does not change type construction or layout legalit
 
 ## Traits and effects
 
+Shared flags are Rust `bitflags` types. Their interfaces are ordinary declarations:
+
 ```text
-flags OpTraits {
-    storage: u16,
-    members: [TERMINATOR(0), COMMUTATIVE(1)],
-    separator: ", "
-}
-flags MemoryEffects {
-    storage: u8,
-    members: [READ(0), WRITE(1), ALLOCATE(2), FREE(3)],
-    separator: ", "
+type MemoryEffects = rust("veloc_types::MemoryEffects") {
+    trait: rust("veloc_types::traits::MemoryEffects"),
+    const READ: Self;
+    const WRITE: Self;
+    const fn empty() -> Self;
+    const fn union(self, other: Self) -> Self;
 }
 ```
 
-`flags` declares a named set with unsigned storage (`u8` through `u128`), explicit
-member bit positions and a display separator. It generates the private-storage
-struct, member constants, `NONE`, `ALL`, `empty`, `is_empty`, `union`, `contains`,
-`intersects` and `Display`. Display follows declaration order, lowercases member
-names and changes underscores to hyphens; the empty set prints `none`.
-Bit positions preserve representation independently of declaration/display order.
-Set names are not restricted to `OpTraits`. The old standalone `trait`
-and `region` declarations are no longer supported. Memory effects do not use
-resource flag sets; `MemoryEffects` is a set of behaviors, not resources.
+The Rust owner explicitly implements the generated const trait. Ops use
+`MemoryEffects::READ.union(MemoryEffects::WRITE)`. Associated constants and
+static methods are checked like instance methods; unused declarations still
+belong to the Rust trait contract. Repeating a flag in a union is legal and has
+the semantics of Rust's implementation.
 
-Flag sets and ordinary packed encodings share checked storage and bit-layout
-code for widths, masks, occupied bits and overlap detection. Flags use explicit
-one-bit positions; encodings pack multi-bit fields in declaration order.
+The explicit `analysis: traits` and `analysis: memory(MemoryEffect::NONE)`
+annotations select the operation-analysis interfaces. They are not value schemas:
+opgen neither knows the bit positions nor recognizes `Known` / `Unknown`
+constructors. Primitive algebra supplies derived logical facts; generated Rust
+checks that user-declared flags and memory behavior do not contradict them.
+The generator does not guess an analysis role from a Rust path or type name.
 
 ### Typed operation metadata
 
@@ -566,17 +600,17 @@ Structs are shared by instruction properties and build-time metadata. Enums
 and flags are ordinary field types, not special operation keywords:
 
 ```text
-enum MemoryEffect { variants: [Known(MemoryEffects), Unknown] }
-struct OpInfo { traits: OpTraits, memory: MemoryEffect }
+import "../../defs/types.ops";
+struct Example {}
 
 op Example() -> () {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ, WRITE]) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ.union(MemoryEffects::WRITE)) },
     mnemonic: "example", storage: Example {}
 }
 ```
 
 The generic value checker resolves each field against its declared type. It
-checks enum variants and their payloads, flags membership and duplicates,
+checks defs-owned enum variants and their payloads, declared associated members,
 nested structs, optional values (`none` / `some(value)`), integer ranges, and
 required fields. A struct body consists directly of `name: Type` fields, in
 declaration order. Every field must be supplied when constructing a struct,
@@ -591,8 +625,8 @@ fields; it need not be named `OpInfo`. MIR stores it inline in each static
 `OpSpec`, and `Opcode::meta()` borrows that value. LIR emits its own typed
 `GenericOpcode::meta()` table. Neither stores metadata on each instruction.
 
-The operation-contract adapter interprets fields *typed* `OpTraits` and
-`MemoryEffect`, regardless of field names; more than one field of either type
+The operation-contract adapter selects fields with the explicitly bound traits and
+memory interface types, regardless of field names; more than one field of either type
 is ambiguous and rejected. Other fields are just typed data. Semantic laws and
 LIR flow contracts populate inferred facts before final struct checking. Pure
 interface expressions may supply constant metadata fields explicitly. If a memory
@@ -601,10 +635,10 @@ contract is conservatively unknown.
 Missing operation traits mean no additional declared traits, not inferred purity.
 
 The former top-level `traits` / `memory` entries and named `effect`
-declarations are rejected. `Known([])` means no memory effects; `Unknown`
+declarations are rejected. `MemoryEffect::NONE` means no memory effects; `MemoryEffect::UNKNOWN`
 is a separate enum variant, not a flag or every known member combined.
-The `MemoryEffect` enum is generated like any other enum. Trusted Rust queries
-still implement memory interference, deletion and possible behaviors.
+The `MemoryEffect` enum and its trusted methods remain in Rust; they implement
+memory interference, deletion and possible behaviors.
 Per-access volatility belongs to `MemFlags`; MIR atomic ordering is not
 currently modeled. Addresses and widths belong to access contracts and alias
 analysis.
@@ -630,7 +664,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> T {
 }
 
 op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: T) -> U {
-    meta: OpInfo { memory: Known([]) },
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "extendu",
     storage: Unary { arg: arg },
     verify {
@@ -640,7 +674,7 @@ op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: T) -> U {
     }
 
 op Load(ptr: PTR, offset: u32, flags: MemFlags) -> Any {
-    meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(MemoryAccess, effects) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
@@ -688,7 +722,7 @@ interface MemoryAccess {
 fn ReadAccess(ptr: Value(PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
     value: MemoryAccess {
         ptr: ptr, offset: offset, ty: ty, stored: none, flags: flags,
-        effects: Known([READ]),
+        effects: MemoryEffect::known(MemoryEffects::READ),
     },
 }
 ```
@@ -738,7 +772,7 @@ Ownership transfer is attached to the logical parameter:
 
 ```text
 op Call(func_id: FuncId, move args: values) -> signature {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call",
     storage: Call { func_id: func_id, args: args },
     signature: function(func_id),
@@ -936,7 +970,7 @@ verify {
 Expressions reference logical parameters and struct fields, not physical pool
 IDs or layout names. The existing storage projection resolves those references.
 The language provides Boolean logic (`!`, `&&`, `||`), comparisons, checked
-integer arithmetic (`+`, `-`, `*`) and bitwise operations (`&`, `|`), comparison-enum literals such as `IntCC.Eq`,
+integer arithmetic (`+`, `-`, `*`) and bitwise operations (`&`, `|`), comparison-enum literals such as `IntCC::Eq`,
 and lexical `all(sequence, |element| predicate)` over finite byte/value lists.
 It has no arbitrary Rust callbacks, user recursion or unbounded loops.
 Verification arithmetic uses checked signed 128-bit integers, not wrapping
@@ -1003,7 +1037,7 @@ validation and constant folding:
 
 ```sh
 cargo run --release -q -p veloc-optimizer --example type_schemes -- all 3
-cargo test -p veloc-mir -p veloc-opgen
+cargo test -p veloc-mir -p veloc-opgen -p veloc-filetests
 ```
 
 It contains 200 repetitions of add/sub/mul/extend/wrap, plus constants and return
@@ -1068,7 +1102,7 @@ storage layout:
 
 ```text
 op Store(ptr: PTR, value: Any, offset: u32, flags: MemFlags) -> () {
-    meta: OpInfo { traits: [MAY_TRAP], memory: Known([WRITE]) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) },
     mnemonic: "store",
     storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
     text: "{.flags} {value}, {ptr}, offset={offset}",
@@ -1208,7 +1242,7 @@ operation or a per-lane operation, not an entire vector, memory or machine-state
 model. Absent expressions mean **unmodeled**,
 not a claim that an operation is pure or verified.
 
-Executable semantic expressions infer `MemoryEffect::Known([])`. A complete `access` contract
+Executable semantic expressions infer `MemoryEffect::NONE`. A complete `access` contract
 also supplies its memory summary; other unmodeled operations must declare their
 memory effect in `meta` explicitly. The metadata traits field may be omitted.
 
@@ -1403,7 +1437,7 @@ model is a subsequent step. The `split_add` semantics example demonstrates a
 fixed-width representation check; it is not an enabled wide-integer backend pass.
 
 ```sh
-cargo test -p veloc-opgen -p veloc-mir -p veloc-optimizer -p veloc-semantics
+cargo test -p veloc-opgen -p veloc-mir -p veloc-optimizer -p veloc-semantics -p veloc-filetests
 cargo run -q -p veloc-semantics --example split_add | z3 -in
 cargo run -q -p veloc-optimizer --example semantic_check -- overflow | z3 -in
 cargo run -q -p veloc-optimizer --example semantic_check -- overflow --broken | z3 -in

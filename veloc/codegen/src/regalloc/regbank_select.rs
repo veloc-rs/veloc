@@ -1,7 +1,7 @@
 use crate::target::arch::TargetMachine;
 use alloc::vec::Vec;
 use veloc_lir::{MachineFunction, MachineOperand};
-use veloc_mir::Type;
+use veloc_mir::{Type, TypeInfo};
 
 use veloc_lir::RegisterBank;
 

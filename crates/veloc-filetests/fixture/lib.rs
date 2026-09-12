@@ -1,4 +1,6 @@
-include!("../../../veloc/mir/src/lib.rs");
+#![feature(const_trait_impl, const_cmp)]
+
+include!("../../../veloc/mir/src/root.rs");
 
 pub use inst::{FloatOrderCC, OrderCC};
 
@@ -6,8 +8,8 @@ pub mod tokens {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Stamp(pub u32);
 
-    impl Stamp {
-        pub fn number(self) -> u32 {
+    impl crate::type_methods::Stamp for Stamp {
+        fn number(self) -> u32 {
             self.0
         }
     }

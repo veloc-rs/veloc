@@ -13,7 +13,7 @@ pub mod syntax;
 mod text;
 mod types;
 
-pub use generate::{Plan, format_rust};
+pub use generate::Plan;
 pub use model::Definitions;
 pub use source::{Source, SourceError};
 
@@ -47,6 +47,7 @@ impl std::error::Error for Error {}
 /// Generated MIR, optimizer and offline artifacts; callers choose which to write.
 #[derive(Default)]
 pub struct Generated {
+    pub checks: String,
     pub host: String,
     pub types: String,
     pub type_rules: String,
@@ -76,45 +77,33 @@ pub fn compile(source: &str) -> Result<Generated, Error> {
 }
 
 #[cfg(test)]
-mod fixtures {
-    use super::*;
+mod fixtures;
 
-    static BUILTINS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-        concat!(
-            include_str!("../../defs/types.ops"),
-            "\n",
-            include_str!("../../defs/builtins.ops"),
-            "\n",
-            include_str!("../../defs/comparisons.ops")
-        )
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("import "))
-        .collect::<Vec<_>>()
-        .join("\n")
-    });
-
-    pub fn types_policy(name: &str) -> crate::model::records::Policy {
-        super::parse(&BUILTINS).unwrap().data.rust.policy(name)
+pub mod interfaces;
+/// Format generated Rust files with the workspace's rustfmt configuration.
+///
+/// Only the supplied files are formatted; module declarations are not followed.
+/// The workspace toolchain includes rustfmt. Missing tools and invalid generated
+/// syntax are reported instead of silently leaving unformatted artifacts.
+pub fn format_rust(files: &[std::path::PathBuf], config: &std::path::Path) -> std::io::Result<()> {
+    use std::{io, process::Command};
+    if files.is_empty() {
+        return Ok(());
     }
-
-    pub fn types() -> types::Types {
-        super::parse(&BUILTINS).unwrap().types
+    let output = Command::new(std::env::var_os("RUSTFMT").unwrap_or_else(|| "rustfmt".into()))
+        .arg("--config-path")
+        .arg(config.canonicalize()?)
+        .args(["--config", "skip_children=true"])
+        .args(files)
+        .output()
+        .map_err(|error| io::Error::new(error.kind(), format!("failed to run rustfmt: {error}")))?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "rustfmt failed ({}):\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        )));
     }
-
-    pub fn set(expression: &str) -> types::TypeSet {
-        super::parse(&format!("{}\ntypeset TestSet = {expression};", *BUILTINS))
-            .unwrap()
-            .types
-            .sets
-            .remove("TestSet")
-            .unwrap()
-    }
-
-    pub fn parse(source: &str) -> Result<Definitions, Error> {
-        super::parse(&format!("{}\n{source}", *BUILTINS))
-    }
-
-    pub fn compile(source: &str) -> Result<Generated, Error> {
-        super::compile(&format!("{}\n{source}", *BUILTINS))
-    }
+    Ok(())
 }

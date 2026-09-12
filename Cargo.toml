@@ -56,10 +56,9 @@ mmap-rs = "0.7.0"
 # --- Data Structures ---
 hashbrown = { version = "0.14" }
 bitvec = "1.0"
+bitflags = { version = "2.11", default-features = false }
 smallvec = { version = "1.13", default-features = false }
 cranelift-entity = { version = "0.128.3", default-features = false }
-
-# --- Parser ---
 
 # --- Async ---
 futures = "0.3"
@@ -78,6 +77,8 @@ anyhow = "1.0"
 elf_loader = { version = "0.14.1" }
 
 [dependencies]
+veloc-opgen = { workspace = true }
+veloc-isle = { workspace = true }
 veloc-mir = { workspace = true }
 veloc-lir = { workspace = true }
 veloc-interpreter = { workspace = true }

@@ -1,65 +1,65 @@
-// ----- arbitrary-interface-and-helper-names
+// ----- interfaces/arbitrary-interface-and-helper-names
 // run: opgen
 // check: pub struct Summary
 // check: pub count: u32
 // check: impl InstructionQuery for Summary
 // check: count: *_f0
-// check: MemoryEffects::READ
+// check: MemoryEffects>::READ
 interface Summary { count: u32, effects: MemoryEffect }
 fn Describe(n: u32) -> Summary {
-    value: Summary { count: n, effects: Known([READ]) },
+    value: Summary { count: n, effects: MemoryEffect::known(MemoryEffects::READ) },
 }
 struct Data { n: u32 }
-op Example(size: u32) -> Type.I32 {
+op Example(size: u32) -> Type::I32 {
     meta: OpInfo { memory: field(Summary, effects) },
     mnemonic: "example", storage: Data { n: size },
     implements: [Describe(size)],
 }
 
-// ----- refined-ssa-reference
+// ----- interfaces/refined-ssa-reference
 // run: opgen-error
 // check: projection type mismatch
-interface Address { base: Value(Type.PTR) }
+interface Address { base: Value(Type::PTR) }
 struct Data { base: Value }
-op Example(base: Type.I32) -> Type.I32 {
-    meta: OpInfo { memory: Known([]) },
+op Example(base: Type::I32) -> Type::I32 {
+    meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "example", storage: Data { base: base },
     implements: [Address { base: base }],
 }
 
-// ----- result-index-is-explicit
+// ----- interfaces/result-index-is-explicit
 // run: opgen-error
 // check: result_type index is out of range
 interface Answer { ty: Type }
 struct Data {}
-op Example() -> Type.I32 {
-    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data {},
+op Example() -> Type::I32 {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Data {},
     implements: [Answer { ty: result_type(1) }],
 }
 
-// ----- multiple-results-need-no-special-rule
+// ----- interfaces/multiple-results-need-no-special-rule
 // run: opgen
 // check: results.get(1)?
 interface Answer { ty: Type }
 struct Data {}
-op Example() -> (Type.I32, Type.I64) {
-    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data {},
+op Example() -> (Type::I32, Type::I64) {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Data {},
     implements: [Answer { ty: result_type(1) }],
 }
 
-// ----- runtime-data-is-not-static-metadata
+// ----- interfaces/runtime-data-is-not-static-metadata
 // run: opgen-error
 // check: metadata projection must be compile-time constant
 interface Summary { count: u32 }
 struct Info { count: u32 }
 struct Data { count: u32 }
-op Example(count: u32) -> Type.I32 {
+op Example(count: u32) -> Type::I32 {
     meta: Info { count: field(Summary, count) },
     mnemonic: "example", storage: Data { count: count },
     implements: [Summary { count: count }],
 }
 
-// ----- forward-helpers-and-arrays
+// ----- interfaces/forward-helpers-and-arrays
 // run: opgen
 // check: pub items: [crate::inst::Item; 2]
 // check: Item { n: *_f0 }
@@ -68,76 +68,556 @@ interface Pair { items: array(Item, 2) }
 fn Describe(n: u32) -> Pair { value: Pair { items: [Make(n), Make(n)] } }
 fn Make(n: u32) -> Item { value: Item { n: n } }
 struct Data { n: u32 }
-op Example(n: u32) -> Type.I32 {
-    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
+op Example(n: u32) -> Type::I32 {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Data { n: n },
     implements: [Describe(n)],
 }
 
-// ----- recursive-helpers-even-if-unused
+// ----- interfaces/recursive-helpers-even-if-unused
 // run: opgen-error
 // check: recursive projection functions are not supported
 fn First(n: u32) -> u32 { value: Second(n) }
 fn Second(n: u32) -> u32 { value: First(n) }
 
-// ----- a-storage-struct-can-also-be-query-data
+// ----- interfaces/a-storage-struct-can-also-be-query-data
 // run: opgen
 // check: pub struct Data
 // check: pub struct Summary
 // check: data: Data { n: *_f0 }
 struct Data { n: u32 }
 interface Summary { data: Data }
-op Example(n: u32) -> Type.I32 {
-    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
+op Example(n: u32) -> Type::I32 {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Data { n: n },
     implements: [Summary { data: Data { n: n } }],
 }
 
-// ----- unused-function-body-is-checked
+// ----- interfaces/unused-function-body-is-checked
 // run: opgen-error
 // check: projection type mismatch
 fn Bad(n: bool) -> u32 { value: n }
 
-// ----- recursive-query-data
+// ----- interfaces/recursive-query-data
 // run: opgen-error
 // check: recursive inline interface type
 interface First { other: optional(Second) }
 interface Second { other: First }
 
-// ----- explicit-lossless-conversion
+// ----- interfaces/explicit-lossless-conversion
 // run: opgen-error
 // check: projection conversion must be lossless
 fn Narrow(n: u64) -> u32 { value: u32(n) }
 
-// ----- missing-binding
+// ----- interfaces/missing-binding
 // run: opgen-error
 // check: projection fields must exactly match the declaration
 interface Summary { count: u32, valid: bool }
 struct Data { n: u32 }
-op Example(n: u32) -> Type.I32 {
-    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
+op Example(n: u32) -> Type::I32 {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Data { n: n },
     implements: [Summary { count: n }],
 }
 
-// ----- duplicate-interface
+// ----- interfaces/duplicate-interface
 // run: opgen-error
 // check: duplicate interface implementation
 interface Summary { count: u32 }
 struct Data { n: u32 }
-op Example(n: u32) -> Type.I32 {
-    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
+op Example(n: u32) -> Type::I32 {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Data { n: n },
     implements: [Summary { count: n }, Summary { count: n }],
 }
 
-// ----- old-record-keyword-is-rejected
+// ----- interfaces/old-record-keyword-is-rejected
 // run: opgen-error
 // check: unknown definition kind `record`
 record Legacy {}
 
-// ----- unknown-query-must-not-imply-purity
+// ----- interfaces/unknown-query-must-not-imply-purity
 // run: opgen-error
 // check: unmodeled operations must declare their memory effect
 interface Summary { count: u32 }
 struct Data { n: u32 }
-op Example(n: u32) -> Type.I32 {
+op Example(n: u32) -> Type::I32 {
     meta: OpInfo {}, mnemonic: "example", storage: Data { n: n },
     implements: [Summary { count: n }],
+}
+
+// ----- host/arbitrary-host-methods-are-declaration-driven
+// run: opgen
+// check: pub trait Numbers
+// check: fn next(&self, n: u32) -> Option<u32>
+// check: impl InstructionQuery for Summary
+// check: crate::host::traits::Numbers::next(&_host, *_f0)
+extern interface Numbers {
+    fn next(n: u32) -> optional(u32);
+}
+interface Summary { count: u32 }
+fn Count(n: u32) -> u32 { value: Numbers::next(n)? }
+struct Data { n: u32 }
+op Example(n: u32) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
+    storage: Data { n: n }, implements: [Summary { count: Count(n) }],
+    verify { require(Count(n) > n, "no next value"); }
+}
+
+// ----- host/helper-requirements-reach-the-caller
+// run: opgen
+// check: crate::host::traits::Module::params(&_host, *_f0)
+fn Count(sig: SigId) -> i128 { value: len(Module::params(sig)?) }
+interface Summary { count: i128 }
+struct Data { sig: SigId }
+op Example(sig: SigId) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
+    storage: Data { sig: sig }, implements: [Summary { count: Count(sig) }],
+}
+
+// ----- host/optional-host-results-must-be-handled
+// run: opgen-error
+// check: projection type mismatch
+fn Count(sig: SigId) -> sequence(Type) { value: Module::params(sig) }
+
+// ----- host/try-only-applies-to-optionals
+// run: opgen-error
+// check: ? requires an optional value
+fn Next(n: u32) -> u32 { value: n? }
+
+// ----- host/host-method-signatures-are-checked
+// run: opgen-error
+// check: projection type mismatch
+fn Bad(n: u32) -> optional(SigId) { value: Module::signature(n) }
+
+// ----- host/opaque-host-queries-are-not-static-metadata
+// run: opgen-error
+// check: metadata projection must be compile-time constant
+extern interface Numbers {
+    fn next(n: u32) -> optional(u32);
+}
+fn Count(n: u32) -> u32 { value: Numbers::next(n)? }
+struct Info { count: u32, memory: MemoryEffect }
+struct Empty {}
+op Example() -> () {
+    meta: Info { count: Count(1), memory: MemoryEffect::NONE },
+    mnemonic: "example", storage: Empty {},
+}
+
+// ----- host/legacy-module-query-is-not-a-hidden-hook
+// run: opgen-error
+// check: unknown expression name or operation
+fn Bad(sig: SigId) -> i128 { value: len(params(sig)) }
+
+// ----- host/interface-in-clause-is-removed
+// run: opgen-error
+// check: expected `{`
+extern interface Legacy in [query] { fn next(n: u32) -> u32; }
+
+// ----- host/context-declarations-are-removed
+// run: opgen-error
+// check: unknown definition kind `context`
+context query {}
+
+// ----- host/unused-host-needs-no-adapter
+// run: opgen
+// check: pub trait Unused
+// check: impl InstructionQuery for Summary
+// not: let _host
+extern interface Unused { fn number() -> u32; }
+interface Summary { count: u32 }
+struct Data { n: u32 }
+op Example(n: u32) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
+    storage: Data { n: n }, implements: [Summary { count: n }],
+}
+
+// ----- rust-types/declared-paths-are-shared-by-fields-and-host-signatures
+// run: opgen
+// check: fn read(&self, value: crate::tokens::Token) -> Option<crate::tokens::Token>
+// check: pub value: crate::tokens::Token
+// check: Some(crate::tokens::Token)
+type Token = rust("crate::tokens::Token");
+extern interface Tokens { fn read(value: Token) -> optional(Token); }
+struct Entry { value: Token }
+enum EntryResult { variants: [Some(Token), None] }
+
+// ----- rust-types/foreign-types-are-not-ssa-types
+// run: opgen-error
+// check: Token
+type Token = rust("crate::tokens::Token");
+struct Empty {}
+op Example() -> Token {
+    mnemonic: "example", meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty {},
+}
+
+// ----- rust-types/foreign-types-are-not-structural-type-aliases
+// run: opgen-error
+// check: TOKEN
+type TOKEN = rust("crate::tokens::Token");
+type BAD = vector(TOKEN, 4);
+
+// ----- rust-types/foreign-types-are-nominal
+// run: opgen-error
+// check: projection type mismatch
+type First = rust("crate::tokens::Token");
+type Second = rust("crate::tokens::Token");
+extern interface Tokens { fn first() -> First; }
+fn wrong() -> Second { value: Tokens::first() }
+
+// ----- rust-types/foreign-types-have-no-implicit-fields
+// run: opgen-error
+// check: field
+type Token = rust("crate::tokens::Token");
+fn wrong(token: Token) -> u32 { value: token.number }
+
+// ----- rust-types/foreign-types-have-no-implicit-arithmetic
+// run: opgen-error
+// check: unsupported expression operator or operand type
+type Token = rust("crate::tokens::Token");
+fn wrong(token: Token) -> Token { value: token + token }
+
+// ----- rust-types/binding-needs-one-path
+// run: opgen-error
+// check: rust requires one type path string
+type Token = rust();
+
+// ----- rust-types/path-is-not-rust-code
+// run: opgen-error
+// check: Rust type path must be nonempty and qualified
+type Token = rust("crate::Token; panic!()");
+
+// ----- rust-types/binding-cannot-shadow-a-primitive
+// run: opgen-error
+// check: conflicts with a built-in type
+type u32 = rust("crate::Token");
+
+// ----- rust-types/binding-cannot-duplicate-generated-data
+// run: opgen-error
+// check: duplicate data type
+type Token = rust("crate::tokens::Token");
+struct Token { number: u32 }
+
+// ----- rust-types/binding-does-not-silently-declare-other-types
+// run: opgen-error
+// check: unknown projection type
+extern interface Tokens { fn read(value: Undeclared) -> u32; }
+
+// ----- type-methods/methods-share-the-type-declaration-and-expand-defs-bodies
+// run: opgen
+// check: pub trait Token: Sized
+// not: impl Token for
+// check: crate::type_methods::Token>::number
+// check: checked_mul
+type Token = rust("crate::tokens::Token") {
+    fn number(self) -> u32;
+    fn twice(self) -> u32 { value: self.number() * 2 }
+}
+extern interface Tokens { fn read(number: u32) -> Token; }
+struct Input { number: u32 }
+op Check(number: u32) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Input { number },
+    verify { require(Tokens::read(number).twice() > 0, "positive"); }
+}
+
+// ----- type-methods/external-trait-binding-selects-the-method-contract
+// run: opgen
+// check: crate::tokens::Read>::number
+type Token = rust("crate::tokens::Token") {
+    trait: rust("crate::tokens::Read"),
+    fn number(self) -> u32;
+}
+extern interface Tokens { fn read(number: u32) -> Token; }
+struct Input { number: u32 }
+op Check(number: u32) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Input { number },
+    verify { require(Tokens::read(number).number() > 0, "positive"); }
+}
+
+// ----- type-methods/methods-must-be-declared
+// run: opgen-error
+// check: unknown projection function
+fn wrong(ty: Type) -> bool { value: ty.undeclared() }
+
+// ----- type-methods/results-are-types-not-fake-ssa-values
+// run: opgen-error
+// check: unknown projection function `Type::ty`
+struct Unary { arg: Value }
+op Check(arg: Type::I8) -> (result: Type::I16) {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Unary { arg },
+    verify { require(result.ty().is_scalar(), "scalar"); }
+}
+
+// ----- type-methods/result-only-generic-has-a-concrete-slot
+// run: opgen
+// check: veloc_types::traits::TypeInfo>::element_bits(results[0])
+struct Empty {}
+op Check<T: Integer>() -> (result: T) {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Empty {},
+    verify { require(T.element_bits()? > 8, "wide"); }
+}
+
+// ----- type-methods/generic-and-value-names-cannot-collide
+// run: opgen-error
+// check: duplicate parameter
+struct Unary { arg: Value }
+op Check<T: Integer>(T: T) -> T {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Unary { arg: T },
+}
+
+// ----- type-methods/rust-query-signature-is-checked
+// run: opgen-rust-error
+// check: mismatched types
+fn wrong(ty: Type) -> bool = rust("crate::Type::element_bits");
+
+// ----- type-methods/optional-query-needs-an-explicit-unwrapping-policy
+// run: opgen-error
+// check: optional operands
+fn wrong(ty: Type) -> bool { value: ty.element_bits() > 8 }
+
+// ----- type-methods/old-intrinsic-binding-is-not-kept-as-an-alias
+// run: opgen-error
+// check: expected rust binding
+fn old(ty: Type) -> bool = intrinsic("type.is_owned");
+
+// ----- type-methods/missing-offline-support-is-not-silently-ignored
+// run: opgen-error
+// check: semantic type constraints require const functions
+fn runtime_only(ty: Type) -> bool = rust("crate::Type::is_valid");
+struct Unary { arg: Value }
+op Check<T: Integer>(arg: T) -> T {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Unary { arg },
+    verify { require(runtime_only(T), "valid"); }
+    semantics: bv.neg(arg)
+}
+
+// ----- type-methods/runtime-only-query-is-allowed-without-offline-semantics
+// run: opgen
+// check: crate::Type::is_scalable(operands[0])
+fn runtime_only(ty: Type) -> bool = rust("crate::Type::is_scalable");
+struct Unary { arg: Value }
+op Check<T: Integer>(arg: T) -> T {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Unary { arg },
+    verify { require(runtime_only(T), "scalable"); }
+}
+
+// ----- type-methods/type-methods-can-be-used-in-constant-metadata
+// run: opgen
+// check: veloc_types::traits::TypeInfo>::element_bits(crate::types::I64)
+struct Info { count: u32, memory: MemoryEffect }
+struct Empty {}
+op Check() -> () {
+    meta: Info { count: Type::I64.element_bits()?, memory: MemoryEffect::NONE },
+    mnemonic: "check", storage: Empty {},
+}
+
+// ----- type-methods/declared-methods-cannot-recurse
+// run: opgen-error
+// check: recursive projection
+type Token = rust("crate::tokens::Token") {
+    fn first(self) -> bool { value: self.second() }
+    fn second(self) -> bool { value: self.first() }
+}
+
+// ----- type-methods/short-circuit-and-absence-use-the-shared-type-kernel
+// run: opgen
+// check: Opcode::Check
+struct Unary { arg: Value }
+op Check<T: ScalarInteger | Type::PTR>(arg: T) -> T {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Unary { arg },
+    verify { require(!T.is_ptr() && T.element_bits()? > 0, "sized integer"); }
+    semantics: bv.neg(arg)
+}
+
+// ----- type-methods/malformed-default-binding-reports-an-error
+// run: opgen-error
+// check: unknown function field `rust`
+fn wrong() -> bool { rust: default }
+
+// ----- type-methods/user-predicate-bindings-use-the-declared-set-offline
+// run: opgen
+// check: crate::types::is_wide
+predicate is_wide = Type::I32 | Type::I64;
+const fn wide(ty: Type) -> bool = rust("crate::types::is_wide");
+struct Unary { arg: Value }
+op Check<T: Integer>(arg: T) -> T {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Unary { arg },
+    verify { require(wide(T), "wide"); }
+    semantics: bv.neg(arg)
+}
+
+// ----- type-methods/postfix-fields-and-methods-use-the-same-grammar
+// run: opgen
+// check: crate::type_methods::Token>::number
+type Token = rust("crate::tokens::Token") {
+    fn number(self) -> u32;
+}
+extern interface Tokens { fn read(number: u32) -> Token; }
+struct Input { number: u32 }
+struct Boxed { token: Token }
+fn unwrap(boxed: Boxed) -> u32 { value: (boxed) . token . number() }
+op Check(number: u32) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Input { number },
+    verify { require(unwrap(Boxed { token: Tokens :: read(number) }) > 0, "positive"); }
+}
+
+// ----- type-methods/constant-projections-share-the-typed-evaluator
+// run: opgen
+// check: MemoryEffect>::NONE
+struct Pair { lhs: u32, rhs: u32 }
+fn same(pair: Pair) -> bool { value: (pair).lhs == pair.rhs }
+struct Empty {}
+op Check() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Empty {},
+    verify { require(same(Pair { lhs: 3 * 7, rhs: 21 }), "same"); }
+}
+
+// ----- type-methods/methods-respect-the-declared-return-type
+// run: opgen-error
+// check: projection type mismatch
+type Token = rust("crate::tokens::Token") {
+    fn erase(self, value: Value(Type::I32)) -> Value { value: value }
+}
+fn narrow(token: Token, value: Value(Type::I32)) -> Value(Type::I32) {
+    value: token.erase(value)
+}
+
+// ----- type-methods/unused-rust-methods-still-have-a-contract
+// run: opgen
+// check: pub trait Handle: Sized
+// check: fn count(self) -> u32
+// not: impl Handle for
+type Handle = rust("crate::handles::Handle") { fn count(self) -> u32; }
+
+// ----- type-methods/non-type-methods-must-also-be-declared
+// run: opgen-error
+// check: unknown projection function
+type Handle = rust("crate::handles::Handle");
+fn count(handle: Handle) -> u32 { value: handle.count() }
+
+// ----- type-methods/foreign-const-metadata-needs-no-offline-registration
+// run: opgen
+// check: pub const trait Token: Sized
+// check: crate::type_methods::Token>::number(crate::tokens::new(7u32))
+type Token = rust("crate::tokens::Token") {
+    const fn number(self) -> u32;
+}
+const fn token(number: u32) -> Token = rust("crate::tokens::new");
+struct Info { count: u32, memory: MemoryEffect }
+struct Empty {}
+op Check() -> () {
+    meta: Info { count: token(7).number(), memory: MemoryEffect::NONE },
+    mnemonic: "check", storage: Empty {},
+}
+
+// ----- type-methods/runtime-method-is-not-constant-metadata
+// run: opgen-error
+// check: metadata projection must be compile-time constant
+type Token = rust("crate::tokens::Token") {
+    fn number(self) -> u32;
+}
+const fn token(number: u32) -> Token = rust("crate::tokens::new");
+struct Info { count: u32, memory: MemoryEffect }
+struct Empty {}
+op Check() -> () {
+    meta: Info { count: token(7).number(), memory: MemoryEffect::NONE },
+    mnemonic: "check", storage: Empty {},
+}
+
+// ----- type-methods/const-helpers-cannot-call-runtime-functions
+// run: opgen-error
+// check: const function calls a runtime-only operation
+fn runtime(number: u32) -> u32 = rust("crate::runtime");
+const fn twice(number: u32) -> u32 { value: runtime(number) * 2 }
+
+// ----- type-methods/associated-constants-are-not-function-calls
+// run: opgen-error
+// check: associated constants are values, not functions
+struct Empty {}
+op Check() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE() }, mnemonic: "check", storage: Empty {},
+}
+
+// ----- type-methods/associated-constants-do-not-use-dot
+// run: opgen-error
+// check: unknown expression name or operation: MemoryEffect
+struct Empty {}
+op Check() -> () {
+    meta: OpInfo { memory: MemoryEffect.NONE }, mnemonic: "check", storage: Empty {},
+}
+
+// ----- type-methods/associated-path-requires-a-namespace
+// run: opgen-error
+// check: :: requires a type or namespace path
+struct Empty {}
+op Check() -> () {
+    meta: OpInfo { memory: MemoryEffect::known(MemoryEffects::empty())::NONE },
+    mnemonic: "check", storage: Empty {},
+}
+
+// ----- expressions/helpers-share-verification-query-and-metadata-expressions
+// run: opgen
+// check: impl InstructionQuery for Summary
+// check: checked_mul(2u64)
+// check: count: 14
+// check: valid: true
+struct Info { count: u64, valid: bool, memory: MemoryEffect }
+interface Summary { count: u64 }
+fn Twice(n: u64) -> u64 { value: n * 2 }
+fn Positive(n: u64) -> bool { value: 0 < n }
+struct Data { n: u64 }
+op Example(n: u64) -> () {
+    meta: Info { count: Twice(7), valid: Positive(Twice(7)), memory: MemoryEffect::NONE },
+    mnemonic: "example", storage: Data { n: n },
+    implements: [Summary { count: Twice(n) }],
+    verify {
+        require(Positive(Twice(n)), "expected a positive doubled value");
+    }
+}
+
+// ----- expressions/metadata-preserves-full-width-signed-integers
+// run: opgen
+// check: high: 18446744073709551615
+// check: low: -7
+struct Info { high: u64, low: i64, memory: MemoryEffect }
+fn High() -> u64 { value: 18446744073709551615 }
+fn Low() -> i64 { value: -7 }
+struct Empty {}
+op Example() -> () {
+    meta: Info { high: High(), low: Low(), memory: MemoryEffect::NONE },
+    mnemonic: "example", storage: Empty {},
+}
+
+// ----- expressions/invalid-helper-result-is-still-type-checked
+// run: opgen-error
+// check: projection type mismatch
+fn Nonzero(n: u32) -> bool { value: n }
+
+// ----- expressions/helper-does-not-silently-narrow-arguments
+// run: opgen-error
+// check: projection type mismatch
+struct Data { n: u64 }
+op Example(n: u64) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "example", storage: Data { n: n },
+    verify {
+        require(is_power_of_two(n), "bad alignment");
+    }
+}
+
+// ----- expressions/helpers-cannot-shadow-primitives
+// run: opgen-error
+// check: function conflicts with a projection primitive
+fn len(n: u32) -> u32 { value: n }
+
+// ----- expressions/legacy-constraints-have-no-compatibility-layer
+// run: opgen-error
+// check: use a verify block instead of constraints
+property Int { constraints: [true] }
+
+// ----- expressions/query-emits-declared-host-calls
+// run: opgen
+// check: crate::host::traits::Module::params(&_host, (crate::host::traits::Module::signature
+interface Summary { count: i128 }
+struct Data { function: FuncId }
+op Example(function: FuncId) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "example", storage: Data { function: function },
+    implements: [Summary { count: len(Module::params(Module::signature(function)?)?) }],
 }

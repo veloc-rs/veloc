@@ -109,11 +109,11 @@ impl X86_64TargetMachine {
             desc,
             legalizer: X86_64Legalizer::new(cpu),
             selector: X86_64Selector::new(cpu),
-            operand_lowering: X86_64OperandLowering::new(cpu),
-            post_isel: X86_64PostIsel::new(cpu),
-            frame_lowering: X86_64FrameLowering::new(cpu),
-            pass_config: X86_64PassConfig::new(cpu),
-            regbank_select: X86_64RegBankSelect::new(cpu),
+            operand_lowering: X86_64OperandLowering,
+            post_isel: X86_64PostIsel,
+            frame_lowering: X86_64FrameLowering,
+            pass_config: X86_64PassConfig,
+            regbank_select: X86_64RegBankSelect,
             emitter: X86_64CodeEmitter::new(),
         }
     }

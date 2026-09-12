@@ -1,6 +1,6 @@
 //! Compact shared types, checked scalar/vector views and physical encoding.
 
-use crate::{CallableKind, Scalar, Shape, SigId, TypeBits, TypeSize};
+use crate::{CallableKind, Scalar, Shape, SigId, TypeBits, TypeInfo, TypeSize};
 use core::fmt;
 
 // Physical layout is a Rust implementation detail, not an OpSpec contract.
@@ -11,7 +11,8 @@ const SCALABLE_MASK: u16 = 0x0100;
 const USED_MASK: u16 = SCALAR_MASK | LANES_LOG2_MASK | SCALABLE_MASK;
 const LANES_LOG2_MAX: u16 = crate::MAX_VECTOR_LANES.trailing_zeros() as u16;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialOrd, Ord, Hash)]
+#[derive_const(PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Type(u64);
 
@@ -129,28 +130,12 @@ impl Type {
             .name(debug)
     }
     #[inline]
-    pub const fn is_scalar(self) -> bool {
-        self.as_scalar().is_some()
-    }
-    #[inline]
-    pub const fn is_vector(self) -> bool {
-        self.as_vector().is_some()
-    }
-    #[inline]
     pub const fn is_integer(self) -> bool {
         matches!(self.element(), Some(Int(_)))
     }
     #[inline]
     pub const fn is_float(self) -> bool {
         matches!(self.element(), Some(Float(_)))
-    }
-    #[inline]
-    pub const fn is_ptr(self) -> bool {
-        matches!(self.as_scalar(), Some(ScalarType::PTR))
-    }
-    #[inline]
-    pub const fn is_predicate(self) -> bool {
-        self.is_vector() && matches!(self.element(), Some(Bool))
     }
 }
 
@@ -179,21 +164,6 @@ impl Type {
             _ => return None,
         };
         Some((SigId((self.0 >> 16) as u32), kind))
-    }
-
-    #[inline]
-    pub const fn is_callable(self) -> bool {
-        self.as_callable().is_some()
-    }
-
-    #[inline]
-    pub const fn is_owned(self) -> bool {
-        matches!(self.as_callable(), Some((_, CallableKind::Owned)))
-    }
-
-    #[inline]
-    pub const fn is_compact(self) -> bool {
-        self.0 <= u16::MAX as u64
     }
 }
 
@@ -253,56 +223,13 @@ impl Default for Type {
 }
 
 impl Type {
-    #[inline]
-    pub const fn element_bits(self) -> Option<u32> {
-        match self.element() {
-            Some(element) => element.element_bits(),
-            None => None,
-        }
-    }
-    #[inline]
-    pub const fn lanes(self) -> Option<u32> {
-        if self.is_compact() && self.is_valid() {
-            Some(self.lane_count() as u32)
-        } else {
-            None
-        }
-    }
-    #[inline]
-    pub const fn shape(self) -> Option<Shape> {
-        match self.as_vector() {
-            Some(vector) => Some(vector.shape()),
-            None => None,
-        }
-    }
-    #[inline]
-    pub const fn is_fixed(self) -> bool {
-        self.is_vector() && !self.is_scalable()
-    }
-    #[inline]
-    pub const fn is_local(self) -> bool {
-        matches!(self.as_callable(), Some((_, CallableKind::Local)))
-    }
-    #[inline]
-    pub const fn is_shared(self) -> bool {
-        matches!(self.as_callable(), Some((_, CallableKind::Shared)))
-    }
-    #[inline]
-    pub fn bit_size(self) -> Option<TypeBits> {
-        let bits = self.element_bits()?.checked_mul(self.lanes()?)?;
-        Some(if self.is_scalable() {
-            TypeBits::Scalable { min_bits: bits }
-        } else {
-            TypeBits::Fixed(bits)
-        })
-    }
     /// Byte-addressed representation, not a target ABI or packed predicate layout.
     #[inline]
-    pub fn storage_size(self) -> TypeSize {
-        let Some(bytes) = self
-            .element_bits()
-            .and_then(|bits| bits.div_ceil(8).checked_mul(self.lanes()?))
-        else {
+    pub const fn storage_size(self) -> TypeSize {
+        let (Some(bits), Some(lanes)) = (self.element_bits(), self.lanes()) else {
+            return TypeSize::TargetDependent;
+        };
+        let Some(bytes) = bits.div_ceil(8).checked_mul(lanes) else {
             return TypeSize::TargetDependent;
         };
         if self.is_scalable() {
@@ -312,12 +239,8 @@ impl Type {
         }
     }
     #[inline]
-    pub fn fixed_size_bytes(self) -> Option<u32> {
+    pub const fn fixed_size_bytes(self) -> Option<u32> {
         self.storage_size().fixed_bytes()
-    }
-    #[inline]
-    pub fn min_size_bytes(self) -> Option<u32> {
-        self.storage_size().min_bytes()
     }
     #[inline]
     pub fn min_bit_width(self) -> Option<u32> {
@@ -513,5 +436,102 @@ impl From<ScalarType> for Type {
 impl From<VectorType> for Type {
     fn from(ty: VectorType) -> Self {
         ty.as_type()
+    }
+}
+
+const impl TypeInfo for Type {
+    #[inline]
+    fn element_bits(self) -> Option<u32> {
+        match self.element() {
+            Some(element) => element.element_bits(),
+            None => None,
+        }
+    }
+
+    #[inline]
+    fn bit_size(self) -> Option<TypeBits> {
+        let (Some(bits), Some(lanes)) = (self.element_bits(), self.lanes()) else {
+            return None;
+        };
+        let Some(bits) = bits.checked_mul(lanes) else {
+            return None;
+        };
+        Some(if self.is_scalable() {
+            TypeBits::Scalable { min_bits: bits }
+        } else {
+            TypeBits::Fixed(bits)
+        })
+    }
+
+    #[inline]
+    fn min_size_bytes(self) -> Option<u32> {
+        self.storage_size().min_bytes()
+    }
+
+    #[inline]
+    fn lanes(self) -> Option<u32> {
+        if self.is_compact() && self.is_valid() {
+            Some(self.lane_count() as u32)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn shape(self) -> Option<Shape> {
+        match self.as_vector() {
+            Some(vector) => Some(vector.shape()),
+            None => None,
+        }
+    }
+
+    #[inline]
+    fn is_fixed(self) -> bool {
+        self.is_vector() && !self.is_scalable()
+    }
+
+    #[inline]
+    fn is_scalar(self) -> bool {
+        self.as_scalar().is_some()
+    }
+
+    #[inline]
+    fn is_vector(self) -> bool {
+        self.as_vector().is_some()
+    }
+
+    #[inline]
+    fn is_ptr(self) -> bool {
+        matches!(self.as_scalar(), Some(ScalarType::PTR))
+    }
+
+    #[inline]
+    fn is_predicate(self) -> bool {
+        self.is_vector() && matches!(self.element(), Some(Bool))
+    }
+
+    #[inline]
+    fn is_callable(self) -> bool {
+        self.as_callable().is_some()
+    }
+
+    #[inline]
+    fn is_owned(self) -> bool {
+        matches!(self.as_callable(), Some((_, CallableKind::Owned)))
+    }
+
+    #[inline]
+    fn is_local(self) -> bool {
+        matches!(self.as_callable(), Some((_, CallableKind::Local)))
+    }
+
+    #[inline]
+    fn is_shared(self) -> bool {
+        matches!(self.as_callable(), Some((_, CallableKind::Shared)))
+    }
+
+    #[inline]
+    fn is_compact(self) -> bool {
+        self.0 <= u16::MAX as u64
     }
 }

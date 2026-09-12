@@ -138,6 +138,8 @@ impl Policy {
     pub fn parse(source: &str, record: &Record, records: &[Record]) -> Result<Self, Error> {
         let mut fields = model::Fields::new(source, record.clone());
         fields.take("expr")?;
+        fields.optional("trait");
+        fields.optional("analysis");
         let references = match fields.optional("field") {
             None => References::Data,
             Some(node) => References::parse(source, &node, records, &mut BTreeSet::new())?,
@@ -171,85 +173,43 @@ impl Policy {
 /// Rust type bindings are nominal in defs; paths only control code emission.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RustTypes {
-    external: BTreeMap<String, String>,
+    external: crate::interfaces::Bindings,
+    pub analysis: Option<super::metadata::Analysis>,
     policies: BTreeMap<String, Policy>,
 }
 
-pub(crate) fn rust_binding(record: &Record) -> Option<&Node> {
-    (record.kind == "type")
-        .then(|| record.fields.get("expr"))
-        .flatten()
-        .filter(|node| matches!(&node.kind, Kind::Call(name, _) if name == "rust"))
-}
-
-pub(crate) fn primitive(name: &str) -> bool {
-    matches!(
-        name,
-        "bool" | "u8" | "u32" | "u64" | "i32" | "i64" | "i128" | "f64"
-    )
-}
+pub(crate) use crate::interfaces::{primitive, rust_binding, rust_path};
 
 impl RustTypes {
     pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
-        let mut result = Self::default();
-        for record in records {
-            let Some(node) = rust_binding(record) else {
-                continue;
-            };
-            if primitive(&record.name) {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "Rust type binding conflicts with a built-in type",
-                ));
-            }
-            let Kind::Call(_, args) = &node.kind else {
-                unreachable!()
-            };
-            let [
-                Node {
-                    kind: Kind::Text(path),
-                    ..
-                },
-            ] = args.as_slice()
-            else {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "rust requires one type path string",
-                ));
-            };
-            rust_path(source, node.offset, path)?;
-            result
-                .policies
-                .insert(record.name.clone(), Policy::parse(source, record, records)?);
-            if result
-                .external
-                .insert(record.name.clone(), path.clone())
-                .is_some()
-            {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "duplicate Rust type binding",
-                ));
-            }
+        let external = crate::interfaces::Bindings::compile(records, source)?;
+        let mut policies = BTreeMap::new();
+        for record in records.iter().filter(|r| rust_binding(r).is_some()) {
+            policies.insert(record.name.clone(), Policy::parse(source, record, records)?);
         }
-        Ok(result)
+        Ok(Self {
+            external,
+            policies,
+            analysis: super::metadata::Analysis::compile(records, source)?,
+        })
     }
-
+    pub fn method_trait(&self, name: &str, is_const: bool) -> String {
+        self.external
+            .method_trait(name, "crate::type_methods", is_const)
+    }
     pub fn policy(&self, name: &str) -> Policy {
         self.policies.get(name).cloned().unwrap_or_default()
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.external.contains_key(name)
+        self.external.0.contains_key(name)
     }
 
     pub fn rust(&self, name: &str) -> String {
         self.external
+            .0
             .get(name)
-            .cloned()
+            .map(|b| b.path.clone())
             .unwrap_or_else(|| name.to_owned())
     }
 
@@ -339,7 +299,7 @@ pub(crate) fn field_type(
                 && (rust_binding(r).is_some()
                     || matches!(
                         r.kind.as_str(),
-                        "struct" | "enum" | "flags" | "encoding" | "comparison"
+                        "struct" | "enum" | "encoding" | "comparison"
                     ))
         })
     {
@@ -420,34 +380,6 @@ pub(crate) fn generate(records: &[RecordDef]) -> String {
 }
 
 /// The binding boundary accepts qualified paths, never embedded Rust expressions.
-pub(crate) fn rust_path(source: &str, offset: usize, path: &str) -> Result<(), Error> {
-    // Accept paths, not arbitrary Rust code, references or generic types.
-    let mut parts = path.split("::");
-    let first = parts.next().unwrap_or_default();
-    if first.is_empty() {
-        return Err(Error::at(
-            source,
-            offset,
-            "Rust type path must be nonempty and qualified",
-        ));
-    }
-    if !matches!(first, "crate") {
-        model::identifier(source, offset, first)?;
-    }
-    let rest = parts.collect::<Vec<_>>();
-    if rest.is_empty() {
-        return Err(Error::at(
-            source,
-            offset,
-            "Rust type path must be qualified",
-        ));
-    }
-    for part in rest {
-        model::identifier(source, offset, part)?;
-    }
-
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {

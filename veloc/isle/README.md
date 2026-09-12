@@ -58,14 +58,14 @@ remain specialized consumers; target selection has not yet been migrated to
 the new value-rule core. Sharing the contracts does not imply sharing graph
 mutation, CFG construction or instruction-encoding algorithms.
 
-Run `CARGO_INCREMENTAL=0 cargo test -p veloc-isle` for rule-to-Rust execution
+Run `CARGO_INCREMENTAL=0 cargo test -p veloc-filetests --test rules` for rule-to-Rust execution
 tests and the existing target-description tests.
 
 The CLI exposes the two consumers explicitly:
 
 ```text
-veloc-isle target INPUT OUTPUT ARCH
-veloc-isle rules INPUT OUTPUT SOURCE_NAME SOURCE_OPS TARGET_NAME TARGET_OPS
+cargo run -p veloc --bin veloc-isle -- target INPUT OUTPUT ARCH
+cargo run -p veloc --bin veloc-isle -- rules INPUT OUTPUT SOURCE_NAME SOURCE_OPS TARGET_NAME TARGET_OPS
 ```
 
 The rules command emits `lower` and its `Context` trait, referring to the host's

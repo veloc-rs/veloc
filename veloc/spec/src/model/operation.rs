@@ -11,7 +11,7 @@ pub(super) fn parse(
     vocabulary: Vocabulary<'_>,
     expressions: &mut super::expr::Library,
 ) -> Result<Op, Error> {
-    let Vocabulary { builtins, data, .. } = vocabulary;
+    let Vocabulary { data, .. } = vocabulary;
     let sig = record
         .signature
         .take()
@@ -104,29 +104,16 @@ pub(super) fn parse(
     let mut meta_node = fields.take("meta")?;
     expressions.metadata(source, &mut meta_node, &implementations, vocabulary)?;
     let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
-    let mut traits = meta.traits(source, data, builtins)?;
+    let mut traits = BTreeSet::new();
     if let Projection::Operands(projection) = &projection {
-        let required: &[&str] = match projection.flow.as_str() {
-            "Jump" | "Return" => &["TERMINATOR"],
-            "Trap" => &["TERMINATOR", "ABORT", "MAY_TRAP"],
-            "Call" => &["MAY_TRAP"],
-            _ => &[],
-        };
-        for &name in required {
-            if !builtins.has_trait(name) {
-                return Err(fields.error(format!("flow requires undeclared trait `{name}`")));
-            }
-            if !traits.iter().any(|t| t == name) {
-                traits.push(name.into());
-            }
-        }
+        traits.extend(projection.flow.traits());
     }
     let constraints = fields
         .optional("verify")
         .map(|node| list(source, node))
         .transpose()?
         .unwrap_or_default();
-    if traits.iter().any(|t| t == "ABORT") && !traits.iter().any(|t| t == "TERMINATOR") {
+    if traits.contains("ABORT") && !traits.contains("TERMINATOR") {
         return Err(fields.error("ABORT requires TERMINATOR"));
     }
     let mut identity = fields
@@ -147,19 +134,9 @@ pub(super) fn parse(
             .ok_or_else(|| fields.error("trap guards require executable semantics"))?;
         crate::semantic::traps(source, node, &params, sem)?;
     }
-    let declared_memory = meta.memory(source, data, builtins)?;
-    let memory = match declared_memory {
-        _ if semantics.is_some() && !meta.explicit_memory() => {
-            crate::model::builtins::Effect::Known(Vec::new())
-        }
-        Some(memory) => memory,
-        None if semantics.is_some() => crate::model::builtins::Effect::Known(Vec::new()),
-        None if !meta.has_memory_field() => crate::model::builtins::Effect::Unknown,
-        None => return Err(fields.error("unmodeled operations must declare their memory effect")),
-    };
     if let Some(semantics) = &semantics {
-        if !semantics.traps.is_empty() && !traits.iter().any(|t| t == "MAY_TRAP") {
-            traits.push("MAY_TRAP".into());
+        if !semantics.traps.is_empty() {
+            traits.insert("MAY_TRAP".into());
         }
         crate::semantic::derive(
             source,
@@ -169,16 +146,17 @@ pub(super) fn parse(
             &mut identity,
             &mut absorbing,
         )?;
-        for name in &traits {
-            if !builtins.has_trait(name) {
-                return Err(
-                    fields.error(format!("semantic law requires undeclared trait `{name}`"))
-                );
-            }
-        }
     }
     fields.finish()?;
-    let meta = meta.finish(source, data, builtins, &traits, &memory)?;
+    let meta = meta.finish(
+        source,
+        data,
+        expressions,
+        &implementations,
+        vocabulary,
+        &traits,
+        semantics.is_some(),
+    )?;
     let mut op = Op {
         offset: fields.offset,
         name: fields.name,
@@ -191,7 +169,6 @@ pub(super) fn parse(
         signature_source,
         text,
         traits,
-        memory,
         interfaces: implementations,
         constraints: Vec::new(),
         identity,

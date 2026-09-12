@@ -1,5 +1,6 @@
 //! Memory semantics shared by analyses and lowerings. An Access is a query
 //! result, not a second authoritative copy of instruction operands.
+use veloc_types::TypeInfo;
 use crate::{Function, Inst, Value};
 
 pub use crate::inst::MemoryAccess as Access;
