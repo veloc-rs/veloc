@@ -1,38 +1,52 @@
-//! Resolve type construction independently of the compact MIR representation.
-
+//! Resolve named compositions over the shared Rust type catalog.
+use crate::types::{Scalar, TypeSet};
+use crate::{
+    Error,
+    model::Fields,
+    syntax::{Kind, Node, Record},
+};
 use std::collections::BTreeMap;
-
-use crate::Error;
-use crate::model::Fields;
-use crate::syntax::{Kind, Node, Record};
-use crate::types::TypeSet;
-use crate::types::{Primitive, Scalar};
-
-fn primitive_name(ty: Primitive) -> String {
-    match ty {
-        Primitive::Int(bits) => format!("I{bits}"),
-        Primitive::Float(bits) => format!("F{bits}"),
-        Primitive::Bool => "Bool".into(),
-        Primitive::Ptr => "Ptr".into(),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum TypeExpr {
-    Scalar(Primitive),
-    Vector {
-        element: Primitive,
-        lanes: u32,
-        scalable: bool,
-    },
-}
+use veloc_types::{ScalarType, Type};
 
 pub(crate) struct Declarations {
     pub scalars: Vec<Scalar>,
     pub exact: BTreeMap<String, TypeSet>,
 }
 
+// Keep the receiver in the AST so file-local import checks still see Type.
+pub(crate) fn name(node: &Node) -> Option<String> {
+    match &node.kind {
+        Kind::Name(name) => Some(name.clone()),
+        Kind::Member(receiver, member) if matches!(&receiver.kind, Kind::Name(name) if name == "Type") => {
+            Some(format!("Type.{member}"))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, Error> {
+    let bound = records.iter().any(|r| {
+        r.kind == "type" && r.name == "Type" && crate::model::records::rust_binding(r).is_some()
+    });
+    let mut resolved = if bound {
+        Type::NAMED
+            .iter()
+            .map(|&(name, ty)| (format!("Type.{name}"), ty))
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    let scalars = if bound {
+        ScalarType::ALL
+            .iter()
+            .map(|&scalar| Scalar {
+                name: format!("{:?}", scalar.as_type()),
+                ty: scalar.element(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut pending = BTreeMap::new();
     for record in records
         .iter()
@@ -46,78 +60,54 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, 
         fields.finish()?;
         pending.insert(record.name.clone(), expr);
     }
-    let mut resolved = BTreeMap::new();
     while !pending.is_empty() {
         let before = pending.len();
-        for name in pending.keys().cloned().collect::<Vec<_>>() {
-            if let Some(ty) = resolve(source, &pending[&name], &resolved, &pending)? {
-                let node = pending.remove(&name).unwrap();
-                resolved.insert(name, (node.offset, ty));
+        for alias in pending.keys().cloned().collect::<Vec<_>>() {
+            if let Some(ty) = resolve(source, &pending[&alias], &resolved, &pending)? {
+                pending.remove(&alias);
+                resolved.insert(alias, ty);
             }
         }
         if pending.len() == before {
-            let (name, node) = pending.first_key_value().unwrap();
+            let (alias, node) = pending.first_key_value().unwrap();
             return Err(Error::at(
                 source,
                 node.offset,
-                format!("cyclic type definition `{name}`"),
+                format!("cyclic type definition `{alias}`"),
             ));
         }
     }
-
-    // Canonical logical scalar kinds, independent of backend bit encodings.
-    let primitives = resolved
-        .values()
-        .map(|(_, ty)| match ty {
-            TypeExpr::Scalar(p) => *p,
-            TypeExpr::Vector { element, .. } => *element,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    let scalars = primitives
+    let exact = resolved
         .into_iter()
-        .map(|ty| Scalar {
-            name: primitive_name(ty),
-            ty,
+        .map(|(name, ty)| {
+            let (exponent, scalable) = ty
+                .as_vector()
+                .map(|v| {
+                    let (lanes, scalable) = v.shape();
+                    (lanes.trailing_zeros(), scalable)
+                })
+                .unwrap_or((0, false));
+            (
+                name,
+                TypeSet::singleton(ty.element().expect("compact type"), exponent, scalable),
+            )
         })
-        .collect::<Vec<_>>();
-    let mut exact = BTreeMap::new();
-    for (name, (offset, ty)) in resolved {
-        let primitive = match ty {
-            TypeExpr::Scalar(p) => p,
-            TypeExpr::Vector { element, .. } => element,
-        };
-        let set = match ty {
-            TypeExpr::Scalar(_) => TypeSet::singleton(primitive, 0, false),
-            TypeExpr::Vector {
-                lanes, scalable, ..
-            } => {
-                if lanes > u32::from(veloc_types::MAX_VECTOR_LANES) {
-                    return Err(Error::at(
-                        source,
-                        offset,
-                        "vector lanes exceed the supported type domain",
-                    ));
-                }
-                TypeSet::singleton(primitive, lanes.trailing_zeros(), scalable)
-            }
-        };
-        exact.insert(name, set);
-    }
+        .collect();
     Ok(Declarations { scalars, exact })
 }
 
 fn resolve(
     source: &str,
     node: &Node,
-    resolved: &BTreeMap<String, (usize, TypeExpr)>,
+    resolved: &BTreeMap<String, Type>,
     pending: &BTreeMap<String, Node>,
-) -> Result<Option<TypeExpr>, Error> {
+) -> Result<Option<Type>, Error> {
     let fail = |message| Error::at(source, node.offset, message);
-    if let Kind::Name(name) = &node.kind {
-        if let Some((_, ty)) = resolved.get(name) {
-            return Ok(Some(*ty));
+    if let Some(name) = name(node) {
+        if let Some(&ty) = resolved.get(&name) {
+            return Ok(Some(ty));
         }
-        if pending.contains_key(name) {
+        if pending.contains_key(&name) {
             return Ok(None);
         }
         return Err(fail(format!("unknown type `{name}`")));
@@ -125,77 +115,39 @@ fn resolve(
     let Kind::Call(constructor, args) = &node.kind else {
         return Err(fail("expected a type name or type constructor".into()));
     };
-    let primitive = match constructor.as_str() {
-        "int" | "float" => {
-            let [bits] = args.as_slice() else {
-                return Err(fail(format!("{constructor} expects one bit width")));
-            };
-            let bits = number(source, bits)?;
-            match (constructor.as_str(), bits) {
-                ("int", 8 | 16 | 32 | 64) => Primitive::Int(bits),
-                ("float", 32 | 64) => Primitive::Float(bits),
-                _ => {
-                    return Err(fail(
-                        "unsupported scalar kind or width for the MIR codecs".into(),
-                    ));
-                }
-            }
-        }
-        "bool" | "ptr" => {
-            if !args.is_empty() {
-                return Err(fail(format!("{constructor} expects no arguments")));
-            }
-            if constructor == "bool" {
-                Primitive::Bool
-            } else {
-                Primitive::Ptr
-            }
-        }
-        "vector" => {
-            let [element, shape] = args.as_slice() else {
-                return Err(fail("vector expects an element type and lane count".into()));
-            };
-            let (lanes, scalable) = match &shape.kind {
-                Kind::Number(n) => (*n, false),
-                Kind::Call(name, args) if name == "scalable" && args.len() == 1 => {
-                    (number(source, &args[0])?, true)
-                }
-                _ => {
-                    return Err(Error::at(
-                        source,
-                        shape.offset,
-                        "vector shape must be a lane count or scalable(lanes)",
-                    ));
-                }
-            };
-            if lanes < 2 || !lanes.is_power_of_two() {
-                return Err(fail(
-                    "vector lanes must be a power of two and at least two".into(),
-                ));
-            }
-            let Some(element) = resolve(source, element, resolved, pending)? else {
-                return Ok(None);
-            };
-            let TypeExpr::Scalar(element) = element else {
-                return Err(fail("vector element must be a scalar type".into()));
-            };
-            if element == Primitive::Ptr {
-                return Err(fail("pointer vectors are not supported".into()));
-            }
-            return Ok(Some(TypeExpr::Vector {
-                element,
-                lanes,
-                scalable,
-            }));
-        }
-        _ => return Err(fail(format!("unknown type constructor `{constructor}`"))),
+    if constructor != "vector" {
+        return Err(fail(format!(
+            "unknown type constructor `{constructor}`; use Type constants for scalar types"
+        )));
+    }
+    let [element, shape] = args.as_slice() else {
+        return Err(fail("vector expects an element type and lane count".into()));
     };
-    Ok(Some(TypeExpr::Scalar(primitive)))
-}
-
-fn number(source: &str, node: &Node) -> Result<u32, Error> {
-    match node.kind {
+    let number = |node: &Node| match node.kind {
         Kind::Number(n) => Ok(n),
         _ => Err(Error::at(source, node.offset, "expected a number")),
-    }
+    };
+    let (lanes, scalable) = match &shape.kind {
+        Kind::Number(n) => (*n, false),
+        Kind::Call(name, args) if name == "scalable" && args.len() == 1 => {
+            (number(&args[0])?, true)
+        }
+        _ => {
+            return Err(fail(
+                "vector shape must be a lane count or scalable(lanes)".into(),
+            ));
+        }
+    };
+    let Some(element) = resolve(source, element, resolved, pending)? else {
+        return Ok(None);
+    };
+    let scalar = element
+        .as_scalar()
+        .ok_or_else(|| fail("vector element must be a scalar type".into()))?;
+    let lanes = u16::try_from(lanes)
+        .map_err(|_| fail("vector lanes exceed the supported type domain".into()))?;
+    scalar
+        .vector(lanes, scalable)
+        .map(|v| Some(v.as_type()))
+        .ok_or_else(|| fail("invalid vector lanes or element type".into()))
 }

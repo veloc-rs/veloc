@@ -694,13 +694,19 @@ mod tests {
             );
             validate("", &op, &crate::fixtures::types()).unwrap();
         }
-        for name in ["I8", "I16", "I32", "I64"] {
+        for name in ["Type.I8", "Type.I16", "Type.I32", "Type.I64"] {
             let op = unary(Pattern::Exact(name.into()), Pattern::Exact(name.into()));
             validate("", &op, &crate::fixtures::types()).unwrap();
         }
         for (operand, result) in [
-            (Pattern::Exact("BOOL".into()), Pattern::Exact("BOOL".into())),
-            (Pattern::Exact("I32".into()), Pattern::Exact("I64".into())),
+            (
+                Pattern::Exact("Type.BOOL".into()),
+                Pattern::Exact("Type.BOOL".into()),
+            ),
+            (
+                Pattern::Exact("Type.I32".into()),
+                Pattern::Exact("Type.I64".into()),
+            ),
             (
                 Pattern::Bind(0, crate::fixtures::set("Float")),
                 Pattern::Same(0),
@@ -717,7 +723,10 @@ mod tests {
 
     #[test]
     fn executable_bitvector_semantics_do_not_claim_effects_or_traps() {
-        let mut op = unary(Pattern::Exact("I32".into()), Pattern::Exact("I32".into()));
+        let mut op = unary(
+            Pattern::Exact("Type.I32".into()),
+            Pattern::Exact("Type.I32".into()),
+        );
         op.memory = crate::model::builtins::Effect::Unknown;
         assert!(validate("", &op, &crate::fixtures::types()).is_err());
         op.memory = crate::model::builtins::Effect::Known(Vec::new());

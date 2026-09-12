@@ -6,7 +6,7 @@ struct CallIndirect {
     args: ValueList,
     sig_id: SigId,
 }
-op CallIndirect(sig_id: SigId, args: values, ptr: PTR) -> signature {
+op CallIndirect(sig_id: SigId, args: values, ptr: Type.PTR) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
@@ -72,7 +72,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (T {
 struct Pair {
     args: values(2),
 }
-op PairAdd<T: Integer>(left: T, right: T) -> T, BOOL {
+op PairAdd<T: Integer>(left: T, right: T) -> T, Type.BOOL {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
@@ -84,7 +84,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> T, BOOL {
 struct Pair {
     args: values(2),
 }
-op PairAdd<T: Integer>(left: T, right: T) -> (T BOOL) {
+op PairAdd<T: Integer>(left: T, right: T) -> (T Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
@@ -253,7 +253,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (left: T) {
 struct Pair {
     args: values(2),
 }
-op PairAdd<T: Integer>(left: T, right: T) -> (result: T, result: BOOL) {
+op PairAdd<T: Integer>(left: T, right: T) -> (result: T, result: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
@@ -267,7 +267,7 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, ptr: u32, flags: MemFlags) -> (result: Any) {
+op Load(ptr: Type.PTR, ptr: u32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -282,7 +282,7 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, offset: i32, flags: MemFlags) -> (result: Any) {
+op Load(ptr: Type.PTR, offset: i32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -297,7 +297,7 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, offset: u32, flags: bool) -> (result: Any) {
+op Load(ptr: Type.PTR, offset: u32, flags: bool) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -306,13 +306,13 @@ op Load(ptr: PTR, offset: u32, flags: bool) -> (result: Any) {
 
 // ----- properties-must-match-their-declared-storage-type-and-role-3
 // run: opgen-error
-// check: unknown property type `I32`
+// check: unknown property type `Type.I32`
 struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, offset: I32, flags: MemFlags) -> (result: Any) {
+op Load(ptr: Type.PTR, offset: Type.I32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -342,7 +342,7 @@ struct CallIndirect {
     args: ValueList,
     sig_id: SigId,
 }
-op CallIndirect(sig_id: SigId, ptr: PTR, args: successor) -> signature {
+op CallIndirect(sig_id: SigId, ptr: Type.PTR, args: successor) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
@@ -418,7 +418,7 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, offset: u32, flags: MemFlags) -> (result: Any) {
+op Load(ptr: Type.PTR, offset: u32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset },

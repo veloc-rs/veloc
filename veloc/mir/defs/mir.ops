@@ -4,10 +4,10 @@ import "formats.ops";
 // Storage mappings preserve the current compact MIR layout and SSA traversal order.
 // Structural constraints compile to direct checks, not a runtime rule list.
 
-// Query data, not instruction storage. Value(PTR) checks the logical signature
+// Query data, not instruction storage. Value(Type.PTR) checks the logical signature
 // at definition time; the runtime representation is an ordinary SSA Value.
 interface MemoryAccess {
-    ptr: Value(PTR),
+    ptr: Value(Type.PTR),
     offset: i64,
     ty: Type,
     stored: optional(Value),
@@ -15,14 +15,14 @@ interface MemoryAccess {
     effects: MemoryEffect,
 }
 
-fn ReadAccess(ptr: Value(PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
+fn ReadAccess(ptr: Value(Type.PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
     value: MemoryAccess {
         ptr: ptr, offset: offset, ty: ty, stored: none, flags: flags,
         effects: Known([READ]),
     },
 }
 
-fn WriteAccess(ptr: Value(PTR), offset: i64, value: Value, flags: MemFlags) -> MemoryAccess {
+fn WriteAccess(ptr: Value(Type.PTR), offset: i64, value: Value, flags: MemFlags) -> MemoryAccess {
     value: MemoryAccess {
         ptr: ptr, offset: offset, ty: value.ty(), stored: some(value), flags: flags,
         effects: Known([WRITE]),
@@ -129,7 +129,7 @@ op Fconst(value: Float) -> type(value) {
     storage: Fconst { value },
 }
 
-op Bconst(value: bool) -> BOOL {
+op Bconst(value: bool) -> Type.BOOL {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "bconst",
     storage: Bconst { value },
@@ -192,7 +192,7 @@ op ISubSatS<T: Integer>(lhs: T, rhs: T) -> T {
     )
 }
 
-op IAddWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op IAddWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
     meta: OpInfo {},
     mnemonic: "iadd-with-overflow",
     storage: Binary { args: [lhs, rhs] },
@@ -203,7 +203,7 @@ op IAddWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
     ]
 }
 
-op ISubWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op ISubWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
     meta: OpInfo {},
     mnemonic: "isub-with-overflow",
     storage: Binary { args: [lhs, rhs] },
@@ -213,7 +213,7 @@ op ISubWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
     ]
 }
 
-op IMulWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op IMulWithOverflow<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
     meta: OpInfo {},
     mnemonic: "imul-with-overflow",
     storage: Binary { args: [lhs, rhs] },
@@ -346,21 +346,21 @@ op FNearest<T: Float>(arg: T) -> T {
     storage: Unary { arg },
 }
 
-op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
+op IAnd<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "iand",
     storage: Binary { args: [lhs, rhs] },
     semantics: bv.and(lhs, rhs)
 }
 
-op IOr<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
+op IOr<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "ior",
     storage: Binary { args: [lhs, rhs] },
     semantics: bv.or(lhs, rhs)
 }
 
-op IXor<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
+op IXor<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "ixor",
     storage: Binary { args: [lhs, rhs] },
@@ -429,14 +429,14 @@ op IPopcnt<T: Integer>(arg: T) -> T {
     semantics: bv.popcnt(arg)
 }
 
-op IEqz(arg: ScalarInteger) -> BOOL {
+op IEqz(arg: ScalarInteger) -> Type.BOOL {
     meta: OpInfo {},
     mnemonic: "ieqz",
     storage: Unary { arg },
     semantics: bv.eq(arg, bv.zero())
 }
 
-op Icmp<T: ScalarInteger | PTR>(kind: IntCC, lhs: T, rhs: T) -> BOOL {
+op Icmp<T: ScalarInteger | Type.PTR>(kind: IntCC, lhs: T, rhs: T) -> Type.BOOL {
     meta: OpInfo {},
     mnemonic: "icmp",
     storage: IntCompare { kind, args: [lhs, rhs] },
@@ -447,7 +447,7 @@ op Icmp<T: ScalarInteger | PTR>(kind: IntCC, lhs: T, rhs: T) -> BOOL {
     }
 }
 
-op Fcmp<T: ScalarFloat>(kind: FloatCC, lhs: T, rhs: T) -> BOOL {
+op Fcmp<T: ScalarFloat>(kind: FloatCC, lhs: T, rhs: T) -> Type.BOOL {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "fcmp",
     storage: FloatCompare { kind, args: [lhs, rhs] },
@@ -465,7 +465,7 @@ op ExtendS<T: Integer, U: Integer>(arg: T) -> U {
     semantics: bv.sext(arg, result(0))
 }
 
-op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: T) -> U {
+op ExtendU<T: Integer | Type.BOOL | vectors(Type.BOOL), U: Integer>(arg: T) -> U {
     meta: OpInfo {},
     mnemonic: "extendu",
     storage: Unary { arg },
@@ -541,13 +541,13 @@ op IntToFloatU<T: Integer, U: Float>(arg: T) -> U {
     }
 }
 
-op FloatPromote(arg: F32) -> F64 {
+op FloatPromote(arg: Type.F32) -> Type.F64 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "float-promote",
     storage: Unary { arg },
 }
 
-op FloatDemote(arg: F64) -> F32 {
+op FloatDemote(arg: Type.F64) -> Type.F32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "float-demote",
     storage: Unary { arg },
@@ -562,19 +562,19 @@ op Reinterpret(arg: Number) -> (result: Number) {
     }
 }
 
-op IntToPtr(arg: ScalarInteger) -> PTR {
+op IntToPtr(arg: ScalarInteger) -> Type.PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "inttoptr",
     storage: IntToPtr { arg },
 }
 
-op PtrToInt(arg: PTR) -> ScalarInteger {
+op PtrToInt(arg: Type.PTR) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ptrtoint",
     storage: PtrToInt { arg },
 }
 
-op Load(ptr: PTR, offset: u32, flags: MemFlags) -> Any {
+op Load(ptr: Type.PTR, offset: u32, flags: MemFlags) -> Any {
     meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
     mnemonic: "load",
     storage: Load { ptr, offset, flags },
@@ -582,7 +582,7 @@ op Load(ptr: PTR, offset: u32, flags: MemFlags) -> Any {
     implements: [ReadAccess(ptr, i64(offset), result_type(0), flags)],
 }
 
-op Store(ptr: PTR, value: Any, offset: u32, flags: MemFlags) -> () {
+op Store(ptr: Type.PTR, value: Any, offset: u32, flags: MemFlags) -> () {
     meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
     mnemonic: "store",
     storage: Store { ptr, value, offset, flags },
@@ -593,7 +593,7 @@ op Store(ptr: PTR, value: Any, offset: u32, flags: MemFlags) -> () {
 // A fresh, uninitialized local object, valid until the invocation returns.
 // Physical resource exhaustion is outside MIR equivalence: unused objects may
 // be eliminated, but distinct live objects must not be merged or speculated.
-op Alloca(size: u32, align: u32) -> PTR {
+op Alloca(size: u32, align: u32) -> Type.PTR {
     meta: OpInfo { memory: Known([ALLOCATE]) },
     mnemonic: "alloca",
     storage: Alloca { size, align },
@@ -605,13 +605,13 @@ op Alloca(size: u32, align: u32) -> PTR {
     }
 }
 
-op PtrOffset(ptr: PTR, offset: i32) -> PTR {
+op PtrOffset(ptr: Type.PTR, offset: i32) -> Type.PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ptr-offset",
     storage: PtrOffset { ptr, offset },
 }
 
-op PtrIndex(ptr: PTR, index: ScalarInteger, imm: PtrIndexImm) -> PTR {
+op PtrIndex(ptr: Type.PTR, index: ScalarInteger, imm: PtrIndexImm) -> Type.PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ptr-index",
     storage: PtrIndex { ptr, index, imm_id: imm },
@@ -630,7 +630,7 @@ op Call(func_id: FuncId, move args: values) -> signature {
     text: "{func_id}({args}) : {function(func_id)}",
 }
 
-op CallIndirect(sig_id: SigId, ptr: PTR, move args: values) -> signature {
+op CallIndirect(sig_id: SigId, ptr: Type.PTR, move args: values) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr, args, sig_id },
@@ -660,13 +660,13 @@ op Jump(dest: successor) -> () {
     storage: Jump { dest },
 }
 
-op Br(condition: BOOL, then_dest: successor, else_dest: successor) -> () {
+op Br(condition: Type.BOOL, then_dest: successor, else_dest: successor) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "br",
     storage: Br { condition, then_dest, else_dest },
 }
 
-op BrTable(index: I32, cases: successors, default: successor) -> () {
+op BrTable(index: Type.I32, cases: successors, default: successor) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "br-table",
     storage: BrTable { index, table: table(cases, default) },
@@ -682,7 +682,7 @@ op Return(move values: values) -> () {
     }
 }
 
-op Select<T: Any>(condition: BOOL, if_true: T, if_false: T) -> T {
+op Select<T: Any>(condition: Type.BOOL, if_true: T, if_false: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "select",
     storage: Ternary { args: [condition, if_true, if_false] },
@@ -755,25 +755,25 @@ op ReduceMax<T: Number & Vector>(arg: T) -> element(T) {
     storage: Unary { arg },
 }
 
-op ReduceAnd<T: Integer & Vector | vectors(BOOL)>(arg: T) -> element(T) {
+op ReduceAnd<T: Integer & Vector | vectors(Type.BOOL)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-and",
     storage: Unary { arg },
 }
 
-op ReduceOr<T: Integer & Vector | vectors(BOOL)>(arg: T) -> element(T) {
+op ReduceOr<T: Integer & Vector | vectors(Type.BOOL)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-or",
     storage: Unary { arg },
 }
 
-op ReduceXor<T: Integer & Vector | vectors(BOOL)>(arg: T) -> element(T) {
+op ReduceXor<T: Integer & Vector | vectors(Type.BOOL)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-xor",
     storage: Unary { arg },
 }
 
-op LoadStride(ptr: PTR, stride: ScalarInteger, mem: VectorMemOptions) -> Vector {
+op LoadStride(ptr: Type.PTR, stride: ScalarInteger, mem: VectorMemOptions) -> Vector {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load-stride",
     storage: VectorLoadStrided { ptr, stride, ext: mem },
@@ -781,11 +781,11 @@ op LoadStride(ptr: PTR, stride: ScalarInteger, mem: VectorMemOptions) -> Vector 
 
     verify {
         require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == result_type(0).shape()?), "mask must match vector shape");
-        require(all(mem.evl, |v| v.ty() == I32), "EVL must be i32");
+        require(all(mem.evl, |v| v.ty() == Type.I32), "EVL must be i32");
     }
 }
 
-op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, mem: VectorMemOptions) -> () {
+op StoreStride(ptr: Type.PTR, stride: ScalarInteger, value: Vector, mem: VectorMemOptions) -> () {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([WRITE]) },
     mnemonic: "store-stride",
     storage: VectorStoreStrided { args: [ptr, stride, value], ext: mem },
@@ -793,11 +793,11 @@ op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, mem: VectorMemOpt
 
     verify {
         require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == value.ty().shape()?), "mask must match vector shape");
-        require(all(mem.evl, |v| v.ty() == I32), "EVL must be i32");
+        require(all(mem.evl, |v| v.ty() == Type.I32), "EVL must be i32");
     }
 }
 
-op Gather<T: Integer & Vector, U: Vector>(ptr: PTR, index: T, mem: VectorMemOptions) -> U {
+op Gather<T: Integer & Vector, U: Vector>(ptr: Type.PTR, index: T, mem: VectorMemOptions) -> U {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "gather",
     storage: VectorGather { ptr, index, ext: mem },
@@ -806,11 +806,11 @@ op Gather<T: Integer & Vector, U: Vector>(ptr: PTR, index: T, mem: VectorMemOpti
     verify {
         require(U.same_shape(T), "index and result must have the same shape");
         require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == result_type(0).shape()?), "mask must match vector shape");
-        require(all(mem.evl, |v| v.ty() == I32), "EVL must be i32");
+        require(all(mem.evl, |v| v.ty() == Type.I32), "EVL must be i32");
     }
 }
 
-op Scatter<T: Integer & Vector, U: Vector>(ptr: PTR, index: T, value: U, mem: VectorMemOptions) -> () {
+op Scatter<T: Integer & Vector, U: Vector>(ptr: Type.PTR, index: T, value: U, mem: VectorMemOptions) -> () {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([WRITE]) },
     mnemonic: "scatter",
     storage: VectorScatter { args: [ptr, index, value], ext: mem },
@@ -819,6 +819,6 @@ op Scatter<T: Integer & Vector, U: Vector>(ptr: PTR, index: T, value: U, mem: Ve
     verify {
         require(U.same_shape(T), "index and value must have the same shape");
         require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == value.ty().shape()?), "mask must match vector shape");
-        require(all(mem.evl, |v| v.ty() == I32), "EVL must be i32");
+        require(all(mem.evl, |v| v.ty() == Type.I32), "EVL must be i32");
     }
 }

@@ -1,7 +1,7 @@
 // ----- exact-set-members-drive-codegen-and-bitvector-semantics-1
 // run: opgen-error
 // check: floating-point execution semantics are not modeled
-typeset Wide = I32 | F64;
+typeset Wide = Type.I32 | Type.F64;
 struct Pair { args: values(2) }
 op Add<T: Wide>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
@@ -11,8 +11,8 @@ op Add<T: Wide>(lhs: T, rhs: T) -> T {
 // ----- exact-shapes-detect-impossible-relations-at-definition-time-1
 // run: opgen-error
 // check: constraint is always false
-typeset V4 = I32X4;
-typeset V2 = I64X2;
+typeset V4 = Type.I32X4;
+typeset V2 = Type.I64X2;
 struct Unary { arg: Value }
 op Convert<T: V4, U: V2>(arg: T) -> U {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
@@ -22,8 +22,8 @@ mnemonic: "convert", storage: Unary { arg: arg }, }
 // ----- exact-shapes-detect-impossible-relations-at-definition-time-2
 // run: opgen-error
 // check: constraint is always false
-typeset V4 = I32X4;
-typeset V2 = I64;
+typeset V4 = Type.I32X4;
+typeset V2 = Type.I64;
 struct Unary { arg: Value }
 op Convert<T: V4, U: V2>(arg: T) -> U {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
@@ -32,13 +32,13 @@ mnemonic: "convert", storage: Unary { arg: arg }, }
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-1
 // run: opgen-error
-// check: pointer vectors are not supported
-type V = vector(PTR, 4);
+// check: invalid vector lanes or element type
+type V = vector(Type.PTR, 4);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-2
 // run: opgen-error
 // check: vector element must be a scalar type
-type V = vector(I32X4, 4);
+type V = vector(Type.I32X4, 4);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-3
 // run: opgen-error
@@ -47,53 +47,55 @@ type V = vector(Missing, 4);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-4
 // run: opgen-error
-// check: vector lanes must be a power of two and at least two
-type V = vector(I32, 0);
+// check: invalid vector lanes or element type
+type V = vector(Type.I32, 0);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-5
 // run: opgen-error
-// check: vector lanes must be a power of two and at least two
-type V = vector(I32, 1);
+// check: invalid vector lanes or element type
+type V = vector(Type.I32, 1);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-6
 // run: opgen-error
-// check: vector lanes must be a power of two and at least two
-type V = vector(I32, 3);
+// check: invalid vector lanes or element type
+type V = vector(Type.I32, 3);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-7
 // run: opgen-error
 // check: vector lanes exceed the supported type domain
-type V = vector(I32, 65536);
+type V = vector(Type.I32, 65536);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-8
 // run: opgen-error
 // check: vector shape must be a lane count or scalable(lanes)
-type V = vector(I32, maybe);
+type V = vector(Type.I32, maybe);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-9
 // run: opgen-error
-// check: duplicate type `I32`
-type I32 = vector(I32, 4);
+// check: duplicate type `V`
+type V = Type.I32;
+type V = vector(Type.I32, 4);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-10
 // run: opgen-error
 // check: type name must be uppercase and not INVALID
-type INVALID = vector(I32, 4);
+type INVALID = vector(Type.I32, 4);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-11
 // run: opgen-error
-// check: duplicate type `I32X4`
-type I32X4 = vector(I32, 4);
+// check: duplicate type `V`
+type V = Type.I32X4;
+type V = vector(Type.I32, 4);
 
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-1
 // run: opgen-error
 // check: vectors() requires a set of non-pointer scalar types
-typeset Bad = vectors(PTR);
+typeset Bad = vectors(Type.PTR);
 
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-2
 // run: opgen-error
 // check: vectors() requires a set of non-pointer scalar types
-typeset Bad = vectors(I32X4);
+typeset Bad = vectors(Type.I32X4);
 
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-3
 // run: opgen-error
@@ -103,7 +105,7 @@ typeset Bad = vectors(Any);
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-4
 // run: opgen-error
 // check: vectors() requires a set of non-pointer scalar types
-typeset Bad = vectors(vectors(I32));
+typeset Bad = vectors(vectors(Type.I32));
 
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-5
 // run: opgen-error
@@ -118,12 +120,12 @@ typeset Bad = vectors();
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-7
 // run: opgen-error
 // check: expected a type, typeset or vectors(set)
-typeset Bad = vectors(I32, I64);
+typeset Bad = vectors(Type.I32, Type.I64);
 
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-8
 // run: opgen
 // check: pub enum Opcode
-typeset Repeated = vectors(I32) | vectors(I32);
+typeset Repeated = vectors(Type.I32) | vectors(Type.I32);
 
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-9
 // run: opgen-error
@@ -133,7 +135,8 @@ typeset A = vectors(B); typeset B = A;
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-10
 // run: opgen-error
 // check: typeset name shadows an exact type
-typeset I32X4 = I32;
+type V = Type.I32X4;
+typeset V = Type.I32;
 
 // ----- vector-families-require-scalar-sets-and-preserve-definition-checks-11
 // run: opgen-error
@@ -144,8 +147,8 @@ typeset Bad = vector_integer;
 // run: opgen
 // check: pub enum Opcode
 // check: Add
-typeset Wide = (Later | I32) & Scalar;
-typeset Later = I64 | I32;
+typeset Wide = (Later | Type.I32) & Scalar;
+typeset Later = Type.I64 | Type.I32;
 typeset Lanes = vectors(Wide) & Vector;
 struct Pair { args: values(2) }
 op Add<T: Lanes>(lhs: T, rhs: T) -> T {
@@ -158,4 +161,4 @@ op Add<T: Lanes>(lhs: T, rhs: T) -> T {
 // ----- old-class-declarations-are-rejected
 // run: opgen-error
 // check: unknown definition kind `class`
-class Legacy { members: [I32] }
+class Legacy { members: [Type.I32] }

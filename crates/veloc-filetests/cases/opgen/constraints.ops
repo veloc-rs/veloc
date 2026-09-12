@@ -266,7 +266,7 @@ struct PtrIndex {
     imm_id: PtrIndexImm,
 }
 
-op PtrIndex(ptr: PTR, index: ScalarInteger, imm: PtrIndexImm) -> PTR {
+op PtrIndex(ptr: Type.PTR, index: ScalarInteger, imm: PtrIndexImm) -> Type.PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ptr-index",
     storage: PtrIndex { ptr: ptr, index: index, imm_id: imm },

@@ -384,9 +384,16 @@ fn pattern(
     variables: &mut BTreeMap<String, Variable>,
     types: &Types,
 ) -> Result<Pattern, Error> {
+    if let Some(name) = types.exact_name(&node) {
+        return Ok(Pattern::Exact(name));
+    }
     match node.kind {
+        Kind::Member(..) => Err(Error::at(
+            source,
+            node.offset,
+            "unknown type constant or undeclared Type",
+        )),
         Kind::Name(name) if name == "Callable" => Ok(Pattern::Callable),
-        Kind::Name(name) if types.exact.contains_key(&name) => Ok(Pattern::Exact(name)),
         Kind::Name(ref name) if types.sets.contains_key(name) => {
             Ok(Pattern::Set(types.set(source, &node)?))
         }

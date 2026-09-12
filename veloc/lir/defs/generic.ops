@@ -219,19 +219,19 @@ op G_FSQRT<T: Float>(src: T) -> (dst: T) {
     storage: UnaryReg { dst, src },
 }
 
-op G_AND<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> (dst: T) {
+op G_AND<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.and(lhs, rhs)
 }
 
-op G_OR<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> (dst: T) {
+op G_OR<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.or(lhs, rhs)
 }
 
-op G_XOR<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> (dst: T) {
+op G_XOR<T: Integer | Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.xor(lhs, rhs)
@@ -277,17 +277,17 @@ op G_ROTR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ICMP<T: ScalarInteger | PTR>(lhs: T, rhs: T, cc: IntCC) -> (dst: BOOL) {
+op G_ICMP<T: ScalarInteger | Type.PTR>(lhs: T, rhs: T, cc: IntCC) -> (dst: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: ICmp { dst, lhs, rhs, cc },
 }
 
-op G_FCMP<T: ScalarFloat>(lhs: T, rhs: T, cc: FloatCC) -> (dst: BOOL) {
+op G_FCMP<T: ScalarFloat>(lhs: T, rhs: T, cc: FloatCC) -> (dst: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: FCmp { dst, lhs, rhs, cc },
 }
 
-op G_IEQZ(src: Integer) -> (dst: BOOL) {
+op G_IEQZ(src: Integer) -> (dst: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: UnaryReg { dst, src },
 }
@@ -322,52 +322,52 @@ op G_UMAX<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
+op G_UADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
+op G_SADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_USUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
+op G_USUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SSUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
+op G_SSUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_UADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (dst: T, flag: BOOL) {
+op G_UADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type.BOOL) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_SADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (dst: T, flag: BOOL) {
+op G_SADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type.BOOL) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_USUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (dst: T, flag: BOOL) {
+op G_USUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type.BOOL) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_SSUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (dst: T, flag: BOOL) {
+op G_SSUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type.BOOL) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_UMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
+op G_UMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
+op G_SMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
@@ -412,17 +412,17 @@ op G_USUBSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_LOAD(base: PTR) -> (dst: Any) {
+op G_LOAD(base: Type.PTR) -> (dst: Any) {
     meta: OpInfo { memory: Unknown },
     storage: Load { dst, base },
 }
 
-op G_STORE(src: Any, base: PTR) -> () {
+op G_STORE(src: Any, base: Type.PTR) -> () {
     meta: OpInfo { memory: Unknown },
     storage: Store { src, base },
 }
 
-op G_PTR_ADD(lhs: PTR, rhs: ScalarInteger) -> (dst: PTR) {
+op G_PTR_ADD(lhs: Type.PTR, rhs: ScalarInteger) -> (dst: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     storage: BinaryReg { dst, lhs, rhs },
 }
@@ -437,32 +437,32 @@ op G_STACK_STORE(src: Any, slot: StackSlot) -> () {
     storage: StackStore { src, slot },
 }
 
-op G_STACK_ADDR(slot: StackSlot) -> (dst: PTR) {
+op G_STACK_ADDR(slot: StackSlot) -> (dst: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     storage: StackAddr { dst, slot },
 }
 
-op G_OFFSET_LOAD(base: PTR, offset: i64) -> (dst: Any) {
+op G_OFFSET_LOAD(base: Type.PTR, offset: i64) -> (dst: Any) {
     meta: OpInfo { memory: Unknown },
     storage: LoadOffset { dst, base, offset },
 }
 
-op G_OFFSET_STORE(src: Any, base: PTR, offset: i64) -> () {
+op G_OFFSET_STORE(src: Any, base: Type.PTR, offset: i64) -> () {
     meta: OpInfo { memory: Unknown },
     storage: StoreOffset { src, base, offset },
 }
 
-op G_INDEXED_LOAD(wb_dst: PTR, base: PTR, offset: i64) -> (dst: Any, out_wb_dst: PTR) {
+op G_INDEXED_LOAD(wb_dst: Type.PTR, base: Type.PTR, offset: i64) -> (dst: Any, out_wb_dst: Type.PTR) {
     meta: OpInfo { memory: Unknown },
     storage: IndexedLoad { dst, wb_dst: tied(wb_dst, out_wb_dst), base, offset },
 }
 
-op G_INDEXED_STORE(wb_dst: PTR, src: Any, base: PTR, offset: i64) -> (out_wb_dst: PTR) {
+op G_INDEXED_STORE(wb_dst: Type.PTR, src: Any, base: Type.PTR, offset: i64) -> (out_wb_dst: Type.PTR) {
     meta: OpInfo { memory: Unknown },
     storage: IndexedStore { wb_dst: tied(wb_dst, out_wb_dst), src, base, offset },
 }
 
-op G_CONSTANT(imm: i64) -> (dst: ScalarInteger | BOOL | PTR) {
+op G_CONSTANT(imm: i64) -> (dst: ScalarInteger | Type.BOOL | Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     storage: Constant { dst, imm },
 }
@@ -477,7 +477,7 @@ op G_TRUNC(src: Integer) -> (dst: Integer) {
     storage: UnaryReg { dst, src },
 }
 
-op G_ZEXT(src: Integer | BOOL | vectors(BOOL)) -> (dst: Integer) {
+op G_ZEXT(src: Integer | Type.BOOL | vectors(Type.BOOL)) -> (dst: Integer) {
     meta: OpInfo { memory: Known([]) },
     storage: UnaryReg { dst, src },
 }
@@ -522,12 +522,12 @@ op G_BITCAST(src: Any) -> (dst: Any) {
     storage: UnaryReg { dst, src },
 }
 
-op G_INTTOPTR(src: ScalarInteger) -> (dst: PTR) {
+op G_INTTOPTR(src: ScalarInteger) -> (dst: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     storage: UnaryReg { dst, src },
 }
 
-op G_PTRTOINT(src: PTR) -> (dst: ScalarInteger) {
+op G_PTRTOINT(src: Type.PTR) -> (dst: ScalarInteger) {
     meta: OpInfo { memory: Known([]) },
     storage: UnaryReg { dst, src },
 }
@@ -538,7 +538,7 @@ op G_BR(target: Block) -> () {
     flow: Jump,
 }
 
-op G_BRCOND(cond: BOOL, then_blk: Block, else_blk: Block) -> () {
+op G_BRCOND(cond: Type.BOOL, then_blk: Block, else_blk: Block) -> () {
     meta: OpInfo { memory: Known([]) },
     storage: BranchCond { cond, then_blk, else_blk },
     flow: Jump,
@@ -562,7 +562,7 @@ op G_CALL(callee: SymbolId, args: values) -> signature {
     flow: Call,
 }
 
-op G_CALLIND(callee: PTR, args: values) -> signature {
+op G_CALLIND(callee: Type.PTR, args: values) -> signature {
     meta: OpInfo { memory: Unknown },
     storage: Call { shape: call(callee, args) },
     flow: Call,
@@ -573,7 +573,7 @@ op G_ARG(index: i64) -> (dst: Any) {
     storage: Arg { dst, index },
 }
 
-op G_SELECT<T: Any>(cond: BOOL, v1: T, v2: T) -> (dst: T) {
+op G_SELECT<T: Any>(cond: Type.BOOL, v1: T, v2: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
     storage: Select { dst, cond, v1, v2 },
 }

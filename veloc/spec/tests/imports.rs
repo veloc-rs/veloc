@@ -37,7 +37,7 @@ fn diamond_imports_generate_each_definition_once() {
     let files = Files::new();
     files.write(
         "shared.ops",
-        "import \"prelude.ops\";\n// no final newline\ntypeset Small = I8 | I16;\ntypeset Unused = I8;",
+        "import \"prelude.ops\";\n// no final newline\ntypeset Small = Type.I8 | Type.I16;\ntypeset Unused = Type.I8;",
     );
     files.write(
         "left.ops",
@@ -165,7 +165,7 @@ fn cycles_missing_files_and_late_imports_have_diagnostics() {
     let error = files.load("missing.ops").err().unwrap();
     assert!(error.to_string().contains("missing-target.ops"));
     assert!(error.to_string().contains("missing.ops:2:1"));
-    files.write("late.ops", "typeset A = I8;\nimport \"prelude.ops\";");
+    files.write("late.ops", "typeset A = Type.I8;\nimport \"prelude.ops\";");
     assert!(
         files
             .load("late.ops")
@@ -306,7 +306,8 @@ fn imports_are_file_local_even_when_siblings_are_loaded_first() {
             "fn query(value: Type) -> bool { value: value.is_scalar() }",
             "Type",
         ),
-        ("typeset Small = I8;", "I8"),
+        ("typeset Small = Type.I8;", "Type"),
+        ("type SIMD = Type.I32X4;", "Type"),
         (
             "type Inputs = rust(\"crate::inst::Arguments\") { field: list(Value), }",
             "Value",

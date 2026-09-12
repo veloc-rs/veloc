@@ -18,7 +18,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, imm: PtrIndexImm) -> (result: PTR) {
+op Indexed(ptr: Type.PTR, index: Type.I32, imm: PtrIndexImm) -> (result: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool() },
 }
@@ -35,7 +35,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, imm: Bytes) -> (result: PTR) {
+op Indexed(ptr: Type.PTR, index: Type.I32, imm: Bytes) -> (result: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -52,7 +52,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, imm: PtrIndexImm, unused: PtrIndexImm) -> (result: PTR) {
+op Indexed(ptr: Type.PTR, index: Type.I32, imm: PtrIndexImm, unused: PtrIndexImm) -> (result: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -70,7 +70,7 @@ struct Indexed {
     imm_id: PtrIndexImm,
     other: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, imm: PtrIndexImm) -> (result: PTR) {
+op Indexed(ptr: Type.PTR, index: Type.I32, imm: PtrIndexImm) -> (result: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm, other: imm },
 }
@@ -87,7 +87,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, imm: PtrIndexImmId) -> (result: PTR) {
+op Indexed(ptr: Type.PTR, index: Type.I32, imm: PtrIndexImmId) -> (result: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -104,7 +104,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, imm: ConstantPoolId) -> (result: PTR) {
+op Indexed(ptr: Type.PTR, index: Type.I32, imm: ConstantPoolId) -> (result: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -121,7 +121,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, imm: VectorExtId) -> (result: PTR) {
+op Indexed(ptr: Type.PTR, index: Type.I32, imm: VectorExtId) -> (result: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -138,7 +138,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, imm: VectorMemExtId) -> (result: PTR) {
+op Indexed(ptr: Type.PTR, index: Type.I32, imm: VectorMemExtId) -> (result: Type.PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -214,7 +214,7 @@ struct Table {
     index: Value,
     table: JumpTable,
 }
-op Table(index: I32, cases: successors, default: successor) -> () {
+op Table(index: Type.I32, cases: successors, default: successor) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "table", storage: Table { index: index, table: table(cases) },
 }
@@ -226,7 +226,7 @@ struct Table {
     index: Value,
     table: JumpTable,
 }
-op Table(index: I32, cases: successors, default: successor) -> () {
+op Table(index: Type.I32, cases: successors, default: successor) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "table", storage: Table { index: index, table: table(cases, cases) },
 }
@@ -238,7 +238,7 @@ struct Table {
     index: Value,
     table: JumpTable,
 }
-op Table(index: I32, cases: successors, default: successors) -> () {
+op Table(index: Type.I32, cases: successors, default: successors) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "table", storage: Table { index: index, table: table(cases, default) },
 }
@@ -250,7 +250,7 @@ struct Table {
     index: Value,
     table: JumpTable,
 }
-op Table(index: I32, cases: successors, default: successor) -> () {
+op Table(index: Type.I32, cases: successors, default: successor) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "table", storage: Table { index: index, table: cases },
 }

@@ -2,7 +2,7 @@
 // run: opgen-error
 // check: unknown integer comparison property `missing`
 struct Compare { cc: IntCC, args: values(2) }
-op Test<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> BOOL {
+op Test<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> Type.BOOL {
     meta: OpInfo {},
     mnemonic: "test", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.cmp(missing, lhs, rhs)
@@ -12,7 +12,7 @@ op Test<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> BOOL {
 // run: opgen-error
 // check: unknown semantic value `condition`
 struct Compare { cc: IntCC, args: values(2) }
-op Test<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> BOOL {
+op Test<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> Type.BOOL {
     meta: OpInfo {},
     mnemonic: "test", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.add(condition, lhs)
@@ -22,7 +22,7 @@ op Test<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> BOOL {
 // run: opgen-error
 // check: invalid semantic types [Bv(Width(8)), Bv(Width(8))] -> [Bv(Width(8)), Bool]: expected bool, got bv8
 struct Binary { args: values(2) }
-op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
     meta: OpInfo {},
     mnemonic: "pair", storage: Binary { args: [lhs, rhs] },
     semantics: [bv.add(lhs, rhs), bv.add(lhs, rhs)]
@@ -32,7 +32,7 @@ op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
 // run: opgen-error
 // check: semantic result count does not match signature
 struct Binary { args: values(2) }
-op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op Pair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
     meta: OpInfo {},
     mnemonic: "pair", storage: Binary { args: [lhs, rhs] },
     semantics: bv.add(lhs, rhs)
@@ -127,7 +127,7 @@ op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
 // run: opgen-error
 // check: semantic recipes require a shared lane shape
 struct Unary { arg: Value }
-op Convert<T: Integer>(arg: T) -> (result: I32X4) {
+op Convert<T: Integer>(arg: T) -> (result: Type.I32X4) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {

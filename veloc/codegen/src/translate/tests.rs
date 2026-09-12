@@ -99,7 +99,7 @@ fn semantic_lowering_rejects_malformed_arity_and_type_instances() {
             }
             6 => function
                 .edit()
-                .set_value_type(args[1], veloc_mir::types::I32X4),
+                .set_value_type(args[1], veloc_mir::Type::I32X4),
             _ => unreachable!(),
         }
         assert!(

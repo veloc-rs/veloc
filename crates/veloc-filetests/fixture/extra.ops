@@ -93,7 +93,7 @@ struct Grouped {
     group: TestOperands,
     after: Value,
 }
-op Grouped(before: I32, after: I32, group: TestOperands) -> I32 {
+op Grouped(before: Type.I32, after: Type.I32, group: TestOperands) -> Type.I32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "grouped", storage: Grouped { before, group, after },
     text: "{before}, {after}, token={group.token}[, optional={group.optional}], tag={group.tag}",
@@ -105,7 +105,7 @@ struct Routed {
     dest: Destination,
     tail: VectorExtData,
 }
-op Routed(input: I32, group: TestOperands, tail: VectorExtData, dest: successor) -> () {
+op Routed(input: Type.I32, group: TestOperands, tail: VectorExtData, dest: successor) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "routed",
     storage: Routed { operands: input, group, dest, tail },
@@ -125,13 +125,13 @@ struct Empty {  }
 op Many<A: Any, B: Any, C: Any, D: Any, E: Any>(a: A, b: B, c: C, d: D, e: E) -> (E, A) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "many", storage: Quinary { args: [a, b, c, d, e] }, }
-op ThreeResults<A: Any, B: Any>(a: A, b: B) -> (B, A, BOOL) {
+op ThreeResults<A: Any, B: Any>(a: A, b: B) -> (B, A, Type.BOOL) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "three-results", storage: Binary { args: [a, b] }, }
 op Output<T: Integer>() -> T {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "output", storage: Empty {}, }
-op Sized<T: Scalar>(arg: T) -> (result: I8) {
+op Sized<T: Scalar>(arg: T) -> (result: Type.I8) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "sized", storage: Unary { arg },
 verify {
@@ -163,7 +163,7 @@ text: "{right}, {left}", }
 op SelectType<T: Integer>(lhs: T, rhs: T) -> Integer {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "select-type", storage: Pair { inputs: [lhs, rhs] }, }
-op WidePair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, wide: I64) {
+op WidePair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, wide: Type.I64) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "wide-pair", storage: Pair { inputs: [lhs, rhs] },
 verify {
@@ -172,7 +172,7 @@ verify {
 op Triple<T: Integer>(base: T, index: T, increment: T) -> T {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "triple", storage: Triple { args: [base, index, increment] }, }
-op Offset(arg: PTR, amount: i32) -> PTR {
+op Offset(arg: Type.PTR, amount: i32) -> Type.PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "offset", storage: Immediate { value: arg, displacement: amount },
 text: "{arg}, amount={amount}", }
@@ -185,21 +185,21 @@ layout Extended {
     text: "{inputs}, tag={tag}",
 }
 
-predicate is_wide = Scalar & (I32 | I64);
+predicate is_wide = Scalar & (Type.I32 | Type.I64);
 predicate is_chosen = Chosen;
-typeset Chosen = I32X4 | SV4;
-type SV4 = vector(I32, scalable(4));
-typeset Wide = I32 | I64;
+typeset Chosen = Type.I32X4 | SV4;
+type SV4 = vector(Type.I32, scalable(4));
+typeset Wide = Type.I32 | Type.I64;
 op Named<T: Wide>(lhs: T, rhs: T) -> T {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "named", storage: Binary { args: [lhs, rhs] }, }
-op Inline<T: (I64 | I32) & Scalar>(lhs: T, rhs: T) -> T {
+op Inline<T: (Type.I64 | Type.I32) & Scalar>(lhs: T, rhs: T) -> T {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "inline", storage: Binary { args: [lhs, rhs] }, }
-op Lane<T: vectors(I32 | I64)>(arg: T) -> element(T) {
+op Lane<T: vectors(Type.I32 | Type.I64)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "lane", storage: Unary { arg }, }
-op Convert<T: I32 | I64, U: Float & Scalar>(arg: T) -> U {
+op Convert<T: Type.I32 | Type.I64, U: Float & Scalar>(arg: T) -> U {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { memory: Known([]) },
 mnemonic: "convert", storage: Unary { arg }, }
@@ -221,11 +221,11 @@ op Trapping<T: ScalarInteger>(lhs: T, rhs: T) -> T {
     mnemonic: "trapping", storage: Binary { args: [lhs, rhs] }, semantics: bv.udiv(lhs, rhs),
     traps: [DivisionByZero(bv.eq(rhs, bv.zero()))]
 }
-op Multiple<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op Multiple<T: ScalarInteger>(lhs: T, rhs: T) -> (T, Type.BOOL) {
     meta: OpInfo {},
     mnemonic: "multiple", storage: Binary { args: [lhs, rhs] }, semantics: [bv.add(lhs, rhs), bv.eq(lhs, rhs)]
 }
-op CompareValue<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> BOOL {
+op CompareValue<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> Type.BOOL {
     meta: OpInfo {},
     mnemonic: "compare-value", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.cmp(condition, lhs, rhs)
@@ -271,11 +271,11 @@ mnemonic: "effect-set", storage: EffectSet {}, }
 // One field declaration can serve as both a primary layout and a nested property.
 struct LiteralPayload { bits: u32 }
 struct WrappedPayload { inner: LiteralPayload }
-op Payload(bits: u32) -> I32 {
+op Payload(bits: u32) -> Type.I32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "payload", storage: LiteralPayload { bits }
 }
-op Wrapped(inner: LiteralPayload) -> I32 {
+op Wrapped(inner: LiteralPayload) -> Type.I32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "wrapped", storage: WrappedPayload { inner },
     text: "{inner.bits}"
@@ -331,7 +331,7 @@ op RuntimeScalable<T: Integer>(arg: T) -> T {
     verify { require(scalable(T), "scalable only"); }
 }
 
-predicate is_fixture_width = I16 | I32;
+predicate is_fixture_width = Type.I16 | Type.I32;
 fn fixture_width(ty: Type) -> bool = rust("crate::types::is_fixture_width");
 op CheckedWidth<T: ScalarInteger>(arg: T) -> T {
     meta: OpInfo {}, mnemonic: "checked-width", storage: Unary { arg },
@@ -343,7 +343,7 @@ struct RoutedTable {
     index: Input,
     targets: Destinations,
 }
-op RoutedTable(index: I32, cases: successors, default: successor) -> () {
+op RoutedTable(index: Type.I32, cases: successors, default: successor) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "routed-table",
     storage: RoutedTable { index, targets: table(cases, default) },

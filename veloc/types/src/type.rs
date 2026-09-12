@@ -15,13 +15,16 @@ const LANES_LOG2_MAX: u16 = crate::MAX_VECTOR_LANES.trailing_zeros() as u16;
 #[repr(transparent)]
 pub struct Type(u64);
 
-// One Rust table owns scalar discriminants, names and their logical facts.
-macro_rules! scalar_types {
-    ($($name:ident = $code:literal => $fact:ident $(($bits:literal))?, $debug:literal, $text:literal;)*) => {
+// One Rust table owns scalar facts and the catalog of named types.
+macro_rules! define_types {
+    (scalars { $($name:ident = $code:literal => $fact:ident $(($bits:literal))?, $debug:literal, $text:literal;)* }
+     vectors { $($vector:ident = $element:ident($lanes:literal);)* }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(u8)]
         pub enum ScalarType { $($name = $code,)* }
         impl ScalarType {
+            /// Canonical scalar catalog, generated from the representation table.
+            pub const ALL: &'static [Self] = &[$(Self::$name,)*];
             #[inline]
             pub const fn from_element(element: Scalar) -> Option<Self> {
                 match element { $($fact $(($bits))? => Some(Self::$name),)* _ => None }
@@ -46,6 +49,15 @@ macro_rules! scalar_types {
         }
         impl Type {
             $(pub const $name: Self = ScalarType::$name.as_type();)*
+            $(pub const $vector: Self = match ScalarType::$element.vector($lanes, false) {
+                Some(vector) => vector.as_type(),
+                None => panic!("invalid named vector type"),
+            };)*
+            /// Named conveniences, not an exhaustive enumeration of legal types.
+            pub const NAMED: &'static [(&'static str, Self)] = &[
+                $((stringify!($name), Self::$name),)*
+                $((stringify!($vector), Self::$vector),)*
+            ];
             pub fn from_name(name: &str) -> Option<Self> {
                 match name { $($text => Some(Self::$name),)* _ => None }
             }
@@ -53,7 +65,8 @@ macro_rules! scalar_types {
     }
 }
 use crate::Scalar::{Bool, Float, Int, Ptr};
-scalar_types! {
+define_types! {
+  scalars {
     I8 = 1 => Int(8), "I8", "i8";
     I16 = 2 => Int(16), "I16", "i16";
     I32 = 3 => Int(32), "I32", "i32";
@@ -62,6 +75,15 @@ scalar_types! {
     F64 = 6 => Float(64), "F64", "f64";
     BOOL = 7 => Bool, "Bool", "bool";
     PTR = 8 => Ptr, "Ptr", "ptr";
+  }
+  vectors {
+    I32X4 = I32(4);
+    I64X2 = I64(2);
+    F32X4 = F32(4);
+    F64X2 = F64(2);
+    I8X16 = I8(16);
+    I16X8 = I16(8);
+  }
 }
 impl Type {
     #[inline]

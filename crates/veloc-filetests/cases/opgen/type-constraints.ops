@@ -21,7 +21,7 @@ op G_WIDEN<T: Integer, U: Integer>(src: T) -> (dst: U) {
 // run: opgen-error
 // check: unknown field
 struct Unary { arg: Value }
-op Old(arg: I8) -> (result: I16) {
+op Old(arg: Type.I8) -> (result: Type.I16) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "old", storage: Unary { arg },
     where: [wider(arg, result)],
@@ -42,7 +42,7 @@ op Impossible<T: Integer>(arg: T) -> T {
 // run: opgen
 // check: Opcode::IntegerOnly
 struct Unary { arg: Value }
-op IntegerOnly<T: ScalarInteger | PTR>(arg: T) -> T {
+op IntegerOnly<T: ScalarInteger | Type.PTR>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "integer-only", storage: Unary { arg },
     verify { require(!arg.ty().is_ptr(), "no pointers"); }

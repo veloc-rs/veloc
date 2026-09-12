@@ -446,8 +446,8 @@ mod tests {
         let mut operation = op(&[("arg", "Float")], None);
         for result in [
             Pattern::Set(crate::fixtures::set("ScalarFloat")),
-            Pattern::Exact("F32".into()),
-            Pattern::Exact("F64".into()),
+            Pattern::Exact("Type.F32".into()),
+            Pattern::Exact("Type.F64".into()),
             Pattern::Bind(0, crate::fixtures::set("ScalarFloat")),
         ] {
             operation.signature.results = TypeList::Fixed(vec![result]);
@@ -458,7 +458,7 @@ mod tests {
             TypeList::Signature,
             TypeList::Fixed(vec![Pattern::Set(crate::fixtures::set("Float"))]),
             TypeList::Fixed(vec![Pattern::Set(crate::fixtures::set("ScalarInteger"))]),
-            TypeList::Fixed(vec![Pattern::Exact("I32".into())]),
+            TypeList::Fixed(vec![Pattern::Exact("Type.I32".into())]),
             TypeList::Fixed(vec![Pattern::Same(0)]),
         ] {
             operation.signature.results = results;

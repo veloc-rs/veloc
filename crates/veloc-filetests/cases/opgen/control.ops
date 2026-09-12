@@ -11,7 +11,7 @@ op Apply(cont: Callable, args: values) -> () {
 // ----- structural-type-name-cannot-be-shadowed
 // run: opgen-error
 // check: Callable is a reserved structural type name
-typeset Callable = I32;
+typeset Callable = Type.I32;
 
 // ----- move-contract-rejects-properties
 // run: opgen-error

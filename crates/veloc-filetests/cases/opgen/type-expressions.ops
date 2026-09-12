@@ -2,13 +2,13 @@
 // run: opgen-error
 // check: constraint is always false
 struct Unary { arg: Value }
-op Copy(arg: I32 | I64) -> I32 | I64 {
+op Copy(arg: Type.I32 | Type.I64) -> Type.I32 | Type.I64 {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "copy", storage: Unary { arg: arg }, }
-op Lane<T: vectors(I32 | I64)>(arg: T) -> element(T) {
+op Lane<T: vectors(Type.I32 | Type.I64)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "lane", storage: Unary { arg: arg }, }
-op Convert<T: I32 | I64, U: Float & Vector>(arg: T) -> U {
+op Convert<T: Type.I32 | Type.I64, U: Float & Vector>(arg: T) -> U {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { memory: Known([]) },
 mnemonic: "convert", storage: Unary { arg: arg }, }
@@ -17,13 +17,13 @@ mnemonic: "convert", storage: Unary { arg: arg }, }
 // run: opgen-error
 // check: unknown type or typeset `T`
 struct Unary { arg: Value }
-op Copy(arg: I32 | I64) -> I32 | I64 {
+op Copy(arg: Type.I32 | Type.I64) -> Type.I32 | Type.I64 {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "copy", storage: Unary { arg: arg }, }
 op Lane<T: vectors(T)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "lane", storage: Unary { arg: arg }, }
-op Convert<T: I32 | I64, U: Float & Scalar>(arg: T) -> U {
+op Convert<T: Type.I32 | Type.I64, U: Float & Scalar>(arg: T) -> U {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { memory: Known([]) },
 mnemonic: "convert", storage: Unary { arg: arg }, }
@@ -32,7 +32,7 @@ mnemonic: "convert", storage: Unary { arg: arg }, }
 // run: opgen-error
 // check: definition nesting exceeds 64 levels
 struct Pair { args: values(2) }
-op Add<T: ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((I32))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))>(lhs: T, rhs: T) -> T {
+op Add<T: ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((Type.I32))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
@@ -50,7 +50,7 @@ op Add<T: Integer & Float>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: type constraint must not be empty
 struct Pair { args: values(2) }
-op Add<T: vectors(I32) & I32>(lhs: T, rhs: T) -> T {
+op Add<T: vectors(Type.I32) & Type.I32>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
@@ -68,7 +68,7 @@ op Add<T: Integer | Missing>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: unknown type or typeset `Missing`
 struct Pair { args: values(2) }
-op Add<T: (I32 & F32) & Missing>(lhs: T, rhs: T) -> T {
+op Add<T: (Type.I32 & Type.F32) & Missing>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
@@ -77,7 +77,7 @@ op Add<T: (I32 & F32) & Missing>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: vectors() requires a set of non-pointer scalar types
 struct Pair { args: values(2) }
-op Add<T: vectors(I32 | PTR)>(lhs: T, rhs: T) -> T {
+op Add<T: vectors(Type.I32 | Type.PTR)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
@@ -95,7 +95,7 @@ op Add<T: Integer |>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: expected `,`
 struct Pair { args: values(2) }
-op Add<T: Integer || BOOL>(lhs: T, rhs: T) -> T {
+op Add<T: Integer || Type.BOOL>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
@@ -113,7 +113,7 @@ op Add<T: Integer && Vector>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: expected `,`
 struct Pair { args: values(2) }
-op Add<T: Integer + BOOL>(lhs: T, rhs: T) -> T {
+op Add<T: Integer + Type.BOOL>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
@@ -122,7 +122,7 @@ op Add<T: Integer + BOOL>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: expected `)`
 struct Pair { args: values(2) }
-op Add<T: (Integer | BOOL>(lhs: T, rhs: T) -> T {
+op Add<T: (Integer | Type.BOOL>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
@@ -144,13 +144,13 @@ typeset Empty = Integer & Float;
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-13
 // run: opgen-error
 // check: cyclic type set `A`
-typeset A = I32 | vectors(B); typeset B = A & Scalar;
+typeset A = Type.I32 | vectors(B); typeset B = A & Scalar;
 
 // ----- semantics-and-text-codecs-use-resolved-inline-constraints-1
 // run: opgen-error
 // check: invalid semantic types [Bool, Bool] -> [Bool]: expected a bitvector, got bool
 struct Pair { args: values(2) }
-op Add<T: BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
+op Add<T: Type.BOOL | vectors(Type.BOOL)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
@@ -159,7 +159,7 @@ op Add<T: BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: floating-point execution semantics are not modeled
 struct Pair { args: values(2) }
-op Add<T: I32 | F64>(lhs: T, rhs: T) -> T {
+op Add<T: Type.I32 | Type.F64>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }

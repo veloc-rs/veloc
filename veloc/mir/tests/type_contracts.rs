@@ -14,8 +14,8 @@ fn operand_contract_errors_are_independent_of_result_types() {
         Type::I64,
         Type::F32,
         Type::F64,
-        veloc_mir::types::I32X4,
-        veloc_mir::types::I64X2,
+        veloc_mir::Type::I32X4,
+        veloc_mir::Type::I64X2,
         Type::I8
             .as_scalar()
             .unwrap()

@@ -60,7 +60,7 @@ mod tests {
         let mut dfg = DataFlowGraph::new();
         let id = ConstantPoolId::insert(&mut dfg, vec![7; 16]);
         assert_eq!(id, ConstantPoolId::insert(&mut dfg, vec![7; 16]));
-        let ty = crate::types::I8X16.as_vector().unwrap();
+        let ty = crate::Type::I8X16.as_vector().unwrap();
         let a = dfg.writer().vconst(crate::VectorConst::dense(ty, id));
         let b = dfg.writer().copy(a);
         let cloned = dfg.clone();

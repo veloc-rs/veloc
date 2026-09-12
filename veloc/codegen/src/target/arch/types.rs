@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn reg_class_for_type_falls_back_from_vr_to_fpr() {
         assert_eq!(
-            TEST_DESC_WITHOUT_VR.reg_class_for_type(&veloc_mir::types::F32X4),
+            TEST_DESC_WITHOUT_VR.reg_class_for_type(&veloc_mir::Type::F32X4),
             RegClass::FPR
         );
     }
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn reg_class_for_type_prefers_vr_when_available() {
         assert_eq!(
-            TEST_DESC_WITH_VR.reg_class_for_type(&veloc_mir::types::F32X4),
+            TEST_DESC_WITH_VR.reg_class_for_type(&veloc_mir::Type::F32X4),
             RegClass::VR
         );
     }

@@ -132,7 +132,7 @@ extern interface Arithmetic {
 fn Next(n: u64) -> u64 { value: Arithmetic.next(n)? }
 fn Successor(n: u64) -> u64 { value: Next(n) }
 struct Custom { bits: u64, yes: bool }
-op Example(number: u64, flag: bool) -> I32 {
+op Example(number: u64, flag: bool) -> Type.I32 {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example",
     storage: Custom { bits: number, yes: flag },
     verify { require(flag || Successor(number) > number, "host failure"); }

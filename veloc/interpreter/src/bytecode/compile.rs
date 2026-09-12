@@ -1552,8 +1552,8 @@ mod tests {
     fn rejects_vector_parameters_even_when_only_returned() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(
-            vec![veloc_mir::types::I32X4],
-            vec![veloc_mir::types::I32X4],
+            vec![veloc_mir::Type::I32X4],
+            vec![veloc_mir::Type::I32X4],
             CallConv::SystemV,
         );
         let func = module.declare_function("vector_identity".into(), sig, Linkage::Local);

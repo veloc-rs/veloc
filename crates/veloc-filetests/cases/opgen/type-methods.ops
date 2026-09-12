@@ -35,7 +35,7 @@ fn wrong(ty: Type) -> bool { value: ty.undeclared() }
 // run: opgen-error
 // check: unknown projection function `Type.ty`
 struct Unary { arg: Value }
-op Check(arg: I8) -> (result: I16) {
+op Check(arg: Type.I8) -> (result: Type.I16) {
     meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg },
     verify { require(result.ty().is_scalar(), "scalar"); }
 }
@@ -99,7 +99,7 @@ op Check<T: Integer>(arg: T) -> T {
 struct Info { count: u32, memory: MemoryEffect }
 struct Empty {}
 op Check() -> () {
-    meta: Info { count: I64.element_bits()?, memory: Known([]) },
+    meta: Info { count: Type.I64.element_bits()?, memory: Known([]) },
     mnemonic: "check", storage: Empty {},
 }
 
@@ -115,7 +115,7 @@ type Token = rust("crate::tokens::Token") {
 // run: opgen
 // check: Opcode::Check
 struct Unary { arg: Value }
-op Check<T: ScalarInteger | PTR>(arg: T) -> T {
+op Check<T: ScalarInteger | Type.PTR>(arg: T) -> T {
     meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg },
     verify { require(!T.is_ptr() && T.element_bits()? > 0, "sized integer"); }
     semantics: bv.neg(arg)
@@ -129,7 +129,7 @@ fn wrong() -> bool { rust: default }
 // ----- user-predicate-bindings-use-the-declared-set-offline
 // run: opgen
 // check: crate::types::is_wide
-predicate is_wide = I32 | I64;
+predicate is_wide = Type.I32 | Type.I64;
 fn wide(ty: Type) -> bool = rust("crate::types::is_wide");
 struct Unary { arg: Value }
 op Check<T: Integer>(arg: T) -> T {
@@ -168,8 +168,8 @@ op Check() -> () {
 // run: opgen-error
 // check: projection type mismatch
 type Token = rust("crate::tokens::Token") {
-    fn erase(self, value: Value(I32)) -> Value { value: value }
+    fn erase(self, value: Value(Type.I32)) -> Value { value: value }
 }
-fn narrow(token: Token, value: Value(I32)) -> Value(I32) {
+fn narrow(token: Token, value: Value(Type.I32)) -> Value(Type.I32) {
     value: token.erase(value)
 }

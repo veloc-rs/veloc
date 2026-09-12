@@ -1,0 +1,44 @@
+// ----- rust-types-are-available-in-signatures-and-constraints
+// run: opgen
+// check: pub enum Opcode
+struct Unary { arg: Value }
+op Scalar(arg: Type.I32) -> Type.I32 {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "scalar",
+    storage: Unary { arg },
+    verify { require(arg.ty() == Type.I32, "expected i32"); }
+}
+op Vector(arg: Type.I32X4) -> Type.I32X4 {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "vector",
+    storage: Unary { arg },
+    verify { require(arg.ty().lanes()? == 4, "expected four lanes"); }
+}
+
+// ----- arbitrary-vector-aliases-still-compose
+// run: opgen
+// check: pub enum Opcode
+type WIDE = vector(Type.I16, 32);
+type SCALABLE = vector(Type.I32, scalable(8));
+typeset Shapes = WIDE | SCALABLE | Type.I32X4;
+struct Unary { arg: Value }
+op Copy<T: Shapes>(arg: T) -> T {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "copy",
+    storage: Unary { arg },
+}
+
+// ----- unknown-associated-type
+// run: opgen-error
+// check: unknown type
+type UNSUPPORTED = Type.I128;
+
+// ----- unqualified-scalars-are-not-implicit-globals
+// run: opgen-error
+// check: unknown type
+type WORD = I32;
+
+// ----- removed-scalar-constructor
+// run: opgen-error
+// check: unknown type constructor
+type WORD = int(32);

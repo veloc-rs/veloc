@@ -26,7 +26,7 @@ fn callable_signature_source_requires_a_single_named_callable_operand() {
         ),
         (
             "callee: Callable",
-            "callee: PTR",
+            "callee: Type.PTR",
             "must be a Callable value operand",
         ),
         (

@@ -23,8 +23,8 @@ fn rejected(source: &str, expected: &str) {
 fn builtin_references_are_explicit_not_hidden_mir_defaults() {
     rejected(ADD, "unknown type or typeset `ScalarInteger`");
     rejected(
-        "struct Test {} op Test() -> (result: I32) { mnemonic: \"test\", storage: Test {} }",
-        "unbound type variable `I32`",
+        "struct Test {} op Test() -> (result: Type.I32) { mnemonic: \"test\", storage: Test {} }",
+        "unknown type constant or undeclared Type",
     );
 }
 
@@ -78,10 +78,13 @@ fn sets_reject_cycles_unknowns_duplicates_and_shadowing() {
         ("typeset A = B; typeset B = A;", "cyclic type set"),
         ("typeset A = A;", "cyclic type set"),
         ("typeset A = Absent;", "unknown type or typeset"),
-        ("typeset A = I8 & I16;", "must not be empty"),
+        ("typeset A = Type.I8 & Type.I16;", "must not be empty"),
         ("typeset A = scalar_integer;", "unknown type or typeset"),
         ("typeset values = Scalar;", "shadows a signature keyword"),
-        ("typeset I32 = Scalar;", "shadows an exact type"),
+        (
+            "type V = Type.I32X4; typeset V = Scalar;",
+            "shadows an exact type",
+        ),
         ("typeset Scalar = scalar_integer;", "duplicate typeset"),
         ("typeset A = Scalar, typo: 1;", "expected `;`"),
     ] {

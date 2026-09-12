@@ -1090,13 +1090,8 @@ impl Checker<'_> {
             Kind::Call(name, args)
                 if name == "Value" && args.len() == 1 && self.data.rust.contains(name) =>
             {
-                let Kind::Name(ty) = &args[0].kind else {
-                    return Err(fail());
-                };
-                if !self.types.exact.contains_key(ty) {
-                    return Err(fail());
-                }
-                Ok(Ty::Value(Some(ty.clone())))
+                let ty = self.types.exact_name(&args[0]).ok_or_else(fail)?;
+                Ok(Ty::Value(Some(ty)))
             }
             Kind::Call(name, args) if name == "sequence" && args.len() == 1 => {
                 Ok(Ty::Sequence(Box::new(self.ty(&args[0])?)))
@@ -1413,6 +1408,15 @@ impl Checker<'_> {
     ) -> Result<Expr, Error> {
         let fail = |message: &str| Error::at(self.source, node.offset, message);
         let expr = match &node.kind {
+            _ if self.types.exact_name(node).is_some()
+                && !matches!(&node.kind, Kind::Name(name) if env.contains_key(name))
+                && !matches!(&node.kind, Kind::Member(receiver, _) if matches!(&receiver.kind, Kind::Name(name) if env.contains_key(name))) =>
+            {
+                let name = self.types.exact_name(node).unwrap();
+                let mut expr = Expr::new(Ty::named("Type"), ExprKind::Type(name.clone()));
+                expr.types = self.types.exact.get(&name).cloned();
+                expr
+            }
             Kind::Method(receiver, method, args) => {
                 self.method(node.offset, receiver, method, args, env, signature)?
             }
@@ -1494,11 +1498,6 @@ impl Checker<'_> {
             }
             Kind::Name(name) if env.contains_key(name) => env[name].clone(),
 
-            Kind::Name(name) if self.types.exact.contains_key(name) => {
-                let mut expr = Expr::new(Ty::named("Type"), ExprKind::Type(name.clone()));
-                expr.types = self.types.exact.get(name).cloned();
-                expr
-            }
             Kind::Object(name, values) => {
                 let fields = self
                     .fields(name)
@@ -1838,7 +1837,7 @@ impl<'a> Emitter<'a> {
                 self.results, receiver
             ),
             ExprKind::Results => self.results.into(),
-            ExprKind::Type(name) => format!("crate::types::{name}"),
+            ExprKind::Type(name) => crate::types::rust_type(name),
             ExprKind::Slice(sequence, index, prefix) => {
                 let sequence = self.term(sequence);
                 let index = self.required(format!("usize::try_from({}).ok()", self.term(index)));

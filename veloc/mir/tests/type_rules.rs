@@ -90,7 +90,7 @@ fn integer_conversions_compare_lane_widths() {
 #[test]
 fn bitcasts_require_equal_size_expressions() {
     let bitcast = Opcode::Reinterpret;
-    let fixed = veloc_mir::types::I32X4;
+    let fixed = veloc_mir::Type::I32X4;
     let scalable = Type::I32
         .as_scalar()
         .unwrap()

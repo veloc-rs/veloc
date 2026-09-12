@@ -275,6 +275,13 @@ fn signature(
         }
         let kind = if properties.contains(&param.name) {
             let offset = param.ty.offset;
+            if let Some(ty) = types.exact_name(&param.ty) {
+                return Err(Error::at(
+                    source,
+                    offset,
+                    format!("unknown property type `{ty}`"),
+                ));
+            }
             let ty = name(source, param.ty)?;
             if !super::records::primitive(&ty)
                 && ty != "Bytes"

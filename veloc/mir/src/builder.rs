@@ -490,7 +490,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn i8x16const(&mut self, values: [i8; 16]) -> Value {
         let data = values.iter().map(|&v| v as u8).collect();
-        self.dense_const(data, crate::types::I8X16)
+        self.dense_const(data, crate::Type::I8X16)
     }
 
     pub fn i16x8const(&mut self, values: [i16; 8]) -> Value {
@@ -498,7 +498,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.dense_const(data, crate::types::I16X8)
+        self.dense_const(data, crate::Type::I16X8)
     }
 
     pub fn i32x4const(&mut self, values: [i32; 4]) -> Value {
@@ -506,7 +506,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.dense_const(data, crate::types::I32X4)
+        self.dense_const(data, crate::Type::I32X4)
     }
 
     pub fn i64x2const(&mut self, values: [i64; 2]) -> Value {
@@ -514,7 +514,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.dense_const(data, crate::types::I64X2)
+        self.dense_const(data, crate::Type::I64X2)
     }
 
     pub fn f32x4const(&mut self, values: [f32; 4]) -> Value {
@@ -522,7 +522,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_bits().to_le_bytes());
         }
-        self.dense_const(data, crate::types::F32X4)
+        self.dense_const(data, crate::Type::F32X4)
     }
 
     pub fn f64x2const(&mut self, values: [f64; 2]) -> Value {
@@ -530,7 +530,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_bits().to_le_bytes());
         }
-        self.dense_const(data, crate::types::F64X2)
+        self.dense_const(data, crate::Type::F64X2)
     }
 
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Inst {

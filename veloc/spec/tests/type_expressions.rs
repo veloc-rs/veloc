@@ -25,8 +25,8 @@ fn rejected(source: &str, expected: &str) {
 
 #[test]
 fn expression_nesting_is_bounded_but_flat_unions_are_not_recursive() {
-    let deep = format!("{}I32{}", "(".repeat(70), ")".repeat(70));
+    let deep = format!("{}Type.I32{}", "(".repeat(70), ")".repeat(70));
     rejected(&pair(&deep), "nesting exceeds 64");
-    let flat = vec!["I32"; 1000].join(" | ");
+    let flat = vec!["Type.I32"; 1000].join(" | ");
     assert!(compile(&pair(&flat)).is_ok());
 }

@@ -10,7 +10,7 @@ fn Describe(n: u32) -> Summary {
     value: Summary { count: n, effects: Known([READ]) },
 }
 struct Data { n: u32 }
-op Example(size: u32) -> I32 {
+op Example(size: u32) -> Type.I32 {
     meta: OpInfo { memory: field(Summary, effects) },
     mnemonic: "example", storage: Data { n: size },
     implements: [Describe(size)],
@@ -19,9 +19,9 @@ op Example(size: u32) -> I32 {
 // ----- refined-ssa-reference
 // run: opgen-error
 // check: projection type mismatch
-interface Address { base: Value(PTR) }
+interface Address { base: Value(Type.PTR) }
 struct Data { base: Value }
-op Example(base: I32) -> I32 {
+op Example(base: Type.I32) -> Type.I32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Data { base: base },
     implements: [Address { base: base }],
@@ -32,7 +32,7 @@ op Example(base: I32) -> I32 {
 // check: result_type index is out of range
 interface Answer { ty: Type }
 struct Data {}
-op Example() -> I32 {
+op Example() -> Type.I32 {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data {},
     implements: [Answer { ty: result_type(1) }],
 }
@@ -42,7 +42,7 @@ op Example() -> I32 {
 // check: results.get(1)?
 interface Answer { ty: Type }
 struct Data {}
-op Example() -> (I32, I64) {
+op Example() -> (Type.I32, Type.I64) {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data {},
     implements: [Answer { ty: result_type(1) }],
 }
@@ -53,7 +53,7 @@ op Example() -> (I32, I64) {
 interface Summary { count: u32 }
 struct Info { count: u32 }
 struct Data { count: u32 }
-op Example(count: u32) -> I32 {
+op Example(count: u32) -> Type.I32 {
     meta: Info { count: field(Summary, count) },
     mnemonic: "example", storage: Data { count: count },
     implements: [Summary { count: count }],
@@ -68,7 +68,7 @@ interface Pair { items: array(Item, 2) }
 fn Describe(n: u32) -> Pair { value: Pair { items: [Make(n), Make(n)] } }
 fn Make(n: u32) -> Item { value: Item { n: n } }
 struct Data { n: u32 }
-op Example(n: u32) -> I32 {
+op Example(n: u32) -> Type.I32 {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
     implements: [Describe(n)],
 }
@@ -86,7 +86,7 @@ fn Second(n: u32) -> u32 { value: First(n) }
 // check: data: Data { n: *_f0 }
 struct Data { n: u32 }
 interface Summary { data: Data }
-op Example(n: u32) -> I32 {
+op Example(n: u32) -> Type.I32 {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
     implements: [Summary { data: Data { n: n } }],
 }
@@ -112,7 +112,7 @@ fn Narrow(n: u64) -> u32 { value: u32(n) }
 // check: projection fields must exactly match the declaration
 interface Summary { count: u32, valid: bool }
 struct Data { n: u32 }
-op Example(n: u32) -> I32 {
+op Example(n: u32) -> Type.I32 {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
     implements: [Summary { count: n }],
 }
@@ -122,7 +122,7 @@ op Example(n: u32) -> I32 {
 // check: duplicate interface implementation
 interface Summary { count: u32 }
 struct Data { n: u32 }
-op Example(n: u32) -> I32 {
+op Example(n: u32) -> Type.I32 {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
     implements: [Summary { count: n }, Summary { count: n }],
 }
@@ -137,7 +137,7 @@ record Legacy {}
 // check: unmodeled operations must declare their memory effect
 interface Summary { count: u32 }
 struct Data { n: u32 }
-op Example(n: u32) -> I32 {
+op Example(n: u32) -> Type.I32 {
     meta: OpInfo {}, mnemonic: "example", storage: Data { n: n },
     implements: [Summary { count: n }],
 }

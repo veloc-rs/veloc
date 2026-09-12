@@ -2,7 +2,7 @@
 // run: opgen
 // check: pub fn example
 struct Example{value:u32,}
-op Example(value:u32,)->I32{
+op Example(value:u32,)->Type.I32{
     meta:OpInfo{memory:Known([]),}, // 中文注释
     mnemonic:"example",storage:Example{value:value,},
     verify {

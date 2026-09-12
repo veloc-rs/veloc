@@ -6,8 +6,8 @@ use veloc_mir::{CallConv, Linkage, Opcode, VectorMemOptions, builder::ModuleBuil
 fn generated_pool_builders_use_logical_parameters() {
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(
-        vec![Type::PTR, veloc_mir::types::I32X4],
-        vec![veloc_mir::types::I32X4],
+        vec![Type::PTR, veloc_mir::Type::I32X4],
+        vec![veloc_mir::Type::I32X4],
         CallConv::SystemV,
     );
     let func = module.declare_function("pooled".into(), sig, Linkage::Local);

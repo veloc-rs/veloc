@@ -97,7 +97,7 @@ fn generated_mapping_executes_in_logical_argument_order() {
         r#"
 storage Operands { prefix: "G_" }
 struct Pair { right: Use, high: Def, left: Use, low: Def }
-op G_PAIR(first: I32, second: I64) -> (low: I32, high: I64) {
+op G_PAIR(first: Type.I32, second: Type.I64) -> (low: Type.I32, high: Type.I64) {
     meta: OpInfo { memory: Known([]) },
     storage: Pair { right: second, high, left: first, low },
 }

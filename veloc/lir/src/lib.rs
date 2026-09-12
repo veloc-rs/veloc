@@ -28,6 +28,5 @@ pub use veloc_mir::Value as ValueId;
 pub use veloc_types::{Type, TypeBits};
 
 pub mod types {
-    use veloc_types::{ScalarType, Type};
     include!(concat!(env!("OUT_DIR"), "/types.rs"));
 }

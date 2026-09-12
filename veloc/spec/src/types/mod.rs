@@ -91,7 +91,18 @@ pub(crate) struct Types {
     max_exponent: u32,
 }
 
+pub(crate) fn rust_type(name: &str) -> String {
+    if let Some(member) = name.strip_prefix("Type.") {
+        format!("crate::Type::{member}")
+    } else {
+        format!("crate::types::{name}")
+    }
+}
+
 impl Types {
+    pub(crate) fn exact_name(&self, node: &Node) -> Option<String> {
+        resolve::name(node).filter(|name| self.exact.contains_key(name))
+    }
     /// Result domains supplied by typed literal properties, independent of set names.
     pub(crate) fn property_types(&self, name: &str) -> Option<TypeSet> {
         match name {
@@ -224,6 +235,9 @@ impl Types {
         node: &Node,
         pending: &BTreeMap<String, (usize, Node)>,
     ) -> Result<Option<TypeSet>, Error> {
+        if let Some(name) = self.exact_name(node) {
+            return Ok(Some(self.exact[&name].clone()));
+        }
         match &node.kind {
             Kind::Name(name) => {
                 if let Some(set) = self.exact.get(name).or_else(|| self.sets.get(name)) {
@@ -303,9 +317,9 @@ mod tests {
     fn exact_sets_preserve_width_lane_count_and_scalability() {
         let defs = crate::fixtures::parse(
             r#"
-            typeset Wide = I32 | I64;
-            typeset Shapes = I32X4 | SV4;
-            type SV4 = vector(I32, scalable(4));
+            typeset Wide = Type.I32 | Type.I64;
+            typeset Shapes = Type.I32X4 | SV4;
+            type SV4 = vector(Type.I32, scalable(4));
             typeset AllWideVectors = vectors(Wide);
         "#,
         )
@@ -353,9 +367,9 @@ mod tests {
                 (Primitive::Int(64), 4)
             ])
         );
-        set.intersect(&types.exact["I32X4"]);
-        assert_eq!(set, types.exact["I32X4"]);
-        set.intersect(&types.exact["I64X2"]);
+        set.intersect(&types.exact["Type.I32X4"]);
+        assert_eq!(set, types.exact["Type.I32X4"]);
+        set.intersect(&types.exact["Type.I64X2"]);
         assert!(set.is_empty());
     }
 }

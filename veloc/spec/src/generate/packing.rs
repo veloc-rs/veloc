@@ -383,7 +383,7 @@ pub(crate) fn builder(
             .collect::<Vec<_>>();
         inferred.iter().map(|r| match r {
             crate::types::rules::ResultExpr::Property(name) => format!("{name}.ty()"),
-            crate::types::rules::ResultExpr::Exact(ty) => format!("crate::types::{ty}"),
+            crate::types::rules::ResultExpr::Exact(ty) => crate::types::rust_type(ty),
             crate::types::rules::ResultExpr::Operand(index) => format!("self.value_type({})", operands[*index].name),
             crate::types::rules::ResultExpr::Element(index) => format!("self.value_type({}).as_vector().expect(\"result element type requires a vector operand\").element_type().as_type()", operands[*index].name),
         }).collect::<Vec<_>>().join(", ")

@@ -534,8 +534,8 @@ mod tests {
         let plan = CallConv::SystemV
             .plan_callsite(
                 TargetArch::X86_64,
-                &[veloc_mir::types::F32X4],
-                &[veloc_mir::types::F64X2],
+                &[veloc_mir::Type::F32X4],
+                &[veloc_mir::Type::F64X2],
             )
             .unwrap();
 
