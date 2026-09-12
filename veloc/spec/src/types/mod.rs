@@ -12,7 +12,7 @@ pub(crate) mod rules;
 
 /// Exact type sets: logical scalar kinds map to scalar/fixed/scalable shape masks.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TypeSet(pub BTreeMap<Primitive, u32>);
+pub struct TypeSet(pub(crate) BTreeMap<Primitive, u32>);
 
 impl TypeSet {
     pub fn singleton(code: Primitive, exponent: u32, scalable: bool) -> Self {
@@ -20,6 +20,10 @@ impl TypeSet {
             code,
             1 << (exponent + if scalable { 16 } else { 0 }),
         )]))
+    }
+
+    pub fn is_singleton(&self) -> bool {
+        self.0.len() == 1 && self.0.values().next().unwrap().count_ones() == 1
     }
 
     pub fn is_empty(&self) -> bool {

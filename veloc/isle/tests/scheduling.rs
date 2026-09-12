@@ -1,4 +1,4 @@
-use veloc_isle::compile;
+use veloc_isle::target::compile;
 
 #[test]
 fn scheduling_metadata_is_inherited_and_can_be_overridden() {

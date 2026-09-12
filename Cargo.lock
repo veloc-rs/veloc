@@ -1742,6 +1742,7 @@ dependencies = [
  "logos",
  "miette",
  "thiserror 2.0.18",
+ "veloc-opgen",
 ]
 
 [[package]]
@@ -1816,7 +1817,6 @@ dependencies = [
  "hashbrown 0.14.5",
  "smallvec",
  "thiserror 2.0.18",
- "veloc-lir",
  "veloc-opgen",
  "veloc-semantics",
  "veloc-types",

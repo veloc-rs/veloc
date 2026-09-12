@@ -58,19 +58,6 @@ impl Definitions {
             storage::Strategy::Operands(operands) => operands.format_count(),
         }
     }
-
-    /// Direct, reviewed primitive contracts shared by all storage strategies.
-    pub fn primitive_bindings(&self) -> Vec<(BvOp, &str)> {
-        self.ops
-            .iter()
-            .filter_map(|op| {
-                op.semantics
-                    .as_ref()?
-                    .primitive()
-                    .map(|primitive| (primitive, op.name.as_str()))
-            })
-            .collect()
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

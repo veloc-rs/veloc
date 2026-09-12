@@ -11,9 +11,9 @@ use veloc_lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
     MachineBlock, MachineFunction, MachineInst, MachineModule, MachineOpcode, MachineOperand, Reg,
 };
-use veloc_mir::{Function, InstView, Module, Opcode, Value};
+use veloc_mir::{Function, InstView, Module, Value};
 
-include!(concat!(env!("OUT_DIR"), "/mir_lowering.rs"));
+mod lower;
 
 #[cfg(test)]
 mod tests;
@@ -207,6 +207,9 @@ impl<'a> IRTranslator<'a> {
             }
 
             for &inst_id in &func.layout().blocks()[block_id].insts {
+                if lower::instruction(inst_id, &mut ctx, &mut mblock)? {
+                    continue;
+                }
                 let translated = self.translate_instruction(inst_id, &mut ctx, &mut mblock)?;
                 let m_inst_id = ctx.mfunc.alloc_inst(translated.inst);
                 if let Some(extra) = translated.extra {
@@ -245,38 +248,6 @@ impl<'a> IRTranslator<'a> {
             defs.push(MachineOperand::Def(Writable(vreg)));
         }
 
-        let spec = inst_data.opcode().spec();
-        if matches!(inst_data, InstView::Unary { .. } | InstView::Binary { .. }) {
-            let args = ctx.func.dfg().operands(inst_id);
-            let operand_types: SmallVec<[_; 2]> = args
-                .iter()
-                .map(|&value| ctx.func.dfg().value_type(value))
-                .collect();
-            let result_types: SmallVec<[_; 1]> = results
-                .iter()
-                .map(|&value| ctx.func.dfg().value_type(value))
-                .collect();
-            inst_data
-                .opcode()
-                .validate_types(&operand_types, &result_types)
-                .map_err(|error| {
-                    Error::translate(format!(
-                        "invalid types for {} semantic lowering: {error:?}",
-                        spec.mnemonic
-                    ))
-                })?;
-            if let Some(opcode) = direct_lowering(inst_data.opcode()) {
-                // The shared binding describes the scalar/per-lane operation.
-                // Preserve source types here; target legalization still decides
-                // which widths and vector shapes the backend can implement.
-                defs.extend(
-                    args.iter()
-                        .map(|arg| MachineOperand::Use(ctx.value_map[*arg])),
-                );
-                return Ok(MachineInst::build_generic(MachineOpcode::Generic(opcode), defs).into());
-            }
-        }
-
         match inst_data {
             InstView::TailCall { .. } => Err(Error::translate(
                 "tail calls require tail-call lowering before native code generation",
@@ -285,68 +256,6 @@ impl<'a> IRTranslator<'a> {
                 let slot = ctx.slots[&inst_id];
                 Ok(MachineInst::build_stack_addr(defs[0].as_writable().unwrap(), slot).into())
             }
-            InstView::Binary { opcode, args } => {
-                let src0 = ctx.value_map[args[0]];
-                let src1 = ctx.value_map[args[1]];
-
-                let m_opcode = match opcode {
-                    Opcode::IDivS => MachineOpcode::Generic(GenericOpcode::G_SDIV),
-                    Opcode::IRemS => MachineOpcode::Generic(GenericOpcode::G_SREM),
-                    Opcode::IRemU => MachineOpcode::Generic(GenericOpcode::G_UREM),
-                    Opcode::IRotl => MachineOpcode::Generic(GenericOpcode::G_ROTL),
-                    Opcode::IRotr => MachineOpcode::Generic(GenericOpcode::G_ROTR),
-                    Opcode::IDivU => MachineOpcode::Generic(GenericOpcode::G_UDIV),
-                    Opcode::IShl => MachineOpcode::Generic(GenericOpcode::G_SHL),
-                    Opcode::IShrS => MachineOpcode::Generic(GenericOpcode::G_ASHR),
-                    Opcode::IShrU => MachineOpcode::Generic(GenericOpcode::G_LSHR),
-                    Opcode::FAdd => MachineOpcode::Generic(GenericOpcode::G_FADD),
-                    Opcode::FSub => MachineOpcode::Generic(GenericOpcode::G_FSUB),
-                    Opcode::FMul => MachineOpcode::Generic(GenericOpcode::G_FMUL),
-                    Opcode::FDiv => MachineOpcode::Generic(GenericOpcode::G_FDIV),
-                    _ => {
-                        return Err(Error::unsupported_binary_opcode(*opcode));
-                    }
-                };
-
-                Ok(
-                    MachineInst::build_binary(m_opcode, defs[0].as_writable().unwrap(), src0, src1)
-                        .into(),
-                )
-            }
-
-            InstView::Unary { opcode, arg } => {
-                let src = ctx.value_map[*arg];
-
-                let m_opcode = match opcode {
-                    // The MIR contract spells negation as `0 - arg`. This
-                    // explicit target rule retains G_NEG until compositional
-                    // selection can match complete semantic programs.
-                    Opcode::INeg => MachineOpcode::Generic(GenericOpcode::G_NEG),
-                    Opcode::IClz => MachineOpcode::Generic(GenericOpcode::G_CTLZ),
-                    Opcode::ICtz => MachineOpcode::Generic(GenericOpcode::G_CTTZ),
-                    Opcode::IPopcnt => MachineOpcode::Generic(GenericOpcode::G_CTPOP),
-                    Opcode::FAbs => MachineOpcode::Generic(GenericOpcode::G_FABS),
-                    Opcode::FSqrt => MachineOpcode::Generic(GenericOpcode::G_FSQRT),
-                    Opcode::FNeg => MachineOpcode::Generic(GenericOpcode::G_FNEG),
-                    Opcode::IEqz => MachineOpcode::Generic(GenericOpcode::G_IEQZ),
-                    Opcode::Wrap => MachineOpcode::Generic(GenericOpcode::G_TRUNC),
-                    Opcode::ExtendU => MachineOpcode::Generic(GenericOpcode::G_ZEXT),
-                    Opcode::ExtendS => MachineOpcode::Generic(GenericOpcode::G_SEXT),
-                    Opcode::FloatDemote => MachineOpcode::Generic(GenericOpcode::G_FPTRUNC),
-                    Opcode::FloatPromote => MachineOpcode::Generic(GenericOpcode::G_FPEXT),
-                    Opcode::FloatToIntU => MachineOpcode::Generic(GenericOpcode::G_FPTOUI),
-                    Opcode::FloatToIntS => MachineOpcode::Generic(GenericOpcode::G_FPTOSI),
-                    Opcode::IntToFloatU => MachineOpcode::Generic(GenericOpcode::G_UITOFP),
-                    Opcode::IntToFloatS => MachineOpcode::Generic(GenericOpcode::G_SITOFP),
-                    Opcode::Reinterpret => MachineOpcode::Generic(GenericOpcode::G_BITCAST),
-                    _ => {
-                        return Err(Error::unsupported_unary_opcode(*opcode));
-                    }
-                };
-
-                Ok(MachineInst::build_unary(m_opcode, defs[0].as_writable().unwrap(), src).into())
-            }
-
             InstView::IntCompare { kind, args } => {
                 let src0 = ctx.value_map[args[0]];
                 let src1 = ctx.value_map[args[1]];
@@ -549,45 +458,6 @@ impl<'a> IRTranslator<'a> {
                     call_inst,
                     InstExtra::Call(call_info),
                 ))
-            }
-
-            InstView::Ternary { opcode, args } => {
-                let v0 = ctx.value_map[args[0]];
-                let v1 = ctx.value_map[args[1]];
-                let v2 = ctx.value_map[args[2]];
-
-                match opcode {
-                    Opcode::Select => {
-                        Ok(
-                            MachineInst::build_select(defs[0].as_writable().unwrap(), v0, v1, v2)
-                                .into(),
-                        )
-                    }
-                    _ => Err(Error::translate(format!(
-                        "Unsupported ternary opcode: {:?}",
-                        opcode
-                    ))),
-                }
-            }
-
-            InstView::IntToPtr { arg } => {
-                let src = ctx.value_map[*arg];
-                Ok(MachineInst::build_unary(
-                    MachineOpcode::Generic(GenericOpcode::G_INTTOPTR),
-                    defs[0].as_writable().unwrap(),
-                    src,
-                )
-                .into())
-            }
-
-            InstView::PtrToInt { arg } => {
-                let src = ctx.value_map[*arg];
-                Ok(MachineInst::build_unary(
-                    MachineOpcode::Generic(GenericOpcode::G_PTRTOINT),
-                    defs[0].as_writable().unwrap(),
-                    src,
-                )
-                .into())
             }
 
             InstView::PtrOffset { ptr, offset } => {

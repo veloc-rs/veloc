@@ -20,11 +20,9 @@ smallvec = { workspace = true }
 
 [build-dependencies]
 veloc-opgen = { workspace = true }
-veloc-semantics = { workspace = true }
 
 [dev-dependencies]
 veloc-semantics = { workspace = true }
-veloc-lir = { workspace = true }
 
 [features]
 default = ["std"]

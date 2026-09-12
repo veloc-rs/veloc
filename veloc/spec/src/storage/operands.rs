@@ -541,11 +541,7 @@ impl Operands {
             return;
         }
         let projection = inst.operands();
-        let name = inst
-            .name
-            .strip_prefix(&self.prefix)
-            .unwrap_or(&inst.name)
-            .to_ascii_lowercase();
+        let name = self.mnemonic(&inst.name);
         writeln!(
             out,
             "impl MachineInst {{ pub fn build_{name}({}) -> Self {{",

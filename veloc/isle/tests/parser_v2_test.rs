@@ -1,4 +1,4 @@
-use veloc_isle::{Def, MatchKind, Pattern, parse};
+use veloc_isle::target::{Def, MatchKind, Pattern, parse};
 
 #[test]
 fn parse_select_rule_with_node_bind_and_covers() {
@@ -103,11 +103,11 @@ fn parse_block_operand_and_rel32_emit() {
     assert_eq!(inst.operands.len(), 1);
     assert!(matches!(
         inst.operands[0],
-        veloc_isle::OperandConstraint::Block(ref name) if name == "target"
+        veloc_isle::target::OperandConstraint::Block(ref name) if name == "target"
     ));
     assert!(matches!(
         inst.emit.get(1),
-        Some(veloc_isle::EmitExpr::Rel32(name)) if name == "target"
+        Some(veloc_isle::target::EmitExpr::Rel32(name)) if name == "target"
     ));
 }
 
@@ -179,7 +179,7 @@ fn parse_fixed_use_operand_constraint() {
 
     assert!(matches!(
         inst.operands[1],
-        veloc_isle::OperandConstraint::FixedUse { ref reg, ref src }
+        veloc_isle::target::OperandConstraint::FixedUse { ref reg, ref src }
             if reg == "RCX" && src == "count"
     ));
 }

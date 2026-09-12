@@ -84,7 +84,7 @@ names, reversed text order, multiple results, result-only bindings, alternate
 storage, predicates and composite semantics. `fixture` compiles the **real MIR
 sources** against those definitions; it does not copy the runtime or mock types.
 Its integration tests execute generated builders, predicates, comparison
-transforms, evaluators and direct-lowering mappings. No generated handler IDs
+transforms and evaluators. Typed lowering rules are covered by veloc-isle's execution tests. No generated handler IDs
 are inspected. Ordinary builds of `veloc-mir` do not generate this fixture.
 
 Keep small Rust tests for API-only invariants, exhaustive/property-style checks,

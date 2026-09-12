@@ -3,18 +3,19 @@
 mod lexer;
 mod parser;
 
-pub(crate) use parser::{parse, parse_file};
+pub use parser::parse;
+pub(crate) use parser::parse_file;
 
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
-pub(crate) struct Node {
+pub struct Node {
     pub offset: usize,
     pub kind: Kind,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Kind {
+pub enum Kind {
     Name(String),
     Text(String),
     Number(u32),
@@ -33,7 +34,7 @@ pub(crate) enum Kind {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Parameter {
+pub struct Parameter {
     pub offset: usize,
     pub name: String,
     pub moves: bool,
@@ -41,33 +42,33 @@ pub(crate) struct Parameter {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResultType {
+pub struct ResultType {
     pub offset: usize,
     pub name: Option<String>,
     pub ty: Node,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Results {
+pub enum Results {
     Fixed(Vec<ResultType>),
     Signature,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Signature {
+pub struct Signature {
     pub generics: Vec<Parameter>,
     pub params: Vec<Parameter>,
     pub results: Results,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum FunctionBody {
+pub enum FunctionBody {
     Value(Node),
     Rust { offset: usize, path: Option<String> },
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Record {
+pub struct Record {
     pub offset: usize,
     pub kind: String,
     pub name: String,
@@ -140,12 +141,12 @@ impl Node {
 }
 
 /// A file is parsed once, before the loader resolves its dependencies.
-pub(crate) struct File {
+pub struct File {
     pub imports: Vec<Import>,
     pub records: Vec<Record>,
 }
 
-pub(crate) struct Import {
+pub struct Import {
     pub offset: usize,
     pub path: String,
 }

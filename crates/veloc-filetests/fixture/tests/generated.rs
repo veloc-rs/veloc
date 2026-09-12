@@ -21,7 +21,6 @@ mod offline {
     use veloc_mir::{IntCC, Opcode};
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
-include!(concat!(env!("OUT_DIR"), "/lowering.rs"));
 
 #[test]
 fn shared_expressions_execute_in_queries_and_explicit_validation() {
@@ -810,22 +809,6 @@ fn generated_comparison_transforms_follow_outcomes() {
     assert_eq!(I::from_mnemonic("notbefore"), Some(I::NotBefore));
     assert_eq!(F::Before.complement(), Some(F::NotBefore));
     assert_eq!(F::NotAfter.complement(), Some(F::After));
-}
-
-#[test]
-fn generated_lowering_only_accepts_direct_nontrapping_primitives() {
-    assert_eq!(
-        direct_lowering(Opcode::Direct),
-        Some(veloc_lir::GenericOpcode::G_SUB)
-    );
-    for opcode in [
-        Opcode::Reversed,
-        Opcode::Composed,
-        Opcode::Trapping,
-        Opcode::Multiple,
-    ] {
-        assert_eq!(direct_lowering(opcode), None);
-    }
 }
 
 #[test]

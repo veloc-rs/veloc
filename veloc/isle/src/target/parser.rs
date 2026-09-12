@@ -1,7 +1,7 @@
 #![allow(unused_assignments)]
 
-use crate::ast::*;
-use crate::lexer::Token;
+use crate::target::ast::*;
+use crate::target::lexer::Token;
 use logos::{Logos, SpannedIter};
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;

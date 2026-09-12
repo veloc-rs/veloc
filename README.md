@@ -98,7 +98,7 @@ WebAssembly and C source are translated into the same Veloc middle-level IR (MIR
 | `veloc-optimizer` | Pass management, metrics, constant folding, and dead-code elimination. |
 | `veloc-interpreter` | IR-to-bytecode compiler and register-bytecode runtime. |
 | `veloc-codegen` | Target-independent LIR pipeline and x86-64 backend. |
-| `veloc-isle` | Rule compiler used by target lowering and instruction selection. |
+| `veloc-isle` | Typed cross-IR value-rule compiler sharing OpSpec contracts, plus target descriptions and instruction selection. |
 | `veloc-wasm` | WebAssembly translator, runtime, CLI, linker, JIT, and WASI support. |
 | `veloc-c` | Experimental C parser and IR frontend. |
 | `veloc-spec` | WebAssembly specification test runner. |

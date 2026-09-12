@@ -1,12 +1,12 @@
-use crate::ast::{Def, OperandConstraint};
-use crate::{EmitExpr, Expr, MacroDef};
+use crate::target::ast::{Def, OperandConstraint};
+use crate::target::{EmitExpr, Expr, MacroDef};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
 use super::{FinalInstDef, subst_expr};
 
 /// 收集寄存器硬件编码
-pub(crate) fn collect_reg_encs(module: &crate::ast::Module) -> HashMap<String, u32> {
+pub(crate) fn collect_reg_encs(module: &crate::target::ast::Module) -> HashMap<String, u32> {
     let mut map = HashMap::new();
     for def in &module.defs {
         if let Def::Reg(reg) = def {
@@ -574,7 +574,7 @@ fn format_clobber_slice(clobbers: &[String]) -> String {
 
 pub(crate) fn generate_target_inst_metadata(
     output: &mut String,
-    module: &crate::ast::Module,
+    module: &crate::target::ast::Module,
     final_inst_defs: &HashMap<String, FinalInstDef>,
 ) {
     let reg_names: BTreeSet<String> = module
@@ -727,9 +727,9 @@ impl TargetInst {{
     writeln!(output, "        }}\n    }}\n}}").unwrap();
 }
 
-pub(crate) fn generate_cpu_info(output: &mut String, module: &crate::ast::Module) {
-    let mut features: Vec<&crate::ast::FeatureDef> = Vec::new();
-    let mut cpus: Vec<&crate::ast::CpuDef> = Vec::new();
+pub(crate) fn generate_cpu_info(output: &mut String, module: &crate::target::ast::Module) {
+    let mut features: Vec<&crate::target::ast::FeatureDef> = Vec::new();
+    let mut cpus: Vec<&crate::target::ast::CpuDef> = Vec::new();
 
     for def in &module.defs {
         if let Def::Feature(f) = def {
@@ -791,8 +791,8 @@ pub(crate) fn generate_cpu_info(output: &mut String, module: &crate::ast::Module
 }
 
 fn collect_canonical_regs<'a>(
-    module: &'a crate::ast::Module,
-) -> BTreeMap<u32, &'a crate::ast::RegDef> {
+    module: &'a crate::target::ast::Module,
+) -> BTreeMap<u32, &'a crate::target::ast::RegDef> {
     let mut regs = BTreeMap::new();
     for def in &module.defs {
         if let Def::Reg(reg) = def {
@@ -802,7 +802,7 @@ fn collect_canonical_regs<'a>(
     regs
 }
 
-fn collect_reserved_reg_encs(module: &crate::ast::Module) -> BTreeSet<u32> {
+fn collect_reserved_reg_encs(module: &crate::target::ast::Module) -> BTreeSet<u32> {
     let mut regs = BTreeSet::new();
     for def in &module.defs {
         if let Def::Reg(reg) = def {
@@ -815,8 +815,8 @@ fn collect_reserved_reg_encs(module: &crate::ast::Module) -> BTreeSet<u32> {
 }
 
 fn collect_special_role_regs<'a>(
-    module: &'a crate::ast::Module,
-) -> BTreeMap<String, &'a crate::ast::RegDef> {
+    module: &'a crate::target::ast::Module,
+) -> BTreeMap<String, &'a crate::target::ast::RegDef> {
     let mut roles = BTreeMap::new();
     let canonical_regs = collect_canonical_regs(module);
     for reg in canonical_regs.values() {
@@ -827,7 +827,10 @@ fn collect_special_role_regs<'a>(
     roles
 }
 
-pub(crate) fn generate_register_descriptors(output: &mut String, module: &crate::ast::Module) {
+pub(crate) fn generate_register_descriptors(
+    output: &mut String,
+    module: &crate::target::ast::Module,
+) {
     let regs: Vec<_> = module
         .defs
         .iter()
@@ -956,7 +959,7 @@ pub(crate) fn generate_register_descriptors(output: &mut String, module: &crate:
 
 pub(crate) fn generate_abi_descriptors(
     output: &mut String,
-    module: &crate::ast::Module,
+    module: &crate::target::ast::Module,
 ) -> Result<(), String> {
     let reg_map = collect_reg_encs(module);
     let abis: Vec<_> = module
@@ -1044,7 +1047,7 @@ pub static {prefix}: AbiDescriptor = AbiDescriptor {{
 fn generate_abi_pool_array(
     output: &mut String,
     const_name: &str,
-    classes: &[crate::ast::AbiClassRegsDef],
+    classes: &[crate::target::ast::AbiClassRegsDef],
     reg_map: &HashMap<String, u32>,
 ) {
     writeln!(output, "pub const {}: &[AbiRegisterPool] = &[", const_name).unwrap();
@@ -1069,7 +1072,7 @@ fn generate_abi_pool_array(
 fn generate_abi_preserved_array(
     output: &mut String,
     const_name: &str,
-    preserved: &[crate::ast::AbiPreservedSetDef],
+    preserved: &[crate::target::ast::AbiPreservedSetDef],
     reg_map: &HashMap<String, u32>,
 ) {
     writeln!(output, "pub const {}: &[AbiPreservedSet] = &[", const_name).unwrap();

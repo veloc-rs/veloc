@@ -1,4 +1,4 @@
-use veloc_isle::compile;
+use veloc_isle::target::compile;
 
 #[test]
 fn memory_contracts_are_inherited_and_generated() {

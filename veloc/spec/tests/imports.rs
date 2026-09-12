@@ -233,7 +233,6 @@ fn production_entry_points_generate_the_same_runtime_contracts() {
             .instructions
             .contains("pub enum GenericOpcode")
     );
-    assert_eq!(lir.parse().unwrap().primitive_bindings().len(), 7);
     assert!(mir.dependencies().any(|p| p.ends_with("defs/types.ops")));
 }
 

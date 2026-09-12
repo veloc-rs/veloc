@@ -2,8 +2,8 @@ mod generate;
 mod preprocess;
 mod select;
 
-use crate::ast::Def;
-use crate::{EmitExpr, Expr, ExtractorDef, MacroDef, OperandConstraint, parser};
+use crate::target::ast::Def;
+use crate::target::{EmitExpr, Expr, ExtractorDef, MacroDef, OperandConstraint, parser};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,7 @@ pub(crate) struct FinalInstDef {
     is_pseudo: bool,
 }
 
-fn parse_input(input: &str) -> Result<crate::ast::Module, String> {
+fn parse_input(input: &str) -> Result<crate::target::ast::Module, String> {
     match parser::parse(input) {
         Ok(m) => Ok(m),
         Err(e) => {
@@ -35,10 +35,10 @@ fn parse_input(input: &str) -> Result<crate::ast::Module, String> {
 }
 
 fn collect_definitions(
-    module: &crate::ast::Module,
+    module: &crate::target::ast::Module,
 ) -> (
     HashMap<String, ExtractorDef>,
-    HashMap<String, crate::ast::TemplateDef>,
+    HashMap<String, crate::target::ast::TemplateDef>,
     HashMap<String, MacroDef>,
 ) {
     let mut extractors = HashMap::new();
@@ -141,8 +141,8 @@ fn subst_operand(op: &OperandConstraint, args_map: &HashMap<String, Expr>) -> Op
 }
 
 fn instantiate_templates(
-    module: &crate::ast::Module,
-    templates: &HashMap<String, crate::ast::TemplateDef>,
+    module: &crate::target::ast::Module,
+    templates: &HashMap<String, crate::target::ast::TemplateDef>,
 ) -> HashMap<String, FinalInstDef> {
     let mut final_inst_defs = HashMap::new();
 

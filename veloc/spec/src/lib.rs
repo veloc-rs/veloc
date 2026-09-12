@@ -5,14 +5,15 @@
 
 mod generate;
 mod model;
+pub mod schema;
 mod semantic;
 mod source;
 mod storage;
-mod syntax;
+pub mod syntax;
 mod text;
 mod types;
 
-pub use generate::{Plan, format_rust, generate_lowering};
+pub use generate::{Plan, format_rust};
 pub use model::Definitions;
 pub use source::{Source, SourceError};
 
@@ -25,7 +26,7 @@ pub struct Error {
 }
 
 impl Error {
-    fn at(source: &str, offset: usize, message: impl Into<String>) -> Self {
+    pub fn at(source: &str, offset: usize, message: impl Into<String>) -> Self {
         let prefix = &source.as_bytes()[..offset.min(source.len())];
         Self {
             line: 1 + prefix.iter().filter(|&&b| b == b'\n').count(),

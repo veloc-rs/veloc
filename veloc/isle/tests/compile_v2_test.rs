@@ -1,4 +1,4 @@
-use veloc_isle::compile;
+use veloc_isle::target::compile;
 
 #[test]
 fn compile_select_rule_v2_generates_target_inst_and_match_arm() {

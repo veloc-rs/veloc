@@ -98,7 +98,7 @@ WebAssembly 和 C 源码都会转换为同一种 Veloc 中层 IR（MIR）。运�
 | `veloc-optimizer` | Pass 管理、指标统计、常量折叠和死代码消除。 |
 | `veloc-interpreter` | IR 到字节码的编译器及寄存器字节码运行时。 |
 | `veloc-codegen` | 与目标无关的 LIR 流水线及 x86-64 后端。 |
-| `veloc-isle` | 用于目标 lowering 和指令选择的规则编译器。 |
+| `veloc-isle` | 复用 OpSpec 契约的跨 IR 类型化值规则编译器，以及目标描述和指令选择。 |
 | `veloc-wasm` | WebAssembly 翻译器、运行时、CLI、链接器、JIT 和 WASI 支持。 |
 | `veloc-c` | 实验性 C 解析器和 IR 前端。 |
 | `veloc-spec` | WebAssembly 规范测试运行器。 |

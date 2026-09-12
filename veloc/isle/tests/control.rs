@@ -1,4 +1,4 @@
-use veloc_isle::compile;
+use veloc_isle::target::compile;
 
 #[test]
 fn control_metadata_is_generated_for_instructions_templates_and_pseudos() {

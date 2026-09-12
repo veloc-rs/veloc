@@ -6,16 +6,6 @@ fn main() {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let output = source.compile().expect("compile fixture MIR");
-    let definitions = source.parse().expect("check fixture definitions");
-    let lowering = veloc_opgen::generate_lowering(
-        &definitions,
-        &[
-            (veloc_semantics::BvOp::Sub, "G_SUB"),
-            (veloc_semantics::BvOp::Add, "G_ADD"),
-            (veloc_semantics::BvOp::UDiv, "G_UDIV"),
-        ],
-    )
-    .unwrap();
     let dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let mut files = Vec::new();
     for (name, text) in [
@@ -30,7 +20,6 @@ fn main() {
         ("text_printer.rs", output.text_printer),
         ("evaluation.rs", output.evaluation),
         ("semantics.rs", output.semantics),
-        ("lowering.rs", lowering),
     ] {
         let path = dir.join(name);
         fs::write(&path, text).unwrap();

@@ -1,5 +1,5 @@
-use crate::ast::{CondCode, Constructor, DeclDef, Def, Pattern, SelectRuleDef};
-use crate::{ExtractorDef, OperandConstraint, PatternArg};
+use crate::target::ast::{CondCode, Constructor, DeclDef, Def, Pattern, SelectRuleDef};
+use crate::target::{ExtractorDef, OperandConstraint, PatternArg};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
@@ -49,7 +49,7 @@ fn named_args(args: &[PatternArg]) -> impl Iterator<Item = (&str, &Pattern)> {
     })
 }
 
-pub(crate) fn module_has_positional_rules(module: &crate::ast::Module) -> bool {
+pub(crate) fn module_has_positional_rules(module: &crate::target::ast::Module) -> bool {
     module.defs.iter().any(|def| {
         let Def::SelectRule(rule) = def else {
             return false;
@@ -62,7 +62,7 @@ pub(crate) fn module_has_positional_rules(module: &crate::ast::Module) -> bool {
 }
 
 pub(crate) fn module_needs_source_defs_helper(
-    module: &crate::ast::Module,
+    module: &crate::target::ast::Module,
     final_inst_defs: &HashMap<String, FinalInstDef>,
 ) -> bool {
     module.defs.iter().any(|def| {
@@ -117,7 +117,7 @@ fn constructor_needs_source_defs(
     false
 }
 
-fn collect_decl_map(module: &crate::ast::Module) -> HashMap<String, DeclDef> {
+fn collect_decl_map(module: &crate::target::ast::Module) -> HashMap<String, DeclDef> {
     let mut decls = HashMap::new();
     for def in &module.defs {
         if let Def::Decl(decl) = def {
@@ -128,7 +128,7 @@ fn collect_decl_map(module: &crate::ast::Module) -> HashMap<String, DeclDef> {
 }
 
 fn collect_select_rules_by_opcode<'a>(
-    module: &'a crate::ast::Module,
+    module: &'a crate::target::ast::Module,
 ) -> HashMap<String, Vec<&'a SelectRuleDef>> {
     let mut opcode_rules: HashMap<String, Vec<&SelectRuleDef>> = HashMap::new();
     for def in &module.defs {
@@ -280,7 +280,7 @@ fn collect_used_extractors_in_pattern(
 }
 
 fn collect_used_extractors(
-    module: &crate::ast::Module,
+    module: &crate::target::ast::Module,
     extractors: &HashMap<String, ExtractorDef>,
 ) -> BTreeSet<String> {
     let mut used = BTreeSet::new();
@@ -1093,7 +1093,7 @@ fn operand_index_expr(op_index: usize, operand: &OperandConstraint) -> String {
 
 pub(crate) fn generate_generic_inst_metadata(
     output: &mut String,
-    module: &crate::ast::Module,
+    module: &crate::target::ast::Module,
     final_inst_defs: &HashMap<String, FinalInstDef>,
 ) {
     let metadata_map = derive_generic_inst_metadata(module, final_inst_defs);
@@ -1275,7 +1275,7 @@ fn constructor_arg_bindings_by_target_operand<'a>(
 }
 
 fn derive_generic_inst_metadata(
-    module: &crate::ast::Module,
+    module: &crate::target::ast::Module,
     final_inst_defs: &HashMap<String, FinalInstDef>,
 ) -> BTreeMap<String, DerivedGenericInstMetadata> {
     let mut result = BTreeMap::<String, DerivedGenericInstMetadata>::new();
@@ -1384,7 +1384,7 @@ fn derive_generic_inst_metadata(
 
 pub(crate) fn generate_select_instruction(
     output: &mut String,
-    module: &crate::ast::Module,
+    module: &crate::target::ast::Module,
     extractors: &HashMap<String, ExtractorDef>,
     final_inst_defs: &HashMap<String, FinalInstDef>,
     arch: &str,

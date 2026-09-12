@@ -1,0 +1,174 @@
+// Exact pure-primitive matches (IAdd, ISub, IMul, bitwise ops) are inferred
+// from OpSpec semantics and checked through the same rule compiler.
+// These explicit rules are reviewed contracts, not SMT-proven equalities.
+// Division/trap, masked shift and floating-point behavior remain obligations
+// of LIR legalization and target selection.
+rule INeg {
+    match: mir.INeg(x),
+    emit: lir.G_NEG(x),
+}
+
+rule IDivS {
+    match: mir.IDivS(x, y),
+    emit: lir.G_SDIV(x, y),
+}
+
+rule IDivU {
+    match: mir.IDivU(x, y),
+    emit: lir.G_UDIV(x, y),
+}
+
+rule IRemS {
+    match: mir.IRemS(x, y),
+    emit: lir.G_SREM(x, y),
+}
+
+rule IRemU {
+    match: mir.IRemU(x, y),
+    emit: lir.G_UREM(x, y),
+}
+
+rule IRotl {
+    match: mir.IRotl(x, y),
+    emit: lir.G_ROTL(x, y),
+}
+
+rule IRotr {
+    match: mir.IRotr(x, y),
+    emit: lir.G_ROTR(x, y),
+}
+
+rule IShl {
+    match: mir.IShl(x, y),
+    emit: lir.G_SHL(x, y),
+}
+
+rule IShrS {
+    match: mir.IShrS(x, y),
+    emit: lir.G_ASHR(x, y),
+}
+
+rule IShrU {
+    match: mir.IShrU(x, y),
+    emit: lir.G_LSHR(x, y),
+}
+
+rule FAdd {
+    match: mir.FAdd(x, y),
+    emit: lir.G_FADD(x, y),
+}
+
+rule FSub {
+    match: mir.FSub(x, y),
+    emit: lir.G_FSUB(x, y),
+}
+
+rule FMul {
+    match: mir.FMul(x, y),
+    emit: lir.G_FMUL(x, y),
+}
+
+rule FDiv {
+    match: mir.FDiv(x, y),
+    emit: lir.G_FDIV(x, y),
+}
+
+rule IClz {
+    match: mir.IClz(x),
+    emit: lir.G_CTLZ(x),
+}
+
+rule ICtz {
+    match: mir.ICtz(x),
+    emit: lir.G_CTTZ(x),
+}
+
+rule IPopcnt {
+    match: mir.IPopcnt(x),
+    emit: lir.G_CTPOP(x),
+}
+
+rule FAbs {
+    match: mir.FAbs(x),
+    emit: lir.G_FABS(x),
+}
+
+rule FSqrt {
+    match: mir.FSqrt(x),
+    emit: lir.G_FSQRT(x),
+}
+
+rule FNeg {
+    match: mir.FNeg(x),
+    emit: lir.G_FNEG(x),
+}
+
+rule IEqz {
+    match: mir.IEqz(x),
+    emit: lir.G_IEQZ(x),
+}
+
+rule Wrap {
+    match: mir.Wrap(x),
+    emit: lir.G_TRUNC(x),
+}
+
+rule ExtendU {
+    match: mir.ExtendU(x),
+    emit: lir.G_ZEXT(x),
+}
+
+rule ExtendS {
+    match: mir.ExtendS(x),
+    emit: lir.G_SEXT(x),
+}
+
+rule FloatDemote {
+    match: mir.FloatDemote(x),
+    emit: lir.G_FPTRUNC(x),
+}
+
+rule FloatPromote {
+    match: mir.FloatPromote(x),
+    emit: lir.G_FPEXT(x),
+}
+
+rule FloatToIntU {
+    match: mir.FloatToIntU(x),
+    emit: lir.G_FPTOUI(x),
+}
+
+rule FloatToIntS {
+    match: mir.FloatToIntS(x),
+    emit: lir.G_FPTOSI(x),
+}
+
+rule IntToFloatU {
+    match: mir.IntToFloatU(x),
+    emit: lir.G_UITOFP(x),
+}
+
+rule IntToFloatS {
+    match: mir.IntToFloatS(x),
+    emit: lir.G_SITOFP(x),
+}
+
+rule Reinterpret {
+    match: mir.Reinterpret(x),
+    emit: lir.G_BITCAST(x),
+}
+
+rule IntToPtr {
+    match: mir.IntToPtr(x),
+    emit: lir.G_INTTOPTR(x),
+}
+
+rule PtrToInt {
+    match: mir.PtrToInt(x),
+    emit: lir.G_PTRTOINT(x),
+}
+
+rule Select {
+    match: mir.Select(x, y, z),
+    emit: lir.G_SELECT(x, y, z),
+}

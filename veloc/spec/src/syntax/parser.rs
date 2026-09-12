@@ -12,7 +12,7 @@ pub(crate) fn parse_file(source: &str) -> Result<File, Error> {
     Parser::new(source)?.file()
 }
 
-pub(crate) fn parse(source: &str) -> Result<Vec<Record>, Error> {
+pub fn parse(source: &str) -> Result<Vec<Record>, Error> {
     let file = parse_file(source)?;
     if let Some(import) = file.imports.first() {
         return Err(Error::at(
