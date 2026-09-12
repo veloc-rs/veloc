@@ -1,5 +1,5 @@
 //! Recursive descent for declarations and set expressions; precedence climbing
-//! for constraints. A single lookahead token keeps lexing independent of grammar.
+//! for pure expressions. A single lookahead token keeps lexing independent of grammar.
 use std::collections::BTreeMap;
 
 use super::lexer::{Kind as TokenKind, Lexer, Token};
@@ -28,7 +28,7 @@ pub(crate) fn parse(source: &str) -> Result<Vec<Record>, Error> {
 enum Context {
     Value,
     Type,
-    Constraint,
+    Expr,
 }
 
 struct Parser<'a> {
@@ -65,11 +65,46 @@ impl<'a> Parser<'a> {
                 };
                 self.expect(";")?;
                 file.imports.push(Import { offset, path });
+            } else if kind == "extern" {
+                file.records.extend(self.external(offset)?);
             } else {
                 file.records.push(self.declaration(offset, kind)?);
             }
         }
         Ok(file)
+    }
+
+    fn external(&mut self, offset: usize) -> Result<Vec<Record>, Error> {
+        if self.name()? != "interface" {
+            return Err(self.error(offset, "expected extern interface"));
+        }
+        let name = self.name()?;
+        self.expect("{")?;
+        let mut records = vec![Record {
+            offset,
+            kind: "extern-interface".into(),
+            name: name.clone(),
+            fields: BTreeMap::new(),
+            signature: None,
+        }];
+        while !self.at("}") {
+            let offset = self.token.offset;
+            if self.name()? != "fn" {
+                return Err(self.error(offset, "expected extern method"));
+            }
+            let method = self.name()?;
+            let signature = self.signature()?;
+            self.expect(";")?;
+            records.push(Record {
+                offset,
+                kind: "extern-fn".into(),
+                name: format!("{name}.{method}"),
+                fields: BTreeMap::new(),
+                signature: Some(signature),
+            });
+        }
+        self.expect("}")?;
+        Ok(records)
     }
 
     fn declaration(&mut self, offset: usize, kind: String) -> Result<Record, Error> {
@@ -86,7 +121,8 @@ impl<'a> Parser<'a> {
                 self.expect(";")?;
                 BTreeMap::from([(if kind == "type" { "expr" } else { "set" }.into(), node)])
             }
-            _ => self.fields(0)?,
+            "fn" => self.fields(0, Context::Expr)?,
+            _ => self.fields(0, Context::Value)?,
         };
         Ok(Record {
             offset,
@@ -163,38 +199,62 @@ impl<'a> Parser<'a> {
         Ok(ResultType { offset, name, ty })
     }
 
-    fn fields(&mut self, depth: u8) -> Result<BTreeMap<String, Node>, Error> {
+    fn fields(&mut self, depth: u8, context: Context) -> Result<BTreeMap<String, Node>, Error> {
         self.expect("{")?;
         let mut fields = BTreeMap::new();
-        self.sequence("}", |parser| {
-            let offset = parser.token.offset;
-            let name = parser.name()?;
-            parser.expect(":")?;
-            let node = if name == "constraints" {
-                let offset = parser.token.offset;
-                parser.expect("[")?;
+        while !self.at("}") {
+            let offset = self.token.offset;
+            let name = self.name()?;
+            if name == "constraints" {
+                return Err(self.error(offset, "use a verify block instead of constraints"));
+            }
+            let block = name == "verify" && self.at("{");
+            let node = if block {
+                self.expect("{")?;
+                let mut statements = Vec::new();
+                while !self.at("}") {
+                    statements.push(self.expression(depth + 1, Context::Expr)?);
+                    self.expect(";")?;
+                }
+                self.expect("}")?;
                 Node {
                     offset,
-                    kind: Kind::List(
-                        parser.sequence("]", |p| p.expression(depth + 1, Context::Constraint))?,
-                    ),
+                    kind: Kind::List(statements),
                 }
             } else {
-                parser.expression(depth, Context::Value)?
+                self.expect(":")?;
+                self.expression(depth, context)?
             };
             if fields.insert(name.clone(), node).is_some() {
-                return Err(parser.error(offset, format!("duplicate field `{name}`")));
+                return Err(self.error(offset, format!("duplicate field `{name}`")));
             }
-            Ok(())
-        })?;
+            if block {
+                self.eat(",")?;
+            } else if !self.at("}") {
+                self.expect(",")?;
+            }
+        }
+        self.expect("}")?;
         Ok(fields)
     }
 
     fn expression(&mut self, depth: u8, context: Context) -> Result<Node, Error> {
-        if context == Context::Constraint {
-            self.constraint(depth, 0)
+        if context == Context::Expr {
+            self.binary(depth, 0)
         } else {
-            self.union(depth, context)
+            let mut node = self.union(depth, context)?;
+            if context != Context::Type {
+                let mut postfix = 0;
+                while self.eat("?")? {
+                    postfix += 1;
+                    self.check_depth(depth + postfix, Context::Expr)?;
+                    node = Node {
+                        offset: node.offset,
+                        kind: Kind::Try(Box::new(node)),
+                    };
+                }
+            }
+            Ok(node)
         }
     }
 
@@ -238,32 +298,41 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn constraint(&mut self, depth: u8, precedence: u8) -> Result<Node, Error> {
-        self.check_depth(depth, Context::Constraint)?;
+    fn binary(&mut self, depth: u8, precedence: u8) -> Result<Node, Error> {
+        self.check_depth(depth, Context::Expr)?;
         let offset = self.token.offset;
         let kind = match self.token.kind {
             TokenKind::Symbol(op @ ("!" | "-")) => {
                 self.bump()?;
-                Kind::Unary(op, Box::new(self.constraint(depth + 1, 6)?))
+                Kind::Unary(op, Box::new(self.binary(depth + 1, 9)?))
             }
             TokenKind::Symbol("|") => {
                 self.bump()?;
                 let name = self.name()?;
                 self.expect("|")?;
-                Kind::Lambda(name, Box::new(self.constraint(depth + 1, 0)?))
+                Kind::Lambda(name, Box::new(self.binary(depth + 1, 0)?))
             }
-            _ => self.atom(depth, Context::Constraint)?.kind,
+            _ => self.atom(depth, Context::Expr)?.kind,
         };
         let mut lhs = Node { offset, kind };
+        let mut postfix = 0;
+        while self.eat("?")? {
+            postfix += 1;
+            self.check_depth(depth + postfix, Context::Expr)?;
+            lhs = Node {
+                offset,
+                kind: Kind::Try(Box::new(lhs)),
+            };
+        }
         let mut chain = 0;
         while let Some((op, level)) = self.binary_operator() {
             if level < precedence {
                 break;
             }
             chain += 1;
-            self.check_depth(depth + chain, Context::Constraint)?;
+            self.check_depth(depth + chain, Context::Expr)?;
             self.bump()?;
-            let rhs = self.constraint(depth + 1, level + 1)?;
+            let rhs = self.binary(depth + 1, level + 1)?;
             lhs = Node {
                 offset,
                 kind: Kind::Binary(op, Box::new(lhs), Box::new(rhs)),
@@ -279,9 +348,12 @@ impl<'a> Parser<'a> {
         let level = match op {
             "||" => 1,
             "&&" => 2,
-            "==" | "!=" | "<=" | ">=" | "<" | ">" => 3,
-            "+" | "-" => 4,
-            "*" => 5,
+            "|" => 3,
+            "&" => 4,
+            "==" | "!=" => 5,
+            "<=" | ">=" | "<" | ">" => 6,
+            "+" | "-" => 7,
+            "*" => 8,
             _ => return None,
         };
         Some((op, level))
@@ -296,13 +368,13 @@ impl<'a> Parser<'a> {
                 self.expect(")")?;
                 return Ok(node);
             }
-            TokenKind::Symbol("[") if context != Context::Constraint => {
-                Kind::List(self.sequence("]", |p| p.expression(depth + 1, Context::Value))?)
+            TokenKind::Symbol("[") => {
+                Kind::List(self.sequence("]", |p| p.expression(depth + 1, context))?)
             }
             TokenKind::Text(text) => Kind::Text(text),
-            TokenKind::Number(text) if context == Context::Constraint => Kind::Integer(
+            TokenKind::Number(text) if context == Context::Expr => Kind::Integer(
                 text.parse()
-                    .map_err(|_| self.error(offset, "constraint integer is out of range"))?,
+                    .map_err(|_| self.error(offset, "expression integer is out of range"))?,
             ),
             TokenKind::Number(text) => Kind::Number(
                 text.parse()
@@ -311,7 +383,7 @@ impl<'a> Parser<'a> {
             TokenKind::Name(name) => {
                 let name = name.to_owned();
                 if self.eat("(")? {
-                    let arguments = if context == Context::Constraint {
+                    let arguments = if context == Context::Expr {
                         context
                     } else {
                         Context::Value
@@ -320,8 +392,8 @@ impl<'a> Parser<'a> {
                         name,
                         self.sequence(")", |p| p.expression(depth + 1, arguments))?,
                     )
-                } else if context == Context::Value && self.at("{") {
-                    Kind::Object(name, self.fields(depth + 1)?)
+                } else if context != Context::Type && self.at("{") {
+                    Kind::Object(name, self.fields(depth + 1, context)?)
                 } else {
                     Kind::Name(name)
                 }
@@ -351,8 +423,8 @@ impl<'a> Parser<'a> {
         if depth < 64 {
             return Ok(());
         }
-        let kind = if context == Context::Constraint {
-            "constraint"
+        let kind = if context == Context::Expr {
+            "expression"
         } else {
             "definition"
         };

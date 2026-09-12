@@ -5,7 +5,9 @@ struct Example{value:u32,}
 op Example(@value:u32,)->I32{
     meta:OpInfo{memory:Known([]),}, // 中文注释
     mnemonic:"example",storage:Example{value:value,},
-    constraints:[require(value>=0&&value<=4294967295,"valid // not a comment"),],
+    verify {
+        require(value>=0&&value<=4294967295,"valid // not a comment");
+    },
 }
 
 // ----- an-arrow-is-one-token
@@ -15,11 +17,13 @@ op Example() - > () {}
 
 // ----- constraint-number-range
 // run: opgen-error
-// check: constraint integer is out of range
+// check: expression integer is out of range
 struct Empty {}
 op Example() -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Empty {},
-    constraints: [170141183460469231731687303715884105728 > 0]
+    verify {
+        170141183460469231731687303715884105728 > 0;
+    }
 }
 
 // ----- definition-number-range
@@ -33,7 +37,9 @@ encoding TooWide { storage: u64, fields: [bits(4294967296)] }
 struct Empty {}
 op Example() -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Empty {},
-    constraints: [require(true, "quotes: \" / slash: \\ / newline: \n / UTF-8: 字符 } ]")],
+    verify {
+        require(true, "quotes: \" / slash: \\ / newline: \n / UTF-8: 字符 } ]");
+    },
 }
 
 // ----- invalid-string-escape

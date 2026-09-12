@@ -27,6 +27,7 @@ pub(crate) enum Kind {
     Unary(&'static str, Box<Node>),
     Binary(&'static str, Box<Node>, Box<Node>),
     Lambda(String, Box<Node>),
+    Try(Box<Node>),
 }
 
 #[derive(Debug, Clone)]
@@ -106,7 +107,7 @@ impl Node {
                     node.relocate(base);
                 }
             }
-            Kind::Unary(_, node) | Kind::Lambda(_, node) => node.relocate(base),
+            Kind::Unary(_, node) | Kind::Lambda(_, node) | Kind::Try(node) => node.relocate(base),
             Kind::Binary(_, lhs, rhs) => {
                 lhs.relocate(base);
                 rhs.relocate(base);

@@ -1,0 +1,85 @@
+// ----- arbitrary-host-methods-are-declaration-driven
+// run: opgen
+// check: pub trait Numbers
+// check: fn next(&self, n: u32) -> Option<u32>
+// check: impl InstructionQuery for Summary
+// check: crate::host::traits::Numbers::next(&_host, *_f0)
+extern interface Numbers {
+    fn next(n: u32) -> optional(u32);
+}
+interface Summary { count: u32 }
+fn Count(n: u32) -> u32 { value: Numbers.next(n)? }
+struct Data { n: u32 }
+op Example(@n: u32) -> () {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example",
+    storage: Data { n: n }, implements: [Summary { count: Count(n) }],
+    verify { require(Count(n) > n, "no next value"); }
+}
+
+// ----- helper-requirements-reach-the-caller
+// run: opgen
+// check: crate::host::traits::Module::params(&_host, *_f0)
+fn Count(sig: SigId) -> i128 { value: len(Module.params(sig)?) }
+interface Summary { count: i128 }
+struct Data { sig: SigId }
+op Example(@sig: SigId) -> () {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example",
+    storage: Data { sig: sig }, implements: [Summary { count: Count(sig) }],
+}
+
+// ----- optional-host-results-must-be-handled
+// run: opgen-error
+// check: projection type mismatch
+fn Count(sig: SigId) -> sequence(Type) { value: Module.params(sig) }
+
+// ----- try-only-applies-to-optionals
+// run: opgen-error
+// check: ? requires an optional value
+fn Next(n: u32) -> u32 { value: n? }
+
+// ----- host-method-signatures-are-checked
+// run: opgen-error
+// check: projection type mismatch
+fn Bad(n: u32) -> optional(SigId) { value: Module.signature(n) }
+
+// ----- opaque-host-queries-are-not-static-metadata
+// run: opgen-error
+// check: metadata projection must be compile-time constant
+extern interface Numbers {
+    fn next(n: u32) -> optional(u32);
+}
+fn Count(n: u32) -> u32 { value: Numbers.next(n)? }
+struct Info { count: u32, memory: MemoryEffect }
+struct Empty {}
+op Example() -> () {
+    meta: Info { count: Count(1), memory: Known([]) },
+    mnemonic: "example", storage: Empty {},
+}
+
+// ----- legacy-module-query-is-not-a-hidden-hook
+// run: opgen-error
+// check: unknown expression name or operation
+fn Bad(sig: SigId) -> i128 { value: len(params(sig)) }
+
+// ----- interface-in-clause-is-removed
+// run: opgen-error
+// check: expected `{`
+extern interface Legacy in [query] { fn next(n: u32) -> u32; }
+
+// ----- context-declarations-are-removed
+// run: opgen-error
+// check: unknown definition kind `context`
+context query {}
+
+// ----- unused-host-needs-no-adapter
+// run: opgen
+// check: pub trait Unused
+// check: impl InstructionQuery for Summary
+// not: let _host
+extern interface Unused { fn number() -> u32; }
+interface Summary { count: u32 }
+struct Data { n: u32 }
+op Example(@n: u32) -> () {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example",
+    storage: Data { n: n }, implements: [Summary { count: n }],
+}

@@ -8,6 +8,7 @@ pub mod constant;
 pub mod dfg;
 pub mod error;
 pub mod function;
+pub mod host;
 pub mod inst;
 pub mod intrinsic;
 pub mod memory;

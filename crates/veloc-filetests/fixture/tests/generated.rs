@@ -25,6 +25,48 @@ mod offline {
 include!(concat!(env!("OUT_DIR"), "/lowering.rs"));
 
 #[test]
+fn shared_expressions_execute_in_queries_and_explicit_validation() {
+    use veloc_mir::{dfg::DataFlowGraph, inst::SizeInfo};
+    let dfg = DataFlowGraph::new();
+    for (size, expected, valid) in [
+        (
+            8,
+            Some(SizeInfo {
+                next: 9,
+                aligned: true,
+            }),
+            true,
+        ),
+        (
+            0,
+            Some(SizeInfo {
+                next: 1,
+                aligned: false,
+            }),
+            false,
+        ),
+        (
+            3,
+            Some(SizeInfo {
+                next: 4,
+                aligned: false,
+            }),
+            false,
+        ),
+        (u32::MAX, None, false),
+    ] {
+        // Construction and parsing intentionally accept invalid contracts.
+        let draft = InstDraft::checked_size(size);
+        assert_eq!(draft.as_view().query::<SizeInfo>(&dfg, &[]), expected);
+        let text = format!(
+            "local function test() -> void\nblock0():\n  checked-size size={size}\n  return\n"
+        );
+        let module = veloc_mir::ModuleParser::new().parse(&text).unwrap();
+        assert_eq!(module.validate().is_ok(), valid);
+    }
+}
+
+#[test]
 fn new_ops_get_constraints_and_ownership_without_rust_opcode_cases() {
     let parse = |text: &str| veloc_mir::ModuleParser::new().parse(text).unwrap();
     let valid = "local function test(owned<() -> void>) -> owned<() -> void>\nblock0(v0: owned<() -> void>):\n  v1: owned<() -> void> = rebind v0\n  return v1\n";
@@ -67,6 +109,24 @@ fn new_ops_get_constraints_and_ownership_without_rust_opcode_cases() {
             .to_string()
             .contains("used after move")
     );
+}
+
+#[test]
+fn host_queries_preserve_optional_results_through_helpers() {
+    use veloc_mir::{Block, CallableKind, SigId, dfg::DataFlowGraph, inst::CallableInfo};
+    let mut dfg = DataFlowGraph::new();
+    for (ty, expected) in [
+        (
+            Type::callable(SigId(7), CallableKind::Local),
+            Some(SigId(7)),
+        ),
+        (Type::I32, None),
+    ] {
+        let value = dfg.append_block_param(Block(0), ty);
+        let draft = InstDraft::unary(Opcode::Rebind, value);
+        let info = draft.as_view().query::<CallableInfo>(&dfg, &[]).unwrap();
+        assert_eq!(info.signature, expected);
+    }
 }
 
 #[test]

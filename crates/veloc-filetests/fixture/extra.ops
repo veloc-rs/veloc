@@ -1,5 +1,19 @@
 // Exercise contracts not represented by production MIR instructions.
 // These have no control lowering interface: validation comes only from defs.
+interface SizeInfo { next: u32, aligned: bool }
+fn NextSize(size: u32) -> u32 { value: size + 1 }
+struct CheckedSize { size: u32 }
+op CheckedSize(@size: u32) -> () {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "checked-size", storage: CheckedSize { size: size },
+    text: "size={size}",
+    implements: [SizeInfo { next: NextSize(size), aligned: is_power_of_two(size) }],
+    verify {
+        require(NextSize(size) > size, "size overflow");
+        require(is_power_of_two(size), "invalid size alignment");
+    }
+}
+
 struct VectorLiteral {
     payload: VectorConst,
 }
@@ -9,11 +23,18 @@ op VectorLiteral(@data: VectorConst) -> type(data) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "vector-literal", storage: VectorLiteral { payload: data }, }
 
+interface CallableInfo { signature: optional(SigId) }
+fn InspectCallable(ty: Type) -> CallableInfo {
+    value: CallableInfo { signature: Types.signature(ty) },
+}
 op Rebind(move value: Callable) -> Callable {
     meta: OpInfo { memory: Unknown },
     mnemonic: "rebind", storage: Unary { arg: value },
+    implements: [InspectCallable(type(value))],
 
-    constraints: [require(type(value) == result_type(0), "rebind type mismatch")]
+    verify {
+        require(type(value) == result_type(0), "rebind type mismatch");
+    }
 }
 struct MoveBranch {
     value: Value,

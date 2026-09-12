@@ -68,6 +68,55 @@ fn diamond_imports_generate_each_definition_once() {
 }
 
 #[test]
+fn imported_hosts_and_helpers_need_no_capability_configuration() {
+    let files = Files::new();
+    files.write(
+        "host.ops",
+        r#"
+extern interface Numbers { fn next(n: u32) -> u32; }
+fn Next(n: u32) -> u32 { value: Numbers.next(n) }
+"#,
+    );
+    files.write(
+        "helpers.ops",
+        r#"
+import "host.ops";
+fn Twice(n: u32) -> u32 { value: Next(Next(n)) }
+"#,
+    );
+    let consumer = r#"
+import "prelude.ops";
+import "helpers.ops";
+interface Summary { count: u32 }
+struct Data { n: u32 }
+op Example(@n: u32) -> () {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example",
+    storage: Data { n: n }, implements: [Summary { count: Twice(n) }],
+}
+"#;
+    files.write("consumer.ops", consumer);
+    let source = files.load("consumer.ops").unwrap();
+    let generated = source.compile().unwrap();
+    assert!(generated.host.contains("pub trait Numbers"));
+    assert_eq!(
+        generated
+            .instructions
+            .matches("host::traits::Numbers::next")
+            .count(),
+        2
+    );
+    assert!(source.dependencies().any(|path| path.ends_with("host.ops")));
+
+    // Importing definitions is still required; there is no implicit host registry.
+    files.write(
+        "helpers.ops",
+        "fn Twice(n: u32) -> u32 { value: Numbers.next(n) }",
+    );
+    let error = files.load("consumer.ops").unwrap().compile().err().unwrap();
+    assert_eq!(error.path, files.0.join("helpers.ops"));
+}
+
+#[test]
 fn model_errors_retain_imported_file_line_and_column() {
     let files = Files::new();
     files.write(

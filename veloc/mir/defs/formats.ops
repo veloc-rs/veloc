@@ -1,10 +1,10 @@
 // Typed property contracts run during validation, not construction.
 property VectorConst {
-    constraints: [
-        require(!is_dense(value) || is_fixed(type(value)), "dense vector constant requires a fixed type"),
-        require(!is_dense(value) || len(bytes(value)) == min_bytes(type(value)), "dense vector constant byte count must match its type"),
-        require(!is_dense(value) || !is_predicate(type(value)) || all(bytes(value), |byte| byte <= 1), "boolean constant lanes must be zero or one")
-    ]
+    verify {
+        require(!Constants.is_dense(value) || is_fixed(type(value)), "dense vector constant requires a fixed type");
+        require(!Constants.is_dense(value) || len(Constants.bytes(value)?) == min_bytes(type(value)), "dense vector constant byte count must match its type");
+        require(!Constants.is_dense(value) || !is_predicate(type(value)) || all(Constants.bytes(value)?, |byte| byte <= 1), "boolean constant lanes must be zero or one");
+    }
 }
 
 // Logical records. SSA fields are extracted into the instruction's operands.
@@ -173,9 +173,9 @@ struct VectorOpWithExt {
 layout VectorOpWithExt {
     format: arity(args, [Unary, Binary, Ternary]),
     text: "{args}, mask={ext.mask}[, evl={ext.evl}]",
-    constraints: [
-        require(len(results()) == 1 && all(results(), |t| is_vector(t)), "predicated operation must produce a vector"),
-        require(all(results(), |t| is_predicate(type(ext.mask)) && shape(type(ext.mask)) == shape(t)), "mask must match vector shape"),
-        require(all(ext.evl, |v| type(v) == I32), "EVL must be i32")
-    ],
+    verify {
+        require(len(results()) == 1 && all(results(), |t| is_vector(t)), "predicated operation must produce a vector");
+        require(all(results(), |t| is_predicate(type(ext.mask)) && shape(type(ext.mask)) == shape(t)), "mask must match vector shape");
+        require(all(ext.evl, |v| type(v) == I32), "EVL must be i32");
+    }
 }

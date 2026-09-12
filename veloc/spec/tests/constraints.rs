@@ -3,11 +3,14 @@ mod common;
 fn checked(predicate: &str) -> Result<veloc_opgen::Generated, veloc_opgen::Error> {
     common::compile(&format!(
         r#"
+fn Double(n: u64) -> u64 {{ value: n * 2 }}
 struct Custom {{ bits: u64, yes: bool }}
 op Example(@number: u64, @flag: bool) -> ScalarInteger {{
     meta: OpInfo {{ memory: Known([]) }},
     mnemonic: "example", storage: Custom {{ bits: number, yes: flag }},
-     constraints: [{predicate}]
+    verify {{
+        {predicate};
+    }}
 }}
 "#
     ))
@@ -46,6 +49,8 @@ mod dfg {
             [false, true, true, true],
         ),
         ("(number + 1) * 2 >= 8", [true, true, true, true]),
+        ("Double(number) > 0", [true, true, false, false]),
+        ("flag || Double(number + 0) > 0", [true, true, false, true]),
     ]
     .iter()
     .enumerate()
@@ -74,18 +79,24 @@ mod numeric_{index} {{
         ("all(data, |i| i != 0 && len(other) > 0)", false),
         ("all(data, |i| all(data, |i| i < 8) && i < 8)", true),
         ("all(data, |i| true)", true),
+        ("all(data, |i| Above([2, 3], i))", true),
     ]
     .iter()
     .enumerate()
     {
         let validation = common::compile(&format!(
             r#"
+fn Above(items: array(u32, 2), limit: i128) -> bool {{
+    value: all(items, |item| i128(item) > limit)
+}}
 struct Buffers {{ first: ConstantPoolId, second: ConstantPoolId }}
 op Example(@data: Bytes, @other: Bytes) -> Vector {{
     meta: OpInfo {{ memory: Known([]) }},
     mnemonic: "example", storage: Buffers {{ first: pool(data), second: pool(other) }},
     text: "{{data:bytes}}, {{other:bytes}}",
-    constraints: [{predicate}]
+    verify {{
+        {predicate};
+    }}
 }}
 "#
         ))
@@ -113,6 +124,58 @@ mod sequences_{index} {{
 }}
 "#));
     }
+    let generated = common::compile(
+        r#"
+extern interface Arithmetic {
+    fn next(n: u64) -> optional(u64);
+}
+fn Next(n: u64) -> u64 { value: Arithmetic.next(n)? }
+fn Successor(n: u64) -> u64 { value: Next(n) }
+struct Custom { bits: u64, yes: bool }
+op Example(@number: u64, @flag: bool) -> I32 {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example",
+    storage: Custom { bits: number, yes: flag },
+    verify { require(flag || Successor(number) > number, "host failure"); }
+}
+"#,
+    )
+    .unwrap();
+    let host = generated.host;
+    let validation = generated.validation;
+    code.push_str(&format!(r#"
+type VectorConst = ();
+type FuncId = u32;
+type SigId = u32;
+mod host {{
+    pub mod traits {{ {host} }}
+    pub struct Context;
+    impl Context {{
+        pub fn new(_: &()) -> Self {{ Self }}
+        pub fn with_module(self, _: &(), _: ()) -> Self {{ self }}
+    }}
+    impl traits::Arithmetic for Context {{
+        fn next(&self, n: u64) -> Option<u64> {{ n.checked_add(1) }}
+    }}
+}}
+mod host_calls {{
+    use super::*;
+    enum Opcode {{ Example }}
+    enum ViewData {{ Custom {{ bits: u64, yes: bool }} }}
+    type InstructionView<'a> = ViewData;
+    impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
+    struct Function {{ dfg: (), signature: () }}
+    impl Function {{ fn constraint_error(&self, _: Inst, message: &str) -> String {{ message.into() }} }}
+    {validation}
+    #[test] fn execute() {{
+        let f = Function {{ dfg: (), signature: () }};
+        for (bits, yes, valid) in [(3, false, true), (u64::MAX, false, false), (u64::MAX, true, true)] {{
+            let result = f.validate_constraints(&(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[]);
+            assert_eq!(result.is_ok(), valid);
+            if !valid {{ assert_eq!(result.unwrap_err(), "host failure"); }}
+        }}
+    }}
+}}
+"#));
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -129,9 +192,9 @@ mod sequences_{index} {{
     let _cleanup = Cleanup(dir.clone());
     let input = dir.join("generated.rs");
     let binary = dir.join(format!("generated{}", std::env::consts::EXE_SUFFIX));
-    std::fs::write(&input, code).unwrap();
+    std::fs::write(&input, &code).unwrap();
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let output = std::process::Command::new(rustc)
+    let output = std::process::Command::new(&rustc)
         .args(["--edition=2024", "--test", "-Dwarnings"])
         .arg(&input)
         .arg("-o")
@@ -149,5 +212,28 @@ mod sequences_{index} {{
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    // The same generated calls must fail without the trait implementation,
+    // even when an identically named inherent method is available.
+    std::fs::write(
+        &input,
+        code.replace("impl traits::Arithmetic for Context", "impl Context"),
+    )
+    .unwrap();
+    let output = std::process::Command::new(&rustc)
+        .args(["--edition=2024", "--test", "--emit=metadata"])
+        .arg(&input)
+        .arg("-o")
+        .arg(dir.join("missing-host.rmeta"))
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "missing host implementation was accepted"
+    );
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("Arithmetic") && diagnostic.contains("not satisfied"),
+        "{diagnostic}"
     );
 }

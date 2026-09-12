@@ -58,12 +58,14 @@ mnemonic: "stop", storage: Stop {},  }
 
 // ----- signature-query-is-typed
 // run: opgen-error
-// check: signature expects a function, signature ID or callable type
+// check: projection type mismatch: expected Named("FuncId"), found Named("u32")
 struct Check { n: u32 }
 op Check(@n: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "check", storage: Check { n: n },
-    constraints: [len(params(signature(n))) == 0]
+    verify {
+        len(Module.params(Module.signature(n)?)?) == 0;
+    }
 }
 
 // ----- slice-query-is-typed
@@ -73,5 +75,7 @@ struct Check { n: u32 }
 op Check(@n: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "check", storage: Check { n: n },
-    constraints: [len(prefix(n, 0)) == 0]
+    verify {
+        len(prefix(n, 0)) == 0;
+    }
 }

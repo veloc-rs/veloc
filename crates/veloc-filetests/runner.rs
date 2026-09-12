@@ -150,7 +150,12 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 rejected(result)
             } else {
                 result
-                    .map(|generated| generated.instructions + &generated.opcodes)
+                    .map(|generated| {
+                        generated.host
+                            + &generated.instructions
+                            + &generated.validation
+                            + &generated.opcodes
+                    })
                     .map_err(|error| error.to_string())
             }
         }

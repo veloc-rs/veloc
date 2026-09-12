@@ -63,13 +63,15 @@ plugin framework or additional runtime descriptor is introduced.
 - `syntax/lexer.rs` produces one lookahead token at a time, borrowing names and
   numbers and decoding strings once. Compound operators are single tokens.
 - `syntax/parser.rs` uses recursive descent for declarations, signatures,
-  lists, objects and type sets, and precedence climbing for constraints.
-  A named parsing context distinguishes values, result types and constraints;
+  lists, objects and type sets, and precedence climbing for pure expressions.
+  A named parsing context distinguishes declaration values, types and pure expressions;
   nested syntax is bounded, while flat type sets remain n-ary.
 - `syntax/mod.rs` holds the untyped syntax tree and source offsets.
 - `source.rs` resolves file dependencies and maps diagnostics back to files.
 - `model/` owns operations, structs, metadata, effects and ownership contracts.
-  Each contract keeps its checker and related projection together.
+  `model/expr.rs` is the shared typed expression checker, helper expander,
+  constant evaluator and Rust emitter. Verification and interface modules
+  only adapt it to their respective consumers.
 - `types/` groups type declarations, exact sets, encoding, resolution and
   generated type rules. Small set operations live with the type model.
 - `generate/` prepares output plans and assembles Rust artifacts, constructors and constant evaluation;
@@ -108,28 +110,82 @@ Generated Rust artifacts follow their consumers, not the input file boundaries:
 - `builders.rs`: operation-specific `InstBuilder` methods.
 - `type_rules.rs`: type validation dispatch and shared signature checks.
 - `validation.rs`: function-level property constraints.
+- `host_traits.rs`: typed read-only interfaces supplied by the Rust host.
 - `text_parser.rs` and `text_printer.rs`: their respective text codecs.
 
 Construction and validation remain separate. Optimizer evaluation, offline
 semantics and backend lowering retain separate artifacts and consumers.
 
+### Rust host interfaces
+
+`extern interface` declares a read-only, deterministic host capability, not a
+C ABI, dynamic library or arbitrary Rust code fragment:
+
+```text
+extern interface Module {
+    fn signature(func: FuncId) -> optional(SigId);
+    fn params(sig: SigId) -> optional(sequence(Type));
+}
+fn parameter_count(func: FuncId) -> i128 {
+    value: len(Module.params(Module.signature(func)?)?)
+}
+```
+
+The declaration generates a Rust trait in `host_traits.rs`. MIR implements it
+in `src/host.rs`; generated expressions call that trait statically. Definition
+checking uses the declared signatures, with no method-name-specific checker.
+Qualified calls keep host capabilities distinct from ordinary defs functions.
+
+Interfaces do not list their consumers. Ordinary file-level
+`import "file.ops";` loads their declarations along with other definitions;
+there is no separate capability import or `context` declaration. Imports still
+form one definition unit, not isolated module namespaces.
+
+Host dependencies follow directly from the checked expressions, including
+expanded helper calls. The emitter creates a Rust host adapter only when the
+expression uses it, and emits statically resolved trait calls. Rust checks that
+the adapter implements every interface actually called. No separate capability
+list duplicates the adapter's implementations.
+
+For example, a query using `Module.params` requires its Rust adapter to implement
+`Module`. MIR's instruction validator supplies module state; its ordinary
+property and instruction-query adapters do not. Using that interface there
+therefore fails when compiling generated Rust, not while checking the defs.
+Declaring or importing an interface does not provide its implementation.
+The old `in [...]` clause and `context` declarations are not supported.
+
+`optional(T)` lowers to `Option<T>`; `sequence(T)` lowers to a borrowed slice.
+Borrowed host results are tied to the context, not temporary arguments. Ordinary
+query-result records remain owned; consume sequences inside helpers instead.
+`?` explicitly propagates absence to the enclosing consumer: the current
+`require` diagnostic in validation, or `None` in an interface query. Helpers are
+expanded expressions, not separately called Rust functions. Keeping an optional
+result without `?` is supported.
+
+Read-only determinism is a trusted host contract: `&self` alone cannot prove the
+absence of interior mutation. Opaque host calls are not evaluated or assumed
+constant by the definition compiler, even with literal arguments.
+Core arithmetic, finite sequence operators and type-language primitives remain
+native operations; static signature/type-set reasoning does not require a host.
+
 ### Validation and ownership contracts
 
-`constraints` compile to direct Rust checks at the explicit validation phase.
+`verify` blocks compile to direct Rust checks at the explicit validation phase.
 They do not run in builders and are not interpreted at runtime. The same
 expression language applies to operations and alternate storage layouts:
 
 ```text
-constraints: [
-    require(matches(args, params(signature(function))), "argument types differ"),
-    require(returns(signature(function)) == returns(current_signature()), "answer types differ"),
-    require(all(options.evl, |v| type(v) == I32), "EVL must be i32")
-]
+verify {
+    require(matches(args, Module.params(Module.signature(function)?)?), "argument types differ");
+    require(Module.returns(Module.signature(function)?)? == Module.returns(Module.current_signature())?, "answer types differ");
+    require(all(options.evl, |v| type(v) == I32), "EVL must be i32");
+}
 ```
 
-`signature` accepts a `FuncId`, `SigId`, or callable `Type`. `params` and
-`returns` borrow type sequences; `results()` exposes the instruction's result
-types. `matches` compares SSA value types with a type sequence without allocating.
+`Module.signature` maps a `FuncId` to an optional `SigId`; `Types.signature`
+extracts a signature ID from a callable type. `Module.params` and
+`Module.returns` borrow type sequences. Callers handle their optional results
+with `?`; `results()` exposes the instruction's result types. `matches` compares SSA value types with a type sequence without allocating.
 `prefix(sequence, count)` and `suffix(sequence, count)` use checked slicing.
 `all` supports both sequences and optional values (absence satisfies the predicate).
 Invalid handles or slices produce the constraint diagnostic, not a panic.
@@ -687,26 +743,28 @@ or per-opcode type descriptor. Generated checks return `TypeError` with static
 diagnostic strings and relevant operand/result positions. Interned `TypeClass`
 membership checks remain executable helpers, not a second type-rule interpreter.
 
-Structural `constraints` are typed, pure expressions, compiled directly into
+Structural `verify` blocks contain typed, pure expressions, compiled directly into
 Rust checks. For example:
 
 ```text
-constraints: [
-    require(imm.scale != 0, "scale must be non-zero"),
-    len(mask) == lanes(type(lhs)),
-    all(mask, |i| i < 2 * lanes(type(lhs)))
-]
+verify {
+    require(imm.scale != 0, "scale must be non-zero");
+    len(mask) == lanes(type(lhs));
+    all(mask, |i| i < 2 * lanes(type(lhs)));
+}
 ```
 
 Expressions reference logical parameters and struct fields, not physical pool
 IDs or layout names. The existing storage projection resolves those references.
 The language provides Boolean logic (`!`, `&&`, `||`), comparisons, checked
-integer arithmetic (`+`, `-`, `*`), comparison-enum literals such as `IntCC.Eq`,
+integer arithmetic (`+`, `-`, `*`) and bitwise operations (`&`, `|`), comparison-enum literals such as `IntCC.Eq`,
 and lexical `all(sequence, |element| predicate)` over finite byte/value lists.
 It has no arbitrary Rust callbacks, user recursion or unbounded loops.
-Numbers are checked signed 128-bit integers, not wrapping instruction values;
-property integers are widened without truncation. Constant overflow is a
-definition error; dynamic overflow is a validation error.
+Verification arithmetic uses checked signed 128-bit integers, not wrapping
+instruction values; property integers are widened without truncation.
+Typed helper bodies and arguments use their declared integer types instead.
+Constant arithmetic overflow is a definition error; dynamic overflow fails
+validation (or returns `None` from an interface query). Neither path wraps.
 
 Queries are `type(value)`, `result_type(constant_index)`, `len(sequence)`,
 `lanes(type)`, `min_bytes(type)`, `is_ptr(type)`, `is_scalar(type)`,
@@ -714,8 +772,7 @@ Queries are `type(value)`, `result_type(constant_index)`, `len(sequence)`,
 Lane counts and byte sizes are minima for scalable types. A target-dependent
 byte size is an evaluation error. Result indices must refer to declared fixed
 results. Enum literals are checked against the comparison definitions; struct
-fields against the struct definitions. Unsupported property kinds and optional
-fields are rejected instead of guessed or silently coerced.
+fields against the struct definitions. Unsupported property kinds are rejected instead of guessed or silently coerced.
 
 `require(predicate, "diagnostic")` supplies an optional diagnostic; a bare
 predicate uses its expression text. Errors include the instruction and opcode.
@@ -731,6 +788,32 @@ first, allowing generated checks to use operand/result positions directly,
 including for alternative physical layouts. Actual property checks remain
 dynamic. Constraint diagnostics are emitted directly into the generated checks;
 there is no runtime rule interpreter or predefined constraint-name registry.
+
+The same pure `fn` can be used by verification, interface projections and
+compile-time metadata. For example, the alignment check is a definition, not a
+built-in verifier keyword:
+
+```text
+fn is_power_of_two(value: u32) -> bool {
+    value: value != 0 && (value & (value - 1)) == 0,
+}
+op Alloca(@size: u32, @align: u32) -> PTR {
+    // ... storage, metadata and text ...
+    verify {
+        require(size > 0, "alloca size must be positive");
+        require(is_power_of_two(align), "invalid alignment");
+    }
+}
+```
+
+Helpers are checked once and expanded at build time, with fresh names for
+lexical binders. They cannot recurse. Runtime value/type queries still need a
+DFG; module queries are only available to instruction verification. Pure helpers
+may call them; generated Rust trait calls enforce their transitive host requirements.
+An ordinary interface query cannot gain module access by hiding it in a helper.
+Static metadata must reduce to a constant; it cannot read runtime operands.
+The old `constraints: [...]` syntax is rejected; there is no compatibility path.
+These declarations do not add construction-time checks to builders.
 
 These predicates specify IR legality, not instruction execution or traps.
 For example, a division instruction with a zero divisor can be valid IR with

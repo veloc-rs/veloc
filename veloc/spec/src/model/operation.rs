@@ -29,14 +29,14 @@ pub(super) fn parse(
     source: &str,
     mut record: Record,
     storage_defs: &storage::Storage,
-    comparisons: &[crate::model::comparisons::Comparison],
     vocabulary: Vocabulary<'_>,
-    interfaces: &mut super::interfaces::Library,
+    expressions: &mut super::expr::Library,
 ) -> Result<Op, Error> {
     let Vocabulary {
         types: type_defs,
         builtins,
         data,
+        ..
     } = vocabulary;
     let sig = record
         .signature
@@ -101,7 +101,7 @@ pub(super) fn parse(
         })
         .transpose()?;
     let text = fields.optional("text");
-    let implementations = interfaces.bind(
+    let implementations = expressions.bind(
         source,
         fields.optional("implements"),
         &params,
@@ -146,14 +146,7 @@ pub(super) fn parse(
         }
     }
     let mut meta_node = fields.take("meta")?;
-    interfaces.metadata(
-        source,
-        &mut meta_node,
-        &implementations,
-        data,
-        builtins,
-        type_defs,
-    )?;
+    expressions.metadata(source, &mut meta_node, &implementations, vocabulary)?;
     let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
     let mut traits = meta.traits(source, data, builtins)?;
     if let Projection::Operands(projection) = &projection {
@@ -173,7 +166,7 @@ pub(super) fn parse(
         }
     }
     let constraints = fields
-        .optional("constraints")
+        .optional("verify")
         .map(|node| list(source, node))
         .transpose()?
         .unwrap_or_default();
@@ -262,14 +255,8 @@ pub(super) fn parse(
         absorbing,
         semantics,
     };
-    op.constraints = crate::model::constraints::check(
-        source,
-        constraints,
-        &op,
-        storage_defs,
-        type_defs,
-        comparisons,
-    )?;
+    op.constraints =
+        crate::model::constraints::check(source, constraints, &op, vocabulary, expressions)?;
     Ok(op)
 }
 

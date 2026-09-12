@@ -436,7 +436,7 @@ fn parse_layout(
     };
     if let Some(binding) = binding {
         for (key, node) in &binding.fields {
-            if !matches!(key.as_str(), "format" | "text" | "constraints") {
+            if !matches!(key.as_str(), "format" | "text" | "verify") {
                 return Err(Error::at(
                     source,
                     node.offset,
@@ -530,7 +530,7 @@ fn parse_layout(
     let layout = Layout {
         constraints: record
             .fields
-            .get("constraints")
+            .get("verify")
             .cloned()
             .map(|node| crate::model::list(source, node))
             .transpose()?

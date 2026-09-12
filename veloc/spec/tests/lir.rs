@@ -79,7 +79,8 @@ fn unsupported_output_contracts_are_not_silently_ignored() {
         "{BINARY} {}",
         ADD.replace(
             "semantics:",
-            "constraints: [require(true, \"checked\")], semantics:"
+            "verify {require(true, \"checked\");
+}, semantics:"
         )
     ));
     assert!(

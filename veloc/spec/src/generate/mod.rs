@@ -51,7 +51,7 @@ fn generate(plan: &Plan) -> Generated {
     let classes = crate::types::generate::Classes::new(defs);
     let mut type_rules = String::from(HEADER);
     type_rules.push_str("use super::TypeClass as C;\nuse crate::Type;\n");
-    let query_types = defs.interfaces.data_types();
+    let query_types = defs.expressions.data_types();
     let mut instructions = defs.data.generate(
         &defs
             .storage
@@ -169,6 +169,7 @@ fn generate(plan: &Plan) -> Generated {
         text_parser,
         text_printer,
         type_rules,
+        host: defs.expressions.host_code(),
         validation: crate::model::constraints::generate(
             defs,
             &packed.formats,

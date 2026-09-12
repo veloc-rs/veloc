@@ -120,6 +120,7 @@ pub(crate) fn prepare_alternatives(
     source: &str,
 ) -> Result<Vec<Alternative>, Error> {
     let mut alternatives = Vec::new();
+    let mut expressions = defs.expressions.clone();
     for alt in &defs.storage.alternatives {
         let targets = defs
             .storage
@@ -148,9 +149,13 @@ pub(crate) fn prepare_alternatives(
             source,
             alt.constraints.clone(),
             &op,
-            &defs.storage,
-            &defs.types,
-            &defs.comparisons,
+            crate::model::Vocabulary {
+                types: &defs.types,
+                data: &defs.data,
+                builtins: &defs.builtins,
+                comparisons: &defs.comparisons,
+            },
+            &mut expressions,
         )?;
         alternatives.push(Alternative {
             op,

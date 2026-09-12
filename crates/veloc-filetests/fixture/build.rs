@@ -20,6 +20,7 @@ fn main() {
     let mut files = Vec::new();
     for (name, text) in [
         ("types.rs", output.types),
+        ("host_traits.rs", output.host),
         ("type_rules.rs", output.type_rules),
         ("builders.rs", output.builders),
         ("validation.rs", output.validation),

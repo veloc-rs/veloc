@@ -1,27 +1,35 @@
 // ----- property-type-checking
 // run: opgen-error
-// check: constraint expects Bool, got Int
+// check: projection type mismatch: expected Named("bool"), found Named("u8")
 property VectorConst {
-    constraints: [all(bytes(value), |byte| byte)]
+    verify {
+        all(Constants.bytes(value)?, |byte| byte);
+    }
 }
 
 // ----- property-result-context
 // run: opgen-error
-// check: property constraints cannot depend on instruction or module context
+// check: result_type requires a fixed operation result signature
 property VectorConst {
-    constraints: [type(value) == result_type(0)]
+    verify {
+        type(value) == result_type(0);
+    }
 }
 
-// ----- property-module-context
-// run: opgen-error
-// check: property constraints cannot depend on instruction or module context
+// ----- property-emits-declared-host-calls
+// run: opgen
+// check: crate::host::traits::Module::params(&_host, crate::host::traits::Module::current_signature
 property VectorConst {
-    constraints: [len(params(current_signature())) == 0]
+    verify {
+        len(Module.params(Module.current_signature())?) == 0;
+    }
 }
 
 // ----- unknown-property
 // run: opgen-error
 // check: unknown typed property
 property Unknown {
-    constraints: [true]
+    verify {
+        true;
+    }
 }

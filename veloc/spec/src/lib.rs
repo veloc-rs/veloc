@@ -46,6 +46,7 @@ impl std::error::Error for Error {}
 /// Generated MIR, optimizer and offline artifacts; callers choose which to write.
 #[derive(Default)]
 pub struct Generated {
+    pub host: String,
     pub types: String,
     pub type_rules: String,
     pub validation: String,

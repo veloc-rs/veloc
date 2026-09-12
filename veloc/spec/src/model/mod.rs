@@ -4,6 +4,7 @@ pub(crate) mod comparisons;
 pub(crate) mod constraints;
 pub(crate) mod control;
 pub(crate) mod data;
+pub(crate) mod expr;
 pub(crate) mod interfaces;
 pub(crate) mod metadata;
 pub(crate) mod ownership;
@@ -30,7 +31,7 @@ pub struct Definitions {
     pub(crate) storage: storage::Storage,
     pub(crate) ops: Vec<Op>,
     pub(crate) properties: Vec<Property>,
-    pub(crate) interfaces: interfaces::Library,
+    pub(crate) expressions: expr::Library,
 }
 
 /// Shared names available to operation contracts and pure projections.
@@ -39,6 +40,7 @@ pub(crate) struct Vocabulary<'a> {
     pub types: &'a Types,
     pub builtins: &'a Builtins,
     pub data: &'a data::Types,
+    pub comparisons: &'a [comparisons::Comparison],
 }
 
 pub(crate) struct Property {
@@ -136,7 +138,7 @@ pub(crate) struct Op {
     pub text: Option<Node>,
     pub traits: Vec<String>,
     pub memory: crate::model::builtins::Effect,
-    pub interfaces: BTreeMap<String, interfaces::Expr>,
+    pub interfaces: BTreeMap<String, expr::Expr>,
     pub constraints: Vec<crate::model::constraints::Constraint>,
     pub identity: Option<BvConst>,
     pub absorbing: Option<BvConst>,
@@ -246,7 +248,13 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 format!("duplicate {} `{}`", record.kind, record.name),
             ));
         }
-        identifier(source, record.offset, &record.name)?;
+        if record.kind == "extern-fn" {
+            for part in record.name.split('.') {
+                identifier(source, record.offset, part)?;
+            }
+        } else {
+            identifier(source, record.offset, &record.name)?;
+        }
     }
     let encoding = crate::types::encoding::TypeEncoding::compile(&records, source)?;
     let types = Types::compile(&records, source, &encoding)?;
@@ -254,12 +262,13 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
     let comparisons = crate::model::comparisons::compile(&records, source)?;
     let data = crate::model::data::Types::compile(&records, source)?;
     let storage = storage::compile(&records, source, &data)?;
-    let mut interfaces = interfaces::Library::compile(&records, source, &data, &builtins, &types)?;
     let vocabulary = Vocabulary {
         types: &types,
         builtins: &builtins,
         data: &data,
+        comparisons: &comparisons,
     };
+    let mut expressions = expr::Library::compile(&records, source, vocabulary)?;
     let mut ops = Vec::new();
     let mut properties = Vec::new();
     for record in records {
@@ -271,14 +280,13 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 let offset = record.offset;
                 let name = record.name.clone();
                 let mut fields = Fields::new(source, record);
-                let nodes = list(source, fields.take("constraints")?)?;
+                let nodes = list(source, fields.take("verify")?)?;
                 let constraints = constraints::check_property(
                     source,
                     &name,
                     nodes,
-                    &storage,
-                    &types,
-                    &comparisons,
+                    vocabulary,
+                    &mut expressions,
                 )?;
                 fields.finish()?;
                 properties.push(Property {
@@ -291,12 +299,11 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 source,
                 record,
                 &storage,
-                &comparisons,
                 vocabulary,
-                &mut interfaces,
+                &mut expressions,
             )?),
             "layout" | "struct" | "enum" | "encoding" | "comparison" | "storage" | "interface"
-            | "fn" => {}
+            | "fn" | "extern-interface" | "extern-fn" => {}
             kind if Builtins::is_definition(kind) => {}
             kind if Types::is_definition(kind) => {}
             _ => {
@@ -317,7 +324,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
         storage,
         ops,
         properties,
-        interfaces,
+        expressions,
     };
     definitions.validate(source)?;
     Ok(definitions)
