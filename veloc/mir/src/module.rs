@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Deref;
 use cranelift_entity::PrimaryMap;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linkage {
@@ -45,9 +45,8 @@ pub struct Global {
 #[derive(Debug, Default, Clone)]
 pub struct ModuleData {
     pub functions: PrimaryMap<FuncId, Function>,
-    pub signatures: PrimaryMap<SigId, Signature>,
+    pub signatures: veloc_types::Signatures,
     pub globals: Vec<Global>,
-    sig_map: HashMap<Signature, SigId>,
 }
 
 impl ModuleData {
@@ -65,15 +64,15 @@ impl ModuleData {
     }
 
     pub fn signature_eq(&self, lhs: SigId, other: &Self, rhs: SigId) -> bool {
+        if core::ptr::eq(self, other) {
+            return lhs == rhs && self.signatures.get(lhs).is_some();
+        }
         let (Some(a), Some(b)) = (self.signatures.get(lhs), other.signatures.get(rhs)) else {
             return false;
         };
-        if core::ptr::eq(self, other) && lhs == rhs {
-            return true;
-        }
         // Ordinary function signatures do not need structural traversal or any
         // allocation, including cross-module indirect calls.
-        if a.params.iter().chain(&a.returns).all(|ty| ty.is_compact()) {
+        if a.types().iter().all(|ty| ty.is_compact()) {
             return a == b;
         }
         let mut pending = alloc::vec![(lhs, rhs)];
@@ -86,17 +85,12 @@ impl ModuleData {
                 return false;
             };
             if a.call_conv != b.call_conv
-                || a.params.len() != b.params.len()
-                || a.returns.len() != b.returns.len()
+                || a.params().len() != b.params().len()
+                || a.returns().len() != b.returns().len()
             {
                 return false;
             }
-            for (&lhs, &rhs) in a
-                .params
-                .iter()
-                .chain(&a.returns)
-                .zip(b.params.iter().chain(&b.returns))
-            {
+            for (&lhs, &rhs) in a.types().iter().zip(b.types()) {
                 if lhs.is_compact() || rhs.is_compact() {
                     if lhs != rhs {
                         return false;
@@ -124,13 +118,7 @@ impl ModuleData {
     }
 
     pub fn intern_signature(&mut self, signature: Signature) -> SigId {
-        if let Some(&id) = self.sig_map.get(&signature) {
-            id
-        } else {
-            let id = self.signatures.push(signature.clone());
-            self.sig_map.insert(signature, id);
-            id
-        }
+        self.signatures.insert(signature)
     }
 
     pub fn declare_function(&mut self, name: String, sig_id: SigId, linkage: Linkage) -> FuncId {

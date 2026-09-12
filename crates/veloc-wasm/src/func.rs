@@ -156,10 +156,10 @@ macro_rules! impl_into_func {
                     .iter()
                     .copied()
                     .map(crate::module::types::valtype_to_veloc)
-                    .collect();
+                    .collect::<Vec<_>>();
                 let signature = Signature::new(ir_params, ir_results, CallConv::SystemV);
-                let args = signature.params.len();
-                let has_result = !signature.returns.is_empty();
+                let args = signature.params().len();
+                let has_result = !signature.returns().is_empty();
                 let host_fn = HostFunction::new(signature, move |values| {
                     #[allow(unused_variables)]
                     let vmctx = values[0].to_i64_bits() as *const VMContext as *mut VMContext;

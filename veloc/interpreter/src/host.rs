@@ -44,8 +44,8 @@ impl HostFunction {
         args: usize,
         results: usize,
     ) -> crate::Result<()> {
-        if args != self.signature.params.len()
-            || results != self.signature.returns.len()
+        if args != self.signature.params().len()
+            || results != self.signature.returns().len()
             || values.len() < args.max(results).max(1)
         {
             return Err(crate::Error::InvalidHostCall);

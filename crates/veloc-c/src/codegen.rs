@@ -45,11 +45,14 @@ impl CodeGenContext {
         let sig = self.signature_from_declarator(&func.declarator, &func.specifiers)?;
 
         let builder = self.module_builder.as_mut().unwrap();
-        let sig_id =
-            builder.make_signature(sig.params.to_vec(), sig.returns.to_vec(), CallConv::SystemV);
+        let sig_id = builder.make_signature(
+            sig.params().to_vec(),
+            sig.returns().to_vec(),
+            CallConv::SystemV,
+        );
         let func_id = builder.declare_function(name, sig_id, Linkage::Export);
 
-        let return_type = sig.returns.first().copied();
+        let return_type = sig.returns().first().copied();
         let mut func_builder = builder.builder(func_id);
         func_builder.init_entry_block();
 
@@ -82,7 +85,7 @@ impl CodeGenContext {
         let params = Vec::new();
         Ok(Signature::new(
             params,
-            ret_type.into_iter().collect(),
+            ret_type.into_iter().collect::<Vec<_>>(),
             CallConv::SystemV,
         ))
     }

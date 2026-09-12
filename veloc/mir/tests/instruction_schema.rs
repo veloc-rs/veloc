@@ -231,12 +231,15 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
             veloc_mir::inst::ConstantPoolId::insert(dfg, bytes),
         )
     };
-    let dense = make_dense(Type::I32X4, bytes.clone(), dfg);
+    let dense = make_dense(veloc_mir::types::I32X4, bytes.clone(), dfg);
     dense.validate(dfg).unwrap();
     assert!(matches!(dense.data(), ConstData::Dense(id) if id.get(dfg) == Some(bytes.as_slice())));
-    assert_eq!(make_dense(Type::I32X4, bytes.clone(), dfg), dense);
+    assert_eq!(
+        make_dense(veloc_mir::types::I32X4, bytes.clone(), dfg),
+        dense
+    );
     assert!(
-        make_dense(Type::I32X4, vec![0; 3], dfg)
+        make_dense(veloc_mir::types::I32X4, vec![0; 3], dfg)
             .validate(dfg)
             .is_err()
     );
@@ -259,12 +262,12 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
     );
     let splat = VectorConst::splat(ScalarConst::from(-7i32), 4, false).unwrap();
     let scalable_splat = VectorConst::splat(ScalarConst::from(-7i32), 4, true).unwrap();
-    assert_eq!(splat.ty(), Type::I32X4);
+    assert_eq!(splat.ty(), veloc_mir::types::I32X4);
     assert!(VectorConst::splat(ScalarConst::from(7i32), 3, false).is_none());
     let dense = builder
         .func_mut()
         .edit()
-        .dense_constant(Type::I32X4.as_vector().unwrap(), bytes);
+        .dense_constant(veloc_mir::types::I32X4.as_vector().unwrap(), bytes);
     for value in [
         Constant::from(nan),
         dense.into(),
@@ -303,9 +306,12 @@ fn vector_constant_construction_defers_data_checks_to_validation() {
     let value = builder
         .func_mut()
         .edit()
-        .dense_constant(Type::I32X4.as_vector().unwrap(), vec![0; 3]);
+        .dense_constant(veloc_mir::types::I32X4.as_vector().unwrap(), vec![0; 3]);
     let result = builder.ins().vconst(value);
-    assert_eq!(builder.func().dfg().value_type(result), Type::I32X4);
+    assert_eq!(
+        builder.func().dfg().value_type(result),
+        veloc_mir::types::I32X4
+    );
     assert_eq!(builder.func().dfg().as_const(result), Some(value.into()));
     builder.ins().ret(&[]);
     builder.seal_all_blocks();

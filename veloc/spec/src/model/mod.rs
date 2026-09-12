@@ -3,6 +3,7 @@ pub(crate) mod builtins;
 pub(crate) mod comparisons;
 pub(crate) mod constraints;
 pub(crate) mod data;
+mod encoding;
 pub(crate) mod expr;
 pub(crate) mod interfaces;
 pub(crate) mod metadata;
@@ -22,7 +23,6 @@ mod operation;
 
 /// Checked operation definitions, independent of the runtime MIR.
 pub struct Definitions {
-    pub(crate) encoding: crate::types::encoding::TypeEncoding,
     pub(crate) builtins: Builtins,
     pub(crate) data: crate::model::data::Types,
     pub(crate) comparisons: Vec<crate::model::comparisons::Comparison>,
@@ -246,8 +246,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
             identifier(source, record.offset, &record.name)?;
         }
     }
-    let encoding = crate::types::encoding::TypeEncoding::compile(&records, source)?;
-    let types = Types::compile(&records, source, &encoding)?;
+    let types = Types::compile(&records, source)?;
     let builtins = Builtins::compile(&records, source)?;
     let comparisons = crate::model::comparisons::compile(&records, source)?;
     let data = crate::model::data::Types::compile(&records, source)?;
@@ -306,7 +305,6 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
         }
     }
     let mut definitions = Definitions {
-        encoding,
         builtins,
         data,
         comparisons,

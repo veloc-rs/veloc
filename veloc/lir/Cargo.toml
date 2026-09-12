@@ -5,6 +5,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
+veloc-types = { workspace = true }
 veloc-mir = { path = "../mir", default-features = false }
 cranelift-entity = { workspace = true }
 hashbrown = { workspace = true }

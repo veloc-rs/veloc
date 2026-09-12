@@ -5,19 +5,17 @@ use std::collections::BTreeMap;
 use crate::Error;
 use crate::model::Fields;
 use crate::syntax::{Kind, Node, Record};
-use crate::types::encoding::TypeEncoding;
 
-pub(crate) mod encoding;
 pub(crate) mod generate;
 mod resolve;
 pub(crate) mod rules;
 
-/// Exact type sets: scalar codes map to scalar/fixed/scalable shape masks.
+/// Exact type sets: logical scalar kinds map to scalar/fixed/scalable shape masks.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TypeSet(pub BTreeMap<u8, u32>);
+pub(crate) struct TypeSet(pub BTreeMap<Primitive, u32>);
 
 impl TypeSet {
-    pub fn singleton(code: u8, exponent: u32, scalable: bool) -> Self {
+    pub fn singleton(code: Primitive, exponent: u32, scalable: bool) -> Self {
         Self(BTreeMap::from([(
             code,
             1 << (exponent + if scalable { 16 } else { 0 }),
@@ -69,7 +67,6 @@ pub(crate) use veloc_types::Scalar as Primitive;
 #[derive(Debug)]
 pub(crate) struct Scalar {
     pub name: String,
-    pub code: u8,
     pub ty: Primitive,
 }
 
@@ -79,17 +76,8 @@ impl Scalar {
     }
 }
 
-pub(crate) struct Vector {
-    pub name: String,
-    pub element: usize,
-    pub lanes: u16,
-    pub scalable: bool,
-}
-
 pub(crate) struct Types {
     pub scalars: Vec<Scalar>,
-    pub vectors: Vec<Vector>,
-    pub aliases: Vec<(String, usize)>,
     pub exact: BTreeMap<String, TypeSet>,
     pub sets: BTreeMap<String, TypeSet>,
     pub predicates: BTreeMap<String, TypeSet>,
@@ -114,11 +102,7 @@ impl Types {
         }
     }
 
-    pub fn compile(
-        records: &[Record],
-        source: &str,
-        encoding: &TypeEncoding,
-    ) -> Result<Self, Error> {
+    pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
         if let Some(record) = records
             .iter()
             .find(|r| matches!(r.kind.as_str(), "type" | "typeset") && r.name == "Callable")
@@ -129,25 +113,23 @@ impl Types {
                 "Callable is a reserved structural type name",
             ));
         }
-        let declarations = crate::types::resolve::compile(records, source, encoding)?;
+        let declarations = crate::types::resolve::compile(records, source)?;
         let mut types = Self {
             scalars: declarations.scalars,
-            vectors: declarations.vectors,
-            aliases: declarations.aliases,
             exact: declarations.exact,
             sets: BTreeMap::new(),
             predicates: BTreeMap::new(),
             lanes: TypeSet::default(),
             integers: TypeSet::default(),
             scalar_floats: TypeSet::default(),
-            max_exponent: encoding.lanes_log2_max(),
+            max_exponent: veloc_types::MAX_VECTOR_LANES.trailing_zeros(),
         };
         for scalar in &types.scalars {
-            let single = TypeSet::singleton(scalar.code, 0, false);
+            let single = TypeSet::singleton(scalar.ty, 0, false);
             let mut family = single.clone();
             if scalar.ty != Primitive::Ptr {
                 types.lanes.union(&single);
-                family.union(&single.vectors(encoding.lanes_log2_max()));
+                family.union(&single.vectors(veloc_types::MAX_VECTOR_LANES.trailing_zeros()));
             }
             if matches!(scalar.ty, Primitive::Int(_) | Primitive::Bool) {
                 types.integers.union(&family);
@@ -208,7 +190,20 @@ impl Types {
             }
             if matches!(
                 record.name.as_str(),
-                "is_valid" | "is_scalable" | "is_compact" | "is_callable" | "is_owned"
+                "is_valid"
+                    | "is_scalable"
+                    | "is_compact"
+                    | "is_callable"
+                    | "is_owned"
+                    | "is_scalar"
+                    | "is_vector"
+                    | "is_integer"
+                    | "is_float"
+                    | "is_ptr"
+                    | "is_predicate"
+                    | "is_fixed"
+                    | "is_local"
+                    | "is_shared"
             ) {
                 return Err(fields.error("predicate name conflicts with a built-in Type method"));
             }
@@ -311,21 +306,29 @@ mod tests {
         "#,
         )
         .unwrap();
-        for code in 0..=u8::MAX {
+        for code in [
+            Primitive::Int(8),
+            Primitive::Int(16),
+            Primitive::Int(32),
+            Primitive::Int(64),
+            Primitive::Float(32),
+            Primitive::Bool,
+            Primitive::Ptr,
+        ] {
             for exponent in 0..=15 {
                 for scalable in [false, true] {
                     let ty = TypeSet::singleton(code, exponent, scalable);
                     assert_eq!(
                         ty.subset_of(&defs.types.sets["Wide"]),
-                        matches!(code, 3 | 4) && exponent == 0 && !scalable
+                        matches!(code, Primitive::Int(32 | 64)) && exponent == 0 && !scalable
                     );
                     assert_eq!(
                         ty.subset_of(&defs.types.sets["Shapes"]),
-                        code == 3 && exponent == 2
+                        code == Primitive::Int(32) && exponent == 2
                     );
                     assert_eq!(
                         ty.subset_of(&defs.types.sets["AllWideVectors"]),
-                        matches!(code, 3 | 4) && exponent > 0
+                        matches!(code, Primitive::Int(32 | 64)) && exponent > 0
                     );
                 }
             }
@@ -337,7 +340,15 @@ mod tests {
         let types = crate::fixtures::types();
         let mut set = types.sets["Integer"].clone();
         set.retain_shapes(1 << 2); // Fixed vectors with four lanes.
-        assert_eq!(set.0, BTreeMap::from([(1, 4), (2, 4), (3, 4), (4, 4)]));
+        assert_eq!(
+            set.0,
+            BTreeMap::from([
+                (Primitive::Int(8), 4),
+                (Primitive::Int(16), 4),
+                (Primitive::Int(32), 4),
+                (Primitive::Int(64), 4)
+            ])
+        );
         set.intersect(&types.exact["I32X4"]);
         assert_eq!(set, types.exact["I32X4"]);
         set.intersect(&types.exact["I64X2"]);

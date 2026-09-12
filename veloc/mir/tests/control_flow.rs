@@ -64,11 +64,11 @@ fn deeply_nested_callable_signatures_validate_without_recursive_stack_growth() {
         let params = vec![Type::callable(SigId(index + 1), CallableKind::Shared)];
         module
             .signatures
-            .push(Signature::new(params, vec![], CallConv::SystemV));
+            .insert(Signature::new(params, vec![], CallConv::SystemV));
     }
     module
         .signatures
-        .push(Signature::new(vec![], vec![], CallConv::SystemV));
+        .insert(Signature::new(vec![], vec![], CallConv::SystemV));
     module.validate().unwrap();
 }
 
@@ -76,7 +76,7 @@ fn deeply_nested_callable_signatures_validate_without_recursive_stack_growth() {
 fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
     use veloc_mir::{CallConv, CallableKind, ModuleData, SigId, Signature, Type};
     let mut module = ModuleData::default();
-    let sig = module.signatures.push(Signature::new(
+    let sig = module.signatures.insert(Signature::new(
         vec![Type::callable(SigId(1), CallableKind::Shared)],
         vec![],
         CallConv::SystemV,
@@ -85,7 +85,7 @@ fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
     assert!(error.contains("signature sig0, parameter 0"), "{error}");
     assert!(error.contains("unknown callable signature sig1"), "{error}");
 
-    module.signatures.push(Signature::new(
+    module.signatures.insert(Signature::new(
         vec![],
         vec![Type::callable(sig, CallableKind::Owned)],
         CallConv::SystemV,

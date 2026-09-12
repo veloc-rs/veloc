@@ -76,7 +76,7 @@ impl Expr {
         &self,
         types: &Types,
         params: &[Param],
-        values: &[(u8, u32)],
+        values: &[(crate::types::Primitive, u32)],
         inputs: usize,
     ) -> bool {
         // Called only for constraints classified as type-only during checking.
@@ -104,7 +104,7 @@ impl Expr {
 pub(super) enum Value {
     Int(i128),
     Bool(bool),
-    Type(u8, u32),
+    Type(crate::types::Primitive, u32),
     Shape(veloc_types::Shape),
     Bits(veloc_types::TypeBits),
     Sequence(Vec<Value>),
@@ -279,7 +279,7 @@ impl Evaluator<'_> {
                     .evaluation
                     .as_ref()
                     .ok_or(Unknown)?
-                    .evaluate(self.types, code, shape)
+                    .evaluate(code, shape)
                     .ok_or(Invalid)?
             }
             E::Unary(op, value) => match (*op, self.eval(value)?) {
@@ -402,21 +402,21 @@ impl Evaluator<'_> {
 }
 
 /// Convert a checked member of the defs type universe into shared concrete facts.
-/// The scalar code and shape mask are representation adapters, not query semantics.
-fn type_query(types: &Types, query: TypeQuery, code: u8, shape: u32) -> Option<Value> {
-    use veloc_types::Type;
-    let scalar = types.scalars.iter().find(|s| s.code == code)?;
-    let element = scalar.ty;
+/// Logical scalar kinds and shape masks are converted to the shared Rust type.
+fn type_query(query: TypeQuery, code: crate::types::Primitive, shape: u32) -> Option<Value> {
+    let scalar = veloc_types::ScalarType::from_element(code)?;
     let ty = if shape == 0 {
-        Type::scalar(element)
+        scalar.as_type()
     } else {
-        Type::vector(element, 1u16.checked_shl(shape % 16)?, shape >= 16)?
+        scalar
+            .vector(1u16.checked_shl(shape % 16)?, shape >= 16)?
+            .as_type()
     };
     let optional = |value: Option<Value>| Value::Optional(value.map(Box::new));
     Some(match query {
         TypeQuery::ElementBits => optional(ty.element_bits().map(|v| Value::Int(v.into()))),
         TypeQuery::Lanes => optional(ty.lanes().map(|v| Value::Int(v.into()))),
-        TypeQuery::MinBytes => optional(ty.min_bytes().map(|v| Value::Int(v.into()))),
+        TypeQuery::MinBytes => optional(ty.min_size_bytes().map(|v| Value::Int(v.into()))),
         TypeQuery::BitSize => optional(ty.bit_size().map(Value::Bits)),
         TypeQuery::Shape => optional(ty.shape().map(Value::Shape)),
         TypeQuery::IsFixed => Value::Bool(ty.is_fixed()),
@@ -425,13 +425,19 @@ fn type_query(types: &Types, query: TypeQuery, code: u8, shape: u32) -> Option<V
         TypeQuery::IsLocal => Value::Bool(ty.is_local()),
         TypeQuery::IsShared => Value::Bool(ty.is_shared()),
         TypeQuery::IsCompact => Value::Bool(true),
+        TypeQuery::IsScalar => Value::Bool(ty.is_scalar()),
+        TypeQuery::IsVector => Value::Bool(ty.is_vector()),
+        TypeQuery::IsInteger => Value::Bool(ty.is_integer()),
+        TypeQuery::IsFloat => Value::Bool(ty.is_float()),
+        TypeQuery::IsPtr => Value::Bool(ty.is_ptr()),
+        TypeQuery::IsPredicate => Value::Bool(ty.is_predicate()),
     })
 }
 
 impl RustEval {
-    pub(super) fn evaluate(&self, types: &Types, code: u8, shape: u32) -> Option<Value> {
+    pub(super) fn evaluate(&self, code: crate::types::Primitive, shape: u32) -> Option<Value> {
         match self {
-            Self::Query(query) => type_query(types, *query, code, shape),
+            Self::Query(query) => type_query(*query, code, shape),
             // Membership is computed from the same checked set that generates
             // the runtime predicate, including user-defined predicates.
             Self::Predicate(set) => Some(Value::Bool(

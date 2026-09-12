@@ -10,7 +10,6 @@ use std::fmt::Write;
 pub(crate) fn constructor(
     op: &Op,
     format: &Format,
-    _dfg: &str,
     opcode: &str,
     local: impl Fn(&str) -> String,
 ) -> String {
@@ -375,13 +374,7 @@ pub(crate) fn builder(
     if typed {
         params.push_str(", ty: crate::Type");
     }
-    let constructor = crate::generate::packing::constructor(
-        op,
-        format,
-        "self.builder().func_mut().dfg",
-        &op.name,
-        str::to_owned,
-    );
+    let constructor = crate::generate::packing::constructor(op, format, &op.name, str::to_owned);
     let result_types = if let Some(inferred) = inferred {
         let operands = op
             .params
@@ -390,7 +383,7 @@ pub(crate) fn builder(
             .collect::<Vec<_>>();
         inferred.iter().map(|r| match r {
             crate::types::rules::ResultExpr::Property(name) => format!("{name}.ty()"),
-            crate::types::rules::ResultExpr::Exact(ty) => format!("crate::Type::{ty}"),
+            crate::types::rules::ResultExpr::Exact(ty) => format!("crate::types::{ty}"),
             crate::types::rules::ResultExpr::Operand(index) => format!("self.value_type({})", operands[*index].name),
             crate::types::rules::ResultExpr::Element(index) => format!("self.value_type({}).as_vector().expect(\"result element type requires a vector operand\").element_type().as_type()", operands[*index].name),
         }).collect::<Vec<_>>().join(", ")
@@ -446,7 +439,7 @@ mod tests {
                 .iter()
                 .find(|f| f.name == op.format)
                 .unwrap();
-            let packed = constructor(op, format, "dfg", &op.name, str::to_owned);
+            let packed = constructor(op, format, &op.name, str::to_owned);
             assert_eq!(packed.contains("::insert("), pooled, "{packed}");
             let locals = projections(op, format, "dfg", str::to_owned, |value| {
                 format!("{value}.ok_or(invalid)?")
@@ -472,7 +465,7 @@ mod tests {
             .find(|format| format.name == op.format)
             .unwrap();
         assert!(
-            constructor(op, format, "dfg", &op.name, str::to_owned)
+            constructor(op, format, &op.name, str::to_owned)
                 .contains("chain(core::iter::once((default).as_view()))")
         );
         let locals = projections(op, format, "dfg", str::to_owned, |value| {

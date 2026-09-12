@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use std::fmt::Write;
 
+use super::encoding::{BitLayout, Storage};
 use crate::Error;
 use crate::model::{Fields, identifier, list, name};
 use crate::syntax::{Kind, Node, Record};
-use crate::types::encoding::{BitLayout, Storage};
 
 #[derive(Debug)]
 pub(crate) struct Flag {
@@ -98,10 +98,7 @@ pub(crate) struct Builtins {
 impl Builtins {
     pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
         let mut defs = Self::default();
-        for record in records
-            .iter()
-            .filter(|r| Self::is_definition(&r.kind) && !(r.kind == "encoding" && r.name == "Type"))
-        {
+        for record in records.iter().filter(|r| Self::is_definition(&r.kind)) {
             let mut fields = Fields::new(source, record.clone());
             match record.kind.as_str() {
                 "flags" | "encoding" => {

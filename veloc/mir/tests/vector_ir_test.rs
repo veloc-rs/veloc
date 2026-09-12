@@ -6,8 +6,8 @@ use veloc_mir::{CallConv, Linkage, Opcode, VectorMemOptions, builder::ModuleBuil
 fn generated_pool_builders_use_logical_parameters() {
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(
-        vec![Type::PTR, Type::I32X4],
-        vec![Type::I32X4],
+        vec![Type::PTR, veloc_mir::types::I32X4],
+        vec![veloc_mir::types::I32X4],
         CallConv::SystemV,
     );
     let func = module.declare_function("pooled".into(), sig, Linkage::Local);
@@ -304,7 +304,10 @@ fn test_vector_types_properties() {
     assert!(!v4i32.is_scalable());
     assert!(!v4i32.is_predicate());
     assert_eq!(v4i32.lane_count(), 4);
-    assert_eq!(v4i32.element_type(), Type::I32);
+    assert_eq!(
+        v4i32.as_vector().unwrap().element_type().as_type(),
+        Type::I32
+    );
     assert_eq!(v4i32.fixed_size_bytes(), Some(16));
 
     let scalable_v4f32 = Type::F32

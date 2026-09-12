@@ -1027,7 +1027,11 @@ mod tests {
             }
         }
         assert_eq!(TypePair::pack(Type::I32, Type::I64), 0x0403);
-        for ty in [Type::INVALID, Type::I32X4, Type::new_mask(4, true).unwrap()] {
+        for ty in [
+            Type::INVALID,
+            veloc_mir::types::I32X4,
+            Type::new_mask(4, true).unwrap(),
+        ] {
             assert!(std::panic::catch_unwind(|| TypePair::pack(ty, Type::I32)).is_err());
             assert!(std::panic::catch_unwind(|| TypePair::pack(Type::I32, ty)).is_err());
         }

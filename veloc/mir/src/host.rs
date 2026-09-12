@@ -59,17 +59,9 @@ impl Module for Context<'_, ModuleState<'_>> {
         self.module.signature
     }
     fn params(&self, sig: SigId) -> Option<&[Type]> {
-        self.module
-            .data
-            .signatures
-            .get(sig)
-            .map(|s| s.params.as_slice())
+        self.module.data.signatures.get(sig).map(|s| s.params())
     }
     fn returns(&self, sig: SigId) -> Option<&[Type]> {
-        self.module
-            .data
-            .signatures
-            .get(sig)
-            .map(|s| s.returns.as_slice())
+        self.module.data.signatures.get(sig).map(|s| s.returns())
     }
 }

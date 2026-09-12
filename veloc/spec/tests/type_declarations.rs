@@ -1,7 +1,5 @@
 mod common;
 
-use common::BUILTINS;
-
 fn rejected(source: &str, message: &str) {
     let error = std::panic::catch_unwind(|| veloc_opgen::compile(source))
         .expect("bad type declarations must not panic")
@@ -40,7 +38,7 @@ fn malformed_constructors_alias_cycles_and_removed_syntax_are_rejected() {
         ("type A = vector(I32, scalable(3));", "vector lanes"),
         (
             "type A = vector(I32, scalable(2147483648));",
-            "fit Type encoding",
+            "supported type domain",
         ),
         (
             "type A = I32 | I64;",
@@ -62,30 +60,6 @@ fn malformed_constructors_alias_cycles_and_removed_syntax_are_rejected() {
     ] {
         rejected(&common::source(source), message);
     }
-}
-
-#[test]
-fn encoding_bindings_are_separate_checked_and_not_assigned_to_aliases() {
-    for (from, to, message) in [
-        ("I8(1), ", "", "missing scalar encoding for `I8`"),
-        ("I8(1)", "MISSING(1)", "encoding references unknown type"),
-        ("I8(1)", "I32X4(1)", "cannot assign a code to a vector"),
-        ("I8(1)", "I8(1), I8(9)", "duplicate scalar encoding"),
-        ("I8(1)", "I8(0)", "scalar code"),
-        ("I8(1)", "I8(16)", "scalar code"),
-        ("I8(1)", "I8(2)", "scalar code"),
-        ("I8(1)", "I8", "expected scalar encoding"),
-        ("I8(1)", "I8()", "expected scalar encoding"),
-        ("I8(1)", "I8(1, 2)", "expected scalar encoding"),
-        ("I8(1)", "I8(code)", "code must be a number"),
-        ("codes:", "unknown_codes:", "missing `codes`"),
-    ] {
-        rejected(&BUILTINS.replace(from, to), message);
-    }
-    let alias = format!("{}\ntype BYTE = I8;", BUILTINS.replace("I8(1)", "BYTE(1)"));
-    rejected(&alias, "requires name `I8`");
-
-    veloc_opgen::compile(&BUILTINS.replace("I32(3)", "I32(9)")).unwrap();
 }
 
 #[test]

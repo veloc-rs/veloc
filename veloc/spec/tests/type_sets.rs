@@ -1,6 +1,6 @@
 mod common;
 
-use common::{BUILTINS, compile};
+use common::compile;
 
 fn rejected(source: &str, expected: &str) {
     let result =
@@ -87,9 +87,4 @@ fn vector_constants_reject_unrepresentable_or_invalid_types() {
     ] {
         rejected(source, error);
     }
-    let narrow = BUILTINS.replace("lanes_log2(4)", "lanes_log2(3)");
-    let error = veloc_opgen::compile(&format!("{narrow}\ntype V = vector(I32, 256);"))
-        .err()
-        .unwrap();
-    assert!(error.message.contains("vector lanes"));
 }

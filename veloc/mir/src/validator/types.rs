@@ -1,17 +1,17 @@
 //! Module type structure and restrictions on where types may be used.
-use crate::{CallableKind, ModuleData, Result, SigId, Type};
-use alloc::{format, vec::Vec};
+use crate::{CallableKind, ModuleData, Result, Type};
+use alloc::format;
 
 pub(super) fn validate(module: &ModuleData) -> Result<()> {
-    for (id, sig) in &module.signatures {
-        for (role, types) in [("parameter", &sig.params), ("return", &sig.returns)] {
+    for (id, sig) in module.signatures.iter() {
+        for (role, types) in [("parameter", sig.params()), ("return", sig.returns())] {
             for (index, &ty) in types.iter().enumerate() {
                 check_type(module, ty).map_err(|error| {
                     crate::Error::Message(format!("signature {id}, {role} {index}: {error}"))
                 })?;
             }
         }
-        check_returns(&sig.returns)
+        check_returns(sig.returns())
             .map_err(|error| crate::Error::Message(format!("signature {id}: {error}")))?;
     }
     check_cycles(module)?;
@@ -54,54 +54,11 @@ fn check_returns(returns: &[Type]) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum Visit {
-    Unseen,
-    Active,
-    Done,
-}
-
-/// References have already been checked. An explicit DFS stack handles deeply
-/// nested signatures without using the Rust call stack; shared tails are visited
-/// once. Recursion needs an explicit recursive type model, not arbitrary ID cycles.
+/// Shared iterative graph checking handles forward references and deep nesting.
 fn check_cycles(module: &ModuleData) -> Result<()> {
-    let mut marks = vec![Visit::Unseen; module.signatures.len()];
-    let mut stack: Vec<(SigId, usize)> = Vec::new();
-    for (root, _) in &module.signatures {
-        if !matches!(marks[root.0 as usize], Visit::Unseen) {
-            continue;
-        }
-        marks[root.0 as usize] = Visit::Active;
-        stack.push((root, 0));
-        while let Some((id, next)) = stack.last_mut() {
-            let sig = &module.signatures[*id];
-            let ty = if *next < sig.params.len() {
-                sig.params.get(*next)
-            } else {
-                sig.returns.get(*next - sig.params.len())
-            };
-            let Some(&ty) = ty else {
-                marks[id.0 as usize] = Visit::Done;
-                stack.pop();
-                continue;
-            };
-            *next += 1;
-            let Some((target, _)) = ty.as_callable() else {
-                continue;
-            };
-            match marks[target.0 as usize] {
-                Visit::Active => {
-                    return Err(crate::Error::Message(format!(
-                        "signature {id} references active signature {target}: recursive callable signature requires an explicit recursive type"
-                    )));
-                }
-                Visit::Done => {}
-                Visit::Unseen => {
-                    marks[target.0 as usize] = Visit::Active;
-                    stack.push((target, 0));
-                }
-            }
-        }
-    }
-    Ok(())
+    module
+        .signatures
+        .dependency_order()
+        .map(|_| ())
+        .map_err(|error| crate::Error::Message(alloc::format!("{error}")))
 }

@@ -298,7 +298,7 @@ pub(crate) fn validate(
 /// `scalar` distinguishes genuinely scalar signatures from vector-only recipes.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Instance {
-    pub codes: Vec<u8>,
+    pub kinds: Vec<crate::types::Primitive>,
     pub sorts: Vec<Sort>,
     pub scalar: bool,
 }
@@ -342,7 +342,7 @@ fn instances(source: &str, op: &Op, types: &crate::types::Types) -> Result<Vec<I
         };
         domains.push(domain);
     }
-    let mut accepted = std::collections::BTreeMap::<Vec<u8>, bool>::new();
+    let mut accepted = std::collections::BTreeMap::<Vec<crate::types::Primitive>, bool>::new();
     enumerate(&domains, &mut Vec::new(), &mut 0, &mut |values| {
         if !constraints.iter().all(|c| {
             c.condition
@@ -362,20 +362,14 @@ fn instances(source: &str, op: &Op, types: &crate::types::Types) -> Result<Vec<I
         Ok(())
     })
     .map_err(|message| fail(message.into()))?;
-    for (codes, scalar) in accepted {
-        let has_pointer = codes.iter().any(|code| {
-            types
-                .scalars
-                .iter()
-                .any(|s| s.code == *code && s.ty == crate::types::Primitive::Ptr)
-        });
+    for (kinds, scalar) in accepted {
+        let has_pointer = kinds.contains(&crate::types::Primitive::Ptr);
         let widths: &[u16] = if has_pointer { &[32, 64] } else { &[32] };
         for &pointer_width in widths {
-            let sorts = codes
+            let sorts = kinds
                 .iter()
-                .map(|code| {
-                    let scalar = types.scalars.iter().find(|s| s.code == *code).unwrap();
-                    match scalar.ty {
+                .map(|&kind| {
+                    match kind {
                         crate::types::Primitive::Int(bits) => {
                             Ok(Sort::bv(bits as u16).unwrap())
                         }
@@ -401,7 +395,7 @@ fn instances(source: &str, op: &Op, types: &crate::types::Types) -> Result<Vec<I
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
             let instance = Instance {
-                codes: codes.clone(),
+                kinds: kinds.clone(),
                 sorts,
                 scalar,
             };
@@ -423,9 +417,9 @@ enum Domain<'a> {
 
 fn enumerate(
     domains: &[Domain<'_>],
-    values: &mut Vec<(u8, u32)>,
+    values: &mut Vec<(crate::types::Primitive, u32)>,
     visits: &mut usize,
-    accept: &mut impl FnMut(&[(u8, u32)]) -> Result<(), &'static str>,
+    accept: &mut impl FnMut(&[(crate::types::Primitive, u32)]) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     *visits += 1;
     if *visits > 1_000_000 {

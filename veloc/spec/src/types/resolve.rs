@@ -6,8 +6,7 @@ use crate::Error;
 use crate::model::Fields;
 use crate::syntax::{Kind, Node, Record};
 use crate::types::TypeSet;
-use crate::types::encoding::TypeEncoding;
-use crate::types::{Primitive, Scalar, Vector};
+use crate::types::{Primitive, Scalar};
 
 fn primitive_name(ty: Primitive) -> String {
     match ty {
@@ -30,16 +29,10 @@ enum TypeExpr {
 
 pub(crate) struct Declarations {
     pub scalars: Vec<Scalar>,
-    pub vectors: Vec<Vector>,
-    pub aliases: Vec<(String, usize)>,
     pub exact: BTreeMap<String, TypeSet>,
 }
 
-pub(crate) fn compile(
-    records: &[Record],
-    source: &str,
-    encoding: &TypeEncoding,
-) -> Result<Declarations, Error> {
+pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, Error> {
     let mut pending = BTreeMap::new();
     for record in records
         .iter()
@@ -72,98 +65,45 @@ pub(crate) fn compile(
         }
     }
 
-    // Bind structural scalar types to the explicit backend encoding. A primitive
-    // has one code; alternate type names are aliases, not new representations.
-    let mut scalars = Vec::new();
-    let mut indices = BTreeMap::new();
-    let mut codes = encoding.codes.iter().collect::<Vec<_>>();
-    codes.sort_by_key(|(_, entry)| entry.code);
-    for (name, entry) in codes {
-        let (_, ty) = resolved.get(name).ok_or_else(|| {
-            Error::at(
-                source,
-                entry.offset,
-                format!("encoding references unknown type `{name}`"),
-            )
-        })?;
-        let TypeExpr::Scalar(primitive) = *ty else {
-            return Err(Error::at(
-                source,
-                entry.offset,
-                "scalar encoding cannot assign a code to a vector",
-            ));
-        };
-        let canonical = primitive_name(primitive);
-        if *name != canonical.to_ascii_uppercase() {
-            return Err(Error::at(
-                source,
-                entry.offset,
-                format!(
-                    "MIR scalar encoding requires name `{}` for this primitive",
-                    canonical.to_ascii_uppercase()
-                ),
-            ));
-        }
-        indices.insert(primitive, scalars.len());
-        scalars.push(Scalar {
-            name: canonical,
-            code: entry.code,
-            ty: primitive,
-        });
-    }
+    // Canonical logical scalar kinds, independent of backend bit encodings.
+    let primitives = resolved
+        .values()
+        .map(|(_, ty)| match ty {
+            TypeExpr::Scalar(p) => *p,
+            TypeExpr::Vector { element, .. } => *element,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let scalars = primitives
+        .into_iter()
+        .map(|ty| Scalar {
+            name: primitive_name(ty),
+            ty,
+        })
+        .collect::<Vec<_>>();
     let mut exact = BTreeMap::new();
-    let mut aliases = Vec::new();
-    let mut vectors = Vec::new();
     for (name, (offset, ty)) in resolved {
         let primitive = match ty {
             TypeExpr::Scalar(p) => p,
             TypeExpr::Vector { element, .. } => element,
         };
-        let index = *indices.get(&primitive).ok_or_else(|| {
-            Error::at(
-                source,
-                offset,
-                format!(
-                    "missing scalar encoding for `{}`",
-                    primitive_name(primitive).to_ascii_uppercase()
-                ),
-            )
-        })?;
-        let scalar = &scalars[index];
         let set = match ty {
-            TypeExpr::Scalar(_) => {
-                if name != scalar.exact() {
-                    aliases.push((name.clone(), index));
-                }
-                TypeSet::singleton(scalar.code, 0, false)
-            }
+            TypeExpr::Scalar(_) => TypeSet::singleton(primitive, 0, false),
             TypeExpr::Vector {
                 lanes, scalable, ..
             } => {
-                if lanes.trailing_zeros() > encoding.lanes_log2_max() {
+                if lanes > u32::from(veloc_types::MAX_VECTOR_LANES) {
                     return Err(Error::at(
                         source,
                         offset,
-                        "vector lanes must fit Type encoding",
+                        "vector lanes exceed the supported type domain",
                     ));
                 }
-                vectors.push(Vector {
-                    name: name.clone(),
-                    element: index,
-                    lanes: lanes as u16,
-                    scalable,
-                });
-                TypeSet::singleton(scalar.code, lanes.trailing_zeros(), scalable)
+                TypeSet::singleton(primitive, lanes.trailing_zeros(), scalable)
             }
         };
         exact.insert(name, set);
     }
-    Ok(Declarations {
-        scalars,
-        vectors,
-        aliases,
-        exact,
-    })
+    Ok(Declarations { scalars, exact })
 }
 
 fn resolve(

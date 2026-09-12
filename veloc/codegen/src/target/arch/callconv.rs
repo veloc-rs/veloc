@@ -39,7 +39,12 @@ impl CallConv {
         arch: TargetArch,
         sig: &Signature,
     ) -> Result<CallConvPlan, crate::error::Error> {
-        self.plan_types(arch, &sig.params, &sig.returns, AbiStackBase::IncomingArgs)
+        self.plan_types(
+            arch,
+            sig.params(),
+            sig.returns(),
+            AbiStackBase::IncomingArgs,
+        )
     }
 
     /// 为调用点构建 ABI 计划。
@@ -527,7 +532,11 @@ mod tests {
     #[test]
     fn test_x86_64_systemv_vector_plan_uses_xmm_registers() {
         let plan = CallConv::SystemV
-            .plan_callsite(TargetArch::X86_64, &[Type::F32X4], &[Type::F64X2])
+            .plan_callsite(
+                TargetArch::X86_64,
+                &[veloc_mir::types::F32X4],
+                &[veloc_mir::types::F64X2],
+            )
             .unwrap();
 
         assert_eq!(plan.args[0].single_reg(), Some(Reg(16)));

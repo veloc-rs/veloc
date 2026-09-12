@@ -103,7 +103,7 @@ MIR groups related runtime code under one module boundary:
   `inst/storage.rs` owns physical instruction storage.
 - `function/mod.rs` owns functions, with `edit.rs` for structural editing and
   `layout.rs` for block order, instruction placement and CFG edges.
-- `types/signature.rs` owns both signatures and calling conventions.
+- `veloc-types` owns types, signatures and calling conventions. MIR\'s `types`\n  module re-exports them alongside MIR entity handles and generated constants.
 - `dfg` remains independent; `builder` and `validator` serve both functions and
   modules and remain top-level modules.
 
@@ -194,13 +194,18 @@ Bound functions are trusted pure, deterministic, read-only operations. Context
 capabilities still use host interfaces; these declarations do not inject module
 state or turn arbitrary Rust code into an offline evaluator.
 
-`veloc-types` is a dependency-free, no_std concrete-facts kernel. MIR decodes its
-generated compact representation into those facts; opgen constructs the same
-facts from checked scalar definitions and vector shapes. Both use the same
-bit/byte-size and shape operations, including scalable sizes and absent pointer
-widths. Nominal scalar codes and module-owned callable signature identities stay
-in their owners; equal facts do not establish IR type equality. This separation
-avoids a build cycle between opgen and MIR's generated type encoding.
+The no_std `veloc-types` crate owns the shared `Type`, checked scalar/vector
+views, physical encoding and size queries. MIR re-exports these types; opgen uses
+the same constructors and queries directly. There is no second facts-only Type
+or build dependency from veloc-types back to opgen.
+
+Signature stores are context-local and append-only. Each signature stores its
+parameters and returns in one buffer; the interning index stores only IDs.
+Borrowed interning hits do not allocate a signature. Callable types retain a
+direct signature ID and ownership tag. The interpreter imports each module's
+signature graph once into a program-wide canonical store; runtime comparisons
+use remapped IDs instead of walking nested signatures. Raw IDs from different
+stores must never be compared without remapping or structural comparison.
 
 Offline Rust-call adapters only convert arguments/results and invoke that kernel.
 Predicate adapters use the same exact sets as generated runtime predicates,
@@ -360,39 +365,22 @@ Unlike flag sets, packed structs do not expose `union` or `contains`.
 
 Rust implements semantic wrappers such as `MemFlags::with_alignment`: validating
 power-of-two alignment, converting to log2 and conservatively clamping to the
-declared field limit. `Type` retains its specialized Rust projection and scalar
-code table while sharing the physical layout parser and checks.
+declared field limit. Type encoding is instead an implementation detail of
+`veloc-types`, not a configurable definition-language encoding.
 
-## Type encoding
+## Shared type representation
 
-```text
-encoding Type {
-    storage: u16,
-    fields: [scalar(4), lanes_log2(4), scalable(1)],
-    codes: [I8(1), I16(2), I32(3), I64(4), F32(5), F64(6), BOOL(7), PTR(8)]
-}
-```
+`Type` is an eight-byte tagged value. Scalars and vectors use a compact u16
+payload; callables use a disjoint ownership tag and a context-local signature
+ID. Scalar codes, masks, shifts, construction and decoding live together in Rust.
+Invalid or reserved raw encodings are rejected.
 
-Fields are packed in declaration order, from low to high bits. Unused high bits
-of this compact payload are reserved. `Type` itself is a tagged u64: structural
-callable types use a disjoint tag plus a module-interned signature, and do not
-have a u16 raw encoding. This generates the storage declaration, layout documentation,
-masks, shifts, used-bit mask and lane-exponent limit. Scalar code validation uses
-the same field width; it does not independently assume codes fit in four bits.
-Type construction and decoding consume these generated values, including a
-nonzero scalar offset and narrower lane-count fields. Named vectors are checked
-against this layout before generation and use the checked runtime constructor.
-Field accessors (`element_code`, `lanes_log2`, `is_scalable`, `element_type`) and
-raw encoding access are generated with the layout. Raw decoding uses those
-accessors rather than repeating the unpacking expressions. Vector construction,
-legality checks and target-independent size calculations remain shared Rust code.
-
-The current MIR adapter requires `u16` storage, scalar codes fitting `u8`, lane
-counts fitting `u16`, and a one-bit scalable flag. Unknown, missing, duplicate,
-zero-width and overflowing fields are definition errors. Changing the layout
-changes raw encodings; the checked-in layout preserves the existing representation.
-Vector legality and type semantics remain Rust algorithms, separate from this
-MIR-specific physical representation. HIR and LIR need not share this layout.
+Defs declare logical scalar/vector types, aliases and exact sets. Generated
+aliases and named vectors are module constants (`types::I32X4`); custom
+predicates are free functions (`types::is_chosen(ty)`). They do not generate
+inherent implementations on the shared Type. Standard classification methods
+belong to Rust. Ordinary `encoding` declarations still describe packed data
+such as memory flags, but there is no specialized `encoding Type` mechanism.
 
 Callable operations use ordinary signatures, `move` parameters, `verify`
 predicates and explicit metadata. Their definitions declare `MAY_TRAP`, and tail
@@ -489,7 +477,7 @@ Passing pointers or vector types to `vectors()` is an error, not silent filterin
 
 Sets preserve both scalar identity and vector shape. `{I32, I64}` does not include
 I8/I16 or any vectors; `{I32X4}` does not include I32X8 or scalable I32 vectors.
-The build-time model maps scalar codes to shape bitsets; generated runtime checks
+The build-time model maps logical scalar kinds to shape bitsets; generated runtime checks
 use integer masks and matches, not heap-allocated sets. These exact sets also drive
 definition-time shape constraints, bitvector semantic compatibility and floating
 text checks. There is no separate seven-domain vocabulary or name allowlist.
@@ -528,20 +516,17 @@ inference, semantic checks and text codecs inspect resolved sets, not set names.
 ## Type predicates
 
 ```text
-predicate is_integer = Integer;
-predicate is_scalar = Scalar | PTR;
-predicate is_predicate = vectors(BOOL);
 predicate is_wide = (I32 | I64) & Scalar;
 ```
 
-Predicates generate public `const fn` methods on `Type`. They use the same exact
+Predicates generate public `const fn` functions accepting `Type`. They use the same exact
 set-expression compiler and membership projection as operation constraints, but
 emit direct checks instead of calling another predicate or a runtime set object.
 All invalid encodings return false, including reserved bits and illegal shapes.
 In particular, `Type::is_scalar()` includes pointers; the `Scalar` set does not.
 
-Predicate names must be snake_case starting with `is_`. `is_valid`, `is_scalable`
-and `is_fixed` are reserved validity/physical-shape APIs, not set aliases.
+Predicate names must be snake_case starting with `is_`. Standard Rust Type
+methods are reserved; custom predicates do not redefine their semantics.
 Predicates may forward-reference sets and exact types, but are not themselves
 type-set names. Empty sets, unknown references and duplicate names are definition
 errors. Defining a predicate does not change type construction or layout legality.
@@ -571,12 +556,9 @@ Set names are not restricted to `OpTraits`. The old standalone `trait`
 and `region` declarations are no longer supported. Memory effects do not use
 resource flag sets; `MemoryEffects` is a set of behaviors, not resources.
 
-Flag sets and `encoding Type` use the same checked storage and bit-layout code
-for widths, masks, occupied bits and overlap detection. Flags are one-bit fields
-at explicit positions; Type packs multi-bit fields in declaration order. Their
-meaning and generated APIs remain separate: Type is not a set, and its raw APIs
-still require `u16`. Its scalar-code and vector-shape constraints remain in the
-Type adapter.
+Flag sets and ordinary packed encodings share checked storage and bit-layout
+code for widths, masks, occupied bits and overlap detection. Flags use explicit
+one-bit positions; encodings pack multi-bit fields in declaration order.
 
 ### Typed operation metadata
 

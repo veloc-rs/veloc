@@ -75,7 +75,7 @@ impl Interpreter {
         args: &[InterpreterValue],
     ) -> Result<&'p [Type]> {
         let sig = program.signature(module, function)?;
-        if sig.params.len() != args.len() {
+        if sig.params().len() != args.len() {
             return Err(crate::Error::Message("argument count mismatch".into()));
         }
         if let Some(identity) = &self.callables.program
@@ -87,7 +87,7 @@ impl Interpreter {
             ));
         }
         self.callables.program = Some(program.identity.clone());
-        for (&arg, &ty) in args.iter().zip(&sig.params) {
+        for (&arg, &ty) in args.iter().zip(sig.params()) {
             if ty.is_callable()
                 && (!self.callables.check(program, arg, module, ty)
                     || !self.callables.external.contains(&arg.0)
@@ -97,7 +97,7 @@ impl Interpreter {
             }
         }
         let mut moved = HashSet::new();
-        for (&arg, &ty) in args.iter().zip(&sig.params) {
+        for (&arg, &ty) in args.iter().zip(sig.params()) {
             if ty.is_owned() && !moved.insert(arg.0) {
                 return Err(crate::Error::Message(
                     "one-shot argument passed more than once".into(),
@@ -111,7 +111,7 @@ impl Interpreter {
             .next_scope
             .checked_add(1)
             .expect("scope identity exhausted");
-        Ok(&sig.returns)
+        Ok(sig.returns())
     }
 
     pub(super) fn end_callables(&mut self, results: &[Type], success: bool) {
@@ -339,7 +339,7 @@ impl Interpreter {
                     .signature(module, function)
                     .map_err(|_| DispatchExit::InvalidHostCall)?;
                 let args = self.args_buffer.len();
-                let results = sig.returns.len();
+                let results = sig.returns().len();
                 self.args_buffer
                     .resize(args.max(results).max(1), InterpreterValue::none());
                 program

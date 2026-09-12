@@ -15,7 +15,7 @@ predicate is_bad = vectors(PTR);
 
 // ----- invalid-sets-names-and-method-collisions-are-diagnosed-4
 // run: opgen-error
-// check: duplicate predicate `is_scalar`
+// check: predicate name conflicts with a built-in Type method
 predicate is_scalar = Scalar;
 
 // ----- invalid-sets-names-and-method-collisions-are-diagnosed-5

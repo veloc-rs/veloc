@@ -39,14 +39,14 @@ impl Plan {
                     continue;
                 }
                 let scalars = instance
-                    .codes
+                    .kinds
                     .iter()
                     .map(|code| {
                         defs.types
                             .scalars
                             .iter()
-                            .position(|s| s.code == *code)
-                            .expect("checked scalar code")
+                            .position(|s| s.ty == *code)
+                            .expect("checked scalar kind")
                     })
                     .collect::<Vec<_>>();
                 let Some(variants) = scalars

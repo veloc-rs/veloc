@@ -25,4 +25,9 @@ pub use symbol::*;
 pub use use_def::UseDefChain;
 pub use validation::TypeError;
 pub use veloc_mir::Value as ValueId;
-pub use veloc_mir::{Type, TypeBits};
+pub use veloc_types::{Type, TypeBits};
+
+pub mod types {
+    use veloc_types::{ScalarType, Type};
+    include!(concat!(env!("OUT_DIR"), "/types.rs"));
+}

@@ -291,7 +291,7 @@ mod tests {
                 .dfg
                 .replace_inst(inst, |writer: crate::InstWriter<'_>| {
                     writer.vconst(crate::VectorConst::dense(
-                        Type::I32X4.as_vector().unwrap(),
+                        crate::types::I32X4.as_vector().unwrap(),
                         crate::inst::ConstantPoolId(u32::MAX),
                     ))
                 });

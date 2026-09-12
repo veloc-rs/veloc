@@ -23,6 +23,9 @@ pub struct Program {
     hosts: PrimaryMap<HostFuncId, HostFunction>,
     /// Loaded modules
     modules: PrimaryMap<ModuleId, RuntimeModule>,
+    /// Canonical signatures for constant-time cross-module call checks.
+    signatures: veloc_types::Signatures,
+    host_signatures: PrimaryMap<HostFuncId, Option<veloc_mir::SigId>>,
     /// Stable opaque references used by indirect calls.
     func_refs: Vec<CallTarget>,
     /// Reference handle assigned to each host function.
@@ -44,15 +47,15 @@ impl Program {
         signature: veloc_mir::SigId,
         target: CallTarget,
     ) -> bool {
-        let source = &self.modules[module].ir;
+        let Some(&source) = self.modules[module].signatures.get(signature.0 as usize) else {
+            return false;
+        };
         match target {
             CallTarget::Bytecode(module, func) => {
-                let target = &self.modules[module].ir;
-                source.signature_eq(signature, target, target.functions[func].signature)
+                let target = &self.modules[module];
+                source == target.signatures[target.ir.functions[func].signature.0 as usize]
             }
-            CallTarget::Host(host) => {
-                source.get_signature(signature) == self.hosts[host].signature()
-            }
+            CallTarget::Host(host) => self.host_signatures[host] == Some(source),
         }
     }
     pub(crate) fn type_eq(
@@ -65,7 +68,21 @@ impl Program {
         let (Some(a), Some(b)) = (self.modules.get(a), self.modules.get(b)) else {
             return false;
         };
-        a.ir.type_eq(lhs, &b.ir, rhs)
+        if lhs.is_compact() || rhs.is_compact() {
+            return lhs == rhs;
+        }
+        let (Some((lhs, left_kind)), Some((rhs, right_kind))) =
+            (lhs.as_callable(), rhs.as_callable())
+        else {
+            return false;
+        };
+        let (Some(lhs), Some(rhs)) = (
+            a.signatures.get(lhs.0 as usize),
+            b.signatures.get(rhs.0 as usize),
+        ) else {
+            return false;
+        };
+        left_kind == right_kind && lhs == rhs
     }
     pub(crate) fn signature(
         &self,
@@ -112,6 +129,8 @@ impl Program {
             hosts_by_name: HashMap::new(),
             hosts: PrimaryMap::new(),
             modules: PrimaryMap::new(),
+            signatures: veloc_types::Signatures::default(),
+            host_signatures: PrimaryMap::new(),
             func_refs: Vec::new(),
             host_refs: PrimaryMap::new(),
         }
@@ -181,7 +200,16 @@ impl Program {
 
     /// Register a host function. Its signature is used to validate links and calls.
     pub fn register_host(&mut self, name: String, host: HostFunction) -> HostFuncId {
+        // Host signatures have no module context for nested callable identities.
+        // Such calls remain rejected by the ownership-aware ABI checks.
+        let sig = host.signature();
+        let signature = sig.types().iter().all(|ty| ty.is_compact()).then(|| {
+            self.signatures
+                .intern(sig.params(), sig.returns(), sig.call_conv)
+        });
         let id = self.hosts.push(host);
+        let sig_id = self.host_signatures.push(signature);
+        debug_assert_eq!(id, sig_id);
         let reference = self.push_func_ref(CallTarget::Host(id));
         let ref_id = self.host_refs.push(reference);
         debug_assert_eq!(id, ref_id);
@@ -315,11 +343,7 @@ impl<'a> ProgramBuilder<'a> {
         for (id, function) in &self.module.functions {
             let sig = self.module.get_signature(function.signature);
             if matches!(self.targets[id], Some(CallTarget::Host(_)))
-                && sig
-                    .params
-                    .iter()
-                    .chain(&sig.returns)
-                    .any(|ty| ty.is_callable())
+                && sig.types().iter().any(|ty| ty.is_callable())
             {
                 return Err(Error::Message(
                     "host callable imports require an ownership-aware ABI lowering".into(),
@@ -361,7 +385,13 @@ impl<'a> ProgramBuilder<'a> {
             debug_assert_eq!(func, ref_id);
         }
 
+        // The module has been validated; import resolves nested signatures once.
+        let signatures = program
+            .signatures
+            .import(&module.signatures)
+            .expect("validated signature graph");
         let actual = program.modules.push(RuntimeModule {
+            signatures,
             ir: module,
             compiled,
             call_targets,

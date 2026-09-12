@@ -924,7 +924,7 @@ mod tests {
             assert_eq!(cx.module.functions.len(), 1);
             let function = &cx.module.functions[FuncId(0)];
             assert_eq!(
-                cx.module.signatures[function.signature].returns,
+                cx.module.signatures[function.signature].returns(),
                 [Type::I32]
             );
         });
@@ -1044,8 +1044,8 @@ mod tests {
             parser.signature(&mut Cursor::new(" (i32)->i32 ")).unwrap(),
             sig
         );
-        assert_eq!(parser.module.signatures[sig].params, [Type::I32]);
-        assert_eq!(parser.module.signatures[sig].returns, [Type::I32]);
+        assert_eq!(parser.module.signatures[sig].params(), [Type::I32]);
+        assert_eq!(parser.module.signatures[sig].returns(), [Type::I32]);
         assert!(
             parser
                 .signature(&mut Cursor::new(": (i32) -> i32"))

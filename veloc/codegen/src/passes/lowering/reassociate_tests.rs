@@ -100,7 +100,7 @@ fn shared_subexpressions_are_not_duplicated() {
 
 #[test]
 fn leaves_with_multiple_definitions_and_non_integer_types_are_untouched() {
-    for ty in [Type::I32, Type::F32, Type::I32X4] {
+    for ty in [Type::I32, Type::F32, veloc_mir::types::I32X4] {
         let mut f = function();
         let a = f.alloc_vreg(ty);
         let b = f.alloc_vreg(ty);

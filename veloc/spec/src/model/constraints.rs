@@ -230,7 +230,7 @@ fn emit_body(
             .expect("checked signature arguments")
             .name];
         let args = args.strip_prefix('*').unwrap_or(args);
-        writeln!(body, "let signature = _module.signatures.get({id}).ok_or_else(|| {error})?;\nself.validate_values({:?}, \"value\", {args}, signature.params.iter().copied())?;\nself.validate_values({:?}, \"result\", self.dfg.inst_results(_inst), signature.returns.iter().copied())?;", op.mnemonic, op.mnemonic).unwrap();
+        writeln!(body, "let signature = _module.signatures.get({id}).ok_or_else(|| {error})?;\nself.validate_values({:?}, \"value\", {args}, signature.params().iter().copied())?;\nself.validate_values({:?}, \"result\", self.dfg.inst_results(_inst), signature.returns().iter().copied())?;", op.mnemonic, op.mnemonic).unwrap();
         storage_used = true;
     }
     // table(cases, default) requires a default in its physical sequence.

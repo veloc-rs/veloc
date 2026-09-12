@@ -120,10 +120,10 @@ impl Checker<'_> {
             }
             let params = &layout.blocks[entry].params;
             // Types are checked later, once all parameter handles are valid.
-            if params.len() != signature.params.len() {
+            if params.len() != signature.params().len() {
                 return func.fail(format!(
                     "entry parameter count mismatch: expected {}, got {}",
-                    signature.params.len(),
+                    signature.params().len(),
                     params.len()
                 ));
             }
@@ -241,7 +241,7 @@ impl Checker<'_> {
         for (&param, &expected) in func.layout.blocks[entry]
             .params
             .iter()
-            .zip(&signature.params)
+            .zip(signature.params())
         {
             if func.dfg.value_type(param) != expected {
                 return func.fail(format!(

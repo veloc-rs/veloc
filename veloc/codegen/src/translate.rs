@@ -119,9 +119,9 @@ impl<'a> IRTranslator<'a> {
                 || self
                     .module
                     .get_signature(func.signature)
-                    .params
+                    .params()
                     .iter()
-                    .chain(&self.module.get_signature(func.signature).returns)
+                    .chain(self.module.get_signature(func.signature).returns())
                     .any(|ty| ty.is_callable())
             {
                 return Err(Error::message(

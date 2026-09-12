@@ -45,16 +45,7 @@ type JumpTable = rust("crate::inst::Successors") {
     field: list(BlockCall),
 }
 
-// The compact scalar/vector payload of Type, packed least significant bit first.
-// Structural callable types use a disjoint tag and module signature ID;
-// they never pass through this u16 bytecode encoding. Scalar code zero is invalid.
-encoding Type {
-    storage: u16,
-    fields: [scalar(4), lanes_log2(4), scalable(1)],
-    codes: [I8(1), I16(2), I32(3), I64(4), F32(5), F64(6), BOOL(7), PTR(8)]
-}
-
-// Type meanings are independent of their scalar codes above.
+// Concrete types are logical declarations; Rust owns their representation.
 // Pointer width is supplied by the target.
 type I8 = int(8);
 type I16 = int(16);
@@ -83,12 +74,3 @@ typeset Integer = ScalarInteger | vectors(ScalarInteger);
 typeset Float = ScalarFloat | vectors(ScalarFloat);
 typeset Number = Integer | Float;
 typeset Vector = vectors(Scalar);
-
-// Public Type predicates. Unlike the Scalar set, is_scalar includes pointers.
-// These are evaluated as exact type sets, not executable Rust expressions.
-predicate is_scalar = Scalar | PTR;
-predicate is_vector = Vector;
-predicate is_integer = Integer;
-predicate is_float = Float;
-predicate is_ptr = PTR;
-predicate is_predicate = vectors(BOOL);

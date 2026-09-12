@@ -17,6 +17,8 @@ use veloc_mir::{FuncId, Module};
 pub(crate) struct RuntimeModule {
     /// The original IR module
     ir: Module,
+    /// Local signature IDs remapped into the immutable program type context.
+    signatures: alloc::vec::Vec<veloc_mir::SigId>,
     /// Compiled bytecode functions (None for imports)
     compiled: PrimaryMap<FuncId, Option<Arc<CompiledFunction>>>,
     /// Explicit target for every direct call slot.

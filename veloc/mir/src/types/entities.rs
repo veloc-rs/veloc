@@ -60,11 +60,6 @@ entity_impl!(ModuleId, "module");
 pub struct FuncId(pub u32);
 entity_impl!(FuncId, "func");
 
-/// A reference to a signature identifier.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SigId(pub u32);
-entity_impl!(SigId, "sig");
-
 /// A reference to a variable (SSA variable used in function building).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Variable(pub u32);

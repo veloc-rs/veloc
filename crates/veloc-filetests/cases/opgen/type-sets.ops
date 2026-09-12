@@ -62,7 +62,7 @@ type V = vector(I32, 3);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-7
 // run: opgen-error
-// check: vector lanes must fit Type encoding
+// check: vector lanes exceed the supported type domain
 type V = vector(I32, 65536);
 
 // ----- vector-constants-reject-unrepresentable-or-invalid-types-8

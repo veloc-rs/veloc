@@ -3,3 +3,6 @@ name = "veloc-types"
 version = "0.1.0"
 edition = { workspace = true }
 rust-version = { workspace = true }
+
+[dependencies]
+hashbrown = { workspace = true, features = ["ahash", "inline-more"] }

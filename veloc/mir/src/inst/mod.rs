@@ -136,7 +136,7 @@ mod tests {
                     .result_types(&dfg, &module, &[Type::F32])
                     .unwrap()
                     .as_slice(),
-                module.signatures[signature].returns.as_slice()
+                module.signatures[signature].returns()
             );
         }
         assert!(!Opcode::Return.has_signature());

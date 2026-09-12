@@ -497,7 +497,13 @@ impl Operands {
                 > 1;
             writeln!(out, "Some(GenericOpcode::{}) => {{", op.name).unwrap();
             if !f.fields.iter().any(|(_, r)| r.variable()) {
-                writeln!(out, "if self.operands.len() != {} {{ return Err(self.decode_error(\"invalid {} operand count\")); }}", op.operands().arity, f.name).unwrap();
+                let count = op.operands().arity;
+                let invalid = if count == 0 {
+                    "!self.operands.is_empty()".to_owned()
+                } else {
+                    format!("self.operands.len() != {count}")
+                };
+                writeln!(out, "if {invalid} {{ return Err(self.decode_error(\"invalid {} operand count\")); }}", f.name).unwrap();
             }
             writeln!(out, "InstView::{}({}Inst {{", f.name, f.name).unwrap();
             if shared {

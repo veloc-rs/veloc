@@ -29,8 +29,7 @@ impl ModuleBuilder {
         ret: Vec<Type>,
         call_conv: CallConv,
     ) -> SigId {
-        let sig = Signature::new(params, ret, call_conv);
-        self.data.intern_signature(sig)
+        self.data.signatures.intern(&params, &ret, call_conv)
     }
 
     pub fn get_func_id(&self, name: &str) -> Option<FuncId> {
@@ -109,8 +108,8 @@ impl<'a> FunctionBuilder<'a> {
         self.seal_block(entry);
 
         let sig_id = self.func().signature;
-        for index in 0..self.module.signatures[sig_id].params.len() {
-            let ty = self.module.signatures[sig_id].params[index];
+        for index in 0..self.module.signatures[sig_id].params().len() {
+            let ty = self.module.signatures[sig_id].params()[index];
             self.add_block_param(entry, ty);
         }
         entry
@@ -491,7 +490,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
 
     pub fn i8x16const(&mut self, values: [i8; 16]) -> Value {
         let data = values.iter().map(|&v| v as u8).collect();
-        self.dense_const(data, Type::I8X16)
+        self.dense_const(data, crate::types::I8X16)
     }
 
     pub fn i16x8const(&mut self, values: [i16; 8]) -> Value {
@@ -499,7 +498,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.dense_const(data, Type::I16X8)
+        self.dense_const(data, crate::types::I16X8)
     }
 
     pub fn i32x4const(&mut self, values: [i32; 4]) -> Value {
@@ -507,7 +506,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.dense_const(data, Type::I32X4)
+        self.dense_const(data, crate::types::I32X4)
     }
 
     pub fn i64x2const(&mut self, values: [i64; 2]) -> Value {
@@ -515,7 +514,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_le_bytes());
         }
-        self.dense_const(data, Type::I64X2)
+        self.dense_const(data, crate::types::I64X2)
     }
 
     pub fn f32x4const(&mut self, values: [f32; 4]) -> Value {
@@ -523,7 +522,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_bits().to_le_bytes());
         }
-        self.dense_const(data, Type::F32X4)
+        self.dense_const(data, crate::types::F32X4)
     }
 
     pub fn f64x2const(&mut self, values: [f64; 2]) -> Value {
@@ -531,7 +530,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         for &v in &values {
             data.extend_from_slice(&v.to_bits().to_le_bytes());
         }
-        self.dense_const(data, Type::F64X2)
+        self.dense_const(data, crate::types::F64X2)
     }
 
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Inst {

@@ -123,7 +123,7 @@ fn emit_results(signature: &TypeDef, instructions: &mut String, property: impl F
         };
         let expressions = results.iter().map(|r| match r {
                 ResultExpr::Property(name) => property(name),
-                ResultExpr::Exact(ty) => format!("Type::{ty}"),
+                ResultExpr::Exact(ty) => format!("crate::types::{ty}"),
                 ResultExpr::Operand(index) => format!("*{}.filter(|ty| ty.is_valid()).ok_or(\"result type requires a known operand type\")?", operand(*index)),
                 ResultExpr::Element(index) => format!("{}.and_then(|ty| ty.as_vector()).ok_or(\"result element type requires a known vector operand\")?.element_type().as_type()", operand(*index)),
             }).collect::<Vec<_>>().join(", ");
@@ -156,7 +156,7 @@ fn signature_results(op: &Op, out: &mut String) {
             matches!(binding, Binding::Name(param) if param == name).then_some(field)
         })
         .expect("checked signature source storage");
-    writeln!(out, "(crate::Opcode::{}, Self::{} {{ {field}: source, .. }}) => {{\nlet sig = {id};\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(&sig.returns))\n}},", op.name, op.format).unwrap();
+    writeln!(out, "(crate::Opcode::{}, Self::{} {{ {field}: source, .. }}) => {{\nlet sig = {id};\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(sig.returns()))\n}},", op.name, op.format).unwrap();
 }
 
 /// Build-time expressions, never emitted as runtime descriptors.
@@ -221,7 +221,7 @@ fn check_list(
             Pattern::Set(set) | Pattern::Property(_, set) => {
                 format!("{}.accepts({value})", sets.reference(set))
             }
-            Pattern::Exact(ty) => format!("{value} == Type::{ty}"),
+            Pattern::Exact(ty) => format!("{value} == crate::types::{ty}"),
             Pattern::Bind(var, set) => {
                 let set = format!("{}.accepts({value})", sets.reference(set));
                 if let Some(bound) = bindings.get(var) {

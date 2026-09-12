@@ -102,9 +102,9 @@ impl<'a> InstPrinter<'a> {
 
     fn fmt_signature(&self, f: &mut dyn Write, sig: &Signature) -> Result {
         f.write_char('(')?;
-        self.fmt_types(f, &sig.params)?;
+        self.fmt_types(f, sig.params())?;
         f.write_str(") -> ")?;
-        self.fmt_ret_types(f, &sig.returns)
+        self.fmt_ret_types(f, sig.returns())
     }
 
     pub(super) fn fmt_func_ref(&self, f: &mut dyn Write, id: FuncId) -> Result {
@@ -211,9 +211,9 @@ impl<'a> FuncPrinter<'a> {
     fn fmt_signature(&self, f: &mut dyn Write) -> Result {
         write!(f, "{} function {}(", self.func.linkage, self.func.name)?;
         let sig = &self.module.signatures[self.func.signature];
-        self.inst_printer.fmt_types(f, &sig.params)?;
+        self.inst_printer.fmt_types(f, sig.params())?;
         f.write_str(") -> ")?;
-        self.inst_printer.fmt_ret_types(f, &sig.returns)
+        self.inst_printer.fmt_ret_types(f, sig.returns())
     }
 
     fn fmt_block(&self, f: &mut dyn Write, block: crate::Block) -> Result {

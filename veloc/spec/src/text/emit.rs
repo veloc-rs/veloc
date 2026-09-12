@@ -143,7 +143,7 @@ pub(super) fn parse(
     writeln!(
         out,
         "Ok(self.func.dfg.create_inst({}))",
-        crate::generate::packing::constructor(op, format, "self.func.dfg", opcode, |name| {
+        crate::generate::packing::constructor(op, format, opcode, |name| {
             let value = local(op, name);
             if op
                 .params

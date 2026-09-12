@@ -1,6 +1,6 @@
 mod common;
 
-use common::{BUILTINS, compile};
+use common::compile;
 
 const ADD: &str = r#"
 struct Pair { args: values(2) }
@@ -21,16 +21,9 @@ fn rejected(source: &str, expected: &str) {
 
 #[test]
 fn builtin_references_are_explicit_not_hidden_mir_defaults() {
-    let encoding = "encoding Type { storage: u16, fields: [scalar(4), lanes_log2(4), scalable(1)], codes: [] }";
+    rejected(ADD, "unknown type or typeset `ScalarInteger`");
     rejected(
-        &format!("{encoding}\n{ADD}"),
-        "unknown type or typeset `ScalarInteger`",
-    );
-    rejected(
-        &format!(
-            "{}\nstruct Test {{}} op Test() -> (result: I32) {{ mnemonic: \"test\", storage: Test {{}} }}",
-            encoding
-        ),
+        "struct Test {} op Test() -> (result: I32) { mnemonic: \"test\", storage: Test {} }",
         "unbound type variable `I32`",
     );
 }
@@ -39,7 +32,7 @@ fn builtin_references_are_explicit_not_hidden_mir_defaults() {
 fn set_unions_drive_both_generated_contracts_and_semantic_checks() {
     let output = compile(ADD).unwrap();
     assert!(output.type_rules.contains("C::Bits"));
-    assert!(output.opcodes.contains("1..=4 => 0x00000001,"));
+    assert!(output.opcodes.contains("veloc_types::Scalar::Int(32)"));
     let mixed = ADD.replace("= ScalarInteger;", "= ScalarInteger | ScalarFloat;");
     rejected(
         &common::source(&mixed),
@@ -94,27 +87,6 @@ fn sets_reject_cycles_unknowns_duplicates_and_shadowing() {
     ] {
         rejected(&common::source(defs), error);
     }
-}
-
-#[test]
-fn compact_scalar_codes_and_adapter_contracts_are_checked() {
-    for (from, to, error) in [
-        ("I8(1)", "I8(0)", "scalar code"),
-        ("I8(1)", "I8(16)", "scalar code"),
-        ("I8(1)", "I8(2)", "scalar code"),
-        ("int(8)", "int(7)", "unsupported scalar"),
-        ("float(32)", "float(target)", "expected a number"),
-        ("ptr()", "ptr(64)", "expects no arguments"),
-        ("type I8", "type BYTE", "unknown type `I8`"),
-        ("int(8)", "int(16)", "requires name `I16`"),
-    ] {
-        rejected(&BUILTINS.replace(from, to), error);
-    }
-    let output = veloc_opgen::compile(&BUILTINS).unwrap();
-    assert!(output.types.contains("I8 = 1,"));
-    assert!(output.types.contains("PTR = 8,"));
-    assert!(output.types.contains("pub const BOOL: Self"));
-    assert!(output.types.contains("\"bool\" => Some(Self::BOOL)"));
 }
 
 #[test]

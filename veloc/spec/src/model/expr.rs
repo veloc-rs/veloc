@@ -205,34 +205,26 @@ impl Expr {
             self
         }
     }
-    fn substitute(&self, args: &[Expr], next: &mut usize, types: &crate::types::Types) -> Self {
-        self.expand(args, &mut BTreeMap::new(), next, types)
+    fn substitute(&self, args: &[Expr], next: &mut usize) -> Self {
+        self.expand(args, &mut BTreeMap::new(), next)
     }
 
-    fn expand(
-        &self,
-        args: &[Expr],
-        locals: &mut BTreeMap<usize, usize>,
-        next: &mut usize,
-        types: &crate::types::Types,
-    ) -> Self {
+    fn expand(&self, args: &[Expr], locals: &mut BTreeMap<usize, usize>, next: &mut usize) -> Self {
         if let ExprKind::Parameter(index) = self.kind {
             return args[index].clone();
         }
         let kind = match &self.kind {
-            ExprKind::Unary(op, e) => {
-                ExprKind::Unary(op, Box::new(e.expand(args, locals, next, types)))
-            }
+            ExprKind::Unary(op, e) => ExprKind::Unary(op, Box::new(e.expand(args, locals, next))),
             ExprKind::Binary(op, a, b) => {
                 return Self::binary(
                     self.ty.clone(),
                     op,
-                    a.expand(args, locals, next, types),
-                    b.expand(args, locals, next, types),
+                    a.expand(args, locals, next),
+                    b.expand(args, locals, next),
                 );
             }
             ExprKind::Query(q, e) => {
-                let value = e.expand(args, locals, next, types);
+                let value = e.expand(args, locals, next);
                 return Self {
                     types: if matches!(q, Query::TypeOf) {
                         value.types.clone()
@@ -244,20 +236,20 @@ impl Expr {
                 };
             }
             ExprKind::Slice(a, b, prefix) => ExprKind::Slice(
-                Box::new(a.expand(args, locals, next, types)),
-                Box::new(b.expand(args, locals, next, types)),
+                Box::new(a.expand(args, locals, next)),
+                Box::new(b.expand(args, locals, next)),
                 *prefix,
             ),
             ExprKind::Matches(a, b) => ExprKind::Matches(
-                Box::new(a.expand(args, locals, next, types)),
-                Box::new(b.expand(args, locals, next, types)),
+                Box::new(a.expand(args, locals, next)),
+                Box::new(b.expand(args, locals, next)),
             ),
             ExprKind::All(a, id, body) => {
-                let sequence = a.expand(args, locals, next, types);
+                let sequence = a.expand(args, locals, next);
                 let fresh = *next;
                 *next += 1;
                 let old = locals.insert(*id, fresh);
-                let body = body.expand(args, locals, next, types);
+                let body = body.expand(args, locals, next);
                 if let Some(old) = old {
                     locals.insert(*id, old);
                 } else {
@@ -266,17 +258,17 @@ impl Expr {
                 ExprKind::All(Box::new(sequence), fresh, Box::new(body))
             }
             ExprKind::Bound(id) => ExprKind::Bound(*locals.get(id).unwrap_or(id)),
-            ExprKind::Try(e) => ExprKind::Try(Box::new(e.expand(args, locals, next, types))),
+            ExprKind::Try(e) => ExprKind::Try(Box::new(e.expand(args, locals, next))),
             ExprKind::Rust(binding, values) => {
                 let args = values
                     .iter()
-                    .map(|v| v.expand(args, locals, next, types))
+                    .map(|v| v.expand(args, locals, next))
                     .collect::<Vec<_>>();
                 if let [arg] = args.as_slice()
                     && let Some(known) = arg
                         .types
                         .as_ref()
-                        .and_then(|set| known_rust(types, binding, set, &self.ty))
+                        .and_then(|set| known_rust(binding, set, &self.ty))
                 {
                     return known;
                 }
@@ -286,33 +278,31 @@ impl Expr {
                 method.clone(),
                 values
                     .iter()
-                    .map(|e| e.expand(args, locals, next, types))
+                    .map(|e| e.expand(args, locals, next))
                     .collect(),
             ),
-            ExprKind::Convert(e) => {
-                ExprKind::Convert(Box::new(e.expand(args, locals, next, types)))
-            }
-            ExprKind::Some(e) => ExprKind::Some(Box::new(e.expand(args, locals, next, types))),
+            ExprKind::Convert(e) => ExprKind::Convert(Box::new(e.expand(args, locals, next))),
+            ExprKind::Some(e) => ExprKind::Some(Box::new(e.expand(args, locals, next))),
             ExprKind::Field(e, name) => {
-                return Self::field(e.expand(args, locals, next, types), name, self.ty.clone());
+                return Self::field(e.expand(args, locals, next), name, self.ty.clone());
             }
             ExprKind::Record(fields) => ExprKind::Record(
                 fields
                     .iter()
-                    .map(|(n, e)| (n.clone(), e.expand(args, locals, next, types)))
+                    .map(|(n, e)| (n.clone(), e.expand(args, locals, next)))
                     .collect(),
             ),
             ExprKind::Variant(name, fields) => ExprKind::Variant(
                 name.clone(),
                 fields
                     .iter()
-                    .map(|e| e.expand(args, locals, next, types))
+                    .map(|e| e.expand(args, locals, next))
                     .collect(),
             ),
             ExprKind::Array(fields) => ExprKind::Array(
                 fields
                     .iter()
-                    .map(|e| e.expand(args, locals, next, types))
+                    .map(|e| e.expand(args, locals, next))
                     .collect(),
             ),
             other => other.clone(),
@@ -1296,7 +1286,7 @@ impl Checker<'_> {
                 };
                 super::records::rust_path(self.source, offset, &path)?;
                 let evaluation = TypeQuery::rust(&path).map(RustEval::Query).or_else(|| {
-                    path.strip_prefix("crate::Type::")
+                    path.strip_prefix("crate::types::")
                         .and_then(|name| self.types.predicates.get(name))
                         .cloned()
                         .map(RustEval::Predicate)
@@ -1409,9 +1399,7 @@ impl Checker<'_> {
             self.verification = wide;
             checked.push(value?);
         }
-        let mut expr = function
-            .body
-            .substitute(&checked, &mut self.next_local, self.types);
+        let mut expr = function.body.substitute(&checked, &mut self.next_local);
         expr.ty = function.result;
         Ok(expr)
     }
@@ -1751,6 +1739,12 @@ pub(crate) enum TypeQuery {
     IsLocal,
     IsShared,
     IsCompact,
+    IsScalar,
+    IsVector,
+    IsInteger,
+    IsFloat,
+    IsPtr,
+    IsPredicate,
 }
 
 pub(crate) struct Emitter<'a> {
@@ -1844,7 +1838,7 @@ impl<'a> Emitter<'a> {
                 self.results, receiver
             ),
             ExprKind::Results => self.results.into(),
-            ExprKind::Type(name) => format!("crate::Type::{name}"),
+            ExprKind::Type(name) => format!("crate::types::{name}"),
             ExprKind::Slice(sequence, index, prefix) => {
                 let sequence = self.term(sequence);
                 let index = self.required(format!("usize::try_from({}).ok()", self.term(index)));
@@ -1990,17 +1984,18 @@ impl TypeQuery {
             "crate::Type::is_local" => Some(Self::IsLocal),
             "crate::Type::is_shared" => Some(Self::IsShared),
             "crate::Type::is_compact" => Some(Self::IsCompact),
+            "crate::Type::is_scalar" => Some(Self::IsScalar),
+            "crate::Type::is_vector" => Some(Self::IsVector),
+            "crate::Type::is_integer" => Some(Self::IsInteger),
+            "crate::Type::is_float" => Some(Self::IsFloat),
+            "crate::Type::is_ptr" => Some(Self::IsPtr),
+            "crate::Type::is_predicate" => Some(Self::IsPredicate),
 
             _ => None,
         }
     }
 }
-fn known_rust(
-    types: &crate::types::Types,
-    binding: &RustCall,
-    set: &TypeSet,
-    ty: &Ty,
-) -> Option<Expr> {
+fn known_rust(binding: &RustCall, set: &TypeSet, ty: &Ty) -> Option<Expr> {
     let evaluation = binding.evaluation.as_ref()?;
     let mut answer = None;
     for (&code, &shapes) in &set.0 {
@@ -2008,7 +2003,7 @@ fn known_rust(
             if shapes & (1 << shape) == 0 {
                 continue;
             }
-            let value = evaluation.evaluate(types, code, shape)?;
+            let value = evaluation.evaluate(code, shape)?;
             if answer.as_ref().is_some_and(|old| old != &value) {
                 return None;
             }

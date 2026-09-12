@@ -20,7 +20,7 @@ fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Res
 }
 
 fn plan_callsite(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<CallConvPlan> {
-    CallConv::from(sig.call_conv).plan_callsite(target.desc().arch, &sig.params, &sig.returns)
+    CallConv::from(sig.call_conv).plan_callsite(target.desc().arch, sig.params(), sig.returns())
 }
 
 fn reg_copy_inst(dst: Reg, src: Reg) -> MachineInst {
@@ -208,11 +208,11 @@ fn lower_return<S>(
             plan.returns.len()
         );
     }
-    if values.len() != sig.returns.len() {
+    if values.len() != sig.returns().len() {
         panic!(
             "return value count mismatch: LIR has {}, signature expects {}",
             values.len(),
-            sig.returns.len()
+            sig.returns().len()
         );
     }
 

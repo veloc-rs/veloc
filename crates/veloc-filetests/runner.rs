@@ -283,11 +283,11 @@ fn interpret(module: Module) -> Result<String> {
         .find_function_by_name("main")
         .ok_or("execute needs a main function")?;
     let signature = &module.signatures[module.functions[main].signature];
-    if !signature.params.is_empty() {
+    if !signature.params().is_empty() {
         return Err("execute requires main() with no parameters".into());
     }
     let widths = signature
-        .returns
+        .returns()
         .iter()
         .map(|ty| {
             ty.as_scalar()

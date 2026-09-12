@@ -332,7 +332,7 @@ op RuntimeScalable<T: Integer>(arg: T) -> T {
 }
 
 predicate is_fixture_width = I16 | I32;
-fn fixture_width(ty: Type) -> bool = rust("crate::Type::is_fixture_width");
+fn fixture_width(ty: Type) -> bool = rust("crate::types::is_fixture_width");
 op CheckedWidth<T: ScalarInteger>(arg: T) -> T {
     meta: OpInfo {}, mnemonic: "checked-width", storage: Unary { arg },
     verify { require(fixture_width(T), "fixture width"); }

@@ -66,7 +66,7 @@ impl TargetInstructionSelector for X86_64Selector {
             use crate::target::arch::{AbiLocation, CallConv, TargetArch};
             let sig = &ctx.mfunc.call_info(ctx.inst_id).sig;
             let cc = CallConv::from(sig.call_conv);
-            let plan = cc.plan_callsite(TargetArch::X86_64, &sig.params, &sig.returns)?;
+            let plan = cc.plan_callsite(TargetArch::X86_64, sig.params(), sig.returns())?;
             let preserved = cc.preserved_regs(TargetArch::X86_64);
             for selected in ctx.selected.iter_mut() {
                 if !matches!(selected.opcode, MachineOpcode::Target(op) if op == TargetInst::X86Call.as_u32() || op == TargetInst::X86CallReg.as_u32())

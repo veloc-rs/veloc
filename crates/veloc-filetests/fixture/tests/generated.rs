@@ -410,7 +410,7 @@ fn scalar_enum_is_exhaustive_and_preserves_type_encoding() {
     const SCALAR: ScalarType = Type::I32.as_scalar().unwrap();
     const VECTOR: Type = SCALAR.vector(4, false).unwrap().as_type();
     assert_eq!(SCALAR, ScalarType::I32);
-    assert_eq!(VECTOR, Type::I32X4);
+    assert_eq!(VECTOR, veloc_mir::types::I32X4);
     for code in 0..=u8::MAX {
         let scalar = ScalarType::from_code(code);
         assert_eq!(
@@ -773,20 +773,26 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
 
 #[test]
 fn generated_predicates_and_inline_sets_observe_actual_types() {
-    const { assert!(Type::I32.is_wide()) };
+    const { assert!(veloc_mir::types::is_wide(Type::I32)) };
     for raw in 0..=u16::MAX {
         let Some(ty) = Type::from_raw(raw) else {
             continue;
         };
-        assert_eq!(ty.is_wide(), ty == Type::I32 || ty == Type::I64);
-        assert_eq!(ty.is_chosen(), ty == Type::I32X4 || ty == Type::SV4);
+        assert_eq!(
+            veloc_mir::types::is_wide(ty),
+            ty == Type::I32 || ty == Type::I64
+        );
+        assert_eq!(
+            veloc_mir::types::is_chosen(ty),
+            ty == veloc_mir::types::I32X4 || ty == veloc_mir::types::SV4
+        );
         let named = Opcode::Named.validate_types(&[ty, ty], &[ty]);
         let inline = Opcode::Inline.validate_types(&[ty, ty], &[ty]);
         assert_eq!(named.is_ok(), ty == Type::I32 || ty == Type::I64);
         assert_eq!(named, inline);
     }
-    assert!(!Type::INVALID.is_wide());
-    assert!(!Type::INVALID.is_chosen());
+    assert!(!veloc_mir::types::is_wide(Type::INVALID));
+    assert!(!veloc_mir::types::is_chosen(Type::INVALID));
     assert!(
         Opcode::Named
             .validate_types(&[Type::I32, Type::I64], &[Type::I32])
@@ -1112,11 +1118,11 @@ fn rust_type_bindings_preserve_paths_in_records_enums_and_host_queries() {
 fn type_constraints_drive_validation_and_generated_evaluation() {
     for (from, to, valid) in [
         (Type::I8, Type::I16, true),
-        (Type::I8, Type::I16X8, false),
-        (Type::I8X16, Type::I16, false),
-        (Type::I8X16, Type::I16X8, false),
+        (Type::I8, veloc_mir::types::I16X8, false),
+        (veloc_mir::types::I8X16, Type::I16, false),
+        (veloc_mir::types::I8X16, veloc_mir::types::I16X8, false),
         (
-            Type::I32X4,
+            veloc_mir::types::I32X4,
             Type::I64
                 .as_scalar()
                 .unwrap()
@@ -1143,7 +1149,7 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
         (Type::I8, Type::I32, false),
         (Type::I64, Type::I32, false),
         (
-            Type::I32X4,
+            veloc_mir::types::I32X4,
             Type::I64
                 .as_scalar()
                 .unwrap()
@@ -1152,7 +1158,7 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
                 .as_type(),
             true,
         ),
-        (Type::I64X2, Type::I64X2, false),
+        (veloc_mir::types::I64X2, veloc_mir::types::I64X2, false),
     ] {
         assert_eq!(
             Opcode::DoubleWidth.validate_types(&[from], &[to]).is_ok(),
@@ -1200,7 +1206,7 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
     );
     assert!(
         Opcode::FourLane
-            .validate_types(&[Type::I32X4], &[Type::I32X4])
+            .validate_types(&[veloc_mir::types::I32X4], &[veloc_mir::types::I32X4])
             .is_ok()
     );
     assert!(
@@ -1219,7 +1225,7 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
             .validate_types(&[scalable4], &[scalable4])
             .is_ok()
     );
-    for ty in [Type::I32, Type::I32X4] {
+    for ty in [Type::I32, veloc_mir::types::I32X4] {
         assert!(
             Opcode::RuntimeScalable
                 .validate_types(&[ty], &[ty])
@@ -1230,7 +1236,7 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
     assert!(!evaluator::can_fold(Opcode::FourLane));
     assert!(
         Opcode::Reinterpret
-            .validate_types(&[Type::I32X4], &[Type::I64X2])
+            .validate_types(&[veloc_mir::types::I32X4], &[veloc_mir::types::I64X2])
             .is_ok()
     );
     let scalable = Type::I64
@@ -1241,7 +1247,7 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
         .as_type();
     assert!(
         Opcode::Reinterpret
-            .validate_types(&[Type::I32X4], &[scalable])
+            .validate_types(&[veloc_mir::types::I32X4], &[scalable])
             .is_err()
     );
     assert!(
