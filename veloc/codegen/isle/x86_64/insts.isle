@@ -670,6 +670,10 @@
 (def-inst X86IMul64 (schedule 3) (template IMul64rr))
 
 ;; 
+(def-inst X86Rol32Cl (template Shift32cl 0))
+(def-inst X86Rol64Cl (template Shift64cl 0))
+(def-inst X86Ror32Cl (template Shift32cl 1))
+(def-inst X86Ror64Cl (template Shift64cl 1))
 (def-inst X86Shl32Cl (template Shift32cl 4))
 (def-inst X86Shl64Cl (template Shift64cl 4))
 (def-inst X86Shr32Cl (template Shift32cl 5))
@@ -917,3 +921,29 @@
         (byte (modrm 0b10 (hw-enc $dst) 0b100))
         (byte (sib 0 0b100 (slot-base-hw-enc $slot)))
         (imm32 (slot-offset $slot))))
+
+;; Scalar SSE conversions: source and destination may belong to different banks.
+(def-template ScalarConvert ($prefix $opcode $wide)
+    (schedule 4)
+    (operands (def $dst) (use $src))
+    (encode
+        (byte $prefix)
+        (if $wide
+            (byte (rex-w (hw-enc $dst) (hw-enc $src)))
+            (if (needs-rex (hw-enc $dst) (hw-enc $src))
+                (byte (rex-rr (hw-enc $dst) (hw-enc $src)))))
+        (byte 0x0F)
+        (byte $opcode)
+        (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
+(def-inst X86I32ToF32 (template ScalarConvert 0xF3 0x2A 0))
+(def-inst X86I64ToF32 (template ScalarConvert 0xF3 0x2A 1))
+(def-inst X86I32ToF64 (template ScalarConvert 0xF2 0x2A 0))
+(def-inst X86I64ToF64 (template ScalarConvert 0xF2 0x2A 1))
+(def-inst X86F32ToI32 (template ScalarConvert 0xF3 0x2C 0))
+(def-inst X86F32ToI64 (template ScalarConvert 0xF3 0x2C 1))
+(def-inst X86F64ToI32 (template ScalarConvert 0xF2 0x2C 0))
+(def-inst X86F64ToI64 (template ScalarConvert 0xF2 0x2C 1))
+(def-inst X86F32ToF64 (template ScalarConvert 0xF3 0x5A 0))
+(def-inst X86F64ToF32 (template ScalarConvert 0xF2 0x5A 0))
+(def-inst X86SqrtF32 (template ScalarConvert 0xF3 0x51 0))
+(def-inst X86SqrtF64 (template ScalarConvert 0xF2 0x51 0))

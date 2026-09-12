@@ -5,6 +5,7 @@
 
 mod frame;
 mod legalize;
+mod numeric;
 mod operand;
 mod pass_config;
 mod regbank;

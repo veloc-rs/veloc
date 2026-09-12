@@ -47,7 +47,10 @@ impl TargetLegalizer for X86_64Legalizer {
                 [def(scalar_int(8, 16)), use(scalar_int(8, 16)), use(scalar_int(8, 16))]
                     if same_types(0, 1, 2) => widen_scalar(I32),
             };
-            G_SHL | G_LSHR | G_ASHR => {
+            G_AND | G_OR | G_XOR => {
+                [def(BOOL), use(BOOL), use(BOOL)] => legal,
+            };
+            G_SHL | G_LSHR | G_ASHR | G_ROTL | G_ROTR | G_SDIV | G_UDIV | G_SREM | G_UREM => {
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
                     if same_types(0, 1, 2) => legal,
             };
@@ -93,8 +96,48 @@ impl TargetLegalizer for X86_64Legalizer {
                 [tied(PTR), use(scalar_numeric(32, 64)), use(PTR), imm] => legal,
             };
             G_CONSTANT => {
+                [def(BOOL), imm] => legal,
                 [def(int_or_ptr_scalar(32, 64)), imm] => legal,
             };
+            G_IEQZ => {
+                [def(BOOL), use(scalar_int(32, 64))] => legal,
+            };
+            G_FNEG | G_FABS => {
+                [def(scalar_float(32, 64)), use(scalar_float(32, 64))]
+                    if same_types(0, 1) => lower,
+            };
+            G_SITOFP => {
+                [def(scalar_float(32, 64)), use(scalar_int(32, 64))] => legal,
+            };
+            G_FPTOSI => {
+                [def(scalar_int(32, 64)), use(scalar_float(32, 64))] => legal,
+            };
+            G_UITOFP => {
+                [def(scalar_float(32, 64)), use(scalar_int(32, 64))] => lower,
+            };
+            G_FPTOUI => {
+                [def(scalar_int(32, 64)), use(scalar_float(32, 64))] => lower,
+            };
+            G_FSQRT => {
+                [def(scalar_float(32, 64)), use(scalar_float(32, 64))]
+                    if same_types(0, 1) => legal,
+            };
+            G_FPEXT => { [def(F64), use(F32)] => legal, };
+            G_FPTRUNC => { [def(F32), use(F64)] => legal, };
+            G_ZEXT => {
+                [def(scalar_int(32, 64)), use(BOOL)] => legal,
+                [def(scalar_int(32, 64)), use(scalar_int(8, 16))] => legal,
+                [def(I64), use(I32)] => legal,
+            };
+            G_SEXT => {
+                [def(scalar_int(32, 64)), use(scalar_int(8, 16))] => legal,
+                [def(I64), use(I32)] => legal,
+            };
+            G_TRUNC => {
+                [def(scalar_int(8, 16, 32)), use(scalar_int(32, 64))] => legal,
+            };
+            G_INTTOPTR => { [def(PTR), use(I64)] => legal, };
+            G_PTRTOINT => { [def(I64), use(PTR)] => legal, };
             G_PTR_ADD => {
                 [def(PTR), use(PTR), use(I64)] => legal,
             };
@@ -145,6 +188,66 @@ impl TargetLegalizer for X86_64Legalizer {
         let opcode = mfunc.dfg[inst_id].generic_opcode();
         if let Some(opcode) = opcode {
             match opcode {
+                GenericOpcode::G_UITOFP | GenericOpcode::G_FPTOUI => {
+                    let inst = mfunc.dfg[inst_id].clone();
+                    let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
+                        unreachable!()
+                    };
+                    self.lowering.unsigned_conversion(
+                        mfunc,
+                        &mut output,
+                        opcode,
+                        unary.dst,
+                        unary.src,
+                    );
+                    return Ok(LegalizeResult::Replace(output));
+                }
+                GenericOpcode::G_FNEG | GenericOpcode::G_FABS => {
+                    let inst = mfunc.dfg[inst_id].clone();
+                    let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
+                        unreachable!()
+                    };
+                    let float = mfunc.vreg_data(unary.dst).ty;
+                    let (integer, sign) = if float == Type::F32 {
+                        (Type::I32, 1i64 << 31)
+                    } else {
+                        (Type::I64, i64::MIN)
+                    };
+                    let bits = mfunc.alloc_vreg(integer);
+                    output.push(mfunc.alloc_inst(MachineInst::build_unary(
+                        MachineOpcode::Generic(GenericOpcode::G_BITCAST),
+                        Writable(bits),
+                        unary.src,
+                    )));
+                    let mask = self.lowering.emit_legalize_constant_reg(
+                        mfunc,
+                        &mut output,
+                        integer,
+                        if opcode == GenericOpcode::G_FNEG {
+                            sign
+                        } else {
+                            !sign
+                        },
+                    );
+                    let changed = self.lowering.emit_legalize_binary_reg(
+                        mfunc,
+                        &mut output,
+                        if opcode == GenericOpcode::G_FNEG {
+                            GenericOpcode::G_XOR
+                        } else {
+                            GenericOpcode::G_AND
+                        },
+                        integer,
+                        bits,
+                        mask,
+                    );
+                    output.push(mfunc.alloc_inst(MachineInst::build_unary(
+                        MachineOpcode::Generic(GenericOpcode::G_BITCAST),
+                        Writable(unary.dst),
+                        changed,
+                    )));
+                    return Ok(LegalizeResult::Replace(output));
+                }
                 GenericOpcode::G_OFFSET_LOAD | GenericOpcode::G_OFFSET_STORE => {
                     let inst = mfunc.dfg[inst_id].clone();
                     let (base, offset, value) = match inst.generic_view()? {

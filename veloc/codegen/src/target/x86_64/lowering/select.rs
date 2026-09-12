@@ -56,7 +56,7 @@ impl TargetInstructionSelector for X86_64Selector {
             let x86_ctx = X86SelectionContext { base: ctx, cpu };
             let res = generated::select_instructions(&x86_ctx, &inst, &view, &mut out);
             *ctx.selected = out;
-            res.unwrap_or_else(|err| panic!("x86_64 generated selector failed: {}", err))
+            res?
         };
 
         if matches!(

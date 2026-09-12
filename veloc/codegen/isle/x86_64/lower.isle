@@ -849,33 +849,33 @@
 
 ;; 
 (select-rule
-    (match (schema BinaryReg G_SHL (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (match (schema BinaryReg G_SHL (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs $y) @n))
     (emit (X86Shl32Cl $y))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema BinaryReg G_LSHR (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (match (schema BinaryReg G_LSHR (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs $y) @n))
     (emit (X86Shr32Cl $y))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema BinaryReg G_ASHR (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+    (match (schema BinaryReg G_ASHR (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs $y) @n))
     (emit (X86Sar32Cl $y))
     (covers (@n))
     (cost 1))
 
 (select-rule
-    (match (schema BinaryReg G_SHL (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (match (schema BinaryReg G_SHL (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs $y) @n))
     (emit (X86Shl64Cl $y))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema BinaryReg G_LSHR (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (match (schema BinaryReg G_LSHR (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs $y) @n))
     (emit (X86Shr64Cl $y))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema BinaryReg G_ASHR (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs (GPR64 $y)) @n))
+    (match (schema BinaryReg G_ASHR (dst (GPR64 $dst)) (lhs (GPR64 $x)) (rhs $y) @n))
     (emit (X86Sar64Cl $y))
     (covers (@n))
     (cost 1))
@@ -984,45 +984,45 @@ end
 ;; Division and Remainder (Lowering logic)
 ;; 指令融合路径：有符号/无符号的 div 与 rem 使用同一条底层除法序列。
 (select-rule
-    (match (schema BinaryReg G_SDIV (dst $dst) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
+    (match (schema BinaryReg G_SDIV (dst $dst) (lhs $lhs) (rhs (GPR64 $rhs)) @n))
     (emit (seq (X86Cqo) (X86IDiv64 $rhs)))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema BinaryReg G_SDIV (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
+    (match (schema BinaryReg G_SDIV (dst $dst) (lhs $lhs) (rhs (GPR32 $rhs)) @n))
     (emit (seq (X86Cdq) (X86IDiv32 $rhs)))
     (covers (@n))
     (cost 1))
 
 (select-rule
-    (match (schema BinaryReg G_SREM (dst $dst) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
+    (match (schema BinaryReg G_SREM (dst $dst) (lhs $lhs) (rhs (GPR64 $rhs)) @n))
     (emit (seq (X86Cqo) (X86IDiv64 $rhs)))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema BinaryReg G_SREM (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
+    (match (schema BinaryReg G_SREM (dst $dst) (lhs $lhs) (rhs (GPR32 $rhs)) @n))
     (emit (seq (X86Cdq) (X86IDiv32 $rhs)))
     (covers (@n))
     (cost 1))
 
 (select-rule
-    (match (schema BinaryReg G_UDIV (dst $dst) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
+    (match (schema BinaryReg G_UDIV (dst $dst) (lhs $lhs) (rhs (GPR64 $rhs)) @n))
     (emit (seq (X86Xor64 (reg RDX) (reg RDX)) (X86Div64 $rhs)))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema BinaryReg G_UDIV (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
+    (match (schema BinaryReg G_UDIV (dst $dst) (lhs $lhs) (rhs (GPR32 $rhs)) @n))
     (emit (seq (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs)))
     (covers (@n))
     (cost 1))
 
 (select-rule
-    (match (schema BinaryReg G_UREM (dst $dst) (lhs (GPR64 $lhs)) (rhs (GPR64 $rhs)) @n))
+    (match (schema BinaryReg G_UREM (dst $dst) (lhs $lhs) (rhs (GPR64 $rhs)) @n))
     (emit (seq (X86Xor64 (reg RDX) (reg RDX)) (X86Div64 $rhs)))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema BinaryReg G_UREM (dst $dst) (lhs (GPR32 $lhs)) (rhs (GPR32 $rhs)) @n))
+    (match (schema BinaryReg G_UREM (dst $dst) (lhs $lhs) (rhs (GPR32 $rhs)) @n))
     (emit (seq (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs)))
     (covers (@n))
     (cost 1))
@@ -1080,3 +1080,66 @@ end
     (emit (X86LeaStack $dst $slot))
     (covers (@n))
     (cost 1))
+
+;; Booleans have canonical 0/1 values in a zero-extended GPR.
+(select-rule
+    (match (schema Constant G_CONSTANT (dst (BOOL $dst)) (imm $imm) @n))
+    (emit (X86Mov32Imm $imm))
+    (covers (@n))
+    (cost 1))
+for (ty) in
+  GPR32
+  GPR64
+do
+(select-rule
+    (match (schema UnaryReg G_ZEXT (dst ({{ty}} $dst)) (src (BOOL $src)) @n))
+    (emit (X86Movzx8to32 $dst $src))
+    (covers (@n))
+    (cost 1))
+end
+
+for (op, ty, native) in
+    G_ROTL, GPR32, X86Rol32Cl
+    G_ROTL, GPR64, X86Rol64Cl
+    G_ROTR, GPR32, X86Ror32Cl
+    G_ROTR, GPR64, X86Ror64Cl
+do
+(select-rule
+    (match (schema BinaryReg {{op}} (dst ({{ty}} $dst)) (lhs ({{ty}} $x)) (rhs $y) @n))
+    (emit ({{native}} $y))
+    (covers (@n))
+    (cost 1))
+end
+
+for (op, native) in
+    G_AND, X86And32
+    G_OR, X86Or32
+    G_XOR, X86Xor32
+do
+(select-rule
+    (match (schema BinaryReg {{op}} (dst (BOOL $dst)) (lhs (BOOL $x)) (rhs (BOOL $y)) @n))
+    (emit ({{native}} $y))
+    (covers (@n))
+    (cost 1))
+end
+
+for (op, dst, src, native) in
+    G_SITOFP, FPR32, GPR32, X86I32ToF32
+    G_SITOFP, FPR32, GPR64, X86I64ToF32
+    G_SITOFP, FPR64, GPR32, X86I32ToF64
+    G_SITOFP, FPR64, GPR64, X86I64ToF64
+    G_FPTOSI, GPR32, FPR32, X86F32ToI32
+    G_FPTOSI, GPR64, FPR32, X86F32ToI64
+    G_FPTOSI, GPR32, FPR64, X86F64ToI32
+    G_FPTOSI, GPR64, FPR64, X86F64ToI64
+    G_FPEXT, FPR64, FPR32, X86F32ToF64
+    G_FPTRUNC, FPR32, FPR64, X86F64ToF32
+    G_FSQRT, FPR32, FPR32, X86SqrtF32
+    G_FSQRT, FPR64, FPR64, X86SqrtF64
+do
+(select-rule
+    (match (schema UnaryReg {{op}} (dst ({{dst}} $dst)) (src ({{src}} $src)) @n))
+    (emit ({{native}} $src))
+    (covers (@n))
+    (cost 4))
+end

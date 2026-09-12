@@ -291,6 +291,10 @@ impl<'a> IRTranslator<'a> {
 
                 let m_opcode = match opcode {
                     Opcode::IDivS => MachineOpcode::Generic(GenericOpcode::G_SDIV),
+                    Opcode::IRemS => MachineOpcode::Generic(GenericOpcode::G_SREM),
+                    Opcode::IRemU => MachineOpcode::Generic(GenericOpcode::G_UREM),
+                    Opcode::IRotl => MachineOpcode::Generic(GenericOpcode::G_ROTL),
+                    Opcode::IRotr => MachineOpcode::Generic(GenericOpcode::G_ROTR),
                     Opcode::IDivU => MachineOpcode::Generic(GenericOpcode::G_UDIV),
                     Opcode::IShl => MachineOpcode::Generic(GenericOpcode::G_SHL),
                     Opcode::IShrS => MachineOpcode::Generic(GenericOpcode::G_ASHR),
@@ -321,6 +325,8 @@ impl<'a> IRTranslator<'a> {
                     Opcode::IClz => MachineOpcode::Generic(GenericOpcode::G_CTLZ),
                     Opcode::ICtz => MachineOpcode::Generic(GenericOpcode::G_CTTZ),
                     Opcode::IPopcnt => MachineOpcode::Generic(GenericOpcode::G_CTPOP),
+                    Opcode::FAbs => MachineOpcode::Generic(GenericOpcode::G_FABS),
+                    Opcode::FSqrt => MachineOpcode::Generic(GenericOpcode::G_FSQRT),
                     Opcode::FNeg => MachineOpcode::Generic(GenericOpcode::G_FNEG),
                     Opcode::IEqz => MachineOpcode::Generic(GenericOpcode::G_IEQZ),
                     Opcode::Wrap => MachineOpcode::Generic(GenericOpcode::G_TRUNC),
@@ -387,6 +393,12 @@ impl<'a> IRTranslator<'a> {
             InstView::Iconst { value: imm } => Ok(MachineInst::build_constant(
                 defs[0].as_writable().unwrap(),
                 imm.signed(),
+            )
+            .into()),
+
+            InstView::Bconst { value } => Ok(MachineInst::build_constant(
+                defs[0].as_writable().unwrap(),
+                i64::from(*value),
             )
             .into()),
 

@@ -219,19 +219,19 @@ op G_FSQRT<T: Float>(src: T) -> (dst: T) {
     storage: UnaryReg { dst, src },
 }
 
-op G_AND<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op G_AND<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.and(lhs, rhs)
 }
 
-op G_OR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op G_OR<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.or(lhs, rhs)
 }
 
-op G_XOR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op G_XOR<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.xor(lhs, rhs)
@@ -462,7 +462,7 @@ op G_INDEXED_STORE(wb_dst: PTR, src: Any, base: PTR, offset: i64) -> (out_wb_dst
     storage: IndexedStore { wb_dst: tied(wb_dst, out_wb_dst), src, base, offset },
 }
 
-op G_CONSTANT(imm: i64) -> (dst: ScalarInteger) {
+op G_CONSTANT(imm: i64) -> (dst: ScalarInteger | BOOL | PTR) {
     meta: OpInfo { memory: Known([]) },
     storage: Constant { dst, imm },
 }
@@ -477,7 +477,7 @@ op G_TRUNC(src: Integer) -> (dst: Integer) {
     storage: UnaryReg { dst, src },
 }
 
-op G_ZEXT(src: Integer) -> (dst: Integer) {
+op G_ZEXT(src: Integer | BOOL | vectors(BOOL)) -> (dst: Integer) {
     meta: OpInfo { memory: Known([]) },
     storage: UnaryReg { dst, src },
 }
