@@ -26,12 +26,14 @@ fn scalar_code_validation_uses_the_declared_field_width() {
 
 #[test]
 fn encodings_are_explicit_and_can_be_forward_referenced() {
-    let builtins = include_str!("../../defs/builtins.ops");
+    let builtins = include_str!("../../defs/builtins.ops")
+        .strip_prefix("import \"types.ops\";\n")
+        .unwrap();
     rejected(builtins, "missing encoding Type");
-    let first = veloc_opgen::compile(BUILTINS).unwrap();
+    let first = veloc_opgen::compile(&BUILTINS).unwrap();
     let last = veloc_opgen::compile(&format!("{builtins}\n{TYPES}")).unwrap();
     assert_eq!(first.types, last.types);
-    rejected(&format!("{BUILTINS}\n{TYPES}"), "duplicate");
+    rejected(&format!("{}\n{TYPES}", *BUILTINS), "duplicate");
     rejected(
         &TYPES.replace("encoding Type", "encoding Other"),
         "missing encoding Type",

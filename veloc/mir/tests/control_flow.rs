@@ -1,7 +1,7 @@
 //! Public editing and validation of the control-flow substrate. Text-only
 //! structural and dominance diagnostics live in the file-test corpus.
 use veloc_mir::function::Dominators;
-use veloc_mir::{Block, EdgeRef, InstDraft, ModuleParser, Value};
+use veloc_mir::{Block, EdgeRef, ModuleParser, Value};
 
 #[test]
 fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
@@ -40,10 +40,11 @@ fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
     let function = &mut module.functions[entry];
     function.dfg().check_uses().unwrap();
     let create = function.layout().blocks()[Block(0)].insts[0];
-    function.edit().replace_inst(
-        create,
-        InstDraft::closure(veloc_mir::Opcode::ClosureShared, body, &[]),
-    );
+    function
+        .edit()
+        .replace_inst(create, |writer: veloc_mir::InstWriter<'_>| {
+            writer.closure(veloc_mir::Opcode::ClosureShared, body, &[])
+        });
     assert!(
         module
             .validate()
@@ -181,20 +182,23 @@ fn validator_rejects_detached_targets_and_unknown_values_without_panicking() {
 }
 
 #[test]
-fn edge_argument_replacement_preserves_draft_tail_and_other_edges() {
-    let mut draft = InstDraft::br(
-        Value(0),
-        veloc_mir::Successor {
-            block: Block(1),
-            args: &[Value(1), Value(2)],
-        },
-        veloc_mir::Successor {
-            block: Block(1),
-            args: &[Value(3)],
-        },
-    );
+fn edge_argument_replacement_preserves_other_edges() {
+    let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
+    let inst = dfg.create_inst(|writer| {
+        writer.br(
+            Value(0),
+            veloc_mir::Successor {
+                block: Block(1),
+                args: &[Value(1), Value(2)],
+            },
+            veloc_mir::Successor {
+                block: Block(1),
+                args: &[Value(3)],
+            },
+        )
+    });
     let mut index = 0;
-    draft.edit_successors(|edge| {
+    dfg.edit_successors(inst, |edge| {
         if index == 0 {
             edge.set_args(&[]);
         } else {
@@ -202,10 +206,11 @@ fn edge_argument_replacement_preserves_draft_tail_and_other_edges() {
         }
         index += 1;
     });
-    assert_eq!(draft.operands(), [Value(0), Value(4), Value(5), Value(6)]);
+    let mut operands = Vec::new();
+    dfg.inst(inst).visit_operands(|v| operands.push(v));
+    assert_eq!(operands, [Value(0), Value(4), Value(5), Value(6)]);
     let mut lengths = Vec::new();
-    draft
-        .as_view()
+    dfg.inst(inst)
         .visit_successors(|edge| lengths.push(edge.args.len()));
     assert_eq!(lengths, [0, 3]);
 }
@@ -224,11 +229,12 @@ fn fallible_visitors_preserve_order_and_stop_at_the_first_error() {
             args: &[Value(2)],
         },
     ];
-    for draft in [
-        InstDraft::br(Value(0), edges[0], edges[1]),
-        InstDraft::br_table(Value(0), edges),
+    let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
+    for inst in [
+        dfg.writer().br(Value(0), edges[0], edges[1]),
+        dfg.writer().br_table(Value(0), edges),
     ] {
-        let view = draft.as_view();
+        let view = dfg.inst(inst);
         let mut visited = Vec::new();
         let result = view.try_visit_successors(|edge| {
             visited.push(edge.args[0]);

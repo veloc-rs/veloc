@@ -1,5 +1,5 @@
 use super::function::Function;
-use super::inst::{Inst, InstDraft, VectorExtData};
+use super::inst::{Inst, InstWriter, VectorExtData};
 use super::types::{Block, BlockCall, FuncId, Signature, Type, Value, Variable};
 use crate::Opcode;
 use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
@@ -146,7 +146,7 @@ impl<'a> FunctionBuilder<'a> {
         let entry = self.func().entry_block.expect("entry block initialized");
         let inst = self.func_mut().edit().prepend_inst(
             entry,
-            InstDraft::alloca(size, align),
+            |writer: InstWriter<'_>| writer.alloca(size, align),
             &[Type::PTR],
         );
         self.func().dfg().first_result(inst).unwrap()
@@ -375,17 +375,11 @@ impl<'a> FunctionBuilder<'a> {
         let Some(&inst) = self.func().layout.blocks[pred].insts.last() else {
             return;
         };
-        let mut data = self.func().dfg.draft(inst);
-        let mut changed = false;
-        data.edit_successors(|edge| {
+        self.func_mut().dfg.edit_successors(inst, |edge| {
             if edge.block() == target {
                 edge.set_arg(index, val);
-                changed = true;
             }
         });
-        if changed {
-            self.func_mut().edit().replace_inst(inst, data);
-        }
     }
 }
 
@@ -417,7 +411,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     /// Insert an instruction with caller-supplied result types, without validation.
     /// Referenced storage and the current block must exist. Run the validator
     /// before passing untrusted or potentially invalid IR to later stages.
-    pub fn insert(&mut self, data: InstDraft, types: &[Type]) -> Inst {
+    pub fn insert(&mut self, data: impl FnOnce(InstWriter<'_>) -> Inst, types: &[Type]) -> Inst {
         let block = self.block();
         self.builder
             .func_mut()
@@ -426,7 +420,11 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     /// Insert a fixed number of results without checking the type contract.
-    fn emit<const N: usize>(&mut self, data: InstDraft, types: [Type; N]) -> [Value; N] {
+    fn emit<const N: usize>(
+        &mut self,
+        data: impl FnOnce(InstWriter<'_>) -> Inst,
+        types: [Type; N],
+    ) -> [Value; N] {
         let inst = self.insert(data, &types);
         self.builder
             .func()
@@ -437,11 +435,19 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     /// Resolve dynamic result types, such as a call's signature, before insertion.
-    fn insert_inferred(&mut self, data: InstDraft) -> Inst {
-        let types = data
+    fn insert_inferred(&mut self, data: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {
+        let block = self.block();
+        let inst = self.builder.func_mut().dfg.create_inst(data);
+        let types = self
+            .builder
+            .func()
+            .dfg
+            .inst(inst)
             .result_types(&self.builder.func().dfg, self.builder.module, &[])
-            .unwrap_or_else(|error| panic!("{}: {error}", data.opcode().spec().mnemonic));
-        self.insert(data, &types)
+            .unwrap_or_else(|error| panic!("{error}"));
+        self.builder.func_mut().dfg.append_results(inst, &types);
+        self.builder.func_mut().edit().append_existing(block, inst);
+        inst
     }
 
     pub fn i32const(&mut self, val: i32) -> Value {
@@ -463,10 +469,12 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     /// Materialize a constant in this function. Dense handles must belong to it.
     pub fn constant(&mut self, value: crate::Constant) -> Value {
         let ty = value.ty();
-        let data = if let Some(value) = value.as_scalar() {
-            value.into()
-        } else {
-            InstDraft::vconst(value.as_vector().expect("supported constant form"))
+        let data = |writer: InstWriter<'_>| {
+            if let Some(value) = value.as_scalar() {
+                writer.scalar_const(value)
+            } else {
+                writer.vconst(value.as_vector().expect("supported constant form"))
+            }
         };
         let [result] = self.emit(data, [ty]);
         result
@@ -527,24 +535,28 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     }
 
     pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Inst {
-        self.insert_inferred(InstDraft::call(func_id, args))
+        self.insert_inferred(|writer: InstWriter<'_>| writer.call(func_id, args))
     }
 
     /// Call a typed value and infer its results from the value's signature.
     pub fn call_value(&mut self, callee: Value, args: &[Value]) -> Inst {
-        self.insert_inferred(InstDraft::call_value(Opcode::CallValue, callee, args))
+        self.insert_inferred(|writer: InstWriter<'_>| {
+            writer.call_value(Opcode::CallValue, callee, args)
+        })
     }
 
     pub fn call_indirect(&mut self, sig_id: SigId, ptr: Value, args: &[Value]) -> Inst {
-        self.insert_inferred(InstDraft::call_indirect(ptr, args, sig_id))
+        self.insert_inferred(|writer: InstWriter<'_>| writer.call_indirect(ptr, args, sig_id))
     }
 
     pub fn jump(&mut self, destination: Block, args: &[Value]) {
         self.insert(
-            InstDraft::jump(crate::Successor {
-                block: destination,
-                args,
-            }),
+            |writer: InstWriter<'_>| {
+                writer.jump(crate::Successor {
+                    block: destination,
+                    args,
+                })
+            },
             &[],
         );
     }
@@ -558,30 +570,34 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         else_args: &[Value],
     ) {
         self.insert(
-            InstDraft::br(
-                condition,
-                crate::Successor {
-                    block: then_block,
-                    args: then_args,
-                },
-                crate::Successor {
-                    block: else_block,
-                    args: else_args,
-                },
-            ),
+            |writer: InstWriter<'_>| {
+                writer.br(
+                    condition,
+                    crate::Successor {
+                        block: then_block,
+                        args: then_args,
+                    },
+                    crate::Successor {
+                        block: else_block,
+                        args: else_args,
+                    },
+                )
+            },
             &[],
         );
     }
 
     pub fn br_table(&mut self, index: Value, default_call: BlockCall, targets: &[BlockCall]) {
         self.insert(
-            InstDraft::br_table(
-                index,
-                targets
-                    .iter()
-                    .map(BlockCall::as_view)
-                    .chain(core::iter::once(default_call.as_view())),
-            ),
+            |writer: InstWriter<'_>| {
+                writer.br_table(
+                    index,
+                    targets
+                        .iter()
+                        .map(BlockCall::as_view)
+                        .chain(core::iter::once(default_call.as_view())),
+                )
+            },
             &[],
         );
     }
@@ -589,7 +605,9 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     /// Call an intrinsic function.
     /// Returns the instruction handle, use `dfg.inst_results(inst)` to get return values.
     pub fn call_intrinsic(&mut self, intrinsic: Intrinsic, sig_id: SigId, args: &[Value]) -> Inst {
-        self.insert_inferred(InstDraft::call_intrinsic(intrinsic, args, sig_id))
+        self.insert_inferred(|writer: InstWriter<'_>| {
+            writer.call_intrinsic(intrinsic, args, sig_id)
+        })
     }
 
     // ======================================
@@ -627,7 +645,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         let ext = VectorExtData { mask, evl };
 
         let [result] = self.emit(
-            InstDraft::vector_op_with_ext(opcode, args, ext),
+            |writer: InstWriter<'_>| writer.vector_op_with_ext(opcode, args, ext),
             [result_ty],
         );
         result

@@ -34,7 +34,7 @@ struct Unary { arg: Value }
 op Impossible<T: Integer>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "impossible", storage: Unary { arg },
-    verify { require(type(arg).element_bits()? > 128, "too wide"); }
+    verify { require(arg.ty().element_bits()? > 128, "too wide"); }
     semantics: bv.neg(arg)
 }
 
@@ -45,7 +45,7 @@ struct Unary { arg: Value }
 op IntegerOnly<T: ScalarInteger | PTR>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "integer-only", storage: Unary { arg },
-    verify { require(!type(arg).is_ptr(), "no pointers"); }
+    verify { require(!arg.ty().is_ptr(), "no pointers"); }
     semantics: bv.neg(arg)
 }
 
@@ -56,6 +56,6 @@ struct Unary { arg: Value }
 op Guarded<T: Integer>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "guarded", storage: Unary { arg },
-    verify { require(type(arg).is_scalar() || type(arg).shape()? == type(arg).shape()?, "short circuit"); }
+    verify { require(arg.ty().is_scalar() || arg.ty().shape()? == arg.ty().shape()?, "short circuit"); }
     semantics: bv.neg(arg)
 }

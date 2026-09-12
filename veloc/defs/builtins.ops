@@ -1,7 +1,15 @@
+import "types.ops";
+
 // Rust-owned data types used by operation properties and host interfaces.
-type Int = rust("crate::Int");
-type Float = rust("crate::Float");
-type VectorConst = rust("crate::VectorConst");
+type Int = rust("crate::Int") {
+    fn ty(self) -> Type { value: type(self) }
+}
+type Float = rust("crate::Float") {
+    fn ty(self) -> Type { value: type(self) }
+}
+type VectorConst = rust("crate::VectorConst") {
+    fn ty(self) -> Type { value: type(self) }
+}
 type FuncId = rust("crate::FuncId");
 type SigId = rust("crate::SigId");
 type Intrinsic = rust("crate::Intrinsic");

@@ -1,5 +1,5 @@
 //! Exact constants. Scalar views add guarantees, not another representation tag.
-use crate::{InstDraft, ScalarType, Type, VectorType, dfg::DataFlowGraph, inst::ConstantPoolId};
+use crate::{InstWriter, ScalarType, Type, VectorType, dfg::DataFlowGraph, inst::ConstantPoolId};
 
 /// A target-independent scalar bit pattern. Pointer constants are not modeled.
 /// Unused high bits are always zero; equality preserves NaN payloads and -0.
@@ -162,14 +162,14 @@ impl From<bool> for ScalarConst {
     }
 }
 
-impl From<ScalarConst> for InstDraft {
-    fn from(value: ScalarConst) -> Self {
+impl InstWriter<'_> {
+    pub fn scalar_const(self, value: ScalarConst) -> crate::Inst {
         match value.ty {
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
-                Self::iconst(Int(value))
+                self.iconst(Int(value))
             }
-            ScalarType::F32 | ScalarType::F64 => Self::fconst(Float(value)),
-            ScalarType::BOOL => Self::bconst(value.bits != 0),
+            ScalarType::F32 | ScalarType::F64 => self.fconst(Float(value)),
+            ScalarType::BOOL => self.bconst(value.bits != 0),
             ScalarType::PTR => unreachable!("pointer constants are not represented by ScalarConst"),
         }
     }

@@ -9,7 +9,7 @@ interface Summary { count: u64 }
 fn Twice(n: u64) -> u64 { value: n * 2 }
 fn Positive(n: u64) -> bool { value: 0 < n }
 struct Data { n: u64 }
-op Example(@n: u64) -> () {
+op Example(n: u64) -> () {
     meta: Info { count: Twice(7), valid: Positive(Twice(7)), memory: Known([]) },
     mnemonic: "example", storage: Data { n: n },
     implements: [Summary { count: Twice(n) }],
@@ -40,7 +40,7 @@ fn Nonzero(n: u32) -> bool { value: n }
 // run: opgen-error
 // check: projection type mismatch
 struct Data { n: u64 }
-op Example(@n: u64) -> () {
+op Example(n: u64) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Data { n: n },
     verify {
@@ -63,7 +63,7 @@ property Int { constraints: [true] }
 // check: crate::host::traits::Module::params(&_host, (crate::host::traits::Module::signature
 interface Summary { count: i128 }
 struct Data { function: FuncId }
-op Example(@function: FuncId) -> () {
+op Example(function: FuncId) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Data { function: function },
     implements: [Summary { count: len(Module.params(Module.signature(function)?)?) }],

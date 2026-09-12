@@ -100,7 +100,7 @@ pub(crate) enum Pattern {
     /// A typed property's type; the set permits type-only validation as well.
     Property(String, TypeSet),
     Callable,
-    Class(TypeSet),
+    Set(TypeSet),
     Exact(String),
     Bind(u8, TypeSet),
     Same(u8),
@@ -218,7 +218,7 @@ impl Op {
 
 struct Variable {
     slot: u8,
-    class: TypeSet,
+    set: TypeSet,
     possible: TypeSet,
     bound: bool,
 }
@@ -402,13 +402,11 @@ fn pattern(
     match node.kind {
         Kind::Name(name) if name == "Callable" => Ok(Pattern::Callable),
         Kind::Name(name) if types.exact.contains_key(&name) => Ok(Pattern::Exact(name)),
-        Kind::Name(ref name) if types.classes.contains_key(name) => {
-            Ok(Pattern::Class(types.set(source, &node)?))
+        Kind::Name(ref name) if types.sets.contains_key(name) => {
+            Ok(Pattern::Set(types.set(source, &node)?))
         }
-        Kind::Union(_) | Kind::Intersection(_) => Ok(Pattern::Class(types.set(source, &node)?)),
-        Kind::Call(ref kind, _) if kind == "vectors" => {
-            Ok(Pattern::Class(types.set(source, &node)?))
-        }
+        Kind::Union(_) | Kind::Intersection(_) => Ok(Pattern::Set(types.set(source, &node)?)),
+        Kind::Call(ref kind, _) if kind == "vectors" => Ok(Pattern::Set(types.set(source, &node)?)),
         Kind::Name(name) => {
             let var = variables.get_mut(&name).ok_or_else(|| {
                 Error::at(
@@ -421,7 +419,7 @@ fn pattern(
                 Ok(Pattern::Same(var.slot))
             } else {
                 var.bound = true;
-                Ok(Pattern::Bind(var.slot, var.class.clone()))
+                Ok(Pattern::Bind(var.slot, var.set.clone()))
             }
         }
         Kind::Call(kind, args) => {

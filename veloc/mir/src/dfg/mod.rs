@@ -1,8 +1,7 @@
-use super::inst::{ConstantPoolId, FieldPool, Inst, InstDraft, InstView, PackedFields, StoredInst};
+use super::inst::{FieldPool, Inst, InstFields, InstView, InstWriter, StoredInst};
 use crate::constant::Constant;
 use crate::types::{Block, Type, Value, ValueData, ValueDef, ValueList, ValueListPool};
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
 
@@ -13,17 +12,14 @@ pub use operands::{Use, Uses};
 
 #[derive(Debug, Clone)]
 pub struct DataFlowGraph {
-    instructions: PrimaryMap<Inst, StoredInst>,
-    fields: FieldPool,
+    pub(crate) instructions: PrimaryMap<Inst, StoredInst>,
+    pub(crate) fields: FieldPool,
     pub(crate) values: PrimaryMap<Value, ValueData>,
     // Debug names are sparse metadata, not one String header per preceding value.
     value_names: HashMap<Value, Box<str>>,
     inst_results: SecondaryMap<Inst, ValueList>,
     value_list_pool: ValueListPool,
     operands: operands::Operands,
-    /// Constant bytes are immutable and may be interned.
-    constant_pool: PrimaryMap<ConstantPoolId, Arc<[u8]>>,
-    constant_pool_map: HashMap<Arc<[u8]>, ConstantPoolId>,
 }
 
 impl DataFlowGraph {
@@ -44,8 +40,6 @@ impl DataFlowGraph {
             inst_results: SecondaryMap::new(),
             value_list_pool: ValueListPool::new(),
             operands: operands::Operands::default(),
-            constant_pool: PrimaryMap::new(),
-            constant_pool_map: HashMap::new(),
         }
     }
 
@@ -108,28 +102,42 @@ impl DataFlowGraph {
             .view(self.operands.get(data.operands), &self.fields)
     }
 
-    /// Decode persistent storage into an independently editable draft.
-    pub fn draft(&self, inst: Inst) -> InstDraft {
-        self.inst(inst).to_draft()
-    }
-
     pub fn instructions(&self) -> impl ExactSizeIterator<Item = (Inst, InstView<'_>)> {
         self.instructions
             .iter()
             .map(|(inst, _)| (inst, self.inst(inst)))
     }
 
-    pub fn create_inst(&mut self, data: InstDraft) -> Inst {
-        let InstDraft {
-            fields,
-            operands: values,
-        } = data;
-        let fields = fields.pack(&mut self.fields);
-        let inst = self.instructions.push(StoredInst {
-            fields,
-            operands: OperandRange::default(),
-        });
-        self.instructions[inst].operands = self.operands.alloc(inst, &values);
+    pub fn writer(&mut self) -> InstWriter<'_> {
+        InstWriter {
+            dfg: self,
+            target: None,
+        }
+    }
+
+    pub fn create_inst(&mut self, build: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {
+        build(self.writer())
+    }
+
+    pub(crate) fn write_inst(
+        &mut self,
+        target: Option<Inst>,
+        fields: InstFields,
+        values: &[Value],
+    ) -> Inst {
+        let inst = if let Some(inst) = target {
+            self.instructions[inst].fields.release(&mut self.fields);
+            self.operands
+                .release(core::mem::take(&mut self.instructions[inst].operands));
+            self.instructions[inst].fields = fields;
+            inst
+        } else {
+            self.instructions.push(StoredInst {
+                fields,
+                operands: OperandRange::default(),
+            })
+        };
+        self.instructions[inst].operands = self.operands.alloc(inst, values);
         inst
     }
 
@@ -231,7 +239,7 @@ impl DataFlowGraph {
         self.operands
             .release(core::mem::take(&mut self.instructions[inst].operands));
         self.instructions[inst].fields.release(&mut self.fields);
-        self.instructions[inst].fields = PackedFields::Nop;
+        self.instructions[inst].fields = InstFields::Nop;
         self.inst_results[inst].clear(&mut self.value_list_pool);
     }
 
@@ -252,17 +260,15 @@ impl DataFlowGraph {
     }
 
     /// Replace operand structure. Positions from the previous instruction expire.
-    pub fn replace_inst(&mut self, inst: Inst, data: InstDraft) {
-        let InstDraft {
-            fields,
-            operands: values,
-        } = data;
-        self.instructions[inst].fields.release(&mut self.fields);
-        let fields = fields.pack(&mut self.fields);
-        self.operands
-            .release(core::mem::take(&mut self.instructions[inst].operands));
-        let operands = self.operands.alloc(inst, &values);
-        self.instructions[inst] = StoredInst { fields, operands };
+    pub fn replace_inst(&mut self, inst: Inst, build: impl FnOnce(InstWriter<'_>) -> Inst) {
+        let result = build(InstWriter {
+            dfg: self,
+            target: Some(inst),
+        });
+        assert_eq!(
+            result, inst,
+            "replacement must write the selected instruction"
+        );
     }
 }
 

@@ -1,16 +1,22 @@
 #![allow(dead_code)]
 
 pub const TYPES: &str = include_str!("../../../defs/types.ops");
-pub const BUILTINS: &str = concat!(
-    include_str!("../../../defs/types.ops"),
-    "\n",
-    include_str!("../../../defs/builtins.ops"),
-    "\n",
-    include_str!("../../../defs/comparisons.ops")
-);
+pub static BUILTINS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    concat!(
+        include_str!("../../../defs/types.ops"),
+        "\n",
+        include_str!("../../../defs/builtins.ops"),
+        "\n",
+        include_str!("../../../defs/comparisons.ops")
+    )
+    .lines()
+    .filter(|line| !line.trim_start().starts_with("import "))
+    .collect::<Vec<_>>()
+    .join("\n")
+});
 
 pub fn source(ops: &str) -> String {
-    format!("{BUILTINS}\n{ops}")
+    format!("{}\n{ops}", *BUILTINS)
 }
 
 pub fn parse(ops: &str) -> Result<veloc_opgen::Definitions, veloc_opgen::Error> {

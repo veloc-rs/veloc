@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::Error;
-use crate::model::records::RecordDef;
+use crate::model::records::{Policy, RecordDef};
 use crate::syntax::{Kind, Node, Record};
 
 mod compact;
@@ -72,6 +72,7 @@ pub(crate) struct Field {
     pub(crate) name: String,
     pub(crate) ty: FieldType,
     pub(crate) rust: String,
+    pub(crate) policy: Policy,
 }
 
 #[derive(Clone, Debug)]
@@ -97,34 +98,26 @@ impl FieldType {
         matches!(self, Self::Named(name) if name == expected)
     }
 
-    fn arity(&self) -> Option<usize> {
-        match self {
-            Self::Values(n) => Some(*n),
-            Self::Named(name) => match name.as_str() {
-                "Value" => Some(1),
-                "ValueList" | "BlockCall" | "JumpTable" => None,
-                _ => Some(0),
-            },
-        }
-    }
-
     fn schema_type(&self) -> String {
         match self {
             Self::Named(name) => name.clone(),
             Self::Values(n) => format!("values({n})"),
         }
     }
+}
 
-    fn traversal(&self) -> Option<&'static str> {
-        match self {
-            Self::Values(_) => Some("array"),
-            Self::Named(name) => match name.as_str() {
-                "Value" => Some("value"),
-                "ValueList" => Some("value_list"),
-                "BlockCall" => Some("block_call"),
-                "JumpTable" => Some("jump_table"),
-                _ => None,
-            },
+impl Field {
+    pub(crate) fn traversal(&self) -> Option<&'static str> {
+        if matches!(self.ty, FieldType::Values(_)) {
+            return Some("array");
+        }
+        self.policy.references.traversal()
+    }
+
+    fn arity(&self) -> Option<usize> {
+        match self.ty {
+            FieldType::Values(n) => Some(n),
+            _ => self.policy.references.arity(),
         }
     }
 }
@@ -133,7 +126,7 @@ impl Layout {
     fn arity(&self) -> Option<usize> {
         self.fields
             .iter()
-            .try_fold(0usize, |n, field| n.checked_add(field.ty.arity()?))
+            .try_fold(0usize, |n, field| n.checked_add(field.arity()?))
     }
 
     fn pattern(&self) -> String {
@@ -195,19 +188,10 @@ pub(crate) fn compile(
     let properties = data.records.clone();
     let mut layouts = Vec::new();
     let mut names = BTreeSet::new();
-    let mut methods: BTreeSet<String> = [
-        "as_view",
-        "opcode",
-        "operands",
-        "set_operand",
-        "edit_successors",
-        "is_terminator",
-        "result_types",
-        "from_values",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
+    let mut methods: BTreeSet<String> = ["copy", "write", "from_values"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     let mut used = BTreeSet::new();
     for op in records.iter().filter(|r| r.kind == "op") {
         if let Some(Node {
@@ -244,7 +228,7 @@ pub(crate) fn compile(
             return Err(Error::at(
                 source,
                 record.offset,
-                format!("conflicting draft constructor `{method}`"),
+                format!("conflicting instruction constructor `{method}`"),
             ));
         }
         layouts.push(parse_layout(
@@ -288,7 +272,7 @@ pub(crate) fn compile(
                     ));
                 }
             };
-            if ty != "Value"
+            if !field.policy.references.is_operand()
                 && (matches!(field.ty, PropertyType::Optional(_)) || data.contains_value(ty))
             {
                 return Err(Error::at(
@@ -330,6 +314,58 @@ pub(crate) fn compile(
 }
 
 impl Storage {
+    pub(crate) fn properties(
+        &self,
+        source: &str,
+        offset: usize,
+        format: &str,
+        mappings: &BTreeMap<String, Node>,
+        params: &[crate::syntax::Parameter],
+    ) -> Result<BTreeSet<String>, Error> {
+        if let Strategy::Operands(operands) = &self.strategy {
+            return operands.properties(source, offset, format, mappings, params);
+        }
+        let layout = self
+            .layouts
+            .iter()
+            .find(|l| l.name == format)
+            .or_else(|| {
+                self.layouts.iter().find(|l| match &l.format {
+                    FormatSource::Fixed(name) => name == format,
+                    FormatSource::Arity { formats, .. } => formats.iter().any(|n| n == format),
+                })
+            })
+            .ok_or_else(|| {
+                Error::at(source, offset, format!("unknown storage layout `{format}`"))
+            })?;
+        let mut properties = BTreeSet::new();
+        for field in &layout.fields {
+            if field.policy.references.is_data()
+                && !matches!(field.ty, FieldType::Values(_))
+                && let Some(node) = mappings.get(&field.name)
+            {
+                match &node.kind {
+                    Kind::Name(name) => {
+                        properties.insert(name.clone());
+                    }
+                    Kind::Call(name, args) if name == "pool" => {
+                        if let [
+                            Node {
+                                kind: Kind::Name(name),
+                                ..
+                            },
+                        ] = args.as_slice()
+                        {
+                            properties.insert(name.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(properties)
+    }
+
     pub(crate) fn instructions(&self) -> String {
         generate::instructions(&self.layouts, &self.records)
     }
@@ -400,6 +436,7 @@ fn parse_layout(
             };
             Ok(Field {
                 name: f.name.clone(),
+                policy: f.policy.clone(),
                 rust: match &ty {
                     FieldType::Named(name) => rust.qualified(name),
                     FieldType::Values(n) => format!("[{}; {n}]", rust.qualified("Value")),
@@ -422,6 +459,7 @@ fn parse_layout(
             0,
             Field {
                 name: "opcode".into(),
+                policy: Policy::default(),
                 ty: FieldType::Named("Opcode".into()),
                 rust: "crate::Opcode".into(),
             },
@@ -461,7 +499,7 @@ fn parse_layout(
             ("fixed", [target]) => FormatSource::Fixed(name(target, source)?.to_owned()),
             ("arity", [values, formats]) => {
                 let index = field_index(&fields, name(values, source)?, values, source)?;
-                if !fields[index].ty.named("ValueList") {
+                if !fields[index].policy.references.is_operands() {
                     return Err(Error::at(
                         source,
                         values.offset,
@@ -471,7 +509,7 @@ fn parse_layout(
                 if fields
                     .iter()
                     .enumerate()
-                    .any(|(i, f)| i != index && f.ty.arity() != Some(0))
+                    .any(|(i, f)| i != index && f.arity() != Some(0))
                 {
                     return Err(Error::at(
                         source,
@@ -752,7 +790,9 @@ fn validate_links(layouts: &[Layout], formats: &[Format], source: &str) -> Resul
 
 fn value_only(fields: &[Field]) -> bool {
     fields.iter().all(|f| {
-        f.ty.named("Value") || f.ty.named("Opcode") || matches!(f.ty, FieldType::Values(_))
+        f.policy.references.is_operand()
+            || f.ty.named("Opcode")
+            || matches!(f.ty, FieldType::Values(_))
     })
 }
 

@@ -217,7 +217,7 @@ impl Types {
 
     /// Records and enums are acyclic after declaration checking.
     pub fn contains_value(&self, ty: &str) -> bool {
-        if ty == "Value" {
+        if !self.rust.policy(ty).references.is_data() {
             return true;
         }
         let has = |ty: &PropertyType| {

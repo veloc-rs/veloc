@@ -16,7 +16,7 @@ impl Files {
         ));
         std::fs::create_dir(&path).unwrap();
         let files = Self(path);
-        files.write("prelude.ops", common::BUILTINS);
+        files.write("prelude.ops", &common::BUILTINS);
         files
     }
     fn write(&self, name: &str, text: &str) {
@@ -37,7 +37,7 @@ fn diamond_imports_generate_each_definition_once() {
     let files = Files::new();
     files.write(
         "shared.ops",
-        "// no final newline\nclass Small { members: [I8, I16] }\nclass Unused { members: [I8] }",
+        "import \"prelude.ops\";\n// no final newline\ntypeset Small = I8 | I16;\ntypeset Unused = I8;",
     );
     files.write(
         "left.ops",
@@ -98,7 +98,7 @@ import "prelude.ops";
 import "helpers.ops";
 interface Summary { count: u32 }
 struct Data { n: u32 }
-op Example(@n: u32) -> () {
+op Example(n: u32) -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example",
     storage: Data { n: n }, implements: [Summary { count: Twice(n) }],
 }
@@ -128,10 +128,7 @@ op Example(@n: u32) -> () {
 #[test]
 fn model_errors_retain_imported_file_line_and_column() {
     let files = Files::new();
-    files.write(
-        "bad.ops",
-        "// 类型定义\nclass Broken { members: [Missing] }",
-    );
+    files.write("bad.ops", "// 类型定义\ntypeset Broken = Missing;");
     files.write("root.ops", "import \"prelude.ops\";\nimport \"bad.ops\";");
     let source = files.load("root.ops").unwrap();
     let error = source.parse().err().unwrap();
@@ -144,7 +141,7 @@ fn model_errors_retain_imported_file_line_and_column() {
 #[test]
 fn imported_files_are_syntactically_independent() {
     let files = Files::new();
-    files.write("bad.ops", "class Broken {\n");
+    files.write("bad.ops", "typeset Broken =\n");
     files.write("root.ops", "import \"bad.ops\";\n}");
     let error = files.load("root.ops").err().unwrap();
     // The root is also malformed. Neither file may complete the other's braces.
@@ -168,10 +165,7 @@ fn cycles_missing_files_and_late_imports_have_diagnostics() {
     let error = files.load("missing.ops").err().unwrap();
     assert!(error.to_string().contains("missing-target.ops"));
     assert!(error.to_string().contains("missing.ops:2:1"));
-    files.write(
-        "late.ops",
-        "class A { members: [I8] }\nimport \"prelude.ops\";",
-    );
+    files.write("late.ops", "typeset A = I8;\nimport \"prelude.ops\";");
     assert!(
         files
             .load("late.ops")
@@ -247,18 +241,21 @@ fn production_entry_points_generate_the_same_runtime_contracts() {
 fn original_offsets_survive_unicode_imports_and_comments() {
     let files = Files::new();
     files.write("类型.ops", "");
-    files.write("root.ops", "import \"prelude.ops\";\nimport \"类型.ops\"; // 原文保留\n\nclass Broken { members: [Missing] }");
+    files.write(
+        "root.ops",
+        "import \"prelude.ops\";\nimport \"类型.ops\"; // 原文保留\n\ntypeset Broken = Missing;",
+    );
     let error = files.load("root.ops").unwrap().parse().err().unwrap();
     assert_eq!(error.path, files.0.join("root.ops"));
     assert_eq!(error.diagnostic.line, 4);
-    assert_eq!(error.diagnostic.column, 26);
+    assert_eq!(error.diagnostic.column, 18);
     assert!(error.diagnostic.message.contains("Missing"));
 }
 
 #[test]
 fn output_plan_errors_keep_the_imported_source_location() {
     let files = Files::new();
-    files.write("bad.ops", "struct Work {}\nop Work() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: \"emit\", storage: Work {} }");
+    files.write("bad.ops", "import \"prelude.ops\"; struct Work {}\nop Work() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: \"emit\", storage: Work {} }");
     files.write("root.ops", "import \"prelude.ops\";\nimport \"bad.ops\";");
     let source = files.load("root.ops").unwrap();
     source.parse().unwrap();
@@ -294,4 +291,86 @@ struct Entry { value: Token }
     let error = files.load("consumer.ops").unwrap().compile().err().unwrap();
     assert_eq!(error.path, files.0.join("types.ops"));
     assert_eq!(error.diagnostic.line, 1);
+}
+
+#[test]
+fn imports_are_file_local_even_when_siblings_are_loaded_first() {
+    let files = Files::new();
+    for (body, name) in [
+        ("struct Holder { value: Type }", "Type"),
+        ("struct Holder { value: Float }", "Float"),
+        (
+            "fn use_float(Float: Float) -> Float { value: Float }",
+            "Float",
+        ),
+        (
+            "fn query(value: Type) -> bool { value: value.is_scalar() }",
+            "Type",
+        ),
+        ("typeset Small = I8;", "I8"),
+        (
+            "type Inputs = rust(\"crate::inst::Arguments\") { field: list(Value), }",
+            "Value",
+        ),
+    ] {
+        files.write("consumer.ops", body);
+        for root in [
+            "import \"prelude.ops\"; import \"consumer.ops\";",
+            "import \"consumer.ops\"; import \"prelude.ops\";",
+        ] {
+            files.write("root.ops", root);
+            let error = files
+                .load("root.ops")
+                .unwrap()
+                .parse()
+                .err()
+                .expect("sibling import leaked");
+            assert_eq!(error.path, files.0.join("consumer.ops"));
+            assert!(
+                error
+                    .diagnostic
+                    .message
+                    .contains(&format!("`{name}` is not imported")),
+                "{error}"
+            );
+        }
+        files.write("consumer.ops", &format!("import \"prelude.ops\";\n{body}"));
+        files.load("root.ops").unwrap().compile().unwrap();
+    }
+}
+
+#[test]
+fn imported_type_sets_do_not_expose_unimported_rust_types() {
+    let files = Files::new();
+    files.write("scalar-types.ops", common::TYPES);
+    files.write(
+        "consumer.ops",
+        "import \"scalar-types.ops\"; struct Holder { value: Float }",
+    );
+    files.write(
+        "root.ops",
+        "import \"prelude.ops\"; import \"consumer.ops\";",
+    );
+    // Avoid duplicating the type declarations: prelude reaches this same file.
+    files.write(
+        "prelude.ops",
+        &format!(
+            "import \"scalar-types.ops\";\n{}\n{}",
+            include_str!("../../defs/builtins.ops")
+                .strip_prefix("import \"types.ops\";\n")
+                .unwrap(),
+            include_str!("../../defs/comparisons.ops"),
+        ),
+    );
+    let error = files
+        .load("root.ops")
+        .unwrap()
+        .parse()
+        .err()
+        .expect("data namespace leaked");
+    assert_eq!(error.path, files.0.join("consumer.ops"));
+    assert!(
+        error.diagnostic.message.contains("`Float` is not imported"),
+        "{error}"
+    );
 }

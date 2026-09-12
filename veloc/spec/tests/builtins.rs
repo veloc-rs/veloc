@@ -8,7 +8,7 @@ op Add<T: Bits>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
 }
-class Bits { members: [ScalarInteger] }
+typeset Bits = ScalarInteger;
 "#;
 
 fn rejected(source: &str, expected: &str) {
@@ -24,11 +24,11 @@ fn builtin_references_are_explicit_not_hidden_mir_defaults() {
     let encoding = "encoding Type { storage: u16, fields: [scalar(4), lanes_log2(4), scalable(1)], codes: [] }";
     rejected(
         &format!("{encoding}\n{ADD}"),
-        "unknown type or class `ScalarInteger`",
+        "unknown type or typeset `ScalarInteger`",
     );
     rejected(
         &format!(
-            "{}\nop Test() -> (result: I32) {{ mnemonic: \"test\" }}",
+            "{}\nstruct Test {{}} op Test() -> (result: I32) {{ mnemonic: \"test\", storage: Test {{}} }}",
             encoding
         ),
         "unbound type variable `I32`",
@@ -36,80 +36,61 @@ fn builtin_references_are_explicit_not_hidden_mir_defaults() {
 }
 
 #[test]
-fn class_unions_drive_both_generated_contracts_and_semantic_checks() {
+fn set_unions_drive_both_generated_contracts_and_semantic_checks() {
     let output = compile(ADD).unwrap();
     assert!(output.type_rules.contains("C::Bits"));
     assert!(output.opcodes.contains("1..=4 => 0x00000001,"));
-    let mixed = ADD.replace(
-        "members: [ScalarInteger]",
-        "members: [ScalarInteger, ScalarFloat]",
-    );
+    let mixed = ADD.replace("= ScalarInteger;", "= ScalarInteger | ScalarFloat;");
     rejected(
         &common::source(&mixed),
         "floating-point execution semantics are not modeled",
     );
-    let vectors = ADD.replace("members: [ScalarInteger]", "members: [Integer & Vector]");
+    let vectors = ADD.replace("= ScalarInteger;", "= Integer & Vector;");
     assert!(compile(&vectors).is_ok());
 }
 
 #[test]
-fn class_domains_check_derived_shapes_without_canonical_class_names() {
+fn set_domains_check_derived_shapes_without_canonical_set_names() {
     let source = r#"
         struct Unary { arg: Value }
-        class Lanes { members: [ScalarInteger] }
+        typeset Lanes = ScalarInteger;
         op Element<T: Lanes>(arg: T) -> (result: element(T)) {
     meta: OpInfo { memory: Known([]) },
             mnemonic: "element", storage: Unary { arg: arg }, }
     "#;
     rejected(&common::source(source), "impossible element constraint");
-    assert!(compile(&source.replace("[ScalarInteger]", "[vectors(ScalarInteger)]")).is_ok());
+    assert!(compile(&source.replace("= ScalarInteger;", "= vectors(ScalarInteger);")).is_ok());
 }
 
 #[test]
-fn floating_text_uses_domains_instead_of_class_name_allowlists() {
+fn floating_text_uses_domains_instead_of_set_name_allowlists() {
     let source = r#"
-        class Floating { members: [ScalarFloat] }
+        typeset Floating = ScalarFloat;
         struct Literal { value: Float }
-        op Literal(@value: Float) -> (result: Floating) {
+        op Literal(value: Float) -> (result: Floating) {
     meta: OpInfo { memory: Known([]) },
             mnemonic: "literal", storage: Literal { value: value },
             }
     "#;
     assert!(compile(source).is_ok());
     rejected(
-        &common::source(&source.replace("[ScalarFloat]", "[vectors(ScalarFloat)]")),
+        &common::source(&source.replace("= ScalarFloat;", "= vectors(ScalarFloat);")),
         "scalar float",
     );
 }
 
 #[test]
-fn classes_reject_cycles_unknowns_duplicates_and_shadowing() {
+fn sets_reject_cycles_unknowns_duplicates_and_shadowing() {
     for (defs, error) in [
-        (
-            "class A { members: [B] } class B { members: [A] }",
-            "cyclic type class",
-        ),
-        ("class A { members: [A] }", "cyclic type class"),
-        ("class A { members: [Absent] }", "unknown type or class"),
-        ("class A { members: [] }", "must not be empty"),
-        (
-            "class A { members: [Scalar, Scalar] }",
-            "duplicate class member",
-        ),
-        (
-            "class A { members: [scalar_integer] }",
-            "unknown type or class",
-        ),
-        (
-            "class values { members: [Scalar] }",
-            "shadows a signature keyword",
-        ),
-        ("class I32 { members: [Scalar] }", "shadows an exact type"),
-        (
-            "class Scalar { members: [scalar_integer] }",
-            "duplicate class",
-        ),
-        ("class A { members: [Scalar], typo: 1 }", "unknown field"),
+        ("typeset A = B; typeset B = A;", "cyclic type set"),
+        ("typeset A = A;", "cyclic type set"),
+        ("typeset A = Absent;", "unknown type or typeset"),
+        ("typeset A = I8 & I16;", "must not be empty"),
+        ("typeset A = scalar_integer;", "unknown type or typeset"),
+        ("typeset values = Scalar;", "shadows a signature keyword"),
+        ("typeset I32 = Scalar;", "shadows an exact type"),
+        ("typeset Scalar = scalar_integer;", "duplicate typeset"),
+        ("typeset A = Scalar, typo: 1;", "expected `;`"),
     ] {
         rejected(&common::source(defs), error);
     }
@@ -129,7 +110,7 @@ fn compact_scalar_codes_and_adapter_contracts_are_checked() {
     ] {
         rejected(&BUILTINS.replace(from, to), error);
     }
-    let output = veloc_opgen::compile(BUILTINS).unwrap();
+    let output = veloc_opgen::compile(&BUILTINS).unwrap();
     assert!(output.types.contains("I8 = 1,"));
     assert!(output.types.contains("PTR = 8,"));
     assert!(output.types.contains("pub const BOOL: Self"));

@@ -1,4 +1,4 @@
-//! Instruction kinds, metadata, drafts and borrowed storage views.
+//! Instruction kinds, metadata, direct writers and borrowed storage views.
 
 use crate::dfg::DataFlowGraph;
 use crate::types::Value;
@@ -17,53 +17,38 @@ pub struct ConstantPoolId(pub u32);
 entity_impl!(ConstantPoolId, "const");
 
 mod storage;
-pub(crate) use storage::FieldPool;
-pub(crate) use storage::StoredInst;
 pub use storage::{Arguments, Successor, SuccessorMut, Successors};
+pub(crate) use storage::{FieldPool, StoredInst};
 
-/// Owned logical fields using the same operand order as the DFG.
-/// Persistent fields use a separately generated compact layout.
-/// Constructors guarantee storage shape, not the instruction's type contract.
-#[derive(Debug, Clone)]
-pub struct InstDraft {
-    pub(crate) fields: InstFields,
-    pub(crate) operands: Arguments,
+/// A single-use write into one DFG. Generated methods encode directly into
+/// persistent fields; no owning instruction draft is materialized.
+pub struct InstWriter<'a> {
+    pub(crate) dfg: &'a mut DataFlowGraph,
+    pub(crate) target: Option<Inst>,
 }
-
-impl InstDraft {
-    pub fn as_view(&self) -> InstView<'_> {
-        self.fields.view(&self.operands)
+impl InstWriter<'_> {
+    /// Copy an instruction in this DFG, retaining its logical inputs but owning new pooled data.
+    pub fn copy(self, inst: Inst) -> Inst {
+        let fields = self.dfg.instructions[inst].fields.clone();
+        let fields = fields.clone_in(&mut self.dfg.fields);
+        let values = self.dfg.inst(inst).operands_owned();
+        self.write(fields, &values)
     }
 
-    pub fn opcode(&self) -> Opcode {
-        self.fields.opcode()
-    }
-
-    pub fn is_terminator(&self) -> bool {
-        self.opcode().spec().is_terminator()
-    }
-
-    pub fn result_types(
-        &self,
-        dfg: &DataFlowGraph,
-        module: &crate::ModuleData,
-        explicit: &[crate::Type],
-    ) -> Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {
-        self.as_view().result_types(dfg, module, explicit)
-    }
-
-    pub fn operands(&self) -> &[Value] {
-        &self.operands
-    }
-
-    pub fn set_operand(&mut self, index: usize, value: Value) {
-        self.operands[index] = value;
+    fn write(self, fields: InstFields, values: &[Value]) -> Inst {
+        self.dfg.write_inst(self.target, fields, values)
     }
 }
 
 include!(concat!(env!("OUT_DIR"), "/instructions.rs"));
 
 impl InstView<'_> {
+    pub(crate) fn operands_owned(&self) -> Arguments {
+        let mut values = Arguments::new();
+        self.visit_operands(|value| values.push(value));
+        values
+    }
+
     pub fn is_terminator(&self) -> bool {
         self.opcode().spec().is_terminator()
     }
@@ -137,14 +122,15 @@ mod tests {
             def: crate::ValueDef::Param(Block(0)),
         });
         // The nonexistent argument values are deliberately not validated here.
-        for data in [
-            InstDraft::call(func, &[Value(7)]),
-            InstDraft::call_indirect(Value(9), &[Value(7)], signature),
-            InstDraft::call_intrinsic(crate::intrinsic_ids::SIN_F32, &[Value(7)], signature),
-            InstDraft::call_value(Opcode::CallValue, callee, &[Value(7)]),
+        for inst in [
+            dfg.writer().call(func, &[Value(7)]),
+            dfg.writer().call_indirect(Value(9), &[Value(7)], signature),
+            dfg.writer()
+                .call_intrinsic(crate::intrinsic_ids::SIN_F32, &[Value(7)], signature),
+            dfg.writer()
+                .call_value(Opcode::CallValue, callee, &[Value(7)]),
         ] {
-            assert!(data.opcode().has_signature());
-            let inst = dfg.create_inst(data);
+            assert!(dfg.opcode(inst).has_signature());
             assert_eq!(
                 dfg.inst(inst)
                     .result_types(&dfg, &module, &[Type::F32])
@@ -163,14 +149,14 @@ mod tests {
             ty: Type::callable(SigId(u32::MAX), crate::CallableKind::Shared),
             def: crate::ValueDef::Param(Block(0)),
         });
-        for data in [
-            InstDraft::call(FuncId(u32::MAX), &[]),
-            InstDraft::call_indirect(Value(9), &[], SigId(u32::MAX)),
-            InstDraft::call_value(Opcode::CallValue, Value(u32::MAX), &[]),
-            InstDraft::call_value(Opcode::CallValue, scalar, &[]),
-            InstDraft::call_value(Opcode::CallValue, unknown, &[]),
+        for inst in [
+            dfg.writer().call(FuncId(u32::MAX), &[]),
+            dfg.writer().call_indirect(Value(9), &[], SigId(u32::MAX)),
+            dfg.writer().call_value(Opcode::CallValue, Value(99), &[]),
+            dfg.writer().call_value(Opcode::CallValue, scalar, &[]),
+            dfg.writer().call_value(Opcode::CallValue, unknown, &[]),
         ] {
-            assert!(data.result_types(&dfg, &module, &[]).is_err());
+            assert!(dfg.inst(inst).result_types(&dfg, &module, &[]).is_err());
         }
     }
 
@@ -180,12 +166,14 @@ mod tests {
         let first = BlockCall::new(Block(1), &[Value(1)]);
         let second = BlockCall::new(Block(2), &[Value(2), Value(3)]);
         let default = BlockCall::new(Block(3), &[]);
-        let inst = dfg.create_inst(InstDraft::br_table(
-            Value(0),
-            [first.clone(), second.clone(), first, default]
-                .iter()
-                .map(BlockCall::as_view),
-        ));
+        let inst = dfg.create_inst(|writer| {
+            writer.br_table(
+                Value(0),
+                [first.clone(), second.clone(), first, default]
+                    .iter()
+                    .map(BlockCall::as_view),
+            )
+        });
         let InstView::BrTable { table, .. } = dfg.inst(inst) else {
             unreachable!()
         };

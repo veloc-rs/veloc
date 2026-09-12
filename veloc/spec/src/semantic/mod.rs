@@ -327,7 +327,7 @@ fn instances(source: &str, op: &Op, types: &crate::types::Types) -> Result<Vec<I
     let mut domains = Vec::new();
     for pattern in inputs.iter().chain(outputs) {
         let domain = match pattern {
-            Pattern::Class(set) => Domain::Set(set),
+            Pattern::Set(set) => Domain::Set(set),
             Pattern::Bind(var, set) => {
                 bindings.insert(*var, domains.len());
                 Domain::Set(set)
@@ -693,9 +693,9 @@ mod tests {
 
     #[test]
     fn same_width_integer_schemes_include_vectors_and_exact_types() {
-        for class in ["Integer", "ScalarInteger", "Integer & Vector"] {
+        for set in ["Integer", "ScalarInteger", "Integer & Vector"] {
             let op = unary(
-                Pattern::Bind(0, crate::fixtures::set(class)),
+                Pattern::Bind(0, crate::fixtures::set(set)),
                 Pattern::Same(0),
             );
             validate("", &op, &crate::fixtures::types()).unwrap();
@@ -712,8 +712,8 @@ mod tests {
                 Pattern::Same(0),
             ),
             (
-                Pattern::Class(crate::fixtures::set("ScalarInteger")),
-                Pattern::Class(crate::fixtures::set("ScalarInteger")),
+                Pattern::Set(crate::fixtures::set("ScalarInteger")),
+                Pattern::Set(crate::fixtures::set("ScalarInteger")),
             ),
         ] {
             let op = unary(operand, result);

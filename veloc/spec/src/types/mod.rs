@@ -1,9 +1,9 @@
 //! Scalar types, named vectors and exact type-set expressions from types.ops.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::Error;
-use crate::model::{Fields, list};
+use crate::model::Fields;
 use crate::syntax::{Kind, Node, Record};
 use crate::types::encoding::TypeEncoding;
 
@@ -91,7 +91,7 @@ pub(crate) struct Types {
     pub vectors: Vec<Vector>,
     pub aliases: Vec<(String, usize)>,
     pub exact: BTreeMap<String, TypeSet>,
-    pub classes: BTreeMap<String, TypeSet>,
+    pub sets: BTreeMap<String, TypeSet>,
     pub predicates: BTreeMap<String, TypeSet>,
     pub lanes: TypeSet,
     pub integers: TypeSet,
@@ -100,7 +100,7 @@ pub(crate) struct Types {
 }
 
 impl Types {
-    /// Result domains supplied by typed literal properties, independent of class names.
+    /// Result domains supplied by typed literal properties, independent of set names.
     pub(crate) fn property_types(&self, name: &str) -> Option<TypeSet> {
         match name {
             "Float" => Some(self.scalar_floats.clone()),
@@ -121,7 +121,7 @@ impl Types {
     ) -> Result<Self, Error> {
         if let Some(record) = records
             .iter()
-            .find(|r| matches!(r.kind.as_str(), "type" | "class") && r.name == "Callable")
+            .find(|r| matches!(r.kind.as_str(), "type" | "typeset") && r.name == "Callable")
         {
             return Err(Error::at(
                 source,
@@ -135,7 +135,7 @@ impl Types {
             vectors: declarations.vectors,
             aliases: declarations.aliases,
             exact: declarations.exact,
-            classes: BTreeMap::new(),
+            sets: BTreeMap::new(),
             predicates: BTreeMap::new(),
             lanes: TypeSet::default(),
             integers: TypeSet::default(),
@@ -156,60 +156,40 @@ impl Types {
                 types.scalar_floats.union(&single);
             }
         }
-        let mut classes = BTreeMap::new();
-        for record in records.iter().filter(|r| r.kind == "class") {
+        let mut pending = BTreeMap::new();
+        for record in records.iter().filter(|r| r.kind == "typeset") {
             let mut fields = Fields::new(source, record.clone());
             if types.exact.contains_key(&record.name) {
-                return Err(fields.error("class name shadows an exact type"));
+                return Err(fields.error("typeset name shadows an exact type"));
             }
             if matches!(
                 record.name.as_str(),
                 "values" | "successor" | "successors" | "signature"
             ) {
-                return Err(fields.error("class name shadows a signature keyword"));
+                return Err(fields.error("typeset name shadows a signature keyword"));
             }
-            let members = list(source, fields.take("members")?)?;
-            if members.is_empty() {
-                return Err(fields.error("type class must not be empty"));
-            }
+            let expr = fields.take("set")?;
             fields.finish()?;
-            classes.insert(record.name.clone(), (record.offset, members));
+            pending.insert(record.name.clone(), (record.offset, expr));
         }
-        while !classes.is_empty() {
-            let before = classes.len();
-            for key in classes.keys().cloned().collect::<Vec<_>>() {
-                let (_, members) = &classes[&key];
-                let mut set = TypeSet::default();
-                let mut resolved = true;
-                let mut seen = BTreeSet::new();
-                for member in members {
-                    // Offsets are intentionally excluded from duplicate detection.
-                    if !seen.insert(member_key(source, member)?) {
-                        return Err(Error::at(source, member.offset, "duplicate class member"));
-                    }
-                    match types.member(source, member, &classes)? {
-                        Some(value) => set.union(&value),
-                        None => resolved = false,
-                    }
-                }
-                if resolved {
+        while !pending.is_empty() {
+            let before = pending.len();
+            for key in pending.keys().cloned().collect::<Vec<_>>() {
+                let (offset, expr) = &pending[&key];
+                if let Some(set) = types.member(source, expr, &pending)? {
                     if set.is_empty() {
-                        return Err(Error::at(
-                            source,
-                            classes[&key].0,
-                            "type class must not be empty",
-                        ));
+                        return Err(Error::at(source, *offset, "type set must not be empty"));
                     }
-                    classes.remove(&key);
-                    types.classes.insert(key, set);
+                    pending.remove(&key);
+                    types.sets.insert(key, set);
                 }
             }
-            if classes.len() == before {
-                let (name, (offset, _)) = classes.first_key_value().unwrap();
+            if pending.len() == before {
+                let (name, (offset, _)) = pending.first_key_value().unwrap();
                 return Err(Error::at(
                     source,
                     *offset,
-                    format!("cyclic type class `{name}`"),
+                    format!("cyclic type set `{name}`"),
                 ));
             }
         }
@@ -243,11 +223,11 @@ impl Types {
         &self,
         source: &str,
         node: &Node,
-        pending: &BTreeMap<String, (usize, Vec<Node>)>,
+        pending: &BTreeMap<String, (usize, Node)>,
     ) -> Result<Option<TypeSet>, Error> {
         match &node.kind {
             Kind::Name(name) => {
-                if let Some(set) = self.exact.get(name).or_else(|| self.classes.get(name)) {
+                if let Some(set) = self.exact.get(name).or_else(|| self.sets.get(name)) {
                     return Ok(Some(set.clone()));
                 }
                 if pending.contains_key(name) {
@@ -256,7 +236,7 @@ impl Types {
                 Err(Error::at(
                     source,
                     node.offset,
-                    format!("unknown type or class `{name}`"),
+                    format!("unknown type or typeset `{name}`"),
                 ))
             }
             Kind::Call(name, args) if name == "vectors" && args.len() == 1 => {
@@ -292,7 +272,7 @@ impl Types {
             _ => Err(Error::at(
                 source,
                 node.offset,
-                "expected a type, class or vectors(set)",
+                "expected a type, typeset or vectors(set)",
             )),
         }
     }
@@ -300,7 +280,7 @@ impl Types {
     pub fn set(&self, source: &str, node: &Node) -> Result<TypeSet, Error> {
         let set = self
             .member(source, node, &BTreeMap::new())?
-            .expect("all named classes have been resolved");
+            .expect("all named sets have been resolved");
         if set.is_empty() {
             return Err(Error::at(
                 source,
@@ -312,33 +292,7 @@ impl Types {
     }
 
     pub fn is_definition(kind: &str) -> bool {
-        matches!(kind, "type" | "class" | "predicate")
-    }
-}
-
-fn member_key(source: &str, node: &Node) -> Result<String, Error> {
-    match &node.kind {
-        Kind::Name(name) => Ok(name.clone()),
-        Kind::Call(name, args) if name == "vectors" && args.len() == 1 => {
-            Ok(format!("vectors({})", member_key(source, &args[0])?))
-        }
-        Kind::Union(parts) | Kind::Intersection(parts) => {
-            let separator = if matches!(node.kind, Kind::Union(_)) {
-                " | "
-            } else {
-                " & "
-            };
-            let parts = parts
-                .iter()
-                .map(|part| member_key(source, part))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(format!("({})", parts.join(separator)))
-        }
-        _ => Err(Error::at(
-            source,
-            node.offset,
-            "expected a type, class or vectors(set)",
-        )),
+        matches!(kind, "type" | "typeset" | "predicate")
     }
 }
 
@@ -350,10 +304,10 @@ mod tests {
     fn exact_sets_preserve_width_lane_count_and_scalability() {
         let defs = crate::fixtures::parse(
             r#"
-            class Wide { members: [I32, I64] }
-            class Shapes { members: [I32X4, SV4] }
+            typeset Wide = I32 | I64;
+            typeset Shapes = I32X4 | SV4;
             type SV4 = vector(I32, scalable(4));
-            class AllWideVectors { members: [vectors(Wide)] }
+            typeset AllWideVectors = vectors(Wide);
         "#,
         )
         .unwrap();
@@ -362,15 +316,15 @@ mod tests {
                 for scalable in [false, true] {
                     let ty = TypeSet::singleton(code, exponent, scalable);
                     assert_eq!(
-                        ty.subset_of(&defs.types.classes["Wide"]),
+                        ty.subset_of(&defs.types.sets["Wide"]),
                         matches!(code, 3 | 4) && exponent == 0 && !scalable
                     );
                     assert_eq!(
-                        ty.subset_of(&defs.types.classes["Shapes"]),
+                        ty.subset_of(&defs.types.sets["Shapes"]),
                         code == 3 && exponent == 2
                     );
                     assert_eq!(
-                        ty.subset_of(&defs.types.classes["AllWideVectors"]),
+                        ty.subset_of(&defs.types.sets["AllWideVectors"]),
                         matches!(code, 3 | 4) && exponent > 0
                     );
                 }
@@ -381,7 +335,7 @@ mod tests {
     #[test]
     fn shape_constraints_retain_the_exact_type_set() {
         let types = crate::fixtures::types();
-        let mut set = types.classes["Integer"].clone();
+        let mut set = types.sets["Integer"].clone();
         set.retain_shapes(1 << 2); // Fixed vectors with four lanes.
         assert_eq!(set.0, BTreeMap::from([(1, 4), (2, 4), (3, 4), (4, 4)]));
         set.intersect(&types.exact["I32X4"]);

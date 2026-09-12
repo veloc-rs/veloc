@@ -15,7 +15,7 @@ mnemonic: "convert", storage: Unary { arg: arg }, }
 
 // ----- direct-patterns-and-shape-constraints-accept-expressions-2
 // run: opgen-error
-// check: unknown type or class `T`
+// check: unknown type or typeset `T`
 struct Unary { arg: Value }
 op Copy(arg: I32 | I64) -> I32 | I64 {
     meta: OpInfo { memory: Known([]) },
@@ -57,7 +57,7 @@ op Add<T: vectors(I32) & I32>(lhs: T, rhs: T) -> T {
 
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-3
 // run: opgen-error
-// check: unknown type or class `Missing`
+// check: unknown type or typeset `Missing`
 struct Pair { args: values(2) }
 op Add<T: Integer | Missing>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
@@ -66,7 +66,7 @@ op Add<T: Integer | Missing>(lhs: T, rhs: T) -> T {
 
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-4
 // run: opgen-error
-// check: unknown type or class `Missing`
+// check: unknown type or typeset `Missing`
 struct Pair { args: values(2) }
 op Add<T: (I32 & F32) & Missing>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
@@ -138,13 +138,13 @@ op Add<T: ()>(lhs: T, rhs: T) -> T {
 
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-12
 // run: opgen-error
-// check: type class must not be empty
-class Empty { members: [Integer & Float] }
+// check: type set must not be empty
+typeset Empty = Integer & Float;
 
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-13
 // run: opgen-error
-// check: cyclic type class `A`
-class A { members: [I32 | vectors(B)] } class B { members: [A & Scalar] }
+// check: cyclic type set `A`
+typeset A = I32 | vectors(B); typeset B = A & Scalar;
 
 // ----- semantics-and-text-codecs-use-resolved-inline-constraints-1
 // run: opgen-error
@@ -168,7 +168,7 @@ op Add<T: I32 | F64>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: float text atoms require a scalar float first result
 struct Literal { value: Float }
-op Literal<T: Float & Vector>(@value: Float) -> T {
+op Literal<T: Float & Vector>(value: Float) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "literal", storage: Literal { value: value },
 }

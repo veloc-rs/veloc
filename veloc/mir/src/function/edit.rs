@@ -1,6 +1,6 @@
 //! Structural editing. Type contracts and dominance remain explicit validation.
 use super::Function;
-use crate::{Block, Inst, InstDraft, SuccessorMut, Type, Value};
+use crate::{Block, Inst, InstWriter, SuccessorMut, Type, Value};
 use alloc::vec::Vec;
 use smallvec::SmallVec;
 
@@ -46,22 +46,38 @@ impl<'a> FunctionEditor<'a> {
     /// Edit exactly one outgoing edge, maintaining operands, uses and CFG
     /// adjacency. Type and dominance contracts remain explicit validation.
     pub fn edit_edge(&mut self, edge: EdgeRef, edit: impl FnOnce(&mut SuccessorMut<'_>)) {
-        let mut draft = self.func.dfg.draft(edge.inst);
         let mut edit = Some(edit);
         let mut index = 0;
-        draft.edit_successors(|successor| {
+        self.func.dfg.edit_successors(edge.inst, |successor| {
             if index == edge.index {
                 edit.take().expect("unique successor position")(successor);
             }
             index += 1;
         });
         assert!(edit.is_none(), "successor position out of bounds");
-        self.replace_inst(edge.inst, draft);
+        let block = self
+            .func
+            .layout
+            .inst_block(edge.inst)
+            .expect("edge instruction in layout");
+        self.sync_edges(block);
     }
 
-    pub fn append_inst(&mut self, block: Block, data: InstDraft, types: &[Type]) -> Inst {
-        let control = data.is_terminator();
+    pub(crate) fn append_existing(&mut self, block: Block, inst: Inst) {
+        self.func.layout.append_inst(block, inst);
+        if self.func.dfg.opcode(inst).spec().is_terminator() {
+            self.sync_edges(block);
+        }
+    }
+
+    pub fn append_inst(
+        &mut self,
+        block: Block,
+        data: impl FnOnce(InstWriter<'_>) -> Inst,
+        types: &[Type],
+    ) -> Inst {
         let inst = self.func.dfg.create_inst(data);
+        let control = self.func.dfg.opcode(inst).spec().is_terminator();
         self.func.dfg.append_results(inst, types);
         self.func.layout.append_inst(block, inst);
         if control {
@@ -71,22 +87,35 @@ impl<'a> FunctionEditor<'a> {
     }
 
     /// Insert a non-terminator at block entry.
-    pub fn prepend_inst(&mut self, block: Block, data: InstDraft, types: &[Type]) -> Inst {
-        assert!(!data.is_terminator(), "cannot prepend a terminator");
+    pub fn prepend_inst(
+        &mut self,
+        block: Block,
+        data: impl FnOnce(InstWriter<'_>) -> Inst,
+        types: &[Type],
+    ) -> Inst {
         let inst = self.func.dfg.create_inst(data);
+        assert!(
+            !self.func.dfg.opcode(inst).spec().is_terminator(),
+            "cannot prepend a terminator"
+        );
         self.func.dfg.append_results(inst, types);
         self.func.layout.prepend_inst(block, inst);
         inst
     }
 
-    pub fn insert_after(&mut self, after: Inst, data: InstDraft, types: &[Type]) -> Inst {
+    pub fn insert_after(
+        &mut self,
+        after: Inst,
+        data: impl FnOnce(InstWriter<'_>) -> Inst,
+        types: &[Type],
+    ) -> Inst {
         let block = self
             .func
             .layout
             .inst_block(after)
             .expect("anchor not in layout");
-        let control = data.is_terminator();
         let inst = self.func.dfg.create_inst(data);
+        let control = self.func.dfg.opcode(inst).spec().is_terminator();
         self.func.dfg.append_results(inst, types);
         self.func.layout.insert_after(after, inst);
         if control {
@@ -95,15 +124,15 @@ impl<'a> FunctionEditor<'a> {
         inst
     }
 
-    pub fn replace_inst(&mut self, inst: Inst, data: InstDraft) {
+    pub fn replace_inst(&mut self, inst: Inst, data: impl FnOnce(InstWriter<'_>) -> Inst) {
         let block = self
             .func
             .layout
             .inst_block(inst)
             .expect("instruction not in layout");
-        let control = data.is_terminator() || self.func.dfg.opcode(inst).spec().is_terminator();
+        let control = self.func.dfg.opcode(inst).spec().is_terminator();
         self.func.dfg.replace_inst(inst, data);
-        if control {
+        if control || self.func.dfg.opcode(inst).spec().is_terminator() {
             self.sync_edges(block);
         }
     }

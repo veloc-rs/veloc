@@ -51,7 +51,7 @@ struct RefTag {
     target: FuncId,
     tag: u32,
 }
-op RefTag(@target: FuncId, @tag: u32) -> () {
+op RefTag(target: FuncId, tag: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ref-tag", storage: RefTag { target: target, tag: tag },
     text: "{target} {tag}", }

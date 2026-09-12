@@ -5,7 +5,7 @@ fn checked(predicate: &str) -> Result<veloc_opgen::Generated, veloc_opgen::Error
         r#"
 fn Double(n: u64) -> u64 {{ value: n * 2 }}
 struct Custom {{ bits: u64, yes: bool }}
-op Example(@number: u64, @flag: bool) -> ScalarInteger {{
+op Example(number: u64, flag: bool) -> ScalarInteger {{
     meta: OpInfo {{ memory: Known([]) }},
     mnemonic: "example", storage: Custom {{ bits: number, yes: flag }},
     verify {{
@@ -90,7 +90,7 @@ fn Above(items: array(u32, 2), limit: i128) -> bool {{
     value: all(items, |item| i128(item) > limit)
 }}
 struct Buffers {{ first: ConstantPoolId, second: ConstantPoolId }}
-op Example(@data: Bytes, @other: Bytes) -> Vector {{
+op Example(data: Bytes, other: Bytes) -> Vector {{
     meta: OpInfo {{ memory: Known([]) }},
     mnemonic: "example", storage: Buffers {{ first: pool(data), second: pool(other) }},
     text: "{{data:bytes}}, {{other:bytes}}",
@@ -132,7 +132,7 @@ extern interface Arithmetic {
 fn Next(n: u64) -> u64 { value: Arithmetic.next(n)? }
 fn Successor(n: u64) -> u64 { value: Next(n) }
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> I32 {
+op Example(number: u64, flag: bool) -> I32 {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example",
     storage: Custom { bits: number, yes: flag },
     verify { require(flag || Successor(number) > number, "host failure"); }

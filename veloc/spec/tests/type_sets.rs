@@ -10,9 +10,9 @@ fn rejected(source: &str, expected: &str) {
 }
 
 #[test]
-fn exact_class_members_drive_codegen_and_bitvector_semantics() {
+fn exact_sets_drive_codegen_and_bitvector_semantics() {
     let source = r#"
-        class Wide { members: [I32, I64] }
+        typeset Wide = I32 | I64;
         struct Pair { args: values(2) }
         op Add<T: Wide>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
@@ -22,17 +22,17 @@ fn exact_class_members_drive_codegen_and_bitvector_semantics() {
     compile(source).unwrap();
 
     rejected(
-        &source.replace("[I32, I64]", "[I32, F64]"),
+        &source.replace("I32 | I64", "I32 | F64"),
         "floating-point execution semantics are not modeled",
     );
-    assert!(compile(&source.replace("[I32, I64]", "[I32X4]")).is_ok());
+    assert!(compile(&source.replace("I32 | I64", "I32X4")).is_ok());
 }
 
 #[test]
 fn exact_shapes_detect_impossible_relations_at_definition_time() {
     let source = r#"
-        class V4 { members: [I32X4] }
-        class V2 { members: [I64X2] }
+        typeset V4 = I32X4;
+        typeset V2 = I64X2;
         struct Unary { arg: Value }
         op Convert<T: V4, U: V2>(arg: T) -> U {
     verify { require(U.same_shape(T), "input and result must have the same shape"); }
@@ -40,59 +40,34 @@ fn exact_shapes_detect_impossible_relations_at_definition_time() {
             mnemonic: "convert", storage: Unary { arg: arg }, }
     "#;
     rejected(source, "constraint is always false");
-    assert!(compile(&source.replace("[I64X2]", "[F32X4]")).is_ok());
-    let scalar = source.replace("[I64X2]", "[I64]");
+    assert!(compile(&source.replace("I64X2", "F32X4")).is_ok());
+    let scalar = source.replace("I64X2", "I64");
     rejected(&scalar, "constraint is always false");
 }
 
 #[test]
 fn vector_families_require_scalar_sets_and_preserve_definition_checks() {
     for (source, error) in [
+        ("typeset Bad = vectors(PTR);", "non-pointer scalar"),
+        ("typeset Bad = vectors(I32X4);", "non-pointer scalar"),
+        ("typeset Bad = vectors(Any);", "non-pointer scalar"),
+        ("typeset Bad = vectors(vectors(I32));", "non-pointer scalar"),
+        ("typeset Bad = vectors(Missing);", "unknown type or typeset"),
         (
-            "class Bad { members: [vectors(PTR)] }",
-            "non-pointer scalar",
+            "typeset Bad = vectors();",
+            "expected a type, typeset or vectors(set)",
         ),
         (
-            "class Bad { members: [vectors(I32X4)] }",
-            "non-pointer scalar",
+            "typeset Bad = vectors(I32, I64);",
+            "expected a type, typeset or vectors(set)",
         ),
-        (
-            "class Bad { members: [vectors(Any)] }",
-            "non-pointer scalar",
-        ),
-        (
-            "class Bad { members: [vectors(vectors(I32))] }",
-            "non-pointer scalar",
-        ),
-        (
-            "class Bad { members: [vectors(Missing)] }",
-            "unknown type or class",
-        ),
-        (
-            "class Bad { members: [vectors()] }",
-            "expected a type, class or vectors(set)",
-        ),
-        (
-            "class Bad { members: [vectors(I32, I64)] }",
-            "expected a type, class or vectors(set)",
-        ),
-        (
-            "class Bad { members: [vectors(I32), vectors(I32)] }",
-            "duplicate class member",
-        ),
-        (
-            "class A { members: [vectors(B)] } class B { members: [A] }",
-            "cyclic type class",
-        ),
-        ("class I32X4 { members: [I32] }", "shadows an exact type"),
-        (
-            "class Bad { members: [vector_integer] }",
-            "unknown type or class",
-        ),
+        ("typeset A = vectors(B); typeset B = A;", "cyclic type set"),
+        ("typeset I32X4 = I32;", "shadows an exact type"),
+        ("typeset Bad = vector_integer;", "unknown type or typeset"),
     ] {
         rejected(source, error);
     }
-    assert!(compile("class Mixed { members: [I32, ScalarInteger] }").is_ok());
+    assert!(compile("typeset Mixed = I32 | ScalarInteger;").is_ok());
 }
 
 #[test]

@@ -2,7 +2,7 @@
 // run: opgen-error
 // check: unknown integer comparison property `missing`
 struct Compare { cc: IntCC, args: values(2) }
-op Test<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
+op Test<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> BOOL {
     meta: OpInfo {},
     mnemonic: "test", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.cmp(missing, lhs, rhs)
@@ -12,7 +12,7 @@ op Test<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
 // run: opgen-error
 // check: unknown semantic value `condition`
 struct Compare { cc: IntCC, args: values(2) }
-op Test<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
+op Test<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> BOOL {
     meta: OpInfo {},
     mnemonic: "test", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.add(condition, lhs)
@@ -80,7 +80,7 @@ op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
-        require(result.element_bits()? < type(arg).element_bits()?, "result must have fewer bits per lane than arg");
+        require(result.element_bits()? < arg.ty().element_bits()?, "result must have fewer bits per lane than arg");
     } semantics: bv.sext(arg, result(0))
 }
 
@@ -93,7 +93,7 @@ op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
-        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
+        require(result.element_bits()? > arg.ty().element_bits()?, "result must have more bits per lane than arg");
     } semantics: bv.sext(arg, result(1))
 }
 
@@ -106,7 +106,7 @@ op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
-        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
+        require(result.element_bits()? > arg.ty().element_bits()?, "result must have more bits per lane than arg");
     } semantics: bv.sext(arg, type(missing))
 }
 
@@ -119,7 +119,7 @@ op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
         require(U.same_shape(T), "input and result must have the same shape");
-        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
+        require(result.element_bits()? > arg.ty().element_bits()?, "result must have more bits per lane than arg");
     } semantics: arg
 }
 
@@ -131,7 +131,7 @@ op Convert<T: Integer>(arg: T) -> (result: I32X4) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
-        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
+        require(result.element_bits()? > arg.ty().element_bits()?, "result must have more bits per lane than arg");
     } semantics: bv.sext(arg, result(0))
 }
 

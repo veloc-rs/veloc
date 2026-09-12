@@ -10,7 +10,7 @@ extern interface Numbers {
 interface Summary { count: u32 }
 fn Count(n: u32) -> u32 { value: Numbers.next(n)? }
 struct Data { n: u32 }
-op Example(@n: u32) -> () {
+op Example(n: u32) -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example",
     storage: Data { n: n }, implements: [Summary { count: Count(n) }],
     verify { require(Count(n) > n, "no next value"); }
@@ -22,7 +22,7 @@ op Example(@n: u32) -> () {
 fn Count(sig: SigId) -> i128 { value: len(Module.params(sig)?) }
 interface Summary { count: i128 }
 struct Data { sig: SigId }
-op Example(@sig: SigId) -> () {
+op Example(sig: SigId) -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example",
     storage: Data { sig: sig }, implements: [Summary { count: Count(sig) }],
 }
@@ -79,7 +79,7 @@ context query {}
 extern interface Unused { fn number() -> u32; }
 interface Summary { count: u32 }
 struct Data { n: u32 }
-op Example(@n: u32) -> () {
+op Example(n: u32) -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "example",
     storage: Data { n: n }, implements: [Summary { count: n }],
 }

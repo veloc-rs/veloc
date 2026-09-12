@@ -11,7 +11,7 @@ pub(super) fn stored_type(field: &Field, records: &[RecordDef]) -> Option<String
     if let Some(record) = record(field, records) {
         return Some(format!("{}Fields", record.name));
     }
-    match field.ty.traversal() {
+    match field.traversal() {
         Some("value" | "array") => None,
         Some("value_list") => Some("u32".into()),
         Some("block_call") => Some("storage::Edge".into()),
@@ -24,7 +24,7 @@ fn view_type(field: &Field) -> String {
     if let FieldType::Values(n) = field.ty {
         return format!("&'a [Value; {n}]");
     }
-    match field.ty.traversal() {
+    match field.traversal() {
         Some("value_list") => "&'a [Value]".into(),
         Some("block_call") => "Successor<'a>".into(),
         Some("jump_table") => "Successors<'a>".into(),
@@ -37,7 +37,7 @@ pub(super) fn read_field(field: &Field, records: &[RecordDef], value: &str) -> S
     if record(field, records).is_some() {
         return format!("{value}.view(&mut reader)");
     }
-    match field.ty.traversal() {
+    match field.traversal() {
         Some("value") => "reader.value()".into(),
         Some("array") => {
             let FieldType::Values(n) = field.ty else {
@@ -71,7 +71,7 @@ pub(super) fn construct(name: &str, fields: impl Iterator<Item = (String, String
 
 pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String {
     let mut out =
-        String::from("// @generated: construction data and borrowed views share one schema.\n");
+        String::from("// generated: construction data and borrowed views share one schema.\n");
     out.push_str("#[derive(Debug, Clone, Copy)] pub enum InstView<'a> {\n");
     for layout in layouts {
         if layout.fields.is_empty() {
@@ -85,53 +85,6 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         out.push_str("},\n");
     }
     out.push_str("}\n");
-    out.push_str("#[derive(Debug, Clone)] pub(crate) enum InstFields {\n");
-    for layout in layouts {
-        let fields = layout
-            .fields
-            .iter()
-            .filter_map(|f| stored_type(f, records).map(|ty| (f.name.clone(), ty)));
-        writeln!(out, "{},", construct(&layout.name, fields)).unwrap();
-    }
-    out.push_str("}\n");
-    out.push_str("impl InstFields { pub(crate) fn opcode(&self) -> Opcode { match self {\n");
-    for layout in layouts {
-        let fields = layout
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| stored_type(f, records).is_some())
-            .map(|(i, f)| (f.name.clone(), format!("_field{i}")));
-        let pat = construct(&format!("Self::{}", layout.name), fields);
-        let opcode = match &layout.opcode {
-            OpcodeSource::Fixed(op) => format!("Opcode::{op}"),
-            OpcodeSource::Dynamic(i) => format!("*_field{i}"),
-        };
-        writeln!(out, "{pat} => {opcode},").unwrap();
-    }
-    out.push_str("} } }\n");
-    out.push_str("impl InstFields { #[allow(clippy::single_match)] pub(crate) fn map_functions(&mut self, mut map: impl FnMut(crate::FuncId) -> crate::FuncId) { let _ = &mut map; match self {\n");
-    for layout in layouts {
-        let fields: Vec<_> = layout
-            .fields
-            .iter()
-            .filter(|f| f.ty.named("FuncId"))
-            .collect();
-        if fields.is_empty() {
-            continue;
-        }
-        let names = fields
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(out, "Self::{} {{ {names}, .. }} => {{", layout.name).unwrap();
-        for field in fields {
-            writeln!(out, "*{0} = map(*{0});", field.name).unwrap();
-        }
-        out.push_str("},\n");
-    }
-    out.push_str("_ => {},\n} } }\n");
     for record in records {
         writeln!(
             out,
@@ -141,8 +94,8 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         .unwrap();
         for f in &record.fields {
             let ty = match &f.ty {
-                PropertyType::Named(ty) if ty == "Value" => continue,
-                PropertyType::Optional(ty) if ty == "Value" => "bool",
+                PropertyType::Named(_) if f.policy.references.is_operand() => continue,
+                PropertyType::Optional(_) if f.policy.references.is_operand() => "bool",
                 PropertyType::Named(_) => &f.rust,
                 _ => unreachable!("checked record type"),
             };
@@ -152,7 +105,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         writeln!(out, "#[allow(unused_variables)] impl {} {{ fn store(self, values: &mut Arguments) -> {}Fields {{", record.name, record.name).unwrap();
         for f in &record.fields {
             match &f.ty {
-                PropertyType::Named(ty) if ty == "Value" => {
+                PropertyType::Named(_) if f.policy.references.is_operand() => {
                     writeln!(out, "values.push(self.{});", f.name).unwrap()
                 }
                 PropertyType::Optional(_) => {
@@ -162,7 +115,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             }
         }
         let fields = record.fields.iter().filter_map(|f| match &f.ty {
-            PropertyType::Named(ty) if ty == "Value" => None,
+            PropertyType::Named(_) if f.policy.references.is_operand() => None,
             PropertyType::Optional(_) => {
                 Some((f.name.clone(), format!("self.{}.is_some()", f.name)))
             }
@@ -177,7 +130,9 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         writeln!(out, "#[allow(unused_variables)] impl {}Fields {{ fn view(self, reader: &mut storage::OperandReader<'_>) -> {} {{", record.name, record.name).unwrap();
         let fields = record.fields.iter().map(|f| {
             let expr = match &f.ty {
-                PropertyType::Named(ty) if ty == "Value" => "reader.value()".into(),
+                PropertyType::Named(_) if f.policy.references.is_operand() => {
+                    "reader.value()".into()
+                }
                 PropertyType::Optional(_) => format!("self.{}.then(|| reader.value())", f.name),
                 _ => format!("self.{}", f.name),
             };
@@ -185,7 +140,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         });
         writeln!(out, "{} }} }}", construct(&record.name, fields)).unwrap();
     }
-    out.push_str("#[allow(unused_variables, unused_mut)] impl InstDraft {\n");
+    out.push_str("#[allow(unused_variables, unused_mut)] impl InstWriter<'_> {\n");
     for layout in layouts {
         // Keep internal locals disjoint from all definition-owned field names.
         let mut prefix = "_".to_owned();
@@ -197,7 +152,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             .fields
             .iter()
             .map(|f| {
-                let ty = match f.ty.traversal() {
+                let ty = match f.traversal() {
                     Some("value_list") => "&[Value]".into(),
                     Some("block_call") => "Successor<'_>".into(),
                     Some("jump_table") => "impl IntoIterator<Item = Successor<'a>>".into(),
@@ -207,19 +162,18 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let lifetime = if layout.fields.iter().any(|f| f.ty.named("JumpTable")) {
+        let lifetime = if layout.fields.iter().any(|f| f.policy.references.is_edges()) {
             "<'a>"
         } else {
             ""
         };
-        writeln!(out, "/// Construct this layout without validating its type contract.\npub fn {}{lifetime}({params}) -> Self {{\nlet mut {values} = Arguments::new();", super::constructor_name(&layout.name)).unwrap();
-        let mut fields = Vec::new();
+        writeln!(out, "/// Construct this layout without validating its type contract.\npub fn {}{lifetime}(self, {params}) -> Inst {{\nlet mut {values} = Arguments::new();", super::constructor_name(&layout.name)).unwrap();
         for (i, f) in layout.fields.iter().enumerate() {
             let name = &f.name;
             let expr = if record(f, records).is_some() {
                 format!("{name}.store(&mut {values})")
             } else {
-                match f.ty.traversal() {
+                match f.traversal() {
                     Some("value") => {
                         writeln!(out, "{values}.push({name});").unwrap();
                         continue;
@@ -230,7 +184,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                     }
                     Some("value_list") => {
                         writeln!(out, "{values}.extend_from_slice({name});").unwrap();
-                        format!("{name}.len().try_into().expect(\"too many operands\")")
+                        format!("u32::try_from({name}.len()).expect(\"too many operands\")")
                     }
                     Some("block_call") => format!("storage::store_edge({name}, &mut {values})"),
                     Some("jump_table") => format!("storage::Edges::store({name}, &mut {values})"),
@@ -238,41 +192,16 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                 }
             };
             writeln!(out, "let {prefix}stored{i} = {expr};").unwrap();
-            fields.push((name.clone(), format!("{prefix}stored{i}")));
         }
         writeln!(
             out,
-            "Self {{ fields: {}, operands: {values} }} }}",
-            construct(&format!("InstFields::{}", layout.name), fields.into_iter())
+            "let fields = {}; self.write(fields, &{values}) }}",
+            super::compact::encode(layout, records, |i| format!("{prefix}stored{i}"))
         )
         .unwrap();
     }
     from_values(&mut out, layouts);
-    successor_edit(&mut out, layouts, records);
-    out.push_str("}\n#[allow(unused_variables)] impl InstFields {\npub(crate) fn view<'a>(&'a self, values: &'a [Value]) -> InstView<'a> {\nlet mut reader = storage::OperandReader(values);\nlet view = match self {\n");
-    for layout in layouts {
-        let bindings = layout
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| stored_type(f, records).is_some())
-            .map(|(i, f)| (f.name.clone(), format!("_field{i}")));
-        let pat = construct(&format!("Self::{}", layout.name), bindings);
-        writeln!(out, "{pat} => {{").unwrap();
-        let mut fields = Vec::new();
-        for (i, f) in layout.fields.iter().enumerate() {
-            let expr = read_field(f, records, &format!("_field{i}"));
-            writeln!(out, "let _view{i} = {expr};").unwrap();
-            fields.push((f.name.clone(), format!("_view{i}")));
-        }
-        writeln!(
-            out,
-            "{} }},",
-            construct(&format!("InstView::{}", layout.name), fields.into_iter())
-        )
-        .unwrap();
-    }
-    out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n} }\n#[allow(unused_variables)] impl<'a> InstView<'a> {\npub fn opcode(&self) -> Opcode { match self {\n");
+    out.push_str("}\n#[allow(unused_variables)] impl<'a> InstView<'a> {\npub fn opcode(&self) -> Opcode { match self {\n");
     for layout in layouts {
         let value = match &layout.opcode {
             OpcodeSource::Fixed(op) => format!("Opcode::{op}"),
@@ -317,7 +246,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                     }
                     for member in &record.fields {
                         match &member.ty {
-                            PropertyType::Named(ty) if ty == "Value" => {
+                            PropertyType::Named(_) if member.policy.references.is_operand() => {
                                 writeln!(out, "f(_field{i}.{})?;", member.name).unwrap()
                             }
                             PropertyType::Optional(_) => writeln!(
@@ -330,7 +259,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                         }
                     }
                 } else {
-                    match field.ty.traversal() {
+                    match field.traversal() {
                         Some("value") => writeln!(out, "f(*_field{i}){propagate};").unwrap(),
                         Some("array" | "value_list") => writeln!(out, "for &value in _field{i}.iter() {{ f(value){propagate}; }}").unwrap(),
                         Some("block_call") => writeln!(out, "for &value in _field{i}.args {{ f(value){propagate}; }}").unwrap(),
@@ -367,11 +296,12 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
     }
     out.push_str("} }\n}\n");
     out.push_str(&super::compact::generate(layouts, records));
+    edit_successors(&mut out, layouts);
     out
 }
 
 fn from_values(out: &mut String, layouts: &[Layout]) {
-    out.push_str("pub fn from_values(opcode: Opcode, values: &[Value]) -> Option<Self> { match opcode.spec().format {\n");
+    out.push_str("pub fn from_values(self, opcode: Opcode, values: &[Value]) -> Option<Inst> { match opcode.spec().format {\n");
     for layout in layouts
         .iter()
         .filter(|l| l.canonical && value_only(&l.fields))
@@ -385,7 +315,7 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
                     index += n;
                     format!("values[{i}..{index}].try_into().unwrap()")
                 }
-                FieldType::Named(ty) if ty == "Value" => {
+                FieldType::Named(_) if f.policy.references.is_operand() => {
                     let i = index;
                     index += 1;
                     format!("values[{i}]")
@@ -401,7 +331,7 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
         };
         writeln!(
             out,
-            "OpFormat::{} if {check} => Some(Self::{}({})),",
+            "OpFormat::{} if {check} => Some(self.{}({})),",
             layout.name,
             super::constructor_name(&layout.name),
             fields
@@ -414,59 +344,68 @@ fn from_values(out: &mut String, layouts: &[Layout]) {
     out.push_str("_ => None, } }\n");
 }
 
-fn successor_edit(out: &mut String, layouts: &[Layout], records: &[RecordDef]) {
-    out.push_str("/// Edit individual successor occurrences in storage order.\npub fn edit_successors(&mut self, mut f: impl FnMut(&mut SuccessorMut<'_>)) {\nlet mut offset = 0;\nmatch &mut self.fields {\n");
+fn edit_successors(out: &mut String, layouts: &[Layout]) {
+    out.push_str("impl crate::dfg::DataFlowGraph {\npub fn edit_successors(&mut self, inst: Inst, mut edit: impl FnMut(&mut SuccessorMut<'_>)) {\nmatch self.inst(inst) {\n");
     for layout in layouts {
-        let Some(last) = layout
+        if !layout
             .fields
             .iter()
-            .rposition(|f| matches!(f.ty.traversal(), Some("block_call" | "jump_table")))
-        else {
+            .any(|f| matches!(f.traversal(), Some("block_call" | "jump_table")))
+        {
             continue;
-        };
-        let fields = layout
+        }
+        let pat = layout.pattern().replace("Self::", "InstView::");
+        writeln!(out, "{pat} => {{").unwrap();
+        for (i, f) in layout.fields.iter().enumerate() {
+            let value = match f.traversal() {
+                Some("array") => format!("*_field{i}"),
+                Some("value_list") => format!("_field{i}.to_vec()"),
+                Some("block_call") => {
+                    format!("crate::BlockCall::new(_field{i}.block, _field{i}.args)")
+                }
+                Some("jump_table") => format!(
+                    "_field{i}.iter().map(|s| crate::BlockCall::new(s.block, s.args)).collect::<alloc::vec::Vec<_>>()"
+                ),
+                _ => format!("_field{i}"),
+            };
+            let mutable = if matches!(f.traversal(), Some("block_call" | "jump_table")) {
+                "mut "
+            } else {
+                ""
+            };
+            writeln!(out, "let {mutable}_arg{i} = {value};").unwrap();
+        }
+        for (i, f) in layout.fields.iter().enumerate() {
+            match f.traversal() {
+                Some("block_call") => {
+                    writeln!(out, "SuccessorMut::edit_call(&mut _arg{i}, &mut edit);").unwrap()
+                }
+                Some("jump_table") => writeln!(
+                    out,
+                    "for call in &mut _arg{i} {{ SuccessorMut::edit_call(call, &mut edit); }}"
+                )
+                .unwrap(),
+                _ => {}
+            }
+        }
+        let args = layout
             .fields
             .iter()
             .enumerate()
-            .filter(|(_, f)| stored_type(f, records).is_some())
-            .map(|(i, f)| (f.name.clone(), format!("_field{i}")));
+            .map(|(i, f)| match f.traversal() {
+                Some("value_list") => format!("&_arg{i}"),
+                Some("block_call") => format!("_arg{i}.as_view()"),
+                Some("jump_table") => format!("_arg{i}.iter().map(crate::BlockCall::as_view)"),
+                _ => format!("_arg{i}"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         writeln!(
             out,
-            "{} => {{",
-            construct(&format!("InstFields::{}", layout.name), fields)
+            "self.replace_inst(inst, |writer| writer.{}({args})); }},",
+            super::constructor_name(&layout.name)
         )
         .unwrap();
-        for (i, field) in layout.fields[..=last].iter().enumerate() {
-            if let Some(record) = record(field, records) {
-                for member in &record.fields {
-                    match &member.ty {
-                        PropertyType::Named(ty) if ty == "Value" => out.push_str("offset += 1;\n"),
-                        PropertyType::Optional(_) => {
-                            writeln!(out, "offset += usize::from(_field{i}.{});", member.name)
-                                .unwrap()
-                        }
-                        _ => {}
-                    }
-                }
-            } else {
-                match &field.ty {
-                    FieldType::Values(n) => writeln!(out, "offset += {n};").unwrap(),
-                    _ => match field.ty.traversal() {
-                        Some("value") => out.push_str("offset += 1;\n"),
-                        Some("value_list") => {
-                            writeln!(out, "offset += *_field{i} as usize;").unwrap()
-                        }
-                        Some("block_call" | "jump_table") => writeln!(
-                            out,
-                            "_field{i}.edit(&mut self.operands, &mut offset, &mut f);"
-                        )
-                        .unwrap(),
-                        _ => {}
-                    },
-                }
-            }
-        }
-        out.push_str("},\n");
     }
-    out.push_str("_ => {},\n}\n}\n");
+    out.push_str("_ => {}, } } }\n");
 }

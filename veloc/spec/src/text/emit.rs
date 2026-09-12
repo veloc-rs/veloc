@@ -142,7 +142,7 @@ pub(super) fn parse(
     }
     writeln!(
         out,
-        "Ok({})",
+        "Ok(self.func.dfg.create_inst({}))",
         crate::generate::packing::constructor(op, format, "self.func.dfg", opcode, |name| {
             let value = local(op, name);
             if op
@@ -296,7 +296,7 @@ pub(super) fn print(
     }
     for (index, field) in format.fields.iter().enumerate() {
         let expected = match &field.ty {
-            FieldType::Named(ty) if ty == "ValueList" => arity,
+            FieldType::Named(_) if field.policy.references.is_operands() => arity,
             _ => None,
         };
         if let Some(n) = expected {

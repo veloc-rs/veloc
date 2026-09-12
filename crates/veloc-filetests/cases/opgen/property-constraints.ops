@@ -12,7 +12,7 @@ property VectorConst {
 // check: result_type requires a fixed operation result signature
 property VectorConst {
     verify {
-        type(value) == result_type(0);
+        value.ty() == result_type(0);
     }
 }
 

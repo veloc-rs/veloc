@@ -22,7 +22,7 @@ pub use constant::{ConstData, Constant, Float, Int, ScalarConst, VectorConst};
 pub use error::{Error, Result};
 pub use function::{EdgeRef, Function};
 pub use inst::{
-    Arguments, FloatCC, Inst, InstDraft, InstView, IntCC, MemFlags, Opcode, Successor,
+    Arguments, FloatCC, Inst, InstView, InstWriter, IntCC, MemFlags, Opcode, Successor,
     SuccessorMut, Successors, VectorMemOptions,
 };
 pub use intrinsic::{Intrinsic, ids as intrinsic_ids};

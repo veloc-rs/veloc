@@ -22,7 +22,7 @@ op Work() -> () {
 // check: fixed text binding requires an in-range integer literal
 struct Settings { scale: u8 }
 struct Work { settings: Settings }
-op Work(@settings: Settings) -> () {
+op Work(settings: Settings) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "work", storage: Work { settings: settings },
     text: "{settings.scale=256}"
@@ -33,7 +33,7 @@ op Work(@settings: Settings) -> () {
 // check: text field `settings.scale` is consumed more than once
 struct Settings { scale: u8 }
 struct Work { settings: Settings }
-op Work(@settings: Settings) -> () {
+op Work(settings: Settings) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "work", storage: Work { settings: settings },
     text: "{settings.scale=1} {settings.scale}"

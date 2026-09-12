@@ -419,8 +419,9 @@ fn fold(op: Opcode, args: &[ScalarConst]) -> Option<ScalarConst> {
         .iter()
         .map(|c| dfg.append_block_param(veloc_mir::Block(0), c.ty()))
         .collect::<Vec<_>>();
-    let data = veloc_mir::InstDraft::from_values(op, &values)?;
-    let results = data
+    let inst = dfg.writer().from_values(op, &values)?;
+    let results = dfg
+        .inst(inst)
         .result_types(&dfg, &veloc_mir::ModuleData::default(), &[])
         .ok()?;
     veloc_optimizer::rewrite::evaluate(op, args, &results, &[])?

@@ -24,6 +24,16 @@ Files are parsed independently in one pass, including their import preambles.
 The loader resolves imports from that AST and retains the original source for
 diagnostics; it does not mask imports or parse the file again. Syntax cannot
 cross import boundaries.
+
+Each file sees its own declarations and its transitive imports, not unrelated
+files loaded by an entry module. For example, `mir.ops` imports `formats.ops`,
+which imports the shared prelude; `builtins.ops` imports `types.ops` for `Type`.
+Rust data types such as `Type` and `Float` need an explicit declaration or import.
+IR type sets and Rust data types occupy distinct namespaces: importing the
+`Float` set does not import the Rust `Float` property type. Primitive syntax types
+such as `u32` and `bool` remain built in. Imports are file-wide (no selective
+imports or aliases yet), and duplicate declarations in the combined unit are
+still rejected.
 String-based `parse/compile` remain available for self-contained definitions;
 they do not resolve imports or inject an implicit vocabulary.
 
@@ -88,7 +98,7 @@ template parser stays separate because quoted templates have a different grammar
 
 MIR groups related runtime code under one module boundary:
 
-- `inst/mod.rs` exports instruction handles, drafts, views and opcode metadata.
+- `inst/mod.rs` exports instruction handles, writers, views and opcode metadata.
   `inst/opcode.rs` owns generated opcode/type contracts and their support;
   `inst/storage.rs` owns physical instruction storage.
 - `function/mod.rs` owns functions, with `edit.rs` for structural editing and
@@ -105,8 +115,8 @@ from the crate root.
 Generated Rust artifacts follow their consumers, not the input file boundaries:
 
 - `types.rs`: compact type encoding, constants and type helpers.
-- `opcodes.rs`: opcode metadata, formats, type classes, flags and comparisons.
-- `instructions.rs`: storage, drafts, views, accessors and result type inference.
+- `opcodes.rs`: opcode metadata, formats, type sets, flags and comparisons.
+- `instructions.rs`: storage, writers, views, accessors and result type inference.
 - `builders.rs`: operation-specific `InstBuilder` methods.
 - `type_rules.rs`: type validation dispatch and shared signature checks.
 - `validation.rs`: function-level property constraints.
@@ -166,6 +176,12 @@ A defs body is checked and inlined into the shared expression tree. An explicit
 `= rust("crate::path::function");` binding can adapt naming; its first argument
 is the receiver. The same binding syntax is available for free functions.
 There is no separate `impl` or `intrinsic` declaration mechanism.
+`Value`, `Int`, `Float` and `VectorConst` declare `ty()` in their type blocks.
+Their defs bodies use the fundamental `type(self)` query: SSA values need a DFG
+lookup, whereas typed constants carry their own type. User-facing verification
+and projection expressions call `value.ty()`; the result-pattern
+`-> type(property)` and semantic sort reference `type(operand)` are separate
+grammatical uses and remain unchanged.
 
 Every method must be declared. Calls are resolved by the nominal receiver type,
 not by a global method-name whitelist. Defs checks arguments/results against the
@@ -200,7 +216,7 @@ Constraint dependencies and offline support are classified once when checked.
 Semantic instances are prepared during validation and reused by code generation;
 independent type variables are enumerated separately and predicates filter their
 combinations. Per-lane recipes reject any admitted shape-changing combination;
-only pointer instances are expanded for both target widths. Runtime type-class
+only pointer instances are expanded for both target widths. Runtime type-set
 tables include only sets referenced by operation signatures.
 
 ### Rust host interfaces
@@ -225,8 +241,8 @@ Qualified calls keep host capabilities distinct from ordinary defs functions.
 
 Interfaces do not list their consumers. Ordinary file-level
 `import "file.ops";` loads their declarations along with other definitions;
-there is no separate capability import or `context` declaration. Imports still
-form one definition unit, not isolated module namespaces.
+there is no separate capability import or `context` declaration. Imports form one output definition unit, but name visibility is file-local;
+parent and sibling imports do not grant ambient access.
 
 Host dependencies follow directly from the checked expressions, including
 expanded helper calls. The emitter creates a Rust host adapter only when the
@@ -265,7 +281,7 @@ expression language applies to operations and alternate storage layouts:
 verify {
     require(matches(args, Module.params(Module.signature(function)?)?), "argument types differ");
     require(Module.returns(Module.signature(function)?)? == Module.returns(Module.current_signature())?, "answer types differ");
-    require(all(options.evl, |v| type(v) == I32), "EVL must be i32");
+    require(all(options.evl, |v| v.ty() == I32), "EVL must be i32");
 }
 ```
 
@@ -416,12 +432,12 @@ type I32X4 = vector(I32, 4);
 type SV4 = vector(I32, scalable(4));
 type WORD = I32;
 type WORDS = vector(WORD, 4);
-class WideInteger { members: [I32, I64] }
-class WideVectors { members: [vectors(WideInteger)] }
-class ChosenShapes { members: [I32X4, SV4] }
+typeset WideInteger = I32 | I64;
+typeset WideVectors = vectors(WideInteger);
+typeset ChosenShapes = I32X4 | SV4;
 ```
 
-`type Name = expression;` is the only type declaration syntax. Constructors are
+`type Name = expression;` declares one concrete IR type (or binds a Rust data type). Constructors are
 interpreted by the semantic checker, not special cases in the grammar. Supported
 constructors are `int(bits)`, `float(bits)`, `bool()`, `ptr()` and
 `vector(element, lanes)`; `scalable(lanes)` is a vector shape expression. Type
@@ -463,12 +479,12 @@ the interpreter retain its packed 16-bit conversion type pairs without retaining
 a second semantic type. Stack type slots hold the complete 16-bit encoding.
 The current interpreter rejects non-scalar values before bytecode emission.
 
-Classes are exact type sets: members can be scalar/vector type constants, other
-classes, or `vectors(S)`, which includes every legal fixed and scalable vector
+`typeset Name = expression;` declares an exact type set, using scalar/vector type constants, other
+sets, or `vectors(S)`, which includes every legal fixed and scalable vector
 shape over the non-pointer scalar set S. Named vector constants are conveniences,
 not an exhaustive enumeration of legal vectors. Numeric lane counts are fixed;
 `scalable(lanes)` explicitly selects a scalable shape.
-Forward references work; cycles, unknown names and empty classes are errors.
+Forward references work; cycles, unknown names and empty sets are errors.
 Passing pointers or vector types to `vectors()` is an error, not silent filtering.
 
 Sets preserve both scalar identity and vector shape. `{I32, I64}` does not include
@@ -478,7 +494,7 @@ use integer masks and matches, not heap-allocated sets. These exact sets also dr
 definition-time shape constraints, bitvector semantic compatibility and floating
 text checks. There is no separate seven-domain vocabulary or name allowlist.
 
-Type-set expressions also work directly in operation signatures; a named class
+Type-set expressions also work directly in operation signatures; a named set
 is just a reusable alias, not a required declaration for every combination:
 
 ```text
@@ -492,13 +508,14 @@ op Convert<T: I32 | I64, U: F32 | F64>(arg: T) -> U { meta: OpInfo {}, ... }
 
 `|` means union and `&` means intersection; `&` binds more tightly. Parentheses
 group expressions, for example `(I32 | F32) & Scalar`. Both operators also work
-inside `vectors(...)` and class member lists. Empty intermediate sets are allowed,
-but an empty final class or signature constraint is an error. Unknown names and
+inside `vectors(...)` and `typeset` declarations. Repeated operands are idempotent:
+`I32 | I32` is the same set as `I32`. Empty intermediate sets are allowed,
+but an empty final set or signature constraint is an error. Unknown names and
 invalid vector inputs are checked even in branches whose intersection is empty.
 
 `T: I32 | I64` selects one concrete type for `T`; all occurrences of `T` must match.
 By contrast, `lhs: I32 | I64, rhs: I32 | I64` allows the operands to independently
-select their types. Set expressions contain concrete types and class aliases, not
+select their types. Set expressions contain concrete types and set aliases, not
 type variables. Independent generics and ordinary `verify` predicates express
 relations such as `U.same_shape(T)`. `element(T)` and `vector(T)` remain
 structural type patterns. There is no separate `shape(T, set)` pattern.
@@ -506,7 +523,7 @@ structural type patterns. There is no separate `shape(T, set)` pattern.
 Generation evaluates and interns equal sets, including anonymous expressions.
 Named aliases and inline constraints share the same compact runtime membership
 checks; runtime code neither evaluates expressions nor constructs sets. Builder
-inference, semantic checks and text codecs inspect resolved sets, not class names.
+inference, semantic checks and text codecs inspect resolved sets, not set names.
 
 ## Type predicates
 
@@ -521,11 +538,11 @@ Predicates generate public `const fn` methods on `Type`. They use the same exact
 set-expression compiler and membership projection as operation constraints, but
 emit direct checks instead of calling another predicate or a runtime set object.
 All invalid encodings return false, including reserved bits and illegal shapes.
-In particular, `Type::is_scalar()` includes pointers; the `Scalar` class does not.
+In particular, `Type::is_scalar()` includes pointers; the `Scalar` set does not.
 
 Predicate names must be snake_case starting with `is_`. `is_valid`, `is_scalable`
 and `is_fixed` are reserved validity/physical-shape APIs, not set aliases.
-Predicates may forward-reference classes and exact types, but are not themselves
+Predicates may forward-reference sets and exact types, but are not themselves
 type-set names. Empty sets, unknown references and duplicate names are definition
 errors. Defining a predicate does not change type construction or layout legality.
 
@@ -640,7 +657,7 @@ op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: T) -> U {
     }
     }
 
-op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
+op Load(ptr: PTR, offset: u32, flags: MemFlags) -> Any {
     meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -652,7 +669,7 @@ op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
 Type requirements use the same `verify { require(predicate, diagnostic); }`
 expressions as structural checks; the old `where` relation list is not supported.
 Named results and generic variables directly denote types: `result.wider_than(T)`.
-Operand names denote SSA values, so their types use `type(arg)`. Anonymous results
+Operand names denote SSA values, so their types use the declared `arg.ty()` method. Anonymous results
 use `result_type(index)`. Result/type bindings resolve to signature slots at build
 time; no runtime name lookup or generic environment is stored. `type.element_bits()?` is a logical per-lane width, while
 `type.bit_size()?` preserves the whole-value fixed/scalable distinction. Undefined
@@ -710,7 +727,7 @@ parameters are immutable, nongeneric values, with one declared return type.
 
 Projection expressions support parameter references, typed struct/enum
 constructors, flags, option constructors, fixed arrays, `field(value, name)`,
-`type(value)`, `result_type(index)` and explicit lossless integer conversions.
+declared `value.ty()` methods, `result_type(index)` and explicit lossless integer conversions.
 Result indices are checked against fixed operation signatures; there is no
 single-result restriction. Narrowing conversions are rejected. This is a
 restricted pure expression language, not arbitrary Rust or a runtime interpreter.
@@ -738,7 +755,7 @@ conservative effects until their runtime consumers support appropriate queries.
 Ownership transfer is attached to the logical parameter:
 
 ```text
-op Call(@func_id: FuncId, move args: values) -> signature {
+op Call(func_id: FuncId, move args: values) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call",
     storage: Call { func_id: func_id, args: args },
@@ -766,15 +783,57 @@ and result types, not solved by those predicates. Construction does not validate
 these relationships. Relations refer to generic or operand/result names, not numeric slots.
 There are no separate `types` structs or references to named type schemes.
 
-An `@` parameter is a property, not an SSA use: `@offset: u32` and
-`@flags: MemFlags` are stored values, while `ptr: PTR` is an SSA value with a
-pointer type. Variable-length SSA groups use `args: values`; one successor uses
+Parameter roles are derived from the storage mapping, not an `@` marker.
+A mapping to an SSA field makes `ptr: PTR` an SSA input constrained to pointer
+type; mappings to ordinary data fields make `offset: u32` and `flags: MemFlags`
+properties. The signature is checked against this classification; it cannot
+override the field's role. Variable-length SSA groups use `args: values`; one successor uses
 `dest: successor`, and a successor group uses `cases: successors`. Empty input
 and result lists are `()`; signature-selected results use `-> signature`.
 For example, an indirect call declares a statically checked `ptr: PTR`, a
 variable-length `args: values` group and `signature: sig_id`. Direct calls use
 `signature: function(func_id)` to identify the callee's signature. The source of
 dynamic result types is explicit, not inferred from the opcode's name.
+
+Rust-bound types declare reference structure separately from payload placement:
+
+```text
+type Value = rust("crate::Value") {
+    field: operand,
+    fn ty(self) -> Type { value: type(self) }
+}
+type ValueList = rust("crate::inst::Arguments") { field: list(Value), }
+type BlockCall = rust("crate::inst::Successor") { field: edge(Value), }
+type JumpTable = rust("crate::inst::Successors") { field: list(BlockCall), }
+type Payload = rust("crate::Payload") {
+    storage: pooled,
+}
+```
+
+An absent `field` means plain data. `operand` is an SSA leaf;
+`list(T)` composes a sequence and `edge(T)` associates a block target with
+a sequence of SSA parameters. The element type must be declared and imported.
+Aliases resolve structurally, with cycles rejected. Rust-bound views currently
+support operand leaves, operand lists, edges, and edge lists; unsupported
+nested reference containers are diagnosed rather than losing uses. Structural
+records support direct and optional SSA leaves.
+Placement defaults to `auto`: compact codecs may inline metadata if the whole
+layout fits. `pooled` forces the containing payload out of line, without
+moving its SSA references out of the operand store.
+The generator uses checked structure, not the Rust type's spelling, to split and
+traverse SSA fields. Fixed `values(N)` groups are inherently SSA operands.
+
+Each out-of-line instruction layout has a generated payload type and its own
+`Pool<T>`. A generated trait selects that pool for the common `push<T>`,
+`get<T>`, and `remove<T>` interface. A payload groups the layout's non-SSA
+fields to avoid a separate allocation/lookup for every field; the pools do not
+store a maximum-sized enum containing every layout. Small layouts stay inline.
+Typed IDs are private to the owning DFG and invalidated on replacement or
+erasure; freed slots are reused. They are not public, generation-checked handles.
+SSA uses remain in the DFG's operand arena and are never managed through these pools.
+`FieldPool` also owns an immutable `InternPool` for constant bytes. Interned
+entries are shared by content and live until the DFG is dropped; erasing an
+instruction never releases them. Small scalar and splat constants stay inline.
 
 A single `struct Name { field: Type, ... }` declaration describes both plain
 structured data and instruction storage. `storage: Name { ... }` selects its
@@ -831,7 +890,7 @@ file.
 
 ## Generated consumers
 
-The same definitions generate `Opcode`, `OpFormat`, `InstDraft`, type
+The same definitions generate `Opcode`, `OpFormat`, `InstWriter`, type
 contracts, opcode extraction, operand traversal/replacement, memory flag access,
 operation-specific parsing/printing and ordinary builders.
 
@@ -847,7 +906,7 @@ empty type slice instead of invoking dynamic inference. All paths use the same
 also accepts caller-supplied result types for generic transformations or
 deliberately incomplete IR.
 
-`InstDraft::result_types` is the dynamic construction entry point used by
+`InstView::result_types` is the dynamic construction entry point used by
 contextual builders and generic construction clients. Its generated opcode
 branches return the final types directly, using operand types, explicit types or the referenced
 signature. There is no runtime result-strategy enum. Missing explicit types,
@@ -871,7 +930,7 @@ positions. Generated handlers check arity before indexing and retain the
 declaration's diagnostic order, without allocating bindings or interpreting
 patterns or constraint records. The number of variables is not limited to four.
 Result construction knows statically whether results are fixed, require explicit
-types, or come from a function signature. It performs no type-class, operand
+types, or come from a function signature. It performs no type-set, operand
 equality or verification-expression checks. Those checks run only during validation,
 including for result types computed by generated builders.
 
@@ -887,8 +946,8 @@ Rust checks. For example:
 ```text
 verify {
     require(imm.scale != 0, "scale must be non-zero");
-    len(mask) == type(lhs).lanes()?;
-    all(mask, |i| i < 2 * type(lhs).lanes()?);
+    len(mask) == lhs.ty().lanes()?;
+    all(mask, |i| i < 2 * lhs.ty().lanes()?);
 }
 ```
 
@@ -904,7 +963,7 @@ Typed helper bodies and arguments use their declared integer types instead.
 Constant arithmetic overflow is a definition error; dynamic overflow fails
 validation (or returns `None` from an interface query). Neither path wraps.
 
-Queries are `type(value)`, `result_type(constant_index)`, `len(sequence)`,
+Queries are `value.ty()`, `result_type(constant_index)`, `len(sequence)`,
 `type.lanes()?`, `type.min_size_bytes()?`, `type.is_ptr()`, `type.is_scalar()`,
 `type.is_vector()` and `type.is_fixed()` (a fixed-width vector).
 Lane counts and byte sizes are minima for scalable types. A target-dependent
@@ -935,7 +994,7 @@ built-in verifier keyword:
 fn is_power_of_two(value: u32) -> bool {
     value: value != 0 && (value & (value - 1)) == 0,
 }
-op Alloca(@size: u32, @align: u32) -> PTR {
+op Alloca(size: u32, align: u32) -> PTR {
     // ... storage, metadata and text ...
     verify {
         require(size > 0, "alloca size must be positive");
@@ -1026,7 +1085,7 @@ An explicit projection changes notation without changing the builder API or
 storage layout:
 
 ```text
-op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
+op Store(ptr: PTR, value: Any, offset: u32, flags: MemFlags) -> () {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([WRITE]) },
     mnemonic: "store",
     storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
@@ -1248,12 +1307,12 @@ time. Analyses iterate `dfg.operands(inst)` directly. Instruction views inspect
 operands, successors, formats and memory flags without requiring a DFG; type
 resolution and constant-pool access still require their context. RAUW visits occurrences, not distinct users. Iteration order is unspecified.
 
-Operand ranges use power-of-two size classes and are recycled as units. Range
+Operand ranges use power-of-two size sets and are recycled as units. Range
 growth/replacement rebuilds links for that instruction, never the whole function.
 There is no separate UseIndex, per-instruction UseId list, storage-path locator,
 mirrored operand Value, or generation table.
 
-Definitions generate named layout constructors on `InstDraft`, borrowed
+Definitions generate named layout constructors on `InstWriter`, borrowed
 `InstView` variants, and private SSA-free `InstFields`. A draft owns
 one flat operand buffer; an installed instruction holds an arena range instead.
 Both use the same fields, group metadata and view projection. There is no owned
@@ -1270,7 +1329,7 @@ argument copies.
 
 Successor metadata contains targets and argument
 lengths, not another Value list. Borrowed successor views preserve duplicate
-edges and the final default edge. Record properties are stored inline; only
+edges and the final default edge. Small record properties are stored inline; only
 immutable byte constants are interned. No mutable SSA-bearing pool is shared.
 
 `Use<'a>` is a borrowed view with `inst()`, `index()` and `value()`, not a

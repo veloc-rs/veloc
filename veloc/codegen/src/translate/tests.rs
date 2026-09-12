@@ -1,6 +1,6 @@
 use crate::translate::IRTranslator;
 use alloc::format;
-use veloc_mir::{InstDraft, Module, ModuleParser, Opcode, Type};
+use veloc_mir::{Module, ModuleParser, Opcode, Type};
 
 fn module(opcode: Opcode, ty: Type, arity: usize) -> Module {
     let source = if arity == 1 {
@@ -78,10 +78,12 @@ fn semantic_lowering_rejects_malformed_arity_and_type_instances() {
             2 => {
                 function
                     .edit()
-                    .replace_inst(inst, InstDraft::unary(Opcode::IAdd, args[0]));
+                    .replace_inst(inst, |writer: veloc_mir::InstWriter<'_>| {
+                        writer.unary(Opcode::IAdd, args[0])
+                    });
             }
             3 => {
-                let replacement = function.dfg().draft(inst);
+                let replacement = |writer: veloc_mir::InstWriter<'_>| writer.copy(inst);
                 function.edit().insert_after(inst, replacement, &[]);
             }
             4 => {
@@ -90,7 +92,7 @@ fn semantic_lowering_rejects_malformed_arity_and_type_instances() {
                 }
             }
             5 => {
-                let replacement = function.dfg().draft(inst);
+                let replacement = |writer: veloc_mir::InstWriter<'_>| writer.copy(inst);
                 function
                     .edit()
                     .insert_after(inst, replacement, &[Type::I32, Type::I32]);
@@ -128,14 +130,18 @@ fn composed_semantic_fallback_still_validates_its_source_contract() {
                 function.edit().set_value_type(result, Type::F32);
             }
             2 => {
-                function
-                    .edit()
-                    .insert_after(inst, InstDraft::unary(Opcode::INeg, arg), &[]);
+                function.edit().insert_after(
+                    inst,
+                    |writer: veloc_mir::InstWriter<'_>| writer.unary(Opcode::INeg, arg),
+                    &[],
+                );
             }
             3 => {
                 function
                     .edit()
-                    .replace_inst(inst, InstDraft::binary(Opcode::INeg, [arg, arg]));
+                    .replace_inst(inst, |writer: veloc_mir::InstWriter<'_>| {
+                        writer.binary(Opcode::INeg, [arg, arg])
+                    });
             }
             _ => unreachable!(),
         }

@@ -437,8 +437,8 @@ impl OperandParser<'_> {
     fn instruction(&mut self, input: &mut Cursor<'_>, block: Block) -> ParseResult<()> {
         let results = self.parse_results(input)?;
         let (opcode, flags) = parse_instruction_header(input)?;
-        let data = self.parse(opcode, flags, input, results.first().map(|(_, ty)| *ty))?;
-        let inst = self.func.edit().append_inst(block, data, &[]);
+        let inst = self.parse(opcode, flags, input, results.first().map(|(_, ty)| *ty))?;
+        self.func.edit().append_existing(block, inst);
         self.func.dfg.bind_results(inst, &results);
         Ok(())
     }

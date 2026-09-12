@@ -145,7 +145,12 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 include_str!("../../veloc/defs/comparisons.ops"),
                 "\n",
             );
-            let result = veloc_opgen::compile(&format!("{builtins}{source}"));
+            let builtins = builtins
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("import "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let result = veloc_opgen::compile(&format!("{builtins}\n{source}"));
             if mode == "opgen-error" {
                 rejected(result)
             } else {

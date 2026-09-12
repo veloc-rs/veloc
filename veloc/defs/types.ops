@@ -28,7 +28,22 @@ type Type = rust("crate::Type") {
 }
 type TypeBits = rust("crate::TypeBits");
 type Shape = rust("veloc_types::Shape");
-type Value = rust("crate::Value");
+type Value = rust("crate::Value") {
+    field: operand,
+    // Fundamental SSA type query; callers use the declared method.
+    fn ty(self) -> Type { value: type(self) }
+}
+
+// Operand groups retain only lengths and control-flow metadata in instruction fields.
+type ValueList = rust("crate::inst::Arguments") {
+    field: list(Value),
+}
+type BlockCall = rust("crate::inst::Successor") {
+    field: edge(Value),
+}
+type JumpTable = rust("crate::inst::Successors") {
+    field: list(BlockCall),
+}
 
 // The compact scalar/vector payload of Type, packed least significant bit first.
 // Structural callable types use a disjoint tag and module signature ID;
@@ -58,18 +73,18 @@ type F64X2 = vector(F64, 2);
 type I8X16 = vector(I8, 16);
 type I16X8 = vector(I16, 8);
 
-// Members are exact types, other classes, or vectors(set). The latter includes
+// Members are exact types, other sets, or vectors(set). The latter includes
 // every legal fixed and scalable shape over a set of non-pointer scalar types.
-class Any { members: [Scalar, PTR, Vector] }
-class Scalar { members: [ScalarInteger, ScalarFloat, BOOL] }
-class ScalarInteger { members: [I8, I16, I32, I64] }
-class ScalarFloat { members: [F32, F64] }
-class Integer { members: [ScalarInteger, vectors(ScalarInteger)] }
-class Float { members: [ScalarFloat, vectors(ScalarFloat)] }
-class Number { members: [Integer, Float] }
-class Vector { members: [vectors(Scalar)] }
+typeset Any = Scalar | PTR | Vector;
+typeset Scalar = ScalarInteger | ScalarFloat | BOOL;
+typeset ScalarInteger = I8 | I16 | I32 | I64;
+typeset ScalarFloat = F32 | F64;
+typeset Integer = ScalarInteger | vectors(ScalarInteger);
+typeset Float = ScalarFloat | vectors(ScalarFloat);
+typeset Number = Integer | Float;
+typeset Vector = vectors(Scalar);
 
-// Public Type predicates. Unlike the Scalar class, is_scalar includes pointers.
+// Public Type predicates. Unlike the Scalar set, is_scalar includes pointers.
 // These are evaluated as exact type sets, not executable Rust expressions.
 predicate is_scalar = Scalar | PTR;
 predicate is_vector = Vector;

@@ -11,13 +11,13 @@ op Apply(cont: Callable, args: values) -> () {
 // ----- structural-type-name-cannot-be-shadowed
 // run: opgen-error
 // check: Callable is a reserved structural type name
-class Callable { members: [I32] }
+typeset Callable = I32;
 
 // ----- move-contract-rejects-properties
 // run: opgen-error
 // check: move requires a value operand
 struct Take { function: FuncId }
-op Take(@move function: FuncId) -> () {
+op Take(move function: FuncId) -> () {
     meta: OpInfo { memory: Unknown },
     mnemonic: "take", storage: Take { function: function },
 }
@@ -34,7 +34,7 @@ mnemonic: "stop", storage: Stop {},  }
 // run: opgen-error
 // check: projection type mismatch: expected Named("FuncId"), found Named("u32")
 struct Check { n: u32 }
-op Check(@n: u32) -> () {
+op Check(n: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "check", storage: Check { n: n },
     verify {
@@ -46,7 +46,7 @@ op Check(@n: u32) -> () {
 // run: opgen-error
 // check: slice expects a sequence
 struct Check { n: u32 }
-op Check(@n: u32) -> () {
+op Check(n: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "check", storage: Check { n: n },
     verify {

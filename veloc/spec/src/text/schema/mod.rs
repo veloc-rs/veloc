@@ -92,9 +92,13 @@ pub(super) fn compile(
         {
             for field in &record.fields {
                 let kind = match &field.ty {
-                    PropertyType::Named(ty) if ty == "Value" => AtomKind::Value,
+                    PropertyType::Named(_) if field.policy.references.is_operand() => {
+                        AtomKind::Value
+                    }
                     PropertyType::Named(ty) => AtomKind::Scalar(ty.clone()),
-                    PropertyType::Optional(ty) if ty == "Value" => AtomKind::OptionalValue,
+                    PropertyType::Optional(_) if field.policy.references.is_operand() => {
+                        AtomKind::OptionalValue
+                    }
                     _ => return Err(checker.error(op.offset, "unsupported optional property")),
                 };
                 checker
@@ -261,16 +265,14 @@ fn result_in_set(
     let accepts = |set: &crate::types::TypeSet| set.subset_of(allowed);
     match result {
         Pattern::Exact(ty) => accepts(&types.exact[ty]),
-        Pattern::Class(class) | Pattern::Bind(_, class) | Pattern::Property(_, class) => {
-            accepts(class)
-        }
+        Pattern::Set(set) | Pattern::Bind(_, set) | Pattern::Property(_, set) => accepts(set),
         Pattern::Same(slot) => {
             let operands = match &signature.operands {
                 TypeList::Fixed(operands) | TypeList::Variadic(operands) => operands.as_slice(),
                 TypeList::Signature => &[],
             };
             operands.iter().any(|pattern| {
-                matches!(pattern, Pattern::Bind(other, class) if slot == other && accepts(class))
+                matches!(pattern, Pattern::Bind(other, set) if slot == other && accepts(set))
             })
         }
         _ => false,
@@ -345,21 +347,25 @@ mod tests {
             name: "Config".into(),
             fields: vec![
                 RecordField {
+                    policy: crate::fixtures::types_policy("Value"),
                     name: "mask".into(),
                     ty: PropertyType::Named("Value".into()),
                     rust: "crate::Value".into(),
                 },
                 RecordField {
+                    policy: crate::fixtures::types_policy("Value"),
                     name: "evl".into(),
                     ty: PropertyType::Optional("Value".into()),
                     rust: "Option<crate::Value>".into(),
                 },
                 RecordField {
+                    policy: crate::model::records::Policy::default(),
                     name: "scale".into(),
                     ty: PropertyType::Named("u8".into()),
                     rust: "u8".into(),
                 },
                 RecordField {
+                    policy: crate::model::records::Policy::default(),
                     name: "flags".into(),
                     ty: PropertyType::Named("MemFlags".into()),
                     rust: "MemFlags".into(),
@@ -403,7 +409,7 @@ mod tests {
             let text = format!(r#""{{arg:{codec}}}""#);
             let mut operation = op(&[("arg", ty)], Some(&text));
             operation.signature.results =
-                TypeList::Fixed(vec![Pattern::Class(crate::fixtures::set("ScalarFloat"))]);
+                TypeList::Fixed(vec![Pattern::Set(crate::fixtures::set("ScalarFloat"))]);
             let schema = compile(&operation, &[], "").unwrap();
             assert!(matches!(&schema.args[0], Item::Atom(atom) if atom.kind == expected));
             assert!(compile(&op(&[("arg", "value")], Some(&text)), &[], "").is_err());
@@ -439,7 +445,7 @@ mod tests {
     fn floating_atoms_require_a_statically_scalar_float_first_result() {
         let mut operation = op(&[("arg", "Float")], None);
         for result in [
-            Pattern::Class(crate::fixtures::set("ScalarFloat")),
+            Pattern::Set(crate::fixtures::set("ScalarFloat")),
             Pattern::Exact("F32".into()),
             Pattern::Exact("F64".into()),
             Pattern::Bind(0, crate::fixtures::set("ScalarFloat")),
@@ -450,8 +456,8 @@ mod tests {
         for results in [
             TypeList::Fixed(vec![]),
             TypeList::Signature,
-            TypeList::Fixed(vec![Pattern::Class(crate::fixtures::set("Float"))]),
-            TypeList::Fixed(vec![Pattern::Class(crate::fixtures::set("ScalarInteger"))]),
+            TypeList::Fixed(vec![Pattern::Set(crate::fixtures::set("Float"))]),
+            TypeList::Fixed(vec![Pattern::Set(crate::fixtures::set("ScalarInteger"))]),
             TypeList::Fixed(vec![Pattern::Exact("I32".into())]),
             TypeList::Fixed(vec![Pattern::Same(0)]),
         ] {
@@ -470,10 +476,14 @@ mod tests {
             include_str!("../../../../mir/defs/formats.ops"),
             include_str!("../../../../mir/defs/mir.ops"),
         ]
+        .join("\n")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("import "))
+        .collect::<Vec<_>>()
         .join("\n");
         let bad = definitions.replacen(
-            "op Fconst(@value: Float) -> type(value)",
-            "op Fconst(@value: Float) -> ScalarInteger",
+            "op Fconst(value: Float) -> type(value)",
+            "op Fconst(value: Float) -> ScalarInteger",
             1,
         );
         assert_ne!(bad, definitions);

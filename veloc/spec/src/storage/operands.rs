@@ -207,6 +207,54 @@ pub(crate) fn compile(
     Ok(Operands { formats, prefix })
 }
 impl Operands {
+    pub(crate) fn properties(
+        &self,
+        source: &str,
+        offset: usize,
+        format: &str,
+        mappings: &BTreeMap<String, Node>,
+        params: &[crate::syntax::Parameter],
+    ) -> Result<BTreeSet<String>, Error> {
+        let shape = self
+            .formats
+            .get(format)
+            .ok_or_else(|| Error::at(source, offset, "unknown operand format"))?;
+        let mut properties = BTreeSet::new();
+        for (field, role) in &shape.fields {
+            let Some(node) = mappings.get(field) else {
+                continue;
+            };
+            if matches!(
+                role,
+                Role::Imm
+                    | Role::Block
+                    | Role::FImm
+                    | Role::StackSlot
+                    | Role::IntCC
+                    | Role::FloatCC
+                    | Role::Index
+            ) {
+                if let Kind::Name(name) = &node.kind {
+                    properties.insert(name.clone());
+                }
+            } else if *role == Role::CallShape
+                && let Kind::Call(_, args) = &node.kind
+                && let Some(Node {
+                    kind: Kind::Name(name),
+                    ..
+                }) = args.first()
+            {
+                // Named direct callees use a symbol property; indirect callees use PTR.
+                if params.iter().any(|p| {
+                    p.name == *name && matches!(&p.ty.kind, Kind::Name(ty) if ty == "SymbolId")
+                }) {
+                    properties.insert(name.clone());
+                }
+            }
+        }
+        Ok(properties)
+    }
+
     pub(crate) fn record_names(&self) -> Vec<String> {
         self.formats.keys().cloned().collect()
     }

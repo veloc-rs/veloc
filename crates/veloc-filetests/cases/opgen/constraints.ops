@@ -2,7 +2,7 @@
 // run: opgen-error
 // check: constraint is always false: ((1 + (2 * 3)) == 9)
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -14,7 +14,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: binary expression operand types differ
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -26,7 +26,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: binary expression operand types differ
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -38,7 +38,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: unknown expression name or operation
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -50,7 +50,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: field access requires a struct
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -62,7 +62,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: all expects a finite sequence
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -74,7 +74,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: all expects a sequence and |name| predicate
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -86,7 +86,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: len expects a sequence
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -96,13 +96,13 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-8
 // run: opgen-error
-// check: type expects an SSA value or typed property
+// check: unknown projection function `u64.ty`
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
-        type(number) == result_type(0);
+        number.ty() == result_type(0);
     }
 }
 
@@ -110,7 +110,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: result_type index is out of range
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -122,7 +122,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: unknown comparison variant
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -134,7 +134,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: projection type mismatch: expected Named("IntCC"), found Named("FloatCC")
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -146,7 +146,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: expected value of type bool
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -158,7 +158,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: unsupported expression operator or operand type
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -170,7 +170,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: require expects a predicate and a diagnostic string
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -182,7 +182,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: expected value of type bool
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -194,7 +194,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: expected value of type bool
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -206,7 +206,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: expression arithmetic overflow
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -218,7 +218,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: unknown expression name or operation
 struct Custom { bits: u64, yes: bool }
-op Example(@number: u64, @flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
@@ -230,7 +230,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: projection type mismatch: expected Named("bool"), found Named("i128")
 struct Custom { pool_id: ConstantPoolId }
-op Example(@data: Bytes) -> Vector {
+op Example(data: Bytes) -> Vector {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: "{data:bytes}",
@@ -243,7 +243,7 @@ op Example(@data: Bytes) -> Vector {
 // run: opgen-error
 // check: result_type index is out of range
 struct Custom { pool_id: ConstantPoolId }
-op Example(@data: Bytes) -> () {
+op Example(data: Bytes) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: "{data:bytes}",
@@ -266,7 +266,7 @@ struct PtrIndex {
     imm_id: PtrIndexImm,
 }
 
-op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
+op PtrIndex(ptr: PTR, index: ScalarInteger, imm: PtrIndexImm) -> PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ptr-index",
     storage: PtrIndex { ptr: ptr, index: index, imm_id: imm },
@@ -279,12 +279,12 @@ op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
 
 // ----- type-queries-use-static-signatures-and-operand-positions-1
 // run: opgen-error
-// check: constraint is always false: type(input).is_ptr()
+// check: constraint is always false: input.ty().is_ptr()
 struct Unary { arg: Value }
 op Example<T: Integer>(input: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Unary { arg: input },
     verify {
-        type(input).is_ptr(); type(input).lanes()? > 0;
+        input.ty().is_ptr(); input.ty().lanes()? > 0;
     }
 }

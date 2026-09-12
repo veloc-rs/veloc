@@ -76,11 +76,12 @@ fn main() {
         let lhs = dfg.append_block_param(veloc_mir::Block(0), Type::I32);
         let rhs = dfg.append_block_param(veloc_mir::Block(0), Type::I32);
         let context = ModuleData::default();
+        let insts = [Opcode::IAdd, Opcode::ISub, Opcode::IMul]
+            .map(|op| dfg.writer().from_values(op, &[lhs, rhs]).unwrap());
         measure("resolve_results (3 calls)", 100_000 * scale, || {
-            for op in [Opcode::IAdd, Opcode::ISub, Opcode::IMul] {
-                let data = veloc_mir::InstDraft::from_values(black_box(op), &[lhs, rhs]).unwrap();
+            for inst in black_box(insts) {
                 black_box(
-                    black_box(data)
+                    black_box(dfg.inst(inst))
                         .result_types(black_box(&dfg), black_box(&context), &[])
                         .unwrap(),
                 );

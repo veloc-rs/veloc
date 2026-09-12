@@ -1,5 +1,59 @@
 //! Physical storage and borrowed successor groups. No nested SSA-value pools.
-use super::{InstFields, PackedFields};
+use super::{ConstantPoolId, InstFields, PayloadPool};
+use alloc::sync::Arc;
+use core::{borrow::Borrow, hash::Hash};
+use cranelift_entity::{EntityRef, PrimaryMap};
+use hashbrown::HashMap;
+
+/// Owns out-of-line data; SSA references remain in the DFG operand store.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FieldPool {
+    pub(super) payloads: PayloadPool,
+    constants: InternPool<ConstantPoolId, Arc<[u8]>>,
+}
+
+/// Immutable, shared entries. IDs remain valid for the lifetime of the pool.
+/// No mutation or per-instruction removal is exposed.
+#[derive(Debug, Clone)]
+struct InternPool<K: EntityRef, T> {
+    values: PrimaryMap<K, T>,
+    index: HashMap<T, K>,
+}
+impl<K: EntityRef, T> Default for InternPool<K, T> {
+    fn default() -> Self {
+        Self {
+            values: PrimaryMap::new(),
+            index: HashMap::new(),
+        }
+    }
+}
+impl<K: EntityRef, T: Clone + Eq + Hash> InternPool<K, T> {
+    fn intern<Q: ?Sized + Eq + Hash>(&mut self, value: &Q, make: impl FnOnce() -> T) -> K
+    where
+        T: Borrow<Q>,
+    {
+        if let Some(&id) = self.index.get(value) {
+            return id;
+        }
+        let value = make();
+        let id = self.values.push(value.clone());
+        self.index.insert(value, id);
+        id
+    }
+    fn get(&self, id: K) -> Option<&T> {
+        self.values.get(id)
+    }
+}
+
+impl FieldPool {
+    pub(crate) fn intern(&mut self, bytes: &[u8]) -> ConstantPoolId {
+        self.constants.intern(bytes, || Arc::from(bytes))
+    }
+    pub(crate) fn constant(&self, id: ConstantPoolId) -> Option<&[u8]> {
+        self.constants.get(id).map(AsRef::as_ref)
+    }
+}
+
 use crate::{Block, BlockCall, Value};
 
 pub type Arguments = smallvec::SmallVec<[Value; 4]>;
@@ -7,58 +61,98 @@ pub type Arguments = smallvec::SmallVec<[Value; 4]>;
 #[derive(Debug, Clone)]
 pub(crate) struct StoredInst {
     pub operands: crate::dfg::OperandRange,
-    pub fields: PackedFields,
+    pub fields: InstFields,
 }
 
 pub(crate) use crate::constant::{ScalarBits, VectorBits};
 
-/// Only out-of-line layouts occupy slots. Replacement and erasure recycle them.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct FieldPool {
-    slots: alloc::vec::Vec<FieldSlot>,
-    free: Option<u32>,
+/// Private, type-indexed handles. A handle belongs to its DFG; replacement
+/// releases it before reuse. Handles never escape through public IR views.
+pub(crate) struct Id<T>(u32, core::marker::PhantomData<fn() -> T>);
+impl<T> Copy for Id<T> {}
+impl<T> Clone for Id<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> core::fmt::Debug for Id<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 #[derive(Debug, Clone)]
-enum FieldSlot {
-    Live(InstFields),
-    Free(Option<u32>),
+pub(crate) struct Pool<T> {
+    slots: alloc::vec::Vec<Slot<T>>,
+    free: Option<u32>,
 }
-
-impl FieldPool {
-    pub fn insert(&mut self, fields: InstFields) -> u32 {
-        if let Some(id) = self.free {
-            let FieldSlot::Free(next) = self.slots[id as usize] else {
-                unreachable!("free field slot")
-            };
-            self.free = next;
-            self.slots[id as usize] = FieldSlot::Live(fields);
-            id
-        } else {
-            let id = self.slots.len().try_into().expect("too many field slots");
-            self.slots.push(FieldSlot::Live(fields));
-            id
+impl<T> Default for Pool<T> {
+    fn default() -> Self {
+        Self {
+            slots: alloc::vec::Vec::new(),
+            free: None,
         }
     }
-
-    pub fn get(&self, id: u32) -> &InstFields {
-        let FieldSlot::Live(fields) = &self.slots[id as usize] else {
-            unreachable!("live field slot")
+}
+#[derive(Debug, Clone)]
+enum Slot<T> {
+    Live(T),
+    Free(Option<u32>),
+}
+impl<T> Pool<T> {
+    pub fn push(&mut self, value: T) -> Id<T> {
+        let index = if let Some(index) = self.free {
+            let Slot::Free(next) = self.slots[index as usize] else {
+                unreachable!("free pool slot")
+            };
+            self.free = next;
+            self.slots[index as usize] = Slot::Live(value);
+            index
+        } else {
+            let index = self.slots.len().try_into().expect("too many pooled fields");
+            self.slots.push(Slot::Live(value));
+            index
         };
-        fields
+        Id(index, core::marker::PhantomData)
     }
-
-    pub fn get_mut(&mut self, id: u32) -> &mut InstFields {
-        let FieldSlot::Live(fields) = &mut self.slots[id as usize] else {
-            unreachable!("live field slot")
+    pub fn get(&self, id: Id<T>) -> &T {
+        let Slot::Live(value) = &self.slots[id.0 as usize] else {
+            unreachable!("live pool slot")
         };
-        fields
+        value
     }
+    #[allow(dead_code)] // Used when a generated pooled payload contains remappable IDs.
+    pub fn get_mut(&mut self, id: Id<T>) -> &mut T {
+        let Slot::Live(value) = &mut self.slots[id.0 as usize] else {
+            unreachable!("live pool slot")
+        };
+        value
+    }
+    pub fn remove(&mut self, id: Id<T>) {
+        assert!(matches!(self.slots[id.0 as usize], Slot::Live(_)));
+        self.slots[id.0 as usize] = Slot::Free(self.free);
+        self.free = Some(id.0);
+    }
+}
 
-    pub fn remove(&mut self, id: u32) {
-        assert!(matches!(self.slots[id as usize], FieldSlot::Live(_)));
-        self.slots[id as usize] = FieldSlot::Free(self.free);
-        self.free = Some(id);
+/// Implemented by generated out-of-line payloads, not arbitrary runtime types.
+pub(crate) trait Pooled: Sized {
+    fn pool(pools: &super::FieldPool) -> &Pool<Self>;
+    fn pool_mut(pools: &mut super::FieldPool) -> &mut Pool<Self>;
+}
+impl super::FieldPool {
+    pub fn push<T: Pooled>(&mut self, value: T) -> Id<T> {
+        T::pool_mut(self).push(value)
+    }
+    pub fn get<T: Pooled>(&self, id: Id<T>) -> &T {
+        T::pool(self).get(id)
+    }
+    #[allow(dead_code)] // Generated remapping uses this for pooled function IDs.
+    pub fn get_mut<T: Pooled>(&mut self, id: Id<T>) -> &mut T {
+        T::pool_mut(self).get_mut(id)
+    }
+    pub fn remove<T: Pooled>(&mut self, id: Id<T>) {
+        T::pool_mut(self).remove(id)
     }
 }
 
@@ -94,66 +188,20 @@ impl Edges {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Float, InstDraft, Int, Opcode, Type, VectorConst};
-
     #[test]
-    fn persistent_layout_and_pool_costs() {
-        assert_eq!(size_of::<ScalarBits>(), 9);
-        assert_eq!(size_of::<VectorBits>(), 11);
-        assert_eq!(size_of::<PackedFields>(), 16);
+    fn compact_storage_and_typed_pool_recycling() {
+        assert_eq!(size_of::<InstFields>(), 16);
         assert_eq!(size_of::<StoredInst>(), 24);
-        // A cold instruction pays for this slot in addition to its 24-byte header.
-        assert_eq!(size_of::<FieldSlot>(), 32);
-    }
-
-    #[test]
-    fn fields_roundtrip_and_recycle_without_changing_drafts() {
-        let a = BlockCall::new(Block(1), &[Value(2), Value(3)]);
-        let b = BlockCall::new(Block(2), &[Value(4)]);
-        let vector = VectorConst::splat((-7i32).into(), 4, true).unwrap();
-        let drafts = [
-            InstDraft::binary(Opcode::IAdd, [Value(0), Value(1)]),
-            InstDraft::iconst(Int::from_bits(Type::I64, u64::MAX).unwrap()),
-            InstDraft::fconst(Float::from_f32_bits(0x7fa12345)),
-            InstDraft::fconst(Float::from_f64_bits(0x8000000000000000)),
-            InstDraft::vconst(vector),
-            InstDraft::vconst(VectorConst::dense(
-                Type::I32X4.as_vector().unwrap(),
-                super::super::ConstantPoolId(u32::MAX),
-            )),
-            InstDraft::call(crate::FuncId(3), &[Value(0), Value(1)]),
-            InstDraft::br(Value(0), a.as_view(), b.as_view()),
-            InstDraft::br_table(Value(0), [a.as_view(), b.as_view()]),
-        ];
-        let mut pool = FieldPool::default();
-        for draft in drafts {
-            let expected = format!("{:?}", draft.as_view());
-            let opcode = draft.opcode();
-            let InstDraft { fields, operands } = draft;
-            let packed = fields.pack(&mut pool);
-            assert_eq!(
-                matches!(packed, PackedFields::OutOfLine(_)),
-                opcode == Opcode::BrTable
-            );
-            assert_eq!(packed.opcode(&pool), opcode);
-            let view = packed.view(&operands, &pool);
-            assert_eq!(format!("{view:?}"), expected);
-            assert_eq!(format!("{:?}", view.to_draft().as_view()), expected);
-            let mut cloned = pool.clone();
-            packed.release(&mut pool);
-            // Cloning a DFG's pool must not share mutable slots with the original.
-            assert_eq!(format!("{:?}", packed.view(&operands, &cloned)), expected);
-            packed.release(&mut cloned);
-        }
-        // Only the branch table needs a slot; constants remain inline too.
-        assert_eq!(pool.slots.len(), 1);
-        for _ in 0..100 {
-            let packed = InstDraft::br_table(Value(0), [a.as_view(), b.as_view()])
-                .fields
-                .pack(&mut pool);
-            assert!(matches!(packed, PackedFields::OutOfLine(0)));
-            packed.release(&mut pool);
-        }
+        assert_eq!(size_of::<Id<u64>>(), 4);
+        let mut pool = Pool::<u64>::default();
+        let id = pool.push(7);
+        assert_eq!(*pool.get(id), 7);
+        let cloned = pool.clone();
+        pool.remove(id);
+        let next = pool.push(9);
+        assert_eq!(id.0, next.0);
+        assert_eq!(*pool.get(next), 9);
+        assert_eq!(*cloned.get(id), 7);
         assert_eq!(pool.slots.len(), 1);
     }
 }
@@ -173,7 +221,7 @@ impl BlockCall {
     }
 }
 
-/// Borrowed successor groups in the shared draft/DFG layout.
+/// Borrowed successor groups reconstructed from edge metadata and SSA operands.
 #[derive(Debug, Clone, Copy)]
 pub struct Successors<'a> {
     edges: &'a [Edge],
@@ -248,7 +296,7 @@ pub(crate) fn store_edge(call: Successor<'_>, values: &mut Arguments) -> Edge {
     }
 }
 
-/// A single successor occurrence in a draft. Resizing its arguments preserves
+/// A single successor occurrence during an edit. Resizing its arguments preserves
 /// all other operand groups, including other edges to the same block.
 pub struct SuccessorMut<'a> {
     edge: &'a mut Edge,
@@ -257,6 +305,18 @@ pub struct SuccessorMut<'a> {
 }
 
 impl SuccessorMut<'_> {
+    pub(crate) fn edit_call(call: &mut BlockCall, f: &mut impl FnMut(&mut SuccessorMut<'_>)) {
+        let mut edge = Edge {
+            block: call.block,
+            len: call.args.len().try_into().expect("too many arguments"),
+        };
+        f(&mut SuccessorMut {
+            edge: &mut edge,
+            values: &mut call.args,
+            offset: 0,
+        });
+        call.block = edge.block;
+    }
     pub fn block(&self) -> Block {
         self.edge.block
     }
@@ -292,36 +352,5 @@ impl SuccessorMut<'_> {
         } else {
             self.values[self.offset + index] = value;
         }
-    }
-}
-
-impl Edge {
-    pub(super) fn edit(
-        &mut self,
-        values: &mut Arguments,
-        offset: &mut usize,
-        f: &mut impl FnMut(&mut SuccessorMut<'_>),
-    ) {
-        f(&mut SuccessorMut {
-            edge: self,
-            values,
-            offset: *offset,
-        });
-        *offset += self.len as usize;
-    }
-}
-
-impl Edges {
-    pub(super) fn edit(
-        &mut self,
-        values: &mut Arguments,
-        offset: &mut usize,
-        f: &mut impl FnMut(&mut SuccessorMut<'_>),
-    ) {
-        let start = *offset;
-        for edge in &mut self.entries {
-            edge.edit(values, offset, f);
-        }
-        self.len = *offset - start;
     }
 }

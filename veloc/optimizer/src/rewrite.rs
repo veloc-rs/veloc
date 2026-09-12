@@ -78,9 +78,10 @@ pub(crate) fn rewrite(func: &mut Function, inst: Inst) -> Option<SmallVec<[Inst;
             for (index, (value, constant)) in results.into_iter().zip(constants).enumerate() {
                 assert_eq!(edit.function().dfg().value_type(value), constant.ty());
                 if index == 0 {
-                    edit.replace_inst(inst, constant.into());
+                    edit.replace_inst(inst, |writer| writer.scalar_const(constant));
                 } else {
-                    let next = edit.insert_after(previous, constant.into(), &[]);
+                    let next =
+                        edit.insert_after(previous, |writer| writer.scalar_const(constant), &[]);
                     edit.move_result(value, next);
                     previous = next;
                 }

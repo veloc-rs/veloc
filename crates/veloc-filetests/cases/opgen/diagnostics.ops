@@ -151,7 +151,7 @@ struct Binary {
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "iadd", verify {
-        require(result.element_bits()? > type(missing).element_bits()?, "result must have more bits per lane than missing");
+        require(result.element_bits()? > missing.ty().element_bits()?, "result must have more bits per lane than missing");
     } storage: Binary { args: [lhs, rhs] },
      semantics: bv.add(lhs, rhs)
 }
@@ -164,7 +164,7 @@ struct Binary {
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { memory: Known([]) },
-    mnemonic: "iadd", verify { require(unknown(type(lhs)), "unknown constraint"); } storage: Binary { args: [lhs, rhs] },
+    mnemonic: "iadd", verify { require(unknown(lhs.ty()), "unknown constraint"); } storage: Binary { args: [lhs, rhs] },
      semantics: bv.add(lhs, rhs)
 }
 

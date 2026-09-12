@@ -17,9 +17,7 @@ fn possible(
     signature: Option<&TypeDef>,
 ) -> Option<TypeSet> {
     match pattern {
-        Pattern::Class(set) | Pattern::Bind(_, set) | Pattern::Property(_, set) => {
-            Some(set.clone())
-        }
+        Pattern::Set(set) | Pattern::Bind(_, set) | Pattern::Property(_, set) => Some(set.clone()),
         Pattern::Exact(name) => types.exact.get(name).cloned(),
         Pattern::Same(slot) => {
             let signature = signature?;
@@ -91,13 +89,16 @@ impl Ty {
                 _ => false,
             }
     }
-    fn property(ty: &PropertyType) -> Self {
+    fn property(ty: &PropertyType, rust: &super::records::RustTypes) -> Self {
         match ty {
-            PropertyType::Named(name) if name == "Value" => Self::Value(None),
-            PropertyType::Named(name) => Self::Named(name.clone()),
-            PropertyType::Optional(name) => {
-                Self::Optional(Box::new(Self::property(&PropertyType::Named(name.clone()))))
+            PropertyType::Named(name) if rust.policy(name).references.is_operand() => {
+                Self::Value(None)
             }
+            PropertyType::Named(name) => Self::Named(name.clone()),
+            PropertyType::Optional(name) => Self::Optional(Box::new(Self::property(
+                &PropertyType::Named(name.clone()),
+                rust,
+            ))),
             PropertyType::Values(n) => Self::Array(Box::new(Self::Value(None)), *n),
         }
     }
@@ -685,7 +686,7 @@ impl Library {
                 .iter()
                 .map(|p| {
                     super::identifier(source, p.offset, &p.name)?;
-                    if p.moves || p.property || !names.insert(&p.name) {
+                    if p.moves || !names.insert(&p.name) {
                         return Err(Error::at(
                             source,
                             p.offset,
@@ -1139,7 +1140,7 @@ impl Checker<'_> {
                 self.data.records.iter().find(|r| r.name == name).map(|r| {
                     r.fields
                         .iter()
-                        .map(|f| (f.name.clone(), Ty::property(&f.ty)))
+                        .map(|f| (f.name.clone(), Ty::property(&f.ty, &self.data.rust)))
                         .collect()
                 })
             })
@@ -1252,7 +1253,7 @@ impl Checker<'_> {
             if param.name != "self" || owner.is_none() {
                 super::identifier(self.source, param.offset, &param.name)?;
             }
-            if param.moves || param.property {
+            if param.moves {
                 return Err(Error::at(
                     self.source,
                     param.offset,
@@ -1677,7 +1678,10 @@ impl Checker<'_> {
                         .iter()
                         .find(|(n, _)| n == name)
                         .ok_or_else(|| fail("unknown projection enum variant"))?;
-                    let params = params.iter().map(Ty::property).collect::<Vec<_>>();
+                    let params = params
+                        .iter()
+                        .map(|ty| Ty::property(ty, &self.data.rust))
+                        .collect::<Vec<_>>();
                     if params.len() != args.len() {
                         return Err(fail("enum argument count mismatch"));
                     }

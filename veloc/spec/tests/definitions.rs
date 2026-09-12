@@ -2,20 +2,15 @@ mod common;
 
 #[test]
 fn the_actual_mir_definitions_compile_deterministically() {
-    let source = [
-        include_str!("../../mir/defs/formats.ops"),
-        include_str!("../../mir/defs/mir.ops"),
-    ]
-    .join("\n");
-    let source = common::source(&source);
-    let plan = veloc_opgen::plan(&source).unwrap();
+    let source = veloc_opgen::Source::load(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mir/defs/module.ops"),
+    )
+    .unwrap();
+    let plan = source.plan().unwrap();
     assert!(plan.definitions().operation_count() > 0);
     let first = plan.generate();
     let second = plan.generate();
-    assert_eq!(
-        first.instructions,
-        veloc_opgen::compile(&source).unwrap().instructions
-    );
+    assert_eq!(first.instructions, source.compile().unwrap().instructions);
     assert_eq!(first.types, second.types);
     assert_eq!(first.builders, second.builders);
     assert_eq!(first.type_rules, second.type_rules);

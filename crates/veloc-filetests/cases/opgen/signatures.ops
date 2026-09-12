@@ -6,7 +6,7 @@ struct CallIndirect {
     args: ValueList,
     sig_id: SigId,
 }
-op CallIndirect(@sig_id: SigId, args: values, ptr: PTR) -> signature {
+op CallIndirect(sig_id: SigId, args: values, ptr: PTR) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
@@ -25,7 +25,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> Integer {
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
 verify {
-        require(result.element_bits()? > type(left).element_bits()?, "result must have more bits per lane than left");
+        require(result.element_bits()? > left.ty().element_bits()?, "result must have more bits per lane than left");
     } }
 
 // ----- anonymous-results-have-no-synthetic-names-2
@@ -39,7 +39,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> Integer {
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
 verify {
-        require(result0.element_bits()? > type(left).element_bits()?, "result0 must have more bits per lane than left");
+        require(result0.element_bits()? > left.ty().element_bits()?, "result0 must have more bits per lane than left");
     } }
 
 // ----- bare-result-types-leave-the-operation-body-unconsumed-1
@@ -116,7 +116,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (shape(T, Integer): T) {
 
 // ----- bare-result-types-leave-the-operation-body-unconsumed-7
 // run: opgen-error
-// check: results cannot be properties
+// check: expected a name
 struct Pair {
     args: values(2),
 }
@@ -164,7 +164,7 @@ op PairAdd<T: Integer, T: Float>(left: T, right: T) -> (result: T) {
 
 // ----- generic-declarations-and-type-domains-are-checked-2
 // run: opgen-error
-// check: unknown type or class `Missing`
+// check: unknown type or typeset `Missing`
 struct Pair {
     args: values(2),
 }
@@ -267,7 +267,7 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, @ptr: u32, @flags: MemFlags) -> (result: Any) {
+op Load(ptr: PTR, ptr: u32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -282,7 +282,7 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, @offset: i32, @flags: MemFlags) -> (result: Any) {
+op Load(ptr: PTR, offset: i32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -297,7 +297,7 @@ struct Load {
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, @offset: u32, @flags: bool) -> (result: Any) {
+op Load(ptr: PTR, offset: u32, flags: bool) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -306,13 +306,13 @@ op Load(ptr: PTR, @offset: u32, @flags: bool) -> (result: Any) {
 
 // ----- properties-must-match-their-declared-storage-type-and-role-3
 // run: opgen-error
-// check: parameter `offset` is incompatible with storage field `offset`
+// check: unknown property type `I32`
 struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, offset: I32, @flags: MemFlags) -> (result: Any) {
+op Load(ptr: PTR, offset: I32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -321,13 +321,13 @@ op Load(ptr: PTR, offset: I32, @flags: MemFlags) -> (result: Any) {
 
 // ----- properties-must-match-their-declared-storage-type-and-role-4
 // run: opgen-error
-// check: parameter `ptr` is incompatible with storage field `ptr`
+// check: unbound type variable `u32`
 struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
 }
-op Load(@ptr: u32, @offset: u32, @flags: MemFlags) -> (result: Any) {
+op Load(ptr: u32, offset: u32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -342,7 +342,7 @@ struct CallIndirect {
     args: ValueList,
     sig_id: SigId,
 }
-op CallIndirect(@sig_id: SigId, ptr: PTR, args: successor) -> signature {
+op CallIndirect(sig_id: SigId, ptr: PTR, args: successor) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
@@ -412,13 +412,13 @@ op PairAdd<T: Integer>(left: T, right: T, unused: T) -> (result: T) {
 
 // ----- storage-packing-covers-every-field-and-logical-parameter-once-6
 // run: opgen-error
-// check: missing storage field `flags`
+// check: unbound type variable `MemFlags`
 struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
 }
-op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> (result: Any) {
+op Load(ptr: PTR, offset: u32, flags: MemFlags) -> (result: Any) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset },

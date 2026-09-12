@@ -1,9 +1,11 @@
+import "../../../veloc/mir/defs/module.ops";
+
 // Exercise contracts not represented by production MIR instructions.
 // These have no control lowering interface: validation comes only from defs.
 interface SizeInfo { next: u32, aligned: bool }
 fn NextSize(size: u32) -> u32 { value: size + 1 }
 struct CheckedSize { size: u32 }
-op CheckedSize(@size: u32) -> () {
+op CheckedSize(size: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "checked-size", storage: CheckedSize { size },
     text: "size={size}",
@@ -19,7 +21,7 @@ struct VectorLiteral {
 }
 // A different opcode/field name must still inherit the property's codec,
 // result type and validation, without repeating Vconst's rules.
-op VectorLiteral(@data: VectorConst) -> type(data) {
+op VectorLiteral(data: VectorConst) -> type(data) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "vector-literal", storage: VectorLiteral { payload: data }, }
 
@@ -30,10 +32,10 @@ fn InspectCallable(ty: Type) -> CallableInfo {
 op Rebind(move value: Callable) -> Callable {
     meta: OpInfo { memory: Unknown },
     mnemonic: "rebind", storage: Unary { arg: value },
-    implements: [InspectCallable(type(value))],
+    implements: [InspectCallable(value.ty())],
 
     verify {
-        require(type(value) == result_type(0), "rebind type mismatch");
+        require(value.ty() == result_type(0), "rebind type mismatch");
     }
 }
 struct MoveBranch {
@@ -57,28 +59,33 @@ struct WideRef {
     low: u64,
     high: u64,
 }
-op WideRef(@target: FuncId, @low: u64, @high: u64) -> () {
+op WideRef(target: FuncId, low: u64, high: u64) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "wide-ref", storage: WideRef { target, low, high },
 }
-op FunctionOperand(@target: FuncId) -> () {
+op FunctionOperand(target: FuncId) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "function-operand", storage: FunctionOperand { target },
 text: "{target}", }
 struct ExplicitCall {
     target: FuncId,
-    args: ValueList,
+    args: Inputs,
     sig: SigId,
 }
-op ExplicitCall(@target: FuncId, args: values, @sig: SigId) -> signature {
+op ExplicitCall(target: FuncId, args: values, sig: SigId) -> signature {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "explicit-call", storage: ExplicitCall { target, args, sig },
     signature: sig,
 text: "{target}({args}) : {sig}", }
 
+// Alternate names exercise structural field contracts, not spelling-based dispatch.
+type Input = rust("crate::Value") { field: operand, }
+type Inputs = rust("crate::inst::Arguments") { field: list(Input), }
+type Destination = rust("crate::inst::Successor") { field: edge(Input), }
+type Destinations = rust("crate::inst::Successors") { field: list(Destination), }
 struct TestOperands {
-    token: Value,
-    optional: optional(Value),
+    token: Input,
+    optional: optional(Input),
     tag: u32,
 }
 struct Grouped {
@@ -86,7 +93,7 @@ struct Grouped {
     group: TestOperands,
     after: Value,
 }
-op Grouped(before: I32, after: I32, @group: TestOperands) -> I32 {
+op Grouped(before: I32, after: I32, group: TestOperands) -> I32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "grouped", storage: Grouped { before, group, after },
     text: "{before}, {after}, token={group.token}[, optional={group.optional}], tag={group.tag}",
@@ -95,10 +102,10 @@ op Grouped(before: I32, after: I32, @group: TestOperands) -> I32 {
 struct Routed {
     operands: Value,
     group: TestOperands,
-    dest: BlockCall,
+    dest: Destination,
     tail: VectorExtData,
 }
-op Routed(input: I32, @group: TestOperands, @tail: VectorExtData, dest: successor) -> () {
+op Routed(input: I32, group: TestOperands, tail: VectorExtData, dest: successor) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "routed",
     storage: Routed { operands: input, group, dest, tail },
@@ -128,7 +135,7 @@ op Sized<T: Scalar>(arg: T) -> (result: I8) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "sized", storage: Unary { arg },
 verify {
-        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
+        require(result.element_bits()? > arg.ty().element_bits()?, "result must have more bits per lane than arg");
     } }
 op First<T: Integer>(lhs: T, rhs: T) -> T {
     meta: OpInfo { memory: Known([]) },
@@ -160,12 +167,12 @@ op WidePair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, wide: I64) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "wide-pair", storage: Pair { inputs: [lhs, rhs] },
 verify {
-        require(wide.element_bits()? > type(lhs).element_bits()?, "wide must have more bits per lane than lhs");
+        require(wide.element_bits()? > lhs.ty().element_bits()?, "wide must have more bits per lane than lhs");
     } }
 op Triple<T: Integer>(base: T, index: T, increment: T) -> T {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "triple", storage: Triple { args: [base, index, increment] }, }
-op Offset(arg: PTR, @amount: i32) -> PTR {
+op Offset(arg: PTR, amount: i32) -> PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "offset", storage: Immediate { value: arg, displacement: amount },
 text: "{arg}, amount={amount}", }
@@ -180,9 +187,9 @@ layout Extended {
 
 predicate is_wide = Scalar & (I32 | I64);
 predicate is_chosen = Chosen;
-class Chosen { members: [I32X4 | SV4] }
+typeset Chosen = I32X4 | SV4;
 type SV4 = vector(I32, scalable(4));
-class Wide { members: [I32 | I64] }
+typeset Wide = I32 | I64;
 op Named<T: Wide>(lhs: T, rhs: T) -> T {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "named", storage: Binary { args: [lhs, rhs] }, }
@@ -218,7 +225,7 @@ op Multiple<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
     meta: OpInfo {},
     mnemonic: "multiple", storage: Binary { args: [lhs, rhs] }, semantics: [bv.add(lhs, rhs), bv.eq(lhs, rhs)]
 }
-op CompareValue<T: ScalarInteger>(lhs: T, @condition: IntCC, rhs: T) -> BOOL {
+op CompareValue<T: ScalarInteger>(lhs: T, condition: IntCC, rhs: T) -> BOOL {
     meta: OpInfo {},
     mnemonic: "compare-value", storage: Compare { cc: condition, args: [lhs, rhs] },
     semantics: bv.cmp(condition, lhs, rhs)
@@ -264,11 +271,11 @@ mnemonic: "effect-set", storage: EffectSet {}, }
 // One field declaration can serve as both a primary layout and a nested property.
 struct LiteralPayload { bits: u32 }
 struct WrappedPayload { inner: LiteralPayload }
-op Payload(@bits: u32) -> I32 {
+op Payload(bits: u32) -> I32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "payload", storage: LiteralPayload { bits }
 }
-op Wrapped(@inner: LiteralPayload) -> I32 {
+op Wrapped(inner: LiteralPayload) -> I32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "wrapped", storage: WrappedPayload { inner },
     text: "{inner.bits}"
@@ -285,7 +292,7 @@ struct StampRecord { stamp: Stamp }
 enum StampResult { variants: [Present(Stamp), Absent] }
 interface StampInfo { stamp: Stamp, doubled: u32 }
 struct StampInput { number: u32 }
-op ReadStamp(@number: u32) -> () {
+op ReadStamp(number: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "read-stamp", storage: StampInput { number },
     text: "{number}",
@@ -313,7 +320,7 @@ op FourLane<T: Integer>(arg: T) -> T {
     mnemonic: "four-lane",
     storage: Unary { arg },
     verify {
-        require(type(arg).lanes()? == 4, "requires four lanes");
+        require(arg.ty().lanes()? == 4, "requires four lanes");
     }
     semantics: bv.neg(arg)
 }
@@ -330,4 +337,15 @@ op CheckedWidth<T: ScalarInteger>(arg: T) -> T {
     meta: OpInfo {}, mnemonic: "checked-width", storage: Unary { arg },
     verify { require(fixture_width(T), "fixture width"); }
     semantics: bv.neg(arg)
+}
+
+struct RoutedTable {
+    index: Input,
+    targets: Destinations,
+}
+op RoutedTable(index: I32, cases: successors, default: successor) -> () {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "routed-table",
+    storage: RoutedTable { index, targets: table(cases, default) },
+    text: "{index}, {cases}, {default}",
 }

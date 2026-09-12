@@ -22,12 +22,12 @@ fn generate(plan: &Plan) -> Generated {
         let crate::storage::Strategy::Operands(storage) = &defs.storage.strategy else {
             unreachable!("operand plan matches storage strategy");
         };
-        let classes = crate::types::generate::Classes::new(defs);
-        let mut type_rules = classes.generate();
+        let sets = crate::types::generate::Sets::new(defs);
+        let mut type_rules = sets.generate();
         type_rules.push_str("mod rules {\nuse super::TypeClass as C;\nuse crate::Type;\n");
         crate::types::rules::generate_validation(
             defs,
-            &classes,
+            &sets,
             "crate::GenericOpcode",
             &mut type_rules,
         );
@@ -48,7 +48,7 @@ fn generate(plan: &Plan) -> Generated {
     let plan::Output::Packed(packed) = &plan.output else {
         unreachable!("operand output already emitted");
     };
-    let classes = crate::types::generate::Classes::new(defs);
+    let sets = crate::types::generate::Sets::new(defs);
     let mut type_rules = String::from(HEADER);
     type_rules.push_str("use super::TypeClass as C;\nuse crate::Type;\n");
     let query_types = defs.expressions.data_types();
@@ -72,11 +72,11 @@ fn generate(plan: &Plan) -> Generated {
     instructions.push_str(&crate::generate::packing::accessors(defs));
     instructions.push_str(&crate::model::ownership::generate(defs));
     instructions.push_str(&crate::model::interfaces::generate(defs, &packed.formats));
-    crate::types::rules::generate(defs, &classes, &mut type_rules, &mut instructions);
+    crate::types::rules::generate(defs, &sets, &mut type_rules, &mut instructions);
 
     let mut ops = String::from(HEADER);
     ops.push_str(&defs.storage.format_code());
-    ops.push_str(&classes.generate());
+    ops.push_str(&sets.generate());
     ops.push_str(&crate::model::builtins::contracts(&defs.builtins));
     for comparison in &defs.comparisons {
         ops.push_str(&comparison.generate());

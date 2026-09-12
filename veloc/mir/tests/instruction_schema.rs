@@ -3,8 +3,7 @@ use veloc_mir::inst::OpFormat;
 use veloc_mir::inst::VectorExtData;
 use veloc_mir::{Arguments, BlockCall, InstView};
 use veloc_mir::{
-    Block, CallConv, InstDraft, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value,
-    VectorMemOptions,
+    Block, CallConv, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value, VectorMemOptions,
 };
 
 fn operands(data: &InstView<'_>, include_auxiliary: bool) -> Vec<Value> {
@@ -28,14 +27,14 @@ fn rewriting_predicated_operands_preserves_construction_data() {
         mask: old,
         evl: Some(evl),
     };
-    let original = InstDraft::vector_op_with_ext(Opcode::IAdd, &args, ext);
-    let inst = dfg.create_inst(original.clone());
+    let inst = dfg.writer().vector_op_with_ext(Opcode::IAdd, &args, ext);
+    let original = operands(&dfg.inst(inst), true);
     dfg.replace_all_uses(old, new);
     let changed = dfg.inst(inst);
 
     assert_eq!(operands(&changed, false), [new, new]);
     assert_eq!(operands(&changed, true), [new, new, new, evl]);
-    assert_eq!(operands(&original.as_view(), true), [old, old, old, evl]);
+    assert_eq!(original, [old, old, old, evl]);
     assert!(changed.matches_format(OpFormat::Binary));
     assert!(!changed.matches_format(OpFormat::Unary));
     assert!(!changed.matches_format(OpFormat::IntCompare));
@@ -58,18 +57,14 @@ fn branch_table_rewriting_visits_successor_arguments() {
         args: right_args,
     };
     let table = [left, right];
-    let branch = InstDraft::br_table(old, table.iter().map(BlockCall::as_view));
-    assert_eq!(
-        operands(&branch.as_view(), false),
-        [old, old, keep, keep, old]
-    );
-    let inst = dfg.create_inst(branch);
+    let inst = dfg
+        .writer()
+        .br_table(old, table.iter().map(BlockCall::as_view));
+    let branch = dfg.inst(inst);
+    assert_eq!(operands(&branch, false), [old, old, keep, keep, old]);
     dfg.replace_all_uses(old, new);
-    let branch = dfg.draft(inst);
-    assert_eq!(
-        operands(&branch.as_view(), true),
-        [new, new, keep, keep, new]
-    );
+    let branch = dfg.inst(inst);
+    assert_eq!(operands(&branch, true), [new, new, keep, keep, new]);
 }
 
 #[test]
@@ -83,21 +78,24 @@ fn memory_view_keeps_auxiliary_operands_separate() {
         offset: 0,
         scale: 1,
     };
-    let scatter = InstDraft::vector_scatter(values, ext);
-    assert!(scatter.as_view().matches_format(OpFormat::VectorScatter));
-    assert_eq!(operands(&scatter.as_view(), false), values);
+    let mut dfg = DataFlowGraph::new();
+    let inst = dfg.writer().vector_scatter(values, ext);
+    let scatter = dfg.inst(inst);
+    assert!(scatter.matches_format(OpFormat::VectorScatter));
+    assert_eq!(operands(&scatter, false), values);
     assert_eq!(
-        operands(&scatter.as_view(), true),
+        operands(&scatter, true),
         [Value(0), Value(1), Value(2), Value(3), Value(4)]
     );
-    assert_eq!(scatter.as_view().memory_flags(), Some(flags));
-    assert!(scatter.as_view().has_volatile_access());
+    assert_eq!(scatter.memory_flags(), Some(flags));
+    assert!(scatter.has_volatile_access());
 
     // Fixed operand groups cannot have the wrong length in construction data.
 }
 
 #[test]
 fn values_construction_handles_inline_fixed_opcode_and_nullary_layouts() {
+    let mut dfg = DataFlowGraph::new();
     let values = [Value(0), Value(1), Value(2)];
     for opcode in [
         Opcode::INeg,
@@ -110,15 +108,20 @@ fn values_construction_handles_inline_fixed_opcode_and_nullary_layouts() {
     ] {
         let format = opcode.spec().format;
         let arity = format.fixed_value_arity().unwrap();
-        let instruction = InstDraft::from_values(opcode, &values[..arity]).unwrap();
+        let inst = dfg.writer().from_values(opcode, &values[..arity]).unwrap();
+        let instruction = dfg.inst(inst);
         assert_eq!(instruction.opcode(), opcode);
-        assert!(instruction.as_view().matches_format(format));
-        assert_eq!(operands(&instruction.as_view(), true), values[..arity]);
-        assert_eq!(instruction.as_view().memory_flags(), None);
-        assert!(InstDraft::from_values(opcode, &[Value(0); 4]).is_none());
+        assert!(instruction.matches_format(format));
+        assert_eq!(operands(&instruction, true), values[..arity]);
+        assert_eq!(instruction.memory_flags(), None);
+        assert!(dfg.writer().from_values(opcode, &[Value(0); 4]).is_none());
     }
     // Property-bearing instructions cannot be fabricated from operands alone.
-    assert!(InstDraft::from_values(Opcode::Load, &values[..1]).is_none());
+    assert!(
+        dfg.writer()
+            .from_values(Opcode::Load, &values[..1])
+            .is_none()
+    );
 }
 
 #[test]

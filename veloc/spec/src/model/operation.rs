@@ -16,12 +16,24 @@ pub(super) fn parse(
         .signature
         .take()
         .expect("op parser requires a signature");
+    let node = record
+        .fields
+        .get("storage")
+        .ok_or_else(|| Error::at(source, record.offset, "missing field `storage`"))?;
+    let Kind::Object(format, mappings) = &node.kind else {
+        return Err(Error::at(
+            source,
+            node.offset,
+            "expected storage: Layout { field mappings }",
+        ));
+    };
+    let properties = storage_defs.properties(source, node.offset, format, mappings, &sig.params)?;
     let CheckedSignature {
         params,
         types,
         slots,
         type_bindings,
-    } = signature(source, record.offset, sig, vocabulary)?;
+    } = signature(source, record.offset, sig, vocabulary, &properties)?;
     let mut fields = Fields::new(source, record);
     let mnemonic = match fields.optional("mnemonic") {
         Some(Node {
@@ -209,14 +221,14 @@ fn signature(
     offset: usize,
     sig: Signature,
     vocabulary: Vocabulary<'_>,
+    properties: &BTreeSet<String>,
 ) -> Result<CheckedSignature, Error> {
     let Vocabulary { types, data, .. } = vocabulary;
     let mut variables = BTreeMap::new();
     for generic in sig.generics {
         identifier(source, generic.offset, &generic.name)?;
         if generic.moves
-            || generic.property
-            || types.classes.contains_key(&generic.name)
+            || types.sets.contains_key(&generic.name)
             || types.exact.contains_key(&generic.name)
         {
             return Err(Error::at(
@@ -225,7 +237,7 @@ fn signature(
                 "invalid type variable declaration",
             ));
         }
-        let class = types.set(source, &generic.ty)?;
+        let set = types.set(source, &generic.ty)?;
         let slot = u8::try_from(variables.len())
             .map_err(|_| Error::at(source, generic.offset, "more than 256 type variables"))?;
         if variables
@@ -233,8 +245,8 @@ fn signature(
                 generic.name.clone(),
                 Variable {
                     slot,
-                    possible: class.clone(),
-                    class,
+                    possible: set.clone(),
+                    set,
                     bound: false,
                 },
             )
@@ -261,12 +273,12 @@ fn signature(
                 format!("duplicate parameter `{}`", param.name),
             ));
         }
-        let kind = if param.property {
+        let kind = if properties.contains(&param.name) {
             let offset = param.ty.offset;
             let ty = name(source, param.ty)?;
             if !super::records::primitive(&ty)
                 && ty != "Bytes"
-                && (!data.names.contains(&ty) || ty == "Value")
+                && (!data.names.contains(&ty) || !data.rust.policy(&ty).references.is_data())
             {
                 return Err(Error::at(
                     source,
@@ -512,9 +524,9 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
                 use_param(
                     arg,
                     &|kind| match kind {
-                        ParamKind::Value => ty == "Value",
-                        ParamKind::Values => ty == "ValueList",
-                        ParamKind::Successor => ty == "BlockCall",
+                        ParamKind::Value => field.policy.references.is_operand(),
+                        ParamKind::Values => field.policy.references.is_operands(),
+                        ParamKind::Successor => field.policy.references.is_edge(),
                         ParamKind::Successors => false,
                         ParamKind::Property(prop) => ty == prop,
                     },
@@ -531,7 +543,9 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
                     &field.name,
                 )?;
             }
-            (Binding::Table { cases, default }, FieldType::Named(ty)) if ty == "JumpTable" => {
+            (Binding::Table { cases, default }, FieldType::Named(_))
+                if field.policy.references.is_edges() =>
+            {
                 use_param(
                     cases,
                     &|kind| matches!(kind, ParamKind::Successors),

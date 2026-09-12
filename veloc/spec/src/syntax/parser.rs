@@ -70,25 +70,39 @@ impl<'a> Parser<'a> {
             } else if kind == "extern" {
                 file.records.extend(self.external(offset)?);
             } else {
-                let record = self.declaration(offset, kind)?;
+                let mut record = self.declaration(offset, kind)?;
                 let owner = (record.kind == "type" && self.at("{")).then(|| record.name.clone());
+                let methods = if let Some(owner) = owner {
+                    self.methods(&owner, &mut record.fields)?
+                } else {
+                    Vec::new()
+                };
                 file.records.push(record);
-                if let Some(owner) = owner {
-                    file.records.extend(self.methods(&owner)?);
-                }
+                file.records.extend(methods);
             }
         }
         Ok(file)
     }
 
     // Methods share the ordinary function checker and expansion mechanism.
-    fn methods(&mut self, owner: &str) -> Result<Vec<Record>, Error> {
+    fn methods(
+        &mut self,
+        owner: &str,
+        fields: &mut BTreeMap<String, Node>,
+    ) -> Result<Vec<Record>, Error> {
         self.expect("{")?;
         let mut records = Vec::new();
         while !self.at("}") {
             let offset = self.token.offset;
-            if self.name()? != "fn" {
-                return Err(self.error(offset, "expected method declaration"));
+            let kind = self.name()?;
+            if kind != "fn" {
+                self.expect(":")?;
+                let value = self.expression(0, Context::Value)?;
+                self.expect(",")?;
+                if fields.insert(kind.clone(), value).is_some() {
+                    return Err(self.error(offset, format!("duplicate type field `{kind}`")));
+                }
+                continue;
             }
             let name = format!("{owner}.{}", self.name()?);
             let signature = self.method_signature(Some(owner))?;
@@ -187,7 +201,7 @@ impl<'a> Parser<'a> {
             None
         };
         let fields = match kind.as_str() {
-            "type" | "predicate" => {
+            "type" | "typeset" | "predicate" => {
                 self.expect("=")?;
                 let node = self.expression(0, Context::Type)?;
                 if kind != "type" || !self.at("{") {
@@ -229,7 +243,6 @@ impl<'a> Parser<'a> {
                 Ok(Parameter {
                     offset,
                     name: "self".into(),
-                    property: false,
                     moves: false,
                     ty: Node {
                         offset,
@@ -264,7 +277,6 @@ impl<'a> Parser<'a> {
 
     fn parameter(&mut self) -> Result<Parameter, Error> {
         let offset = self.token.offset;
-        let property = self.eat("@")?;
         let mut name = self.name()?;
         let moves = name == "move" && !self.at(":");
         if moves {
@@ -275,16 +287,12 @@ impl<'a> Parser<'a> {
         Ok(Parameter {
             offset,
             name,
-            property,
             moves,
             ty,
         })
     }
 
     fn result(&mut self) -> Result<ResultType, Error> {
-        if self.at("@") {
-            return Err(self.error(self.token.offset, "results cannot be properties"));
-        }
         let first = self.expression(0, Context::Type)?;
         let offset = first.offset;
         let (name, ty) = if self.eat(":")? {

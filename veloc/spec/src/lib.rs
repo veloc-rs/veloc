@@ -78,34 +78,42 @@ pub fn compile(source: &str) -> Result<Generated, Error> {
 mod fixtures {
     use super::*;
 
-    const BUILTINS: &str = concat!(
-        include_str!("../../defs/types.ops"),
-        "\n",
-        include_str!("../../defs/builtins.ops"),
-        "\n",
-        include_str!("../../defs/comparisons.ops")
-    );
+    static BUILTINS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        concat!(
+            include_str!("../../defs/types.ops"),
+            "\n",
+            include_str!("../../defs/builtins.ops"),
+            "\n",
+            include_str!("../../defs/comparisons.ops")
+        )
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("import "))
+        .collect::<Vec<_>>()
+        .join("\n")
+    });
+
+    pub fn types_policy(name: &str) -> crate::model::records::Policy {
+        super::parse(&BUILTINS).unwrap().data.rust.policy(name)
+    }
 
     pub fn types() -> types::Types {
-        super::parse(BUILTINS).unwrap().types
+        super::parse(&BUILTINS).unwrap().types
     }
 
     pub fn set(expression: &str) -> types::TypeSet {
-        super::parse(&format!(
-            "{BUILTINS}\nclass TestSet {{ members: [{expression}] }}"
-        ))
-        .unwrap()
-        .types
-        .classes
-        .remove("TestSet")
-        .unwrap()
+        super::parse(&format!("{}\ntypeset TestSet = {expression};", *BUILTINS))
+            .unwrap()
+            .types
+            .sets
+            .remove("TestSet")
+            .unwrap()
     }
 
     pub fn parse(source: &str) -> Result<Definitions, Error> {
-        super::parse(&format!("{BUILTINS}\n{source}"))
+        super::parse(&format!("{}\n{source}", *BUILTINS))
     }
 
     pub fn compile(source: &str) -> Result<Generated, Error> {
-        super::compile(&format!("{BUILTINS}\n{source}"))
+        super::compile(&format!("{}\n{source}", *BUILTINS))
     }
 }

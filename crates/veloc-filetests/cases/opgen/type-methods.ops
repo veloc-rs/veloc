@@ -8,7 +8,7 @@ type Token = rust("crate::tokens::Token") {
 }
 extern interface Tokens { fn read(number: u32) -> Token; }
 struct Input { number: u32 }
-op Check(@number: u32) -> () {
+op Check(number: u32) -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Input { number },
     verify { require(Tokens.read(number).twice() > 0, "positive"); }
 }
@@ -21,7 +21,7 @@ type Token = rust("crate::tokens::Token") {
 }
 extern interface Tokens { fn read(number: u32) -> Token; }
 struct Input { number: u32 }
-op Check(@number: u32) -> () {
+op Check(number: u32) -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Input { number },
     verify { require(Tokens.read(number).number() > 0, "positive"); }
 }
@@ -33,11 +33,11 @@ fn wrong(ty: Type) -> bool { value: ty.undeclared() }
 
 // ----- results-are-types-not-fake-ssa-values
 // run: opgen-error
-// check: type expects an SSA value
+// check: unknown projection function `Type.ty`
 struct Unary { arg: Value }
 op Check(arg: I8) -> (result: I16) {
     meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg },
-    verify { require(type(result).is_scalar(), "scalar"); }
+    verify { require(result.ty().is_scalar(), "scalar"); }
 }
 
 // ----- result-only-generic-has-a-concrete-slot
@@ -148,7 +148,7 @@ extern interface Tokens { fn read(number: u32) -> Token; }
 struct Input { number: u32 }
 struct Boxed { token: Token }
 fn unwrap(boxed: Boxed) -> u32 { value: (boxed) . token . number() }
-op Check(@number: u32) -> () {
+op Check(number: u32) -> () {
     meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Input { number },
     verify { require(unwrap(Boxed { token: Tokens . read(number) }) > 0, "positive"); }
 }

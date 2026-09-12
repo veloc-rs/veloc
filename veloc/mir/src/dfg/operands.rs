@@ -131,10 +131,10 @@ impl Operands {
 /// A borrowed operand occurrence, not a stable handle across instruction edits.
 ///
 /// ```compile_fail
-/// use veloc_mir::{InstDraft, Opcode, Value};
+/// use veloc_mir::{InstWriter, Opcode, Value};
 /// use veloc_mir::dfg::DataFlowGraph;
 /// let mut dfg = DataFlowGraph::new();
-/// let inst = dfg.create_inst(InstDraft::unary(Opcode::INeg, Value(0)));
+/// let inst = dfg.create_inst(|writer: crate::InstWriter<'_>| writer.unary(Opcode::INeg, Value(0)));
 /// let site = dfg.uses(Value(0)).next().unwrap();
 /// dfg.set_operand(inst, 0, Value(1));
 /// assert_eq!(site.value(), Value(0)); // A borrowed use cannot cross the edit.

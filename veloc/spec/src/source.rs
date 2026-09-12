@@ -1,7 +1,9 @@
 //! Definition-file imports, dependency tracking and original-file diagnostics.
 //! Files are parsed independently; imports cannot complete another file's syntax.
 
-use std::collections::BTreeSet;
+mod scopes;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::{Definitions, Error, Generated, Plan, model, syntax};
@@ -23,6 +25,8 @@ impl std::error::Error for SourceError {}
 struct File {
     path: PathBuf,
     first_line: usize,
+    records: std::ops::Range<usize>,
+    visible: BTreeSet<usize>,
 }
 
 pub struct Source {
@@ -45,7 +49,7 @@ impl Source {
         Loader {
             source: &mut source,
             active: Vec::new(),
-            loaded: BTreeSet::new(),
+            loaded: BTreeMap::new(),
             next_line: 1,
         }
         .visit(path.as_ref())?;
@@ -59,7 +63,10 @@ impl Source {
     }
 
     pub fn parse(&self) -> Result<Definitions, SourceError> {
-        model::from_records(&self.text, self.records.clone()).map_err(|e| self.locate(e))
+        let defs =
+            model::from_records(&self.text, self.records.clone()).map_err(|e| self.locate(e))?;
+        scopes::check(&self.text, &self.records, &self.files, &defs).map_err(|e| self.locate(e))?;
+        Ok(defs)
     }
 
     /// Prepare checked output projections while retaining original-file diagnostics.
@@ -88,12 +95,12 @@ impl Source {
 struct Loader<'a> {
     source: &'a mut Source,
     active: Vec<PathBuf>,
-    loaded: BTreeSet<PathBuf>,
+    loaded: BTreeMap<PathBuf, usize>,
     next_line: usize,
 }
 
 impl Loader<'_> {
-    fn visit(&mut self, path: &Path) -> Result<(), SourceError> {
+    fn visit(&mut self, path: &Path) -> Result<usize, SourceError> {
         self.source.dependencies.insert(path.to_owned());
         let canonical = path
             .canonicalize()
@@ -111,8 +118,8 @@ impl Loader<'_> {
                 format!("import cycle: {}", chain.join(" -> ")),
             ));
         }
-        if self.loaded.contains(&canonical) {
-            return Ok(());
+        if let Some(&file) = self.loaded.get(&canonical) {
+            return Ok(file);
         }
         if self.active.len() >= 128 {
             return Err(file_error(
@@ -140,12 +147,13 @@ impl Loader<'_> {
             }
         }
         self.active.push(canonical.clone());
+        let mut visible = BTreeSet::new();
         for import in imports {
             let target = canonical
                 .parent()
                 .expect("canonical file has a parent")
                 .join(&import.path);
-            self.visit(&target).map_err(|mut error| {
+            let child = self.visit(&target).map_err(|mut error| {
                 let site = Error::at(&text, import.offset, "");
                 error.diagnostic.message.push_str(&format!(
                     "\n  imported from {}:{}:{}",
@@ -155,15 +163,21 @@ impl Loader<'_> {
                 ));
                 error
             })?;
+            visible.extend(&self.source.files[child].visible);
         }
         self.active.pop();
         let base = self.source.text.len();
         for record in &mut records {
             record.relocate(base);
         }
+        let file = self.source.files.len();
+        visible.insert(file);
+        let start = self.source.records.len();
         self.source.files.push(File {
             path: canonical.clone(),
             first_line: self.next_line,
+            records: start..start + records.len(),
+            visible,
         });
         self.source.records.extend(records);
         self.source.text.push_str(&text);
@@ -172,8 +186,8 @@ impl Loader<'_> {
             self.source.text.push('\n');
             self.next_line += 1;
         }
-        self.loaded.insert(canonical);
-        Ok(())
+        self.loaded.insert(canonical, file);
+        Ok(file)
     }
 }
 

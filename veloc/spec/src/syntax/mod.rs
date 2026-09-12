@@ -36,7 +36,6 @@ pub(crate) enum Kind {
 pub(crate) struct Parameter {
     pub offset: usize,
     pub name: String,
-    pub property: bool,
     pub moves: bool,
     pub ty: Node,
 }

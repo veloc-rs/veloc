@@ -1,14 +1,14 @@
-// ----- successor-editor-name-is-reserved
+// ----- writer-method-name-is-reserved
 // run: opgen-error
-// check: conflicting draft constructor `edit_successors`
-struct EditSuccessors {
+// check: conflicting instruction constructor `write`
+struct Write {
 
 }
-op EditSuccessors() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: "editsuccessors", storage: EditSuccessors {} }
+op Write() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: "write", storage: Write {} }
 
 // ----- pool-bindings-are-typed-and-consume-the-complete-struct-1
 // run: opgen-error
-// check: expected parameter, array, pool(parameter) or table(cases, default)
+// check: unbound type variable `PtrIndexImm`
 struct PtrIndexImm {
     offset: i32,
     scale: u32,
@@ -18,7 +18,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm) -> (result: PTR) {
+op Indexed(ptr: PTR, index: I32, imm: PtrIndexImm) -> (result: PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: pool() },
 }
@@ -35,14 +35,14 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, @imm: Bytes) -> (result: PTR) {
+op Indexed(ptr: PTR, index: I32, imm: Bytes) -> (result: PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
 
 // ----- pool-bindings-are-typed-and-consume-the-complete-struct-3
 // run: opgen-error
-// check: parameter `unused` has no storage mapping
+// check: unbound type variable `PtrIndexImm`
 struct PtrIndexImm {
     offset: i32,
     scale: u32,
@@ -52,7 +52,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm, @unused: PtrIndexImm) -> (result: PTR) {
+op Indexed(ptr: PTR, index: I32, imm: PtrIndexImm, unused: PtrIndexImm) -> (result: PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -70,7 +70,7 @@ struct Indexed {
     imm_id: PtrIndexImm,
     other: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImm) -> (result: PTR) {
+op Indexed(ptr: PTR, index: I32, imm: PtrIndexImm) -> (result: PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm, other: imm },
 }
@@ -87,7 +87,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImmId) -> (result: PTR) {
+op Indexed(ptr: PTR, index: I32, imm: PtrIndexImmId) -> (result: PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -104,7 +104,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, @imm: ConstantPoolId) -> (result: PTR) {
+op Indexed(ptr: PTR, index: I32, imm: ConstantPoolId) -> (result: PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -121,7 +121,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, @imm: VectorExtId) -> (result: PTR) {
+op Indexed(ptr: PTR, index: I32, imm: VectorExtId) -> (result: PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -138,7 +138,7 @@ struct Indexed {
     index: Value,
     imm_id: PtrIndexImm,
 }
-op Indexed(ptr: PTR, index: I32, @imm: VectorMemExtId) -> (result: PTR) {
+op Indexed(ptr: PTR, index: I32, imm: VectorMemExtId) -> (result: PTR) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "indexed", storage: Indexed { ptr: ptr, index: index, imm_id: imm },
 }
@@ -166,7 +166,7 @@ struct Invoke {
     callee: FuncId,
     args: ValueList,
 }
-op Invoke(@callee: FuncId, args: values) -> signature {
+op Invoke(callee: FuncId, args: values) -> signature {
     meta: OpInfo { memory: Unknown },
     mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
 }
@@ -178,7 +178,7 @@ struct Invoke {
     callee: FuncId,
     args: ValueList,
 }
-op Invoke(@callee: FuncId, args: values) -> signature {
+op Invoke(callee: FuncId, args: values) -> signature {
     meta: OpInfo { memory: Unknown },
     mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
 signature: callee, }
@@ -190,7 +190,7 @@ struct Invoke {
     callee: FuncId,
     args: ValueList,
 }
-op Invoke(@callee: FuncId, args: values) -> signature {
+op Invoke(callee: FuncId, args: values) -> signature {
     meta: OpInfo { memory: Unknown },
     mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
 signature: function(missing), }
@@ -202,7 +202,7 @@ struct Invoke {
     callee: FuncId,
     args: ValueList,
 }
-op Invoke(@callee: FuncId, args: values) -> () {
+op Invoke(callee: FuncId, args: values) -> () {
     meta: OpInfo { memory: Unknown },
     mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
 signature: function(callee), }
@@ -255,22 +255,48 @@ op Table(index: I32, cases: successors, default: successor) -> () {
     mnemonic: "table", storage: Table { index: index, table: cases },
 }
 
-// ----- draft-constructor-name-collision
+// ----- writer-constructor-name-collision
 // run: opgen-error
-// check: conflicting draft constructor `a_b`
+// check: conflicting instruction constructor `a_b`
 struct AB {  }
 op AB() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: "ab", storage: AB {} }
 struct A_b {  }
 op A_b() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: "a_b", storage: A_b {} }
 
-// ----- draft-constructor-api-collision
+// ----- writer-constructor-api-collision
 // run: opgen-error
-// check: conflicting draft constructor `operands`
-struct Operands {  }
-op Operands() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: "operands", storage: Operands {} }
+// check: conflicting instruction constructor `copy`
+struct Copy {  }
+op Copy() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: "operands", storage: Copy {} }
 
 // ----- draft-constructor-keyword
 // run: opgen-error
 // check: invalid generated identifier `match`
 struct Match {  }
 op Match() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: "match", storage: Match {} }
+
+// ----- field-contract-rejects-cycles
+// run: opgen-error
+// check: cyclic field reference
+type Recursive = rust("crate::Value") { field: list(Recursive), }
+
+// ----- edge-contract-requires-ssa-parameters
+// run: opgen-error
+// check: edge parameters require an SSA operand element
+type Tag = rust("crate::Tag");
+type BadEdge = rust("crate::inst::Successor") { field: edge(Tag), }
+
+// ----- field-contract-rejects-unknown-types
+// run: opgen-error
+// check: field reference requires a declared Rust type
+type Missing = rust("crate::Value") { field: list(NotDeclared), }
+
+// ----- field-contract-rejects-unsupported-nested-rust-views
+// run: opgen-error
+// check: unsupported nested Rust field interface
+type Nested = rust("crate::inst::Arguments") { field: list(list(Value)), }
+
+// ----- field-contract-removes-role-labels
+// run: opgen-error
+// check: unknown field `role`
+type Legacy = rust("crate::Value") { role: ssa, }

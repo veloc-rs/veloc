@@ -61,14 +61,14 @@ pub(crate) fn generate(defs: &Definitions) -> String {
                         {
                             for field in &record.fields {
                                 match &field.ty {
-                                    PropertyType::Named(ty) if ty == "Value" => writeln!(
+                                    PropertyType::Named(_) if field.policy.references.is_operand() => writeln!(
                                         body,
                                         "visit(({}).{}, false)?;",
                                         value.strip_prefix('*').unwrap_or(value),
                                         field.name
                                     )
                                     .unwrap(),
-                                    PropertyType::Optional(ty) if ty == "Value" => writeln!(
+                                    PropertyType::Optional(_) if field.policy.references.is_operand() => writeln!(
                                         body,
                                         "if let Some(value) = ({}).{} {{ visit(value, false)?; }}",
                                         value.strip_prefix('*').unwrap_or(value),

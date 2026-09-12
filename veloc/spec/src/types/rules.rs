@@ -1,19 +1,19 @@
 //! Compile independent result construction and type validation from signatures.
 //! Bindings exist only here: runtime code refers directly to operand/result slots.
 use crate::model::{Binding, Definitions, Op, Pattern, SignatureSource, TypeDef, TypeList};
-use crate::types::generate::Classes;
+use crate::types::generate::Sets;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
 type Bindings = BTreeMap<u8, String>;
 
-fn pattern(p: &Pattern, classes: &Classes) -> String {
+fn pattern(p: &Pattern, sets: &Sets) -> String {
     match p {
         Pattern::Property(name, _) => format!("type({name})"),
         Pattern::Callable => "Callable".into(),
-        Pattern::Class(class) => classes.describe(class).into(),
+        Pattern::Set(set) => sets.describe(set).into(),
         Pattern::Exact(ty) => ty.clone(),
-        Pattern::Bind(var, class) => format!("T{var}: {}", classes.describe(class)),
+        Pattern::Bind(var, set) => format!("T{var}: {}", sets.describe(set)),
         Pattern::Same(var) => format!("T{var}"),
         Pattern::ElementOf(var) => format!("element(T{var})"),
         Pattern::VectorOf(var) => format!("vector(T{var})"),
@@ -22,11 +22,11 @@ fn pattern(p: &Pattern, classes: &Classes) -> String {
 
 pub(crate) fn generate(
     defs: &Definitions,
-    classes: &Classes,
+    sets: &Sets,
     validation: &mut String,
     instructions: &mut String,
 ) {
-    let (ids, groups) = validation_rules(defs, classes, "crate::Opcode", validation);
+    let (ids, groups) = validation_rules(defs, sets, "crate::Opcode", validation);
     // Only the dynamic construction path needs opcode dispatch. Generated
     // builders use the same result expressions directly on their arguments.
     instructions.push_str("impl crate::InstView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch (self.opcode(), self) {\n");
@@ -200,7 +200,7 @@ fn check_list(
     list: &TypeList,
     results: bool,
     bindings: &mut Bindings,
-    classes: &Classes,
+    sets: &Sets,
 ) {
     let (patterns, cmp) = match list {
         TypeList::Fixed(patterns) => (patterns, "!="),
@@ -218,17 +218,17 @@ fn check_list(
         let value = format!("{values}[{index}]");
         let condition = match p {
             Pattern::Callable => format!("{value}.is_callable()"),
-            Pattern::Class(class) | Pattern::Property(_, class) => {
-                format!("{}.accepts({value})", classes.reference(class))
+            Pattern::Set(set) | Pattern::Property(_, set) => {
+                format!("{}.accepts({value})", sets.reference(set))
             }
             Pattern::Exact(ty) => format!("{value} == Type::{ty}"),
-            Pattern::Bind(var, class) => {
-                let class = format!("{}.accepts({value})", classes.reference(class));
+            Pattern::Bind(var, set) => {
+                let set = format!("{}.accepts({value})", sets.reference(set));
                 if let Some(bound) = bindings.get(var) {
-                    format!("{class} && {value} == {bound}")
+                    format!("{set} && {value} == {bound}")
                 } else {
                     bindings.insert(*var, value.clone());
-                    class
+                    set
                 }
             }
             Pattern::Same(var) => format!("{value} == {}", binding(bindings, *var)),
@@ -241,7 +241,7 @@ fn check_list(
                 binding(bindings, *var)
             ),
         };
-        writeln!(out, "    if !({condition}) {{\n        return Err(super::TypeError::Pattern {{\n            results: {results}, index: {index}, expected: {:?}, got: {value},\n        }});\n    }}", pattern(p, classes)).unwrap();
+        writeln!(out, "    if !({condition}) {{\n        return Err(super::TypeError::Pattern {{\n            results: {results}, index: {index}, expected: {:?}, got: {value},\n        }});\n    }}", pattern(p, sets)).unwrap();
     }
 }
 
@@ -251,8 +251,8 @@ fn binding(bindings: &Bindings, var: u8) -> &str {
         .expect("checked type variable is bound before use")
 }
 
-fn check_results(out: &mut String, ty: &TypeDef, bindings: &Bindings, classes: &Classes) {
-    check_list(out, &ty.results, true, &mut bindings.clone(), classes);
+fn check_results(out: &mut String, ty: &TypeDef, bindings: &Bindings, sets: &Sets) {
+    check_list(out, &ty.results, true, &mut bindings.clone(), sets);
 }
 
 fn function(out: &mut String, name: &str, ty: &TypeDef, body: &str) {
@@ -275,28 +275,23 @@ fn function(out: &mut String, name: &str, ty: &TypeDef, body: &str) {
     writeln!(out, "#[inline]\nfn {name}({arg}: &[Type]{extra}) -> core::result::Result<(), super::TypeError> {{\n{body}}}\n").unwrap();
 }
 
-fn emit_rule(id: usize, ty: &TypeDef, classes: &Classes, out: &mut String) {
+fn emit_rule(id: usize, ty: &TypeDef, sets: &Sets, out: &mut String) {
     let mut operands = String::new();
     let mut bindings = Bindings::new();
-    check_list(&mut operands, &ty.operands, false, &mut bindings, classes);
+    check_list(&mut operands, &ty.operands, false, &mut bindings, sets);
     let mut validate = operands;
-    check_results(&mut validate, ty, &bindings, classes);
+    check_results(&mut validate, ty, &bindings, sets);
     validate.push_str("    Ok(())\n");
     function(out, &format!("validate_{id}"), ty, &validate);
 }
 
-pub(crate) fn generate_validation(
-    defs: &Definitions,
-    classes: &Classes,
-    opcode: &str,
-    out: &mut String,
-) {
-    validation_rules(defs, classes, opcode, out);
+pub(crate) fn generate_validation(defs: &Definitions, sets: &Sets, opcode: &str, out: &mut String) {
+    validation_rules(defs, sets, opcode, out);
 }
 
 fn validation_rules<'a>(
     defs: &'a Definitions,
-    classes: &Classes,
+    sets: &Sets,
     opcode: &str,
     validation: &mut String,
 ) -> (BTreeMap<&'a TypeDef, usize>, Vec<Vec<&'a str>>) {
@@ -308,7 +303,7 @@ fn validation_rules<'a>(
         let next = groups.len();
         let id = *ids.entry(ty).or_insert(next);
         if id == next {
-            emit_rule(id, ty, classes, validation);
+            emit_rule(id, ty, sets, validation);
             groups.push(Vec::new());
         }
         groups[id].push(&op.name);

@@ -216,7 +216,7 @@ mod tests {
         let ret = *func.layout.blocks[target].insts.last().unwrap();
         let params = func.layout.blocks[target].params.clone();
         func.edit()
-            .replace_inst(ret, crate::InstDraft::ret(&params));
+            .replace_inst(ret, |writer: crate::InstWriter<'_>| writer.ret(&params));
         let error = module.validate().unwrap_err().to_string();
         assert!(
             error.contains("value count mismatch: expected 6, got 7"),
@@ -247,7 +247,9 @@ mod tests {
             unreachable!()
         };
         func.dfg
-            .replace_inst(inst, crate::InstDraft::br_table(index, []));
+            .replace_inst(inst, |writer: crate::InstWriter<'_>| {
+                writer.br_table(index, [])
+            });
         assert!(
             module
                 .validate()
@@ -284,13 +286,15 @@ mod tests {
             builder.init_entry_block();
             let value = builder.ins().i32x4const([0; 4]);
             let inst = builder.func().dfg.value_inst(value).unwrap();
-            builder.func_mut().dfg.replace_inst(
-                inst,
-                crate::InstDraft::vconst(crate::VectorConst::dense(
-                    Type::I32X4.as_vector().unwrap(),
-                    crate::inst::ConstantPoolId(u32::MAX),
-                )),
-            );
+            builder
+                .func_mut()
+                .dfg
+                .replace_inst(inst, |writer: crate::InstWriter<'_>| {
+                    writer.vconst(crate::VectorConst::dense(
+                        Type::I32X4.as_vector().unwrap(),
+                        crate::inst::ConstantPoolId(u32::MAX),
+                    ))
+                });
             builder.ins().ret(&[]);
         }
         assert!(

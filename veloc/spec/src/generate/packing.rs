@@ -10,11 +10,12 @@ use std::fmt::Write;
 pub(crate) fn constructor(
     op: &Op,
     format: &Format,
-    dfg: &str,
+    _dfg: &str,
     opcode: &str,
     local: impl Fn(&str) -> String,
 ) -> String {
     let mut fields = Vec::new();
+    let mut setup = String::new();
     for field in &format.fields {
         let value = if matches!(&field.ty, FieldType::Named(ty) if ty == "Opcode") {
             format!("crate::Opcode::{opcode}")
@@ -22,7 +23,7 @@ pub(crate) fn constructor(
             match &op.bindings()[&field.name] {
                 Binding::Name(name) => {
                     let value = local(name);
-                    if field.ty.named("BlockCall") {
+                    if field.policy.references.is_edge() {
                         format!("({value}).as_view()")
                     } else {
                         value
@@ -44,7 +45,9 @@ pub(crate) fn constructor(
                 Binding::Pool(name) => {
                     let value = local(name);
                     let ty = field.rust.clone();
-                    format!("{ty}::insert(&mut {dfg}, {value})")
+                    let var = format!("_pooled_{}", field.name);
+                    writeln!(setup, "let {var} = {ty}::insert(writer.dfg, {value});").unwrap();
+                    var
                 }
                 Binding::Table { cases, default } => {
                     format!(
@@ -58,7 +61,7 @@ pub(crate) fn constructor(
         fields.push(value);
     }
     format!(
-        "crate::InstDraft::{}({})",
+        "move |writer: crate::InstWriter<'_>| {{ {setup} writer.{}({}) }}",
         crate::storage::constructor_name(&format.name),
         fields.join(", ")
     )
@@ -183,9 +186,18 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
         };
         let (kind, binding) = match ty.as_str() {
             "Opcode" => continue,
-            "Value" => (ParamKind::Value, Binding::Name(field.name.clone())),
-            "ValueList" => (ParamKind::Values, Binding::Name(field.name.clone())),
-            "BlockCall" => (ParamKind::Successor, Binding::Name(field.name.clone())),
+            _ if field.policy.references.is_operand() => {
+                (ParamKind::Value, Binding::Name(field.name.clone()))
+            }
+            _ if field.policy.references.is_operands() => {
+                (ParamKind::Values, Binding::Name(field.name.clone()))
+            }
+            _ if field.policy.references.is_edge() => {
+                (ParamKind::Successor, Binding::Name(field.name.clone()))
+            }
+            _ if field.policy.references.is_edges() => {
+                (ParamKind::Successors, Binding::Name(field.name.clone()))
+            }
             "ConstantPoolId" => (
                 ParamKind::Property("Bytes".into()),
                 Binding::Pool(field.name.clone()),
@@ -415,12 +427,12 @@ mod tests {
 
     #[test]
     fn only_immutable_bytes_are_interned() {
-        let source = [
-            include_str!("../../../mir/defs/formats.ops"),
-            include_str!("../../../mir/defs/mir.ops"),
-        ]
-        .join("\n");
-        let defs = crate::fixtures::parse(&source).unwrap();
+        let defs = crate::Source::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mir/defs/module.ops"),
+        )
+        .unwrap()
+        .parse()
+        .unwrap();
         for (name, logical, pooled) in [
             ("PtrIndex", "imm", false),
             ("LoadStride", "mem", false),
@@ -446,12 +458,12 @@ mod tests {
 
     #[test]
     fn jump_table_projection_splits_default_from_cases() {
-        let source = [
-            include_str!("../../../mir/defs/formats.ops"),
-            include_str!("../../../mir/defs/mir.ops"),
-        ]
-        .join("\n");
-        let defs = crate::fixtures::parse(&source).unwrap();
+        let defs = crate::Source::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mir/defs/module.ops"),
+        )
+        .unwrap()
+        .parse()
+        .unwrap();
         let op = defs.ops.iter().find(|op| op.name == "BrTable").unwrap();
         let format = defs
             .storage

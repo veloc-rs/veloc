@@ -5,10 +5,174 @@ use std::fmt::Write;
 use crate::syntax::{Kind, Node, Record};
 use crate::{Error, model};
 
+/// Logical reference structure, independent of payload placement.
+/// Lists compose with leaves and edges instead of defining separate role labels.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum References {
+    #[default]
+    Data,
+    Operand,
+    List(Box<Self>),
+    Edge(Box<Self>),
+}
+
+impl References {
+    pub fn is_data(&self) -> bool {
+        match self {
+            Self::Data => true,
+            Self::List(item) => item.is_data(),
+            Self::Operand | Self::Edge(_) => false,
+        }
+    }
+    pub fn is_operand(&self) -> bool {
+        matches!(self, Self::Operand)
+    }
+    pub fn is_operands(&self) -> bool {
+        matches!(self, Self::List(item) if item.is_operand())
+    }
+    pub fn is_edge(&self) -> bool {
+        matches!(self, Self::Edge(_))
+    }
+    pub fn is_edges(&self) -> bool {
+        matches!(self, Self::List(item) if item.is_edge())
+    }
+    pub fn arity(&self) -> Option<usize> {
+        if self.is_data() {
+            Some(0)
+        } else if self.is_operand() {
+            Some(1)
+        } else {
+            None
+        }
+    }
+    pub fn traversal(&self) -> Option<&'static str> {
+        if self.is_data() {
+            None
+        } else if self.is_operand() {
+            Some("value")
+        } else if self.is_operands() {
+            Some("value_list")
+        } else if self.is_edge() {
+            Some("block_call")
+        } else if self.is_edges() {
+            Some("jump_table")
+        } else {
+            unreachable!("unsupported Rust field interface passed checking")
+        }
+    }
+
+    fn parse(
+        source: &str,
+        node: &Node,
+        records: &[Record],
+        active: &mut BTreeSet<String>,
+    ) -> Result<Self, Error> {
+        match &node.kind {
+            Kind::Name(name) if name == "operand" => Ok(Self::Operand),
+            Kind::Name(name) => {
+                let record = records
+                    .iter()
+                    .find(|r| r.name == *name && rust_binding(r).is_some())
+                    .ok_or_else(|| {
+                        Error::at(
+                            source,
+                            node.offset,
+                            "field reference requires a declared Rust type",
+                        )
+                    })?;
+                if !active.insert(name.clone()) {
+                    return Err(Error::at(source, node.offset, "cyclic field reference"));
+                }
+                let result = match record.fields.get("field") {
+                    Some(field) => Self::parse(source, field, records, active),
+                    None => Ok(Self::Data),
+                };
+                active.remove(name);
+                result
+            }
+            Kind::Call(name, args) if matches!(name.as_str(), "list" | "edge") => {
+                let [item] = args.as_slice() else {
+                    return Err(Error::at(
+                        source,
+                        node.offset,
+                        "field constructor requires one element type",
+                    ));
+                };
+                let item = Self::parse(source, item, records, active)?;
+                if name == "edge" {
+                    if !item.is_operand() {
+                        return Err(Error::at(
+                            source,
+                            node.offset,
+                            "edge parameters require an SSA operand element",
+                        ));
+                    }
+                    Ok(Self::Edge(Box::new(item)))
+                } else {
+                    Ok(Self::List(Box::new(item)))
+                }
+            }
+            _ => Err(Error::at(
+                source,
+                node.offset,
+                "expected operand, a field type, list(type), or edge(type)",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Placement {
+    #[default]
+    Auto,
+    Pooled,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Policy {
+    pub references: References,
+    pub storage: Placement,
+}
+
+impl Policy {
+    pub fn parse(source: &str, record: &Record, records: &[Record]) -> Result<Self, Error> {
+        let mut fields = model::Fields::new(source, record.clone());
+        fields.take("expr")?;
+        let references = match fields.optional("field") {
+            None => References::Data,
+            Some(node) => References::parse(source, &node, records, &mut BTreeSet::new())?,
+        };
+        // Rust-bound views must implement one of the supported access contracts.
+        // Structural records compose separately; do not silently lose nested uses.
+        if !(references.is_data()
+            || references.is_operand()
+            || references.is_operands()
+            || references.is_edge()
+            || references.is_edges())
+        {
+            return Err(fields.error("unsupported nested Rust field interface"));
+        }
+        let storage = match fields.optional("storage") {
+            None => Placement::Auto,
+            Some(node) => match model::name(source, node)?.as_str() {
+                "auto" => Placement::Auto,
+                "pooled" => Placement::Pooled,
+                _ => return Err(fields.error("expected auto or pooled storage")),
+            },
+        };
+        fields.finish()?;
+        Ok(Self {
+            references,
+            storage,
+        })
+    }
+}
+
 /// Rust type bindings are nominal in defs; paths only control code emission.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RustTypes {
     external: BTreeMap<String, String>,
+    policies: BTreeMap<String, Policy>,
 }
 
 pub(crate) fn rust_binding(record: &Record) -> Option<&Node> {
@@ -32,12 +196,7 @@ impl RustTypes {
             let Some(node) = rust_binding(record) else {
                 continue;
             };
-            if primitive(&record.name)
-                || matches!(
-                    record.name.as_str(),
-                    "ValueList" | "BlockCall" | "JumpTable"
-                )
-            {
+            if primitive(&record.name) {
                 return Err(Error::at(
                     source,
                     record.offset,
@@ -61,6 +220,9 @@ impl RustTypes {
                 ));
             };
             rust_path(source, node.offset, path)?;
+            result
+                .policies
+                .insert(record.name.clone(), Policy::parse(source, record, records)?);
             if result
                 .external
                 .insert(record.name.clone(), path.clone())
@@ -74,6 +236,10 @@ impl RustTypes {
             }
         }
         Ok(result)
+    }
+
+    pub fn policy(&self, name: &str) -> Policy {
+        self.policies.get(name).cloned().unwrap_or_default()
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -107,6 +273,7 @@ pub(crate) struct RecordField {
     pub name: String,
     pub ty: PropertyType,
     pub rust: String,
+    pub policy: Policy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,7 +333,6 @@ pub(crate) fn field_type(
         return Err(Error::at(source, node.offset, "expected data type name"));
     };
     if !primitive(ty)
-        && !matches!(ty.as_str(), "ValueList" | "BlockCall" | "JumpTable")
         && !crate::storage::operands::is_role(ty)
         && !records.iter().any(|r| {
             r.name == *ty
@@ -214,6 +380,15 @@ pub(crate) fn compile(
                 Ok(RecordField {
                     name: name.clone(),
                     rust: ty.rust(rust),
+                    policy: match &ty {
+                        PropertyType::Named(name) | PropertyType::Optional(name) => {
+                            rust.policy(name)
+                        }
+                        PropertyType::Values(_) => Policy {
+                            references: References::Operand,
+                            storage: Placement::Auto,
+                        },
+                    },
                     ty,
                 })
             })

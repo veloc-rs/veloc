@@ -4,7 +4,12 @@ use common::compile;
 const FORMATS: &str = include_str!("../../mir/defs/formats.ops");
 
 fn definitions() -> String {
-    [FORMATS, include_str!("../../mir/defs/mir.ops")].join("\n")
+    [FORMATS, include_str!("../../mir/defs/mir.ops")]
+        .join("\n")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("import "))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn changed_record(kind: &str, name: &str, from: &str, to: &str) -> String {

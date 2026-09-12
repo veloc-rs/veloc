@@ -96,17 +96,17 @@ pub(crate) fn scalars(types: &Types) -> String {
 }
 
 /// Intern equal sets, independently of spelling, before emitting runtime checks.
-pub(crate) struct Classes {
+pub(crate) struct Sets {
     sets: BTreeMap<TypeSet, usize>,
     names: BTreeMap<TypeSet, String>,
     descriptions: BTreeMap<TypeSet, String>,
 }
 
-impl Classes {
+impl Sets {
     pub fn new(defs: &Definitions) -> Self {
         let mut sets = BTreeMap::new();
         let mut names = BTreeMap::new();
-        for (name, set) in &defs.types.classes {
+        for (name, set) in &defs.types.sets {
             names.entry(set.clone()).or_insert_with(|| name.clone());
         }
         for op in &defs.ops {
@@ -115,7 +115,7 @@ impl Classes {
                     continue;
                 };
                 for pattern in patterns {
-                    if let Pattern::Class(set) | Pattern::Bind(_, set) | Pattern::Property(_, set) =
+                    if let Pattern::Set(set) | Pattern::Bind(_, set) | Pattern::Property(_, set) =
                         pattern
                     {
                         let next = sets.len();
@@ -166,7 +166,7 @@ impl Classes {
         for (set, id) in &self.sets {
             writeln!(out, "{id} => {},", shape_match(set, "code")).unwrap();
         }
-        out.push_str("_ => unreachable!(\"invalid generated type class\"),\n};\nshapes & (1 << shape) != 0\n} }\n");
+        out.push_str("_ => unreachable!(\"invalid generated type set\"),\n};\nshapes & (1 << shape) != 0\n} }\n");
         out
     }
 }
@@ -177,7 +177,7 @@ fn describe(set: &TypeSet, types: &Types) -> String {
     let mut rest = set.clone();
     let mut parts = Vec::new();
     while let Some((name, subset)) = types
-        .classes
+        .sets
         .iter()
         .filter(|(_, subset)| subset.subset_of(&rest))
         .max_by_key(|(_, subset)| subset.0.values().map(|mask| mask.count_ones()).sum::<u32>())
