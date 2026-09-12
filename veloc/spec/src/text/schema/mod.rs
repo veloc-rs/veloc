@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Error;
-use crate::data::Value;
+use crate::model::data::Value;
+use crate::model::records::{PropertyType, RecordDef};
 use crate::model::{Op, ParamKind, Pattern, TypeDef, TypeList};
-use crate::records::{PropertyType, RecordDef};
 use crate::syntax::Kind;
 
 mod template;
@@ -249,7 +249,7 @@ fn simple_scalar(ty: &str) -> bool {
 fn result_in_set(
     signature: &TypeDef,
     types: &crate::types::Types,
-    allowed: &crate::type_set::TypeSet,
+    allowed: &crate::types::TypeSet,
 ) -> bool {
     let Some(result) = signature
         .results
@@ -258,7 +258,7 @@ fn result_in_set(
     else {
         return false;
     };
-    let accepts = |set: &crate::type_set::TypeSet| set.subset_of(allowed);
+    let accepts = |set: &crate::types::TypeSet| set.subset_of(allowed);
     match result {
         Pattern::Exact(ty) => accepts(&types.exact[ty]),
         Pattern::Class(class) | Pattern::Bind(_, class) | Pattern::Property(_, class) => {
@@ -286,7 +286,7 @@ fn single_token(kind: &AtomKind) -> bool {
 mod tests {
     use super::*;
     use crate::model::Param;
-    use crate::records::RecordField;
+    use crate::model::records::RecordField;
 
     fn compile(op: &Op, records: &[RecordDef], source: &str) -> Result<Schema, Error> {
         super::compile(op, records, source, &crate::fixtures::types())
@@ -307,7 +307,7 @@ mod tests {
             offset: 0,
             name: "Test".into(),
             mnemonic: "test".into(),
-            meta: crate::data::Value::Record("OpInfo".into(), Default::default()),
+            meta: crate::model::data::Value::Record("OpInfo".into(), Default::default()),
             format: "Test".into(),
             signature: TypeDef {
                 operands: TypeList::Fixed(vec![]),
@@ -333,8 +333,8 @@ mod tests {
             control: None,
             text,
             traits: vec![],
-            memory: crate::builtins::Effect::Known(Vec::new()),
-            access: None,
+            memory: crate::model::builtins::Effect::Known(Vec::new()),
+            interfaces: BTreeMap::new(),
             constraints: vec![],
             identity: None,
             absorbing: None,
@@ -465,8 +465,8 @@ mod tests {
         assert!(compile(&operation, &[], "").is_err());
 
         let definitions = [
-            include_str!("../../../mir/defs/formats.ops"),
-            include_str!("../../../mir/defs/mir.ops"),
+            include_str!("../../../../mir/defs/formats.ops"),
+            include_str!("../../../../mir/defs/mir.ops"),
         ]
         .join("\n");
         let bad = definitions.replacen(

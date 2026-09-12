@@ -1,7 +1,7 @@
 // ----- impossible-type-variable-constraints-are-definition-errors-1
 // run: opgen-error
 // check: impossible element constraint on type variable `T`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op Add<T: ScalarInteger>(lhs: T, rhs: T) -> (result: element(T)) {
@@ -12,7 +12,7 @@ op Add<T: ScalarInteger>(lhs: T, rhs: T) -> (result: element(T)) {
 // ----- impossible-type-variable-constraints-are-definition-errors-2
 // run: opgen-error
 // check: impossible vector constraint on type variable `T`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op Add<T: Vector>(lhs: T, rhs: T) -> (result: vector(T)) {
@@ -23,7 +23,7 @@ op Add<T: Vector>(lhs: T, rhs: T) -> (result: vector(T)) {
 // ----- impossible-type-variable-constraints-are-definition-errors-3
 // run: opgen-error
 // check: impossible shape constraint on type variable `T`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op Add<T: ScalarInteger>(lhs: T, rhs: T) -> (result: shape(T, Vector)) {
@@ -34,7 +34,7 @@ op Add<T: ScalarInteger>(lhs: T, rhs: T) -> (result: shape(T, Vector)) {
 // ----- normalizing-mnemonics-cannot-create-duplicate-methods-1
 // run: opgen-error
 // check: mnemonics `pair-add` and `pair_add` produce the same method name `pair_add`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {

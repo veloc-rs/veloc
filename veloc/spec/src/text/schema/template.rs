@@ -80,7 +80,7 @@ impl Parser<'_, '_> {
             let path = path.trim();
             let kind = self.checker.consume(path, self.offset)?;
             let value = match (kind, literal.trim().parse::<u32>()) {
-                (AtomKind::Scalar(ty), Ok(n)) if crate::data::fits_number(&ty, n) => {
+                (AtomKind::Scalar(ty), Ok(n)) if crate::model::data::fits_number(&ty, n) => {
                     Value::Number(n)
                 }
                 _ => {

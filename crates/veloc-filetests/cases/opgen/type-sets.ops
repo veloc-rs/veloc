@@ -2,7 +2,7 @@
 // run: opgen-error
 // check: floating-point execution semantics are not modeled
 class Wide { members: [I32, F64] }
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: Wide>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -13,7 +13,7 @@ op Add<T: Wide>(lhs: T, rhs: T) -> T {
 // check: impossible shape constraint on type variable `T`
 class V4 { members: [I32X4] }
 class V2 { members: [I64X2] }
-record Unary { arg: Value }
+struct Unary { arg: Value }
 op Convert<T: V4>(arg: T) -> shape(T, V2) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "convert", storage: Unary { arg: arg }, }
@@ -23,7 +23,7 @@ mnemonic: "convert", storage: Unary { arg: arg }, }
 // check: impossible shape constraint on type variable `T`
 class V4 { members: [I32X4] }
 class V2 { members: [I64] }
-record Unary { arg: Value }
+struct Unary { arg: Value }
 op Convert<T: V4>(arg: T) -> shape(T, V2) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "convert", storage: Unary { arg: arg }, }

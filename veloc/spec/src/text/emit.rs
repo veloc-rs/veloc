@@ -2,8 +2,8 @@
 use std::fmt::Write;
 
 use super::schema::{Atom, AtomKind, CallSignature, Item, Mode, Schema};
+use crate::model::records::RecordDef;
 use crate::model::{Op, ParamKind};
-use crate::records::RecordDef;
 use crate::storage::{FieldType, Format};
 
 fn local(op: &Op, path: &str) -> String {
@@ -30,6 +30,7 @@ pub(super) fn parse(
     schema: &Schema,
     records: &[RecordDef],
     arity: Option<usize>,
+    opcode: &str,
 ) -> String {
     let mut out = String::new();
     if let Some(path) = &schema.flags {
@@ -141,7 +142,7 @@ pub(super) fn parse(
     writeln!(
         out,
         "Ok({})",
-        crate::packing::constructor(op, format, "self.func.dfg", |name| {
+        crate::generate::packing::constructor(op, format, "self.func.dfg", opcode, |name| {
             let value = local(op, name);
             if op
                 .params
@@ -291,7 +292,7 @@ pub(super) fn print(
             .unwrap();
         }
     }
-    for (name, expr) in crate::packing::projections(
+    for (name, expr) in crate::generate::packing::projections(
         op,
         format,
         "self.dfg",

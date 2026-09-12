@@ -1,7 +1,7 @@
 // ----- reject-impure-control-without-effects
 // run: opgen-error
 // check: control interface must bind all parameters directly
-record Apply {
+struct Apply {
     cont: Value,
     args: ValueList,
 }
@@ -13,7 +13,7 @@ control: tail_call_value(cont, args), }
 // ----- reject-wrong-control-operand-kind
 // run: opgen-error
 // check: invalid control interface or parameter kinds
-record Apply {
+struct Apply {
     cont: Value,
     args: ValueList,
 }
@@ -25,7 +25,7 @@ control: tail_call(cont, args),  }
 // ----- reject-noncallable-tail-call-contract
 // run: opgen-error
 // check: control interface must bind all parameters directly
-record Apply {
+struct Apply {
     cont: Value,
     args: ValueList,
 }
@@ -42,7 +42,7 @@ class Callable { members: [I32] }
 // ----- move-contract-rejects-properties
 // run: opgen-error
 // check: move requires a value operand
-record Take { function: FuncId }
+struct Take { function: FuncId }
 op Take(@move function: FuncId) -> () {
     meta: OpInfo { memory: Unknown },
     mnemonic: "take", storage: Take { function: function },
@@ -51,7 +51,7 @@ op Take(@move function: FuncId) -> () {
 // ----- abort-is-an-exit-contract
 // run: opgen-error
 // check: ABORT requires TERMINATOR
-record Stop {  }
+struct Stop {  }
 op Stop() -> () {
     meta: OpInfo { traits: [ABORT], memory: Known([]) },
 mnemonic: "stop", storage: Stop {},  }
@@ -59,7 +59,7 @@ mnemonic: "stop", storage: Stop {},  }
 // ----- signature-query-is-typed
 // run: opgen-error
 // check: signature expects a function, signature ID or callable type
-record Check { n: u32 }
+struct Check { n: u32 }
 op Check(@n: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "check", storage: Check { n: n },
@@ -69,7 +69,7 @@ op Check(@n: u32) -> () {
 // ----- slice-query-is-typed
 // run: opgen-error
 // check: slice expects a sequence
-record Check { n: u32 }
+struct Check { n: u32 }
 op Check(@n: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "check", storage: Check { n: n },

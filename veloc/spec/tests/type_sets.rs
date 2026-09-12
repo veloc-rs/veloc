@@ -13,7 +13,7 @@ fn rejected(source: &str, expected: &str) {
 fn exact_class_members_drive_codegen_and_bitvector_semantics() {
     let source = r#"
         class Wide { members: [I32, I64] }
-        record Pair { args: values(2) }
+        struct Pair { args: values(2) }
         op Add<T: Wide>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
             mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -33,7 +33,7 @@ fn exact_shapes_detect_impossible_relations_at_definition_time() {
     let source = r#"
         class V4 { members: [I32X4] }
         class V2 { members: [I64X2] }
-        record Unary { arg: Value }
+        struct Unary { arg: Value }
         op Convert<T: V4>(arg: T) -> shape(T, V2) {
     meta: OpInfo { memory: Known([]) },
             mnemonic: "convert", storage: Unary { arg: arg }, }

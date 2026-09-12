@@ -98,7 +98,7 @@ pub(crate) fn field_type(
             | "SymbolId"
     ) && !crate::storage::operands::is_role(ty)
         && !records.iter().any(|r| {
-            r.name == *ty && matches!(r.kind.as_str(), "record" | "enum" | "flags" | "encoding")
+            r.name == *ty && matches!(r.kind.as_str(), "struct" | "enum" | "flags" | "encoding")
         })
     {
         return Err(Error::at(
@@ -117,7 +117,7 @@ pub(crate) fn field_type(
 pub(crate) fn compile(records: &[Record], source: &str) -> Result<Vec<RecordDef>, Error> {
     let mut result = Vec::new();
     let mut names = BTreeSet::new();
-    for record in records.iter().filter(|r| r.kind == "record") {
+    for record in records.iter().filter(|r| r.kind == "struct") {
         let fail = |msg: &str| Error::at(source, record.offset, msg);
         model::identifier(source, record.offset, &record.name)?;
         if !names.insert(&record.name) {
@@ -167,15 +167,15 @@ mod tests {
     use super::*;
 
     const RECORDS: &str = r#"
-        record PtrIndexImm {
+        struct PtrIndexImm {
             offset: i32,
             scale: u32,
         }
-        record VectorExtData {
+        struct VectorExtData {
             mask: Value,
             evl: optional(Value),
         }
-        record VectorMemOptions {
+        struct VectorMemOptions {
             offset: i32,
             flags: MemFlags,
             scale: u8,
@@ -188,7 +188,7 @@ mod tests {
         {
             let source =
                 format!("encoding MemFlags {{ fields: [volatile(1)], storage: u16 }}\n{source}");
-            crate::data::Types::compile(&crate::syntax::parse(&source)?, &source)
+            crate::model::data::Types::compile(&crate::syntax::parse(&source)?, &source)
                 .map(|types| types.records)
         }
     }
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn records_are_definition_owned_and_can_contain_operand_groups() {
         assert_eq!(checked(RECORDS).unwrap().len(), 3);
-        assert!(checked(&RECORDS.replace("record PtrIndexImm", "record Other")).is_ok());
+        assert!(checked(&RECORDS.replace("struct PtrIndexImm", "struct Other")).is_ok());
         assert!(
             checked(&RECORDS.replace("mask: Value", "mask: Value, passthrough: Value")).is_ok()
         );
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn field_order_follows_declarations_not_names() {
-        let source = "record Pair { z: u32, a: i32 }";
+        let source = "struct Pair { z: u32, a: i32 }";
         let records = checked(source).unwrap();
         assert_eq!(records[0].fields[0].name, "z");
         let code = generate(&records);

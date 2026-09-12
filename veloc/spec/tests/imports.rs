@@ -184,3 +184,28 @@ fn production_entry_points_generate_the_same_runtime_contracts() {
     assert_eq!(lir.parse().unwrap().primitive_bindings().len(), 7);
     assert!(mir.dependencies().any(|p| p.ends_with("defs/types.ops")));
 }
+
+#[test]
+fn original_offsets_survive_unicode_imports_and_comments() {
+    let files = Files::new();
+    files.write("类型.ops", "");
+    files.write("root.ops", "import \"prelude.ops\";\nimport \"类型.ops\"; // 原文保留\n\nclass Broken { members: [Missing] }");
+    let error = files.load("root.ops").unwrap().parse().err().unwrap();
+    assert_eq!(error.path, files.0.join("root.ops"));
+    assert_eq!(error.diagnostic.line, 4);
+    assert_eq!(error.diagnostic.column, 26);
+    assert!(error.diagnostic.message.contains("Missing"));
+}
+
+#[test]
+fn output_plan_errors_keep_the_imported_source_location() {
+    let files = Files::new();
+    files.write("bad.ops", "struct Work {}\nop Work() -> () { meta: OpInfo { memory: Known([]) }, mnemonic: \"emit\", storage: Work {} }");
+    files.write("root.ops", "import \"prelude.ops\";\nimport \"bad.ops\";");
+    let source = files.load("root.ops").unwrap();
+    source.parse().unwrap();
+    let error = source.plan().err().expect("invalid output plan");
+    assert_eq!(error.path, files.0.join("bad.ops"));
+    assert_eq!(error.diagnostic.line, 2);
+    assert!(error.diagnostic.message.contains("InstBuilder method"));
+}

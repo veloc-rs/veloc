@@ -1,7 +1,7 @@
 // ----- unknown-is-not-a-member
 // run: opgen-error
 // check: unknown MemoryEffects
-record Effectful {  }
+struct Effectful {  }
 op Effectful() -> () {
     meta: OpInfo { memory: Known([unknown]) },
 mnemonic: "effectful", storage: Effectful {}, }
@@ -9,7 +9,7 @@ mnemonic: "effectful", storage: Effectful {}, }
 // ----- duplicate-behavior
 // run: opgen-error
 // check: duplicate MemoryEffects member
-record Effectful {  }
+struct Effectful {  }
 op Effectful() -> () {
     meta: OpInfo { memory: Known([READ, READ]) },
 mnemonic: "effectful", storage: Effectful {}, }
@@ -17,7 +17,7 @@ mnemonic: "effectful", storage: Effectful {}, }
 // ----- old-alias-is-not-supported
 // run: opgen-error
 // check: unknown field
-record Effectful {  }
+struct Effectful {  }
 op Effectful() -> () {
     meta: OpInfo { memory: Unknown },
     mnemonic: "effectful", storage: Effectful {}, memory: READ

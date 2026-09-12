@@ -1,7 +1,7 @@
 // ----- algebraic-constants-are-typed-and-names-round-trip-1
 // run: opgen-error
 // check: unknown algebraic constant `Two`
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -11,7 +11,7 @@ op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- rejects-incorrect-identity-and-absorbing-constants-1
 // run: opgen-error
 // check: bv.add does not support identity `One` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE, ASSOCIATIVE], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -21,7 +21,7 @@ op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- rejects-incorrect-identity-and-absorbing-constants-2
 // run: opgen-error
 // check: bv.and does not support identity `Zero` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE, ASSOCIATIVE], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -31,7 +31,7 @@ op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- rejects-incorrect-identity-and-absorbing-constants-3
 // run: opgen-error
 // check: bv.mul does not support absorbing `One` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE, ASSOCIATIVE], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -41,7 +41,7 @@ op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- rejects-incorrect-identity-and-absorbing-constants-4
 // run: opgen-error
 // check: bv.or does not support absorbing `Zero` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE, ASSOCIATIVE], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -51,7 +51,7 @@ op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- rejects-incorrect-identity-and-absorbing-constants-5
 // run: opgen-error
 // check: bv.xor does not support absorbing `Zero` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE, ASSOCIATIVE], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -61,7 +61,7 @@ op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- rejects-traits-not-supported-by-the-semantic-primitive-1
 // run: opgen-error
 // check: bv.sub does not support trait `COMMUTATIVE` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -70,7 +70,7 @@ semantics: bv.sub(lhs, rhs), }
 // ----- rejects-traits-not-supported-by-the-semantic-primitive-2
 // run: opgen-error
 // check: bv.sub does not support trait `ASSOCIATIVE` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [ASSOCIATIVE], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -79,7 +79,7 @@ semantics: bv.sub(lhs, rhs), }
 // ----- rejects-traits-not-supported-by-the-semantic-primitive-3
 // run: opgen-error
 // check: bv.neg does not support trait `COMMUTATIVE` at every supported width
-record Args { args: values(1) }
+struct Args { args: values(1) }
 op Test<T: Integer>(arg: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [arg] },
@@ -88,7 +88,7 @@ semantics: bv.neg(arg), }
 // ----- rejects-traits-not-supported-by-the-semantic-primitive-4
 // run: opgen-error
 // check: bv.add does not support trait `IDEMPOTENT` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE, ASSOCIATIVE, IDEMPOTENT], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -97,7 +97,7 @@ semantics: bv.add(lhs, rhs), }
 // ----- rejects-traits-not-supported-by-the-semantic-primitive-5
 // run: opgen-error
 // check: bv.mul does not support trait `IDEMPOTENT` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE, ASSOCIATIVE, IDEMPOTENT], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },
@@ -106,7 +106,7 @@ semantics: bv.mul(lhs, rhs), }
 // ----- rejects-traits-not-supported-by-the-semantic-primitive-6
 // run: opgen-error
 // check: bv.xor does not support trait `IDEMPOTENT` at every supported width
-record Args { args: values(2) }
+struct Args { args: values(2) }
 op Test<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: [COMMUTATIVE, ASSOCIATIVE, IDEMPOTENT], memory: Known([]) },
              mnemonic: "test", storage: Args { args: [lhs, rhs] },

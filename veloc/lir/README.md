@@ -33,7 +33,7 @@ type validation. Construction does not run validation.
 
 ```text
 storage Operands { prefix: "G_" }
-record BinaryReg { dst: Def, lhs: Use, rhs: Use }
+struct BinaryReg { dst: Def, lhs: Use, rhs: Use }
 op G_ADD<T: Integer>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     storage: BinaryReg,

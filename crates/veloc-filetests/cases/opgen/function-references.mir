@@ -47,7 +47,7 @@ import function later() -> i32
 // ----- function-reference-is-not-a-single-token
 // run: opgen-error
 // check: spaced operands require two single-token atoms
-record RefTag {
+struct RefTag {
     target: FuncId,
     tag: u32,
 }

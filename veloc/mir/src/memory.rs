@@ -1,16 +1,8 @@
 //! Memory semantics shared by analyses and lowerings. An Access is a query
 //! result, not a second authoritative copy of instruction operands.
-use crate::{Function, Inst, MemFlags, Type, Value};
+use crate::{Function, Inst, Value};
 
-#[derive(Debug, Clone, Copy)]
-pub struct Access {
-    pub ptr: Value,
-    pub offset: i64,
-    pub ty: Type,
-    /// A write stores this SSA value; None denotes a read.
-    pub stored: Option<Value>,
-    pub flags: MemFlags,
-}
+pub use crate::inst::MemoryAccess as Access;
 
 impl Access {
     /// Pointer width is deliberately supplied by the target, not assumed to
@@ -67,11 +59,8 @@ impl Function {
     }
 
     pub fn memory_access(&self, inst: Inst) -> Option<Access> {
-        self.dfg().inst(inst).memory_access(
-            self.dfg(),
-            self.dfg()
-                .first_result(inst)
-                .map(|v| self.dfg().value_type(v)),
-        )
+        self.dfg()
+            .inst(inst)
+            .query(self.dfg(), self.dfg().inst_results(inst))
     }
 }

@@ -3,7 +3,7 @@ mod common;
 use common::compile;
 
 const PAIR: &str = r#"
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: DOMAIN>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)

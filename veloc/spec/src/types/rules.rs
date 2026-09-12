@@ -3,7 +3,7 @@
 use crate::model::{
     Binding, Definitions, Op, Pattern, Relation, SignatureSource, Slot, TypeDef, TypeList,
 };
-use crate::type_gen::Classes;
+use crate::types::generate::Classes;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
@@ -66,7 +66,7 @@ pub(crate) fn generate(
                     op.name, op.format
                 )
                 .unwrap();
-                let projections = crate::packing::projections(
+                let projections = crate::generate::packing::projections(
                     op,
                     format,
                     "dfg",

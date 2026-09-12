@@ -23,7 +23,7 @@ flags MemoryEffects {
 enum MemoryEffect {
     variants: [Known(MemoryEffects), Unknown]
 }
-record OpInfo {
+struct OpInfo {
     traits: OpTraits,
     memory: MemoryEffect,
 }

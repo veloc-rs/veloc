@@ -3,9 +3,9 @@
 //! Flags/enum/record parsing lives in `data`. This adapter knows what operation
 //! traits and memory behaviors mean, including facts derived from semantics.
 use crate::Error;
-use crate::builtins::{Builtins, Effect};
-use crate::data::{Types, Value};
-use crate::records::PropertyType;
+use crate::model::builtins::{Builtins, Effect};
+use crate::model::data::{Types, Value};
+use crate::model::records::PropertyType;
 use crate::syntax::{Kind, Node};
 
 pub(crate) struct Pending {
@@ -31,7 +31,7 @@ impl Pending {
                 Error::at(
                     source,
                     node.offset,
-                    format!("unknown metadata record `{name}`"),
+                    format!("unknown metadata struct `{name}`"),
                 )
             })?;
         let field = |ty: &str| -> Result<Option<String>, Error> {
@@ -179,7 +179,7 @@ impl Pending {
     }
 }
 
-/// A compilation unit has one metadata record type; each opcode has a constant value.
+/// A compilation unit has one metadata struct type; each opcode has a constant value.
 pub(crate) fn record_type(ops: &[crate::model::Op]) -> Option<&str> {
     ops.first().map(|op| {
         let Value::Record(ty, _) = &op.meta else {

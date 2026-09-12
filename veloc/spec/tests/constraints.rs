@@ -3,7 +3,7 @@ mod common;
 fn checked(predicate: &str) -> Result<veloc_opgen::Generated, veloc_opgen::Error> {
     common::compile(&format!(
         r#"
-record Custom {{ bits: u64, yes: bool }}
+struct Custom {{ bits: u64, yes: bool }}
 op Example(@number: u64, @flag: bool) -> ScalarInteger {{
     meta: OpInfo {{ memory: Known([]) }},
     mnemonic: "example", storage: Custom {{ bits: number, yes: flag }},
@@ -40,6 +40,12 @@ mod dfg {
         ("flag || number * number > 0", [true, true, false, true]),
         ("number * 2 + 1 == 7", [true, true, false, false]),
         ("-number < 0", [true, true, true, true]),
+        ("number - 2 - 1 == 0", [true, true, false, false]),
+        (
+            "!(number <= 3) || flag && number != 0",
+            [false, true, true, true],
+        ),
+        ("(number + 1) * 2 >= 8", [true, true, true, true]),
     ]
     .iter()
     .enumerate()
@@ -74,7 +80,7 @@ mod numeric_{index} {{
     {
         let validation = common::compile(&format!(
             r#"
-record Buffers {{ first: ConstantPoolId, second: ConstantPoolId }}
+struct Buffers {{ first: ConstantPoolId, second: ConstantPoolId }}
 op Example(@data: Bytes, @other: Bytes) -> Vector {{
     meta: OpInfo {{ memory: Known([]) }},
     mnemonic: "example", storage: Buffers {{ first: pool(data), second: pool(other) }},

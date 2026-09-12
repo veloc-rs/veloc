@@ -2,7 +2,7 @@
 
 use crate::Error;
 use crate::model::{Binding, Definitions, Op, Param, ParamKind, TypeDef, TypeList};
-use crate::storage::{Alternative, FieldType, Format};
+use crate::storage::{Alternative as LayoutAlternative, FieldType, Format};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -11,12 +11,13 @@ pub(crate) fn constructor(
     op: &Op,
     format: &Format,
     dfg: &str,
+    opcode: &str,
     local: impl Fn(&str) -> String,
 ) -> String {
     let mut fields = Vec::new();
     for field in &format.fields {
         let value = if matches!(&field.ty, FieldType::Named(ty) if ty == "Opcode") {
-            format!("crate::Opcode::{}", op.name)
+            format!("crate::Opcode::{opcode}")
         } else {
             match &op.bindings()[&field.name] {
                 Binding::Name(name) => {
@@ -106,9 +107,64 @@ pub(crate) fn projections(
     locals
 }
 
+pub(crate) struct Alternative {
+    pub op: Op,
+    pub format: Format,
+    pub targets: Vec<usize>,
+}
+
+/// Resolve and check each alternate once, shared by text and validation output.
+pub(crate) fn prepare_alternatives(
+    defs: &Definitions,
+    formats: &[usize],
+    source: &str,
+) -> Result<Vec<Alternative>, Error> {
+    let mut alternatives = Vec::new();
+    for alt in &defs.storage.alternatives {
+        let targets = defs
+            .storage
+            .formats
+            .iter()
+            .enumerate()
+            .filter_map(|(index, format)| alt.formats.contains(&format.name).then_some(index))
+            .collect::<Vec<_>>();
+        let base = defs
+            .ops
+            .iter()
+            .zip(formats)
+            .find(|(_, index)| targets.contains(index));
+        let Some((base, _)) = base else {
+            if !alt.constraints.is_empty() {
+                return Err(Error::at(
+                    source,
+                    alt.text.offset,
+                    "constraint layout has no operation",
+                ));
+            }
+            continue;
+        };
+        let (mut op, format) = alternate(base, alt, source)?;
+        op.constraints = crate::model::constraints::check(
+            source,
+            alt.constraints.clone(),
+            &op,
+            &defs.storage,
+            &defs.types,
+            &defs.comparisons,
+        )?;
+        alternatives.push(Alternative {
+            op,
+            format,
+            targets,
+        });
+    }
+
+    Ok(alternatives)
+}
+
 /// An alternate storage layout exposes its own text-facing fields. Pool handles
 /// become structured properties, while its primary list retains canonical arity.
-pub(crate) fn alternate(op: &Op, alt: &Alternative, source: &str) -> Result<(Op, Format), Error> {
+fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Format), Error> {
     let mut params = Vec::new();
     let mut packing = BTreeMap::new();
     for field in &alt.fields {
@@ -158,8 +214,8 @@ pub(crate) fn alternate(op: &Op, alt: &Alternative, source: &str) -> Result<(Op,
             control: None,
             text: Some(alt.text.clone()),
             traits: Vec::new(),
-            memory: crate::builtins::Effect::Known(Vec::new()),
-            access: None,
+            memory: crate::model::builtins::Effect::Known(Vec::new()),
+            interfaces: BTreeMap::new(),
             constraints: Vec::new(),
             identity: None,
             absorbing: None,
@@ -213,12 +269,11 @@ pub(crate) fn accessors(defs: &Definitions) -> String {
     output
 }
 
-pub(crate) fn builder(
-    op: &Op,
-    format: &crate::storage::Format,
-    records: &[crate::records::RecordDef],
-    source: &str,
-) -> Result<Option<String>, Error> {
+pub(crate) struct Builder {
+    inferred: Option<Vec<crate::types::rules::ResultExpr>>,
+}
+
+pub(crate) fn prepare_builder(op: &Op, source: &str) -> Result<Option<Builder>, Error> {
     let fail = |message| Error::at(source, op.offset, message);
     let ty = &op.signature;
     let Some(results) = ty.results.patterns() else {
@@ -252,7 +307,7 @@ pub(crate) fn builder(
             op.mnemonic
         )));
     }
-    let inferred = crate::type_rules::result_exprs(ty);
+    let inferred = crate::types::rules::result_exprs(ty);
     let typed = inferred.is_none();
     if typed && results.len() != 1 {
         return Err(fail(
@@ -263,14 +318,32 @@ pub(crate) fn builder(
     if typed {
         names.insert("ty".to_owned());
     }
-    let mut params = String::from("&mut self");
-    let mut add_param = |name: String, ty: &str| -> Result<(), Error> {
-        if !names.insert(name.clone()) {
-            return Err(fail(format!("conflicting generated parameter `{name}`")));
+    for param in &op.params {
+        if !names.insert(param.name.clone()) {
+            return Err(fail(format!(
+                "conflicting generated parameter `{}`",
+                param.name
+            )));
         }
-        write!(params, ", {name}: {ty}").unwrap();
-        Ok(())
-    };
+    }
+    Ok(Some(Builder { inferred }))
+}
+
+pub(crate) fn builder(
+    op: &Op,
+    format: &Format,
+    records: &[crate::model::records::RecordDef],
+    builder: &Builder,
+) -> String {
+    let name = op.method_name();
+    let results = op
+        .signature
+        .results
+        .patterns()
+        .expect("prepared builder results");
+    let inferred = &builder.inferred;
+    let typed = inferred.is_none();
+    let mut params = String::from("&mut self");
     for param in &op.params {
         let ty = match &param.kind {
             ParamKind::Value => "crate::Value".to_owned(),
@@ -284,13 +357,18 @@ pub(crate) fn builder(
                 unreachable!("contextual builder was excluded")
             }
         };
-        add_param(param.name.clone(), &ty)?;
+        write!(params, ", {}: {ty}", param.name).unwrap();
     }
     if typed {
         params.push_str(", ty: crate::Type");
     }
-    let constructor =
-        crate::packing::constructor(op, format, "self.builder().func_mut().dfg", str::to_owned);
+    let constructor = crate::generate::packing::constructor(
+        op,
+        format,
+        "self.builder().func_mut().dfg",
+        &op.name,
+        str::to_owned,
+    );
     let result_types = if let Some(inferred) = inferred {
         let operands = op
             .params
@@ -298,10 +376,10 @@ pub(crate) fn builder(
             .filter(|p| p.kind == ParamKind::Value)
             .collect::<Vec<_>>();
         inferred.iter().map(|r| match r {
-            crate::type_rules::ResultExpr::Property(name) => format!("{name}.ty()"),
-            crate::type_rules::ResultExpr::Exact(ty) => format!("crate::Type::{ty}"),
-            crate::type_rules::ResultExpr::Operand(index) => format!("self.value_type({})", operands[*index].name),
-            crate::type_rules::ResultExpr::Element(index) => format!("self.value_type({}).as_vector().expect(\"result element type requires a vector operand\").element_type().as_type()", operands[*index].name),
+            crate::types::rules::ResultExpr::Property(name) => format!("{name}.ty()"),
+            crate::types::rules::ResultExpr::Exact(ty) => format!("crate::Type::{ty}"),
+            crate::types::rules::ResultExpr::Operand(index) => format!("self.value_type({})", operands[*index].name),
+            crate::types::rules::ResultExpr::Element(index) => format!("self.value_type({}).as_vector().expect(\"result element type requires a vector operand\").element_type().as_type()", operands[*index].name),
         }).collect::<Vec<_>>().join(", ")
     } else {
         "ty".into()
@@ -324,10 +402,10 @@ pub(crate) fn builder(
             )
         }
     };
-    Ok(Some(format!(
+    format!(
         "    /// Build `{}` without validating its type contract.\n    pub fn {name}({params}){ret} {{\n        let (data, types) = ({constructor}, [{result_types}]);\n        {body}\n    }}\n",
         op.mnemonic
-    )))
+    )
 }
 
 #[cfg(test)]
@@ -337,8 +415,8 @@ mod tests {
     #[test]
     fn only_immutable_bytes_are_interned() {
         let source = [
-            include_str!("../../mir/defs/formats.ops"),
-            include_str!("../../mir/defs/mir.ops"),
+            include_str!("../../../mir/defs/formats.ops"),
+            include_str!("../../../mir/defs/mir.ops"),
         ]
         .join("\n");
         let defs = crate::fixtures::parse(&source).unwrap();
@@ -355,7 +433,7 @@ mod tests {
                 .iter()
                 .find(|f| f.name == op.format)
                 .unwrap();
-            let packed = constructor(op, format, "dfg", str::to_owned);
+            let packed = constructor(op, format, "dfg", &op.name, str::to_owned);
             assert_eq!(packed.contains("::insert("), pooled, "{packed}");
             let locals = projections(op, format, "dfg", str::to_owned, |value| {
                 format!("{value}.ok_or(invalid)?")
@@ -368,8 +446,8 @@ mod tests {
     #[test]
     fn jump_table_projection_splits_default_from_cases() {
         let source = [
-            include_str!("../../mir/defs/formats.ops"),
-            include_str!("../../mir/defs/mir.ops"),
+            include_str!("../../../mir/defs/formats.ops"),
+            include_str!("../../../mir/defs/mir.ops"),
         ]
         .join("\n");
         let defs = crate::fixtures::parse(&source).unwrap();
@@ -381,7 +459,7 @@ mod tests {
             .find(|format| format.name == op.format)
             .unwrap();
         assert!(
-            constructor(op, format, "dfg", str::to_owned)
+            constructor(op, format, "dfg", &op.name, str::to_owned)
                 .contains("chain(core::iter::once((default).as_view()))")
         );
         let locals = projections(op, format, "dfg", str::to_owned, |value| {

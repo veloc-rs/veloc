@@ -29,11 +29,15 @@ pub(super) fn parse(
     source: &str,
     mut record: Record,
     storage_defs: &storage::Storage,
-    type_defs: &Types,
-    builtins: &Builtins,
-    comparisons: &[crate::comparisons::Comparison],
-    data: &crate::data::Types,
+    comparisons: &[crate::model::comparisons::Comparison],
+    vocabulary: Vocabulary<'_>,
+    interfaces: &mut super::interfaces::Library,
 ) -> Result<Op, Error> {
+    let Vocabulary {
+        types: type_defs,
+        builtins,
+        data,
+    } = vocabulary;
     let sig = record
         .signature
         .take()
@@ -97,13 +101,16 @@ pub(super) fn parse(
         })
         .transpose()?;
     let text = fields.optional("text");
-    let access = fields
-        .optional("access")
-        .map(|node| crate::memory::check(source, node, &params))
-        .transpose()?;
+    let implementations = interfaces.bind(
+        source,
+        fields.optional("implements"),
+        &params,
+        &types,
+        vocabulary,
+    )?;
     let control = fields
         .optional("control")
-        .map(|node| crate::control::check(source, node, &params))
+        .map(|node| crate::model::control::check(source, node, &params))
         .transpose()?;
     if let Some(node) = fields.optional("where") {
         for node in list(source, node)? {
@@ -138,7 +145,16 @@ pub(super) fn parse(
             });
         }
     }
-    let meta = crate::metadata::Pending::new(source, fields.take("meta")?, data)?;
+    let mut meta_node = fields.take("meta")?;
+    interfaces.metadata(
+        source,
+        &mut meta_node,
+        &implementations,
+        data,
+        builtins,
+        type_defs,
+    )?;
+    let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
     let mut traits = meta.traits(source, data, builtins)?;
     if let Projection::Operands(projection) = &projection {
         let required: &[&str] = match projection.flow.as_str() {
@@ -195,22 +211,14 @@ pub(super) fn parse(
         crate::semantic::traps(source, node, &params, sem)?;
     }
     let declared_memory = meta.memory(source, data, builtins)?;
-    if access.is_some() && meta.explicit_memory() {
-        return Err(fields.error("access already defines the complete memory effect"));
-    }
-    let memory = match access.as_ref() {
-        Some(access) => crate::builtins::Effect::Known(vec![access.effect().into()]),
-        None if semantics.is_some() && !meta.explicit_memory() => {
-            crate::builtins::Effect::Known(Vec::new())
+    let memory = match declared_memory {
+        _ if semantics.is_some() && !meta.explicit_memory() => {
+            crate::model::builtins::Effect::Known(Vec::new())
         }
-        None => match declared_memory {
-            Some(memory) => memory,
-            None if semantics.is_some() => crate::builtins::Effect::Known(Vec::new()),
-            None if !meta.has_memory_field() => crate::builtins::Effect::Unknown,
-            None => {
-                return Err(fields.error("unmodeled operations must declare their memory effect"));
-            }
-        },
+        Some(memory) => memory,
+        None if semantics.is_some() => crate::model::builtins::Effect::Known(Vec::new()),
+        None if !meta.has_memory_field() => crate::model::builtins::Effect::Unknown,
+        None => return Err(fields.error("unmodeled operations must declare their memory effect")),
     };
     if let Some(semantics) = &semantics {
         if !semantics.traps.is_empty() && !traits.iter().any(|t| t == "MAY_TRAP") {
@@ -248,13 +256,13 @@ pub(super) fn parse(
         text,
         traits,
         memory,
-        access,
+        interfaces: implementations,
         constraints: Vec::new(),
         identity,
         absorbing,
         semantics,
     };
-    op.constraints = crate::constraints::check(
+    op.constraints = crate::model::constraints::check(
         source,
         constraints,
         &op,
@@ -262,7 +270,6 @@ pub(super) fn parse(
         type_defs,
         comparisons,
     )?;
-    crate::memory::validate(source, &op)?;
     Ok(op)
 }
 

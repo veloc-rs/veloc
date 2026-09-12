@@ -8,165 +8,165 @@ property VectorConst {
 }
 
 // Logical records. SSA fields are extracted into the instruction's operands.
-record PtrIndexImm {
+struct PtrIndexImm {
     offset: i32,
     scale: u32,
 }
-record VectorMemOptions {
+struct VectorMemOptions {
     offset: i32,
     flags: MemFlags,
     scale: u8,
     mask: optional(Value),
     evl: optional(Value),
 }
-record VectorExtData {
+struct VectorExtData {
     mask: Value,
     evl: optional(Value),
 }
 
 // Fields describe logical groups, not physical storage. All SSA inputs,
-// including successor arguments and record inputs, occupy one operand range.
+// including successor arguments and struct inputs, occupy one operand range.
 // values(N) is fixed-arity; ValueList is variadic.
-// An op's storage mapping selects a record as an instruction layout.
-// Opcode fields are inferred from its users, never part of the record itself.
+// An op's storage mapping selects a struct as an instruction layout.
+// Opcode fields are inferred from its users, never part of the struct itself.
 
-record Unary {
+struct Unary {
     arg: Value,
 }
-record Binary {
+struct Binary {
     args: values(2),
 }
-record Ternary {
+struct Ternary {
     args: values(3),
 }
-record Iconst {
+struct Iconst {
     value: Int,
 }
-record Fconst {
+struct Fconst {
     value: Float,
 }
-record Bconst {
+struct Bconst {
     value: bool,
 }
-record Vconst {
+struct Vconst {
     value: VectorConst,
 }
-record Load {
+struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
 }
-record Store {
+struct Store {
     ptr: Value,
     value: Value,
     offset: u32,
     flags: MemFlags,
 }
-record Alloca {
+struct Alloca {
     size: u32,
     align: u32,
 }
-record PtrOffset {
+struct PtrOffset {
     ptr: Value,
     offset: i32,
 }
-record PtrIndex {
+struct PtrIndex {
     ptr: Value,
     index: Value,
     imm_id: PtrIndexImm,
 }
-record IntToPtr {
+struct IntToPtr {
     arg: Value,
 }
-record PtrToInt {
+struct PtrToInt {
     arg: Value,
 }
-record Call {
+struct Call {
     func_id: FuncId,
     args: ValueList,
 }
-record ClosureNew {
+struct ClosureNew {
     func_id: FuncId,
     captures: ValueList,
     cleanup: FuncId,
 }
-record Closure {
+struct Closure {
     func_id: FuncId,
     captures: ValueList,
 }
-record TailCall {
+struct TailCall {
     func_id: FuncId,
     args: ValueList,
 }
-record CallValue {
+struct CallValue {
     callee: Value,
     args: ValueList,
 }
-record CallIndirect {
+struct CallIndirect {
     ptr: Value,
     args: ValueList,
     sig_id: SigId,
 }
-record CallIntrinsic {
+struct CallIntrinsic {
     intrinsic: Intrinsic,
     args: ValueList,
     sig_id: SigId,
 }
-record Jump {
+struct Jump {
     dest: BlockCall,
 }
-record Br {
+struct Br {
     condition: Value,
     then_dest: BlockCall,
     else_dest: BlockCall,
 }
-record BrTable {
+struct BrTable {
     index: Value,
     table: JumpTable,
 }
-record Return {
+struct Return {
     values: ValueList,
 }
-record IntCompare {
+struct IntCompare {
     kind: IntCC,
     args: values(2),
 }
-record FloatCompare {
+struct FloatCompare {
     kind: FloatCC,
     args: values(2),
 }
-record VectorLoadStrided {
+struct VectorLoadStrided {
     ptr: Value,
     stride: Value,
     ext: VectorMemOptions,
 }
-record VectorStoreStrided {
+struct VectorStoreStrided {
     args: values(3),
     ext: VectorMemOptions,
 }
-record VectorGather {
+struct VectorGather {
     ptr: Value,
     index: Value,
     ext: VectorMemOptions,
 }
-record VectorScatter {
+struct VectorScatter {
     args: values(3),
     ext: VectorMemOptions,
 }
-record Shuffle {
+struct Shuffle {
     args: values(2),
     mask: ConstantPoolId,
 }
-record Unreachable {
+struct Unreachable {
 
 }
-record Nop {
+struct Nop {
 
 }
 
 // Predication adds auxiliary operands while keeping the operation's
 // logical Unary/Binary/Ternary format and type rules.
-record VectorOpWithExt {
+struct VectorOpWithExt {
     args: ValueList,
     ext: VectorExtData,
 }

@@ -59,7 +59,7 @@ fn runtime_layout_contracts_check_property_types_and_operand_order() {
         ),
     ] {
         rejected(
-            &changed_record("record", layout, from, to),
+            &changed_record("struct", layout, from, to),
             "field contract",
         );
     }
@@ -74,7 +74,7 @@ fn runtime_layout_contracts_check_fixed_and_variadic_groups() {
         ("Shuffle", "args: values(2)", "args: values(3)"),
     ] {
         rejected(
-            &changed_record("record", layout, from, to),
+            &changed_record("struct", layout, from, to),
             "field contract",
         );
     }
@@ -89,7 +89,7 @@ fn runtime_layout_contracts_reject_missing_and_extra_properties() {
         ("CallIndirect", "    sig_id: SigId,\n", ""),
     ] {
         rejected(
-            &changed_record("record", layout, from, to),
+            &changed_record("struct", layout, from, to),
             "field contract",
         );
     }
@@ -175,7 +175,7 @@ fn existing_predication_has_a_checked_supported_adapter() {
         ("ext: VectorExtData", "ext: VectorExtData, hidden: u32"),
     ] {
         rejected(
-            &changed_record("record", "VectorOpWithExt", from, to),
+            &changed_record("struct", "VectorOpWithExt", from, to),
             "field contract",
         );
     }
@@ -190,7 +190,7 @@ fn canonical_dynamic_layouts_preserve_their_public_field_contracts() {
         ("IntToPtr", "arg: Value", "operand: Value"),
     ] {
         rejected(
-            &changed_record("record", layout, from, to),
+            &changed_record("struct", layout, from, to),
             "field contract",
         );
     }
@@ -199,7 +199,7 @@ fn canonical_dynamic_layouts_preserve_their_public_field_contracts() {
 #[test]
 fn custom_value_formats_allow_custom_field_names() {
     let source = r#"
-        record Pair {
+        struct Pair {
             left: Value,
             right: Value,
         }
@@ -215,7 +215,7 @@ fn custom_value_formats_allow_custom_field_names() {
 fn record_fields_do_not_double_as_text_configuration() {
     rejected(
         &changed_record(
-            "record",
+            "struct",
             "Iconst",
             "value: Int",
             "value: Int, text: IntegerConstant",

@@ -1,7 +1,7 @@
 //! Compile operand transfer contracts. CFG edge arguments are handled by the
 //! dataflow engine, independently for each successor occurrence.
+use crate::model::records::PropertyType;
 use crate::model::{Definitions, ParamKind};
-use crate::records::PropertyType;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
@@ -28,7 +28,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
                 .map(|(i, f)| format!("{}: _f{i}", f.name))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let projections: BTreeMap<_, _> = crate::packing::projections(
+            let projections: BTreeMap<_, _> = crate::generate::packing::projections(
                 op,
                 format,
                 "dfg",

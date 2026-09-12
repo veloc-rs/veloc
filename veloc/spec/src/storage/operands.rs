@@ -163,14 +163,14 @@ pub(crate) fn compile(
     records: &[Record],
     source: &str,
     prefix: String,
-    data: &crate::data::Types,
+    data: &crate::model::data::Types,
 ) -> Result<Operands, Error> {
     for binding in records.iter().filter(|r| r.kind == "layout") {
         if !data.records.iter().any(|r| r.name == binding.name) {
             return Err(Error::at(
                 source,
                 binding.offset,
-                format!("layout `{}` requires a record declaration", binding.name),
+                format!("layout `{}` requires a struct declaration", binding.name),
             ));
         }
     }
@@ -183,10 +183,9 @@ pub(crate) fn compile(
                 Some(Node { kind: Kind::Name(name), .. }) if name == &shape.name
             )
         });
-        let roles = shape
-            .fields
-            .iter()
-            .any(|f| matches!(&f.ty, crate::records::PropertyType::Named(ty) if is_role(ty)));
+        let roles = shape.fields.iter().any(
+            |f| matches!(&f.ty, crate::model::records::PropertyType::Named(ty) if is_role(ty)),
+        );
         let binding = records
             .iter()
             .find(|r| r.kind == "layout" && r.name == shape.name);
@@ -198,7 +197,7 @@ pub(crate) fn compile(
             kind: "layout".into(),
             offset: records
                 .iter()
-                .find(|r| r.kind == "record" && r.name == shape.name)
+                .find(|r| r.kind == "struct" && r.name == shape.name)
                 .expect("checked record")
                 .offset,
             fields: BTreeMap::new(),
@@ -208,7 +207,7 @@ pub(crate) fn compile(
             .fields
             .iter()
             .map(|f| {
-                let crate::records::PropertyType::Named(ty) = &f.ty else {
+                let crate::model::records::PropertyType::Named(ty) = &f.ty else {
                     return Err(Error::at(
                         source,
                         record.offset,

@@ -348,9 +348,7 @@ pub(crate) fn instances(
                         set.clone()
                     }
                     Pattern::Exact(name) => types.exact[name].clone(),
-                    Pattern::Same(var) => {
-                        crate::type_set::TypeSet::singleton(bindings[var], 0, false)
-                    }
+                    Pattern::Same(var) => crate::types::TypeSet::singleton(bindings[var], 0, false),
                     _ => {
                         return Err(fail(
                             "shape-changing semantic recipes are not supported".into(),
@@ -667,7 +665,7 @@ mod tests {
             offset: 0,
             name: "Test".into(),
             mnemonic: "test".into(),
-            meta: crate::data::Value::Record("OpInfo".into(), Default::default()),
+            meta: crate::model::data::Value::Record("OpInfo".into(), Default::default()),
             format: "Unary".into(),
             signature: TypeDef {
                 operands: TypeList::Fixed(vec![operand]),
@@ -680,8 +678,8 @@ mod tests {
             params,
             projection: crate::model::Projection::Packed(Default::default()),
             traits: vec![],
-            memory: crate::builtins::Effect::Known(Vec::new()),
-            access: None,
+            memory: crate::model::builtins::Effect::Known(Vec::new()),
+            interfaces: Default::default(),
             constraints: vec![],
             identity: None,
             absorbing: None,
@@ -722,9 +720,9 @@ mod tests {
     #[test]
     fn executable_bitvector_semantics_do_not_claim_effects_or_traps() {
         let mut op = unary(Pattern::Exact("I32".into()), Pattern::Exact("I32".into()));
-        op.memory = crate::builtins::Effect::Unknown;
+        op.memory = crate::model::builtins::Effect::Unknown;
         assert!(validate("", &op, &crate::fixtures::types()).is_err());
-        op.memory = crate::builtins::Effect::Known(Vec::new());
+        op.memory = crate::model::builtins::Effect::Known(Vec::new());
         for flag in ["MAY_TRAP", "TERMINATOR"] {
             op.traits = vec![flag.into()];
             assert!(validate("", &op, &crate::fixtures::types()).is_err());

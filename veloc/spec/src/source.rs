@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::{Definitions, Error, Generated, generate, model, syntax};
+use crate::{Definitions, Error, Generated, Plan, model, syntax};
 
 #[derive(Debug)]
 pub struct SourceError {
@@ -62,9 +62,13 @@ impl Source {
         model::from_records(&self.text, self.records.clone()).map_err(|e| self.locate(e))
     }
 
+    /// Prepare checked output projections while retaining original-file diagnostics.
+    pub fn plan(&self) -> Result<Plan, SourceError> {
+        Plan::prepare(self.parse()?, &self.text).map_err(|e| self.locate(e))
+    }
+
     pub fn compile(&self) -> Result<Generated, SourceError> {
-        let definitions = self.parse()?;
-        generate::generate(&definitions, &self.text).map_err(|e| self.locate(e))
+        Ok(self.plan()?.generate())
     }
 
     fn locate(&self, mut diagnostic: Error) -> SourceError {
@@ -122,25 +126,19 @@ impl Loader<'_> {
             path: canonical.clone(),
             diagnostic,
         };
-        let imports = syntax::imports(&text).map_err(located)?;
-        // Preserve byte offsets and newlines while removing the import preamble.
-        let mut masked = text.as_bytes().to_vec();
+        let syntax::File {
+            imports,
+            mut records,
+        } = syntax::parse_file(&text).map_err(located)?;
         for import in &imports {
             if import.path.is_empty() || Path::new(&import.path).is_absolute() {
                 return Err(located(Error::at(
                     &text,
-                    import.range.start,
+                    import.offset,
                     "import requires a nonempty relative path",
                 )));
             }
-            for byte in &mut masked[import.range.clone()] {
-                if *byte != b'\n' && *byte != b'\r' {
-                    *byte = b' ';
-                }
-            }
         }
-        let masked = String::from_utf8(masked).expect("whole import spans replaced by ASCII");
-        let mut records = syntax::parse(&masked).map_err(located)?;
         self.active.push(canonical.clone());
         for import in imports {
             let target = canonical
@@ -148,7 +146,7 @@ impl Loader<'_> {
                 .expect("canonical file has a parent")
                 .join(&import.path);
             self.visit(&target).map_err(|mut error| {
-                let site = Error::at(&text, import.range.start, "");
+                let site = Error::at(&text, import.offset, "");
                 error.diagnostic.message.push_str(&format!(
                     "\n  imported from {}:{}:{}",
                     canonical.display(),
@@ -168,9 +166,9 @@ impl Loader<'_> {
             first_line: self.next_line,
         });
         self.source.records.extend(records);
-        self.source.text.push_str(&masked);
-        self.next_line += masked.bytes().filter(|&b| b == b'\n').count();
-        if !masked.ends_with('\n') {
+        self.source.text.push_str(&text);
+        self.next_line += text.bytes().filter(|&b| b == b'\n').count();
+        if !text.ends_with('\n') {
             self.source.text.push('\n');
             self.next_line += 1;
         }

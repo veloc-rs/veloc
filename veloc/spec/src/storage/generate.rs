@@ -1,6 +1,6 @@
 //! Generate construction data, zero-allocation views and SSA-free storage.
 use super::{Field, FieldType, FormatSource, Layout, OpcodeSource, value_only};
-use crate::records::{PropertyType, RecordDef};
+use crate::model::records::{PropertyType, RecordDef};
 use std::fmt::Write;
 
 pub(super) fn record<'a>(field: &Field, records: &'a [RecordDef]) -> Option<&'a RecordDef> {

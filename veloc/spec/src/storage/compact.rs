@@ -1,7 +1,7 @@
 //! Compact persistent fields; drafts and public views keep their logical types.
 use super::generate::{construct, read_field, record, stored_type};
 use super::{Layout, OpcodeSource};
-use crate::records::{PropertyType, RecordDef};
+use crate::model::records::{PropertyType, RecordDef};
 use std::fmt::Write;
 
 // Unknown or large properties stay out of line. This is a storage policy, not

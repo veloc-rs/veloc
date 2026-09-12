@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::Error;
-use crate::records::RecordDef;
+use crate::model::records::RecordDef;
 use crate::syntax::{Kind, Node, Record};
 
 mod compact;
@@ -41,8 +41,7 @@ pub(crate) struct Format {
 pub(crate) struct Storage {
     pub strategy: Strategy,
     pub formats: Vec<Format>,
-    pub instructions: String,
-    pub formats_code: String,
+    layouts: Vec<Layout>,
     pub records: Vec<RecordDef>,
     pub alternatives: Vec<Alternative>,
 }
@@ -176,7 +175,7 @@ impl Layout {
 pub(crate) fn compile(
     records: &[Record],
     source: &str,
-    data: &crate::data::Types,
+    data: &crate::model::data::Types,
 ) -> Result<Storage, Error> {
     if let Some(record) = records.iter().find(|r| r.kind == "storage") {
         if records.iter().filter(|r| r.kind == "storage").count() != 1 || record.name != "Operands"
@@ -207,8 +206,7 @@ pub(crate) fn compile(
         return Ok(Storage {
             strategy: Strategy::Operands(operands),
             formats: Vec::new(),
-            instructions: String::new(),
-            formats_code: String::new(),
+            layouts: Vec::new(),
             records: Vec::new(),
             alternatives: Vec::new(),
         });
@@ -245,18 +243,17 @@ pub(crate) fn compile(
             return Err(Error::at(
                 source,
                 layout.offset,
-                format!("unknown layout record `{}`", layout.name),
+                format!("unknown layout struct `{}`", layout.name),
             ));
         }
     }
-    for record in records.iter().filter(|r| r.kind == "record") {
+    for record in records.iter().filter(|r| r.kind == "struct") {
         let binding = records
             .iter()
             .find(|r| r.kind == "layout" && r.name == record.name);
         if !used.contains(&record.name) && binding.is_none() {
             continue;
         }
-        identifier(&record.name, record.offset, source)?;
         if !names.insert(record.name.clone()) {
             return Err(Error::at(source, record.offset, "duplicate storage layout"));
         }
@@ -292,7 +289,7 @@ pub(crate) fn compile(
         .collect::<Vec<_>>();
     for record in &properties {
         for field in &record.fields {
-            use crate::records::PropertyType;
+            use crate::model::records::PropertyType;
             let ty = match &field.ty {
                 PropertyType::Named(ty) | PropertyType::Optional(ty) => ty.as_str(),
                 PropertyType::Values(_) => {
@@ -310,7 +307,7 @@ pub(crate) fn compile(
                     source,
                     records
                         .iter()
-                        .find(|r| r.kind == "record" && r.name == record.name)
+                        .find(|r| r.kind == "struct" && r.name == record.name)
                         .unwrap()
                         .offset,
                     "operand storage supports direct Value/optional(Value) fields, not nested SSA or optional non-SSA fields",
@@ -320,8 +317,7 @@ pub(crate) fn compile(
     }
     Ok(Storage {
         strategy: Strategy::Packed,
-        instructions: generate::instructions(&layouts, &properties),
-        formats_code: generate_formats(&formats),
+
         records: properties,
         alternatives: layouts
             .iter()
@@ -341,7 +337,18 @@ pub(crate) fn compile(
             })
             .collect(),
         formats,
+        layouts,
     })
+}
+
+impl Storage {
+    pub(crate) fn instructions(&self) -> String {
+        generate::instructions(&self.layouts, &self.records)
+    }
+
+    pub(crate) fn format_code(&self) -> String {
+        generate_formats(&self.formats)
+    }
 }
 
 fn layout_targets(layout: &Record, source: &str) -> Result<Vec<String>, Error> {
@@ -392,9 +399,9 @@ fn parse_layout(
         .iter()
         .map(|f| {
             let ty = match &f.ty {
-                crate::records::PropertyType::Named(name) => FieldType::Named(name.clone()),
-                crate::records::PropertyType::Values(n) => FieldType::Values(*n),
-                crate::records::PropertyType::Optional(_) => {
+                crate::model::records::PropertyType::Named(name) => FieldType::Named(name.clone()),
+                crate::model::records::PropertyType::Values(n) => FieldType::Values(*n),
+                crate::model::records::PropertyType::Optional(_) => {
                     return Err(Error::at(
                         source,
                         record.offset,
@@ -809,32 +816,4 @@ fn field_index(fields: &[Field], name: &str, node: &Node, source: &str) -> Resul
             format!("unknown storage field `{name}`"),
         )
     })
-}
-
-fn identifier(name: &str, offset: usize, source: &str) -> Result<(), Error> {
-    let valid = !name.is_empty()
-        && name
-            .bytes()
-            .next()
-            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        && name != "_"
-        && ![
-            "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
-            "extern", "false", "fn", "for", "gen", "if", "impl", "in", "let", "loop", "match",
-            "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct",
-            "super", "trait", "true", "type", "unsafe", "use", "where", "while", "yield",
-            "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try",
-            "typeof", "unsized", "virtual",
-        ]
-        .contains(&name);
-    if valid {
-        Ok(())
-    } else {
-        Err(Error::at(
-            source,
-            offset,
-            format!("invalid Rust identifier `{name}`"),
-        ))
-    }
 }

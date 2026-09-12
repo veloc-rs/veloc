@@ -1,18 +1,18 @@
-// ----- legacy-record-fields-are-rejected
+// ----- legacy-struct-fields-are-rejected
 // run: opgen-error
 // check: expected data type name
-record Settings { fields: [budget(u8, 1)] }
+struct Settings { fields: [budget(u8, 1)] }
 
-// ----- record-defaults-are-rejected
+// ----- struct-defaults-are-rejected
 // run: opgen-error
 // check: expected `,`
-record Settings { budget: u8 = 1 }
+struct Settings { budget: u8 = 1 }
 
 // ----- optional-fields-must-be-explicit
 // run: opgen-error
 // check: missing field `budget`
-record Settings { budget: optional(u32) }
-record Work {  }
+struct Settings { budget: optional(u32) }
+struct Work {  }
 op Work() -> () {
     meta: Settings {}, mnemonic: "work", storage: Work {}
 }
@@ -20,8 +20,8 @@ op Work() -> () {
 // ----- fixed-text-binding-is-range-checked
 // run: opgen-error
 // check: fixed text binding requires an in-range integer literal
-record Settings { scale: u8 }
-record Work { settings: Settings }
+struct Settings { scale: u8 }
+struct Work { settings: Settings }
 op Work(@settings: Settings) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "work", storage: Work { settings: settings },
@@ -31,8 +31,8 @@ op Work(@settings: Settings) -> () {
 // ----- fixed-text-binding-cannot-also-consume-input
 // run: opgen-error
 // check: text field `settings.scale` is consumed more than once
-record Settings { scale: u8 }
-record Work { settings: Settings }
+struct Settings { scale: u8 }
+struct Work { settings: Settings }
 op Work(@settings: Settings) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "work", storage: Work { settings: settings },
@@ -40,30 +40,30 @@ op Work(@settings: Settings) -> () {
 }
 
 
-// ----- record-without-instruction-use-is-plain-data
+// ----- struct-without-instruction-use-is-plain-data
 // run: opgen
 // check: pub struct Operands
 // check: pub budget: u32
-record Operands { budget: u32 }
+struct Operands { budget: u32 }
 
 // ----- legacy-format-declaration-is-rejected
 // run: opgen-error
 // check: unknown definition kind `format`
 format Pair {}
 
-// ----- opcode-is-not-a-record-type
+// ----- opcode-is-not-a-struct-type
 // run: opgen-error
 // check: unknown data type `Opcode`
-record Pair { opcode: Opcode, args: values(2) }
+struct Pair { opcode: Opcode, args: values(2) }
 
-// ----- alternate-layout-requires-a-record
+// ----- alternate-layout-requires-a-struct
 // run: opgen-error
-// check: unknown layout record `Alternate`
-record Pair { args: values(2) }
+// check: unknown layout struct `Alternate`
+struct Pair { args: values(2) }
 layout Alternate { format: fixed(Pair), text: "{args}" }
 
-// ----- lir-layout-requires-a-record
+// ----- lir-layout-requires-a-struct
 // run: opgen-error
-// check: layout `Missing` requires a record declaration
+// check: layout `Missing` requires a struct declaration
 storage Operands {}
 layout Missing { accessor: missing }

@@ -1,18 +1,18 @@
 // Operand-array storage is independent of operation semantics and type contracts.
 storage Operands { prefix: "G_" }
 
-record UnaryReg {
+struct UnaryReg {
     dst: Def,
     src: Use,
 }
 
-record BinaryReg {
+struct BinaryReg {
     dst: Def,
     lhs: Use,
     rhs: Use,
 }
 
-record BinaryRegWithFlags {
+struct BinaryRegWithFlags {
     dst: Def,
     flag: Def,
     lhs: Use,
@@ -20,63 +20,63 @@ record BinaryRegWithFlags {
     carry_in: OptionalUse,
 }
 
-record Load {
+struct Load {
     dst: Def,
     base: Use,
 }
 
-record LoadOffset {
+struct LoadOffset {
     dst: Def,
     base: Use,
     offset: Imm,
 }
 
-record IndexedLoad {
+struct IndexedLoad {
     dst: Def,
     wb_dst: TiedDefUse,
     base: Use,
     offset: Imm,
 }
 
-record Store {
+struct Store {
     src: Use,
     base: Use,
 }
 
-record StackLoad {
+struct StackLoad {
     dst: Def,
     slot: StackSlot,
 }
 
-record StackAddr {
+struct StackAddr {
     dst: Def,
     slot: StackSlot,
 }
 
-record StackStore {
+struct StackStore {
     src: Use,
     slot: StackSlot,
 }
 
-record StoreOffset {
+struct StoreOffset {
     src: Use,
     base: Use,
     offset: Imm,
 }
 
-record IndexedStore {
+struct IndexedStore {
     wb_dst: TiedDefUse,
     src: Use,
     base: Use,
     offset: Imm,
 }
 
-record Constant {
+struct Constant {
     dst: Def,
     imm: Imm,
 }
 
-record FloatConstant {
+struct FloatConstant {
     dst: Def,
     imm: FImm,
 }
@@ -85,28 +85,28 @@ layout FloatConstant {
     accessor: as_fconstant,
 }
 
-record Branch {
+struct Branch {
     target: Block,
 }
 
-record BranchCond {
+struct BranchCond {
     cond: Use,
     then_blk: Block,
     else_blk: Block,
 }
 
-record BranchTable {
+struct BranchTable {
     index: Use,
 }
 
-record Select {
+struct Select {
     dst: Def,
     cond: Use,
     v1: Use,
     v2: Use,
 }
 
-record ICmp {
+struct ICmp {
     dst: Def,
     lhs: Use,
     rhs: Use,
@@ -116,7 +116,7 @@ layout ICmp {
     accessor: as_icmp,
 }
 
-record FCmp {
+struct FCmp {
     dst: Def,
     lhs: Use,
     rhs: Use,
@@ -126,12 +126,12 @@ layout FCmp {
     accessor: as_fcmp,
 }
 
-record Arg {
+struct Arg {
     dst: Def,
     index: Index,
 }
 
-record Return {
+struct Return {
     values: Uses,
 }
 layout Return {
@@ -139,11 +139,11 @@ layout Return {
     accessor: as_ret,
 }
 
-record Unreachable {
+struct Unreachable {
 
 }
 
-record Call {
+struct Call {
     shape: CallShape,
 }
 layout Call {

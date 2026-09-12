@@ -2,7 +2,7 @@ mod common;
 use common::compile;
 
 const CALL_VALUE: &str = r#"
-    record ApplyValue {
+    struct ApplyValue {
         callee: Value,
         args: ValueList,
     }

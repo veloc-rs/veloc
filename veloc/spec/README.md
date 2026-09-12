@@ -20,14 +20,67 @@ import "mir.ops";
 deduplicates canonical files, rejects cycles and requires imports before
 declarations. Its `dependencies()` includes requested and canonical paths for
 Cargo rebuild tracking; `parse()` and `compile()` report physical file locations.
-Files are parsed independently, so syntax cannot cross import boundaries.
+Files are parsed independently in one pass, including their import preambles.
+The loader resolves imports from that AST and retains the original source for
+diagnostics; it does not mask imports or parse the file again. Syntax cannot
+cross import boundaries.
 String-based `parse/compile` remain available for self-contained definitions;
 they do not resolve imports or inject an implicit vocabulary.
 
 There is one checked `Definitions` model. `storage Operands` selects machine
 operand-array emission; packed storage emits MIR views and pools. Storage
 projections differ, but signatures, type expressions and semantic checking are
-shared. Unsupported projection capabilities fail during generation.
+shared. Unsupported projection capabilities fail while preparing an output plan,
+before any Rust artifact is emitted.
+
+The public stages are explicit:
+
+```rust,ignore
+let source = veloc_opgen::Source::load("defs/module.ops")?;
+let plan = source.plan()?;      // resolve and check the selected output
+let generated = plan.generate(); // infallible emission; reusable
+```
+
+String input has the same `plan(text)?` entry. Existing `compile` entry points
+compose planning and generation. `parse` checks the definition model without
+emitting storage code; it is not a promise that every output supports every
+contract. Property validators are checked there, independently of output choice.
+
+An output plan owns the checked definitions and immutable structured projections,
+not pre-rendered Rust strings. It resolves operation-to-format indices, builder
+result inference and naming, alternate-layout constraints, text schemas and
+dispatch, and supported scalar evaluator instances/property bindings. Each
+alternate is prepared once and shared by text and validation emission; its
+parser receives the actual opcode separately from the shared layout.
+
+Generation consumes those plans without source text or fallible definition
+checking. Filesystem writes, rustfmt failures and integration with the consuming
+Rust crate remain separate artifact-boundary concerns. No general Rust AST,
+plugin framework or additional runtime descriptor is introduced.
+
+## Definition compiler organization
+
+- `syntax/lexer.rs` produces one lookahead token at a time, borrowing names and
+  numbers and decoding strings once. Compound operators are single tokens.
+- `syntax/parser.rs` uses recursive descent for declarations, signatures,
+  lists, objects and type sets, and precedence climbing for constraints.
+  A named parsing context distinguishes values, result types and constraints;
+  nested syntax is bounded, while flat type sets remain n-ary.
+- `syntax/mod.rs` holds the untyped syntax tree and source offsets.
+- `source.rs` resolves file dependencies and maps diagnostics back to files.
+- `model/` owns operations, structs, metadata, effects and ownership contracts.
+  Each contract keeps its checker and related projection together.
+- `types/` groups type declarations, exact sets, encoding, resolution and
+  generated type rules. Small set operations live with the type model.
+- `generate/` prepares output plans and assembles Rust artifacts, constructors and constant evaluation;
+  formatting and direct lowering helpers live in its entry module.
+- `storage/`, `semantic/` and `text/` own their specialized representations
+  and projections. These remain separate because their grammars and consumers
+  differ, not because each helper needs a module.
+
+Parsing establishes syntax, not validity of operation contracts. Type resolution,
+storage compatibility and semantic checks still precede generation. The text
+template parser stays separate because quoted templates have a different grammar.
 
 ## Runtime organization
 
@@ -144,7 +197,7 @@ Ordinary encodings generate a private integer representation, zero initializatio
 Setters preserve neighboring fields and assert that values fit instead of
 silently truncating them. Storage supports `u8` through `u128`. Widths, duplicate
 fields and generated method conflicts are checked before code generation.
-Unlike flag sets, packed records do not expose `union` or `contains`.
+Unlike flag sets, packed structs do not expose `union` or `contains`.
 
 Rust implements semantic wrappers such as `MemFlags::with_alignment`: validating
 power-of-two alignment, converting to log2 and conservatively clamping to the
@@ -364,12 +417,12 @@ Type adapter.
 
 ### Typed operation metadata
 
-Records are shared by instruction properties and build-time metadata. Enums
+Structs are shared by instruction properties and build-time metadata. Enums
 and flags are ordinary field types, not special operation keywords:
 
 ```text
 enum MemoryEffect { variants: [Known(MemoryEffects), Unknown] }
-record OpInfo { traits: OpTraits, memory: MemoryEffect }
+struct OpInfo { traits: OpTraits, memory: MemoryEffect }
 
 op Example() -> () {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ, WRITE]) },
@@ -379,16 +432,16 @@ op Example() -> () {
 
 The generic value checker resolves each field against its declared type. It
 checks enum variants and their payloads, flags membership and duplicates,
-nested records, optional values (`none` / `some(value)`), integer ranges, and
-required fields. A record body consists directly of `name: Type` fields, in
-declaration order. Every field must be supplied when constructing a record,
-including optional fields (use `none` explicitly). Records have no defaults
-and do not generate Rust `Default` implementations. Nested record and enum
+nested structs, optional values (`none` / `some(value)`), integer ranges, and
+required fields. A struct body consists directly of `name: Type` fields, in
+declaration order. Every field must be supplied when constructing a struct,
+including optional fields (use `none` explicitly). Structs have no defaults
+and do not generate Rust `Default` implementations. Nested struct and enum
 values are checked recursively; inline recursive types are rejected.
 There is no separate metadata schema or runtime attribute dictionary.
 
-Each compilation unit uses one metadata record type, selected by its operations'
-`meta: RecordName { ... }` values. That record may contain arbitrary declared
+Each compilation unit uses one metadata struct type, selected by its operations'
+`meta: StructName { ... }` values. That struct may contain arbitrary declared
 fields; it need not be named `OpInfo`. MIR stores it inline in each static
 `OpSpec`, and `Opcode::meta()` borrows that value. LIR emits its own typed
 `GenericOpcode::meta()` table. Neither stores metadata on each instruction.
@@ -396,9 +449,10 @@ fields; it need not be named `OpInfo`. MIR stores it inline in each static
 The operation-contract adapter interprets fields *typed* `OpTraits` and
 `MemoryEffect`, regardless of field names; more than one field of either type
 is ambiguous and rejected. Other fields are just typed data. Semantic laws,
-control interfaces and access contracts populate inferred facts before final
-record checking. A declared access must not duplicate an explicit memory
-summary. If a memory field exists, an unmodeled operation must supply it. A record without a memory contract is conservatively unknown.
+control contracts populate inferred facts before final struct checking. Pure
+interface expressions may supply constant metadata fields explicitly. If a memory
+field exists, an unmodeled operation must supply it. A struct without a memory
+contract is conservatively unknown.
 Missing operation traits mean no additional declared traits, not inferred purity.
 
 The former top-level `traits` / `memory` entries and named `effect`
@@ -419,7 +473,7 @@ copying their constant names into a second definition whitelist.
 ## Operation signatures
 
 ```text
-record Binary {
+struct Binary {
     args: values(2),
 }
 
@@ -438,23 +492,79 @@ op ExtendU<T: Integer | BOOL | vectors(BOOL)>(arg: T) -> (result: shape(T, Integ
     }
 
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
-    meta: OpInfo { traits: [MAY_TRAP] },
+    meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
-    access: read(ptr, offset),
+    implements: [ReadAccess(ptr, i64(offset), result_type(0), flags)],
     }
 ```
 
-`access: read(ptr, offset)` describes a complete ordinary read. Its unique result
-supplies the access type. `access: write(ptr, offset, value)` obtains the access
-type from the stored value. These declarations derive `READ`/`WRITE`; a second
-`memory` declaration is rejected. The address must be a `PTR` operand, and the
-offset must be a signed or unsigned 32-bit property. Packed layouts already
-require at most one `MemFlags` source, so flags need not be repeated. No flags
-means ordinary unaligned, nonvolatile access. Operations with multiple or masked
-accesses currently keep conservative effects rather than pretending that a
-single scalar projection fully describes them.
+### Typed query interfaces
+
+An `interface` declares query data, not instruction storage. Pure `fn` definitions
+assemble that data from explicitly bound logical parameters. These are ordinary
+library names: the generator has no `read/write` parser, pointer-field convention,
+implicit flags lookup, or special memory-access result rule.
+
+```text
+interface MemoryAccess {
+    ptr: Value(PTR),
+    offset: i64,
+    ty: Type,
+    stored: optional(Value),
+    flags: MemFlags,
+    effects: MemoryEffect,
+}
+
+fn ReadAccess(ptr: Value(PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
+    value: MemoryAccess {
+        ptr: ptr, offset: offset, ty: ty, stored: none, flags: flags,
+        effects: Known([READ]),
+    },
+}
+```
+
+`Value(PTR)` is an SSA-reference refinement, checked against the operation
+signature at definition time and erased to `Value` in Rust. `Value` accepts any
+SSA type; `Type` denotes an IR type. Interface fields can use declared structs,
+enums and flags, `optional(T)`, and `array(T, N)` (up to 255 elements). Arrays
+generate inline Rust arrays, not `Vec`. All fields are required. The data
+declaration keyword is `struct`; the former `record` spelling is rejected.
+
+`implements: [ReadAccess(...)]` expands a checked helper. Direct interface
+constructors are also supported. Each operation may implement multiple different
+interfaces, but may not implement the same one twice. A helper may call another
+helper, including a forward declaration. Every body is checked even when unused;
+recursive functions and recursive inline interface types are rejected. Function
+parameters are immutable, nongeneric values, with one declared return type.
+
+Projection expressions support parameter references, typed struct/enum
+constructors, flags, option constructors, fixed arrays, `field(value, name)`,
+`type(value)`, `result_type(index)` and explicit lossless integer conversions.
+Result indices are checked against fixed operation signatures; there is no
+single-result restriction. Narrowing conversions are rejected. This is a
+restricted pure expression language, not arbitrary Rust or a runtime interpreter.
+
+Metadata can explicitly refer to a bound interface, for example
+`memory: field(MemoryAccess, effects)`. The selected expression must reduce to
+constant declaration data. Operand- or result-dependent metadata is rejected.
+The READ/WRITE mapping lives in the helper definitions, not in the generator.
+Missing interfaces never imply purity. These declarations are trusted contracts,
+not proofs that the declared effects agree with executable semantics.
+
+Generation emits an interface struct and an `InstructionQuery` implementation
+with direct opcode dispatch. Consumers call
+`view.query::<MemoryAccess>(dfg, results)`; unsupported opcodes or unavailable
+result data return `None`. The queries do not revalidate MIR types and add no
+fields to stored instructions. MIR's `memory::Access` re-exports the generated
+query data, while bounds/provenance analysis remains ordinary Rust.
+
+This initial interface emitter targets packed MIR. Operand-array output rejects
+operation interface bindings at plan time. Control/ownership contracts, the
+constraint expression checker, and storage's existing flags classification have
+not yet been migrated to this mechanism. Multiple/masked accesses retain
+conservative effects until their runtime consumers support appropriate queries.
 
 Ownership transfer is attached to the logical parameter:
 
@@ -482,7 +592,7 @@ generated representation; anonymous results have no implicit names or aliases.
 Generic variables such as `T` are scoped to that operation; their first direct
 occurrence binds the type. Derived types use `element(T)`, `vector(T)` or
 `shape(T, Integer)`. Relations refer to operand/result names, not numeric slots.
-There are no separate `types` records or references to named type schemes.
+There are no separate `types` structs or references to named type schemes.
 
 An `@` parameter is a property, not an SSA use: `@offset: u32` and
 `@flags: MemFlags` are stored values, while `ptr: PTR` is an SSA value with a
@@ -494,31 +604,31 @@ variable-length `args: values` group and `signature: sig_id`. Direct calls use
 `signature: function(func_id)` to identify the callee's signature. The source of
 dynamic result types is explicit, not inferred from the opcode's name.
 
-A single `record Name { field: Type, ... }` declaration describes both plain
+A single `struct Name { field: Type, ... }` declaration describes both plain
 structured data and instruction storage. `storage: Name { ... }` selects its
 instruction use; there is no separate `format` declaration. The generator
-derives opcode discrimination from the operations using the record: a single
-operation has a fixed opcode; a shared record has a generated opcode parameter.
-Neither form adds a field to the ordinary Rust record when it is also used as
+derives opcode discrimination from the operations using the struct: a single
+operation has a fixed opcode; a shared struct has a generated opcode parameter.
+Neither form adds a field to the ordinary Rust struct when it is also used as
 a nested property or metadata.
 
 The mapping connects logical parameters to generated construction/view fields.
 Every declared field is mapped; fixed groups use `[lhs, rhs]`. The generated
 builder supplies any dynamic opcode. Variadic groups use `ValueList` in the
 schema, but become ordinary slices in views, never a mutable Value-list pool.
-Only byte properties use `pool(bytes)`; records such as `PtrIndexImm` and
+Only byte properties use `pool(bytes)`; structs such as `PtrIndexImm` and
 `VectorMemOptions` bind directly. Branch tables use `table(cases, default)`,
 with the default destination last.
 
 Record names and fields belong to definitions. Generated storage extracts Value
 and optional(Value) members as auxiliary operands and stores only non-SSA fields
-and presence bits. Adding a record operand needs no DFG visitor or mutation
+and presence bits. Adding a struct operand needs no DFG visitor or mutation
 adapter. Built-in format field contracts remain checked because hand-written
 lowering consumers destructure their generated, typed views.
 
 The definition compiler checks references, field coverage, type variables,
 arities, constraints, semantic compatibility and generated method names before
-emitting Rust. Definitions may refer to later records.
+emitting Rust. Definitions may refer to later structs.
 A separate `layout Name { ... }` configures storage-specific projections without
 redeclaring fields: MIR predicated alternatives select canonical formats;
 LIR may override view/accessor names. LIR operand counts follow required and
@@ -588,7 +698,7 @@ constraints: [
 ]
 ```
 
-Expressions reference logical parameters and record fields, not physical pool
+Expressions reference logical parameters and struct fields, not physical pool
 IDs or layout names. The existing storage projection resolves those references.
 The language provides Boolean logic (`!`, `&&`, `||`), comparisons, checked
 integer arithmetic (`+`, `-`, `*`), comparison-enum literals such as `IntCC.Eq`,
@@ -603,8 +713,8 @@ Queries are `type(value)`, `result_type(constant_index)`, `len(sequence)`,
 `is_vector(type)` and `is_fixed(type)` (a fixed-width vector).
 Lane counts and byte sizes are minima for scalable types. A target-dependent
 byte size is an evaluation error. Result indices must refer to declared fixed
-results. Enum literals are checked against the comparison definitions; record
-fields against the record definitions. Unsupported property kinds and optional
+results. Enum literals are checked against the comparison definitions; struct
+fields against the struct definitions. Unsupported property kinds and optional
 fields are rejected instead of guessed or silently coerced.
 
 `require(predicate, "diagnostic")` supplies an optional diagnostic; a bare
@@ -680,7 +790,7 @@ mapping, independently of the text projection.
 Pool-backed and fixed-length-list operations use the same generated builders:
 `vconst(bytes: Vec<u8>, ty: Type)`, `ptr_index(ptr, index, imm: PtrIndexImm)` and
 `gather(ptr, index, mem: VectorMemOptions, ty: Type)`. Packing interns byte properties
-through `ConstantPoolId::insert`; record properties are stored inline. Contextual helpers
+through `ConstantPoolId::insert`; struct properties are stored inline. Contextual helpers
 remain for variadic groups, CFG destinations and signature-selected results.
 They provide higher-level slices and blocks while installed operands occupy one
 flat range. Generated builders compute result types without validating the type
@@ -707,7 +817,7 @@ The template generates both the parser and canonical printer at build time;
 there is no runtime template interpreter. Without an explicit template, logical
 parameters retain their declaration order.
 
-- `{field}` selects a logical parameter; `{record.field}` selects a record leaf.
+- `{field}` selects a logical parameter; `{struct.field}` selects a struct leaf.
 - `{kind} {lhs}, {rhs}` spells a comparison such as `eq v0, v1`.
 - `offset={offset}` is required even when the offset is zero.
 - `[, mask={mem.mask}]` is optional only because the field is an optional SSA
@@ -764,7 +874,7 @@ the referenced function's signature before its declaration. Later declarations
 must agree, and unresolved names are errors, not implicit imports. Function names
 are first parsed as temporary text references; registration happens only after
 the argument list and complete signature have been read. Every created Function
-therefore has a valid signature ID. Symbol records do not duplicate the signature
+therefore has a valid signature ID. Symbol structs do not duplicate the signature
 or represent a signature-unknown state. Standalone FuncId atoms likewise carry a
 signature, for example `foo : (i32) -> i32`; invoke syntax places that signature
 after the arguments. Finalizing function IDs
@@ -928,7 +1038,7 @@ one flat operand buffer; an installed instruction holds an arena range instead.
 Both use the same fields, group metadata and view projection. There is no owned
 instruction-shape enum or per-variant draft-to-storage conversion.
 
-Fixed and variadic operands, successor arguments and record inputs (mask/EVL)
+Fixed and variadic operands, successor arguments and struct inputs (mask/EVL)
 are flattened by the generated constructors. Installation moves fields, copies
 the flat operands into the arena and links their uses. `dfg.draft(inst)` snapshots
 fields and operands without decoding/reconstructing instruction variants.

@@ -1,7 +1,7 @@
 // ----- incomplete-or-ambiguous-alternates-return-definition-errors-1
 // run: opgen-error
 // check: text projection does not consume `tag`
-record Pair {
+struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: T, right: T) -> (result: T) {
@@ -10,7 +10,7 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
     storage: Pair { inputs: [left, right] },
 }
 
-record Extended {
+struct Extended {
     inputs: ValueList,
     tag: u32,
 }
@@ -22,7 +22,7 @@ layout Extended {
 // ----- incomplete-or-ambiguous-alternates-return-definition-errors-2
 // run: opgen-error
 // check: optional named fields require optional(Value)
-record Pair {
+struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: T, right: T) -> (result: T) {
@@ -31,7 +31,7 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
     storage: Pair { inputs: [left, right] },
 }
 
-record Extended {
+struct Extended {
     inputs: ValueList,
     tag: u32,
 }
@@ -43,7 +43,7 @@ layout Extended {
 // ----- incomplete-or-ambiguous-alternates-return-definition-errors-3
 // run: opgen-error
 // check: optional named fields require optional(Value)
-record Pair {
+struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: T, right: T) -> (result: T) {
@@ -52,7 +52,7 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
     storage: Pair { inputs: [left, right] },
 }
 
-record Extended {
+struct Extended {
     inputs: ValueList,
     tag: u32,
 }
@@ -64,7 +64,7 @@ layout Extended {
 // ----- incomplete-or-ambiguous-alternates-return-definition-errors-4
 // run: opgen-error
 // check: multiple text alternatives need an explicit discriminator
-record Pair {
+struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: T, right: T) -> (result: T) {
@@ -73,7 +73,7 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
     storage: Pair { inputs: [left, right] },
 }
 
-record Extended {
+struct Extended {
     inputs: ValueList,
     tag: u32,
 }
@@ -81,7 +81,7 @@ layout Extended {
     format: arity(inputs, [Pair]),
     text: "{inputs}, tag={tag}",
 }
-record Another {
+struct Another {
     inputs: ValueList,
     tag: u32,
 }
@@ -93,7 +93,7 @@ layout Another {
 // ----- unsupported-alternate-storage-groups-fail-before-rust-emission-1
 // run: opgen-error
 // check: alternate text fields must use named storage types
-record Pair {
+struct Pair {
     inputs: values(2),
 }
 op Difference<T: Integer>(left: T, right: T) -> (result: T) {
@@ -102,7 +102,7 @@ op Difference<T: Integer>(left: T, right: T) -> (result: T) {
     storage: Pair { inputs: [left, right] },
 }
 
-record Extended {
+struct Extended {
     inputs: values(2),
     tag: u32,
 }

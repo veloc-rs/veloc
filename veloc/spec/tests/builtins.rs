@@ -3,7 +3,7 @@ mod common;
 use common::{BUILTINS, compile};
 
 const ADD: &str = r#"
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: Bits>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -55,7 +55,7 @@ fn class_unions_drive_both_generated_contracts_and_semantic_checks() {
 #[test]
 fn class_domains_check_derived_shapes_without_canonical_class_names() {
     let source = r#"
-        record Unary { arg: Value }
+        struct Unary { arg: Value }
         class Lanes { members: [ScalarInteger] }
         op Element<T: Lanes>(arg: T) -> (result: element(T)) {
     meta: OpInfo { memory: Known([]) },
@@ -69,7 +69,7 @@ fn class_domains_check_derived_shapes_without_canonical_class_names() {
 fn floating_text_uses_domains_instead_of_class_name_allowlists() {
     let source = r#"
         class Floating { members: [ScalarFloat] }
-        record Literal { value: Float }
+        struct Literal { value: Float }
         op Literal(@value: Float) -> (result: Floating) {
     meta: OpInfo { memory: Known([]) },
             mnemonic: "literal", storage: Literal { value: value },

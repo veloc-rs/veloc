@@ -3,16 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::Error;
-use crate::builtins::Builtins;
+use crate::model::builtins::Builtins;
+use crate::model::records::{PropertyType, RecordDef};
 use crate::model::{Fields, identifier, list};
-use crate::records::{PropertyType, RecordDef};
 use crate::syntax::{Kind, Node, Record};
 
 pub(crate) fn fits_number(ty: &str, n: u32) -> bool {
     match ty {
         "u8" => u8::try_from(n).is_ok(),
         "i32" => i32::try_from(n).is_ok(),
-        "u32" | "u64" => true,
+        "u32" | "u64" | "i64" => true,
         _ => false,
     }
 }
@@ -35,7 +35,7 @@ impl Value {
             Self::Number(n) => n.to_string(),
             Self::Bool(b) => b.to_string(),
             Self::Flags(ty, members) => {
-                crate::builtin_gen::flag_set(&format!("{prefix}{ty}"), members)
+                crate::model::builtins::flag_set(&format!("{prefix}{ty}"), members)
             }
             Self::Record(ty, fields) => format!(
                 "{prefix}{ty} {{ {} }}",
@@ -67,26 +67,26 @@ impl Value {
 }
 
 #[derive(Debug)]
-struct EnumDef {
-    name: String,
-    variants: Vec<(String, Vec<PropertyType>)>,
+pub(crate) struct EnumDef {
+    pub name: String,
+    pub variants: Vec<(String, Vec<PropertyType>)>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Types {
     pub records: Vec<RecordDef>,
-    enums: Vec<EnumDef>,
+    pub enums: Vec<EnumDef>,
 }
 
 impl Types {
     pub fn compile(declarations: &[Record], source: &str) -> Result<Self, Error> {
-        let records = crate::records::compile(declarations, source)?;
+        let records = crate::model::records::compile(declarations, source)?;
         let mut enums = Vec::new();
         let mut names = BTreeSet::new();
         for decl in declarations.iter().filter(|d| {
             matches!(
                 d.kind.as_str(),
-                "record" | "enum" | "flags" | "encoding" | "comparison"
+                "struct" | "enum" | "flags" | "encoding" | "comparison"
             )
         }) {
             if !names.insert(&decl.name) {
@@ -120,7 +120,7 @@ impl Types {
                 }
                 let args = args
                     .into_iter()
-                    .map(|n| crate::records::field_type(declarations, source, n))
+                    .map(|n| crate::model::records::field_type(declarations, source, n))
                     .collect::<Result<_, _>>()?;
                 variants.push((variant, args));
             }
@@ -190,7 +190,7 @@ impl Types {
             return Err(Error::at(
                 source,
                 node.offset,
-                format!("unknown metadata record `{ty}`"),
+                format!("unknown metadata struct `{ty}`"),
             ));
         }
         if self.contains_value(ty) {
@@ -355,7 +355,7 @@ impl Types {
             .filter(|r| !layouts.contains(&r.name) || referenced.contains(r.name.as_str()))
             .cloned()
             .collect::<Vec<_>>();
-        let mut out = crate::records::generate(&records);
+        let mut out = crate::model::records::generate(&records);
         for en in &self.enums {
             writeln!(
                 out,

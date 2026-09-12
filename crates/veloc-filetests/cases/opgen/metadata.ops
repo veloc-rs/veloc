@@ -7,8 +7,8 @@
 // check: crate::inst::Policy::Prefer(crate::inst::Features::FAST.union(crate::inst::Features::SMALL))
 flags Features { storage: u8, members: [FAST(0), SMALL(1)], separator: ", " }
 enum Policy { variants: [Automatic, Prefer(Features)] }
-record Tuning { policy: Policy, budget: u32 }
-record Work {  }
+struct Tuning { policy: Policy, budget: u32 }
+struct Work {  }
 op Work() -> () {
     meta: Tuning { policy: Prefer([SMALL, FAST]), budget: 8 },
     mnemonic: "work", storage: Work {}
@@ -18,10 +18,10 @@ op Work() -> () {
 // run: opgen
 // check: crate::inst::Settings { enabled: true, mask: crate::inst::Features::FAST }
 flags Features { storage: u8, members: [FAST(0)], separator: ", " }
-record Settings { enabled: bool, mask: Features }
+struct Settings { enabled: bool, mask: Features }
 enum Policy { variants: [Automatic, Configured(Settings)] }
-record Tuning { policy: Policy, fallback: optional(Policy) }
-record Work {  }
+struct Tuning { policy: Policy, fallback: optional(Policy) }
+struct Work {  }
 op Work() -> () {
     meta: Tuning { policy: Configured(Settings { enabled: true, mask: [FAST] }), fallback: none }, mnemonic: "work", storage: Work {}
 }
@@ -29,40 +29,40 @@ op Work() -> () {
 // ----- unknown-metadata-field
 // run: opgen-error
 // check: unknown field `budegt`
-record Tuning { budget: u8 }
-record Work {  }
+struct Tuning { budget: u8 }
+struct Work {  }
 op Work() -> () { meta: Tuning { budegt: 8 }, mnemonic: "work", storage: Work {} }
 
 // ----- missing-metadata-field
 // run: opgen-error
 // check: missing field `budget`
-record Tuning { budget: u8 }
-record Work {  }
+struct Tuning { budget: u8 }
+struct Work {  }
 op Work() -> () { meta: Tuning {}, mnemonic: "work", storage: Work {} }
 
 // ----- wrong-enum-argument
 // run: opgen-error
 // check: expected value of type u8
 enum Policy { variants: [Fixed(u8)] }
-record Tuning { policy: Policy }
-record Work {  }
+struct Tuning { policy: Policy }
+struct Work {  }
 op Work() -> () { meta: Tuning { policy: Fixed(256) }, mnemonic: "work", storage: Work {} }
 
 // ----- recursive-inline-data
 // run: opgen-error
 // check: recursive inline data type
-record Cycle { next: optional(Choice) }
+struct Cycle { next: optional(Choice) }
 enum Choice { variants: [End, Link(Cycle)] }
 
 // ----- metadata-cannot-contain-ssa-values
 // run: opgen-error
 // check: metadata cannot contain SSA Value fields
-record Tuning { input: Value }
-record Work {  }
+struct Tuning { input: Value }
+struct Work {  }
 op Work() -> () { meta: Tuning { input: 0 }, mnemonic: "work", storage: Work {} }
 
 // ----- old-traits-entry-is-rejected
 // run: opgen-error
 // check: unknown field `traits`
-record Work {  }
+struct Work {  }
 op Work() -> () { meta: OpInfo { memory: Unknown }, traits: [], mnemonic: "work", storage: Work {} }

@@ -1,7 +1,7 @@
 // ----- constant-folding-preserves-precedence-and-short-circuiting-1
 // run: opgen-error
 // check: constraint is always false: ((1 + (2 * 3)) == 9)
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -11,7 +11,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-1
 // run: opgen-error
 // check: constraint expects Int, got Bool
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -21,7 +21,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-2
 // run: opgen-error
 // check: constraint expects Int, got Bool
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -31,7 +31,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-3
 // run: opgen-error
 // check: unknown constraint name unknown
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -40,8 +40,8 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-4
 // run: opgen-error
-// check: field access requires a record
-record Custom { bits: u64, yes: bool }
+// check: field access requires a struct
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -51,7 +51,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-5
 // run: opgen-error
 // check: all expects a finite sequence
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -61,7 +61,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-6
 // run: opgen-error
 // check: all expects a sequence and |name| predicate
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -71,7 +71,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-7
 // run: opgen-error
 // check: len expects a sequence
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -81,7 +81,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-8
 // run: opgen-error
 // check: type expects an SSA value or typed property
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -91,7 +91,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-9
 // run: opgen-error
 // check: result_type index is out of bounds
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -101,7 +101,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-10
 // run: opgen-error
 // check: unknown comparison variant IntCC.Unknown
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -111,7 +111,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-11
 // run: opgen-error
 // check: constraint expects Enum("IntCC"), got Enum("FloatCC")
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -121,7 +121,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-12
 // run: opgen-error
 // check: unknown constraint operation recurse
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -131,7 +131,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-13
 // run: opgen-error
 // check: constraint expects Int, got Bool
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -141,7 +141,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-14
 // run: opgen-error
 // check: require expects a predicate and a diagnostic string
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -151,7 +151,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-15
 // run: opgen-error
 // check: unknown constraint name VectorConstant
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -161,7 +161,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-16
 // run: opgen-error
 // check: unknown constraint operation nonzero
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -171,7 +171,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-17
 // run: opgen-error
 // check: constraint arithmetic overflow
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -181,7 +181,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- ill-typed-or-unbounded-expressions-are-definition-errors-18
 // run: opgen-error
 // check: unknown constraint name missing
-record Custom { bits: u64, yes: bool }
+struct Custom { bits: u64, yes: bool }
 op Example(@number: u64, @flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
@@ -191,7 +191,7 @@ op Example(@number: u64, @flag: bool) -> ScalarInteger {
 // ----- pool-properties-and-lexical-binders-are-generic-1
 // run: opgen-error
 // check: constraint expects Bool, got Int
-record Custom { pool_id: ConstantPoolId }
+struct Custom { pool_id: ConstantPoolId }
 op Example(@data: Bytes) -> Vector {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
@@ -202,7 +202,7 @@ op Example(@data: Bytes) -> Vector {
 // ----- pool-properties-and-lexical-binders-are-generic-2
 // run: opgen-error
 // check: result_type index is out of bounds
-record Custom { pool_id: ConstantPoolId }
+struct Custom { pool_id: ConstantPoolId }
 op Example(@data: Bytes) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
@@ -210,15 +210,15 @@ op Example(@data: Bytes) -> () {
     constraints: [len(data) == min_bytes(result_type(0)), all(data, |i| i < 2 * lanes(result_type(0)))]
 }
 
-// ----- record-access-uses-logical-names-not-rule-or-storage-names-1
+// ----- struct-access-uses-logical-names-not-rule-or-storage-names-1
 // run: opgen-error
 // check: unknown field PtrIndexImm.unknown
-record PtrIndexImm {
+struct PtrIndexImm {
     offset: i32,
     scale: u32,
 }
 
-record PtrIndex {
+struct PtrIndex {
     ptr: Value,
     index: Value,
     imm_id: PtrIndexImm,
@@ -236,7 +236,7 @@ op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
 // ----- type-queries-use-static-signatures-and-operand-positions-1
 // run: opgen-error
 // check: constraint is always false: is_ptr(type(input))
-record Unary { arg: Value }
+struct Unary { arg: Value }
 op Example<T: Integer>(input: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Unary { arg: input },

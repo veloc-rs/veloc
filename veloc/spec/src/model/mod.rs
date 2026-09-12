@@ -1,31 +1,50 @@
+//! Checked operation contracts, independent of runtime IR containers.
+pub(crate) mod builtins;
+pub(crate) mod comparisons;
+pub(crate) mod constraints;
+pub(crate) mod control;
+pub(crate) mod data;
+pub(crate) mod interfaces;
+pub(crate) mod metadata;
+pub(crate) mod ownership;
+pub(crate) mod records;
 use std::collections::{BTreeMap, BTreeSet};
 
 use veloc_semantics::{BvConst, BvOp};
 
-use crate::builtins::Builtins;
+use crate::model::builtins::Builtins;
 use crate::syntax::{Kind, Node, Record};
-use crate::type_set::TypeSet;
+use crate::types::TypeSet;
 use crate::types::Types;
 use crate::{Error, storage};
 
-#[path = "operation.rs"]
 mod operation;
 
 /// Checked operation definitions, independent of the runtime MIR.
 pub struct Definitions {
-    pub(crate) encoding: crate::encoding::TypeEncoding,
+    pub(crate) encoding: crate::types::encoding::TypeEncoding,
     pub(crate) builtins: Builtins,
-    pub(crate) data: crate::data::Types,
-    pub(crate) comparisons: Vec<crate::comparisons::Comparison>,
+    pub(crate) data: crate::model::data::Types,
+    pub(crate) comparisons: Vec<crate::model::comparisons::Comparison>,
     pub(crate) types: Types,
     pub(crate) storage: storage::Storage,
     pub(crate) ops: Vec<Op>,
     pub(crate) properties: Vec<Property>,
+    pub(crate) interfaces: interfaces::Library,
+}
+
+/// Shared names available to operation contracts and pure projections.
+#[derive(Clone, Copy)]
+pub(crate) struct Vocabulary<'a> {
+    pub types: &'a Types,
+    pub builtins: &'a Builtins,
+    pub data: &'a data::Types,
 }
 
 pub(crate) struct Property {
+    pub offset: usize,
     pub name: String,
-    pub constraints: Vec<Node>,
+    pub constraints: Vec<constraints::Constraint>,
 }
 
 impl Definitions {
@@ -107,18 +126,18 @@ pub(crate) struct Op {
     pub offset: usize,
     pub name: String,
     pub mnemonic: String,
-    pub meta: crate::data::Value,
+    pub meta: crate::model::data::Value,
     pub format: String,
     pub signature: TypeDef,
     pub params: Vec<Param>,
     pub projection: Projection,
     pub signature_source: Option<SignatureSource>,
-    pub control: Option<crate::control::Control>,
+    pub control: Option<crate::model::control::Control>,
     pub text: Option<Node>,
     pub traits: Vec<String>,
-    pub memory: crate::builtins::Effect,
-    pub access: Option<crate::memory::Access>,
-    pub constraints: Vec<crate::constraints::Constraint>,
+    pub memory: crate::model::builtins::Effect,
+    pub interfaces: BTreeMap<String, interfaces::Expr>,
+    pub constraints: Vec<crate::model::constraints::Constraint>,
     pub identity: Option<BvConst>,
     pub absorbing: Option<BvConst>,
     pub semantics: Option<Semantic>,
@@ -229,12 +248,18 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
         }
         identifier(source, record.offset, &record.name)?;
     }
-    let encoding = crate::encoding::TypeEncoding::compile(&records, source)?;
+    let encoding = crate::types::encoding::TypeEncoding::compile(&records, source)?;
     let types = Types::compile(&records, source, &encoding)?;
     let builtins = Builtins::compile(&records, source)?;
-    let comparisons = crate::comparisons::compile(&records, source)?;
-    let data = crate::data::Types::compile(&records, source)?;
+    let comparisons = crate::model::comparisons::compile(&records, source)?;
+    let data = crate::model::data::Types::compile(&records, source)?;
     let storage = storage::compile(&records, source, &data)?;
+    let mut interfaces = interfaces::Library::compile(&records, source, &data, &builtins, &types)?;
+    let vocabulary = Vocabulary {
+        types: &types,
+        builtins: &builtins,
+        data: &data,
+    };
     let mut ops = Vec::new();
     let mut properties = Vec::new();
     for record in records {
@@ -243,22 +268,35 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 if !matches!(record.name.as_str(), "VectorConst" | "Int" | "Float") {
                     return Err(Error::at(source, record.offset, "unknown typed property"));
                 }
+                let offset = record.offset;
                 let name = record.name.clone();
                 let mut fields = Fields::new(source, record);
-                let constraints = list(source, fields.take("constraints")?)?;
+                let nodes = list(source, fields.take("constraints")?)?;
+                let constraints = constraints::check_property(
+                    source,
+                    &name,
+                    nodes,
+                    &storage,
+                    &types,
+                    &comparisons,
+                )?;
                 fields.finish()?;
-                properties.push(Property { name, constraints });
+                properties.push(Property {
+                    offset,
+                    name,
+                    constraints,
+                });
             }
             "op" => ops.push(operation::parse(
                 source,
                 record,
                 &storage,
-                &types,
-                &builtins,
                 &comparisons,
-                &data,
+                vocabulary,
+                &mut interfaces,
             )?),
-            "layout" | "record" | "enum" | "encoding" | "comparison" | "storage" => {}
+            "layout" | "struct" | "enum" | "encoding" | "comparison" | "storage" | "interface"
+            | "fn" => {}
             kind if Builtins::is_definition(kind) => {}
             kind if Types::is_definition(kind) => {}
             _ => {
@@ -279,6 +317,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
         storage,
         ops,
         properties,
+        interfaces,
     };
     definitions.validate(source)?;
     Ok(definitions)
@@ -289,13 +328,13 @@ impl Definitions {
         let mut mnemonics = BTreeSet::new();
         let mut methods = BTreeMap::new();
         for op in &self.ops {
-            if let crate::data::Value::Record(ty, _) = &op.meta
-                && Some(ty.as_str()) != crate::metadata::record_type(&self.ops)
+            if let crate::model::data::Value::Record(ty, _) = &op.meta
+                && Some(ty.as_str()) != crate::model::metadata::record_type(&self.ops)
             {
                 return Err(Error::at(
                     source,
                     op.offset,
-                    "all operations in a unit must use the same metadata record type",
+                    "all operations in a unit must use the same metadata struct type",
                 ));
             }
             let fail = |message| Error::at(source, op.offset, message);
@@ -546,7 +585,7 @@ mod tests {
     use crate::fixtures::parse;
 
     const SOURCE: &str = r#"
-        record Binary {
+        struct Binary {
             args: values(2),
         }
         op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {

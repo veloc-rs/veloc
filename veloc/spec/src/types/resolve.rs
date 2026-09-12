@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 
 use crate::Error;
-use crate::encoding::TypeEncoding;
 use crate::model::Fields;
 use crate::syntax::{Kind, Node, Record};
-use crate::type_set::TypeSet;
+use crate::types::TypeSet;
+use crate::types::encoding::TypeEncoding;
 use crate::types::{Scalar, ScalarKind, Vector};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

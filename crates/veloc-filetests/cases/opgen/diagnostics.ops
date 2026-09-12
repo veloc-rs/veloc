@@ -1,7 +1,7 @@
 // ----- unknown-field
 // run: opgen-error
 // check: unknown field
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -13,7 +13,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- duplicate-field
 // run: opgen-error
 // check: duplicate field
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -25,7 +25,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- unknown-format
 // run: opgen-error
 // check: unknown
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -37,7 +37,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- invalid-identifier
 // run: opgen-error
 // check: invalid generated identifier
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -49,7 +49,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- unbound-variable
 // run: opgen-error
 // check: unbound type variable `U`
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: U) -> (result: T) {
@@ -61,7 +61,7 @@ op IAdd<T: Integer>(lhs: T, rhs: U) -> (result: T) {
 // ----- unbound-storage
 // run: opgen-error
 // check: missing
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -73,7 +73,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- unbound-semantics
 // run: opgen-error
 // check: missing
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -85,7 +85,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- storage-arity
 // run: opgen-error
 // check: storage field `args` requires 2 arguments
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -97,7 +97,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- unknown-primitive
 // run: opgen-error
 // check: unknown
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -109,7 +109,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- wrong-primitive-type
 // run: opgen-error
 // check: floating-point
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Float>(lhs: T, rhs: T) -> (result: T) {
@@ -121,7 +121,7 @@ op IAdd<T: Float>(lhs: T, rhs: T) -> (result: T) {
 // ----- primitive-arity
 // run: opgen-error
 // check: bv.neg expects 1 arguments, got 2
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -133,7 +133,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- unknown-memory
 // run: opgen-error
 // check: no memory effects
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -145,7 +145,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- relation-operand
 // run: opgen-error
 // check: missing
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -157,7 +157,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- unknown-relation
 // run: opgen-error
 // check: type relation
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -169,7 +169,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- missing-colon
 // run: opgen-error
 // check: expected `:`
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -181,7 +181,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- string-newline
 // run: opgen-error
 // check: newline in string
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -193,7 +193,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- out-of-range
 // run: opgen-error
 // check: out of range
-record Binary {
+struct Binary {
     args: values(99999999999999),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
@@ -205,7 +205,7 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 // ----- duplicate-mnemonic
 // run: opgen-error
 // check: duplicate mnemonic
-record Binary {
+struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {

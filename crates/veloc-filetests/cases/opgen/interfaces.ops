@@ -1,0 +1,143 @@
+// ----- arbitrary-interface-and-helper-names
+// run: opgen
+// check: pub struct Summary
+// check: pub count: u32
+// check: impl InstructionQuery for Summary
+// check: count: *_f0
+// check: MemoryEffects::READ
+interface Summary { count: u32, effects: MemoryEffect }
+fn Describe(n: u32) -> Summary {
+    value: Summary { count: n, effects: Known([READ]) },
+}
+struct Data { n: u32 }
+op Example(@size: u32) -> I32 {
+    meta: OpInfo { memory: field(Summary, effects) },
+    mnemonic: "example", storage: Data { n: size },
+    implements: [Describe(size)],
+}
+
+// ----- refined-ssa-reference
+// run: opgen-error
+// check: projection type mismatch
+interface Address { base: Value(PTR) }
+struct Data { base: Value }
+op Example(base: I32) -> I32 {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "example", storage: Data { base: base },
+    implements: [Address { base: base }],
+}
+
+// ----- result-index-is-explicit
+// run: opgen-error
+// check: result_type index is out of range
+interface Answer { ty: Type }
+struct Data {}
+op Example() -> I32 {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data {},
+    implements: [Answer { ty: result_type(1) }],
+}
+
+// ----- multiple-results-need-no-special-rule
+// run: opgen
+// check: results.get(1)?
+interface Answer { ty: Type }
+struct Data {}
+op Example() -> (I32, I64) {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data {},
+    implements: [Answer { ty: result_type(1) }],
+}
+
+// ----- runtime-data-is-not-static-metadata
+// run: opgen-error
+// check: metadata projection must be compile-time constant
+interface Summary { count: u32 }
+struct Info { count: u32 }
+struct Data { count: u32 }
+op Example(@count: u32) -> I32 {
+    meta: Info { count: field(Summary, count) },
+    mnemonic: "example", storage: Data { count: count },
+    implements: [Summary { count: count }],
+}
+
+// ----- forward-helpers-and-arrays
+// run: opgen
+// check: pub items: [Item; 2]
+// check: Item { n: *_f0 }
+struct Item { n: u32 }
+interface Pair { items: array(Item, 2) }
+fn Describe(n: u32) -> Pair { value: Pair { items: [Make(n), Make(n)] } }
+fn Make(n: u32) -> Item { value: Item { n: n } }
+struct Data { n: u32 }
+op Example(@n: u32) -> I32 {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
+    implements: [Describe(n)],
+}
+
+// ----- recursive-helpers-even-if-unused
+// run: opgen-error
+// check: recursive projection functions are not supported
+fn First(n: u32) -> u32 { value: Second(n) }
+fn Second(n: u32) -> u32 { value: First(n) }
+
+// ----- a-storage-struct-can-also-be-query-data
+// run: opgen
+// check: pub struct Data
+// check: pub struct Summary
+// check: data: Data { n: *_f0 }
+struct Data { n: u32 }
+interface Summary { data: Data }
+op Example(@n: u32) -> I32 {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
+    implements: [Summary { data: Data { n: n } }],
+}
+
+// ----- unused-function-body-is-checked
+// run: opgen-error
+// check: projection type mismatch
+fn Bad(n: bool) -> u32 { value: n }
+
+// ----- recursive-query-data
+// run: opgen-error
+// check: recursive inline interface type
+interface First { other: optional(Second) }
+interface Second { other: First }
+
+// ----- explicit-lossless-conversion
+// run: opgen-error
+// check: projection conversion must be lossless
+fn Narrow(n: u64) -> u32 { value: u32(n) }
+
+// ----- missing-binding
+// run: opgen-error
+// check: projection fields must exactly match the declaration
+interface Summary { count: u32, valid: bool }
+struct Data { n: u32 }
+op Example(@n: u32) -> I32 {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
+    implements: [Summary { count: n }],
+}
+
+// ----- duplicate-interface
+// run: opgen-error
+// check: duplicate interface implementation
+interface Summary { count: u32 }
+struct Data { n: u32 }
+op Example(@n: u32) -> I32 {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example", storage: Data { n: n },
+    implements: [Summary { count: n }, Summary { count: n }],
+}
+
+// ----- old-record-keyword-is-rejected
+// run: opgen-error
+// check: unknown definition kind `record`
+record Legacy {}
+
+// ----- unknown-query-must-not-imply-purity
+// run: opgen-error
+// check: unmodeled operations must declare their memory effect
+interface Summary { count: u32 }
+struct Data { n: u32 }
+op Example(@n: u32) -> I32 {
+    meta: OpInfo {}, mnemonic: "example", storage: Data { n: n },
+    implements: [Summary { count: n }],
+}

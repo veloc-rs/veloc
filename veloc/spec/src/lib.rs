@@ -3,36 +3,16 @@
 //! Definitions are checked before Rust generation. This crate does not depend
 //! on a runtime IR; the MIR emitter is one consumer of its definition model.
 
-mod builtin_gen;
-mod builtins;
-mod comparisons;
-mod constraints;
-mod control;
-mod data;
-mod encoding;
-mod evaluate;
-mod format;
 mod generate;
-mod lowering;
-mod memory;
-mod metadata;
 mod model;
-mod ownership;
-mod packing;
-mod records;
 mod semantic;
 mod source;
 mod storage;
 mod syntax;
 mod text;
-mod type_expr;
-mod type_gen;
-mod type_rules;
-mod type_set;
 mod types;
 
-pub use format::format_rust;
-pub use lowering::generate_lowering;
+pub use generate::{Plan, format_rust, generate_lowering};
 pub use model::Definitions;
 pub use source::{Source, SourceError};
 
@@ -83,10 +63,14 @@ pub fn parse(source: &str) -> Result<Definitions, Error> {
     model::parse(source)
 }
 
+/// Prepare all selected-output contracts without emitting Rust.
+pub fn plan(source: &str) -> Result<Plan, Error> {
+    Plan::prepare(parse(source)?, source)
+}
+
 /// Compile checked operations using the declared storage strategy.
 pub fn compile(source: &str) -> Result<Generated, Error> {
-    let definitions = parse(source)?;
-    generate::generate(&definitions, source)
+    Ok(plan(source)?.generate())
 }
 
 #[cfg(test)]
@@ -105,7 +89,7 @@ mod fixtures {
         super::parse(BUILTINS).unwrap().types
     }
 
-    pub fn set(expression: &str) -> type_set::TypeSet {
+    pub fn set(expression: &str) -> types::TypeSet {
         super::parse(&format!(
             "{BUILTINS}\nclass TestSet {{ members: [{expression}] }}"
         ))

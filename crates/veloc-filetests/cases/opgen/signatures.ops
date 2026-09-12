@@ -1,7 +1,7 @@
 // ----- a-fixed-operand-after-a-variadic-group-is-an-explicit-definition-error-1
 // run: opgen-error
 // check: fixed operands must precede variadic operands and successors
-record CallIndirect {
+struct CallIndirect {
     ptr: Value,
     args: ValueList,
     sig_id: SigId,
@@ -17,7 +17,7 @@ op CallIndirect(@sig_id: SigId, args: values, ptr: PTR) -> signature {
 // ----- anonymous-results-have-no-synthetic-names-1
 // run: opgen-error
 // check: type relation references missing operand or result `result`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> Integer {
@@ -29,7 +29,7 @@ where: [wider(left, result)], }
 // ----- anonymous-results-have-no-synthetic-names-2
 // run: opgen-error
 // check: type relation references missing operand or result `result0`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> Integer {
@@ -41,7 +41,7 @@ where: [wider(left, result0)], }
 // ----- bare-result-types-leave-the-operation-body-unconsumed-1
 // run: opgen-error
 // check: expected a name
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) ->  {
@@ -53,7 +53,7 @@ op PairAdd<T: Integer>(left: T, right: T) ->  {
 // ----- bare-result-types-leave-the-operation-body-unconsumed-2
 // run: opgen-error
 // check: expected `,`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (T {
@@ -65,7 +65,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (T {
 // ----- bare-result-types-leave-the-operation-body-unconsumed-3
 // run: opgen-error
 // check: expected `{`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> T, BOOL {
@@ -77,7 +77,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> T, BOOL {
 // ----- bare-result-types-leave-the-operation-body-unconsumed-4
 // run: opgen-error
 // check: expected `,`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (T BOOL) {
@@ -89,7 +89,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (T BOOL) {
 // ----- bare-result-types-leave-the-operation-body-unconsumed-5
 // run: opgen-error
 // check: expected a name
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result:) {
@@ -101,7 +101,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (result:) {
 // ----- bare-result-types-leave-the-operation-body-unconsumed-6
 // run: opgen-error
 // check: expected a result name before ':'
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (shape(T, Integer): T) {
@@ -113,7 +113,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (shape(T, Integer): T) {
 // ----- bare-result-types-leave-the-operation-body-unconsumed-7
 // run: opgen-error
 // check: results cannot be properties
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (@result: T) {
@@ -125,7 +125,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (@result: T) {
 // ----- bare-result-types-leave-the-operation-body-unconsumed-8
 // run: opgen-error
 // check: unknown type pattern
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> ([T]) {
@@ -137,7 +137,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> ([T]) {
 // ----- bare-result-types-leave-the-operation-body-unconsumed-9
 // run: opgen-error
 // check: expected `{`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> result: T {
@@ -149,7 +149,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> result: T {
 // ----- generic-declarations-and-type-domains-are-checked-1
 // run: opgen-error
 // check: duplicate type variable `T`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer, T: Float>(left: T, right: T) -> (result: T) {
@@ -161,7 +161,7 @@ op PairAdd<T: Integer, T: Float>(left: T, right: T) -> (result: T) {
 // ----- generic-declarations-and-type-domains-are-checked-2
 // run: opgen-error
 // check: unknown type or class `Missing`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Missing>(left: T, right: T) -> (result: T) {
@@ -173,7 +173,7 @@ op PairAdd<T: Missing>(left: T, right: T) -> (result: T) {
 // ----- generic-declarations-and-type-domains-are-checked-3
 // run: opgen-error
 // check: unbound type variable `Undeclared`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: Undeclared) -> (result: T) {
@@ -185,7 +185,7 @@ op PairAdd<T: Integer>(left: T, right: Undeclared) -> (result: T) {
 // ----- generic-declarations-and-type-domains-are-checked-4
 // run: opgen-error
 // check: impossible element constraint on type variable `T`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: ScalarInteger>(left: T, right: element(T)) -> (result: T) {
@@ -197,7 +197,7 @@ op PairAdd<T: ScalarInteger>(left: T, right: element(T)) -> (result: T) {
 // ----- generic-declarations-and-type-domains-are-checked-5
 // run: opgen-error
 // check: impossible vector constraint on type variable `T`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Vector>(left: T, right: vector(T)) -> (result: T) {
@@ -209,7 +209,7 @@ op PairAdd<T: Vector>(left: T, right: vector(T)) -> (result: T) {
 // ----- generic-declarations-and-type-domains-are-checked-6
 // run: opgen-error
 // check: impossible shape constraint on type variable `T`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: ScalarInteger>(left: T, right: shape(T, Vector)) -> (result: T) {
@@ -221,7 +221,7 @@ op PairAdd<T: ScalarInteger>(left: T, right: shape(T, Vector)) -> (result: T) {
 // ----- operand-and-result-names-must-be-unique-1
 // run: opgen-error
 // check: duplicate parameter `left`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, left: T) -> (result: T) {
@@ -233,7 +233,7 @@ op PairAdd<T: Integer>(left: T, left: T) -> (result: T) {
 // ----- operand-and-result-names-must-be-unique-2
 // run: opgen-error
 // check: duplicate parameter or result `left`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (left: T) {
@@ -245,7 +245,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (left: T) {
 // ----- operand-and-result-names-must-be-unique-3
 // run: opgen-error
 // check: duplicate parameter or result `result`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T, result: BOOL) {
@@ -257,7 +257,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (result: T, result: BOOL) {
 // ----- operand-and-result-names-must-be-unique-4
 // run: opgen-error
 // check: duplicate parameter `ptr`
-record Load {
+struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
@@ -272,7 +272,7 @@ op Load(ptr: PTR, @ptr: u32, @flags: MemFlags) -> (result: Any) {
 // ----- properties-must-match-their-declared-storage-type-and-role-1
 // run: opgen-error
 // check: parameter `offset` is incompatible with storage field `offset`
-record Load {
+struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
@@ -287,7 +287,7 @@ op Load(ptr: PTR, @offset: i32, @flags: MemFlags) -> (result: Any) {
 // ----- properties-must-match-their-declared-storage-type-and-role-2
 // run: opgen-error
 // check: parameter `flags` is incompatible with storage field `flags`
-record Load {
+struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
@@ -302,7 +302,7 @@ op Load(ptr: PTR, @offset: u32, @flags: bool) -> (result: Any) {
 // ----- properties-must-match-their-declared-storage-type-and-role-3
 // run: opgen-error
 // check: parameter `offset` is incompatible with storage field `offset`
-record Load {
+struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
@@ -317,7 +317,7 @@ op Load(ptr: PTR, offset: I32, @flags: MemFlags) -> (result: Any) {
 // ----- properties-must-match-their-declared-storage-type-and-role-4
 // run: opgen-error
 // check: parameter `ptr` is incompatible with storage field `ptr`
-record Load {
+struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,
@@ -332,7 +332,7 @@ op Load(@ptr: u32, @offset: u32, @flags: MemFlags) -> (result: Any) {
 // ----- properties-must-match-their-declared-storage-type-and-role-5
 // run: opgen-error
 // check: parameter `args` is incompatible with storage field `args`
-record CallIndirect {
+struct CallIndirect {
     ptr: Value,
     args: ValueList,
     sig_id: SigId,
@@ -348,7 +348,7 @@ op CallIndirect(@sig_id: SigId, ptr: PTR, args: successor) -> signature {
 // ----- storage-packing-covers-every-field-and-logical-parameter-once-1
 // run: opgen-error
 // check: missing storage field `args`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
@@ -360,7 +360,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
 // ----- storage-packing-covers-every-field-and-logical-parameter-once-2
 // run: opgen-error
 // check: parameter `left` is stored more than once
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
@@ -372,7 +372,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
 // ----- storage-packing-covers-every-field-and-logical-parameter-once-3
 // run: opgen-error
 // check: unknown parameter `unknown` in storage mapping
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
@@ -384,7 +384,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
 // ----- storage-packing-covers-every-field-and-logical-parameter-once-4
 // run: opgen-error
 // check: unknown storage field `extra` in `Pair`
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
@@ -396,7 +396,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> (result: T) {
 // ----- storage-packing-covers-every-field-and-logical-parameter-once-5
 // run: opgen-error
 // check: parameter `unused` has no storage mapping
-record Pair {
+struct Pair {
     args: values(2),
 }
 op PairAdd<T: Integer>(left: T, right: T, unused: T) -> (result: T) {
@@ -408,7 +408,7 @@ op PairAdd<T: Integer>(left: T, right: T, unused: T) -> (result: T) {
 // ----- storage-packing-covers-every-field-and-logical-parameter-once-6
 // run: opgen-error
 // check: missing storage field `flags`
-record Load {
+struct Load {
     ptr: Value,
     offset: u32,
     flags: MemFlags,

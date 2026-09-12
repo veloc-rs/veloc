@@ -3,10 +3,70 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Error;
-use crate::encoding::TypeEncoding;
 use crate::model::{Fields, list};
 use crate::syntax::{Kind, Node, Record};
-use crate::type_set::TypeSet;
+use crate::types::encoding::TypeEncoding;
+
+pub(crate) mod encoding;
+pub(crate) mod generate;
+mod resolve;
+pub(crate) mod rules;
+
+/// Exact type sets: scalar codes map to scalar/fixed/scalable shape masks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TypeSet(pub BTreeMap<u8, u32>);
+
+impl TypeSet {
+    pub fn singleton(code: u8, exponent: u32, scalable: bool) -> Self {
+        Self(BTreeMap::from([(
+            code,
+            1 << (exponent + if scalable { 16 } else { 0 }),
+        )]))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn union(&mut self, other: &Self) {
+        for (&code, &shapes) in &other.0 {
+            *self.0.entry(code).or_default() |= shapes;
+        }
+    }
+
+    pub fn subset_of(&self, other: &Self) -> bool {
+        !self.is_empty()
+            && self
+                .0
+                .iter()
+                .all(|(code, shapes)| shapes & !other.0.get(code).copied().unwrap_or(0) == 0)
+    }
+
+    pub fn intersect(&mut self, other: &Self) {
+        self.0.retain(|code, shapes| {
+            *shapes &= other.0.get(code).copied().unwrap_or(0);
+            *shapes != 0
+        });
+    }
+
+    pub fn shapes(&self) -> u32 {
+        self.0.values().fold(0, |all, shapes| all | shapes)
+    }
+
+    pub fn retain_shapes(&mut self, allowed: u32) {
+        self.0.retain(|_, shapes| {
+            *shapes &= allowed;
+            *shapes != 0
+        });
+    }
+
+    /// Caller has checked that all members are non-pointer scalars.
+    pub fn vectors(&self, max_exponent: u32) -> Self {
+        let fixed = ((1u32 << (max_exponent + 1)) - 1) & !1;
+        let shapes = fixed | (fixed << 16);
+        Self(self.0.keys().map(|&code| (code, shapes)).collect())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ScalarKind {
@@ -80,7 +140,7 @@ impl Types {
                 "Callable is a reserved structural type name",
             ));
         }
-        let declarations = crate::type_expr::compile(records, source, encoding)?;
+        let declarations = crate::types::resolve::compile(records, source, encoding)?;
         let mut types = Self {
             scalars: declarations.scalars,
             vectors: declarations.vectors,

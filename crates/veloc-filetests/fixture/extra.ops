@@ -1,6 +1,6 @@
 // Exercise contracts not represented by production MIR instructions.
 // These have no control lowering interface: validation comes only from defs.
-record VectorLiteral {
+struct VectorLiteral {
     payload: VectorConst,
 }
 // A different opcode/field name must still inherit the property's codec,
@@ -15,7 +15,7 @@ op Rebind(move value: Callable) -> Callable {
 
     constraints: [require(type(value) == result_type(0), "rebind type mismatch")]
 }
-record MoveBranch {
+struct MoveBranch {
     value: Value,
     dest: BlockCall,
 }
@@ -27,11 +27,11 @@ op Observe(value: Callable) -> () {
     meta: OpInfo { memory: Unknown },
 mnemonic: "observe", storage: Unary { arg: value }, }
 
-record FunctionOperand {
+struct FunctionOperand {
     target: FuncId,
 }
 // Too large for inline fields: test symbol remapping through the field pool.
-record WideRef {
+struct WideRef {
     target: FuncId,
     low: u64,
     high: u64,
@@ -44,7 +44,7 @@ op FunctionOperand(@target: FuncId) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "function-operand", storage: FunctionOperand { target: target },
 text: "{target}", }
-record ExplicitCall {
+struct ExplicitCall {
     target: FuncId,
     args: ValueList,
     sig: SigId,
@@ -55,12 +55,12 @@ op ExplicitCall(@target: FuncId, args: values, @sig: SigId) -> signature {
     signature: sig,
 text: "{target}({args}) : {sig}", }
 
-record TestOperands {
+struct TestOperands {
     token: Value,
     optional: optional(Value),
     tag: u32,
 }
-record Grouped {
+struct Grouped {
     before: Value,
     group: TestOperands,
     after: Value,
@@ -71,7 +71,7 @@ op Grouped(before: I32, after: I32, @group: TestOperands) -> I32 {
     text: "{before}, {after}, token={group.token}[, optional={group.optional}], tag={group.tag}",
 }
 
-record Routed {
+struct Routed {
     operands: Value,
     group: TestOperands,
     dest: BlockCall,
@@ -91,8 +91,8 @@ flags TestFlags {
 }
 flags EmptyFlags { storage: u8, members: [], separator: "," }
 
-record Quinary { args: values(5) }
-record Empty {  }
+struct Quinary { args: values(5) }
+struct Empty {  }
 
 op Many<A: Any, B: Any, C: Any, D: Any, E: Any>(a: A, b: B, c: C, d: D, e: E) -> (E, A) {
     meta: OpInfo { memory: Known([]) },
@@ -117,11 +117,11 @@ op FloatOnly<U: Float>(a: U, b: U) -> U {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "float-only", storage: Binary { args: [a, b] }, }
 
-record Pair { inputs: values(2) }
-record FieldPair { right: Value, left: Value }
-record Triple { args: values(3) }
-record Immediate { value: Value, displacement: i32 }
-record Compare { cc: IntCC, args: values(2) }
+struct Pair { inputs: values(2) }
+struct FieldPair { right: Value, left: Value }
+struct Triple { args: values(3) }
+struct Immediate { value: Value, displacement: i32 }
+struct Compare { cc: IntCC, args: values(2) }
 
 op Difference<T: Integer>(left: T, right: T) -> T {
     meta: OpInfo { memory: Known([]) },
@@ -144,7 +144,7 @@ op Offset(arg: PTR, @amount: i32) -> PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "offset", storage: Immediate { value: arg, displacement: amount },
 text: "{arg}, amount={amount}", }
-record Extended {
+struct Extended {
     inputs: ValueList,
     tag: u32,
 }
@@ -220,24 +220,24 @@ encoding WideRecord { storage: u128, fields: [value(128)] }
 
 // No Rust cases know these types or their enum variants.
 enum TestPolicy { variants: [Automatic, Prefer(TestFlags)] }
-record TestSettings {
+struct TestSettings {
     enabled: bool,
     policy: TestPolicy,
 }
-record TestMetadata {
+struct TestMetadata {
     settings: TestSettings,
     fallback: optional(TestPolicy),
 }
 
 // Deliberately reverse declaration order to exercise canonical set emission.
-record EffectSet {  }
+struct EffectSet {  }
 op EffectSet() -> () {
     meta: OpInfo { memory: Known([WRITE, READ]) },
 mnemonic: "effect-set", storage: EffectSet {}, }
 
 // One field declaration can serve as both a primary layout and a nested property.
-record LiteralPayload { bits: u32 }
-record WrappedPayload { inner: LiteralPayload }
+struct LiteralPayload { bits: u32 }
+struct WrappedPayload { inner: LiteralPayload }
 op Payload(@bits: u32) -> I32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "payload", storage: LiteralPayload { bits: bits }

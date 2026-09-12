@@ -1,7 +1,7 @@
 // ----- direct-patterns-and-shape-constraints-accept-expressions-1
 // run: opgen-error
 // check: impossible shape constraint on type variable `T`
-record Unary { arg: Value }
+struct Unary { arg: Value }
 op Copy(arg: I32 | I64) -> I32 | I64 {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "copy", storage: Unary { arg: arg }, }
@@ -15,7 +15,7 @@ mnemonic: "convert", storage: Unary { arg: arg }, }
 // ----- direct-patterns-and-shape-constraints-accept-expressions-2
 // run: opgen-error
 // check: unknown type or class `T`
-record Unary { arg: Value }
+struct Unary { arg: Value }
 op Copy(arg: I32 | I64) -> I32 | I64 {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "copy", storage: Unary { arg: arg }, }
@@ -29,7 +29,7 @@ mnemonic: "convert", storage: Unary { arg: arg }, }
 // ----- expression-nesting-is-bounded-but-flat-unions-are-not-recursive-1
 // run: opgen-error
 // check: definition nesting exceeds 64 levels
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((I32))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -38,7 +38,7 @@ op Add<T: ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-1
 // run: opgen-error
 // check: type constraint must not be empty
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: Integer & Float>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -47,7 +47,7 @@ op Add<T: Integer & Float>(lhs: T, rhs: T) -> T {
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-2
 // run: opgen-error
 // check: type constraint must not be empty
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: vectors(I32) & I32>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -56,7 +56,7 @@ op Add<T: vectors(I32) & I32>(lhs: T, rhs: T) -> T {
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-3
 // run: opgen-error
 // check: unknown type or class `Missing`
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: Integer | Missing>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -65,7 +65,7 @@ op Add<T: Integer | Missing>(lhs: T, rhs: T) -> T {
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-4
 // run: opgen-error
 // check: unknown type or class `Missing`
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: (I32 & F32) & Missing>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -74,7 +74,7 @@ op Add<T: (I32 & F32) & Missing>(lhs: T, rhs: T) -> T {
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-5
 // run: opgen-error
 // check: vectors() requires a set of non-pointer scalar types
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: vectors(I32 | PTR)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -83,7 +83,7 @@ op Add<T: vectors(I32 | PTR)>(lhs: T, rhs: T) -> T {
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-6
 // run: opgen-error
 // check: expected a name
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: Integer |>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -91,8 +91,8 @@ op Add<T: Integer |>(lhs: T, rhs: T) -> T {
 
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-7
 // run: opgen-error
-// check: expected a name
-record Pair { args: values(2) }
+// check: expected `,`
+struct Pair { args: values(2) }
 op Add<T: Integer || BOOL>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -100,8 +100,8 @@ op Add<T: Integer || BOOL>(lhs: T, rhs: T) -> T {
 
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-8
 // run: opgen-error
-// check: expected a name
-record Pair { args: values(2) }
+// check: expected `,`
+struct Pair { args: values(2) }
 op Add<T: Integer && Vector>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -110,7 +110,7 @@ op Add<T: Integer && Vector>(lhs: T, rhs: T) -> T {
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-9
 // run: opgen-error
 // check: expected `,`
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: Integer + BOOL>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -119,7 +119,7 @@ op Add<T: Integer + BOOL>(lhs: T, rhs: T) -> T {
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-10
 // run: opgen-error
 // check: expected `)`
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: (Integer | BOOL>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -128,7 +128,7 @@ op Add<T: (Integer | BOOL>(lhs: T, rhs: T) -> T {
 // ----- invalid-expressions-empty-constraints-and-nested-cycles-are-diagnosed-11
 // run: opgen-error
 // check: expected a name
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: ()>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -147,7 +147,7 @@ class A { members: [I32 | vectors(B)] } class B { members: [A & Scalar] }
 // ----- semantics-and-text-codecs-use-resolved-inline-constraints-1
 // run: opgen-error
 // check: invalid semantic types [Bool, Bool] -> [Bool]: expected a bitvector, got bool
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -156,7 +156,7 @@ op Add<T: BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
 // ----- semantics-and-text-codecs-use-resolved-inline-constraints-2
 // run: opgen-error
 // check: floating-point execution semantics are not modeled
-record Pair { args: values(2) }
+struct Pair { args: values(2) }
 op Add<T: I32 | F64>(lhs: T, rhs: T) -> T {
     meta: OpInfo {},
     mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
@@ -165,7 +165,7 @@ op Add<T: I32 | F64>(lhs: T, rhs: T) -> T {
 // ----- semantics-and-text-codecs-use-resolved-inline-constraints-3
 // run: opgen-error
 // check: float text atoms require a scalar float first result
-record Literal { value: Float }
+struct Literal { value: Float }
 op Literal<T: Float & Vector>(@value: Float) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "literal", storage: Literal { value: value },

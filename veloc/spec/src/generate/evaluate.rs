@@ -12,7 +12,86 @@ use crate::model::{Binding, Definitions, Semantic};
 use crate::semantic::Instance;
 use crate::types::{Scalar, ScalarKind};
 
-pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error> {
+pub(crate) struct Plan {
+    operations: Vec<Operation>,
+}
+
+struct Operation {
+    opcode: usize,
+    cases: Vec<Case>,
+    properties: Vec<String>,
+}
+
+struct Case {
+    instance: Instance,
+    scalars: Vec<usize>,
+    variants: Vec<String>,
+}
+
+impl Plan {
+    pub(crate) fn prepare(defs: &Definitions, source: &str) -> Result<Self, Error> {
+        let mut operations = Vec::new();
+        for (opcode, op) in defs.ops.iter().enumerate() {
+            let Some(sem) = &op.semantics else { continue };
+            let mut cases = Vec::new();
+            for instance in crate::semantic::instances(source, op, &defs.types)? {
+                if !instance.scalar {
+                    continue;
+                }
+                let scalars = instance
+                    .codes
+                    .iter()
+                    .map(|code| {
+                        defs.types
+                            .scalars
+                            .iter()
+                            .position(|s| s.code == *code)
+                            .expect("checked scalar code")
+                    })
+                    .collect::<Vec<_>>();
+                let Some(variants) = scalars
+                    .iter()
+                    .map(|&i| constant(&defs.types.scalars[i]))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                cases.push(Case {
+                    instance,
+                    scalars,
+                    variants,
+                });
+            }
+            let properties = sem
+                .properties
+                .iter()
+                .map(|property| {
+                    op.bindings()
+                        .iter()
+                        .find_map(|(field, binding)| match binding {
+                            Binding::Name(name) if name == property => Some(field.clone()),
+                            _ => None,
+                        })
+                        .ok_or_else(|| {
+                            Error::at(
+                                source,
+                                op.offset,
+                                "semantic comparison properties require a direct storage field",
+                            )
+                        })
+                })
+                .collect::<Result<_, _>>()?;
+            operations.push(Operation {
+                opcode,
+                cases,
+                properties,
+            });
+        }
+        Ok(Self { operations })
+    }
+}
+
+pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
     let mut code = String::from(
         "// @generated from checked operation semantics.\n\
          #[allow(unused_variables, unreachable_patterns)]\n\
@@ -20,25 +99,18 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error
          match opcode {\n",
     );
     let mut supported = Vec::new();
-    for op in &defs.ops {
-        let Some(sem) = &op.semantics else { continue };
+    for prepared in &plan.operations {
+        let op = &defs.ops[prepared.opcode];
+        let sem = op.semantics.as_ref().expect("prepared semantic operation");
         let mut arms = String::new();
-        for instance in crate::semantic::instances(source, op, &defs.types)? {
-            if !instance.scalar {
-                continue;
-            }
-            let scalars = instance
-                .codes
+        for case in &prepared.cases {
+            let instance = &case.instance;
+            let variants = &case.variants;
+            let scalars = case
+                .scalars
                 .iter()
-                .map(|code| defs.types.scalars.iter().find(|s| s.code == *code).unwrap())
+                .map(|&i| &defs.types.scalars[i])
                 .collect::<Vec<_>>();
-            let Some(variants) = scalars
-                .iter()
-                .map(|s| constant(s))
-                .collect::<Option<Vec<_>>>()
-            else {
-                continue;
-            };
             let inputs = sem.inputs as usize;
             let args = variants[..inputs]
                 .iter()
@@ -67,7 +139,7 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error
                 format!(" if {guard}")
             };
             writeln!(arms, "([{args}], [{results}], [{properties}]){guard} => {{").unwrap();
-            emit(defs, sem, &instance, &variants[inputs..], &mut arms);
+            emit(defs, sem, instance, &variants[inputs..], &mut arms);
             arms.push_str("},\n");
         }
         if !arms.is_empty() {
@@ -87,44 +159,25 @@ pub(crate) fn generate(defs: &Definitions, source: &str) -> Result<String, Error
         format!("matches!(opcode, {})", supported.join(" | "))
     };
     writeln!(code, "/// Whether this opcode has a generated scalar constant evaluator.\npub const fn can_fold(opcode: Opcode) -> bool {{ {supported} }}").unwrap();
-    code.push_str(&properties(defs, source)?);
+    code.push_str(&properties(defs, plan));
     code.push_str(&algebraic_rules(defs));
-    Ok(code)
+    code
 }
 
-fn properties(defs: &Definitions, source: &str) -> Result<String, Error> {
+fn properties(defs: &Definitions, plan: &Plan) -> String {
     let mut ops = String::from(
         "#[allow(unused_variables)] pub(crate) fn properties(data: &veloc_mir::InstructionView<'_>) -> smallvec::SmallVec<[IntCC; 1]> { match data.opcode() {\n",
     );
-    for op in &defs.ops {
-        let Some(sem) = &op.semantics else {
+    for prepared in &plan.operations {
+        let op = &defs.ops[prepared.opcode];
+        let fields = &prepared.properties;
+        if fields.is_empty() {
             continue;
-        };
-        if sem.properties.is_empty() {
-            continue;
-        }
-        let mut fields = Vec::new();
-        for property in &sem.properties {
-            let field = op
-                .bindings()
-                .iter()
-                .find_map(|(field, binding)| match binding {
-                    Binding::Name(name) if name == property => Some(field),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    Error::at(
-                        source,
-                        op.offset,
-                        "semantic comparison properties require a direct storage field",
-                    )
-                })?;
-            fields.push(field.clone());
         }
         writeln!(ops, "Opcode::{} => {{ let veloc_mir::InstructionView::{} {{ {}, .. }} = data else {{ unreachable!(\"checked semantic property layout\") }}; smallvec::smallvec![{}] }},", op.name, op.format, fields.join(", "), fields.iter().map(|f| format!("*{f}")).collect::<Vec<_>>().join(", ")).unwrap();
     }
     ops.push_str("_ => smallvec::smallvec![],\n} }\n");
-    Ok(ops)
+    ops
 }
 
 fn constant(scalar: &Scalar) -> Option<String> {

@@ -2,6 +2,31 @@
 // Storage mappings preserve the current compact MIR layout and SSA traversal order.
 // Structural constraints compile to direct checks, not a runtime rule list.
 
+// Query data, not instruction storage. Value(PTR) checks the logical signature
+// at definition time; the runtime representation is an ordinary SSA Value.
+interface MemoryAccess {
+    ptr: Value(PTR),
+    offset: i64,
+    ty: Type,
+    stored: optional(Value),
+    flags: MemFlags,
+    effects: MemoryEffect,
+}
+
+fn ReadAccess(ptr: Value(PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
+    value: MemoryAccess {
+        ptr: ptr, offset: offset, ty: ty, stored: none, flags: flags,
+        effects: Known([READ]),
+    },
+}
+
+fn WriteAccess(ptr: Value(PTR), offset: i64, value: Value, flags: MemFlags) -> MemoryAccess {
+    value: MemoryAccess {
+        ptr: ptr, offset: offset, ty: type(value), stored: some(value), flags: flags,
+        effects: Known([WRITE]),
+    },
+}
+
 // First-class callable values. Captures bind a prefix of the function parameters;
 // the resulting callable signature describes the remaining inputs and answer.
 // Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
@@ -524,19 +549,19 @@ op PtrToInt(arg: PTR) -> ScalarInteger {
 }
 
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
-    meta: OpInfo { traits: [MAY_TRAP] },
+    meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
-    access: read(ptr, offset),
+    implements: [ReadAccess(ptr, i64(offset), result_type(0), flags)],
 }
 
 op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
-    meta: OpInfo { traits: [MAY_TRAP] },
+    meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
     mnemonic: "store",
     storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
     text: "{.flags} {value}, {ptr}, offset={offset}",
-    access: write(ptr, offset, value),
+    implements: [WriteAccess(ptr, i64(offset), value, flags)],
 }
 
 // A fresh, uninitialized local object, valid until the invocation returns.
