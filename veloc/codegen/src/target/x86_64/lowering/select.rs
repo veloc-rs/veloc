@@ -21,53 +21,40 @@ impl TargetInstructionSelector for X86_64Selector {
         let cpu = self.lowering.cpu;
         let inst = ctx.mfunc.dfg[ctx.inst_id].clone();
 
-        if matches!(inst.opcode, MachineOpcode::Target(_)) {
+        if !inst.is_generic() {
             return Ok(SelectResult::Keep);
         }
 
-        if let MachineOpcode::Generic(_opcode) = inst.opcode {
-            match _opcode {
-                GenericOpcode::G_COPY => {
-                    let copy = inst.as_unary_reg()?;
-                    ctx.selected
-                        .push(build_x86_copy_inst(ctx.mfunc, copy.dst, copy.src)?);
-                    return Ok(SelectResult::InPlace);
-                }
-                GenericOpcode::G_FCMP => {
-                    let fcmp = inst.as_fcmp().unwrap_or_else(|err| {
-                        panic!("invalid fcmp instruction during x86_64 selection: {}", err);
-                    });
-                    if matches!(fcmp.cc, FloatCC::Eq | FloatCC::Ne) {
-                        return self.lowering.select_fcmp(ctx, &inst);
-                    }
-                }
-                GenericOpcode::G_SELECT => {
-                    let select = inst.as_select().unwrap_or_else(|err| {
-                        panic!(
-                            "invalid select instruction during x86_64 selection: {}",
-                            err
-                        );
-                    });
-                    let dst_ty = if select.dst.is_vreg() {
-                        ctx.mfunc.vreg_data(select.dst).ty
-                    } else {
-                        panic!(
-                            "x86_64 select destination must be a virtual register before regalloc",
-                        );
-                    };
-                    if dst_ty.is_float() {
-                        return self.lowering.select_select(ctx, &inst);
-                    }
-                }
-                _ => {}
+        let view = inst.generic_view()?;
+        match view {
+            veloc_lir::InstView::UnaryReg(copy)
+                if copy.opcode == veloc_lir::UnaryRegOpcode::COPY =>
+            {
+                ctx.selected
+                    .push(build_x86_copy_inst(ctx.mfunc, copy.dst, copy.src)?);
+                return Ok(SelectResult::InPlace);
             }
+            veloc_lir::InstView::FCmp(fcmp) if matches!(fcmp.cc, FloatCC::Eq | FloatCC::Ne) => {
+                return self.lowering.select_fcmp(ctx, fcmp);
+            }
+            veloc_lir::InstView::Select(select) => {
+                let dst_ty = if select.dst.is_vreg() {
+                    ctx.mfunc.vreg_data(select.dst).ty
+                } else {
+                    panic!("select destination must be a virtual register before regalloc");
+                };
+                if dst_ty.is_float() {
+                    return self.lowering.select_select(ctx, select);
+                }
+            }
+            _ => {}
         }
 
         let result = {
             let selected = core::mem::take(ctx.selected);
             let mut out = selected;
             let x86_ctx = X86SelectionContext { base: ctx, cpu };
-            let res = generated::select_instructions(&x86_ctx, &inst, &mut out);
+            let res = generated::select_instructions(&x86_ctx, &inst, &view, &mut out);
             *ctx.selected = out;
             res.unwrap_or_else(|err| panic!("x86_64 generated selector failed: {}", err))
         };

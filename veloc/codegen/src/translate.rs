@@ -11,7 +11,7 @@ use veloc_lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
     MachineBlock, MachineFunction, MachineInst, MachineModule, MachineOpcode, MachineOperand, Reg,
 };
-use veloc_mir::{Function, InstructionView, Module, Opcode, Value};
+use veloc_mir::{Function, InstView, Module, Opcode, Value};
 
 include!(concat!(env!("OUT_DIR"), "/mir_lowering.rs"));
 
@@ -160,7 +160,7 @@ impl<'a> IRTranslator<'a> {
 
         for &block in func.layout().block_order() {
             for &inst in &func.layout().blocks()[block].insts {
-                if let InstructionView::Alloca { size, align } = func.dfg().inst(inst) {
+                if let InstView::Alloca { size, align } = func.dfg().inst(inst) {
                     if Some(block) != func.entry_block {
                         return Err(Error::translate(
                             "non-entry alloca requires dynamic stack lowering",
@@ -250,10 +250,7 @@ impl<'a> IRTranslator<'a> {
         }
 
         let spec = inst_data.opcode().spec();
-        if matches!(
-            inst_data,
-            InstructionView::Unary { .. } | InstructionView::Binary { .. }
-        ) {
+        if matches!(inst_data, InstView::Unary { .. } | InstView::Binary { .. }) {
             let args = ctx.func.dfg().operands(inst_id);
             let operand_types: SmallVec<[_; 2]> = args
                 .iter()
@@ -285,11 +282,11 @@ impl<'a> IRTranslator<'a> {
         }
 
         match inst_data {
-            InstructionView::Alloca { .. } => {
+            InstView::Alloca { .. } => {
                 let slot = ctx.slots[&inst_id];
                 Ok(MachineInst::build_stack_addr(defs[0].as_writable().unwrap(), slot).into())
             }
-            InstructionView::Binary { opcode, args } => {
+            InstView::Binary { opcode, args } => {
                 let src0 = ctx.value_map[args[0]];
                 let src1 = ctx.value_map[args[1]];
 
@@ -314,7 +311,7 @@ impl<'a> IRTranslator<'a> {
                 )
             }
 
-            InstructionView::Unary { opcode, arg } => {
+            InstView::Unary { opcode, arg } => {
                 let src = ctx.value_map[*arg];
 
                 let m_opcode = match opcode {
@@ -345,7 +342,7 @@ impl<'a> IRTranslator<'a> {
                 Ok(MachineInst::build_unary(m_opcode, defs[0].as_writable().unwrap(), src).into())
             }
 
-            InstructionView::IntCompare { kind, args } => {
+            InstView::IntCompare { kind, args } => {
                 let src0 = ctx.value_map[args[0]];
                 let src1 = ctx.value_map[args[1]];
 
@@ -355,7 +352,7 @@ impl<'a> IRTranslator<'a> {
                 )
             }
 
-            InstructionView::FloatCompare { kind, args } => {
+            InstView::FloatCompare { kind, args } => {
                 let src0 = ctx.value_map[args[0]];
                 let src1 = ctx.value_map[args[1]];
 
@@ -365,7 +362,7 @@ impl<'a> IRTranslator<'a> {
                 )
             }
 
-            InstructionView::Load { ptr, offset, .. } => {
+            InstView::Load { ptr, offset, .. } => {
                 let base = ctx.value_map[*ptr];
                 let access = self.memory_access(ctx.func, inst_id)?;
                 Ok(MachineInst::build_offset_load(
@@ -377,7 +374,7 @@ impl<'a> IRTranslator<'a> {
                 .into())
             }
 
-            InstructionView::Store {
+            InstView::Store {
                 ptr, value, offset, ..
             } => {
                 let val = ctx.value_map[*value];
@@ -388,13 +385,13 @@ impl<'a> IRTranslator<'a> {
                     .into())
             }
 
-            InstructionView::Iconst { value: imm } => Ok(MachineInst::build_constant(
+            InstView::Iconst { value: imm } => Ok(MachineInst::build_constant(
                 defs[0].as_writable().unwrap(),
                 imm.signed(),
             )
             .into()),
 
-            InstructionView::Fconst { value } => {
+            InstView::Fconst { value } => {
                 let dst = defs[0].as_writable().unwrap();
                 let dst_ty = ctx.mfunc.vreg_data(dst.to_reg()).ty;
 
@@ -421,7 +418,7 @@ impl<'a> IRTranslator<'a> {
                 .into())
             }
 
-            InstructionView::Jump { dest } => {
+            InstView::Jump { dest } => {
                 let target = dest.block;
                 let args = dest
                     .args
@@ -439,7 +436,7 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstructionView::Br {
+            InstView::Br {
                 condition,
                 then_dest,
                 else_dest,
@@ -470,9 +467,9 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstructionView::BrTable { index, .. } => {
+            InstView::BrTable { index, .. } => {
                 let idx_vreg = ctx.value_map[*index];
-                let InstructionView::BrTable { table, .. } = inst_data else {
+                let InstView::BrTable { table, .. } = inst_data else {
                     unreachable!();
                 };
                 let targets = table
@@ -493,7 +490,7 @@ impl<'a> IRTranslator<'a> {
                 ))
             }
 
-            InstructionView::Return { values } => {
+            InstView::Return { values } => {
                 let ret_values = *values;
                 let mut rets = SmallVec::new();
                 for &v in ret_values {
@@ -503,7 +500,7 @@ impl<'a> IRTranslator<'a> {
                 Ok(MachineInst::build_ret(rets).into())
             }
 
-            InstructionView::Call { func_id, args } => {
+            InstView::Call { func_id, args } => {
                 let call_args = *args;
                 let callee = self.module.get_function(*func_id);
                 let sym_id = ctx.mmodule.symbols_mut().get_or_create_function(
@@ -526,7 +523,7 @@ impl<'a> IRTranslator<'a> {
                 ))
             }
 
-            InstructionView::CallIndirect { ptr, args, sig_id } => {
+            InstView::CallIndirect { ptr, args, sig_id } => {
                 let call_args = *args;
                 let call_inst = MachineInst::build_call_indirect(
                     defs.iter().map(|operand| operand.as_writable().unwrap()),
@@ -543,7 +540,7 @@ impl<'a> IRTranslator<'a> {
                 ))
             }
 
-            InstructionView::Ternary { opcode, args } => {
+            InstView::Ternary { opcode, args } => {
                 let v0 = ctx.value_map[args[0]];
                 let v1 = ctx.value_map[args[1]];
                 let v2 = ctx.value_map[args[2]];
@@ -562,7 +559,7 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstructionView::IntToPtr { arg } => {
+            InstView::IntToPtr { arg } => {
                 let src = ctx.value_map[*arg];
                 Ok(MachineInst::build_unary(
                     MachineOpcode::Generic(GenericOpcode::G_INTTOPTR),
@@ -572,7 +569,7 @@ impl<'a> IRTranslator<'a> {
                 .into())
             }
 
-            InstructionView::PtrToInt { arg } => {
+            InstView::PtrToInt { arg } => {
                 let src = ctx.value_map[*arg];
                 Ok(MachineInst::build_unary(
                     MachineOpcode::Generic(GenericOpcode::G_PTRTOINT),
@@ -582,7 +579,7 @@ impl<'a> IRTranslator<'a> {
                 .into())
             }
 
-            InstructionView::PtrOffset { ptr, offset } => {
+            InstView::PtrOffset { ptr, offset } => {
                 use veloc_lir::Writable;
 
                 let addr = ctx.value_map[*ptr];
@@ -603,7 +600,7 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstructionView::PtrIndex { ptr, index, imm_id } => {
+            InstView::PtrIndex { ptr, index, imm_id } => {
                 let base_ptr = ctx.value_map[*ptr];
                 let idx = ctx.value_map[*index];
                 let imm = *imm_id;
@@ -657,10 +654,10 @@ impl<'a> IRTranslator<'a> {
                 )
                 .into())
             }
-            InstructionView::Unreachable => Ok(MachineInst::build_unreachable().into()),
+            InstView::Unreachable => Ok(MachineInst::build_unreachable().into()),
 
             _ => Err(Error::translate(format!(
-                "InstructionView variant not implemented for translation: {:?}",
+                "InstView variant not implemented for translation: {:?}",
                 inst_data
             ))),
         }

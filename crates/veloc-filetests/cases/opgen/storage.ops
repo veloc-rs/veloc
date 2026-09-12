@@ -1,0 +1,86 @@
+// ----- lir-mappings-can-reorder-inputs-and-results
+// run: opgen
+// check: pub fn build_pair(low: Writable<Reg>, high: Writable<Reg>, first: Reg, second: Reg)
+// check: MachineOperand::Use(second), MachineOperand::Def(high), MachineOperand::Use(first), MachineOperand::Def(low)
+storage Operands { prefix: "G_" }
+struct Pair { right: Use, upper: Def, left: Use, lower: Def }
+op G_PAIR(first: I32, second: I64) -> (low: I32, high: I64) {
+    meta: OpInfo { memory: Known([]) },
+    storage: Pair { right: second, upper: high, left: first, lower: low },
+}
+
+// ----- empty-mappings-are-explicit
+// run: opgen
+// check: pub fn build_stop()
+storage Operands { prefix: "G_" }
+struct Empty {}
+op G_STOP() -> () { meta: OpInfo { memory: Known([]) }, storage: Empty {} }
+
+// ----- bare-layout-names-are-removed
+// run: opgen-error
+// check: expected storage: Layout
+storage Operands {}
+struct Empty {}
+op Example() -> () { meta: OpInfo { memory: Known([]) }, storage: Empty }
+
+// ----- missing-result-binding
+// run: opgen-error
+// check: result 0 has no storage mapping
+storage Operands {}
+struct Input { arg: Use }
+op Example(arg: I32) -> (value: I32) { meta: OpInfo { memory: Known([]) }, storage: Input { arg } }
+
+// ----- repeated-result-binding
+// run: opgen-error
+// check: result 'first' is stored more than once
+storage Operands {}
+struct Pair { a: Def, b: Def }
+op Example() -> (first: I32, second: I32) { meta: OpInfo { memory: Known([]) }, storage: Pair { a: first, b: first } }
+
+// ----- repeated-input-binding
+// run: opgen-error
+// check: input 'arg' is stored more than once
+storage Operands {}
+struct Pair { a: Use, b: Use }
+op Example(arg: I32) -> () { meta: OpInfo { memory: Known([]) }, storage: Pair { a: arg, b: arg } }
+
+// ----- definition-fields-cannot-bind-inputs
+// run: opgen-error
+// check: unknown result 'arg'
+storage Operands {}
+struct Output { dst: Def }
+op Example(arg: I32) -> () { meta: OpInfo { memory: Known([]) }, storage: Output { dst: arg } }
+
+// ----- optional-presence-is-not-inferred
+// run: opgen-error
+// check: expected some(...) storage binding
+storage Operands {}
+struct Maybe { value: OptionalUse }
+op Example(value: I32) -> () { meta: OpInfo { memory: Known([]) }, storage: Maybe { value } }
+
+// ----- omitted-operands-must-be-a-suffix
+// run: opgen-error
+// check: only trailing optional operands may be absent
+storage Operands {}
+struct Pair { optional: OptionalUse, required: Use }
+op Example(value: I32) -> () { meta: OpInfo { memory: Known([]) }, storage: Pair { optional: none, required: value } }
+
+// ----- tied-input-and-output-are-explicit
+// run: opgen
+// check: pub fn build_update(next: Writable<Reg>)
+// check: MachineOperand::TiedDefUse(next)
+storage Operands { prefix: "G_" }
+struct Update { register: TiedDefUse }
+op G_UPDATE(previous: PTR) -> (next: PTR) { meta: OpInfo { memory: Known([]) }, storage: Update { register: tied(previous, next) } }
+
+// ----- absent-optional-fields-still-require-a-mapping
+// run: opgen-error
+// check: missing storage field 'value'
+storage Operands {}
+struct Maybe { value: OptionalUse }
+op Example() -> () { meta: OpInfo { memory: Known([]) }, storage: Maybe {} }
+
+// ----- declaration-fields-do-not-use-value-shorthand
+// run: opgen-error
+// check: expected `:`
+struct Bad { value }

@@ -78,7 +78,9 @@ struct Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
-    where: [narrower(arg, result)], semantics: bv.sext(arg, result(0))
+    verify {
+        require(element_bits(type(result)) < element_bits(type(arg)), "result must have fewer bits per lane than arg");
+    } semantics: bv.sext(arg, result(0))
 }
 
 // ----- widths-are-checked-against-every-signature-instance-2
@@ -88,7 +90,9 @@ struct Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
-    where: [wider(arg, result)], semantics: bv.sext(arg, result(1))
+    verify {
+        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+    } semantics: bv.sext(arg, result(1))
 }
 
 // ----- widths-are-checked-against-every-signature-instance-3
@@ -98,7 +102,9 @@ struct Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
-    where: [wider(arg, result)], semantics: bv.sext(arg, type(missing))
+    verify {
+        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+    } semantics: bv.sext(arg, type(missing))
 }
 
 // ----- widths-are-checked-against-every-signature-instance-4
@@ -108,7 +114,9 @@ struct Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
-    where: [wider(arg, result)], semantics: arg
+    verify {
+        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+    } semantics: arg
 }
 
 // ----- widths-are-checked-against-every-signature-instance-5
@@ -118,5 +126,7 @@ struct Unary { arg: Value }
 op Convert<T: Integer>(arg: T) -> (result: I32X4) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
-    where: [wider(arg, result)], semantics: bv.sext(arg, result(0))
+    verify {
+        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+    } semantics: bv.sext(arg, result(0))
 }

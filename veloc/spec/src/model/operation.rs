@@ -4,27 +4,6 @@ use super::*;
 use crate::storage::{FieldType, Format};
 use crate::syntax::{Results, Signature};
 
-const PROPERTIES: &[&str] = &[
-    "MemFlags",
-    "FuncId",
-    "SigId",
-    "StackSlot",
-    "Intrinsic",
-    "IntCC",
-    "FloatCC",
-    "Float",
-    "Int",
-    "VectorConst",
-    "u32",
-    "u64",
-    "i32",
-    "bool",
-    "i64",
-    "f64",
-    "Block",
-    "SymbolId",
-];
-
 pub(super) fn parse(
     source: &str,
     mut record: Record,
@@ -32,21 +11,16 @@ pub(super) fn parse(
     vocabulary: Vocabulary<'_>,
     expressions: &mut super::expr::Library,
 ) -> Result<Op, Error> {
-    let Vocabulary {
-        types: type_defs,
-        builtins,
-        data,
-        ..
-    } = vocabulary;
+    let Vocabulary { builtins, data, .. } = vocabulary;
     let sig = record
         .signature
         .take()
         .expect("op parser requires a signature");
     let CheckedSignature {
         params,
-        mut types,
+        types,
         slots,
-    } = signature(source, record.offset, sig, storage_defs, type_defs)?;
+    } = signature(source, record.offset, sig, vocabulary)?;
     let mut fields = Fields::new(source, record);
     let mnemonic = match fields.optional("mnemonic") {
         Some(Node {
@@ -60,27 +34,33 @@ pub(super) fn parse(
         },
     };
     let storage = fields.take("storage")?;
-    let (format, projection) = match &storage_defs.strategy {
+    let Kind::Object(format, mappings) = storage.kind else {
+        return Err(Error::at(
+            source,
+            storage.offset,
+            "expected storage: Layout { field mappings }",
+        ));
+    };
+    let projection = match &storage_defs.strategy {
         storage::Strategy::Packed => {
-            let Kind::Object(format, mappings) = storage.kind else {
-                return Err(Error::at(
-                    source,
-                    storage.offset,
-                    "expected a storage mapping",
-                ));
-            };
             let mut packing = BTreeMap::new();
             for (field, node) in mappings {
                 packing.insert(field, binding(source, node)?);
             }
-            (format, Projection::Packed(packing))
+            Projection::Packed(packing)
         }
         storage::Strategy::Operands(operands) => {
-            let format = name(source, storage)?;
             let flow = fields.optional("flow");
-            let projection =
-                operands.project(source, fields.offset, &format, &params, &types, flow)?;
-            (format, Projection::Operands(projection))
+            Projection::Operands(operands.project(
+                source,
+                storage.offset,
+                &format,
+                &mappings,
+                &params,
+                &types,
+                &slots,
+                flow,
+            )?)
         }
     };
     let signature_source = fields
@@ -112,39 +92,6 @@ pub(super) fn parse(
         .optional("control")
         .map(|node| crate::model::control::check(source, node, &params))
         .transpose()?;
-    if let Some(node) = fields.optional("where") {
-        for node in list(source, node)? {
-            let Kind::Call(kind, args) = node.kind else {
-                return Err(Error::at(source, node.offset, "expected a type relation"));
-            };
-            if !matches!(kind.as_str(), "wider" | "narrower" | "same_width_distinct")
-                || args.len() != 2
-            {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "expected type relation wider, narrower or same_width_distinct with two names",
-                ));
-            }
-            let mut resolved = Vec::new();
-            for arg in args {
-                let offset = arg.offset;
-                let name = name(source, arg)?;
-                resolved.push(*slots.get(&name).ok_or_else(|| {
-                    Error::at(
-                        source,
-                        offset,
-                        format!("type relation references missing operand or result `{name}`"),
-                    )
-                })?);
-            }
-            types.relations.push(Relation {
-                kind,
-                lhs: resolved[0],
-                rhs: resolved[1],
-            });
-        }
-    }
     let mut meta_node = fields.take("meta")?;
     expressions.metadata(source, &mut meta_node, &implementations, vocabulary)?;
     let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
@@ -255,8 +202,14 @@ pub(super) fn parse(
         absorbing,
         semantics,
     };
-    op.constraints =
-        crate::model::constraints::check(source, constraints, &op, vocabulary, expressions)?;
+    op.constraints = crate::model::constraints::check(
+        source,
+        constraints,
+        &op,
+        &slots,
+        vocabulary,
+        expressions,
+    )?;
     Ok(op)
 }
 
@@ -270,9 +223,9 @@ fn signature(
     source: &str,
     offset: usize,
     sig: Signature,
-    storage: &storage::Storage,
-    types: &Types,
+    vocabulary: Vocabulary<'_>,
 ) -> Result<CheckedSignature, Error> {
+    let Vocabulary { types, data, .. } = vocabulary;
     let mut variables = BTreeMap::new();
     for generic in sig.generics {
         identifier(source, generic.offset, &generic.name)?;
@@ -326,9 +279,9 @@ fn signature(
         let kind = if param.property {
             let offset = param.ty.offset;
             let ty = name(source, param.ty)?;
-            if !PROPERTIES.contains(&ty.as_str())
+            if !super::records::primitive(&ty)
                 && ty != "Bytes"
-                && !storage.records.iter().any(|record| record.name == ty)
+                && (!data.names.contains(&ty) || ty == "Value")
             {
                 return Err(Error::at(
                     source,
@@ -458,11 +411,7 @@ fn signature(
     }
     Ok(CheckedSignature {
         params,
-        types: TypeDef {
-            operands,
-            results,
-            relations: Vec::new(),
-        },
+        types: TypeDef { operands, results },
         slots,
     })
 }

@@ -6,7 +6,7 @@ pub(crate) fn generate(defs: &Definitions, formats: &[usize]) -> String {
         return String::new();
     }
     let mut out = String::from(
-        "/// A statically dispatched projection over an instruction's logical fields.\npub trait InstructionQuery: Sized { fn query(view: &InstructionView<'_>, dfg: &crate::dfg::DataFlowGraph, results: &[crate::Value]) -> Option<Self>; }\nimpl InstructionView<'_> { pub fn query<Q: InstructionQuery>(&self, dfg: &crate::dfg::DataFlowGraph, results: &[crate::Value]) -> Option<Q> { Q::query(self, dfg, results) } }\n",
+        "/// A statically dispatched projection over an instruction's logical fields.\npub trait InstructionQuery: Sized { fn query(view: &InstView<'_>, dfg: &crate::dfg::DataFlowGraph, results: &[crate::Value]) -> Option<Self>; }\nimpl InstView<'_> { pub fn query<Q: InstructionQuery>(&self, dfg: &crate::dfg::DataFlowGraph, results: &[crate::Value]) -> Option<Q> { Q::query(self, dfg, results) } }\n",
     );
     for (name, interface) in &defs.expressions.interfaces {
         writeln!(
@@ -15,10 +15,10 @@ pub(crate) fn generate(defs: &Definitions, formats: &[usize]) -> String {
         )
         .unwrap();
         for (field, ty) in &interface.fields {
-            writeln!(out, "pub {field}: {},", ty.rust()).unwrap();
+            writeln!(out, "pub {field}: {},", ty.rust(&defs.data.rust)).unwrap();
         }
         out.push_str("}\n");
-        writeln!(out,"impl InstructionQuery for {name} {{ fn query(view: &InstructionView<'_>, dfg: &crate::dfg::DataFlowGraph, results: &[crate::Value]) -> Option<Self> {{ let _ = (dfg, results); match view.opcode() {{").unwrap();
+        writeln!(out,"impl InstructionQuery for {name} {{ fn query(view: &InstView<'_>, dfg: &crate::dfg::DataFlowGraph, results: &[crate::Value]) -> Option<Self> {{ let _ = (dfg, results); match view.opcode() {{").unwrap();
         for (op, &format) in defs.ops.iter().zip(formats) {
             let Some(expr) = op.interfaces.get(name) else {
                 continue;
@@ -50,7 +50,7 @@ pub(crate) fn generate(defs: &Definitions, formats: &[usize]) -> String {
             } else {
                 ""
             };
-            writeln!(out,"crate::Opcode::{} => {{ let InstructionView::{} {{ {fields} }} = view else {{ return None; }}; {host} Some({}) }},",op.name,format.name,super::expr::Emitter::query(locals).term(expr)).unwrap();
+            writeln!(out,"crate::Opcode::{} => {{ let InstView::{} {{ {fields} }} = view else {{ return None; }}; {host} Some({}) }},",op.name,format.name,super::expr::Emitter::query(locals).term(expr)).unwrap();
         }
         out.push_str("_ => None, } } }\n");
     }

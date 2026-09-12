@@ -1,9 +1,123 @@
 //! Structured logical properties and their generated Rust representation.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use crate::syntax::{Kind, Node, Record};
 use crate::{Error, model};
+
+/// Rust type bindings are nominal in defs; paths only control code emission.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RustTypes {
+    external: BTreeMap<String, String>,
+}
+
+pub(crate) fn rust_binding(record: &Record) -> Option<&Node> {
+    (record.kind == "type")
+        .then(|| record.fields.get("expr"))
+        .flatten()
+        .filter(|node| matches!(&node.kind, Kind::Call(name, _) if name == "rust"))
+}
+
+pub(crate) fn primitive(name: &str) -> bool {
+    matches!(
+        name,
+        "bool" | "u8" | "u32" | "u64" | "i32" | "i64" | "i128" | "f64"
+    )
+}
+
+impl RustTypes {
+    pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
+        let mut result = Self::default();
+        for record in records {
+            let Some(node) = rust_binding(record) else {
+                continue;
+            };
+            if primitive(&record.name)
+                || matches!(
+                    record.name.as_str(),
+                    "ValueList" | "BlockCall" | "JumpTable"
+                )
+            {
+                return Err(Error::at(
+                    source,
+                    record.offset,
+                    "Rust type binding conflicts with a built-in type",
+                ));
+            }
+            let Kind::Call(_, args) = &node.kind else {
+                unreachable!()
+            };
+            let [
+                Node {
+                    kind: Kind::Text(path),
+                    ..
+                },
+            ] = args.as_slice()
+            else {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "rust requires one type path string",
+                ));
+            };
+            // Accept paths, not arbitrary Rust code, references or generic types.
+            let mut parts = path.split("::");
+            let first = parts.next().unwrap_or_default();
+            if first.is_empty() {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "Rust type path must be nonempty and qualified",
+                ));
+            }
+            if !matches!(first, "crate") {
+                model::identifier(source, node.offset, first)?;
+            }
+            let rest = parts.collect::<Vec<_>>();
+            if rest.is_empty() {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "Rust type path must be qualified",
+                ));
+            }
+            for part in rest {
+                model::identifier(source, node.offset, part)?;
+            }
+            if result
+                .external
+                .insert(record.name.clone(), path.clone())
+                .is_some()
+            {
+                return Err(Error::at(
+                    source,
+                    record.offset,
+                    "duplicate Rust type binding",
+                ));
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.external.contains_key(name)
+    }
+
+    pub fn rust(&self, name: &str) -> String {
+        self.external
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_owned())
+    }
+
+    pub fn qualified(&self, name: &str) -> String {
+        if self.contains(name) || primitive(name) {
+            self.rust(name)
+        } else {
+            format!("crate::inst::{name}")
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecordDef {
@@ -15,6 +129,7 @@ pub(crate) struct RecordDef {
 pub(crate) struct RecordField {
     pub name: String,
     pub ty: PropertyType,
+    pub rust: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,11 +140,11 @@ pub(crate) enum PropertyType {
 }
 
 impl PropertyType {
-    pub fn rust(&self) -> String {
+    pub fn rust(&self, types: &RustTypes) -> String {
         match self {
-            Self::Named(ty) => ty.clone(),
-            Self::Optional(ty) => format!("Option<{ty}>"),
-            Self::Values(n) => format!("[Value; {n}]"),
+            Self::Named(ty) => types.rust(ty),
+            Self::Optional(ty) => format!("Option<{}>", types.rust(ty)),
+            Self::Values(n) => format!("[{}; {n}]", types.rust("Value")),
         }
     }
 }
@@ -73,32 +188,16 @@ pub(crate) fn field_type(
     let Kind::Name(ty) = &inner.kind else {
         return Err(Error::at(source, node.offset, "expected data type name"));
     };
-    if !matches!(
-        ty.as_str(),
-        "i32"
-            | "i64"
-            | "f64"
-            | "u32"
-            | "u64"
-            | "u8"
-            | "bool"
-            | "Value"
-            | "ValueList"
-            | "BlockCall"
-            | "JumpTable"
-            | "FuncId"
-            | "SigId"
-            | "ConstantPoolId"
-            | "Intrinsic"
-            | "IntCC"
-            | "FloatCC"
-            | "Int"
-            | "Float"
-            | "VectorConst"
-            | "SymbolId"
-    ) && !crate::storage::operands::is_role(ty)
+    if !primitive(ty)
+        && !matches!(ty.as_str(), "ValueList" | "BlockCall" | "JumpTable")
+        && !crate::storage::operands::is_role(ty)
         && !records.iter().any(|r| {
-            r.name == *ty && matches!(r.kind.as_str(), "struct" | "enum" | "flags" | "encoding")
+            r.name == *ty
+                && (rust_binding(r).is_some()
+                    || matches!(
+                        r.kind.as_str(),
+                        "struct" | "enum" | "flags" | "encoding" | "comparison"
+                    ))
         })
     {
         return Err(Error::at(
@@ -114,7 +213,11 @@ pub(crate) fn field_type(
     })
 }
 
-pub(crate) fn compile(records: &[Record], source: &str) -> Result<Vec<RecordDef>, Error> {
+pub(crate) fn compile(
+    records: &[Record],
+    source: &str,
+    rust: &RustTypes,
+) -> Result<Vec<RecordDef>, Error> {
     let mut result = Vec::new();
     let mut names = BTreeSet::new();
     for record in records.iter().filter(|r| r.kind == "struct") {
@@ -130,9 +233,11 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Vec<RecordDef>
             .into_iter()
             .map(|(name, node)| {
                 model::identifier(source, node.offset, name)?;
+                let ty = field_type(records, source, node.clone())?;
                 Ok(RecordField {
                     name: name.clone(),
-                    ty: field_type(records, source, node.clone())?,
+                    rust: ty.rust(rust),
+                    ty,
                 })
             })
             .collect::<Result<_, Error>>()?;
@@ -154,7 +259,7 @@ pub(crate) fn generate(records: &[RecordDef]) -> String {
         )
         .unwrap();
         for field in &record.fields {
-            let ty = field.ty.rust();
+            let ty = &field.rust;
             writeln!(out, "pub {}: {ty},", field.name).unwrap();
         }
         out.push_str("}\n");
@@ -186,8 +291,9 @@ mod tests {
 
     fn checked(source: &str) -> Result<Vec<RecordDef>, Error> {
         {
-            let source =
-                format!("encoding MemFlags {{ fields: [volatile(1)], storage: u16 }}\n{source}");
+            let source = format!(
+                "type Value = rust(\"crate::Value\");\nencoding MemFlags {{ fields: [volatile(1)], storage: u16 }}\n{source}"
+            );
             crate::model::data::Types::compile(&crate::syntax::parse(&source)?, &source)
                 .map(|types| types.records)
         }

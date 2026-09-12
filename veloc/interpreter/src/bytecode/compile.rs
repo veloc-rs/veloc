@@ -3,8 +3,8 @@ use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, analyze_liveness};
 use veloc_mir::{
-    Block, FuncId, Function, Inst, InstructionView, Intrinsic, ModuleId, Opcode as IrOpcode,
-    Successor, Type, Value,
+    Block, FuncId, Function, Inst, InstView, Intrinsic, ModuleId, Opcode as IrOpcode, Successor,
+    Type, Value,
 };
 
 macro_rules! unary_dispatch_op {
@@ -297,7 +297,7 @@ fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
     let constant = func.dfg().as_scalar_const(val);
 
     match idata {
-        InstructionView::Binary { opcode, args } => {
+        InstView::Binary { opcode, args } => {
             let res = func.dfg().first_result(user_inst).unwrap();
             let ty = func.dfg().value_type(res);
             // Only I32 and I64 binary operations currently support immediate operands in bytecode
@@ -322,7 +322,7 @@ fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
                 _ => false,
             }
         }
-        InstructionView::Unary { opcode, .. } => {
+        InstView::Unary { opcode, .. } => {
             // Unary instructions can fuse integer, boolean, or float constants.
             if constant.is_none() {
                 return false;
@@ -345,10 +345,7 @@ fn identify_fused_values(func: &Function, rpo: &[Block]) -> std::collections::Ha
     for &block in rpo {
         for &inst in &func.layout().blocks()[block].insts {
             let idata = &func.dfg().inst(inst);
-            if matches!(
-                idata,
-                InstructionView::Iconst { .. } | InstructionView::Bconst { .. }
-            ) {
+            if matches!(idata, InstView::Iconst { .. } | InstView::Bconst { .. }) {
                 let res = func.dfg().first_result(inst).unwrap();
                 let users = || func.dfg().uses(res).map(|site| site.inst());
 
@@ -1295,21 +1292,21 @@ impl<'a> Compiler<'a> {
                     .collect::<Vec<_>>()
             };
             let site = match idata {
-                InstructionView::ClosureNew {
+                InstView::ClosureNew {
                     func_id,
                     captures,
                     cleanup,
                 } => self.closure_site(inst, *func_id, captures, Some(*cleanup)),
-                InstructionView::Closure {
+                InstView::Closure {
                     opcode: IrOpcode::ClosureLocal | IrOpcode::ClosureShared,
                     func_id,
                     captures,
                 } => self.closure_site(inst, *func_id, captures, None),
-                InstructionView::TailCall { func_id, args } => ControlSite::TailCall {
+                InstView::TailCall { func_id, args } => ControlSite::TailCall {
                     function: *func_id,
                     args: regs(args),
                 },
-                InstructionView::CallValue {
+                InstView::CallValue {
                     opcode: IrOpcode::TailCallValue,
                     callee,
                     args,
@@ -1318,7 +1315,7 @@ impl<'a> Compiler<'a> {
                     ty: self.func.dfg().value_type(*callee),
                     args: regs(args),
                 },
-                InstructionView::CallValue {
+                InstView::CallValue {
                     opcode: IrOpcode::CallValue,
                     callee,
                     args,
@@ -1328,7 +1325,7 @@ impl<'a> Compiler<'a> {
                     args: regs(args),
                     results: regs(self.func.dfg().inst_results(inst)),
                 },
-                InstructionView::Unary {
+                InstView::Unary {
                     opcode: IrOpcode::ClosureDrop,
                     arg,
                 } => ControlSite::Drop {
@@ -1343,37 +1340,37 @@ impl<'a> Compiler<'a> {
         }
 
         match idata {
-            InstructionView::Iconst { value } => {
+            InstView::Iconst { value } => {
                 let res = self.func.dfg().first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
                     let dst = self.mapper.reg(res);
                     emit_auto::Iconst(&mut self.code, dst, value.to_bits());
                 }
             }
-            InstructionView::Fconst { value } => {
+            InstView::Fconst { value } => {
                 let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit_auto::Fconst(&mut self.code, dst, value.to_bits());
             }
-            InstructionView::Vconst { .. } => {
+            InstView::Vconst { .. } => {
                 unreachable!("vector constants are rejected before bytecode compilation")
             }
-            InstructionView::Bconst { value } => {
+            InstView::Bconst { value } => {
                 let res = self.func.dfg().first_result(inst).unwrap();
                 if !self.mapper.fused_values.contains(&res) {
                     let dst = self.mapper.reg(res);
                     emit::Bconst(&mut self.code, dst, *value);
                 }
             }
-            InstructionView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args),
-            InstructionView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args),
-            InstructionView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args),
-            InstructionView::Alloca { .. } => {
+            InstView::Binary { opcode, args } => self.emit_binary(inst, *opcode, args),
+            InstView::IntCompare { kind, args, .. } => self.emit_icmp(inst, *kind, args),
+            InstView::FloatCompare { kind, args, .. } => self.emit_fcmp(inst, *kind, args),
+            InstView::Alloca { .. } => {
                 let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit::StackAddr(&mut self.code, dst, self.stack.offsets[inst]);
             }
-            InstructionView::Load { ptr, offset, .. } => {
+            InstView::Load { ptr, offset, .. } => {
                 let access = self.func.memory_access(inst).expect("load access contract");
                 if !access.flags.is_volatile()
                     && let Some((object, offset)) = self
@@ -1391,7 +1388,7 @@ impl<'a> Compiler<'a> {
                     self.emit_load(inst, *ptr, *offset);
                 }
             }
-            InstructionView::Store {
+            InstView::Store {
                 ptr, value, offset, ..
             } => {
                 let access = self
@@ -1414,31 +1411,31 @@ impl<'a> Compiler<'a> {
                     self.emit_store(*ptr, *value, *offset);
                 }
             }
-            InstructionView::Jump { dest } => self.emit_jump(*dest),
-            InstructionView::Br {
+            InstView::Jump { dest } => self.emit_jump(*dest),
+            InstView::Br {
                 condition,
                 then_dest,
                 else_dest,
             } => {
                 self.emit_br(*condition, *then_dest, *else_dest);
             }
-            InstructionView::BrTable { index, table } => self.emit_br_table(*index, *table),
-            InstructionView::Return { values } => self.emit_return(*values),
-            InstructionView::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg),
-            InstructionView::IntToPtr { arg } | InstructionView::PtrToInt { arg, .. } => {
+            InstView::BrTable { index, table } => self.emit_br_table(*index, *table),
+            InstView::Return { values } => self.emit_return(*values),
+            InstView::Unary { opcode, arg, .. } => self.emit_unary(inst, *opcode, *arg),
+            InstView::IntToPtr { arg } | InstView::PtrToInt { arg, .. } => {
                 let arg_reg = self.mapper.reg(*arg);
                 let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit::RegMove(&mut self.code, dst, arg_reg);
             }
-            InstructionView::Call { func_id, args, .. } => self.emit_call(inst, *func_id, *args),
-            InstructionView::CallIndirect { ptr, args, sig_id } => {
+            InstView::Call { func_id, args, .. } => self.emit_call(inst, *func_id, *args),
+            InstView::CallIndirect { ptr, args, sig_id } => {
                 self.emit_call_indirect(inst, *ptr, *args, *sig_id)
             }
-            InstructionView::CallIntrinsic {
+            InstView::CallIntrinsic {
                 intrinsic, args, ..
             } => self.emit_call_intrinsic(inst, *intrinsic, *args),
-            InstructionView::PtrIndex { ptr, index, imm_id } => {
+            InstView::PtrIndex { ptr, index, imm_id } => {
                 let ptr_reg = self.mapper.reg(*ptr);
                 let index_reg = self.mapper.reg(*index);
                 let res = self.func.dfg().first_result(inst).unwrap();
@@ -1453,16 +1450,16 @@ impl<'a> Compiler<'a> {
                     imm.offset as u32,
                 );
             }
-            InstructionView::PtrOffset { ptr, offset } => {
+            InstView::PtrOffset { ptr, offset } => {
                 let ptr_reg = self.mapper.reg(*ptr);
                 let res = self.func.dfg().first_result(inst).unwrap();
                 let dst = self.mapper.reg(res);
                 emit_auto::I64AddImm(&mut self.code, dst, ptr_reg, *offset as u64);
             }
-            InstructionView::Unreachable => {
+            InstView::Unreachable => {
                 emit::Unreachable(&mut self.code);
             }
-            InstructionView::Ternary { opcode, args } if *opcode == IrOpcode::Select => {
+            InstView::Ternary { opcode, args } if *opcode == IrOpcode::Select => {
                 let cond_reg = self.mapper.reg(args[0]);
                 let then_reg = self.mapper.reg(args[1]);
                 let else_reg = self.mapper.reg(args[2]);
@@ -1470,7 +1467,7 @@ impl<'a> Compiler<'a> {
                 let dst = self.mapper.reg(res);
                 emit::Select(&mut self.code, dst, cond_reg, then_reg, else_reg);
             }
-            InstructionView::Nop => {}
+            InstView::Nop => {}
             _ => todo!("Unsupported instruction: {:?}", idata),
         }
     }

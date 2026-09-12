@@ -43,7 +43,7 @@ pub(crate) fn constructor(
                 }
                 Binding::Pool(name) => {
                     let value = local(name);
-                    let ty = field.ty.qualified_type();
+                    let ty = field.rust.clone();
                     format!("{ty}::insert(&mut {dfg}, {value})")
                 }
                 Binding::Table { cases, default } => {
@@ -93,7 +93,7 @@ pub(crate) fn projections(
                 }
             }
             Binding::Pool(name) => {
-                let ty = storage.ty.qualified_type();
+                let ty = storage.rust.clone();
                 let value = required(format!("{ty}::get({value}, {dfg})"));
                 locals.push((name.clone(), value));
             }
@@ -149,6 +149,7 @@ pub(crate) fn prepare_alternatives(
             source,
             alt.constraints.clone(),
             &op,
+            &BTreeMap::new(),
             crate::model::Vocabulary {
                 types: &defs.types,
                 data: &defs.data,
@@ -211,7 +212,6 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
             signature: TypeDef {
                 operands: TypeList::Fixed(Vec::new()),
                 results: TypeList::Fixed(Vec::new()),
-                relations: Vec::new(),
             },
             params,
             projection: crate::model::Projection::Packed(packing),
@@ -236,7 +236,7 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
 
 pub(crate) fn accessors(defs: &Definitions) -> String {
     let mut output = String::from(
-        "impl<'a> crate::InstructionView<'a> {\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, mut f: impl FnMut(crate::Successor<'a>)) {\nself.try_visit_successors::<core::convert::Infallible>(|edge| { f(edge); Ok(()) }).unwrap_or_else(|never| match never {});\n}\n/// Visit successors in storage order, stopping at the first error.\npub fn try_visit_successors<E>(&self, mut f: impl FnMut(crate::Successor<'a>) -> core::result::Result<(), E>) -> core::result::Result<(), E> {\n        match self {\n",
+        "impl<'a> crate::InstView<'a> {\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, mut f: impl FnMut(crate::Successor<'a>)) {\nself.try_visit_successors::<core::convert::Infallible>(|edge| { f(edge); Ok(()) }).unwrap_or_else(|never| match never {});\n}\n/// Visit successors in storage order, stopping at the first error.\npub fn try_visit_successors<E>(&self, mut f: impl FnMut(crate::Successor<'a>) -> core::result::Result<(), E>) -> core::result::Result<(), E> {\n        match self {\n",
     );
     for format in &defs.storage.formats {
         let edges: Vec<_> = format.fields.iter().filter(|field| {
@@ -253,7 +253,7 @@ pub(crate) fn accessors(defs: &Definitions) -> String {
             .join(", ");
         writeln!(
             output,
-            "            crate::InstructionView::{} {{ {bindings}, .. }} => {{",
+            "            crate::InstView::{} {{ {bindings}, .. }} => {{",
             format.name
         )
         .unwrap();
@@ -337,8 +337,8 @@ pub(crate) fn prepare_builder(op: &Op, source: &str) -> Result<Option<Builder>, 
 pub(crate) fn builder(
     op: &Op,
     format: &Format,
-    records: &[crate::model::records::RecordDef],
     builder: &Builder,
+    rust: &crate::model::records::RustTypes,
 ) -> String {
     let name = op.method_name();
     let results = op
@@ -354,10 +354,7 @@ pub(crate) fn builder(
             ParamKind::Value => "crate::Value".to_owned(),
             ParamKind::Values => "&[crate::Value]".to_owned(),
             ParamKind::Property(ty) if ty == "Bytes" => "alloc::vec::Vec<u8>".into(),
-            ParamKind::Property(ty) if records.iter().any(|record| record.name == *ty) => {
-                format!("crate::inst::{ty}")
-            }
-            ParamKind::Property(ty) => FieldType::Named(ty.clone()).qualified_type(),
+            ParamKind::Property(ty) => rust.qualified(ty),
             ParamKind::Successor | ParamKind::Successors => {
                 unreachable!("contextual builder was excluded")
             }

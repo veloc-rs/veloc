@@ -166,7 +166,7 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
 
 fn properties(defs: &Definitions, plan: &Plan) -> String {
     let mut ops = String::from(
-        "#[allow(unused_variables)] pub(crate) fn properties(data: &veloc_mir::InstructionView<'_>) -> smallvec::SmallVec<[IntCC; 1]> { match data.opcode() {\n",
+        "#[allow(unused_variables)] pub(crate) fn properties(data: &veloc_mir::InstView<'_>) -> smallvec::SmallVec<[IntCC; 1]> { match data.opcode() {\n",
     );
     for prepared in &plan.operations {
         let op = &defs.ops[prepared.opcode];
@@ -174,7 +174,7 @@ fn properties(defs: &Definitions, plan: &Plan) -> String {
         if fields.is_empty() {
             continue;
         }
-        writeln!(ops, "Opcode::{} => {{ let veloc_mir::InstructionView::{} {{ {}, .. }} = data else {{ unreachable!(\"checked semantic property layout\") }}; smallvec::smallvec![{}] }},", op.name, op.format, fields.join(", "), fields.iter().map(|f| format!("*{f}")).collect::<Vec<_>>().join(", ")).unwrap();
+        writeln!(ops, "Opcode::{} => {{ let veloc_mir::InstView::{} {{ {}, .. }} = data else {{ unreachable!(\"checked semantic property layout\") }}; smallvec::smallvec![{}] }},", op.name, op.format, fields.join(", "), fields.iter().map(|f| format!("*{f}")).collect::<Vec<_>>().join(", ")).unwrap();
     }
     ops.push_str("_ => smallvec::smallvec![],\n} }\n");
     ops

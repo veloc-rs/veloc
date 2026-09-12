@@ -5,7 +5,6 @@ use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
 use veloc_mir::{Block, FloatCC, IntCC, Type};
 
-use crate::extra::CallInfo;
 use crate::symbol::SymbolId;
 
 /// Abstract register bank; target-specific selection belongs to codegen.
@@ -204,17 +203,34 @@ pub enum CallCallee {
     Indirect(Reg),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallShape {
-    pub defs: SmallVec<[Reg; 2]>,
-    pub callee: CallCallee,
-    pub args: SmallVec<[Reg; 4]>,
+/// Borrowed, structurally checked register operands. Construction is private so
+/// iteration never silently skips a malformed operand.
+#[derive(Debug, Clone, Copy)]
+pub struct RegList<'a>(&'a [MachineOperand]);
+
+impl RegList<'_> {
+    pub fn len(self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn iter(self) -> impl ExactSizeIterator<Item = Reg> + DoubleEndedIterator {
+        self.0.iter().map(|operand| match operand {
+            MachineOperand::Def(reg) => reg.to_reg(),
+            MachineOperand::Use(reg) => *reg,
+            _ => unreachable!("checked register list"),
+        })
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallInst<'a> {
-    pub shape: CallShape,
-    pub info: &'a CallInfo,
+#[derive(Debug, Clone, Copy)]
+pub struct CallShape<'a> {
+    pub defs: RegList<'a>,
+    pub callee: CallCallee,
+    pub args: RegList<'a>,
 }
 
 // Variable-arity calls/returns and target-independent construction helpers.
@@ -383,40 +399,6 @@ impl MachineInst {
         }
     }
 
-    /// 返回该通用 LIR 指令对应的 schema。
-    pub fn generic_schema(&self) -> Option<GenericInstSchema> {
-        self.generic_opcode().map(GenericInstSchema::for_opcode)
-    }
-
-    /// 按 schema 解码通用 LIR 指令。
-    pub fn decode_generic(&self) -> crate::error::Result<DecodedGenericInst> {
-        match self.generic_schema() {
-            Some(schema) => decode_simple_generic(self, schema),
-            None => Err(self.decode_error("no registered schema for opcode")),
-        }
-    }
-
-    pub fn as_call_shape(&self) -> CallShape {
-        self.as_call_shape_data()
-            .unwrap_or_else(|err| panic!("{}", err))
-            .shape
-    }
-
-    fn expect_schema(&self, expected: GenericInstSchema) -> crate::error::Result<()> {
-        match self.generic_schema() {
-            Some(actual) if actual == expected => Ok(()),
-            Some(actual) => Err(self.decode_error_owned(alloc::format!(
-                "schema mismatch: expected {:?}, got {:?}",
-                expected,
-                actual
-            ))),
-            None => Err(self.decode_error_owned(alloc::format!(
-                "opcode {:?} does not have a registered schema",
-                self.opcode
-            ))),
-        }
-    }
-
     fn expect_def_reg(&self, index: usize, message: &str) -> crate::error::Result<Reg> {
         match self.operands.get(index) {
             Some(MachineOperand::Def(w)) => Ok(w.to_reg()),
@@ -503,33 +485,35 @@ impl MachineInst {
         }
     }
 
-    fn collect_use_regs_from(
+    fn borrow_use_regs_from(
         &self,
         index: usize,
         message: &str,
-    ) -> crate::error::Result<SmallVec<[Reg; 2]>> {
-        let mut regs = SmallVec::new();
-        for operand in &self.operands[index..] {
-            match operand {
-                MachineOperand::Use(reg) => regs.push(*reg),
-                _ => return Err(self.decode_error(message)),
-            }
+    ) -> crate::error::Result<RegList<'_>> {
+        let operands = self
+            .operands
+            .get(index..)
+            .ok_or_else(|| self.decode_error(message))?;
+        if operands
+            .iter()
+            .any(|op| !matches!(op, MachineOperand::Use(_)))
+        {
+            return Err(self.decode_error(message));
         }
-        Ok(regs)
+        Ok(RegList(operands))
     }
 
     fn decode_call_shape_field(
         &self,
         _index: usize,
         _message: &str,
-    ) -> crate::error::Result<CallShape> {
-        let mut defs = SmallVec::<[Reg; 2]>::new();
+    ) -> crate::error::Result<CallShape<'_>> {
         let mut index = 0;
-        while let Some(MachineOperand::Def(w)) = self.operands.get(index) {
-            defs.push(w.to_reg());
+        while let Some(MachineOperand::Def(_)) = self.operands.get(index) {
             index += 1;
         }
 
+        let defs = RegList(&self.operands[..index]);
         let callee = match self.generic_opcode() {
             Some(GenericOpcode::G_CALL) => match self.operands.get(index) {
                 Some(MachineOperand::Global(sym)) => {
@@ -556,13 +540,7 @@ impl MachineInst {
             _ => return Err(self.decode_error("call decoder received a non-call opcode")),
         };
 
-        let mut args = SmallVec::<[Reg; 4]>::new();
-        for operand in &self.operands[index..] {
-            match operand {
-                MachineOperand::Use(reg) => args.push(*reg),
-                _ => return Err(self.decode_error("call arguments must be use operands")),
-            }
-        }
+        let args = self.borrow_use_regs_from(index, "call arguments must be use operands")?;
         Ok(CallShape { defs, callee, args })
     }
 
@@ -575,214 +553,5 @@ impl MachineInst {
             opcode: self.opcode.clone(),
             reason: message,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decode_constant_uses_registered_schema() {
-        let inst = MachineInst::build_constant(Writable(Reg::new_vreg(0)), 42);
-        assert_eq!(inst.generic_schema(), Some(GenericInstSchema::Constant));
-        assert_eq!(
-            inst.as_constant().unwrap(),
-            ConstantInst {
-                dst: Reg::new_vreg(0),
-                imm: 42,
-            }
-        );
-    }
-
-    #[test]
-    fn decode_load_normalizes_simple() {
-        let inst = MachineInst::build_load(Writable(Reg::new_vreg(0)), Reg::new_vreg(1));
-        assert_eq!(
-            inst.as_load().unwrap(),
-            LoadInst {
-                dst: Reg::new_vreg(0),
-                base: Reg::new_vreg(1),
-            }
-        );
-    }
-
-    #[test]
-    fn decode_binary_and_unary_forms() {
-        let binary = MachineInst::build_binary(
-            MachineOpcode::Generic(GenericOpcode::G_ADD),
-            Writable(Reg::new_vreg(0)),
-            Reg::new_vreg(1),
-            Reg::new_vreg(2),
-        );
-        let unary = MachineInst::build_copy(Writable(Reg::new_vreg(3)), Reg::new_vreg(4));
-
-        assert_eq!(
-            binary.as_binary_reg().unwrap(),
-            BinaryRegInst {
-                dst: Reg::new_vreg(0),
-                lhs: Reg::new_vreg(1),
-                rhs: Reg::new_vreg(2),
-            }
-        );
-        assert_eq!(
-            unary.as_unary_reg().unwrap(),
-            UnaryRegInst {
-                dst: Reg::new_vreg(3),
-                src: Reg::new_vreg(4),
-            }
-        );
-    }
-
-    #[test]
-    fn decode_icmp_and_fcmp_use_typed_condition_codes() {
-        let unary = MachineInst::build_unary(
-            MachineOpcode::Generic(GenericOpcode::G_ICMP),
-            Writable(Reg::new_vreg(0)),
-            Reg::new_vreg(1),
-        );
-        let binary = MachineInst::build_icmp(
-            Writable(Reg::new_vreg(2)),
-            Reg::new_vreg(3),
-            Reg::new_vreg(4),
-            IntCC::Eq,
-        );
-        let fcmp = MachineInst::build_fcmp(
-            Writable(Reg::new_vreg(5)),
-            Reg::new_vreg(6),
-            Reg::new_vreg(7),
-            FloatCC::Lt,
-        );
-
-        assert!(unary.as_icmp().is_err());
-        assert_eq!(
-            binary.as_icmp().unwrap(),
-            ICmpInst {
-                dst: Reg::new_vreg(2),
-                lhs: Reg::new_vreg(3),
-                rhs: Reg::new_vreg(4),
-                cc: IntCC::Eq,
-            }
-        );
-        assert_eq!(
-            fcmp.as_fcmp().unwrap(),
-            FCmpInst {
-                dst: Reg::new_vreg(5),
-                lhs: Reg::new_vreg(6),
-                rhs: Reg::new_vreg(7),
-                cc: FloatCC::Lt,
-            }
-        );
-    }
-
-    #[test]
-    fn decode_select_and_branch_forms() {
-        let select = MachineInst::build_select(
-            Writable(Reg::new_vreg(0)),
-            Reg::new_vreg(1),
-            Reg::new_vreg(2),
-            Reg::new_vreg(3),
-        );
-        let br = MachineInst::build_br(Block::from_u32(7));
-        let br_cond =
-            MachineInst::build_brcond(Reg::new_vreg(4), Block::from_u32(8), Block::from_u32(9));
-
-        assert_eq!(
-            select.as_select().unwrap(),
-            SelectInst {
-                dst: Reg::new_vreg(0),
-                cond: Reg::new_vreg(1),
-                v1: Reg::new_vreg(2),
-                v2: Reg::new_vreg(3),
-            }
-        );
-        assert_eq!(
-            br.as_branch().unwrap(),
-            BranchInst {
-                target: Block::from_u32(7),
-            }
-        );
-        assert_eq!(
-            br_cond.as_branch_cond().unwrap(),
-            BranchCondInst {
-                cond: Reg::new_vreg(4),
-                then_blk: Block::from_u32(8),
-                else_blk: Block::from_u32(9),
-            }
-        );
-    }
-
-    #[test]
-    fn decode_call_shapes() {
-        let direct = MachineInst::build_call(
-            [Writable(Reg::new_vreg(0))],
-            SymbolId::from_u32(3),
-            [Reg::new_vreg(1), Reg::new_vreg(2)],
-        );
-        let indirect = MachineInst::build_call_indirect(
-            [Writable(Reg::new_vreg(4))],
-            Reg::new_vreg(5),
-            [Reg::new_vreg(6)],
-        );
-
-        assert_eq!(
-            direct.as_call_shape(),
-            CallShape {
-                defs: smallvec::smallvec![Reg::new_vreg(0)],
-                callee: CallCallee::Direct(SymbolId::from_u32(3)),
-                args: smallvec::smallvec![Reg::new_vreg(1), Reg::new_vreg(2)],
-            }
-        );
-        assert_eq!(
-            indirect.as_call_shape(),
-            CallShape {
-                defs: smallvec::smallvec![Reg::new_vreg(4)],
-                callee: CallCallee::Indirect(Reg::new_vreg(5)),
-                args: smallvec::smallvec![Reg::new_vreg(6)],
-            }
-        );
-    }
-
-    #[test]
-    fn decode_arg_ret_fconstant_and_unreachable() {
-        let arg = MachineInst::build_arg(Writable(Reg::new_vreg(0)), 3);
-        let ret = MachineInst::build_ret(smallvec::smallvec![Reg::new_vreg(1), Reg::new_vreg(2)]);
-        let fconst = MachineInst::build_fconstant(Writable(Reg::new_vreg(3)), 1.5);
-        let unreachable = MachineInst::build_unreachable();
-
-        assert_eq!(arg.generic_schema(), Some(GenericInstSchema::Arg));
-        assert_eq!(
-            arg.as_arg().unwrap(),
-            ArgInst {
-                dst: Reg::new_vreg(0),
-                index: 3,
-            }
-        );
-
-        assert_eq!(ret.generic_schema(), Some(GenericInstSchema::Return));
-        assert_eq!(
-            ret.as_ret().unwrap(),
-            RetInst {
-                values: smallvec::smallvec![Reg::new_vreg(1), Reg::new_vreg(2)],
-            }
-        );
-
-        assert_eq!(
-            fconst.generic_schema(),
-            Some(GenericInstSchema::FloatConstant)
-        );
-        assert_eq!(
-            fconst.as_fconstant().unwrap(),
-            FConstantInst {
-                dst: Reg::new_vreg(3),
-                imm: 1.5,
-            }
-        );
-
-        assert_eq!(
-            unreachable.generic_schema(),
-            Some(GenericInstSchema::Unreachable)
-        );
-        assert_eq!(unreachable.as_unreachable().unwrap(), UnreachableInst {});
     }
 }

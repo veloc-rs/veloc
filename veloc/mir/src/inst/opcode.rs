@@ -36,8 +36,8 @@ pub enum TypeError {
         expected: &'static str,
         got: crate::Type,
     },
-    /// Static diagnostic emitted with the failed type-relation check.
-    Relation(&'static str),
+    /// Static diagnostic emitted with a failed type-only requirement.
+    Constraint(&'static str),
 }
 
 /// Shared executable rules generated from the definitions.

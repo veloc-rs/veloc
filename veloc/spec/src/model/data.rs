@@ -20,7 +20,7 @@ pub(crate) fn fits_number(ty: &str, n: i128) -> bool {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Value {
     Number(i128),
     Bool(bool),
@@ -77,22 +77,26 @@ pub(crate) struct EnumDef {
 
 #[derive(Debug, Default)]
 pub(crate) struct Types {
+    pub rust: super::records::RustTypes,
+    pub names: BTreeSet<String>,
     pub records: Vec<RecordDef>,
     pub enums: Vec<EnumDef>,
 }
 
 impl Types {
     pub fn compile(declarations: &[Record], source: &str) -> Result<Self, Error> {
-        let records = crate::model::records::compile(declarations, source)?;
+        let rust = super::records::RustTypes::compile(declarations, source)?;
+        let records = crate::model::records::compile(declarations, source, &rust)?;
         let mut enums = Vec::new();
         let mut names = BTreeSet::new();
         for decl in declarations.iter().filter(|d| {
             matches!(
                 d.kind.as_str(),
                 "struct" | "enum" | "flags" | "encoding" | "comparison"
-            )
+            ) && !(d.kind == "encoding" && d.name == "Type")
+                || super::records::rust_binding(d).is_some()
         }) {
-            if !names.insert(&decl.name) {
+            if !names.insert(decl.name.clone()) {
                 return Err(Error::at(
                     source,
                     decl.offset,
@@ -136,9 +140,14 @@ impl Types {
                 variants,
             });
         }
-        let types = Self { records, enums };
+        let types = Self {
+            rust,
+            names,
+            records,
+            enums,
+        };
         // All declared records/enums are inline values, so recursive layouts are illegal.
-        for name in names {
+        for name in &types.names {
             types.check_cycle(source, name, &mut BTreeSet::new(), &mut BTreeSet::new())?;
         }
         Ok(types)
@@ -240,7 +249,7 @@ impl Types {
             Error::at(
                 source,
                 node.offset,
-                format!("expected value of type {}", ty.rust()),
+                format!("expected value of type {}", ty.rust(&self.rust)),
             )
         };
         if let PropertyType::Optional(inner) = ty {
@@ -375,7 +384,7 @@ impl Types {
                         out,
                         "{name}({}),",
                         args.iter()
-                            .map(PropertyType::rust)
+                            .map(|ty| ty.rust(&self.rust))
                             .collect::<Vec<_>>()
                             .join(", ")
                     )

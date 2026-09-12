@@ -44,7 +44,7 @@ block0(v0: bool):
 
 // ----- reject-known-result-relation
 // run: fixture-validate-error
-// check: results[0] must have more bits per lane than operands[0]
+// check: result must have more bits per lane than arg
 local function sized_type(i32) -> i8
 block0(v0: i32):
   v1: i8 = sized v0

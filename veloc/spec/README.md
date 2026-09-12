@@ -116,6 +116,38 @@ Generated Rust artifacts follow their consumers, not the input file boundaries:
 Construction and validation remain separate. Optimizer evaluation, offline
 semantics and backend lowering retain separate artifacts and consumers.
 
+### Rust type bindings
+
+Use the same `type` declaration for IR value types and Rust-owned data types;
+the right-hand side selects the meaning:
+
+```text
+type I32 = int(32);
+type I32X4 = vector(I32, 4);
+type SigId = rust("crate::SigId");
+type Token = rust("crate::tokens::Token");
+```
+
+A Rust binding declares a nominal, opaque data type. It emits no struct, enum
+or alias. Property fields, enum payloads, host signatures and query results
+resolve the declared Rust path; generated builder and text-codec signatures
+use the same mapping. Different defs names remain distinct even when their
+Rust paths happen to be identical.
+
+Bindings do not introduce SSA value types, arithmetic, accessible fields,
+literal constructors or text codecs. IR result types and type sets still use
+structural definitions such as `int` and `vector`. External values flow through
+typed fields and declared host methods; their Rust implementations supply any
+required traits. In particular, a new binding alone does not enable a new
+text projection.
+
+Paths must be qualified by `crate` or an external crate name, with identifier
+segments only: no references, generic arguments, relative `self/super` paths
+or embedded Rust code. Ordinary imports load these declarations; primitives
+remain built in, and defs-owned structs/enums/comparisons register themselves.
+MIR operand-list and successor storage roles remain structural, not opaque
+Rust type bindings.
+
 ### Rust host interfaces
 
 `extern interface` declares a read-only, deterministic host capability, not a
@@ -544,7 +576,9 @@ op ExtendU<T: Integer | BOOL | vectors(BOOL)>(arg: T) -> (result: shape(T, Integ
     meta: OpInfo { memory: Known([]) },
     mnemonic: "extendu",
     storage: Unary { arg: arg },
-    where: [wider(arg, result)],
+    verify {
+        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+    }
     }
 
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
@@ -555,6 +589,24 @@ op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
     implements: [ReadAccess(ptr, i64(offset), result_type(0), flags)],
     }
 ```
+
+Type requirements use the same `verify { require(predicate, diagnostic); }`
+expressions as structural checks; the old `where` relation list is not supported.
+Named results are available through `type(result_name)`; anonymous results use
+`result_type(index)`. `element_bits(type)` is a logical per-lane width, while
+`bit_size(type)` preserves the whole-value fixed/scalable distinction. Undefined
+width queries (e.g. target-dependent pointers) fail the requirement; boolean
+short-circuiting can guard such queries.
+
+After expanding helper functions, constraints independent of SSA identities,
+properties and host queries are emitted into `Opcode::validate_types`. They are
+not repeated in the function's structural validator and never run during
+instruction construction. The build-time semantic instantiator evaluates these
+same expressions on admitted scalar/vector types before preparing lane recipes.
+It preserves checked arithmetic and short-circuiting, and does not promote a
+vector-only valid recipe into a scalar constant evaluator. Constraints requiring
+properties or DFG/host queries remain in the structural validator; alternate
+layout constraints remain local to that layout.
 
 ### Typed query interfaces
 
@@ -676,6 +728,24 @@ Only byte properties use `pool(bytes)`; structs such as `PtrIndexImm` and
 `VectorMemOptions` bind directly. Branch tables use `table(cases, default)`,
 with the default destination last.
 
+Both storage strategies use explicit `storage: Layout { ... }` mappings.
+Object fields support same-name shorthand: `Unary { arg }` means
+`Unary { arg: arg }`. Bare layout names are rejected. Declarations such as
+`struct` still require field types; shorthand is only for object values.
+
+In operand-array storage, definition fields bind named operation results and
+use/property fields bind logical parameters. Layout names, field names and
+physical field order do not have to match the signature. Optional uses require
+`some(input)` or `none`, tied fields use `tied(input, result)`, and the call-shape
+adapter uses `call(callee, args)` with signature-driven results. Every input and
+fixed result must be mapped exactly once. Builders encode the resolved mapping;
+arity is computed from explicit field presence, not inferred from candidate
+lengths. Only a trailing optional suffix can be absent.
+
+Packed MIR retains its existing SSA operand-order invariant and its `pool`,
+`table` and fixed-array adapters; unifying syntax does not change physical
+storage or introduce optional runtime wrappers.
+
 Record names and fields belong to definitions. Generated storage extracts Value
 and optional(Value) members as auxiliary operands and stores only non-SSA fields
 and presence bits. Adding a struct operand needs no DFG visitor or mutation
@@ -687,8 +757,11 @@ arities, constraints, semantic compatibility and generated method names before
 emitting Rust. Definitions may refer to later structs.
 A separate `layout Name { ... }` configures storage-specific projections without
 redeclaring fields: MIR predicated alternatives select canonical formats;
-LIR may override view/accessor names. LIR operand counts follow required and
-trailing optional roles, rather than a second explicit list of lengths. Diagnostics include source
+LIR derives view names from structs and does not accept layout overrides.
+Its opcode-dispatched `generic_view()` returns a `InstView`, with borrowed
+register lists for variable operands. Shared formats carry a generated restricted
+opcode enum. LIR operand counts follow explicit storage mappings, rather than a
+second explicit list of lengths. Diagnostics include source
 line and column; the build script maps combined input locations back to the source
 file.
 
@@ -724,20 +797,21 @@ takes every result type directly from its SSA declaration. Result counts and
 operand/result type consistency belong to the validator, not the parser.
 
 Selection uses signature structure, not opcode names. Equal operand/result
-patterns, type sets and relations share handlers, using structural equality of
-the checked definition model rather than serialized runtime descriptors.
-Exact pattern slots are retained so sharing preserves error diagnostics.
+patterns and type sets share structural handlers, using equality of the checked
+definition model rather than serialized runtime descriptors. Each opcode then
+runs its type-only requirements, even when its signature is shared with another
+opcode. Exact pattern slots are retained so sharing preserves error diagnostics.
 
 The definition compiler resolves type variables to concrete operand/result
 positions. Generated handlers check arity before indexing and retain the
 declaration's diagnostic order, without allocating bindings or interpreting
-patterns and relation slots. The number of variables is not limited to four.
+patterns or constraint records. The number of variables is not limited to four.
 Result construction knows statically whether results are fixed, require explicit
 types, or come from a function signature. It performs no type-class, operand
-equality or width-relation checks. Those checks run only during validation,
+equality or verification-expression checks. Those checks run only during validation,
 including for result types computed by generated builders.
 
-Type schemes, patterns and relations exist only in the definition compiler.
+Type schemes, patterns and constraint expressions exist only in the definition compiler.
 MIR contains no runtime `TypeScheme`, `TypeList`, `TypePattern`, relation table,
 or per-opcode type descriptor. Generated checks return `TypeError` with static
 diagnostic strings and relevant operand/result positions. Interned `TypeClass`
@@ -1075,7 +1149,7 @@ counts: MIR explicitly uses `bv.urem(rhs, bv.width())`. `bv.width()` and
 Rotations compose shifts and bitwise OR; `bv.clz/ctz/popcnt` provide bit counts.
 
 The definition compiler checks the recipe against all admitted scalar element
-types, respecting width relations and requiring shared lane shapes. It does not
+types, evaluating type-only requirements and requiring shared lane shapes. It does not
 claim to model reductions, scalar broadcasts, predication, or whole vectors.
 The same signature enumeration drives `evaluation.rs`: only legal scalar types
 representable by MIR `Constant` are emitted, including legal conversion pairs.
@@ -1116,7 +1190,7 @@ There is no separate UseIndex, per-instruction UseId list, storage-path locator,
 mirrored operand Value, or generation table.
 
 Definitions generate named layout constructors on `InstDraft`, borrowed
-`InstructionView` variants, and private SSA-free `InstFields`. A draft owns
+`InstView` variants, and private SSA-free `InstFields`. A draft owns
 one flat operand buffer; an installed instruction holds an arena range instead.
 Both use the same fields, group metadata and view projection. There is no owned
 instruction-shape enum or per-variant draft-to-storage conversion.

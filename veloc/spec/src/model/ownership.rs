@@ -88,7 +88,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
         groups.entry(body).or_default().push(&op.name);
     }
     let mut out = String::from(
-        "impl crate::InstructionView<'_> {\n/// Visit non-edge inputs and whether they transfer ownership.\npub(crate) fn try_visit_ownership<E>(&self, mut visit: impl FnMut(crate::Value, bool) -> core::result::Result<(), E>) -> core::result::Result<(), E> {\nmatch self.opcode() {\n",
+        "impl crate::InstView<'_> {\n/// Visit non-edge inputs and whether they transfer ownership.\npub(crate) fn try_visit_ownership<E>(&self, mut visit: impl FnMut(crate::Value, bool) -> core::result::Result<(), E>) -> core::result::Result<(), E> {\nmatch self.opcode() {\n",
     );
     for (body, ops) in groups {
         let arms = ops

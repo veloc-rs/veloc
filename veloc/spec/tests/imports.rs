@@ -258,3 +258,31 @@ fn output_plan_errors_keep_the_imported_source_location() {
     assert_eq!(error.diagnostic.line, 2);
     assert!(error.diagnostic.message.contains("InstBuilder method"));
 }
+
+#[test]
+fn rust_type_bindings_follow_imports_and_preserve_diagnostics() {
+    let files = Files::new();
+    files.write("types.ops", "type Token = rust(\"crate::tokens::Token\");");
+    files.write(
+        "consumer.ops",
+        r#"
+import "prelude.ops";
+import "types.ops";
+extern interface Tokens { fn read(value: Token) -> Token; }
+struct Entry { value: Token }
+"#,
+    );
+    let generated = files.load("consumer.ops").unwrap().compile().unwrap();
+    assert!(generated.host.contains("value: crate::tokens::Token"));
+    assert!(
+        generated
+            .instructions
+            .contains("pub value: crate::tokens::Token")
+    );
+    assert!(!generated.instructions.contains("pub struct Token"));
+
+    files.write("types.ops", "type Token = rust(\"crate::Token; invalid\");");
+    let error = files.load("consumer.ops").unwrap().compile().err().unwrap();
+    assert_eq!(error.path, files.0.join("types.ops"));
+    assert_eq!(error.diagnostic.line, 1);
+}

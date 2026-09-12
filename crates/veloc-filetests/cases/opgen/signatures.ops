@@ -16,7 +16,7 @@ op CallIndirect(@sig_id: SigId, args: values, ptr: PTR) -> signature {
 
 // ----- anonymous-results-have-no-synthetic-names-1
 // run: opgen-error
-// check: type relation references missing operand or result `result`
+// check: unknown expression name or operation: result
 struct Pair {
     args: values(2),
 }
@@ -24,11 +24,13 @@ op PairAdd<T: Integer>(left: T, right: T) -> Integer {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
-where: [wider(left, result)], }
+verify {
+        require(element_bits(type(result)) > element_bits(type(left)), "result must have more bits per lane than left");
+    } }
 
 // ----- anonymous-results-have-no-synthetic-names-2
 // run: opgen-error
-// check: type relation references missing operand or result `result0`
+// check: unknown expression name or operation: result0
 struct Pair {
     args: values(2),
 }
@@ -36,7 +38,9 @@ op PairAdd<T: Integer>(left: T, right: T) -> Integer {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
-where: [wider(left, result0)], }
+verify {
+        require(element_bits(type(result0)) > element_bits(type(left)), "result0 must have more bits per lane than left");
+    } }
 
 // ----- bare-result-types-leave-the-operation-body-unconsumed-1
 // run: opgen-error

@@ -1,3 +1,8 @@
+// Host representation of IR types and SSA identities, not SSA value types.
+type Type = rust("crate::Type");
+type TypeBits = rust("crate::TypeBits");
+type Value = rust("crate::Value");
+
 // The compact scalar/vector payload of Type, packed least significant bit first.
 // Structural callable types use a disjoint tag and module signature ID;
 // they never pass through this u16 bytecode encoding. Scalar code zero is invalid.

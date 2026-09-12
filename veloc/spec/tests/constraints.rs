@@ -61,7 +61,7 @@ mod numeric_{index} {{
     use super::*;
     enum Opcode {{ Example }}
     enum ViewData {{ Custom {{ bits: u64, yes: bool }} }}
-    type InstructionView<'a> = ViewData;
+    type InstView<'a> = ViewData;
     impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
     struct Function;
     impl Function {{ fn constraint_error(&self, _: Inst, message: &str) -> String {{ message.into() }} }}
@@ -106,7 +106,7 @@ op Example(@data: Bytes, @other: Bytes) -> Vector {{
 mod sequences_{index} {{
     use super::*;
     enum Opcode {{ Example }}
-    type InstructionView<'a> = ViewData;
+    type InstView<'a> = ViewData;
     enum ViewData {{ Buffers {{ first: inst::ConstantPoolId, second: inst::ConstantPoolId }} }}
     impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
     struct Function {{ dfg: Vec<Vec<u8>> }}
@@ -161,7 +161,7 @@ mod host_calls {{
     use super::*;
     enum Opcode {{ Example }}
     enum ViewData {{ Custom {{ bits: u64, yes: bool }} }}
-    type InstructionView<'a> = ViewData;
+    type InstView<'a> = ViewData;
     impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
     struct Function {{ dfg: (), signature: () }}
     impl Function {{ fn constraint_error(&self, _: Inst, message: &str) -> String {{ message.into() }} }}

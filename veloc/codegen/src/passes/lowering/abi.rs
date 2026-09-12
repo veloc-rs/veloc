@@ -111,10 +111,14 @@ fn lower_formal_arguments(
     mfunc
         .rewrite_block::<(), _>(0, |cursor| {
             let inst = cursor.current_inst_clone();
-            if inst.generic_opcode() == Some(GenericOpcode::G_ARG) {
-                let decoded = inst.as_arg().unwrap_or_else(|err| {
-                    panic!("invalid G_ARG while lowering `{}`: {}", func_name, err);
-                });
+            // Legalization may already have introduced target instructions.
+            if !inst.is_generic() {
+                cursor.keep_current();
+                return Ok(());
+            }
+            if let veloc_lir::InstView::Arg(decoded) =
+                inst.generic_view().expect("valid LIR argument")
+            {
                 let assignment = match plan.args.get(decoded.index) {
                     Some(assignment) => assignment,
                     None => panic!(
@@ -143,11 +147,13 @@ fn lower_callsite<S>(
     cursor: &mut veloc_lir::BlockRewriteCursor<'_, S>,
     plan: &CallConvPlan,
     inst_id: veloc_lir::InstId,
+    inst: &MachineInst,
 ) {
-    let shape = {
-        let call = cursor.mfunc().as_call(inst_id);
-        call.shape
+    // Borrow the caller's snapshot while mutating the function.
+    let veloc_lir::InstView::Call(call) = inst.generic_view().expect("valid call") else {
+        unreachable!("callsite lowering");
     };
+    let shape = call.shape;
     if shape.args.len() != plan.args.len() {
         panic!(
             "call argument count mismatch: LIR has {}, ABI plan has {}",
@@ -163,7 +169,7 @@ fn lower_callsite<S>(
         );
     }
 
-    for (src, assignment) in shape.args.iter().copied().zip(plan.args.iter()) {
+    for (src, assignment) in shape.args.iter().zip(plan.args.iter()) {
         let inst =
             build_store_to_assignment(target, cursor.mfunc_mut(), src, assignment, "call argument");
         cursor.emit_before(inst);
@@ -177,7 +183,7 @@ fn lower_callsite<S>(
         .arg_size
         .max(plan.stack_arg_bytes);
 
-    for (dst, assignment) in shape.defs.iter().copied().zip(plan.returns.iter()) {
+    for (dst, assignment) in shape.defs.iter().zip(plan.returns.iter()) {
         let inst =
             build_load_from_assignment(target, cursor.mfunc_mut(), assignment, dst, "call return");
         cursor.emit_before(inst);
@@ -189,12 +195,12 @@ fn lower_return<S>(
     mfunc: &mut MachineFunction<S>,
     sig: &veloc_mir::Signature,
     plan: &CallConvPlan,
-    inst_id: veloc_lir::InstId,
+    inst: &MachineInst,
 ) -> Vec<MachineInst> {
-    let values = mfunc.dfg[inst_id]
-        .as_ret()
-        .unwrap_or_else(|err| panic!("invalid G_RET during ABI lowering: {}", err))
-        .values;
+    let veloc_lir::InstView::Return(ret) = inst.generic_view().expect("valid return") else {
+        unreachable!("return lowering");
+    };
+    let values = ret.values;
     if values.len() != plan.returns.len() {
         panic!(
             "return value count mismatch: LIR has {}, ABI plan has {}",
@@ -211,7 +217,7 @@ fn lower_return<S>(
     }
 
     let mut pre = Vec::with_capacity(values.len());
-    for (src, assignment) in values.iter().copied().zip(plan.returns.iter()) {
+    for (src, assignment) in values.iter().zip(plan.returns.iter()) {
         pre.push(build_store_to_assignment(
             target,
             mfunc,
@@ -250,15 +256,15 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                         MachineOpcode::Generic(GenericOpcode::G_CALL)
                         | MachineOpcode::Generic(GenericOpcode::G_CALLIND) => {
                             let call_plan = {
-                                let call = cursor.mfunc().as_call(inst_id);
-                                plan_callsite(ctx.target, &call.info.sig).unwrap_or_else(|err| {
+                                let call = cursor.mfunc().call_info(inst_id);
+                                plan_callsite(ctx.target, &call.sig).unwrap_or_else(|err| {
                                     panic!(
                                     "failed to plan callsite for `{:?}` while lowering `{}`: {}",
-                                    call.info.sig, func_name, err
+                                    call.sig, func_name, err
                                 );
                                 })
                             };
-                            lower_callsite(ctx.target, cursor, &call_plan, inst_id);
+                            lower_callsite(ctx.target, cursor, &call_plan, inst_id, &inst);
                         }
                         MachineOpcode::Generic(GenericOpcode::G_RET) => {
                             let ret_plan = &plan;
@@ -267,7 +273,7 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                                 cursor.mfunc_mut(),
                                 ctx.func_sig,
                                 ret_plan,
-                                inst_id,
+                                &inst,
                             );
                             for inst in pre {
                                 cursor.emit_before(inst);

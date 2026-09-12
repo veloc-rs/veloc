@@ -1,6 +1,6 @@
 //! MIR validation: module types, instruction contracts, SSA and ownership.
 use crate::inst::Inst;
-use crate::{Block, Function, InstructionView, ModuleData, Opcode, Result, Successor, Type, Value};
+use crate::{Block, Function, InstView, ModuleData, Opcode, Result, Successor, Type, Value};
 use alloc::string::String;
 use core::fmt;
 use smallvec::SmallVec;
@@ -243,7 +243,7 @@ mod tests {
             .insts
             .last()
             .unwrap();
-        let crate::InstructionView::BrTable { index, .. } = func.dfg.inst(inst) else {
+        let crate::InstView::BrTable { index, .. } = func.dfg.inst(inst) else {
             unreachable!()
         };
         func.dfg

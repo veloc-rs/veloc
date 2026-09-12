@@ -1,8 +1,6 @@
 //! Compile independent result construction and type validation from signatures.
 //! Bindings exist only here: runtime code refers directly to operand/result slots.
-use crate::model::{
-    Binding, Definitions, Op, Pattern, Relation, SignatureSource, Slot, TypeDef, TypeList,
-};
+use crate::model::{Binding, Definitions, Op, Pattern, SignatureSource, TypeDef, TypeList};
 use crate::types::generate::Classes;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -32,7 +30,7 @@ pub(crate) fn generate(
     let (ids, groups) = validation_rules(defs, classes, "crate::Opcode", validation);
     // Only the dynamic construction path needs opcode dispatch. Generated
     // builders use the same result expressions directly on their arguments.
-    instructions.push_str("impl crate::InstructionView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch (self.opcode(), self) {\n");
+    instructions.push_str("impl crate::InstView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch (self.opcode(), self) {\n");
     for (signature, id) in &ids {
         if matches!(signature.results, TypeList::Signature) {
             // Equal type schemes can still resolve their signatures differently.
@@ -198,26 +196,6 @@ pub(crate) fn result_exprs(ty: &TypeDef) -> Option<Vec<ResultExpr>> {
         .collect()
 }
 
-fn slot(slot: Slot) -> String {
-    format!(
-        "{}[{}]",
-        if slot.result { "results" } else { "operands" },
-        slot.index
-    )
-}
-
-fn relation(r: &Relation) -> String {
-    let (lhs, rhs) = (slot(r.lhs), slot(r.rhs));
-    match r.kind.as_str() {
-        "wider" => format!("{rhs} must have more bits per lane than {lhs}"),
-        "narrower" => format!("{rhs} must have fewer bits per lane than {lhs}"),
-        "same_width_distinct" => {
-            format!("{lhs} and {rhs} must be distinct types with equal whole-value bit sizes")
-        }
-        _ => unreachable!("checked type relation"),
-    }
-}
-
 fn check_list(
     out: &mut String,
     list: &TypeList,
@@ -281,22 +259,6 @@ fn binding(bindings: &Bindings, var: u8) -> &str {
 
 fn check_results(out: &mut String, ty: &TypeDef, bindings: &Bindings, classes: &Classes) {
     check_list(out, &ty.results, true, &mut bindings.clone(), classes);
-    for r in &ty.relations {
-        let (lhs, rhs) = (slot(r.lhs), slot(r.rhs));
-        let condition = match r.kind.as_str() {
-            "wider" => format!(
-                "{lhs}.element_bits().zip({rhs}.element_bits()).is_some_and(|(from, to)| to > from)"
-            ),
-            "narrower" => format!(
-                "{lhs}.element_bits().zip({rhs}.element_bits()).is_some_and(|(from, to)| to < from)"
-            ),
-            "same_width_distinct" => format!(
-                "{lhs}.bit_size().zip({rhs}.bit_size()).is_some_and(|(a, b)| {lhs} != {rhs} && a == b)"
-            ),
-            _ => unreachable!("checked type relation"),
-        };
-        writeln!(out, "    if !({condition}) {{\n        return Err(super::TypeError::Relation({:?}));\n    }}", relation(r)).unwrap();
-    }
 }
 
 fn function(out: &mut String, name: &str, ty: &TypeDef, body: &str) {
@@ -360,17 +322,37 @@ fn validation_rules<'a>(
     }
     writeln!(validation, "impl {opcode} {{").unwrap();
     validation.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), super::TypeError> {\n    match self {\n");
-    for (id, names) in groups.iter().enumerate() {
-        let arms = names
-            .iter()
-            .map(|name| format!("Self::{name}"))
-            .collect::<Vec<_>>()
-            .join(" | ");
+    for op in &defs.ops {
+        let id = ids[&op.signature];
         writeln!(
             validation,
-            "        {arms} => validate_{id}(operands, results),"
+            "Self::{} => {{ validate_{id}(operands, results)?;",
+            op.name
         )
         .unwrap();
+        let mut emitter = crate::model::expr::Emitter::query(BTreeMap::new());
+        emitter.result_values = false;
+        emitter.operand_types = op
+            .params
+            .iter()
+            .filter(|p| p.kind == crate::model::ParamKind::Value)
+            .enumerate()
+            .map(|(i, p)| (p.name.clone(), format!("operands[{i}]")))
+            .collect();
+        for constraint in &op.constraints {
+            if !constraint.condition.type_only(&op.params) || constraint.condition.is_bool(true) {
+                continue;
+            }
+            let error = format!("super::TypeError::Constraint({:?})", constraint.text);
+            emitter.error = Some(error.clone());
+            writeln!(
+                validation,
+                "if !({}) {{ return Err({error}); }}",
+                emitter.term(&constraint.condition)
+            )
+            .unwrap();
+        }
+        validation.push_str("Ok(()) },\n");
     }
     validation.push_str("    }\n}\n}\n");
 

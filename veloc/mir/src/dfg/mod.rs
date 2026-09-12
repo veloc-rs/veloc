@@ -1,6 +1,4 @@
-use super::inst::{
-    ConstantPoolId, FieldPool, Inst, InstDraft, InstructionView, PackedFields, StoredInst,
-};
+use super::inst::{ConstantPoolId, FieldPool, Inst, InstDraft, InstView, PackedFields, StoredInst};
 use crate::constant::Constant;
 use crate::types::{Block, Type, Value, ValueData, ValueDef, ValueList, ValueListPool};
 use alloc::boxed::Box;
@@ -104,7 +102,7 @@ impl DataFlowGraph {
         self.instructions[inst].fields.opcode(&self.fields)
     }
 
-    pub fn inst(&self, inst: Inst) -> InstructionView<'_> {
+    pub fn inst(&self, inst: Inst) -> InstView<'_> {
         let data = &self.instructions[inst];
         data.fields
             .view(self.operands.get(data.operands), &self.fields)
@@ -115,7 +113,7 @@ impl DataFlowGraph {
         self.inst(inst).to_draft()
     }
 
-    pub fn instructions(&self) -> impl ExactSizeIterator<Item = (Inst, InstructionView<'_>)> {
+    pub fn instructions(&self) -> impl ExactSizeIterator<Item = (Inst, InstView<'_>)> {
         self.instructions
             .iter()
             .map(|(inst, _)| (inst, self.inst(inst)))
@@ -190,9 +188,9 @@ impl DataFlowGraph {
     pub fn as_scalar_const(&self, val: Value) -> Option<crate::ScalarConst> {
         let inst = self.value_inst(val)?;
         let value = match self.inst(inst) {
-            InstructionView::Iconst { value } => value.into(),
-            InstructionView::Fconst { value } => value.into(),
-            InstructionView::Bconst { value } => crate::ScalarConst::from(value),
+            InstView::Iconst { value } => value.into(),
+            InstView::Fconst { value } => value.into(),
+            InstView::Bconst { value } => crate::ScalarConst::from(value),
             _ => return None,
         };
         (self.value_type(val) == value.ty()).then_some(value)
@@ -204,8 +202,8 @@ impl DataFlowGraph {
         }
         let ty = self.value_type(val);
         match self.inst(self.value_inst(val)?) {
-            InstructionView::Vconst { value } => (value.ty() == ty).then(|| value.into()),
-            InstructionView::Unary {
+            InstView::Vconst { value } => (value.ty() == ty).then(|| value.into()),
+            InstView::Unary {
                 opcode: crate::Opcode::Splat,
                 arg,
             } => {

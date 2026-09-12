@@ -13,14 +13,20 @@ pub(crate) struct Operands {
 #[derive(Debug)]
 struct Format {
     name: String,
-    view: String,
-    accessor: String,
     fields: Vec<(String, Role)>,
-    lengths: Vec<usize>,
 }
 pub(crate) struct Projection {
     pub arity: usize,
     pub flow: String,
+    // Builder parameters are logical results followed by logical inputs.
+    args: Vec<Argument>,
+    // Expressions in physical field order, resolved from explicit bindings.
+    fields: Vec<String>,
+}
+
+struct Argument {
+    name: String,
+    role: Role,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -70,8 +76,8 @@ impl Role {
             Self::IntCC => "IntCC",
             Self::FloatCC => "FloatCC",
             Self::Index => "usize",
-            Self::Uses => "SmallVec<[Reg; 2]>",
-            Self::CallShape => "CallShape",
+            Self::Uses => "RegList<'a>",
+            Self::CallShape => "CallShape<'a>",
         }
     }
 
@@ -88,7 +94,7 @@ impl Role {
             Self::IntCC => "expect_intcc",
             Self::FloatCC => "expect_floatcc",
             Self::Index => "expect_nonnegative_imm_usize",
-            Self::Uses => "collect_use_regs_from",
+            Self::Uses => "borrow_use_regs_from",
             Self::CallShape => "decode_call_shape_field",
         }
     }
@@ -123,40 +129,10 @@ impl Role {
     fn variable(self) -> bool {
         matches!(self, Self::Uses | Self::CallShape)
     }
-    fn optional(self) -> bool {
-        matches!(self, Self::OptionalUse)
-    }
 }
 
 pub(crate) fn is_role(name: &str) -> bool {
     Role::from_name(name).is_some()
-}
-
-fn finish(source: &str, record: &Record) -> Result<(), Error> {
-    if let Some((key, value)) = record.fields.first_key_value() {
-        return Err(Error::at(
-            source,
-            value.offset,
-            format!("unknown field `{key}`"),
-        ));
-    }
-    Ok(())
-}
-
-fn snake(name: &str) -> String {
-    let chars: Vec<_> = name.chars().collect();
-    let mut out = String::new();
-    for (i, &c) in chars.iter().enumerate() {
-        if c.is_ascii_uppercase()
-            && i > 0
-            && (chars[i - 1].is_ascii_lowercase()
-                || chars.get(i + 1).is_some_and(char::is_ascii_lowercase))
-        {
-            out.push('_');
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 pub(crate) fn compile(
@@ -165,60 +141,43 @@ pub(crate) fn compile(
     prefix: String,
     data: &crate::model::data::Types,
 ) -> Result<Operands, Error> {
-    for binding in records.iter().filter(|r| r.kind == "layout") {
-        if !data.records.iter().any(|r| r.name == binding.name) {
-            return Err(Error::at(
-                source,
-                binding.offset,
-                format!("layout `{}` requires a struct declaration", binding.name),
-            ));
-        }
+    if let Some(binding) = records.iter().find(|r| r.kind == "layout") {
+        return Err(Error::at(
+            source,
+            binding.offset,
+            "operand views are derived from structs; layout overrides are not supported",
+        ));
     }
     let mut formats = BTreeMap::new();
-    let mut symbols = BTreeSet::new();
     for shape in &data.records {
         let users = records.iter().filter(|r| r.kind == "op").any(|op| {
             matches!(
                 op.fields.get("storage"),
-                Some(Node { kind: Kind::Name(name), .. }) if name == &shape.name
+                Some(Node { kind: Kind::Object(name, _), .. }) if name == &shape.name
             )
         });
         let roles = shape.fields.iter().any(
             |f| matches!(&f.ty, crate::model::records::PropertyType::Named(ty) if is_role(ty)),
         );
-        let binding = records
-            .iter()
-            .find(|r| r.kind == "layout" && r.name == shape.name);
-        if !users && !roles && binding.is_none() {
+        if !users && !roles {
             continue;
         }
-        let mut record = binding.cloned().unwrap_or_else(|| Record {
-            name: shape.name.clone(),
-            kind: "layout".into(),
-            offset: records
-                .iter()
-                .find(|r| r.kind == "struct" && r.name == shape.name)
-                .expect("checked record")
-                .offset,
-            fields: BTreeMap::new(),
-            signature: None,
-        });
+        let offset = records
+            .iter()
+            .find(|r| r.kind == "struct" && r.name == shape.name)
+            .expect("checked struct")
+            .offset;
         let fields = shape
             .fields
             .iter()
             .map(|f| {
                 let crate::model::records::PropertyType::Named(ty) = &f.ty else {
-                    return Err(Error::at(
-                        source,
-                        record.offset,
-                        "expected machine operand role",
-                    ));
+                    return Err(Error::at(source, offset, "expected machine operand role"));
                 };
                 Ok((
                     f.name.clone(),
-                    Role::from_name(ty).ok_or_else(|| {
-                        Error::at(source, record.offset, "unknown machine operand role")
-                    })?,
+                    Role::from_name(ty)
+                        .ok_or_else(|| Error::at(source, offset, "unknown machine operand role"))?,
                 ))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -226,57 +185,22 @@ pub(crate) fn compile(
         if variable && (fields.len() != 1) {
             return Err(Error::at(
                 source,
-                record.offset,
+                offset,
                 "variable codec must describe the entire operand sequence",
             ));
         }
-        let lengths = if variable {
-            Vec::new()
-        } else {
-            let required = fields
-                .iter()
-                .rposition(|(_, role)| !role.optional())
-                .map_or(0, |i| i + 1);
-            (required..=fields.len()).collect()
-        };
-        let view = record
-            .fields
-            .remove("view")
-            .map(|n| model::name(source, n))
-            .transpose()?
-            .unwrap_or_else(|| format!("{}Inst", record.name));
-        let accessor = record
-            .fields
-            .remove("accessor")
-            .map(|n| model::name(source, n))
-            .transpose()?
-            .unwrap_or_else(|| format!("as_{}", snake(&record.name)));
-        for symbol in [&view, &accessor] {
-            model::identifier(source, record.offset, symbol)?;
-            if !symbols.insert(symbol.clone()) {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "duplicate generated symbol",
-                ));
-            }
-        }
-        finish(source, &record)?;
-        let name = record.name.clone();
+        let name = shape.name.clone();
         if formats
             .insert(
                 name,
                 Format {
-                    name: record.name,
-                    view,
-                    accessor,
+                    name: shape.name.clone(),
                     fields,
-                    lengths,
                 },
             )
             .is_some()
         {
-            return Err(Error::at(source, record.offset, "duplicate machine format"));
+            return Err(Error::at(source, offset, "duplicate machine format"));
         }
     }
 
@@ -296,13 +220,16 @@ impl Operands {
             .to_ascii_lowercase()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn project(
         &self,
         source: &str,
         offset: usize,
         format: &str,
+        mappings: &BTreeMap<String, Node>,
         params: &[model::Param],
         signature: &model::TypeDef,
+        slots: &BTreeMap<String, model::Slot>,
         flow: Option<Node>,
     ) -> Result<Projection, Error> {
         let fail = |message| Error::at(source, offset, message);
@@ -317,76 +244,123 @@ impl Operands {
         if !matches!(flow.as_str(), "Next" | "Jump" | "Return" | "Call" | "Trap") {
             return Err(fail("unknown control flow kind"));
         }
-        let valid = |role: Role, param: &model::Param| match role {
-            Role::Use | Role::OptionalUse | Role::TiedDefUse => param.kind == ParamKind::Value,
-            _ => matches!(&param.kind, ParamKind::Property(ty) if ty == match role {
-                Role::Imm | Role::Index => "i64", Role::FImm => "f64", Role::StackSlot => "StackSlot",
-                Role::Block => "Block", Role::IntCC => "IntCC", Role::FloatCC => "FloatCC",
-                _ => "",
-            }),
+        for (field, node) in mappings {
+            if !shape.fields.iter().any(|(name, _)| name == field) {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    format!("unknown storage field '{field}'"),
+                ));
+            }
+        }
+        for (field, _) in &shape.fields {
+            if !mappings.contains_key(field) {
+                return Err(fail(&format!("missing storage field '{field}'")));
+            }
+        }
+        let mut binding = Bindings {
+            source,
+            params,
+            slots,
+            used_params: BTreeSet::new(),
+            used_results: BTreeSet::new(),
+            args: BTreeMap::new(),
         };
-        if let [(_, role)] = shape.fields.as_slice() {
-            match role {
+        let mut fields = Vec::new();
+        let mut omitted = false;
+        for (field, role) in &shape.fields {
+            let node = &mappings[field];
+            if *role == Role::OptionalUse
+                && matches!(&node.kind, Kind::Name(name) if name == "none")
+            {
+                omitted = true;
+                continue;
+            }
+            if omitted {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "only trailing optional operands may be absent",
+                ));
+            }
+            let value = match role {
+                Role::Def => binding.result(node, *role)?,
+                Role::TiedDefUse => {
+                    let [input, result] = call_args(source, node, "tied")? else {
+                        return Err(Error::at(
+                            source,
+                            node.offset,
+                            "tied requires an input and a result",
+                        ));
+                    };
+                    binding.input(input, *role, false)?;
+                    binding.result(result, *role)?
+                }
+                Role::OptionalUse => {
+                    let [input] = call_args(source, node, "some")? else {
+                        return Err(Error::at(
+                            source,
+                            node.offset,
+                            "optional use requires some(input) or none",
+                        ));
+                    };
+                    binding.input(input, *role, true)?
+                }
                 Role::Uses => {
-                    if params.len() != 1
-                        || params[0].kind != ParamKind::Values
-                        || signature.results != TypeList::Fixed(vec![])
-                    {
+                    if signature.results != TypeList::Fixed(vec![]) {
                         return Err(fail(
                             "use-list storage requires variadic inputs and no results",
                         ));
                     }
-                    return Ok(Projection { arity: 0, flow });
+                    binding.input(node, *role, false)?
                 }
                 Role::CallShape => {
-                    if params.len() != 2
-                        || params[1].kind != ParamKind::Values
-                        || !(params[0].kind == ParamKind::Value
-                            || params[0].kind == ParamKind::Property("SymbolId".into()))
-                        || signature.results != TypeList::Signature
-                        || flow != "Call"
-                    {
+                    let [callee, args] = call_args(source, node, "call")? else {
+                        return Err(Error::at(
+                            source,
+                            node.offset,
+                            "call requires a callee and variadic arguments",
+                        ));
+                    };
+                    if signature.results != TypeList::Signature || flow != "Call" {
                         return Err(fail(
-                            "call storage requires a callee, variadic arguments, signature results and Call flow",
+                            "call storage requires signature results and Call flow",
                         ));
                     }
-                    return Ok(Projection { arity: 0, flow });
+                    binding.input(callee, *role, false)?;
+                    binding.input(args, Role::Uses, false)?;
+                    String::new()
                 }
-                _ => {}
+                _ => binding.input(node, *role, true)?,
+            };
+            fields.push(value);
+        }
+        for (index, param) in params.iter().enumerate() {
+            if !binding.used_params.contains(&index) {
+                return Err(fail(&format!(
+                    "parameter '{}' has no storage mapping",
+                    param.name
+                )));
             }
         }
-        let TypeList::Fixed(results) = &signature.results else {
-            return Err(fail("fixed operand storage requires fixed results"));
-        };
-        let mut choices = Vec::new();
-        for &arity in &shape.lengths {
-            let fields = &shape.fields[..arity];
-            let defs = fields
-                .iter()
-                .filter(|(_, r)| matches!(r, Role::Def | Role::TiedDefUse))
-                .count();
-            let inputs = fields
-                .iter()
-                .filter(|(_, r)| *r != Role::Def)
-                .collect::<Vec<_>>();
-            if defs == results.len()
-                && inputs.len() == params.len()
-                && inputs
-                    .iter()
-                    .zip(params)
-                    .all(|((name, role), param)| name == &param.name && valid(*role, param))
-            {
-                choices.push(arity);
+        match &signature.results {
+            TypeList::Fixed(results) => {
+                for index in 0..results.len() {
+                    if !binding.used_results.contains(&index) {
+                        return Err(fail(&format!(
+                            "result {index} has no storage mapping; name it in the signature"
+                        )));
+                    }
+                }
             }
+            TypeList::Signature if shape.fields.iter().any(|(_, r)| *r == Role::CallShape) => {}
+            _ => return Err(fail("fixed operand storage requires fixed results")),
         }
-        let [arity] = choices.as_slice() else {
-            return Err(fail(
-                "operand storage does not uniquely match the logical signature",
-            ));
-        };
         Ok(Projection {
-            arity: *arity,
+            arity: fields.len(),
             flow,
+            args: binding.args.into_values().collect(),
+            fields,
         })
     }
 
@@ -406,99 +380,105 @@ impl Operands {
             .unwrap();
         }
         out.push_str("} }\n}\n");
+        let lifetime = if self
+            .formats
+            .values()
+            .any(|f| f.fields.iter().any(|(_, r)| r.variable()))
+        {
+            "<'a>"
+        } else {
+            ""
+        };
+        writeln!(
+            out,
+            "#[derive(Debug, Clone, Copy)] pub enum InstView{lifetime} {{"
+        )
+        .unwrap();
+        for f in self.formats.values() {
+            let borrowed = if f.fields.iter().any(|(_, r)| r.variable()) {
+                "<'a>"
+            } else {
+                ""
+            };
+            writeln!(out, "{}({}Inst{borrowed}),", f.name, f.name).unwrap();
+        }
+        out.push_str("}\n");
+        for f in self.formats.values() {
+            let ops: Vec<_> = defs.ops.iter().filter(|op| op.format == f.name).collect();
+            if ops.len() > 1 {
+                writeln!(out, "#[allow(non_camel_case_types)] #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum {}Opcode {{", f.name).unwrap();
+                for op in &ops {
+                    writeln!(
+                        out,
+                        "{},",
+                        op.name.strip_prefix(&self.prefix).unwrap_or(&op.name)
+                    )
+                    .unwrap();
+                }
+                out.push_str("}\n");
+            }
+            let borrowed = if f.fields.iter().any(|(_, r)| r.variable()) {
+                "<'a>"
+            } else {
+                ""
+            };
+            writeln!(
+                out,
+                "#[derive(Debug, Clone, Copy)] pub struct {}Inst{borrowed} {{",
+                f.name
+            )
+            .unwrap();
+            if ops.len() > 1 {
+                writeln!(out, "pub opcode: {}Opcode,", f.name).unwrap();
+            }
+            for (name, role) in &f.fields {
+                writeln!(out, "pub {name}: {},", role.view_type()).unwrap();
+            }
+            out.push_str("}\n");
+        }
+        let borrowed = if lifetime.is_empty() { "" } else { "<'_>" };
+        writeln!(out, "impl MachineInst {{ pub fn generic_view(&self) -> crate::error::Result<InstView{borrowed}> {{").unwrap();
+        out.push_str("Ok(match self.generic_opcode() {\n");
+        for op in &defs.ops {
+            let f = &self.formats[&op.format];
+            let shared = defs
+                .ops
+                .iter()
+                .filter(|other| other.format == f.name)
+                .count()
+                > 1;
+            writeln!(out, "Some(GenericOpcode::{}) => {{", op.name).unwrap();
+            if !f.fields.iter().any(|(_, r)| r.variable()) {
+                writeln!(out, "if self.operands.len() != {} {{ return Err(self.decode_error(\"invalid {} operand count\")); }}", op.operands().arity, f.name).unwrap();
+            }
+            writeln!(out, "InstView::{}({}Inst {{", f.name, f.name).unwrap();
+            if shared {
+                writeln!(
+                    out,
+                    "opcode: {}Opcode::{},",
+                    f.name,
+                    op.name.strip_prefix(&self.prefix).unwrap_or(&op.name)
+                )
+                .unwrap();
+            }
+            for (index, (name, role)) in f.fields.iter().enumerate() {
+                writeln!(
+                    out,
+                    "{name}: self.{}({index}, \"invalid {}.{name} operand\")?,",
+                    role.decoder(),
+                    f.name
+                )
+                .unwrap();
+            }
+            out.push_str("})\n},\n");
+        }
         out.push_str(
-            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum GenericInstSchema {\n",
+            "_ => return Err(self.decode_error(\"expected a generic opcode\")),\n})\n} }\n",
         );
-        for f in self.formats.values() {
-            writeln!(out, "{},", f.name).unwrap();
-        }
-        out.push_str("}\n#[derive(Debug, Clone, PartialEq)]\npub enum DecodedGenericInst {\n");
-        for f in self.formats.values() {
-            writeln!(out, "{}({}),", f.name, f.view).unwrap();
-        }
-        out.push_str("}\nimpl GenericInstSchema {\npub fn for_opcode(op: GenericOpcode) -> Self { match op {\n");
-        for inst in &defs.ops {
-            writeln!(
-                out,
-                "GenericOpcode::{} => Self::{},",
-                inst.name, inst.format
-            )
-            .unwrap();
-        }
-        out.push_str("} }\n}\nfn decode_simple_generic(inst: &MachineInst, schema: GenericInstSchema) -> crate::error::Result<DecodedGenericInst> { match schema {\n");
-        for f in self.formats.values() {
-            writeln!(
-                out,
-                "GenericInstSchema::{} => inst.{}().map(DecodedGenericInst::{}),",
-                f.name, f.accessor, f.name
-            )
-            .unwrap();
-        }
-        out.push_str("} }\n");
-        for f in self.formats.values() {
-            self.emit_format(&mut out, defs, f);
-        }
         for inst in &defs.ops {
             self.emit_builder(&mut out, inst);
         }
         out
-    }
-
-    fn emit_format(&self, out: &mut String, defs: &Definitions, f: &Format) {
-        writeln!(
-            out,
-            "#[derive(Debug, Clone, PartialEq)]\npub struct {} {{",
-            f.view
-        )
-        .unwrap();
-        for (name, role) in &f.fields {
-            writeln!(out, "pub {name}: {},", role.view_type()).unwrap();
-        }
-        writeln!(
-            out,
-            "}}\nimpl MachineInst {{ pub fn {}(&self) -> crate::error::Result<{}> {{",
-            f.accessor, f.view
-        )
-        .unwrap();
-        writeln!(out, "self.expect_schema(GenericInstSchema::{})?;", f.name).unwrap();
-        // Arity belongs to an opcode, even when several opcodes share a view.
-        if !f.lengths.is_empty() {
-            out.push_str(
-                "let valid_len = match self.generic_opcode().expect(\"schema checked\") {\n",
-            );
-            for inst in defs.ops.iter().filter(|i| i.format == f.name) {
-                let lengths = [inst.operands().arity];
-                writeln!(
-                    out,
-                    "GenericOpcode::{} => matches!(self.operands.len(), {}),",
-                    inst.name,
-                    lengths
-                        .iter()
-                        .map(usize::to_string)
-                        .collect::<Vec<_>>()
-                        .join(" | ")
-                )
-                .unwrap();
-            }
-            out.push_str("_ => unreachable!(\"schema checked\"),\n};\n");
-            writeln!(
-                out,
-                "if !valid_len {{ return Err(self.decode_error(\"invalid {} operand count\")); }}",
-                f.name
-            )
-            .unwrap();
-        }
-        writeln!(out, "Ok({} {{", f.view).unwrap();
-        for (index, (name, role)) in f.fields.iter().enumerate() {
-            writeln!(
-                out,
-                "{name}: self.{}({index}, \"invalid {}.{name} operand\")?,",
-                role.decoder(),
-                f.name
-            )
-            .unwrap();
-        }
-        out.push_str("}) } }\n");
     }
 
     fn emit_builder(&self, out: &mut String, inst: &Op) {
@@ -506,8 +486,7 @@ impl Operands {
         if f.fields.iter().any(|(_, r)| r.variable()) {
             return;
         }
-        let count = inst.operands().arity;
-        let fields = &f.fields[..count];
+        let projection = inst.operands();
         let name = inst
             .name
             .strip_prefix(&self.prefix)
@@ -516,14 +495,122 @@ impl Operands {
         writeln!(
             out,
             "impl MachineInst {{ pub fn build_{name}({}) -> Self {{",
-            fields
+            projection
+                .args
                 .iter()
-                .map(|(name, role)| format!("{name}: {}", role.builder_type()))
+                .map(|arg| format!("{}: {}", arg.name, arg.role.builder_type()))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
         .unwrap();
         writeln!(out, "Self::build_generic(MachineOpcode::Generic(GenericOpcode::{}), smallvec::smallvec![{}])\n}} }}", inst.name,
-            fields.iter().map(|(name, role)| role.encode(name)).collect::<Vec<_>>().join(", ")).unwrap();
+            f.fields.iter().zip(&projection.fields).map(|((_, role), name)| role.encode(name)).collect::<Vec<_>>().join(", ")).unwrap();
+    }
+}
+
+fn call_args<'a>(source: &str, node: &'a Node, expected: &str) -> Result<&'a [Node], Error> {
+    match &node.kind {
+        Kind::Call(name, args) if name == expected => Ok(args),
+        _ => Err(Error::at(
+            source,
+            node.offset,
+            format!("expected {expected}(...) storage binding"),
+        )),
+    }
+}
+
+/// Resolve logical names once; no opcode/field-name conventions or candidate arities.
+struct Bindings<'a> {
+    source: &'a str,
+    params: &'a [model::Param],
+    slots: &'a BTreeMap<String, model::Slot>,
+    used_params: BTreeSet<usize>,
+    used_results: BTreeSet<usize>,
+    args: BTreeMap<(bool, usize), Argument>,
+}
+
+impl Bindings<'_> {
+    fn input(&mut self, node: &Node, role: Role, argument: bool) -> Result<String, Error> {
+        let name = model::name(self.source, node.clone())?;
+        let (index, param) = self
+            .params
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == name)
+            .ok_or_else(|| {
+                Error::at(
+                    self.source,
+                    node.offset,
+                    format!("unknown input '{name}' in storage mapping"),
+                )
+            })?;
+        let valid = match role {
+            Role::Use | Role::OptionalUse | Role::TiedDefUse => param.kind == ParamKind::Value,
+            Role::Uses => param.kind == ParamKind::Values,
+            Role::CallShape => {
+                param.kind == ParamKind::Value
+                    || param.kind == ParamKind::Property("SymbolId".into())
+            }
+            _ => matches!(&param.kind, ParamKind::Property(ty) if ty == match role {
+                Role::Imm | Role::Index => "i64", Role::FImm => "f64",
+                Role::StackSlot => "StackSlot", Role::Block => "Block",
+                Role::IntCC => "IntCC", Role::FloatCC => "FloatCC", _ => "",
+            }),
+        };
+        if !valid {
+            return Err(Error::at(
+                self.source,
+                node.offset,
+                format!("input '{name}' is incompatible with its storage role"),
+            ));
+        }
+        if !self.used_params.insert(index) {
+            return Err(Error::at(
+                self.source,
+                node.offset,
+                format!("input '{name}' is stored more than once"),
+            ));
+        }
+        if argument {
+            self.args.insert(
+                (true, index),
+                Argument {
+                    name: name.clone(),
+                    role,
+                },
+            );
+        }
+        Ok(name)
+    }
+
+    fn result(&mut self, node: &Node, role: Role) -> Result<String, Error> {
+        let name = model::name(self.source, node.clone())?;
+        let slot = self
+            .slots
+            .get(&name)
+            .filter(|slot| slot.result)
+            .ok_or_else(|| {
+                Error::at(
+                    self.source,
+                    node.offset,
+                    format!("unknown result '{name}' in storage mapping"),
+                )
+            })?;
+        let index = usize::from(slot.index);
+        if !self.used_results.insert(index) {
+            return Err(Error::at(
+                self.source,
+                node.offset,
+                format!("result '{name}' is stored more than once"),
+            ));
+        }
+        self.args.insert(
+            (false, index),
+            Argument {
+                name: name.clone(),
+                role,
+            },
+        );
+        Ok(name)
     }
 }

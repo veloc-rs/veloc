@@ -155,6 +155,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                             + &generated.instructions
                             + &generated.validation
                             + &generated.opcodes
+                            + &generated.type_rules
                     })
                     .map_err(|error| error.to_string())
             }

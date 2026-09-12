@@ -71,6 +71,7 @@ struct Layout {
 pub(crate) struct Field {
     pub(crate) name: String,
     pub(crate) ty: FieldType,
+    pub(crate) rust: String,
 }
 
 #[derive(Clone, Debug)]
@@ -107,30 +108,10 @@ impl FieldType {
         }
     }
 
-    fn rust_type(&self) -> String {
-        match self {
-            Self::Named(name) => name.clone(),
-            Self::Values(n) => format!("[Value; {n}]"),
-        }
-    }
-
     fn schema_type(&self) -> String {
         match self {
             Self::Named(name) => name.clone(),
             Self::Values(n) => format!("values({n})"),
-        }
-    }
-
-    pub(crate) fn qualified_type(&self) -> String {
-        match self {
-            Self::Values(n) => format!("[crate::Value; {n}]"),
-            Self::Named(name) => match name.as_str() {
-                "u32" | "u64" | "i32" | "bool" => name.clone(),
-                "PtrIndexImm" | "ConstantPoolId" | "VectorExtData" | "VectorMemOptions" => {
-                    format!("crate::inst::{name}")
-                }
-                _ => format!("crate::{name}"),
-            },
         }
     }
 
@@ -266,7 +247,14 @@ pub(crate) fn compile(
                 format!("conflicting draft constructor `{method}`"),
             ));
         }
-        layouts.push(parse_layout(record, binding, records, source, &properties)?);
+        layouts.push(parse_layout(
+            record,
+            binding,
+            records,
+            source,
+            &properties,
+            &data.rust,
+        )?);
     }
     let formats = layouts
         .iter()
@@ -374,6 +362,7 @@ fn parse_layout(
     declarations: &[Record],
     source: &str,
     records: &[RecordDef],
+    rust: &crate::model::records::RustTypes,
 ) -> Result<Layout, Error> {
     let is_format = binding.is_none();
     let targets = match binding {
@@ -411,6 +400,10 @@ fn parse_layout(
             };
             Ok(Field {
                 name: f.name.clone(),
+                rust: match &ty {
+                    FieldType::Named(name) => rust.qualified(name),
+                    FieldType::Values(n) => format!("[{}; {n}]", rust.qualified("Value")),
+                },
                 ty,
             })
         })
@@ -430,6 +423,7 @@ fn parse_layout(
             Field {
                 name: "opcode".into(),
                 ty: FieldType::Named("Opcode".into()),
+                rust: "crate::Opcode".into(),
             },
         );
         OpcodeSource::Dynamic(0)

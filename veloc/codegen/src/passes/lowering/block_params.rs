@@ -5,8 +5,7 @@ use hashbrown::HashMap;
 use smallvec::SmallVec;
 use veloc_lir::stages::{AllowsUnbankedVRegAlloc, LegalizedLir, RawLir};
 use veloc_lir::{
-    BrTableInfo, BrTableTarget, GenericOpcode, InstExtra, MachineFunction, MachineInst, Reg,
-    Writable,
+    BrTableInfo, BrTableTarget, InstExtra, MachineFunction, MachineInst, Reg, Writable,
 };
 use veloc_mir::{Block, Type};
 
@@ -49,12 +48,20 @@ impl BlockParamLoweringPass {
         for block_idx in 0..original_blocks {
             mfunc.rewrite_block(block_idx, |cursor| -> Result<()> {
                 let inst = cursor.current_inst_clone();
-                match inst.generic_opcode() {
-                    Some(GenericOpcode::G_BR) => Self::lower_branch(cursor, &mut scratch, &inst)?,
-                    Some(GenericOpcode::G_BRCOND) => {
-                        Self::lower_cond_branch(cursor, &mut scratch, &inst)?
+                if !inst.is_generic() {
+                    cursor.keep_current();
+                    return Ok(());
+                }
+                match inst.generic_view()? {
+                    veloc_lir::InstView::Branch(branch) => {
+                        Self::lower_branch(cursor, &mut scratch, branch)?
                     }
-                    Some(GenericOpcode::G_BRJT) => Self::lower_jump_table(cursor, &mut scratch)?,
+                    veloc_lir::InstView::BranchCond(branch) => {
+                        Self::lower_cond_branch(cursor, &mut scratch, branch)?
+                    }
+                    veloc_lir::InstView::BranchTable(_) => {
+                        Self::lower_jump_table(cursor, &mut scratch)?
+                    }
                     _ => cursor.keep_current(),
                 }
                 Ok(())
@@ -67,9 +74,8 @@ impl BlockParamLoweringPass {
     fn lower_branch<S: AllowsUnbankedVRegAlloc>(
         cursor: &mut veloc_lir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
-        inst: &MachineInst,
+        branch: veloc_lir::BranchInst,
     ) -> Result<()> {
-        let branch = inst.as_branch()?;
         let args = Self::branch_args(cursor);
         Self::emit_branch_arg_copies(cursor, scratch, branch.target, &args)?;
         cursor.keep_current();
@@ -79,9 +85,8 @@ impl BlockParamLoweringPass {
     fn lower_cond_branch<S: AllowsUnbankedVRegAlloc>(
         cursor: &mut veloc_lir::BlockRewriteCursor<'_, S>,
         scratch: &mut ParallelCopyScratch,
-        inst: &MachineInst,
+        branch: veloc_lir::BranchCondInst,
     ) -> Result<()> {
-        let branch = inst.as_branch_cond()?;
         let (then_args, else_args) = Self::cond_branch_args(cursor);
 
         if then_args.is_empty() && else_args.is_empty() {
@@ -417,7 +422,9 @@ mod tests {
 
         assert_eq!(mfunc.blocks[0].insts.len(), 2);
         let copy = &mfunc.dfg[mfunc.blocks[0].insts[0]];
-        let decoded = copy.as_unary_reg().unwrap();
+        let veloc_lir::InstView::UnaryReg(decoded) = copy.generic_view().unwrap() else {
+            panic!("expected UnaryReg");
+        };
         assert_eq!(decoded.dst, param);
         assert_eq!(decoded.src, src);
         assert_eq!(mfunc.blocks[0].insts[1], br);
@@ -450,20 +457,29 @@ mod tests {
         BlockParamLoweringPass::run(&mut mfunc).unwrap();
 
         assert_eq!(mfunc.num_blocks(), 4);
-        let lowered = mfunc.dfg[br].as_branch_cond().unwrap();
+        let veloc_lir::InstView::BranchCond(lowered) = mfunc.dfg[br].generic_view().unwrap() else {
+            panic!("expected BranchCond");
+        };
         assert_ne!(lowered.then_blk, then_blk);
         assert_eq!(lowered.else_blk, else_blk);
 
         let synthetic_idx = mfunc.find_block_index(lowered.then_blk).unwrap();
         assert_eq!(mfunc.blocks[synthetic_idx].insts.len(), 2);
-        let copied = mfunc.dfg[mfunc.blocks[synthetic_idx].insts[0]]
-            .as_unary_reg()
-            .unwrap();
+        let veloc_lir::InstView::UnaryReg(copied) = mfunc.dfg[mfunc.blocks[synthetic_idx].insts[0]]
+            .generic_view()
+            .unwrap()
+        else {
+            panic!("expected UnaryReg");
+        };
         assert_eq!(copied.dst, param);
         assert_eq!(copied.src, arg);
-        let synthetic_br = mfunc.dfg[mfunc.blocks[synthetic_idx].insts[1]]
-            .as_branch()
-            .unwrap();
+        let veloc_lir::InstView::Branch(synthetic_br) = mfunc.dfg
+            [mfunc.blocks[synthetic_idx].insts[1]]
+            .generic_view()
+            .unwrap()
+        else {
+            panic!("expected Branch");
+        };
         assert_eq!(synthetic_br.target, then_blk);
     }
 
@@ -532,13 +548,25 @@ mod tests {
         BlockParamLoweringPass::run(&mut mfunc).unwrap();
 
         assert_eq!(mfunc.blocks[0].insts.len(), 4);
-        let save = mfunc.dfg[mfunc.blocks[0].insts[0]].as_unary_reg().unwrap();
+        let veloc_lir::InstView::UnaryReg(save) =
+            mfunc.dfg[mfunc.blocks[0].insts[0]].generic_view().unwrap()
+        else {
+            panic!("expected UnaryReg");
+        };
         assert!(save.dst.is_vreg());
         assert_eq!(save.src, b);
-        let copy0 = mfunc.dfg[mfunc.blocks[0].insts[1]].as_unary_reg().unwrap();
+        let veloc_lir::InstView::UnaryReg(copy0) =
+            mfunc.dfg[mfunc.blocks[0].insts[1]].generic_view().unwrap()
+        else {
+            panic!("expected UnaryReg");
+        };
         assert_eq!(copy0.dst, a);
         assert_eq!(copy0.src, save.dst);
-        let copy1 = mfunc.dfg[mfunc.blocks[0].insts[2]].as_unary_reg().unwrap();
+        let veloc_lir::InstView::UnaryReg(copy1) =
+            mfunc.dfg[mfunc.blocks[0].insts[2]].generic_view().unwrap()
+        else {
+            panic!("expected UnaryReg");
+        };
         assert_eq!(copy1.dst, b);
         assert_eq!(copy1.src, a);
     }

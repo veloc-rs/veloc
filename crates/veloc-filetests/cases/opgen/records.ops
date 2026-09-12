@@ -62,8 +62,8 @@ struct Pair { opcode: Opcode, args: values(2) }
 struct Pair { args: values(2) }
 layout Alternate { format: fixed(Pair), text: "{args}" }
 
-// ----- lir-layout-requires-a-struct
+// ----- lir-layout-overrides-are-rejected
 // run: opgen-error
-// check: layout `Missing` requires a struct declaration
+// check: operand views are derived from structs
 storage Operands {}
 layout Missing { accessor: missing }

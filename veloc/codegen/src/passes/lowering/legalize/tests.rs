@@ -42,13 +42,18 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
             assert_eq!(ids.len(), if expanded { 3 } else { 1 });
             assert_eq!(ids.last(), Some(&id));
             assert_eq!(f.dfg[id].memory, Some(memory));
-            let actual_offset = match kind {
-                MemoryKind::Read => f.dfg[id].as_load_offset().unwrap().offset,
-                MemoryKind::Write => f.dfg[id].as_store_offset().unwrap().offset,
+            let actual_offset = match f.dfg[id].generic_view().unwrap() {
+                veloc_lir::InstView::LoadOffset(load) => load.offset,
+                veloc_lir::InstView::StoreOffset(store) => store.offset,
+                _ => panic!("expected offset access"),
             };
             assert_eq!(actual_offset, if expanded { 0 } else { offset });
             if expanded {
-                assert_eq!(f.dfg[ids[0]].as_constant().unwrap().imm, offset);
+                let veloc_lir::InstView::Constant(constant) = f.dfg[ids[0]].generic_view().unwrap()
+                else {
+                    panic!("expected constant");
+                };
+                assert_eq!(constant.imm, offset);
                 assert_eq!(
                     f.dfg[ids[1]].generic_opcode(),
                     Some(GenericOpcode::G_PTR_ADD)

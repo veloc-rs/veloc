@@ -94,7 +94,7 @@ fn inline(layout: &Layout, records: &[RecordDef]) -> bool {
                     }
                 }
                 Some("jump_table") => return false,
-                _ => match size(&f.ty.rust_type()) {
+                _ => match size(&f.ty.schema_type()) {
                     Some(s) => s,
                     None => return false,
                 },
@@ -199,7 +199,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         }
         out.push_str("},\n");
     }
-    out.push_str("_ => {},\n} }\npub(crate) fn view<'a>(&'a self, values: &'a [Value], pool: &'a storage::FieldPool) -> InstructionView<'a> {\nlet mut reader = storage::OperandReader(values);\nlet view = match self {\nSelf::OutOfLine(id) => return pool.get(*id).view(values),\n");
+    out.push_str("_ => {},\n} }\npub(crate) fn view<'a>(&'a self, values: &'a [Value], pool: &'a storage::FieldPool) -> InstView<'a> {\nlet mut reader = storage::OperandReader(values);\nlet view = match self {\nSelf::OutOfLine(id) => return pool.get(*id).view(values),\n");
     for layout in &hot {
         writeln!(out, "{} => {{", pattern(layout, records, true, "Self")).unwrap();
         for (i, f) in layout.fields.iter().enumerate() {
@@ -228,7 +228,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
             out,
             "{} }},",
             construct(
-                &format!("InstructionView::{}", layout.name),
+                &format!("InstView::{}", layout.name),
                 layout
                     .fields
                     .iter()
@@ -238,7 +238,7 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
         )
         .unwrap();
     }
-    out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n} }\nimpl InstructionView<'_> {\npub fn to_draft(&self) -> InstDraft { match self {\n");
+    out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n} }\nimpl InstView<'_> {\npub fn to_draft(&self) -> InstDraft { match self {\n");
     for layout in layouts {
         let args = layout
             .fields

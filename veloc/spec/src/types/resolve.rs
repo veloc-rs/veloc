@@ -49,7 +49,10 @@ pub(crate) fn compile(
     encoding: &TypeEncoding,
 ) -> Result<Declarations, Error> {
     let mut pending = BTreeMap::new();
-    for record in records.iter().filter(|r| r.kind == "type") {
+    for record in records
+        .iter()
+        .filter(|r| r.kind == "type" && crate::model::records::rust_binding(r).is_none())
+    {
         let mut fields = Fields::new(source, record.clone());
         if record.name != record.name.to_ascii_uppercase() || record.name == "INVALID" {
             return Err(fields.error("type name must be uppercase and not INVALID"));

@@ -1,13 +1,13 @@
 use veloc_mir::dfg::DataFlowGraph;
 use veloc_mir::inst::OpFormat;
 use veloc_mir::inst::VectorExtData;
-use veloc_mir::{Arguments, BlockCall, InstructionView};
+use veloc_mir::{Arguments, BlockCall, InstView};
 use veloc_mir::{
     Block, CallConv, InstDraft, Linkage, MemFlags, ModuleBuilder, Opcode, Type, Value,
     VectorMemOptions,
 };
 
-fn operands(data: &InstructionView<'_>, include_auxiliary: bool) -> Vec<Value> {
+fn operands(data: &InstView<'_>, include_auxiliary: bool) -> Vec<Value> {
     let mut values = Vec::new();
     if include_auxiliary {
         data.visit_operands(|value| values.push(value));
@@ -140,12 +140,12 @@ fn generated_memory_builders_preserve_field_order() {
     let instructions: Vec<_> = dfg.instructions().map(|(_, data)| data).collect();
     assert!(matches!(
         instructions[0],
-        InstructionView::Store { ptr: actual_ptr, value: actual_value, offset: 16, flags: actual_flags }
+        InstView::Store { ptr: actual_ptr, value: actual_value, offset: 16, flags: actual_flags }
             if (actual_ptr, actual_value, actual_flags) == (ptr, value, flags)
     ));
     assert!(matches!(
         dfg.inst(dfg.value_inst(loaded).unwrap()),
-        InstructionView::Load { ptr: actual_ptr, offset: 16, flags: actual_flags }
+        InstView::Load { ptr: actual_ptr, offset: 16, flags: actual_flags }
             if (actual_ptr, actual_flags) == (ptr, flags)
     ));
     assert_eq!(dfg.value_type(loaded), Type::PTR);
@@ -177,7 +177,7 @@ fn generated_integer_constant_builder_preserves_bit_patterns() {
     ] {
         assert!(matches!(
             dfg.inst(dfg.value_inst(result).unwrap()),
-            InstructionView::Iconst { value } if value.to_bits() == expected_bits
+            InstView::Iconst { value } if value.to_bits() == expected_bits
         ));
         assert_eq!(dfg.value_type(result), expected_type);
     }
@@ -277,7 +277,7 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
                     .func()
                     .dfg()
                     .inst(builder.func().dfg().value_inst(result).unwrap()),
-                InstructionView::Vconst { .. }
+                InstView::Vconst { .. }
             ));
         }
     }

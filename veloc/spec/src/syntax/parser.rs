@@ -121,8 +121,8 @@ impl<'a> Parser<'a> {
                 self.expect(";")?;
                 BTreeMap::from([(if kind == "type" { "expr" } else { "set" }.into(), node)])
             }
-            "fn" => self.fields(0, Context::Expr)?,
-            _ => self.fields(0, Context::Value)?,
+            "fn" => self.fields(0, Context::Expr, false)?,
+            _ => self.fields(0, Context::Value, false)?,
         };
         Ok(Record {
             offset,
@@ -199,7 +199,12 @@ impl<'a> Parser<'a> {
         Ok(ResultType { offset, name, ty })
     }
 
-    fn fields(&mut self, depth: u8, context: Context) -> Result<BTreeMap<String, Node>, Error> {
+    fn fields(
+        &mut self,
+        depth: u8,
+        context: Context,
+        shorthand: bool,
+    ) -> Result<BTreeMap<String, Node>, Error> {
         self.expect("{")?;
         let mut fields = BTreeMap::new();
         while !self.at("}") {
@@ -220,6 +225,11 @@ impl<'a> Parser<'a> {
                 Node {
                     offset,
                     kind: Kind::List(statements),
+                }
+            } else if shorthand && (self.at(",") || self.at("}")) {
+                Node {
+                    offset,
+                    kind: Kind::Name(name.clone()),
                 }
             } else {
                 self.expect(":")?;
@@ -393,7 +403,7 @@ impl<'a> Parser<'a> {
                         self.sequence(")", |p| p.expression(depth + 1, arguments))?,
                     )
                 } else if context != Context::Type && self.at("{") {
-                    Kind::Object(name, self.fields(depth + 1, context)?)
+                    Kind::Object(name, self.fields(depth + 1, context, true)?)
                 } else {
                     Kind::Name(name)
                 }

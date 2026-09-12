@@ -1,8 +1,7 @@
 //! Instruction kinds, metadata, drafts and borrowed storage views.
 
 use crate::dfg::DataFlowGraph;
-use crate::types::{FuncId, Value};
-use crate::{Float, Int, Intrinsic, SigId, VectorConst};
+use crate::types::Value;
 use core::fmt;
 use cranelift_entity::entity_impl;
 
@@ -32,7 +31,7 @@ pub struct InstDraft {
 }
 
 impl InstDraft {
-    pub fn as_view(&self) -> InstructionView<'_> {
+    pub fn as_view(&self) -> InstView<'_> {
         self.fields.view(&self.operands)
     }
 
@@ -64,7 +63,7 @@ impl InstDraft {
 
 include!(concat!(env!("OUT_DIR"), "/instructions.rs"));
 
-impl InstructionView<'_> {
+impl InstView<'_> {
     pub fn is_terminator(&self) -> bool {
         self.opcode().spec().is_terminator()
     }
@@ -110,7 +109,7 @@ impl InstructionView<'_> {
     }
 }
 
-impl fmt::Display for InstructionView<'_> {
+impl fmt::Display for InstView<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.opcode())
     }
@@ -120,6 +119,7 @@ impl fmt::Display for InstructionView<'_> {
 mod tests {
     use super::*;
     use crate::{Block, BlockCall, CallConv, Linkage, ModuleBuilder, Type};
+    use crate::{FuncId, SigId};
 
     #[test]
     fn call_results_resolve_the_declared_source_without_validating_arguments() {
@@ -186,7 +186,7 @@ mod tests {
                 .iter()
                 .map(BlockCall::as_view),
         ));
-        let InstructionView::BrTable { table, .. } = dfg.inst(inst) else {
+        let InstView::BrTable { table, .. } = dfg.inst(inst) else {
             unreachable!()
         };
         assert_eq!(

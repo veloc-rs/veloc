@@ -2,7 +2,7 @@
 use std::fmt::Write;
 
 use super::schema::{Atom, AtomKind, CallSignature, Item, Mode, Schema};
-use crate::model::records::RecordDef;
+use crate::model::records::{RecordDef, RustTypes};
 use crate::model::{Op, ParamKind};
 use crate::storage::{FieldType, Format};
 
@@ -31,6 +31,7 @@ pub(super) fn parse(
     records: &[RecordDef],
     arity: Option<usize>,
     opcode: &str,
+    rust: &RustTypes,
 ) -> String {
     let mut out = String::new();
     if let Some(path) = &schema.flags {
@@ -64,7 +65,7 @@ pub(super) fn parse(
             if index != 0 {
                 out.push_str("input.expect(Kind::Comma)?;\n");
             }
-            parse_item(&mut out, op, item);
+            parse_item(&mut out, op, item, rust);
         }
     }
     if !schema.named.is_empty() {
@@ -89,7 +90,7 @@ pub(super) fn parse(
         );
         for named in &schema.named {
             let name = leaf(op, &named.atom.path);
-            writeln!(out, "{:?} => {{ if {name}.is_some() {{ return Err(_key_location.error(format!(\"duplicate `{{_key}}` field\"))); }} {name} = Some({}); }},", named.key, parse_atom(&named.atom)).unwrap();
+            writeln!(out, "{:?} => {{ if {name}.is_some() {{ return Err(_key_location.error(format!(\"duplicate `{{_key}}` field\"))); }} {name} = Some({}); }},", named.key, parse_atom(&named.atom, rust)).unwrap();
         }
         out.push_str("_ => return Err(_key_location.error(format!(\"unknown named field `{_key}`\"))),\n}\nif !input.eat(Kind::Comma) { break; }\n} }\n");
         for named in &schema.named {
@@ -159,14 +160,20 @@ pub(super) fn parse(
     out
 }
 
-fn parse_item(out: &mut String, op: &Op, item: &Item) {
+fn parse_item(out: &mut String, op: &Op, item: &Item, rust: &RustTypes) {
     match item {
         Item::Atom(atom) => {
-            writeln!(out, "let {} = {};", leaf(op, &atom.path), parse_atom(atom)).unwrap();
+            writeln!(
+                out,
+                "let {} = {};",
+                leaf(op, &atom.path),
+                parse_atom(atom, rust)
+            )
+            .unwrap();
         }
         Item::Space(lhs, rhs) => {
-            parse_item(out, op, lhs);
-            parse_item(out, op, rhs);
+            parse_item(out, op, lhs, rust);
+            parse_item(out, op, rhs, rust);
         }
         Item::Invoke {
             callee,
@@ -177,11 +184,17 @@ fn parse_item(out: &mut String, op: &Op, item: &Item) {
                 out,
                 "let {} = {};",
                 leaf(op, &callee.path),
-                parse_atom_with(callee, &callee_codec(callee))
+                parse_atom_with(callee, &callee_codec(callee, rust))
             )
             .unwrap();
             out.push_str("input.expect(Kind::LParen)?;\n");
-            writeln!(out, "let {} = {};", leaf(op, &args.path), parse_atom(args)).unwrap();
+            writeln!(
+                out,
+                "let {} = {};",
+                leaf(op, &args.path),
+                parse_atom(args, rust)
+            )
+            .unwrap();
             out.push_str("input.expect(Kind::RParen)?;\n");
             if !matches!(signature, CallSignature::Value) {
                 out.push_str("input.expect(Kind::Colon).map_err(|e| e.context(\"signature must follow `:`\"))?;\n");
@@ -189,7 +202,13 @@ fn parse_item(out: &mut String, op: &Op, item: &Item) {
             match signature {
                 CallSignature::Value => {}
                 CallSignature::Field(sig) => {
-                    writeln!(out, "let {} = {};", leaf(op, &sig.path), parse_atom(sig)).unwrap();
+                    writeln!(
+                        out,
+                        "let {} = {};",
+                        leaf(op, &sig.path),
+                        parse_atom(sig, rust)
+                    )
+                    .unwrap();
                     if is_function(callee) {
                         writeln!(
                             out,
@@ -214,7 +233,7 @@ fn parse_item(out: &mut String, op: &Op, item: &Item) {
 }
 
 // One codec identity drives both directions; all codecs share the same API.
-fn codec(kind: &AtomKind) -> String {
+fn codec(kind: &AtomKind, rust: &RustTypes) -> String {
     match kind {
         AtomKind::Value | AtomKind::OptionalValue => "crate::Value".into(),
         AtomKind::Values => "super::atom::Values".into(),
@@ -225,7 +244,7 @@ fn codec(kind: &AtomKind) -> String {
         AtomKind::Scalar(ty) => match ty.as_str() {
             "u8" | "u32" | "u64" | "i32" => format!("super::atom::Decimal<{ty}>"),
             "bool" => "bool".into(),
-            _ => format!("crate::{ty}"),
+            _ => rust.qualified(ty),
         },
     }
 }
@@ -234,16 +253,16 @@ fn is_function(atom: &Atom) -> bool {
     matches!(&atom.kind, AtomKind::Scalar(ty) if ty == "FuncId")
 }
 
-fn callee_codec(atom: &Atom) -> String {
+fn callee_codec(atom: &Atom, rust: &RustTypes) -> String {
     if is_function(atom) {
         "super::atom::FunctionName".into()
     } else {
-        codec(&atom.kind)
+        codec(&atom.kind, rust)
     }
 }
 
-fn parse_atom(atom: &Atom) -> String {
-    parse_atom_with(atom, &codec(&atom.kind))
+fn parse_atom(atom: &Atom, rust: &RustTypes) -> String {
+    parse_atom_with(atom, &codec(&atom.kind, rust))
 }
 
 fn parse_atom_with(atom: &Atom, codec: &str) -> String {
@@ -260,6 +279,7 @@ pub(super) fn print(
     format: &Format,
     schema: &Schema,
     arity: Option<usize>,
+    rust: &RustTypes,
 ) -> String {
     let mut out = String::new();
     let fields = format
@@ -270,14 +290,9 @@ pub(super) fn print(
         .collect::<Vec<_>>()
         .join(", ");
     if fields.is_empty() {
-        writeln!(out, "crate::InstructionView::{} => {{", format.name).unwrap();
+        writeln!(out, "crate::InstView::{} => {{", format.name).unwrap();
     } else {
-        writeln!(
-            out,
-            "crate::InstructionView::{} {{ {fields} }} => {{",
-            format.name
-        )
-        .unwrap();
+        writeln!(out, "crate::InstView::{} {{ {fields} }} => {{", format.name).unwrap();
     }
     for (index, field) in format.fields.iter().enumerate() {
         let expected = match &field.ty {
@@ -334,7 +349,7 @@ pub(super) fn print(
             false
         };
         out.push_str("f.write_str(_separator)?; _separator = \", \";\n");
-        print_item(&mut out, op, item);
+        print_item(&mut out, op, item, rust);
         if conditional {
             out.push_str("}\n");
         }
@@ -354,7 +369,7 @@ pub(super) fn print(
                 "<crate::Value as super::atom::AtomCodec>::print(self, f, &_value, ty)?;\n",
             );
         } else {
-            print_atom(&mut out, &named.atom, &value);
+            print_atom(&mut out, &named.atom, &value, rust);
         }
         if !matches!(named.mode, Mode::Required) {
             out.push_str("}\n");
@@ -364,29 +379,34 @@ pub(super) fn print(
     out
 }
 
-fn print_item(out: &mut String, op: &Op, item: &Item) {
+fn print_item(out: &mut String, op: &Op, item: &Item, rust: &RustTypes) {
     match item {
-        Item::Atom(atom) => print_atom(out, atom, &local(op, &atom.path)),
+        Item::Atom(atom) => print_atom(out, atom, &local(op, &atom.path), rust),
         Item::Space(lhs, rhs) => {
-            print_item(out, op, lhs);
+            print_item(out, op, lhs, rust);
             out.push_str("f.write_char(' ')?;\n");
-            print_item(out, op, rhs);
+            print_item(out, op, rhs, rust);
         }
         Item::Invoke {
             callee,
             args,
             signature,
         } => {
-            print_atom_with(out, callee, &local(op, &callee.path), &callee_codec(callee));
+            print_atom_with(
+                out,
+                callee,
+                &local(op, &callee.path),
+                &callee_codec(callee, rust),
+            );
             out.push_str("f.write_char('(')?;\n");
-            print_atom(out, args, &local(op, &args.path));
+            print_atom(out, args, &local(op, &args.path), rust);
             out.push_str("f.write_char(')')?;\n");
             if !matches!(signature, CallSignature::Value) {
                 out.push_str("f.write_str(\" : \")?;\n");
             }
             match signature {
                 CallSignature::Value => {}
-                CallSignature::Field(sig) => print_atom(out, sig, &local(op, &sig.path)),
+                CallSignature::Field(sig) => print_atom(out, sig, &local(op, &sig.path), rust),
                 CallSignature::Function => {
                     writeln!(
                         out,
@@ -400,8 +420,8 @@ fn print_item(out: &mut String, op: &Op, item: &Item) {
     }
 }
 
-fn print_atom(out: &mut String, atom: &Atom, value: &str) {
-    print_atom_with(out, atom, value, &codec(&atom.kind));
+fn print_atom(out: &mut String, atom: &Atom, value: &str, rust: &RustTypes) {
+    print_atom_with(out, atom, value, &codec(&atom.kind, rust));
 }
 
 fn print_atom_with(out: &mut String, atom: &Atom, value: &str, codec: &str) {

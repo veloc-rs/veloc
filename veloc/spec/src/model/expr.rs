@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Param, ParamKind, Pattern, TypeDef, builtins::Builtins, data, records::PropertyType};
 use crate::types::{ScalarKind, TypeSet};
+mod evaluate;
+
 use crate::{
     Error,
     syntax::{Kind, Node, Record, Results},
@@ -57,29 +59,13 @@ impl Ty {
             _ => false,
         }
     }
-    fn host_rust(&self) -> String {
+    pub(crate) fn rust(&self, types: &super::records::RustTypes) -> String {
         match self {
-            Self::Named(n)
-                if matches!(
-                    n.as_str(),
-                    "i128" | "i64" | "i32" | "u64" | "u32" | "u8" | "bool"
-                ) =>
-            {
-                n.clone()
-            }
-            Self::Named(n)
-                if matches!(
-                    n.as_str(),
-                    "Type" | "Int" | "Float" | "VectorConst" | "FuncId" | "SigId"
-                ) =>
-            {
-                format!("crate::{n}")
-            }
-            Self::Named(n) => format!("crate::inst::{n}"),
-            Self::Value(_) => "crate::Value".into(),
-            Self::Optional(t) => format!("Option<{}>", t.host_rust()),
-            Self::Array(t, n) => format!("[{}; {n}]", t.host_rust()),
-            Self::Sequence(t) => format!("&[{}]", t.host_rust()),
+            Self::Named(n) => types.qualified(n),
+            Self::Value(_) => types.qualified("Value"),
+            Self::Optional(t) => format!("Option<{}>", t.rust(types)),
+            Self::Array(t, n) => format!("[{}; {n}]", t.rust(types)),
+            Self::Sequence(t) => format!("&[{}]", t.rust(types)),
         }
     }
     fn integer(&self) -> bool {
@@ -91,15 +77,11 @@ impl Ty {
     fn named(name: &str) -> Self {
         Self::Named(name.into())
     }
-    pub(crate) fn rust(&self) -> String {
-        match self {
-            Self::Named(name) if name == "Type" => "crate::Type".into(),
-            Self::Named(name) => name.clone(),
-            Self::Value(_) => "crate::Value".into(),
-            Self::Optional(ty) => format!("Option<{}>", ty.rust()),
-            Self::Array(ty, n) => format!("[{}; {n}]", ty.rust()),
-            Self::Sequence(ty) => format!("&[{}]", ty.rust()),
-        }
+    fn name(&self) -> &str {
+        let Self::Named(name) = self else {
+            unreachable!("checked expression requires a named type")
+        };
+        name
     }
     fn accepts(&self, actual: &Self) -> bool {
         self == actual
@@ -145,6 +127,7 @@ pub(crate) enum ExprKind {
     Parameter(usize),
     Operand(String),
     ResultType(usize),
+    ResultValue(usize),
     Convert(Box<Expr>),
     Field(Box<Expr>, String),
     Record(BTreeMap<String, Expr>),
@@ -182,7 +165,8 @@ impl Expr {
             | ExprKind::Bound(_)
             | ExprKind::Parameter(_)
             | ExprKind::Operand(_)
-            | ExprKind::ResultType(_) => false,
+            | ExprKind::ResultType(_)
+            | ExprKind::ResultValue(_) => false,
         }
     }
     fn new(ty: Ty, kind: ExprKind) -> Self {
@@ -424,7 +408,7 @@ impl Expr {
             ExprKind::Constant(value) => return Some(constant(value, offset)),
             ExprKind::Convert(value) => return value.constant_node(offset),
             ExprKind::Record(fields) => Kind::Object(
-                self.ty.rust(),
+                self.ty.name().to_owned(),
                 fields
                     .iter()
                     .map(|(n, e)| Some((n.clone(), e.constant_node(offset)?)))
@@ -525,7 +509,7 @@ fn operands(
 }
 
 impl Library {
-    pub(crate) fn host_code(&self) -> String {
+    pub(crate) fn host_code(&self, types: &super::records::RustTypes) -> String {
         use std::fmt::Write;
         let mut groups = BTreeMap::<&str, Vec<&HostMethod>>::new();
         for method in self.hosts.values() {
@@ -538,13 +522,13 @@ impl Library {
                 let params = method
                     .params
                     .iter()
-                    .map(|(name, ty)| format!(", {name}: {}", ty.host_rust()))
+                    .map(|(name, ty)| format!(", {name}: {}", ty.rust(types)))
                     .collect::<String>();
                 writeln!(
                     out,
                     "fn {}(&self{params}) -> {};",
                     method.name,
-                    method.result.host_rust()
+                    method.result.rust(types)
                 )
                 .unwrap();
             }
@@ -552,12 +536,14 @@ impl Library {
         }
         out
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn verify(
         &mut self,
         source: &str,
         nodes: Vec<Node>,
         params: &[Param],
         signature: Option<&TypeDef>,
+        results: &BTreeMap<String, super::Slot>,
         vocabulary: super::Vocabulary<'_>,
     ) -> Result<Vec<super::constraints::Constraint>, Error> {
         let super::Vocabulary {
@@ -566,7 +552,15 @@ impl Library {
             data,
             comparisons,
         } = vocabulary;
-        let env = operands(params, signature, types);
+        let mut env = operands(params, signature, types);
+        for (name, slot) in results.iter().filter(|(_, slot)| slot.result) {
+            let mut value = Expr::new(Ty::Value(None), ExprKind::ResultValue(slot.index as usize));
+            value.types = signature
+                .and_then(|s| s.results.patterns())
+                .and_then(|p| p.get(slot.index as usize))
+                .and_then(|p| possible(types, p, signature));
+            env.insert(name.clone(), value);
+        }
         let mut checker = Checker {
             source,
             library: self,
@@ -676,8 +670,9 @@ impl Library {
         for declaration in declarations.iter().filter(|d| d.kind == "interface") {
             if matches!(
                 declaration.name.as_str(),
-                "Value" | "InstructionQuery" | "InstructionView"
-            ) || data.records.iter().any(|r| r.name == declaration.name)
+                "Value" | "InstructionQuery" | "InstView"
+            ) || data.rust.contains(&declaration.name)
+                || data.records.iter().any(|r| r.name == declaration.name)
                 || data.enums.iter().any(|e| e.name == declaration.name)
                 || builtins.flags.contains_key(&declaration.name)
                 || builtins.encodings.contains_key(&declaration.name)
@@ -953,7 +948,7 @@ impl Checker<'_> {
             "==" | "!="
                 if numeric
                     || boolean
-                    || matches!(&a.ty, Ty::Named(n) if n=="Type" || n=="Shape" || self.comparisons.iter().any(|c|c.name==*n) || self.data.enums.iter().any(|e|e.name==*n))
+                    || matches!(&a.ty, Ty::Named(n) if n=="Type" || n=="Shape" || n=="TypeBits" || self.comparisons.iter().any(|c|c.name==*n) || self.data.enums.iter().any(|e|e.name==*n))
                     || matches!(&a.ty, Ty::Sequence(_)) =>
             {
                 Ty::named("bool")
@@ -1153,12 +1148,14 @@ impl Checker<'_> {
                 }
                 Ty::named("i128")
             }
-            Query::Shape | Query::Lanes | Query::MinBytes => {
+            Query::Shape | Query::Lanes | Query::MinBytes | Query::ElementBits | Query::BitSize => {
                 if value.ty != Ty::named("Type") {
                     return Err(fail("query expects an IR type"));
                 }
                 Ty::named(if matches!(query, Query::Shape) {
                     "Shape"
+                } else if matches!(query, Query::BitSize) {
+                    "TypeBits"
                 } else {
                     "i128"
                 })
@@ -1174,7 +1171,7 @@ impl Checker<'_> {
         if let Some(known) = value
             .types
             .as_ref()
-            .and_then(|s| self.known_query(query, s))
+            .and_then(|s| known_query(self.types, query, s))
         {
             return Ok(known);
         }
@@ -1183,24 +1180,13 @@ impl Checker<'_> {
     fn ty(&self, node: &Node) -> Result<Ty, Error> {
         let fail = || Error::at(self.source, node.offset, "unknown projection type");
         match &node.kind {
-            Kind::Name(name) if name == "Value" => Ok(Ty::Value(None)),
+            Kind::Name(name) if name == "Value" && self.data.rust.contains(name) => {
+                Ok(Ty::Value(None))
+            }
             Kind::Name(name)
-                if matches!(
-                    name.as_str(),
-                    "Type"
-                        | "i64"
-                        | "i32"
-                        | "u32"
-                        | "u64"
-                        | "u8"
-                        | "bool"
-                        | "i128"
-                        | "FuncId"
-                        | "SigId"
-                        | "Int"
-                        | "Float"
-                        | "VectorConst"
-                ) || self.data.records.iter().any(|r| r.name == *name)
+                if super::records::primitive(name)
+                    || self.data.rust.contains(name)
+                    || self.data.records.iter().any(|r| r.name == *name)
                     || self.data.enums.iter().any(|e| e.name == *name)
                     || self.comparisons.iter().any(|c| c.name == *name)
                     || self.builtins.flags.contains_key(name)
@@ -1213,7 +1199,9 @@ impl Checker<'_> {
             {
                 Ok(Ty::named(name))
             }
-            Kind::Call(name, args) if name == "Value" && args.len() == 1 => {
+            Kind::Call(name, args)
+                if name == "Value" && args.len() == 1 && self.data.rust.contains(name) =>
+            {
                 let Kind::Name(ty) = &args[0].kind else {
                     return Err(fail());
                 };
@@ -1526,7 +1514,11 @@ impl Checker<'_> {
                 Expr {
                     types: value.types.clone(),
                     ty: Ty::named("Type"),
-                    kind: ExprKind::Query(Query::TypeOf, Box::new(value)),
+                    kind: if let ExprKind::ResultValue(index) = value.kind {
+                        ExprKind::ResultType(index)
+                    } else {
+                        ExprKind::Query(Query::TypeOf, Box::new(value))
+                    },
                 }
             }
             Kind::Call(name, args) if name == "result_type" && args.len() == 1 => {
@@ -1653,7 +1645,12 @@ impl Checker<'_> {
                         }
                         _ => None,
                     })
-                    .ok_or_else(|| fail("unknown expression name or operation"))?;
+                    .ok_or_else(|| {
+                        fail(&format!(
+                            "unknown expression name or operation: {}",
+                            super::constraints::describe(node)
+                        ))
+                    })?;
                 if let Ty::Named(name) = &ty
                     && let Some(en) = self.data.enums.iter().find(|e| e.name == *name)
                 {
@@ -1724,6 +1721,8 @@ pub(crate) enum Query {
     Len,
     Lanes,
     MinBytes,
+    ElementBits,
+    BitSize,
     IsFixed,
     IsPtr,
     IsVector,
@@ -1801,7 +1800,7 @@ impl<'a> Emitter<'a> {
             } else {
                 ""
             }),
-            ExprKind::Integer(value) => format!("{value}{}", term.ty.rust()),
+            ExprKind::Integer(value) => format!("{value}{}", term.ty.name()),
 
             ExprKind::Parameter(_) => unreachable!("helper calls are expanded before generation"),
             ExprKind::Operand(name) => {
@@ -1815,6 +1814,13 @@ impl<'a> Emitter<'a> {
                     "({}).{field}",
                     value.strip_prefix('*').unwrap_or(&value)
                 ))
+            }
+            ExprKind::ResultValue(index) => {
+                if self.result_values {
+                    format!("{}[{index}]", self.results)
+                } else {
+                    format!("({receiver}).inst_results(_inst)[{index}]")
+                }
             }
             ExprKind::ResultType(index) => {
                 if self.result_values {
@@ -1908,6 +1914,11 @@ impl<'a> Emitter<'a> {
                         "{{ let ty = {value}; if !ty.is_valid() || !ty.is_compact() {{ return {}; }} i128::from(ty.lane_count()) }}",
                         self.failure()
                     ),
+                    Query::ElementBits => format!(
+                        "i128::from({})",
+                        self.required(format!("({value}).element_bits()"))
+                    ),
+                    Query::BitSize => self.required(format!("({value}).bit_size()")),
                     Query::MinBytes => format!(
                         "i128::from({})",
                         self.required(format!("({value}).min_size_bytes()"))
@@ -1920,7 +1931,7 @@ impl<'a> Emitter<'a> {
                     Query::IsScalar => format!("({value}).is_scalar()"),
                 }
             }
-            ExprKind::Convert(e) => format!("{}::from({})", term.ty.rust(), self.term(e)),
+            ExprKind::Convert(e) => format!("{}::from({})", term.ty.name(), self.term(e)),
             ExprKind::Record(fields) => format!(
                 "{}{} {{ {} }}",
                 if self.error.is_some() {
@@ -1928,7 +1939,7 @@ impl<'a> Emitter<'a> {
                 } else {
                     ""
                 },
-                term.ty.rust(),
+                term.ty.name(),
                 fields
                     .iter()
                     .map(|(n, e)| format!("{n}: {}", self.term(e)))
@@ -1936,7 +1947,7 @@ impl<'a> Emitter<'a> {
                     .join(", ")
             ),
             ExprKind::Variant(name, args) => {
-                let path = format!("crate::inst::{}::{name}", term.ty.rust());
+                let path = format!("crate::inst::{}::{name}", term.ty.name());
                 if args.is_empty() {
                     path
                 } else {
@@ -1982,6 +1993,8 @@ impl Query {
             "len" => Some(Self::Len),
             "lanes" => Some(Self::Lanes),
             "min_bytes" => Some(Self::MinBytes),
+            "element_bits" => Some(Self::ElementBits),
+            "bit_size" => Some(Self::BitSize),
             "is_fixed" => Some(Self::IsFixed),
             "is_ptr" => Some(Self::IsPtr),
             "is_vector" => Some(Self::IsVector),
@@ -1998,36 +2011,45 @@ impl Query {
         }
     }
 }
-impl Checker<'_> {
-    fn known_query(&self, query: Query, set: &TypeSet) -> Option<Expr> {
-        let mut answer = None;
-        for (&code, &shapes) in &set.0 {
-            let scalar = self.types.scalars.iter().find(|s| s.code == code)?;
-            for bit in 0..32 {
-                if shapes & (1 << bit) == 0 {
-                    continue;
-                }
-                let value = match query {
-                    Query::IsFixed => i128::from(bit > 0 && bit < 16),
-                    Query::IsScalar => i128::from(bit == 0),
-                    Query::IsVector => i128::from(bit != 0),
-                    Query::IsPtr => i128::from(scalar.kind == ScalarKind::Pointer && bit == 0),
-                    Query::Lanes => 1i128 << (bit % 16),
-                    Query::MinBytes => i128::from(scalar.bits?.div_ceil(8)) << (bit % 16),
-                    _ => return None,
-                };
-                if answer.is_some_and(|old| old != value) {
-                    return None;
-                }
-                answer = Some(value);
+fn known_query(types: &crate::types::Types, query: Query, set: &TypeSet) -> Option<Expr> {
+    let mut answer = None;
+    for (&code, &shapes) in &set.0 {
+        let scalar = types.scalars.iter().find(|s| s.code == code)?;
+        for bit in 0..32 {
+            if shapes & (1 << bit) == 0 {
+                continue;
             }
+            let value = match query {
+                Query::IsFixed => i128::from(bit > 0 && bit < 16),
+                Query::IsScalar => i128::from(bit == 0),
+                Query::IsVector => i128::from(bit != 0),
+                Query::IsPtr => i128::from(scalar.kind == ScalarKind::Pointer && bit == 0),
+                Query::IsPredicate => i128::from(
+                    types
+                        .predicates
+                        .get("is_predicate")?
+                        .0
+                        .get(&code)
+                        .is_some_and(|mask| mask & (1 << bit) != 0),
+                ),
+                Query::IsCompact => 1,
+                Query::IsCallable | Query::IsOwned | Query::IsLocal | Query::IsShared => 0,
+                Query::ElementBits => i128::from(scalar.bits?),
+                Query::Lanes => 1i128 << (bit % 16),
+                Query::MinBytes => i128::from(scalar.bits?.div_ceil(8)) << (bit % 16),
+                _ => return None,
+            };
+            if answer.is_some_and(|old| old != value) {
+                return None;
+            }
+            answer = Some(value);
         }
-        answer.map(|value| {
-            if matches!(query, Query::Lanes | Query::MinBytes) {
-                Expr::integer(value)
-            } else {
-                Expr::boolean(value != 0)
-            }
-        })
     }
+    answer.map(|value| {
+        if matches!(query, Query::Lanes | Query::MinBytes | Query::ElementBits) {
+            Expr::integer(value)
+        } else {
+            Expr::boolean(value != 0)
+        }
+    })
 }

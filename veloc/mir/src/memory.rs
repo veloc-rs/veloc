@@ -24,12 +24,12 @@ impl Function {
         for _ in 0..64 {
             let inst = self.dfg().value_inst(ptr)?;
             match self.dfg().inst(inst) {
-                crate::InstructionView::Alloca { .. }
+                crate::InstView::Alloca { .. }
                     if self.layout().inst_block(inst) == self.entry_block =>
                 {
                     return Some((inst, offset));
                 }
-                crate::InstructionView::PtrOffset {
+                crate::InstView::PtrOffset {
                     ptr: base,
                     offset: delta,
                 } => {
@@ -47,7 +47,7 @@ impl Function {
     pub fn stack_access(&self, access: Access, pointer_bytes: Option<u32>) -> Option<(Inst, u32)> {
         let (object, offset) = self.stack_address(access.ptr)?;
         let offset = u32::try_from(offset.checked_add(access.offset)?).ok()?;
-        let crate::InstructionView::Alloca { size, align } = self.dfg().inst(object) else {
+        let crate::InstView::Alloca { size, align } = self.dfg().inst(object) else {
             unreachable!("stack address ends at an allocation")
         };
         let bytes = access.bytes(pointer_bytes)?;

@@ -24,5 +24,5 @@ pub use module::*;
 pub use symbol::*;
 pub use use_def::UseDefChain;
 pub use validation::TypeError;
-pub use veloc_mir::Type;
 pub use veloc_mir::Value as ValueId;
+pub use veloc_mir::{Type, TypeBits};

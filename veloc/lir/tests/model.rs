@@ -9,7 +9,10 @@ fn standalone_module_supports_instruction_and_stage_apis() {
     let reg = function.alloc_vreg(Type::I64);
     let inst = function.alloc_inst(MachineInst::build_constant(Writable(reg), 42));
     function.append_inst_id_to_block(function.find_block_index(block).unwrap(), inst);
-    assert_eq!(function.dfg[inst].as_constant().unwrap().imm, 42);
+    let veloc_lir::InstView::Constant(constant) = function.dfg[inst].generic_view().unwrap() else {
+        panic!("expected constant");
+    };
+    assert_eq!(constant.imm, 42);
 
     let mut module = MachineModule::new("standalone".into());
     let id = module.add_function(function);
@@ -37,8 +40,9 @@ fn symbol_interning_does_not_require_a_source_module() {
 
 #[test]
 fn decode_errors_are_owned_by_lir() {
-    let inst = MachineInst::build_constant(Writable(veloc_lir::Reg::new_vreg(0)), 42);
-    let error: veloc_lir::DecodeError = inst.as_binary_reg().unwrap_err();
+    let mut inst = MachineInst::build_constant(Writable(veloc_lir::Reg::new_vreg(0)), 42);
+    inst.operands.pop();
+    let error: veloc_lir::DecodeError = inst.generic_view().unwrap_err();
     assert!(matches!(
         error.opcode,
         veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_CONSTANT)

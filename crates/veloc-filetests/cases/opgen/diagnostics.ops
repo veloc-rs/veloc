@@ -150,19 +150,21 @@ struct Binary {
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { memory: Known([]) },
-    mnemonic: "iadd", where: [wider(missing, result)], storage: Binary { args: [lhs, rhs] },
+    mnemonic: "iadd", verify {
+        require(element_bits(type(result)) > element_bits(type(missing)), "result must have more bits per lane than missing");
+    } storage: Binary { args: [lhs, rhs] },
      semantics: bv.add(lhs, rhs)
 }
 
 // ----- unknown-relation
 // run: opgen-error
-// check: type relation
+// check: expected value of type bool
 struct Binary {
     args: values(2),
 }
 op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { memory: Known([]) },
-    mnemonic: "iadd", where: [unknown(lhs, result)], storage: Binary { args: [lhs, rhs] },
+    mnemonic: "iadd", verify { require(unknown(type(lhs)), "unknown constraint"); } storage: Binary { args: [lhs, rhs] },
      semantics: bv.add(lhs, rhs)
 }
 

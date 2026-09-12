@@ -74,7 +74,10 @@ impl Plan {
                     ));
                 }
                 for op in &definitions.ops {
-                    if !op.constraints.is_empty()
+                    if op
+                        .constraints
+                        .iter()
+                        .any(|c| !c.condition.type_only(&op.params))
                         || op.text.is_some()
                         || !op.interfaces.is_empty()
                         || op.params.iter().any(|p| p.moves)

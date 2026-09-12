@@ -31,7 +31,7 @@ fn encodings_are_explicit_and_can_be_forward_referenced() {
     let first = veloc_opgen::compile(BUILTINS).unwrap();
     let last = veloc_opgen::compile(&format!("{builtins}\n{TYPES}")).unwrap();
     assert_eq!(first.types, last.types);
-    rejected(&format!("{BUILTINS}\n{TYPES}"), "duplicate encoding");
+    rejected(&format!("{BUILTINS}\n{TYPES}"), "duplicate");
     rejected(
         &TYPES.replace("encoding Type", "encoding Other"),
         "missing encoding Type",

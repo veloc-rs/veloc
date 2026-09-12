@@ -3,7 +3,7 @@
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Function, Inst, InstructionView, Opcode, Type, Value};
+use veloc_mir::{Function, Inst, InstView, Opcode, Type, Value};
 
 pub struct MemoryPass;
 
@@ -53,7 +53,7 @@ pub fn run_memory(func: &mut Function, metrics: &mut Metrics) -> bool {
             let access = func.memory_access(inst);
             for &value in func.dfg().operands(inst) {
                 let address_only = match view {
-                    InstructionView::PtrOffset { .. } => true,
+                    InstView::PtrOffset { .. } => true,
                     _ => access.is_some_and(|a| value == a.ptr && a.stored != Some(value)),
                 };
                 if !address_only {
@@ -75,10 +75,10 @@ pub fn run_memory(func: &mut Function, metrics: &mut Metrics) -> bool {
             continue;
         };
         match func.dfg().inst(inst) {
-            InstructionView::Alloca { .. } => {
+            InstView::Alloca { .. } => {
                 escaped.insert(inst);
             }
-            InstructionView::PtrOffset { ptr, .. } => escape_roots.push(ptr),
+            InstView::PtrOffset { ptr, .. } => escape_roots.push(ptr),
             _ => {}
         }
     }

@@ -5,8 +5,8 @@ extern crate veloc_test_mir as veloc_mir;
 
 use veloc_mir::constant::ScalarConst;
 use veloc_mir::{
-    Arguments, BlockCall, CallConv, InstDraft, InstructionView, IntCC, Linkage, ModuleBuilder,
-    Opcode, Type, Value,
+    Arguments, BlockCall, CallConv, InstDraft, InstView, IntCC, Linkage, ModuleBuilder, Opcode,
+    Type, Value,
 };
 
 #[allow(dead_code)]
@@ -166,7 +166,7 @@ fn definition_owned_records_flatten_operands_in_field_order() {
             assert_eq!(visited, expected[..=stop]);
         }
         dfg.set_operand(inst, 1, Value(3));
-        let InstructionView::Grouped {
+        let InstView::Grouped {
             before,
             group,
             after,
@@ -197,7 +197,7 @@ fn variadic_ranges_grow_recycle_and_remain_independent_after_clone() {
         dfg.replace_inst(left, InstDraft::ret(&args));
         assert_eq!(dfg.operands(left), args.as_slice());
         assert_eq!(dfg.operands(right), &[Value(7), Value(7)]);
-        let InstructionView::Return { values } = dfg.inst(left) else {
+        let InstView::Return { values } = dfg.inst(left) else {
             unreachable!()
         };
         assert_eq!(values.as_ptr(), dfg.operands(left).as_ptr());
@@ -514,7 +514,7 @@ fn construction_does_not_validate_type_contracts() {
         ("class", "Pattern { results: false, index: 0"),
         ("explicit", "Pattern { results: true, index: 0"),
         ("float-type", "result 0 must have the type of `value`"),
-        ("relation", "results[0] must have more bits"),
+        ("relation", "result must have more bits"),
         ("fixed", "Pattern { results: false, index: 0"),
         ("raw-results", "Pattern { results: true, index: 0"),
         ("raw-arity", "Arity { results: true"),
@@ -686,15 +686,13 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
     builder.ins().ret(&[triple]);
     let dfg = builder.func().dfg();
     let inst = |value| dfg.inst(dfg.value_inst(value).unwrap());
-    assert!(matches!(inst(difference), InstructionView::Pair { inputs, .. } if *inputs == [a, b]));
+    assert!(matches!(inst(difference), InstView::Pair { inputs, .. } if *inputs == [a, b]));
     assert!(
-        matches!(inst(reverse), InstructionView::FieldPair { right, left, .. } if (right, left) == (a, b))
+        matches!(inst(reverse), InstView::FieldPair { right, left, .. } if (right, left) == (a, b))
     );
+    assert!(matches!(inst(triple), InstView::Triple { args, .. } if *args == [a, b, difference]));
     assert!(
-        matches!(inst(triple), InstructionView::Triple { args, .. } if *args == [a, b, difference])
-    );
-    assert!(
-        matches!(inst(offset), InstructionView::Immediate { value, displacement: 7, .. } if value == ptr)
+        matches!(inst(offset), InstView::Immediate { value, displacement: 7, .. } if value == ptr)
     );
     assert_eq!(dfg.value_type(selected), Type::I64);
     assert_eq!(dfg.value_type(first), Type::I32);
@@ -937,7 +935,7 @@ fn drafts_share_storage_shape_and_edit_repeated_successors_independently() {
             Value(4),
         ]
     );
-    let InstructionView::BrTable { index, table } = draft.as_view() else {
+    let InstView::BrTable { index, table } = draft.as_view() else {
         unreachable!()
     };
     assert_eq!(index, Value(5));
@@ -993,7 +991,7 @@ fn draft_successor_growth_preserves_record_inputs_and_following_fields() {
             },
         );
         draft.edit_successors(|edge| edge.set_arg(3, Value(4)));
-        let InstructionView::Routed {
+        let InstView::Routed {
             group,
             dest,
             operands,
@@ -1030,9 +1028,118 @@ fn a_record_can_be_both_instruction_storage_and_plain_data() {
     assert_eq!(dfg.inst(direct).opcode(), Opcode::Payload);
     assert_eq!(dfg.inst(nested).opcode(), Opcode::Wrapped);
     assert!(matches!(dfg.inst(nested),
-        InstructionView::WrappedPayload { inner } if inner == payload));
+        InstView::WrappedPayload { inner } if inner == payload));
     assert_eq!(
         core::mem::size_of::<LiteralPayload>(),
         core::mem::size_of::<u32>()
+    );
+}
+
+#[test]
+fn rust_type_bindings_preserve_paths_in_records_enums_and_host_queries() {
+    use veloc_mir::{
+        dfg::DataFlowGraph,
+        inst::{StampInfo, StampRecord, StampResult},
+        tokens::Stamp,
+    };
+    let draft = InstDraft::stamp_input(17);
+    let info = draft
+        .as_view()
+        .query::<StampInfo>(&DataFlowGraph::new(), &[])
+        .unwrap();
+    assert_eq!(info.stamp, Stamp(17));
+    let record = StampRecord { stamp: info.stamp };
+    assert_eq!(
+        StampResult::Present(record.stamp),
+        StampResult::Present(Stamp(17))
+    );
+    let module = veloc_mir::ModuleParser::new()
+        .parse("local function test() -> void\nblock0():\n  read-stamp 17\n  return\n")
+        .unwrap();
+    module.validate().unwrap();
+    let printed = module.to_string();
+    veloc_mir::ModuleParser::new()
+        .parse(&printed)
+        .unwrap()
+        .validate()
+        .unwrap();
+}
+
+#[test]
+fn type_constraints_drive_validation_and_generated_evaluation() {
+    for (from, to, valid) in [
+        (Type::I8, Type::I16, true),
+        (Type::I8, Type::I32, false),
+        (Type::I64, Type::I32, false),
+        (
+            Type::I32X4,
+            Type::I64
+                .as_scalar()
+                .unwrap()
+                .vector(4, false)
+                .unwrap()
+                .as_type(),
+            true,
+        ),
+        (Type::I64X2, Type::I64X2, false),
+    ] {
+        assert_eq!(
+            Opcode::DoubleWidth.validate_types(&[from], &[to]).is_ok(),
+            valid
+        );
+    }
+    // Construction remains independent of type/DFG validation.
+    let draft = InstDraft::unary(Opcode::DoubleWidth, Value(999));
+    assert_eq!(draft.opcode(), Opcode::DoubleWidth);
+    assert_eq!(
+        evaluator::evaluate(
+            Opcode::DoubleWidth,
+            &[ScalarConst::from(-1i8)],
+            &[Type::I16],
+            &[]
+        ),
+        Some(vec![ScalarConst::from(-1i16)])
+    );
+    assert_eq!(
+        evaluator::evaluate(
+            Opcode::DoubleWidth,
+            &[ScalarConst::from(-1i8)],
+            &[Type::I32],
+            &[]
+        ),
+        None
+    );
+    assert!(
+        Opcode::FourLane
+            .validate_types(&[Type::I32X4], &[Type::I32X4])
+            .is_ok()
+    );
+    assert!(
+        Opcode::FourLane
+            .validate_types(&[Type::I32], &[Type::I32])
+            .is_err()
+    );
+    // Vector-admitted lanes must not leak into scalar constant evaluation.
+    assert!(!evaluator::can_fold(Opcode::FourLane));
+    assert!(
+        Opcode::Reinterpret
+            .validate_types(&[Type::I32X4], &[Type::I64X2])
+            .is_ok()
+    );
+    let scalable = Type::I64
+        .as_scalar()
+        .unwrap()
+        .vector(2, true)
+        .unwrap()
+        .as_type();
+    assert!(
+        Opcode::Reinterpret
+            .validate_types(&[Type::I32X4], &[scalable])
+            .is_err()
+    );
+    assert!(
+        Opcode::Reinterpret
+            .validate_types(&[Type::I32], &[Type::I32])
+            .is_err()
     );
 }

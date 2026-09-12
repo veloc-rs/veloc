@@ -94,7 +94,7 @@ op Indexed(ptr: PTR, index: I32, @imm: PtrIndexImmId) -> (result: PTR) {
 
 // ----- pool-bindings-are-typed-and-consume-the-complete-struct-6
 // run: opgen-error
-// check: unknown property type `ConstantPoolId`
+// check: parameter `imm` is incompatible with storage field `imm_id`
 struct PtrIndexImm {
     offset: i32,
     scale: u32,

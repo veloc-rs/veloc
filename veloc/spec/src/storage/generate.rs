@@ -16,7 +16,7 @@ pub(super) fn stored_type(field: &Field, records: &[RecordDef]) -> Option<String
         Some("value_list") => Some("u32".into()),
         Some("block_call") => Some("storage::Edge".into()),
         Some("jump_table") => Some("storage::Edges".into()),
-        _ => Some(field.ty.rust_type()),
+        _ => Some(field.rust.clone()),
     }
 }
 
@@ -28,7 +28,7 @@ fn view_type(field: &Field) -> String {
         Some("value_list") => "&'a [Value]".into(),
         Some("block_call") => "Successor<'a>".into(),
         Some("jump_table") => "Successors<'a>".into(),
-        _ => field.ty.rust_type(),
+        _ => field.rust.clone(),
     }
 }
 
@@ -72,7 +72,7 @@ pub(super) fn construct(name: &str, fields: impl Iterator<Item = (String, String
 pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String {
     let mut out =
         String::from("// @generated: construction data and borrowed views share one schema.\n");
-    out.push_str("#[derive(Debug, Clone, Copy)] pub enum InstructionView<'a> {\n");
+    out.push_str("#[derive(Debug, Clone, Copy)] pub enum InstView<'a> {\n");
     for layout in layouts {
         if layout.fields.is_empty() {
             writeln!(out, "{},", layout.name).unwrap();
@@ -143,7 +143,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             let ty = match &f.ty {
                 PropertyType::Named(ty) if ty == "Value" => continue,
                 PropertyType::Optional(ty) if ty == "Value" => "bool",
-                PropertyType::Named(ty) => ty,
+                PropertyType::Named(_) => &f.rust,
                 _ => unreachable!("checked record type"),
             };
             writeln!(out, "{}: {ty},", f.name).unwrap();
@@ -201,7 +201,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                     Some("value_list") => "&[Value]".into(),
                     Some("block_call") => "Successor<'_>".into(),
                     Some("jump_table") => "impl IntoIterator<Item = Successor<'a>>".into(),
-                    _ => f.ty.rust_type(),
+                    _ => f.rust.clone(),
                 };
                 format!("{}: {ty}", f.name)
             })
@@ -249,7 +249,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
     }
     from_values(&mut out, layouts);
     successor_edit(&mut out, layouts, records);
-    out.push_str("}\n#[allow(unused_variables)] impl InstFields {\npub(crate) fn view<'a>(&'a self, values: &'a [Value]) -> InstructionView<'a> {\nlet mut reader = storage::OperandReader(values);\nlet view = match self {\n");
+    out.push_str("}\n#[allow(unused_variables)] impl InstFields {\npub(crate) fn view<'a>(&'a self, values: &'a [Value]) -> InstView<'a> {\nlet mut reader = storage::OperandReader(values);\nlet view = match self {\n");
     for layout in layouts {
         let bindings = layout
             .fields
@@ -268,14 +268,11 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         writeln!(
             out,
             "{} }},",
-            construct(
-                &format!("InstructionView::{}", layout.name),
-                fields.into_iter()
-            )
+            construct(&format!("InstView::{}", layout.name), fields.into_iter())
         )
         .unwrap();
     }
-    out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n} }\n#[allow(unused_variables)] impl<'a> InstructionView<'a> {\npub fn opcode(&self) -> Opcode { match self {\n");
+    out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n} }\n#[allow(unused_variables)] impl<'a> InstView<'a> {\npub fn opcode(&self) -> Opcode { match self {\n");
     for layout in layouts {
         let value = match &layout.opcode {
             OpcodeSource::Fixed(op) => format!("Opcode::{op}"),

@@ -1,4 +1,7 @@
 // Operand-array storage is independent of operation semantics and type contracts.
+type StackSlot = rust("crate::StackSlot");
+type Block = rust("veloc_mir::Block");
+
 storage Operands { prefix: "G_" }
 
 struct UnaryReg {
@@ -80,10 +83,6 @@ struct FloatConstant {
     dst: Def,
     imm: FImm,
 }
-layout FloatConstant {
-    view: FConstantInst,
-    accessor: as_fconstant,
-}
 
 struct Branch {
     target: Block,
@@ -112,18 +111,12 @@ struct ICmp {
     rhs: Use,
     cc: IntCC,
 }
-layout ICmp {
-    accessor: as_icmp,
-}
 
 struct FCmp {
     dst: Def,
     lhs: Use,
     rhs: Use,
     cc: FloatCC,
-}
-layout FCmp {
-    accessor: as_fcmp,
 }
 
 struct Arg {
@@ -134,10 +127,6 @@ struct Arg {
 struct Return {
     values: Uses,
 }
-layout Return {
-    view: RetInst,
-    accessor: as_ret,
-}
 
 struct Unreachable {
 
@@ -146,458 +135,454 @@ struct Unreachable {
 struct Call {
     shape: CallShape,
 }
-layout Call {
-    view: CallShapeInst,
-    accessor: as_call_shape_data,
-}
 
 // Logical signatures use the same operation model and type checker as every IR.
 
-op G_ADD<T: Integer>(lhs: T, rhs: T) -> T {
+op G_ADD<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.add(lhs, rhs)
 }
 
-op G_SUB<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SUB<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.sub(lhs, rhs)
 }
 
-op G_MUL<T: Integer>(lhs: T, rhs: T) -> T {
+op G_MUL<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.mul(lhs, rhs)
 }
 
-op G_SDIV<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SDIV<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UDIV<T: Integer>(lhs: T, rhs: T) -> T {
+op G_UDIV<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_SREM<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SREM<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UREM<T: Integer>(lhs: T, rhs: T) -> T {
+op G_UREM<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_NEG<T: Integer>(src: T) -> T {
+op G_NEG<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo {},
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
     semantics: bv.neg(src)
 }
 
-op G_FADD<T: Float>(lhs: T, rhs: T) -> T {
+op G_FADD<T: Float>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_FSUB<T: Float>(lhs: T, rhs: T) -> T {
+op G_FSUB<T: Float>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_FMUL<T: Float>(lhs: T, rhs: T) -> T {
+op G_FMUL<T: Float>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_FDIV<T: Float>(lhs: T, rhs: T) -> T {
+op G_FDIV<T: Float>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_FNEG<T: Float>(src: T) -> T {
+op G_FNEG<T: Float>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_FABS<T: Float>(src: T) -> T {
+op G_FABS<T: Float>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_FSQRT<T: Float>(src: T) -> T {
+op G_FSQRT<T: Float>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_AND<T: Integer>(lhs: T, rhs: T) -> T {
+op G_AND<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.and(lhs, rhs)
 }
 
-op G_OR<T: Integer>(lhs: T, rhs: T) -> T {
+op G_OR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.or(lhs, rhs)
 }
 
-op G_XOR<T: Integer>(lhs: T, rhs: T) -> T {
+op G_XOR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.xor(lhs, rhs)
 }
 
-op G_CTPOP<T: Integer>(src: T) -> T {
+op G_CTPOP<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_CTLZ<T: Integer>(src: T) -> T {
+op G_CTLZ<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_CTTZ<T: Integer>(src: T) -> T {
+op G_CTTZ<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_SHL<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SHL<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_LSHR<T: Integer>(lhs: T, rhs: T) -> T {
+op G_LSHR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ASHR<T: Integer>(lhs: T, rhs: T) -> T {
+op G_ASHR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ROTL<T: Integer>(lhs: T, rhs: T) -> T {
+op G_ROTL<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ROTR<T: Integer>(lhs: T, rhs: T) -> T {
+op G_ROTR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ICMP<T: ScalarInteger | PTR>(lhs: T, rhs: T, @cc: IntCC) -> BOOL {
+op G_ICMP<T: ScalarInteger | PTR>(lhs: T, rhs: T, @cc: IntCC) -> (dst: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: ICmp,
+    storage: ICmp { dst, lhs, rhs, cc },
 }
 
-op G_FCMP<T: ScalarFloat>(lhs: T, rhs: T, @cc: FloatCC) -> BOOL {
+op G_FCMP<T: ScalarFloat>(lhs: T, rhs: T, @cc: FloatCC) -> (dst: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: FCmp,
+    storage: FCmp { dst, lhs, rhs, cc },
 }
 
-op G_IEQZ(src: Integer) -> BOOL {
+op G_IEQZ(src: Integer) -> (dst: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_ANYEXT(src: Integer) -> Integer {
+op G_ANYEXT(src: Integer) -> (dst: Integer) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_ABS<T: Integer>(src: T) -> T {
+op G_ABS<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_SMIN<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SMIN<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_SMAX<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SMAX<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UMIN<T: Integer>(lhs: T, rhs: T) -> T {
+op G_UMIN<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UMAX<T: Integer>(lhs: T, rhs: T) -> T {
+op G_UMAX<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op G_UADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op G_SADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_USUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op G_USUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SSUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op G_SSUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_UADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (T, BOOL) {
+op G_UADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_SADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (T, BOOL) {
+op G_SADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_USUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (T, BOOL) {
+op G_USUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_SSUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (T, BOOL) {
+op G_SSUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: BOOL) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_UMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op G_UMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (T, BOOL) {
+op G_SMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: BOOL) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryRegWithFlags,
+    storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_UMULH<T: Integer>(lhs: T, rhs: T) -> T {
+op G_UMULH<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_SMULH<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SMULH<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_CTLZ_ZERO_UNDEF<T: Integer>(src: T) -> T {
+op G_CTLZ_ZERO_UNDEF<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_CTTZ_ZERO_UNDEF<T: Integer>(src: T) -> T {
+op G_CTTZ_ZERO_UNDEF<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_SADDSAT<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SADDSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UADDSAT<T: Integer>(lhs: T, rhs: T) -> T {
+op G_UADDSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_SSUBSAT<T: Integer>(lhs: T, rhs: T) -> T {
+op G_SSUBSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_USUBSAT<T: Integer>(lhs: T, rhs: T) -> T {
+op G_USUBSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_LOAD(base: PTR) -> Any {
+op G_LOAD(base: PTR) -> (dst: Any) {
     meta: OpInfo { memory: Unknown },
-    storage: Load,
+    storage: Load { dst, base },
 }
 
 op G_STORE(src: Any, base: PTR) -> () {
     meta: OpInfo { memory: Unknown },
-    storage: Store,
+    storage: Store { src, base },
 }
 
-op G_PTR_ADD(lhs: PTR, rhs: ScalarInteger) -> PTR {
+op G_PTR_ADD(lhs: PTR, rhs: ScalarInteger) -> (dst: PTR) {
     meta: OpInfo { memory: Known([]) },
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_STACK_LOAD(@slot: StackSlot) -> Any {
+op G_STACK_LOAD(@slot: StackSlot) -> (dst: Any) {
     meta: OpInfo { memory: Known([READ]) },
-    storage: StackLoad,
+    storage: StackLoad { dst, slot },
 }
 
 op G_STACK_STORE(src: Any, @slot: StackSlot) -> () {
     meta: OpInfo { memory: Known([WRITE]) },
-    storage: StackStore,
+    storage: StackStore { src, slot },
 }
 
-op G_STACK_ADDR(@slot: StackSlot) -> PTR {
+op G_STACK_ADDR(@slot: StackSlot) -> (dst: PTR) {
     meta: OpInfo { memory: Known([]) },
-    storage: StackAddr,
+    storage: StackAddr { dst, slot },
 }
 
-op G_OFFSET_LOAD(base: PTR, @offset: i64) -> Any {
+op G_OFFSET_LOAD(base: PTR, @offset: i64) -> (dst: Any) {
     meta: OpInfo { memory: Unknown },
-    storage: LoadOffset,
+    storage: LoadOffset { dst, base, offset },
 }
 
 op G_OFFSET_STORE(src: Any, base: PTR, @offset: i64) -> () {
     meta: OpInfo { memory: Unknown },
-    storage: StoreOffset,
+    storage: StoreOffset { src, base, offset },
 }
 
-op G_INDEXED_LOAD(wb_dst: PTR, base: PTR, @offset: i64) -> (Any, PTR) {
+op G_INDEXED_LOAD(wb_dst: PTR, base: PTR, @offset: i64) -> (dst: Any, out_wb_dst: PTR) {
     meta: OpInfo { memory: Unknown },
-    storage: IndexedLoad,
+    storage: IndexedLoad { dst, wb_dst: tied(wb_dst, out_wb_dst), base, offset },
 }
 
-op G_INDEXED_STORE(wb_dst: PTR, src: Any, base: PTR, @offset: i64) -> PTR {
+op G_INDEXED_STORE(wb_dst: PTR, src: Any, base: PTR, @offset: i64) -> (out_wb_dst: PTR) {
     meta: OpInfo { memory: Unknown },
-    storage: IndexedStore,
+    storage: IndexedStore { wb_dst: tied(wb_dst, out_wb_dst), src, base, offset },
 }
 
-op G_CONSTANT(@imm: i64) -> ScalarInteger {
+op G_CONSTANT(@imm: i64) -> (dst: ScalarInteger) {
     meta: OpInfo { memory: Known([]) },
-    storage: Constant,
+    storage: Constant { dst, imm },
 }
 
-op G_FCONSTANT(@imm: f64) -> ScalarFloat {
+op G_FCONSTANT(@imm: f64) -> (dst: ScalarFloat) {
     meta: OpInfo { memory: Known([]) },
-    storage: FloatConstant,
+    storage: FloatConstant { dst, imm },
 }
 
-op G_TRUNC(src: Integer) -> Integer {
+op G_TRUNC(src: Integer) -> (dst: Integer) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_ZEXT(src: Integer) -> Integer {
+op G_ZEXT(src: Integer) -> (dst: Integer) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_SEXT(src: Integer) -> Integer {
+op G_SEXT(src: Integer) -> (dst: Integer) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_FPTOSI(src: Float) -> Integer {
+op G_FPTOSI(src: Float) -> (dst: Integer) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_FPTOUI(src: Float) -> Integer {
+op G_FPTOUI(src: Float) -> (dst: Integer) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_SITOFP(src: Integer) -> Float {
+op G_SITOFP(src: Integer) -> (dst: Float) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_UITOFP(src: Integer) -> Float {
+op G_UITOFP(src: Integer) -> (dst: Float) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_FPTRUNC(src: Float) -> Float {
+op G_FPTRUNC(src: Float) -> (dst: Float) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_FPEXT(src: Float) -> Float {
+op G_FPEXT(src: Float) -> (dst: Float) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_BITCAST(src: Any) -> Any {
+op G_BITCAST(src: Any) -> (dst: Any) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_INTTOPTR(src: ScalarInteger) -> PTR {
+op G_INTTOPTR(src: ScalarInteger) -> (dst: PTR) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
-op G_PTRTOINT(src: PTR) -> ScalarInteger {
+op G_PTRTOINT(src: PTR) -> (dst: ScalarInteger) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
 op G_BR(@target: Block) -> () {
     meta: OpInfo { memory: Known([]) },
-    storage: Branch,
+    storage: Branch { target },
     flow: Jump,
 }
 
 op G_BRCOND(cond: BOOL, @then_blk: Block, @else_blk: Block) -> () {
     meta: OpInfo { memory: Known([]) },
-    storage: BranchCond,
+    storage: BranchCond { cond, then_blk, else_blk },
     flow: Jump,
 }
 
 op G_BRJT(index: ScalarInteger) -> () {
     meta: OpInfo { memory: Known([]) },
-    storage: BranchTable,
+    storage: BranchTable { index },
     flow: Jump,
 }
 
 op G_RET(values: values) -> () {
     meta: OpInfo { memory: Known([]) },
-    storage: Return,
+    storage: Return { values },
     flow: Return,
 }
 
 op G_CALL(@callee: SymbolId, args: values) -> signature {
     meta: OpInfo { memory: Unknown },
-    storage: Call,
+    storage: Call { shape: call(callee, args) },
     flow: Call,
 }
 
 op G_CALLIND(callee: PTR, args: values) -> signature {
     meta: OpInfo { memory: Unknown },
-    storage: Call,
+    storage: Call { shape: call(callee, args) },
     flow: Call,
 }
 
-op G_ARG(@index: i64) -> Any {
+op G_ARG(@index: i64) -> (dst: Any) {
     meta: OpInfo { memory: Known([]) },
-    storage: Arg,
+    storage: Arg { dst, index },
 }
 
-op G_SELECT<T: Any>(cond: BOOL, v1: T, v2: T) -> T {
+op G_SELECT<T: Any>(cond: BOOL, v1: T, v2: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: Select,
+    storage: Select { dst, cond, v1, v2 },
 }
 
-op G_COPY<T: Any>(src: T) -> T {
+op G_COPY<T: Any>(src: T) -> (dst: T) {
     meta: OpInfo { memory: Known([]) },
-    storage: UnaryReg,
+    storage: UnaryReg { dst, src },
 }
 
 op G_UNREACHABLE() -> () {
     meta: OpInfo { memory: Known([]) },
-    storage: Unreachable,
+    storage: Unreachable {},
     flow: Trap,
 }

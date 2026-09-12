@@ -1,7 +1,7 @@
 //! LIR 机器函数与基本块定义
 
 use super::{
-    CallInfo, CallInst, InstExtra, InstExtraId, InstId, MachineInst, Reg, StackSlot, VReg, VRegData,
+    CallInfo, InstExtra, InstExtraId, InstId, MachineInst, Reg, StackSlot, VReg, VRegData,
 };
 use crate::RegisterBank;
 use crate::stages::AllowsUnbankedVRegAlloc;
@@ -490,15 +490,6 @@ impl<S> MachineFunction<S> {
                 "call instruction {:?} in `{}` is missing call info payload",
                 inst_id, self.name
             ),
-        }
-    }
-
-    /// 以 typed view 的形式解码 call/call_indirect。
-    pub fn as_call(&self, inst_id: InstId) -> CallInst<'_> {
-        let inst = &self.dfg[inst_id];
-        CallInst {
-            shape: inst.as_call_shape(),
-            info: self.call_info(inst_id),
         }
     }
 

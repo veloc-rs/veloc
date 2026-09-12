@@ -1,0 +1,58 @@
+// ----- lir-type-constraints-use-the-shared-expression-language
+// run: opgen
+// check: TypeError::Constraint("double width")
+// check: checked_mul
+storage Operands { prefix: "G_" }
+struct Unary { dst: Def, src: Use }
+fn double_bits(from: Type, to: Type) -> bool {
+    value: element_bits(to) == element_bits(from) * 2
+}
+op G_WIDEN<T: Integer>(src: T) -> (dst: shape(T, Integer)) {
+    meta: OpInfo {},
+    storage: Unary { dst, src },
+    verify { require(double_bits(type(src), type(dst)), "double width"); }
+    semantics: bv.sext(src, result(0))
+}
+
+// ----- old-where-mechanism-is-removed
+// run: opgen-error
+// check: unknown field
+struct Unary { arg: Value }
+op Old(arg: I8) -> (result: I16) {
+    meta: OpInfo { memory: Known([]) },
+    mnemonic: "old", storage: Unary { arg },
+    where: [wider(arg, result)],
+}
+
+// ----- impossible-type-predicates-reject-semantic-instantiation
+// run: opgen-error
+// check: no admissible semantic signature
+struct Unary { arg: Value }
+op Impossible<T: Integer>(arg: T) -> T {
+    meta: OpInfo {},
+    mnemonic: "impossible", storage: Unary { arg },
+    verify { require(element_bits(type(arg)) > 128, "too wide"); }
+    semantics: bv.neg(arg)
+}
+
+// ----- scalar-type-filter-runs-before-semantic-sort-check
+// run: opgen
+// check: Opcode::IntegerOnly
+struct Unary { arg: Value }
+op IntegerOnly<T: ScalarInteger | PTR>(arg: T) -> T {
+    meta: OpInfo {},
+    mnemonic: "integer-only", storage: Unary { arg },
+    verify { require(!is_ptr(type(arg)), "no pointers"); }
+    semantics: bv.neg(arg)
+}
+
+// ----- partial-type-queries-preserve-short-circuiting
+// run: opgen
+// check: short circuit
+struct Unary { arg: Value }
+op Guarded<T: Integer>(arg: T) -> T {
+    meta: OpInfo {},
+    mnemonic: "guarded", storage: Unary { arg },
+    verify { require(is_scalar(type(arg)) || shape(type(arg)) == shape(type(arg)), "short circuit"); }
+    semantics: bv.neg(arg)
+}

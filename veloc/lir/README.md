@@ -26,7 +26,7 @@ one logical operation model and one type/semantic checker. Import resolution,
 dependency tracking and physical-file diagnostics are shared build infrastructure.
 
 `storage Operands` selects operand-array projection; MIR uses packed storage.
-Machine `format` records describe register roles and properties. Logical `op`
+Machine `struct` declarations describe register roles and properties. Logical `op`
 records declare signatures, effects, control behavior and optional semantics.
 The generated Rust contains opcodes, views, builders, decoding checks and direct
 type validation. Construction does not run validation.
@@ -34,9 +34,9 @@ type validation. Construction does not run validation.
 ```text
 storage Operands { prefix: "G_" }
 struct BinaryReg { dst: Def, lhs: Use, rhs: Use }
-op G_ADD<T: Integer>(lhs: T, rhs: T) -> T {
+op G_ADD<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
-    storage: BinaryReg,
+    storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.add(lhs, rhs)
 }
 ```
@@ -47,10 +47,41 @@ joins MIR and LIR primitive bindings to generate direct lowering dispatch.
 Offline tools can include generated semantic artifacts; runtime LIR has no
 semantics dependency.
 
+Instruction access uses `inst.generic_view()?` and pattern matching:
+
+```rust,ignore
+match inst.generic_view()? {
+    InstView::BinaryReg(binary) => {
+        // The restricted opcode distinguishes ADD, SUB, etc. sharing this shape.
+        use_binary(binary.opcode, binary.dst, binary.lhs, binary.rhs);
+    }
+    InstView::Return(ret) => {
+        for reg in ret.values.iter() {
+            use_return(reg);
+        }
+    }
+    _ => {}
+}
+```
+
+Views are generated from structs; there are no accessor-name overrides or runtime
+schema dispatch. The decoder checks opcode, operand count and operand kinds,
+not semantic type contracts. Fixed fields are copied; variable register lists
+borrow the operands through `RegList`, without allocation. Typed payload structs
+allow passing an already decoded instruction to helpers. Generic views reject
+target/invalid opcodes; target-specific decoding remains the backend's concern.
+
 Fixed builders are named from the opcode (`G_BRCOND` -> `build_brcond`). Variadic
 call/return construction and decoding, and architecture-independent binary/tied
-construction helpers, remain ordinary Rust. An opcode may refine a shared
-format's arity: carry instructions require their carry input. `G_ICMP` always
+construction helpers, remain ordinary Rust. Explicit mappings bind every layout field to logical inputs or named results.
+Field shorthand expands to `field: field`; there is no name/order-based layout
+inference. Builders take results in signature order, then inputs in signature
+order, and encode them in physical layout order. A `tied(input, result)` field
+uses a single writable register for both, so it contributes only the result
+argument to the physical builder. Optional uses require `some(input)` or `none`;
+only trailing fields may be absent. Carry instructions therefore select their
+exact arity explicitly. Variadic returns map `values` directly; call storage uses
+`shape: call(callee, args)` with signature-driven results. `G_ICMP` always
 requires two inputs and an explicit condition; zero comparison is `G_IEQZ`.
 
 Logical type contracts now use the same compiler as MIR and can be checked with

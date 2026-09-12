@@ -1407,13 +1407,13 @@ pub(crate) fn generate_select_instruction(
 pub fn select_instructions<C: LoweringContext{extra_bound}>(
     ctx: &C,
     inst: &MachineInst,
+    decoded: &veloc_lir::InstView<'_>,
     out: &mut alloc::vec::Vec<MachineInst>,
 ) -> Result<SelectResult, crate::error::Error> {{
     use veloc_lir::{{GenericOpcode, MachineOpcode, VReg}};
     use crate::target::arch::SelectResult;
     use crate::target::{arch}::isle::TargetInst;
 
-    let decoded = inst.decode_generic().ok();
 "#,
         extra_bound = extra_bound,
         arch = arch,
@@ -1497,7 +1497,7 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
                     };
                 writeln!(
                     output,
-                    "            if let Some(veloc_lir::DecodedGenericInst::{}({})) = decoded.as_ref() {{",
+                    "            if let veloc_lir::InstView::{}({}) = decoded {{",
                     schema_name, schema_var
                 )
                 .unwrap();

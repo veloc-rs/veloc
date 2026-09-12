@@ -479,7 +479,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(mfunc.blocks[0].insts, vec![inst_id]);
-        let lowered = mfunc.dfg[inst_id].as_binary_reg().unwrap();
+        let veloc_lir::InstView::BinaryReg(lowered) = mfunc.dfg[inst_id].generic_view().unwrap()
+        else {
+            panic!("expected BinaryReg");
+        };
         assert_eq!(lowered.lhs, dst);
         assert_eq!(lowered.rhs, lhs);
     }
@@ -509,11 +512,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(mfunc.blocks[0].insts.len(), 2);
-        let copy = mfunc.dfg[mfunc.blocks[0].insts[0]].as_unary_reg().unwrap();
+        let veloc_lir::InstView::UnaryReg(copy) =
+            mfunc.dfg[mfunc.blocks[0].insts[0]].generic_view().unwrap()
+        else {
+            panic!("expected UnaryReg");
+        };
         assert_eq!(copy.dst, fixed);
         assert_eq!(copy.src, src);
 
-        let lowered = mfunc.dfg[inst_id].as_unary_reg().unwrap();
+        let veloc_lir::InstView::UnaryReg(lowered) = mfunc.dfg[inst_id].generic_view().unwrap()
+        else {
+            panic!("expected UnaryReg");
+        };
         assert_eq!(lowered.src, fixed);
     }
 }

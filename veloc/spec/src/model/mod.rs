@@ -78,7 +78,6 @@ impl Definitions {
 pub(crate) struct TypeDef {
     pub operands: TypeList,
     pub results: TypeList,
-    pub relations: Vec<Relation>,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -115,13 +114,6 @@ pub(crate) enum Pattern {
 pub(crate) struct Slot {
     pub result: bool,
     pub index: u8,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Relation {
-    pub kind: String,
-    pub lhs: Slot,
-    pub rhs: Slot,
 }
 
 pub(crate) struct Op {

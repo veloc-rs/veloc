@@ -124,9 +124,9 @@ impl TargetLegalizer for X86_64Legalizer {
             };
         })?;
         if action == Some(LegalizeAction::Legal) {
-            let offset = match inst.generic_opcode() {
-                Some(GenericOpcode::G_OFFSET_LOAD) => Some(inst.as_load_offset()?.offset),
-                Some(GenericOpcode::G_OFFSET_STORE) => Some(inst.as_store_offset()?.offset),
+            let offset = match inst.generic_view()? {
+                veloc_lir::InstView::LoadOffset(load) => Some(load.offset),
+                veloc_lir::InstView::StoreOffset(store) => Some(store.offset),
                 _ => None,
             };
             if offset.is_some_and(|offset| i32::try_from(offset).is_err()) {
@@ -147,12 +147,12 @@ impl TargetLegalizer for X86_64Legalizer {
             match opcode {
                 GenericOpcode::G_OFFSET_LOAD | GenericOpcode::G_OFFSET_STORE => {
                     let inst = mfunc.dfg[inst_id].clone();
-                    let (base, offset, value) = if opcode == GenericOpcode::G_OFFSET_LOAD {
-                        let load = inst.as_load_offset()?;
-                        (load.base, load.offset, load.dst)
-                    } else {
-                        let store = inst.as_store_offset()?;
-                        (store.base, store.offset, store.src)
+                    let (base, offset, value) = match inst.generic_view()? {
+                        veloc_lir::InstView::LoadOffset(load) => (load.base, load.offset, load.dst),
+                        veloc_lir::InstView::StoreOffset(store) => {
+                            (store.base, store.offset, store.src)
+                        }
+                        _ => unreachable!("offset memory opcode"),
                     };
                     // x86 disp32 sign-extends. Materialize the full displacement
                     // before the access rather than silently truncating it.
@@ -176,12 +176,9 @@ impl TargetLegalizer for X86_64Legalizer {
                 }
                 GenericOpcode::G_CTPOP | GenericOpcode::G_CTLZ | GenericOpcode::G_CTTZ => {
                     let inst = mfunc.dfg[inst_id].clone();
-                    let unary = inst.as_unary_reg().unwrap_or_else(|err| {
-                        panic!(
-                            "invalid unary opcode {:?} during x86_64 legalization: {}",
-                            inst.opcode, err
-                        );
-                    });
+                    let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
+                        unreachable!("unary legalization opcode");
+                    };
                     let ty = if unary.dst.is_vreg() {
                         mfunc.vreg_data(unary.dst).ty
                     } else {
@@ -233,7 +230,7 @@ impl TargetLegalizer for X86_64Legalizer {
             let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).cloned() else {
                 panic!("missing br_table extra during x86_64 br_table legalization");
             };
-            let Ok(brjt) = mfunc.dfg[inst_id].as_branch_table() else {
+            let veloc_lir::InstView::BranchTable(brjt) = mfunc.dfg[inst_id].generic_view()? else {
                 panic!("invalid br_table instruction during x86_64 legalization");
             };
 

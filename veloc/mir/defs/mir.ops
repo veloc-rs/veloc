@@ -33,7 +33,7 @@ fn WriteAccess(ptr: Value(PTR), offset: i64, value: Value, flags: MemFlags) -> M
 op ClosureNew(@func_id: FuncId, move captures: values, @cleanup: FuncId) -> Callable {
     meta: OpInfo { memory: Unknown },
     mnemonic: "closure-new",
-    storage: ClosureNew { func_id: func_id, captures: captures, cleanup: cleanup },
+    storage: ClosureNew { func_id, captures, cleanup },
     text: "{func_id}({captures}) : {function(func_id)}, {cleanup}",
     control: owned(func_id, captures, cleanup),
 
@@ -49,7 +49,7 @@ op ClosureNew(@func_id: FuncId, move captures: values, @cleanup: FuncId) -> Call
 op ClosureLocal(@func_id: FuncId, captures: values) -> Callable {
     meta: OpInfo { memory: Unknown },
     mnemonic: "closure-local",
-    storage: Closure { func_id: func_id, captures: captures },
+    storage: Closure { func_id, captures },
     text: "{func_id}({captures}) : {function(func_id)}",
     control: local(func_id, captures),
 
@@ -64,7 +64,7 @@ op ClosureLocal(@func_id: FuncId, captures: values) -> Callable {
 op ClosureShared(@func_id: FuncId, captures: values) -> Callable {
     meta: OpInfo { memory: Unknown },
     mnemonic: "closure-shared",
-    storage: Closure { func_id: func_id, captures: captures },
+    storage: Closure { func_id, captures },
     text: "{func_id}({captures}) : {function(func_id)}",
     control: shared(func_id, captures),
 
@@ -79,7 +79,7 @@ op ClosureShared(@func_id: FuncId, captures: values) -> Callable {
 op TailCall(@func_id: FuncId, move args: values) -> () {
     meta: OpInfo { memory: Unknown },
     mnemonic: "tail-call",
-    storage: TailCall { func_id: func_id, args: args },
+    storage: TailCall { func_id, args },
     text: "{func_id}({args}) : {function(func_id)}",
     control: tail_call(func_id, args),
 
@@ -92,7 +92,7 @@ op TailCall(@func_id: FuncId, move args: values) -> () {
 op TailCallValue(move callee: Callable, move args: values) -> () {
     meta: OpInfo { memory: Unknown },
     mnemonic: "tail-call-value",
-    storage: CallValue { callee: callee, args: args },
+    storage: CallValue { callee, args },
     text: "{callee}({args})",
     control: tail_call_value(callee, args),
 
@@ -105,7 +105,7 @@ op TailCallValue(move callee: Callable, move args: values) -> () {
 op CallValue(move callee: Callable, move args: values) -> signature {
     meta: OpInfo { memory: Unknown },
     mnemonic: "call-value",
-    storage: CallValue { callee: callee, args: args },
+    storage: CallValue { callee, args },
     signature: callable(callee),
     text: "{callee}({args})",
     control: call(callee, args),
@@ -125,25 +125,25 @@ op ClosureDrop(move callee: Callable) -> () {
 op Iconst(@value: Int) -> type(value) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "iconst",
-    storage: Iconst { value: value },
+    storage: Iconst { value },
 }
 
 op Fconst(@value: Float) -> type(value) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "fconst",
-    storage: Fconst { value: value },
+    storage: Fconst { value },
 }
 
 op Bconst(@value: bool) -> BOOL {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "bconst",
-    storage: Bconst { value: value },
+    storage: Bconst { value },
 }
 
 op Vconst(@value: VectorConst) -> type(value) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "vconst",
-    storage: Vconst { value: value },
+    storage: Vconst { value },
 }
 
 op IAdd<T: Integer>(lhs: T, rhs: T) -> T {
@@ -170,7 +170,7 @@ op IMul<T: Integer>(lhs: T, rhs: T) -> T {
 op INeg<T: Integer>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "ineg",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
     semantics: bv.sub(bv.zero(), arg)
 }
 
@@ -288,7 +288,7 @@ op FMul<T: Float>(lhs: T, rhs: T) -> T {
 op FNeg<T: Float>(arg: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "fneg",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FDiv<T: Float>(lhs: T, rhs: T) -> T {
@@ -318,37 +318,37 @@ op FCopysign<T: Float>(lhs: T, rhs: T) -> T {
 op FAbs<T: Float>(arg: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "fabs",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FSqrt<T: Float>(arg: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "fsqrt",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FCeil<T: Float>(arg: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "fceil",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FFloor<T: Float>(arg: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ffloor",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FTrunc<T: Float>(arg: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ftrunc",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FNearest<T: Float>(arg: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "fnearest",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T {
@@ -416,35 +416,35 @@ op IRotr<T: Integer>(lhs: T, rhs: T) -> T {
 op IClz<T: Integer>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "iclz",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
     semantics: bv.clz(arg)
 }
 
 op ICtz<T: Integer>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "ictz",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
     semantics: bv.ctz(arg)
 }
 
 op IPopcnt<T: Integer>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "ipopcnt",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
     semantics: bv.popcnt(arg)
 }
 
 op IEqz(arg: ScalarInteger) -> BOOL {
     meta: OpInfo {},
     mnemonic: "ieqz",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
     semantics: bv.eq(arg, bv.zero())
 }
 
 op Icmp<T: ScalarInteger | PTR>(@kind: IntCC, lhs: T, rhs: T) -> BOOL {
     meta: OpInfo {},
     mnemonic: "icmp",
-    storage: IntCompare { kind: kind, args: [lhs, rhs] },
+    storage: IntCompare { kind, args: [lhs, rhs] },
     text: "{kind} {lhs}, {rhs}",
     semantics: bv.cmp(kind, lhs, rhs),
     verify {
@@ -455,105 +455,113 @@ op Icmp<T: ScalarInteger | PTR>(@kind: IntCC, lhs: T, rhs: T) -> BOOL {
 op Fcmp<T: ScalarFloat>(@kind: FloatCC, lhs: T, rhs: T) -> BOOL {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "fcmp",
-    storage: FloatCompare { kind: kind, args: [lhs, rhs] },
+    storage: FloatCompare { kind, args: [lhs, rhs] },
     text: "{kind} {lhs}, {rhs}",
 }
 
 op ExtendS<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
     meta: OpInfo {},
     mnemonic: "extends",
-    storage: Unary { arg: arg },
-    where: [wider(arg, result)],
+    storage: Unary { arg },
+    verify {
+        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+    }
     semantics: bv.sext(arg, result(0))
 }
 
 op ExtendU<T: Integer | BOOL | vectors(BOOL)>(arg: T) -> (result: shape(T, Integer)) {
     meta: OpInfo {},
     mnemonic: "extendu",
-    storage: Unary { arg: arg },
-    where: [wider(arg, result)],
+    storage: Unary { arg },
+    verify {
+        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+    }
     semantics: bv.zext(arg, result(0))
 }
 
 op Wrap<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
     meta: OpInfo {},
     mnemonic: "wrap",
-    storage: Unary { arg: arg },
-    where: [narrower(arg, result)],
+    storage: Unary { arg },
+    verify {
+        require(element_bits(type(result)) < element_bits(type(arg)), "result must have fewer bits per lane than arg");
+    }
     semantics: bv.trunc(arg, result(0))
 }
 
 op FloatToIntSatS<T: Float>(arg: T) -> shape(T, Integer) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "float-to-int-sat-s",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FloatToIntSatU<T: Float>(arg: T) -> shape(T, Integer) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "float-to-int-sat-u",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FloatToIntS<T: Float>(arg: T) -> shape(T, Integer) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
     mnemonic: "float-to-int-s",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FloatToIntU<T: Float>(arg: T) -> shape(T, Integer) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([]) },
     mnemonic: "float-to-int-u",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op IntToFloatS<T: Integer>(arg: T) -> shape(T, Float) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "int-to-float-s",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op IntToFloatU<T: Integer>(arg: T) -> shape(T, Float) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "int-to-float-u",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FloatPromote(arg: F32) -> F64 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "float-promote",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op FloatDemote(arg: F64) -> F32 {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "float-demote",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op Reinterpret(arg: Number) -> (result: Number) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reinterpret",
-    storage: Unary { arg: arg },
-    where: [same_width_distinct(arg, result)],
+    storage: Unary { arg },
+    verify {
+        require(type(arg) != type(result) && bit_size(type(arg)) == bit_size(type(result)), "reinterpret requires distinct types with equal bit sizes");
+    }
 }
 
 op IntToPtr(arg: ScalarInteger) -> PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "inttoptr",
-    storage: IntToPtr { arg: arg },
+    storage: IntToPtr { arg },
 }
 
 op PtrToInt(arg: PTR) -> ScalarInteger {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ptrtoint",
-    storage: PtrToInt { arg: arg },
+    storage: PtrToInt { arg },
 }
 
 op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
     meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
     mnemonic: "load",
-    storage: Load { ptr: ptr, offset: offset, flags: flags },
+    storage: Load { ptr, offset, flags },
     text: "{.flags} {ptr}, offset={offset}",
     implements: [ReadAccess(ptr, i64(offset), result_type(0), flags)],
 }
@@ -561,7 +569,7 @@ op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
 op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
     meta: OpInfo { traits: [MAY_TRAP], memory: field(MemoryAccess, effects) },
     mnemonic: "store",
-    storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },
+    storage: Store { ptr, value, offset, flags },
     text: "{.flags} {value}, {ptr}, offset={offset}",
     implements: [WriteAccess(ptr, i64(offset), value, flags)],
 }
@@ -572,7 +580,7 @@ op Store(ptr: PTR, value: Any, @offset: u32, @flags: MemFlags) -> () {
 op Alloca(@size: u32, @align: u32) -> PTR {
     meta: OpInfo { memory: Known([ALLOCATE]) },
     mnemonic: "alloca",
-    storage: Alloca { size: size, align: align },
+    storage: Alloca { size, align },
     text: "size={size}, align={align}",
 
     verify {
@@ -584,13 +592,13 @@ op Alloca(@size: u32, @align: u32) -> PTR {
 op PtrOffset(ptr: PTR, @offset: i32) -> PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ptr-offset",
-    storage: PtrOffset { ptr: ptr, offset: offset },
+    storage: PtrOffset { ptr, offset },
 }
 
 op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "ptr-index",
-    storage: PtrIndex { ptr: ptr, index: index, imm_id: imm },
+    storage: PtrIndex { ptr, index, imm_id: imm },
     text: "{ptr}, {index}, scale={imm.scale}, offset={imm.offset}",
 
     verify {
@@ -601,7 +609,7 @@ op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
 op Call(@func_id: FuncId, move args: values) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call",
-    storage: Call { func_id: func_id, args: args },
+    storage: Call { func_id, args },
     signature: function(func_id),
     text: "{func_id}({args}) : {function(func_id)}",
 }
@@ -609,7 +617,7 @@ op Call(@func_id: FuncId, move args: values) -> signature {
 op CallIndirect(@sig_id: SigId, ptr: PTR, move args: values) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call-indirect",
-    storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
+    storage: CallIndirect { ptr, args, sig_id },
     signature: sig_id,
     text: "{ptr}({args}) : {sig_id}",
 
@@ -621,7 +629,7 @@ op CallIndirect(@sig_id: SigId, ptr: PTR, move args: values) -> signature {
 op CallIntrinsic(@intrinsic: Intrinsic, @sig_id: SigId, move args: values) -> signature {
     meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call-intrinsic",
-    storage: CallIntrinsic { intrinsic: intrinsic, args: args, sig_id: sig_id },
+    storage: CallIntrinsic { intrinsic, args, sig_id },
     signature: sig_id,
     text: "{intrinsic}({args}) : {sig_id}",
 
@@ -633,25 +641,25 @@ op CallIntrinsic(@intrinsic: Intrinsic, @sig_id: SigId, move args: values) -> si
 op Jump(dest: successor) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "jump",
-    storage: Jump { dest: dest },
+    storage: Jump { dest },
 }
 
 op Br(condition: BOOL, then_dest: successor, else_dest: successor) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "br",
-    storage: Br { condition: condition, then_dest: then_dest, else_dest: else_dest },
+    storage: Br { condition, then_dest, else_dest },
 }
 
 op BrTable(index: I32, cases: successors, default: successor) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "br-table",
-    storage: BrTable { index: index, table: table(cases, default) },
+    storage: BrTable { index, table: table(cases, default) },
 }
 
 op Return(move values: values) -> () {
     meta: OpInfo { traits: [TERMINATOR], memory: Known([]) },
     mnemonic: "return",
-    storage: Return { values: values },
+    storage: Return { values },
 
     verify {
         require(matches(values, Module.returns(Module.current_signature())?), "return value type mismatch");
@@ -679,7 +687,7 @@ op Nop() -> () {
 op Splat<T: Scalar>(arg: T) -> vector(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "splat",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op Shuffle<T: Vector>(lhs: T, rhs: T, @mask: Bytes) -> T {
@@ -714,7 +722,7 @@ op ExtractElement<T: Vector>(vector: T, index: ScalarInteger) -> element(T) {
 op ReduceAdd<T: Number & Vector>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-add",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 // Integer extrema use signed comparison. Float extrema propagate NaN;
@@ -722,37 +730,37 @@ op ReduceAdd<T: Number & Vector>(arg: T) -> element(T) {
 op ReduceMin<T: Number & Vector>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-min",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op ReduceMax<T: Number & Vector>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-max",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op ReduceAnd<T: Integer & Vector | vectors(BOOL)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-and",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op ReduceOr<T: Integer & Vector | vectors(BOOL)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-or",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op ReduceXor<T: Integer & Vector | vectors(BOOL)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "reduce-xor",
-    storage: Unary { arg: arg },
+    storage: Unary { arg },
 }
 
 op LoadStride(ptr: PTR, stride: ScalarInteger, @mem: VectorMemOptions) -> Vector {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "load-stride",
-    storage: VectorLoadStrided { ptr: ptr, stride: stride, ext: mem },
+    storage: VectorLoadStrided { ptr, stride, ext: mem },
     text: "{mem.scale=1} {.mem.flags} {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
 
     verify {
@@ -776,7 +784,7 @@ op StoreStride(ptr: PTR, stride: ScalarInteger, value: Vector, @mem: VectorMemOp
 op Gather<T: Integer & Vector>(ptr: PTR, index: T, @mem: VectorMemOptions) -> shape(T, Vector) {
     meta: OpInfo { traits: [MAY_TRAP], memory: Known([READ]) },
     mnemonic: "gather",
-    storage: VectorGather { ptr: ptr, index: index, ext: mem },
+    storage: VectorGather { ptr, index, ext: mem },
     text: "{.mem.flags} {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
 
     verify {

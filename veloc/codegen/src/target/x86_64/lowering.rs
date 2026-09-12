@@ -525,11 +525,8 @@ impl X86_64Lowering {
     fn select_fcmp(
         &self,
         ctx: &mut SelectionContext<'_, PreIselPrepared>,
-        inst: &MachineInst,
+        fcmp: veloc_lir::FCmpInst,
     ) -> Result<SelectResult, crate::error::Error> {
-        let fcmp = inst.as_fcmp().unwrap_or_else(|err| {
-            panic!("invalid fcmp instruction during x86_64 selection: {}", err);
-        });
         let compare_opcode = match if fcmp.lhs.is_vreg() {
             ctx.mfunc.vreg_data(fcmp.lhs).ty
         } else {
@@ -604,14 +601,8 @@ impl X86_64Lowering {
     fn select_select(
         &self,
         ctx: &mut SelectionContext<'_, PreIselPrepared>,
-        inst: &MachineInst,
+        select: veloc_lir::SelectInst,
     ) -> Result<SelectResult, crate::error::Error> {
-        let select = inst.as_select().unwrap_or_else(|err| {
-            panic!(
-                "invalid select instruction during x86_64 selection: {}",
-                err
-            );
-        });
         let dst_ty = if select.dst.is_vreg() {
             ctx.mfunc.vreg_data(select.dst).ty
         } else {

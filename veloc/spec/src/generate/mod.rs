@@ -154,8 +154,8 @@ fn generate(plan: &Plan) -> Generated {
             builders.push_str(&packing::builder(
                 op,
                 &defs.storage.formats[format],
-                &defs.storage.records,
                 builder,
+                &defs.data.rust,
             ));
         }
     }
@@ -169,7 +169,7 @@ fn generate(plan: &Plan) -> Generated {
         text_parser,
         text_printer,
         type_rules,
-        host: defs.expressions.host_code(),
+        host: defs.expressions.host_code(&defs.data.rust),
         validation: crate::model::constraints::generate(
             defs,
             &packed.formats,

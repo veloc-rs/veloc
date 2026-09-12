@@ -2,7 +2,7 @@
 use alloc::vec::Vec;
 use smallvec::SmallVec;
 use veloc_mir::constant::ScalarConst;
-use veloc_mir::{Function, Inst, InstructionView, IntCC, Opcode, Type, Value};
+use veloc_mir::{Function, Inst, InstView, IntCC, Opcode, Type, Value};
 
 enum Replacement {
     Constants(Vec<ScalarConst>),
@@ -35,7 +35,7 @@ fn match_rule(func: &Function, inst: Inst) -> Option<Replacement> {
             }
         }
     }
-    if let InstructionView::Binary { opcode, args } = data {
+    if let InstView::Binary { opcode, args } = data {
         return algebraic(*opcode, args, &args.map(|v| func.dfg().as_scalar_const(v)));
     }
     None

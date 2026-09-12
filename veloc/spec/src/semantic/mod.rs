@@ -335,20 +335,21 @@ pub(crate) fn instances(
     let mut instances = Vec::new();
     for pointer_width in [32, 64] {
         let mut assignments = vec![(
-            Vec::<Sort>::new(),
             std::collections::BTreeMap::<u8, u8>::new(),
             Vec::<u8>::new(),
-            true,
+            u32::MAX,
         )];
         for pattern in inputs.iter().chain(outputs) {
             let mut next = Vec::new();
-            for (sorts, bindings, codes, scalar_shape) in assignments {
+            for (bindings, codes, scalar_shape) in assignments {
                 let set = match pattern {
                     Pattern::Class(set) | Pattern::Bind(_, set) | Pattern::ShapeOf(_, set) => {
                         set.clone()
                     }
                     Pattern::Exact(name) => types.exact[name].clone(),
-                    Pattern::Same(var) => crate::types::TypeSet::singleton(bindings[var], 0, false),
+                    Pattern::Same(var) => crate::types::TypeSet(std::collections::BTreeMap::from(
+                        [(bindings[var], u32::MAX)],
+                    )),
                     _ => {
                         return Err(fail(
                             "shape-changing semantic recipes are not supported".into(),
@@ -361,42 +362,16 @@ pub(crate) fn instances(
                     {
                         continue;
                     }
-                    let scalar = types.scalars.iter().find(|s| s.code == code).unwrap();
-                    let sort = match scalar.kind {
-                        crate::types::ScalarKind::Integer => {
-                            Sort::bv(scalar.bits.unwrap() as u16).unwrap()
-                        }
-                        crate::types::ScalarKind::Boolean => Sort::Bool,
-                        crate::types::ScalarKind::Pointer => {
-                            if sem.steps.iter().any(|s| {
-                                !matches!(
-                                    s,
-                                    SemanticStep::Input(_)
-                                        | SemanticStep::Compare {
-                                            kind: ComparisonRef::Property(_),
-                                            ..
-                                        }
-                                )
-                            }) {
-                                return Err(fail("pointer semantics only support comparison properties, not pointer arithmetic".into()));
-                            }
-                            Sort::bv(pointer_width).unwrap()
-                        }
-                        crate::types::ScalarKind::Float => {
-                            return Err(fail(
-                                "floating-point execution semantics are not modeled".into(),
-                            ));
-                        }
-                    };
                     let mut bindings = bindings.clone();
                     if let Pattern::Bind(var, _) = pattern {
                         bindings.insert(*var, code);
                     }
-                    let mut sorts = sorts.clone();
-                    sorts.push(sort);
                     let mut codes = codes.clone();
                     codes.push(code);
-                    next.push((sorts, bindings, codes, scalar_shape && shapes & 1 != 0));
+                    let shapes = scalar_shape & shapes;
+                    if shapes != 0 {
+                        next.push((bindings, codes, shapes));
+                    }
                 }
             }
             assignments = next;
@@ -406,34 +381,60 @@ pub(crate) fn instances(
                 ));
             }
         }
-        for (sorts, _, codes, scalar) in assignments {
-            let (ins, outs) = sorts.split_at(inputs.len());
-            let get = |slot: &crate::model::Slot| {
-                if slot.result {
-                    outs[slot.index as usize]
-                } else {
-                    ins[slot.index as usize]
-                }
-            };
-            let width = |sort: Sort| match sort {
-                Sort::Bool => 1,
-                Sort::Bv(w) => w.bits(),
-            };
-            if !op
-                .signature
-                .relations
-                .iter()
-                .all(|r| match r.kind.as_str() {
-                    "wider" => width(get(&r.rhs)) > width(get(&r.lhs)),
-                    "narrower" => width(get(&r.rhs)) < width(get(&r.lhs)),
-                    "same_width_distinct" => {
-                        width(get(&r.rhs)) == width(get(&r.lhs)) && get(&r.rhs) != get(&r.lhs)
-                    }
-                    _ => unreachable!("checked relation"),
+        for (_, codes, shapes) in assignments {
+            // A lane recipe can serve several shapes. Test the exact same
+            // constraints on each admitted shape, retaining scalar eligibility
+            // only when the scalar instantiation itself satisfies them.
+            let accepted = (0..32)
+                .filter(|shape| shapes & (1 << shape) != 0)
+                .filter(|shape| {
+                    op.constraints
+                        .iter()
+                        .filter(|c| c.condition.type_only(&op.params))
+                        .all(|c| {
+                            c.condition.accepts_types(
+                                types,
+                                &op.params,
+                                &codes,
+                                inputs.len(),
+                                *shape,
+                            )
+                        })
                 })
-            {
+                .fold(0u32, |mask, shape| mask | (1 << shape));
+            if accepted == 0 {
                 continue;
             }
+            let sorts = codes
+                .iter()
+                .map(|code| {
+                    let scalar = types.scalars.iter().find(|s| s.code == *code).unwrap();
+                    match scalar.kind {
+                        crate::types::ScalarKind::Integer => {
+                            Ok(Sort::bv(scalar.bits.unwrap() as u16).unwrap())
+                        }
+                        crate::types::ScalarKind::Boolean => Ok(Sort::Bool),
+                        crate::types::ScalarKind::Pointer => {
+                            let comparison_only = sem.steps.iter().all(|step| matches!(
+                                step,
+                                SemanticStep::Input(_) | SemanticStep::Compare {
+                                    kind: ComparisonRef::Property(_), ..
+                                }
+                            ));
+                            if !comparison_only {
+                                return Err(fail(
+                                    "pointer semantics only support comparison properties, not pointer arithmetic".into()
+                                ));
+                            }
+                            Ok(Sort::bv(pointer_width).unwrap())
+                        }
+                        crate::types::ScalarKind::Float => Err(fail(
+                            "floating-point execution semantics are not modeled".into()
+                        )),
+                    }
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            let scalar = accepted & 1 != 0;
             let instance = Instance {
                 codes,
                 sorts,
@@ -670,7 +671,6 @@ mod tests {
             signature: TypeDef {
                 operands: TypeList::Fixed(vec![operand]),
                 results: TypeList::Fixed(vec![result]),
-                relations: vec![],
             },
             signature_source: None,
             control: None,

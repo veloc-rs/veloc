@@ -312,7 +312,6 @@ mod tests {
             signature: TypeDef {
                 operands: TypeList::Fixed(vec![]),
                 results: TypeList::Fixed(vec![]),
-                relations: vec![],
             },
             params: params
                 .iter()
@@ -349,18 +348,22 @@ mod tests {
                 RecordField {
                     name: "mask".into(),
                     ty: PropertyType::Named("Value".into()),
+                    rust: "crate::Value".into(),
                 },
                 RecordField {
                     name: "evl".into(),
                     ty: PropertyType::Optional("Value".into()),
+                    rust: "Option<crate::Value>".into(),
                 },
                 RecordField {
                     name: "scale".into(),
                     ty: PropertyType::Named("u8".into()),
+                    rust: "u8".into(),
                 },
                 RecordField {
                     name: "flags".into(),
                     ty: PropertyType::Named("MemFlags".into()),
+                    rust: "MemFlags".into(),
                 },
             ],
         }

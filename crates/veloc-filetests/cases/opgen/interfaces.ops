@@ -61,7 +61,7 @@ op Example(@count: u32) -> I32 {
 
 // ----- forward-helpers-and-arrays
 // run: opgen
-// check: pub items: [Item; 2]
+// check: pub items: [crate::inst::Item; 2]
 // check: Item { n: *_f0 }
 struct Item { n: u32 }
 interface Pair { items: array(Item, 2) }

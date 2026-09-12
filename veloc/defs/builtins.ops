@@ -1,3 +1,13 @@
+// Rust-owned data types used by operation properties and host interfaces.
+type Int = rust("crate::Int");
+type Float = rust("crate::Float");
+type VectorConst = rust("crate::VectorConst");
+type FuncId = rust("crate::FuncId");
+type SigId = rust("crate::SigId");
+type Intrinsic = rust("crate::Intrinsic");
+type ConstantPoolId = rust("crate::inst::ConstantPoolId");
+type SymbolId = rust("crate::SymbolId");
+
 // Declaration order determines display order; bit positions remain explicit and stable.
 // Semantic laws and control-flow behavior are implemented by trusted Rust consumers.
 encoding MemFlags {
