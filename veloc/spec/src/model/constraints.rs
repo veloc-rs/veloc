@@ -10,24 +10,8 @@ use std::fmt::Write;
 pub(crate) struct Constraint {
     pub condition: Expr,
     pub text: String,
-}
-
-pub(crate) fn check(
-    source: &str,
-    nodes: Vec<crate::syntax::Node>,
-    op: &Op,
-    results: &BTreeMap<String, super::Slot>,
-    vocabulary: Vocabulary<'_>,
-    library: &mut Library,
-) -> Result<Vec<Constraint>, Error> {
-    library.verify(
-        source,
-        nodes,
-        &op.params,
-        Some(&op.signature),
-        results,
-        vocabulary,
-    )
+    pub type_only: bool,
+    pub offline: bool,
 }
 
 pub(crate) fn check_property(
@@ -54,6 +38,12 @@ pub(crate) fn describe(node: &Node) -> String {
         Kind::Text(text) => format!("{text:?}"),
         Kind::Unary(op, value) => format!("{op}({})", describe(value)),
         Kind::Binary(op, lhs, rhs) => format!("({} {op} {})", describe(lhs), describe(rhs)),
+        Kind::Member(receiver, name) => format!("{}.{name}", describe(receiver)),
+        Kind::Method(receiver, name, args) => format!(
+            "{}.{name}({})",
+            describe(receiver),
+            args.iter().map(describe).collect::<Vec<_>>().join(", ")
+        ),
         Kind::Call(name, args) => format!(
             "{name}({})",
             args.iter().map(describe).collect::<Vec<_>>().join(", ")
@@ -255,9 +245,7 @@ fn emit_body(
         body.push_str("let _host = crate::host::Context::new(&self.dfg).with_module(_module, self.signature);\n");
     }
     for constraint in &op.constraints {
-        if constraint.condition.is_bool(true)
-            || (type_checks && constraint.condition.type_only(&op.params))
-        {
+        if constraint.condition.is_bool(true) || (type_checks && constraint.type_only) {
             continue;
         }
         let error = format!("self.constraint_error(_inst, {:?})", constraint.text);

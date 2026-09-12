@@ -23,7 +23,7 @@ fn generate(plan: &Plan) -> Generated {
             unreachable!("operand plan matches storage strategy");
         };
         let classes = crate::types::generate::Classes::new(defs);
-        let mut type_rules = classes.generate(&defs.types);
+        let mut type_rules = classes.generate();
         type_rules.push_str("mod rules {\nuse super::TypeClass as C;\nuse crate::Type;\n");
         crate::types::rules::generate_validation(
             defs,
@@ -76,7 +76,7 @@ fn generate(plan: &Plan) -> Generated {
 
     let mut ops = String::from(HEADER);
     ops.push_str(&defs.storage.format_code());
-    ops.push_str(&classes.generate(&defs.types));
+    ops.push_str(&classes.generate());
     ops.push_str(&crate::model::builtins::contracts(&defs.builtins));
     for comparison in &defs.comparisons {
         ops.push_str(&comparison.generate());

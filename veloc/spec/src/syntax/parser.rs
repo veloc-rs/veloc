@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use super::lexer::{Kind as TokenKind, Lexer, Token};
-use super::{File, Import, Kind, Node, Parameter, Record, ResultType, Results, Signature};
+use super::{
+    File, FunctionBody, Import, Kind, Node, Parameter, Record, ResultType, Results, Signature,
+};
 use crate::Error;
 
 pub(crate) fn parse_file(source: &str) -> Result<File, Error> {
@@ -68,10 +70,73 @@ impl<'a> Parser<'a> {
             } else if kind == "extern" {
                 file.records.extend(self.external(offset)?);
             } else {
-                file.records.push(self.declaration(offset, kind)?);
+                let record = self.declaration(offset, kind)?;
+                let owner = (record.kind == "type" && self.at("{")).then(|| record.name.clone());
+                file.records.push(record);
+                if let Some(owner) = owner {
+                    file.records.extend(self.methods(&owner)?);
+                }
             }
         }
         Ok(file)
+    }
+
+    // Methods share the ordinary function checker and expansion mechanism.
+    fn methods(&mut self, owner: &str) -> Result<Vec<Record>, Error> {
+        self.expect("{")?;
+        let mut records = Vec::new();
+        while !self.at("}") {
+            let offset = self.token.offset;
+            if self.name()? != "fn" {
+                return Err(self.error(offset, "expected method declaration"));
+            }
+            let name = format!("{owner}.{}", self.name()?);
+            let signature = self.method_signature(Some(owner))?;
+            let body = if self.eat(";")? {
+                FunctionBody::Rust { offset, path: None }
+            } else {
+                self.function_body()?
+            };
+            records.push(Record {
+                offset,
+                kind: "fn".into(),
+                name,
+                fields: BTreeMap::new(),
+                body: Some(body),
+                signature: Some(signature),
+            });
+        }
+        self.expect("}")?;
+        Ok(records)
+    }
+
+    fn function_body(&mut self) -> Result<FunctionBody, Error> {
+        if self.eat("=")? {
+            let offset = self.token.offset;
+            if self.name()? != "rust" {
+                return Err(self.error(offset, "expected rust binding"));
+            }
+            self.expect("(")?;
+            let TokenKind::Text(path) = self.bump()?.kind else {
+                return Err(self.error(offset, "rust binding requires a qualified path"));
+            };
+            self.expect(")")?;
+            self.expect(";")?;
+            Ok(FunctionBody::Rust {
+                offset,
+                path: Some(path),
+            })
+        } else {
+            let offset = self.token.offset;
+            let mut fields = self.fields(0, Context::Expr, false)?;
+            if let Some((field, node)) = fields.iter().find(|(name, _)| name.as_str() != "value") {
+                return Err(self.error(node.offset, format!("unknown function field `{field}`")));
+            }
+            let value = fields
+                .remove("value")
+                .ok_or_else(|| self.error(offset, "missing function field `value`"))?;
+            Ok(FunctionBody::Value(value))
+        }
     }
 
     fn external(&mut self, offset: usize) -> Result<Vec<Record>, Error> {
@@ -86,6 +151,7 @@ impl<'a> Parser<'a> {
             name: name.clone(),
             fields: BTreeMap::new(),
             signature: None,
+            body: None,
         }];
         while !self.at("}") {
             let offset = self.token.offset;
@@ -101,6 +167,7 @@ impl<'a> Parser<'a> {
                 name: format!("{name}.{method}"),
                 fields: BTreeMap::new(),
                 signature: Some(signature),
+                body: None,
             });
         }
         self.expect("}")?;
@@ -114,14 +181,23 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let body = if kind == "fn" {
+            Some(self.function_body()?)
+        } else {
+            None
+        };
         let fields = match kind.as_str() {
             "type" | "predicate" => {
                 self.expect("=")?;
                 let node = self.expression(0, Context::Type)?;
-                self.expect(";")?;
+                if kind != "type" || !self.at("{") {
+                    self.expect(";")?;
+                } else if !matches!(&node.kind, Kind::Call(name, _) if name == "rust") {
+                    return Err(self.error(offset, "methods require a Rust-bound type"));
+                }
                 BTreeMap::from([(if kind == "type" { "expr" } else { "set" }.into(), node)])
             }
-            "fn" => self.fields(0, Context::Expr, false)?,
+            "fn" => BTreeMap::new(),
             _ => self.fields(0, Context::Value, false)?,
         };
         Ok(Record {
@@ -130,17 +206,40 @@ impl<'a> Parser<'a> {
             name,
             fields,
             signature,
+            body,
         })
     }
 
     fn signature(&mut self) -> Result<Signature, Error> {
+        self.method_signature(None)
+    }
+
+    fn method_signature(&mut self, owner: Option<&str>) -> Result<Signature, Error> {
         let generics = if self.eat("<")? {
             self.sequence(">", Self::parameter)?
         } else {
             Vec::new()
         };
         self.expect("(")?;
-        let params = self.sequence(")", Self::parameter)?;
+        let params = self.sequence(")", |p| {
+            if let Some(owner) = owner
+                && matches!(p.token.kind, TokenKind::Name("self"))
+            {
+                let offset = p.bump()?.offset;
+                Ok(Parameter {
+                    offset,
+                    name: "self".into(),
+                    property: false,
+                    moves: false,
+                    ty: Node {
+                        offset,
+                        kind: Kind::Name(owner.into()),
+                    },
+                })
+            } else {
+                p.parameter()
+            }
+        })?;
         self.expect("->")?;
         let results = if self.eat("(")? {
             Results::Fixed(self.sequence(")", Self::result)?)
@@ -252,19 +351,7 @@ impl<'a> Parser<'a> {
         if context == Context::Expr {
             self.binary(depth, 0)
         } else {
-            let mut node = self.union(depth, context)?;
-            if context != Context::Type {
-                let mut postfix = 0;
-                while self.eat("?")? {
-                    postfix += 1;
-                    self.check_depth(depth + postfix, Context::Expr)?;
-                    node = Node {
-                        offset: node.offset,
-                        kind: Kind::Try(Box::new(node)),
-                    };
-                }
-            }
-            Ok(node)
+            self.union(depth, context)
         }
     }
 
@@ -291,13 +378,15 @@ impl<'a> Parser<'a> {
 
     fn intersection(&mut self, depth: u8, context: Context) -> Result<Node, Error> {
         let first = self.atom(depth, context)?;
+        let first = self.postfix(first, depth, context)?;
         if !self.eat("&")? {
             return Ok(first);
         }
         let offset = first.offset;
         let mut nodes = vec![first];
         loop {
-            nodes.push(self.atom(depth, context)?);
+            let node = self.atom(depth, context)?;
+            nodes.push(self.postfix(node, depth, context)?);
             if !self.eat("&")? {
                 break;
             }
@@ -324,16 +413,7 @@ impl<'a> Parser<'a> {
             }
             _ => self.atom(depth, Context::Expr)?.kind,
         };
-        let mut lhs = Node { offset, kind };
-        let mut postfix = 0;
-        while self.eat("?")? {
-            postfix += 1;
-            self.check_depth(depth + postfix, Context::Expr)?;
-            lhs = Node {
-                offset,
-                kind: Kind::Try(Box::new(lhs)),
-            };
-        }
+        let mut lhs = self.postfix(Node { offset, kind }, depth, Context::Expr)?;
         let mut chain = 0;
         while let Some((op, level)) = self.binary_operator() {
             if level < precedence {
@@ -349,6 +429,33 @@ impl<'a> Parser<'a> {
             };
         }
         Ok(lhs)
+    }
+
+    fn postfix(&mut self, mut node: Node, depth: u8, context: Context) -> Result<Node, Error> {
+        let offset = node.offset;
+
+        let mut postfix = 0;
+        while self.at("?") || self.at(".") {
+            postfix += 1;
+            self.check_depth(depth + postfix, Context::Expr)?;
+            if self.eat("?")? {
+                node = Node {
+                    offset,
+                    kind: Kind::Try(Box::new(node)),
+                };
+            } else {
+                self.expect(".")?;
+                let member = self.name()?;
+                let kind = if self.eat("(")? {
+                    let args = self.sequence(")", |p| p.expression(depth + postfix, context))?;
+                    Kind::Method(Box::new(node), member, args)
+                } else {
+                    Kind::Member(Box::new(node), member)
+                };
+                node = Node { offset, kind };
+            }
+        }
+        Ok(node)
     }
 
     fn binary_operator(&self) -> Option<(&'static str, u8)> {

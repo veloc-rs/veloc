@@ -6,4 +6,4 @@ mod r#type;
 
 pub use entities::*;
 pub use signature::{CallConv, Signature};
-pub use r#type::{CallableKind, ScalarType, Type, TypeBits, TypeSize, VectorType};
+pub use r#type::{CallableKind, ScalarType, Shape, Type, TypeBits, TypeSize, VectorType};

@@ -22,11 +22,12 @@ op Add<T: Vector>(lhs: T, rhs: T) -> (result: vector(T)) {
 
 // ----- impossible-type-variable-constraints-are-definition-errors-3
 // run: opgen-error
-// check: impossible shape constraint on type variable `T`
+// check: constraint is always false
 struct Pair {
     args: values(2),
 }
-op Add<T: ScalarInteger>(lhs: T, rhs: T) -> (result: shape(T, Vector)) {
+op Add<T: ScalarInteger, U: Vector>(lhs: T, rhs: T) -> (result: U) {
+    verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { traits: [], memory: Known([]) },
     mnemonic: "pair-add", storage: Pair { args: [lhs, rhs] },
 }

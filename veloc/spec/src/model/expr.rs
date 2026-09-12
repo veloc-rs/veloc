@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Param, ParamKind, Pattern, TypeDef, builtins::Builtins, data, records::PropertyType};
-use crate::types::{ScalarKind, TypeSet};
+use crate::types::TypeSet;
 mod evaluate;
 
 use crate::{
@@ -17,10 +17,9 @@ fn possible(
     signature: Option<&TypeDef>,
 ) -> Option<TypeSet> {
     match pattern {
-        Pattern::Class(set)
-        | Pattern::Bind(_, set)
-        | Pattern::ShapeOf(_, set)
-        | Pattern::Property(_, set) => Some(set.clone()),
+        Pattern::Class(set) | Pattern::Bind(_, set) | Pattern::Property(_, set) => {
+            Some(set.clone())
+        }
         Pattern::Exact(name) => types.exact.get(name).cloned(),
         Pattern::Same(slot) => {
             let signature = signature?;
@@ -127,7 +126,6 @@ pub(crate) enum ExprKind {
     Parameter(usize),
     Operand(String),
     ResultType(usize),
-    ResultValue(usize),
     Convert(Box<Expr>),
     Field(Box<Expr>, String),
     Record(BTreeMap<String, Expr>),
@@ -135,6 +133,7 @@ pub(crate) enum ExprKind {
     Some(Box<Expr>),
     Try(Box<Expr>),
     Host(HostMethod, Vec<Expr>),
+    Rust(RustCall, Vec<Expr>),
     Array(Vec<Expr>),
 }
 
@@ -155,7 +154,7 @@ impl Expr {
             | ExprKind::Slice(a, b, _)
             | ExprKind::All(a, _, b) => a.uses_host() || b.uses_host(),
             ExprKind::Record(fields) => fields.values().any(Self::uses_host),
-            ExprKind::Array(values) | ExprKind::Variant(_, values) => {
+            ExprKind::Rust(_, values) | ExprKind::Array(values) | ExprKind::Variant(_, values) => {
                 values.iter().any(Self::uses_host)
             }
             ExprKind::Constant(_)
@@ -165,8 +164,7 @@ impl Expr {
             | ExprKind::Bound(_)
             | ExprKind::Parameter(_)
             | ExprKind::Operand(_)
-            | ExprKind::ResultType(_)
-            | ExprKind::ResultValue(_) => false,
+            | ExprKind::ResultType(_) => false,
         }
     }
     fn new(ty: Ty, kind: ExprKind) -> Self {
@@ -182,12 +180,23 @@ impl Expr {
             ExprKind::Constant(data::Value::Bool(value)),
         )
     }
-    fn integer(value: i128) -> Self {
-        Self::new(Ty::named("i128"), ExprKind::Integer(value))
-    }
     pub fn is_bool(&self, value: bool) -> bool {
         matches!(self.kind, ExprKind::Constant(data::Value::Bool(v)) if v == value)
     }
+    fn binary(ty: Ty, op: &'static str, lhs: Self, rhs: Self) -> Self {
+        // These identities preserve short circuiting and fallible RHS queries.
+        if (op == "&&" && lhs.is_bool(false)) || (op == "||" && lhs.is_bool(true)) {
+            return lhs;
+        }
+        if (op == "&&" && lhs.is_bool(true)) || (op == "||" && lhs.is_bool(false)) {
+            return rhs;
+        }
+        if (op == "&&" && rhs.is_bool(true)) || (op == "||" && rhs.is_bool(false)) {
+            return lhs;
+        }
+        Self::new(ty, ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)))
+    }
+
     fn wide(self) -> Self {
         if self.ty.integer() && self.ty != Ty::named("i128") {
             Self::new(Ty::named("i128"), ExprKind::Convert(Box::new(self)))
@@ -195,37 +204,59 @@ impl Expr {
             self
         }
     }
-    fn substitute(&self, args: &[Expr], next: &mut usize) -> Self {
-        self.expand(args, &mut BTreeMap::new(), next)
+    fn substitute(&self, args: &[Expr], next: &mut usize, types: &crate::types::Types) -> Self {
+        self.expand(args, &mut BTreeMap::new(), next, types)
     }
 
-    fn expand(&self, args: &[Expr], locals: &mut BTreeMap<usize, usize>, next: &mut usize) -> Self {
+    fn expand(
+        &self,
+        args: &[Expr],
+        locals: &mut BTreeMap<usize, usize>,
+        next: &mut usize,
+        types: &crate::types::Types,
+    ) -> Self {
         if let ExprKind::Parameter(index) = self.kind {
             return args[index].clone();
         }
         let kind = match &self.kind {
-            ExprKind::Unary(op, e) => ExprKind::Unary(op, Box::new(e.expand(args, locals, next))),
-            ExprKind::Binary(op, a, b) => ExprKind::Binary(
-                op,
-                Box::new(a.expand(args, locals, next)),
-                Box::new(b.expand(args, locals, next)),
-            ),
-            ExprKind::Query(q, e) => ExprKind::Query(*q, Box::new(e.expand(args, locals, next))),
+            ExprKind::Unary(op, e) => {
+                ExprKind::Unary(op, Box::new(e.expand(args, locals, next, types)))
+            }
+            ExprKind::Binary(op, a, b) => {
+                return Self::binary(
+                    self.ty.clone(),
+                    op,
+                    a.expand(args, locals, next, types),
+                    b.expand(args, locals, next, types),
+                );
+            }
+            ExprKind::Query(q, e) => {
+                let value = e.expand(args, locals, next, types);
+                return Self {
+                    types: if matches!(q, Query::TypeOf) {
+                        value.types.clone()
+                    } else {
+                        None
+                    },
+                    ty: self.ty.clone(),
+                    kind: ExprKind::Query(*q, Box::new(value)),
+                };
+            }
             ExprKind::Slice(a, b, prefix) => ExprKind::Slice(
-                Box::new(a.expand(args, locals, next)),
-                Box::new(b.expand(args, locals, next)),
+                Box::new(a.expand(args, locals, next, types)),
+                Box::new(b.expand(args, locals, next, types)),
                 *prefix,
             ),
             ExprKind::Matches(a, b) => ExprKind::Matches(
-                Box::new(a.expand(args, locals, next)),
-                Box::new(b.expand(args, locals, next)),
+                Box::new(a.expand(args, locals, next, types)),
+                Box::new(b.expand(args, locals, next, types)),
             ),
             ExprKind::All(a, id, body) => {
-                let sequence = a.expand(args, locals, next);
+                let sequence = a.expand(args, locals, next, types);
                 let fresh = *next;
                 *next += 1;
                 let old = locals.insert(*id, fresh);
-                let body = body.expand(args, locals, next);
+                let body = body.expand(args, locals, next, types);
                 if let Some(old) = old {
                     locals.insert(*id, old);
                 } else {
@@ -234,36 +265,53 @@ impl Expr {
                 ExprKind::All(Box::new(sequence), fresh, Box::new(body))
             }
             ExprKind::Bound(id) => ExprKind::Bound(*locals.get(id).unwrap_or(id)),
-            ExprKind::Try(e) => ExprKind::Try(Box::new(e.expand(args, locals, next))),
+            ExprKind::Try(e) => ExprKind::Try(Box::new(e.expand(args, locals, next, types))),
+            ExprKind::Rust(binding, values) => {
+                let args = values
+                    .iter()
+                    .map(|v| v.expand(args, locals, next, types))
+                    .collect::<Vec<_>>();
+                if let [arg] = args.as_slice()
+                    && let Some(known) = arg
+                        .types
+                        .as_ref()
+                        .and_then(|set| known_rust(types, binding, set, &self.ty))
+                {
+                    return known;
+                }
+                ExprKind::Rust(binding.clone(), args)
+            }
             ExprKind::Host(method, values) => ExprKind::Host(
                 method.clone(),
                 values
                     .iter()
-                    .map(|e| e.expand(args, locals, next))
+                    .map(|e| e.expand(args, locals, next, types))
                     .collect(),
             ),
-            ExprKind::Convert(e) => ExprKind::Convert(Box::new(e.expand(args, locals, next))),
-            ExprKind::Some(e) => ExprKind::Some(Box::new(e.expand(args, locals, next))),
+            ExprKind::Convert(e) => {
+                ExprKind::Convert(Box::new(e.expand(args, locals, next, types)))
+            }
+            ExprKind::Some(e) => ExprKind::Some(Box::new(e.expand(args, locals, next, types))),
             ExprKind::Field(e, name) => {
-                return Self::field(e.expand(args, locals, next), name, self.ty.clone());
+                return Self::field(e.expand(args, locals, next, types), name, self.ty.clone());
             }
             ExprKind::Record(fields) => ExprKind::Record(
                 fields
                     .iter()
-                    .map(|(n, e)| (n.clone(), e.expand(args, locals, next)))
+                    .map(|(n, e)| (n.clone(), e.expand(args, locals, next, types)))
                     .collect(),
             ),
             ExprKind::Variant(name, fields) => ExprKind::Variant(
                 name.clone(),
                 fields
                     .iter()
-                    .map(|e| e.expand(args, locals, next))
+                    .map(|e| e.expand(args, locals, next, types))
                     .collect(),
             ),
             ExprKind::Array(fields) => ExprKind::Array(
                 fields
                     .iter()
-                    .map(|e| e.expand(args, locals, next))
+                    .map(|e| e.expand(args, locals, next, types))
                     .collect(),
             ),
             other => other.clone(),
@@ -285,157 +333,24 @@ impl Expr {
             kind: ExprKind::Field(Box::new(base), name.into()),
         }
     }
-
-    /// Static metadata can use a projection only when the selected expression
-    /// contains no operand/result reads. It never runs a runtime query.
-    pub(crate) fn constant_node(&self, offset: usize) -> Option<Node> {
-        fn constant(value: &data::Value, offset: usize) -> Node {
-            let kind = match value {
-                data::Value::Number(n) => u32::try_from(*n)
-                    .map(Kind::Number)
-                    .unwrap_or(Kind::Integer(*n)),
-                data::Value::Bool(b) => Kind::Name(b.to_string()),
-                data::Value::Flags(_, members) => Kind::List(
-                    members
-                        .iter()
-                        .map(|m| Node {
-                            offset,
-                            kind: Kind::Name(m.clone()),
-                        })
-                        .collect(),
-                ),
-                data::Value::Record(name, fields) => Kind::Object(
-                    name.clone(),
-                    fields
-                        .iter()
-                        .map(|(n, v)| (n.clone(), constant(v, offset)))
-                        .collect(),
-                ),
-                data::Value::Variant(_, name, args) => Kind::Call(
-                    name.clone(),
-                    args.iter().map(|v| constant(v, offset)).collect(),
-                ),
-                data::Value::None => Kind::Name("none".into()),
-                data::Value::Some(v) => Kind::Call("some".into(), vec![constant(v, offset)]),
-                data::Value::Empty(_) => Kind::Name("empty".into()),
-            };
-            Node { offset, kind }
-        }
-        let kind = match &self.kind {
-            ExprKind::Integer(n) => u32::try_from(*n)
-                .map(Kind::Number)
-                .unwrap_or(Kind::Integer(*n)),
-            ExprKind::Unary(op, value) => {
-                let value = value.constant_node(offset)?;
-                match (*op, value.kind) {
-                    ("!", Kind::Name(b)) if b == "true" || b == "false" => {
-                        Kind::Name((b == "false").to_string())
-                    }
-                    ("-", Kind::Number(n)) if self.ty.fits(-i128::from(n)) => {
-                        Kind::Integer(-i128::from(n))
-                    }
-                    ("-", Kind::Integer(n)) if n.checked_neg().is_some_and(|n| self.ty.fits(n)) => {
-                        Kind::Integer(n.checked_neg()?)
-                    }
-                    _ => return None,
-                }
-            }
-            ExprKind::Binary(op, lhs, rhs) => {
-                let lhs = lhs.constant_node(offset)?;
-                if (*op == "&&" && matches!(&lhs.kind, Kind::Name(n) if n=="false"))
-                    || (*op == "||" && matches!(&lhs.kind, Kind::Name(n) if n=="true"))
-                {
-                    return Some(lhs);
-                }
-                let rhs = rhs.constant_node(offset)?;
-                let number = |n: &Node| match n.kind {
-                    Kind::Number(n) => Some(i128::from(n)),
-                    Kind::Integer(n) => Some(n),
-                    _ => None,
-                };
-                if let (Some(a), Some(b)) = (number(&lhs), number(&rhs)) {
-                    let numeric = match *op {
-                        "+" => a.checked_add(b),
-                        "-" => a.checked_sub(b),
-                        "*" => a.checked_mul(b),
-                        "&" => Some(a & b),
-                        "|" => Some(a | b),
-                        _ => None,
-                    };
-                    if let Some(n) = numeric {
-                        if !self.ty.fits(n) {
-                            return None;
-                        }
-                        u32::try_from(n)
-                            .map(Kind::Number)
-                            .unwrap_or(Kind::Integer(n))
-                    } else {
-                        let b = match *op {
-                            "==" => a == b,
-                            "!=" => a != b,
-                            "<" => a < b,
-                            "<=" => a <= b,
-                            ">" => a > b,
-                            ">=" => a >= b,
-                            _ => return None,
-                        };
-                        Kind::Name(b.to_string())
-                    }
-                } else if let (Kind::Name(a), Kind::Name(b)) = (&lhs.kind, &rhs.kind) {
-                    let value = match *op {
-                        "==" => a == b,
-                        "!=" => a != b,
-                        "&&" => a == "true" && b == "true",
-                        "||" => a == "true" || b == "true",
-                        _ => return None,
-                    };
-                    Kind::Name(value.to_string())
-                } else {
-                    return None;
-                }
-            }
-            ExprKind::Try(value) => {
-                let node = value.constant_node(offset)?;
-                let Kind::Call(name, mut args) = node.kind else {
-                    return None;
-                };
-                if name != "some" || args.len() != 1 {
-                    return None;
-                }
-                return args.pop();
-            }
-            ExprKind::Type(name) => Kind::Name(name.clone()),
-            ExprKind::Constant(value) => return Some(constant(value, offset)),
-            ExprKind::Convert(value) => return value.constant_node(offset),
-            ExprKind::Record(fields) => Kind::Object(
-                self.ty.name().to_owned(),
-                fields
-                    .iter()
-                    .map(|(n, e)| Some((n.clone(), e.constant_node(offset)?)))
-                    .collect::<Option<_>>()?,
-            ),
-            ExprKind::Variant(name, args) => Kind::Call(
-                name.clone(),
-                args.iter()
-                    .map(|e| e.constant_node(offset))
-                    .collect::<Option<_>>()?,
-            ),
-            ExprKind::Some(e) => Kind::Call("some".into(), vec![e.constant_node(offset)?]),
-            ExprKind::Array(args) => Kind::List(
-                args.iter()
-                    .map(|e| e.constant_node(offset))
-                    .collect::<Option<_>>()?,
-            ),
-            _ => return None,
-        };
-        Some(Node { offset, kind })
-    }
 }
 
 #[derive(Clone)]
 pub(crate) struct Interface {
     pub(crate) fields: Vec<(String, Ty)>,
 }
+#[derive(Clone)]
+pub(crate) struct RustCall {
+    path: String,
+    evaluation: Option<RustEval>,
+}
+
+#[derive(Clone)]
+enum RustEval {
+    Query(TypeQuery),
+    Predicate(TypeSet),
+}
+
 #[derive(Clone)]
 struct Function {
     params: Vec<Ty>,
@@ -553,10 +468,25 @@ impl Library {
             comparisons,
         } = vocabulary;
         let mut env = operands(params, signature, types);
-        for (name, slot) in results.iter().filter(|(_, slot)| slot.result) {
-            let mut value = Expr::new(Ty::Value(None), ExprKind::ResultValue(slot.index as usize));
+        for (name, slot) in results {
+            let mut value = Expr::new(Ty::named("Type"), ExprKind::ResultType(slot.index as usize));
+            if !slot.result {
+                let operand = params
+                    .iter()
+                    .filter(|p| p.kind == ParamKind::Value)
+                    .nth(slot.index as usize)
+                    .expect("generic operand binding");
+                let input = env[&operand.name].clone();
+                value.kind = ExprKind::Query(Query::TypeOf, Box::new(input));
+            }
             value.types = signature
-                .and_then(|s| s.results.patterns())
+                .and_then(|s| {
+                    if slot.result {
+                        s.results.patterns()
+                    } else {
+                        s.operands.patterns()
+                    }
+                })
                 .and_then(|p| p.get(slot.index as usize))
                 .and_then(|p| possible(types, p, signature));
             env.insert(name.clone(), value);
@@ -601,7 +531,7 @@ impl Library {
             if let Some(Node {
                 kind: Kind::Name(b),
                 ..
-            }) = condition.constant_node(node.offset)
+            }) = condition.constant_node(checker.types, node.offset)
                 && matches!(b.as_str(), "true" | "false")
             {
                 condition = Expr::boolean(b == "true");
@@ -613,7 +543,12 @@ impl Library {
                     format!("constraint is always false: {text}"),
                 ));
             }
-            result.push(super::constraints::Constraint { condition, text });
+            result.push(super::constraints::Constraint {
+                type_only: condition.type_only(params),
+                offline: condition.offline_supported(),
+                condition,
+                text,
+            });
         }
         Ok(result)
     }
@@ -629,6 +564,11 @@ impl Library {
             }
         }
         let mut names = BTreeSet::new();
+        for function in self.functions.values() {
+            for ty in function.params.iter().chain([&function.result]) {
+                visit(ty, &mut names);
+            }
+        }
         for method in self.hosts.values() {
             for (_, ty) in &method.params {
                 visit(ty, &mut names);
@@ -860,16 +800,27 @@ impl Library {
             node: &mut Node,
             env: &BTreeMap<String, Expr>,
         ) -> Result<(), Error> {
-            if matches!(&node.kind, Kind::Call(name,_) if name == "field" || checker.library.functions.contains_key(name))
+            let method = matches!(
+                &node.kind,
+                Kind::Method(..)
+                    | Kind::Member(..)
+                    | Kind::Try(_)
+                    | Kind::Unary(..)
+                    | Kind::Binary(..)
+            );
+            if method
+                || matches!(&node.kind, Kind::Call(name,_) if name == "field" || checker.library.functions.contains_key(name))
             {
                 let expr = checker.expr(node, None, env, None)?;
-                *node = expr.constant_node(node.offset).ok_or_else(|| {
-                    Error::at(
-                        checker.source,
-                        node.offset,
-                        "metadata projection must be compile-time constant",
-                    )
-                })?;
+                *node = expr
+                    .constant_node(checker.types, node.offset)
+                    .ok_or_else(|| {
+                        Error::at(
+                            checker.source,
+                            node.offset,
+                            "metadata projection must be compile-time constant",
+                        )
+                    })?;
             } else {
                 match &mut node.kind {
                     Kind::Object(_, fields) => {
@@ -916,6 +867,13 @@ impl Checker<'_> {
             })
         };
         let mut a = self.expr(lhs, hint.as_ref(), env, signature)?;
+        if matches!(a.ty, Ty::Optional(_)) {
+            return Err(Error::at(
+                self.source,
+                lhs.offset,
+                "optional operands must be unwrapped with ?",
+            ));
+        }
         if self.verification {
             a = a.wide();
         }
@@ -961,22 +919,13 @@ impl Checker<'_> {
                 ));
             }
         };
-        if (op == "&&" && a.is_bool(false)) || (op == "||" && a.is_bool(true)) {
-            return Ok(a);
-        }
-        if (op == "&&" && a.is_bool(true)) || (op == "||" && a.is_bool(false)) {
-            return Ok(b);
-        }
-        if (op == "&&" && b.is_bool(true)) || (op == "||" && b.is_bool(false)) {
-            return Ok(a);
-        }
         let numeric_constants = numeric
-            && a.constant_node(lhs.offset).is_some()
-            && b.constant_node(rhs.offset).is_some();
-        let expr = Expr::new(ty, ExprKind::Binary(op, Box::new(a), Box::new(b)));
+            && a.constant_node(self.types, lhs.offset).is_some()
+            && b.constant_node(self.types, rhs.offset).is_some();
+        let expr = Expr::binary(ty, op, a, b);
         if numeric_constants
             && matches!(op, "+" | "-" | "*" | "&" | "|")
-            && expr.constant_node(lhs.offset).is_none()
+            && expr.constant_node(self.types, lhs.offset).is_none()
         {
             return Err(Error::at(
                 self.source,
@@ -984,7 +933,7 @@ impl Checker<'_> {
                 "expression arithmetic overflow",
             ));
         }
-        if let Some(node) = expr.constant_node(lhs.offset) {
+        if let Some(node) = expr.constant_node(self.types, lhs.offset) {
             match node.kind {
                 Kind::Name(b) if b == "true" || b == "false" => {
                     return Ok(Expr::boolean(b == "true"));
@@ -997,67 +946,43 @@ impl Checker<'_> {
         Ok(expr)
     }
 
-    fn path(
+    fn member(
         &mut self,
-        node: &Node,
-        name: &str,
+        offset: usize,
+        receiver: &Node,
+        field: &str,
         env: &BTreeMap<String, Expr>,
         signature: Option<&TypeDef>,
     ) -> Result<Expr, Error> {
-        let mut parts = name.split('.');
-        let root = parts.next().unwrap();
-        if !env.contains_key(root)
-            && let Some(comparison) = self.comparisons.iter().find(|c| c.name == root)
+        if let Kind::Name(root) = &receiver.kind
+            && !env.contains_key(root)
+            && let Some(comparison) = self.comparisons.iter().find(|c| c.name == *root)
         {
-            let member = parts
-                .next()
-                .ok_or_else(|| Error::at(self.source, node.offset, "expected an enum variant"))?;
-            if !comparison.has_variant(member) || parts.next().is_some() {
-                return Err(Error::at(
-                    self.source,
-                    node.offset,
-                    "unknown comparison variant",
-                ));
+            if !comparison.has_variant(field) {
+                return Err(Error::at(self.source, offset, "unknown comparison variant"));
             }
             return Ok(Expr::new(
                 Ty::named(root),
-                ExprKind::Variant(member.into(), Vec::new()),
+                ExprKind::Variant(field.into(), Vec::new()),
             ));
         }
-        let mut value = self.expr(
-            &Node {
-                offset: node.offset,
-                kind: Kind::Name(root.into()),
-            },
-            None,
-            env,
-            signature,
-        )?;
-        for field in parts {
-            let Ty::Named(name) = &value.ty else {
-                return Err(Error::at(
-                    self.source,
-                    node.offset,
-                    "field access requires a struct",
-                ));
-            };
-            let fields = self.fields(name).ok_or_else(|| {
-                Error::at(self.source, node.offset, "field access requires a struct")
-            })?;
-            let ty = fields
-                .into_iter()
-                .find(|(n, _)| n == field)
-                .ok_or_else(|| {
-                    Error::at(
-                        self.source,
-                        node.offset,
-                        format!("unknown field {name}.{field}"),
-                    )
-                })?
-                .1;
-            value = Expr::field(value, field, ty);
-        }
-        Ok(value)
+        let value = self.expr(receiver, None, env, signature)?;
+        let Ty::Named(name) = &value.ty else {
+            return Err(Error::at(
+                self.source,
+                offset,
+                "field access requires a struct",
+            ));
+        };
+        let fields = self
+            .fields(name)
+            .ok_or_else(|| Error::at(self.source, offset, "field access requires a struct"))?;
+        let ty = fields
+            .into_iter()
+            .find(|(n, _)| n == field)
+            .ok_or_else(|| Error::at(self.source, offset, format!("unknown field {name}.{field}")))?
+            .1;
+        Ok(Expr::field(value, field, ty))
     }
 
     fn query(
@@ -1136,47 +1061,19 @@ impl Checker<'_> {
                 ExprKind::Slice(Box::new(a), Box::new(b.wide()), name == "prefix"),
             ));
         }
-        let query = Query::named(name).ok_or_else(|| fail("unknown expression query"))?;
         let [arg] = args else {
-            return Err(fail("query expects one argument"));
+            return Err(fail("len expects one argument"));
         };
         let value = self.expr(arg, None, env, signature)?;
-        let ty = match query {
-            Query::Len => {
-                if !matches!(value.ty, Ty::Sequence(_) | Ty::Array(_, _)) {
-                    return Err(fail("len expects a sequence"));
-                }
-                Ty::named("i128")
-            }
-            Query::Shape | Query::Lanes | Query::MinBytes | Query::ElementBits | Query::BitSize => {
-                if value.ty != Ty::named("Type") {
-                    return Err(fail("query expects an IR type"));
-                }
-                Ty::named(if matches!(query, Query::Shape) {
-                    "Shape"
-                } else if matches!(query, Query::BitSize) {
-                    "TypeBits"
-                } else {
-                    "i128"
-                })
-            }
-            Query::TypeOf => unreachable!("type has its own typed constructor"),
-            _ => {
-                if value.ty != Ty::named("Type") {
-                    return Err(fail("query expects an IR type"));
-                }
-                Ty::named("bool")
-            }
-        };
-        if let Some(known) = value
-            .types
-            .as_ref()
-            .and_then(|s| known_query(self.types, query, s))
-        {
-            return Ok(known);
+        if !matches!(value.ty, Ty::Sequence(_) | Ty::Array(_, _)) {
+            return Err(fail("len expects a sequence"));
         }
-        Ok(Expr::new(ty, ExprKind::Query(query, Box::new(value))))
+        Ok(Expr::new(
+            Ty::named("i128"),
+            ExprKind::Query(Query::Len, Box::new(value)),
+        ))
     }
+
     fn ty(&self, node: &Node) -> Result<Ty, Error> {
         let fail = || Error::at(self.source, node.offset, "unknown projection type");
         match &node.kind {
@@ -1312,7 +1209,7 @@ impl Checker<'_> {
                 | "matches"
                 | "results"
                 | "require"
-        ) || Query::named(name).is_some()
+        ) || name == "len"
         {
             return Err(Error::at(
                 self.source,
@@ -1338,8 +1235,23 @@ impl Checker<'_> {
         let result = self.ty(&results[0].ty)?;
         let mut params = Vec::new();
         let mut env = BTreeMap::new();
+        let owner = name.split_once('.').map(|(owner, _)| owner);
+        if let Some(owner) = owner {
+            let valid = signature.params.first().is_some_and(|p| {
+                p.name == "self" && matches!(&p.ty.kind, Kind::Name(ty) if ty == owner)
+            });
+            if !valid {
+                return Err(Error::at(
+                    self.source,
+                    offset,
+                    "method requires self as its first parameter",
+                ));
+            }
+        }
         for param in signature.params {
-            super::identifier(self.source, param.offset, &param.name)?;
+            if param.name != "self" || owner.is_none() {
+                super::identifier(self.source, param.offset, &param.name)?;
+            }
             if param.moves || param.property {
                 return Err(Error::at(
                     self.source,
@@ -1362,10 +1274,59 @@ impl Checker<'_> {
                 ));
             }
         }
-        let mut fields = super::Fields::new(self.source, declaration);
-        let value = fields.take("value")?;
-        fields.finish()?;
-        let body = self.expr(&value, Some(&result), &env, None)?;
+        let body = match declaration.body.expect("function has a body") {
+            crate::syntax::FunctionBody::Rust { offset, path } => {
+                let path = if let Some(path) = path {
+                    path
+                } else {
+                    let owner = owner.expect("implicit Rust binding is a method");
+                    if !self.data.rust.contains(owner) {
+                        return Err(Error::at(
+                            self.source,
+                            offset,
+                            "method requires a Rust-bound type",
+                        ));
+                    }
+                    format!(
+                        "{}::{}",
+                        self.data.rust.rust(owner),
+                        name.rsplit('.').next().unwrap()
+                    )
+                };
+                super::records::rust_path(self.source, offset, &path)?;
+                let evaluation = TypeQuery::rust(&path).map(RustEval::Query).or_else(|| {
+                    path.strip_prefix("crate::Type::")
+                        .and_then(|name| self.types.predicates.get(name))
+                        .cloned()
+                        .map(RustEval::Predicate)
+                });
+                let expected = evaluation.as_ref().map(|e| match e {
+                    RustEval::Query(query) => query.result(),
+                    RustEval::Predicate(_) => Ty::named("bool"),
+                });
+                if let Some(expected) = expected
+                    && (params != [Ty::named("Type")] || result != expected)
+                {
+                    return Err(Error::at(
+                        self.source,
+                        offset,
+                        "Rust type-query signature mismatch",
+                    ));
+                }
+                let args = params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ty)| Expr::new(ty.clone(), ExprKind::Parameter(i)))
+                    .collect();
+                Expr::new(
+                    result.clone(),
+                    ExprKind::Rust(RustCall { path, evaluation }, args),
+                )
+            }
+            crate::syntax::FunctionBody::Value(value) => {
+                self.expr(&value, Some(&result), &env, None)?
+            }
+        };
         let function = Function {
             params,
             result,
@@ -1374,6 +1335,84 @@ impl Checker<'_> {
         self.active.remove(name);
         self.library.functions.insert(name.into(), function.clone());
         Ok(function)
+    }
+
+    fn method(
+        &mut self,
+        offset: usize,
+        receiver: &Node,
+        method: &str,
+        args: &[Node],
+        env: &BTreeMap<String, Expr>,
+        signature: Option<&TypeDef>,
+    ) -> Result<Expr, Error> {
+        if let Kind::Name(owner) = &receiver.kind
+            && !env.contains_key(owner)
+        {
+            let name = format!("{owner}.{method}");
+            if self.library.hosts.contains_key(&name)
+                || self.library.functions.contains_key(&name)
+                || self
+                    .declarations
+                    .iter()
+                    .any(|d| d.kind == "fn" && d.name == name)
+            {
+                return self.expr(
+                    &Node {
+                        offset,
+                        kind: Kind::Call(name, args.to_vec()),
+                    },
+                    None,
+                    env,
+                    signature,
+                );
+            }
+        }
+        let value = self.expr(receiver, None, env, signature)?;
+        let owner = match &value.ty {
+            Ty::Named(name) => name.as_str(),
+            Ty::Value(_) => "Value",
+            _ => {
+                return Err(Error::at(
+                    self.source,
+                    offset,
+                    "method requires a named receiver type",
+                ));
+            }
+        };
+        let function = self.function(&format!("{owner}.{method}"), offset)?;
+        self.call(function, vec![value], args, offset, env, signature)
+    }
+
+    fn call(
+        &mut self,
+        function: Function,
+        mut checked: Vec<Expr>,
+        args: &[Node],
+        offset: usize,
+        env: &BTreeMap<String, Expr>,
+        signature: Option<&TypeDef>,
+    ) -> Result<Expr, Error> {
+        if function.params.len() != checked.len() + args.len() {
+            return Err(Error::at(
+                self.source,
+                offset,
+                "projection function argument count mismatch",
+            ));
+        }
+        for (arg, ty) in args.iter().zip(&function.params[checked.len()..]) {
+            // Parameter arithmetic retains its declared width inside wide verification expressions.
+            let wide = self.verification;
+            self.verification = false;
+            let value = self.expr(arg, Some(ty), env, signature);
+            self.verification = wide;
+            checked.push(value?);
+        }
+        let mut expr = function
+            .body
+            .substitute(&checked, &mut self.next_local, self.types);
+        expr.ty = function.result;
+        Ok(expr)
     }
 
     fn expr(
@@ -1385,6 +1424,12 @@ impl Checker<'_> {
     ) -> Result<Expr, Error> {
         let fail = |message: &str| Error::at(self.source, node.offset, message);
         let expr = match &node.kind {
+            Kind::Method(receiver, method, args) => {
+                self.method(node.offset, receiver, method, args, env, signature)?
+            }
+            Kind::Member(receiver, field) => {
+                self.member(node.offset, receiver, field, env, signature)?
+            }
             Kind::Try(value) => {
                 let value = self.expr(value, None, env, signature)?;
                 let Ty::Optional(inner) = &value.ty else {
@@ -1436,9 +1481,9 @@ impl Checker<'_> {
                 {
                     return Err(fail("invalid unary operand type"));
                 }
-                let constant = value.constant_node(node.offset).is_some();
+                let constant = value.constant_node(self.types, node.offset).is_some();
                 let expr = Expr::new(value.ty.clone(), ExprKind::Unary(op, Box::new(value)));
-                if constant && expr.constant_node(node.offset).is_none() {
+                if constant && expr.constant_node(self.types, node.offset).is_none() {
                     return Err(fail("expression arithmetic overflow"));
                 }
                 expr
@@ -1459,7 +1504,7 @@ impl Checker<'_> {
                 Expr::new(ty, ExprKind::Integer(n))
             }
             Kind::Name(name) if env.contains_key(name) => env[name].clone(),
-            Kind::Name(name) if name.contains('.') => self.path(node, name, env, signature)?,
+
             Kind::Name(name) if self.types.exact.contains_key(name) => {
                 let mut expr = Expr::new(Ty::named("Type"), ExprKind::Type(name.clone()));
                 expr.types = self.types.exact.get(name).cloned();
@@ -1488,19 +1533,10 @@ impl Checker<'_> {
                 }
             }
             Kind::Call(name, args) if name == "field" && args.len() == 2 => {
-                let base = self.expr(&args[0], None, env, signature)?;
-                let (Ty::Named(ty), Kind::Name(field)) = (&base.ty, &args[1].kind) else {
-                    return Err(fail("field requires a struct and field name"));
+                let Kind::Name(field) = &args[1].kind else {
+                    return Err(fail("field requires a field name"));
                 };
-                let fields = self
-                    .fields(ty)
-                    .ok_or_else(|| fail("field requires a struct or interface"))?;
-                let ty = fields
-                    .into_iter()
-                    .find(|(n, _)| n == field)
-                    .ok_or_else(|| fail("unknown projection field"))?
-                    .1;
-                Expr::field(base, field, ty)
+                self.member(node.offset, &args[0], field, env, signature)?
             }
             Kind::Call(name, args) if name == "type" && args.len() == 1 => {
                 let value = self.expr(&args[0], None, env, signature)?;
@@ -1514,11 +1550,7 @@ impl Checker<'_> {
                 Expr {
                     types: value.types.clone(),
                     ty: Ty::named("Type"),
-                    kind: if let ExprKind::ResultValue(index) = value.kind {
-                        ExprKind::ResultType(index)
-                    } else {
-                        ExprKind::Query(Query::TypeOf, Box::new(value))
-                    },
+                    kind: ExprKind::Query(Query::TypeOf, Box::new(value)),
                 }
             }
             Kind::Call(name, args) if name == "result_type" && args.len() == 1 => {
@@ -1588,25 +1620,7 @@ impl Checker<'_> {
                         .any(|d| d.kind == "fn" && d.name == *name) =>
             {
                 let function = self.function(name, node.offset)?;
-                if function.params.len() != args.len() {
-                    return Err(fail("projection function argument count mismatch"));
-                }
-                let args = args
-                    .iter()
-                    .zip(&function.params)
-                    .map(|(arg, ty)| {
-                        // Typed function parameters retain their declared arithmetic width,
-                        // even when the caller is a wide-integer verification expression.
-                        let wide = self.verification;
-                        self.verification = false;
-                        let result = self.expr(arg, Some(ty), env, signature);
-                        self.verification = wide;
-                        result
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let mut expr = function.body.substitute(&args, &mut self.next_local);
-                expr.ty = function.result;
-                expr
+                self.call(function, Vec::new(), args, node.offset, env, signature)?
             }
             Kind::List(nodes) if matches!(expected, Some(Ty::Array(_, _))) => {
                 let Some(Ty::Array(ty, n)) = expected else {
@@ -1627,11 +1641,10 @@ impl Checker<'_> {
                 }
             }
             Kind::Call(name, args)
-                if Query::named(name).is_some()
-                    || matches!(
-                        name.as_str(),
-                        "all" | "prefix" | "suffix" | "matches" | "results"
-                    ) =>
+                if matches!(
+                    name.as_str(),
+                    "len" | "all" | "prefix" | "suffix" | "matches" | "results"
+                ) =>
             {
                 self.query(node.offset, name, args, env, signature)?
             }
@@ -1719,16 +1732,16 @@ impl Checker<'_> {
 pub(crate) enum Query {
     TypeOf,
     Len,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TypeQuery {
     Lanes,
     MinBytes,
     ElementBits,
     BitSize,
     IsFixed,
-    IsPtr,
-    IsVector,
-    IsScalar,
     Shape,
-    IsPredicate,
     IsCallable,
     IsOwned,
     IsLocal,
@@ -1766,11 +1779,6 @@ impl<'a> Emitter<'a> {
             Some(error) if self.instruction => format!("{value}.ok_or_else(|| {error})?"),
             Some(error) => format!("{value}.ok_or({error})?"),
         }
-    }
-    fn failure(&self) -> String {
-        self.error
-            .as_ref()
-            .map_or_else(|| "None".into(), |e| format!("Err({e})"))
     }
     fn operand(&self, term: &Expr) -> String {
         let code = self.term(term);
@@ -1814,13 +1822,6 @@ impl<'a> Emitter<'a> {
                     "({}).{field}",
                     value.strip_prefix('*').unwrap_or(&value)
                 ))
-            }
-            ExprKind::ResultValue(index) => {
-                if self.result_values {
-                    format!("{}[{index}]", self.results)
-                } else {
-                    format!("({receiver}).inst_results(_inst)[{index}]")
-                }
             }
             ExprKind::ResultType(index) => {
                 if self.result_values {
@@ -1880,26 +1881,9 @@ impl<'a> Emitter<'a> {
                 {
                     return ty.clone();
                 }
-                let known_valid = self.instruction && value.types.is_some();
                 let sort = &value.ty;
                 let value = self.term(value);
                 match query {
-                    Query::Shape => {
-                        format!(
-                            "{}.shape()",
-                            self.required(format!("({value}).as_vector()"))
-                        )
-                    }
-                    Query::IsPredicate => format!("({value}).is_predicate()"),
-                    Query::IsCallable => format!("({value}).is_callable()"),
-                    Query::IsOwned => format!("({value}).is_owned()"),
-                    Query::IsLocal => format!(
-                        "matches!(({value}).as_callable(), Some((_, crate::CallableKind::Local)))"
-                    ),
-                    Query::IsShared => format!(
-                        "matches!(({value}).as_callable(), Some((_, crate::CallableKind::Shared)))"
-                    ),
-                    Query::IsCompact => format!("({value}).is_compact()"),
                     Query::TypeOf => {
                         if matches!(sort, Ty::Named(n) if matches!(n.as_str(), "Int" | "Float" | "VectorConst"))
                         {
@@ -1909,28 +1893,9 @@ impl<'a> Emitter<'a> {
                         }
                     }
                     Query::Len => format!("({value}).len() as i128"),
-                    Query::Lanes if known_valid => format!("i128::from(({value}).lane_count())"),
-                    Query::Lanes => format!(
-                        "{{ let ty = {value}; if !ty.is_valid() || !ty.is_compact() {{ return {}; }} i128::from(ty.lane_count()) }}",
-                        self.failure()
-                    ),
-                    Query::ElementBits => format!(
-                        "i128::from({})",
-                        self.required(format!("({value}).element_bits()"))
-                    ),
-                    Query::BitSize => self.required(format!("({value}).bit_size()")),
-                    Query::MinBytes => format!(
-                        "i128::from({})",
-                        self.required(format!("({value}).min_size_bytes()"))
-                    ),
-                    Query::IsFixed => {
-                        format!("({value}).as_vector().is_some_and(|v| v.is_fixed())")
-                    }
-                    Query::IsPtr => format!("({value}).is_ptr()"),
-                    Query::IsVector => format!("({value}).is_vector()"),
-                    Query::IsScalar => format!("({value}).is_scalar()"),
                 }
             }
+
             ExprKind::Convert(e) => format!("{}::from({})", term.ty.name(), self.term(e)),
             ExprKind::Record(fields) => format!(
                 "{}{} {{ {} }}",
@@ -1961,6 +1926,14 @@ impl<'a> Emitter<'a> {
                 }
             }
             ExprKind::Try(e) => self.required(format!("({})", self.term(e))),
+            ExprKind::Rust(binding, args) => format!(
+                "{}({})",
+                binding.path,
+                args.iter()
+                    .map(|arg| self.term(arg))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             ExprKind::Host(method, args) => format!(
                 "crate::host::traits::{}::{}(&_host{})",
                 method.interface,
@@ -1986,70 +1959,57 @@ impl<'a> Emitter<'a> {
     }
 }
 
-impl Query {
-    fn named(name: &str) -> Option<Self> {
+impl TypeQuery {
+    // These typed adapters call the shared kernel; they do not redefine its semantics.
+    // This small trusted kernel has matching runtime emission and offline evaluation.
+    // User-visible method names and signatures are declared in defs.
+    fn result(self) -> Ty {
+        match self {
+            Self::Shape => Ty::Optional(Box::new(Ty::named("Shape"))),
+            Self::BitSize => Ty::Optional(Box::new(Ty::named("TypeBits"))),
+            Self::Lanes | Self::MinBytes | Self::ElementBits => {
+                Ty::Optional(Box::new(Ty::named("u32")))
+            }
+            _ => Ty::named("bool"),
+        }
+    }
+    fn rust(name: &str) -> Option<Self> {
         match name {
-            "type" => Some(Self::TypeOf),
-            "len" => Some(Self::Len),
-            "lanes" => Some(Self::Lanes),
-            "min_bytes" => Some(Self::MinBytes),
-            "element_bits" => Some(Self::ElementBits),
-            "bit_size" => Some(Self::BitSize),
-            "is_fixed" => Some(Self::IsFixed),
-            "is_ptr" => Some(Self::IsPtr),
-            "is_vector" => Some(Self::IsVector),
-            "is_scalar" => Some(Self::IsScalar),
-            "shape" => Some(Self::Shape),
-            "is_predicate" => Some(Self::IsPredicate),
-            "is_callable" => Some(Self::IsCallable),
-            "is_owned" => Some(Self::IsOwned),
-            "is_local" => Some(Self::IsLocal),
-            "is_shared" => Some(Self::IsShared),
-            "is_compact" => Some(Self::IsCompact),
+            "crate::Type::lanes" => Some(Self::Lanes),
+            "crate::Type::min_size_bytes" => Some(Self::MinBytes),
+            "crate::Type::element_bits" => Some(Self::ElementBits),
+            "crate::Type::bit_size" => Some(Self::BitSize),
+            "crate::Type::is_fixed" => Some(Self::IsFixed),
+            "crate::Type::shape" => Some(Self::Shape),
+            "crate::Type::is_callable" => Some(Self::IsCallable),
+            "crate::Type::is_owned" => Some(Self::IsOwned),
+            "crate::Type::is_local" => Some(Self::IsLocal),
+            "crate::Type::is_shared" => Some(Self::IsShared),
+            "crate::Type::is_compact" => Some(Self::IsCompact),
 
             _ => None,
         }
     }
 }
-fn known_query(types: &crate::types::Types, query: Query, set: &TypeSet) -> Option<Expr> {
+fn known_rust(
+    types: &crate::types::Types,
+    binding: &RustCall,
+    set: &TypeSet,
+    ty: &Ty,
+) -> Option<Expr> {
+    let evaluation = binding.evaluation.as_ref()?;
     let mut answer = None;
     for (&code, &shapes) in &set.0 {
-        let scalar = types.scalars.iter().find(|s| s.code == code)?;
-        for bit in 0..32 {
-            if shapes & (1 << bit) == 0 {
+        for shape in 0..32 {
+            if shapes & (1 << shape) == 0 {
                 continue;
             }
-            let value = match query {
-                Query::IsFixed => i128::from(bit > 0 && bit < 16),
-                Query::IsScalar => i128::from(bit == 0),
-                Query::IsVector => i128::from(bit != 0),
-                Query::IsPtr => i128::from(scalar.kind == ScalarKind::Pointer && bit == 0),
-                Query::IsPredicate => i128::from(
-                    types
-                        .predicates
-                        .get("is_predicate")?
-                        .0
-                        .get(&code)
-                        .is_some_and(|mask| mask & (1 << bit) != 0),
-                ),
-                Query::IsCompact => 1,
-                Query::IsCallable | Query::IsOwned | Query::IsLocal | Query::IsShared => 0,
-                Query::ElementBits => i128::from(scalar.bits?),
-                Query::Lanes => 1i128 << (bit % 16),
-                Query::MinBytes => i128::from(scalar.bits?.div_ceil(8)) << (bit % 16),
-                _ => return None,
-            };
-            if answer.is_some_and(|old| old != value) {
+            let value = evaluation.evaluate(types, code, shape)?;
+            if answer.as_ref().is_some_and(|old| old != &value) {
                 return None;
             }
             answer = Some(value);
         }
     }
-    answer.map(|value| {
-        if matches!(query, Query::Lanes | Query::MinBytes | Query::ElementBits) {
-            Expr::integer(value)
-        } else {
-            Expr::boolean(value != 0)
-        }
-    })
+    answer?.expression(ty)
 }

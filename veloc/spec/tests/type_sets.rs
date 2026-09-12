@@ -34,14 +34,15 @@ fn exact_shapes_detect_impossible_relations_at_definition_time() {
         class V4 { members: [I32X4] }
         class V2 { members: [I64X2] }
         struct Unary { arg: Value }
-        op Convert<T: V4>(arg: T) -> shape(T, V2) {
+        op Convert<T: V4, U: V2>(arg: T) -> U {
+    verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { memory: Known([]) },
             mnemonic: "convert", storage: Unary { arg: arg }, }
     "#;
-    rejected(source, "impossible shape constraint");
+    rejected(source, "constraint is always false");
     assert!(compile(&source.replace("[I64X2]", "[F32X4]")).is_ok());
     let scalar = source.replace("[I64X2]", "[I64]");
-    rejected(&scalar, "impossible shape constraint");
+    rejected(&scalar, "constraint is always false");
 }
 
 #[test]

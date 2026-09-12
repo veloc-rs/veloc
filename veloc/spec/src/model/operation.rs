@@ -20,6 +20,7 @@ pub(super) fn parse(
         params,
         types,
         slots,
+        type_bindings,
     } = signature(source, record.offset, sig, vocabulary)?;
     let mut fields = Fields::new(source, record);
     let mnemonic = match fields.optional("mnemonic") {
@@ -202,13 +203,13 @@ pub(super) fn parse(
         absorbing,
         semantics,
     };
-    op.constraints = crate::model::constraints::check(
+    op.constraints = expressions.verify(
         source,
         constraints,
-        &op,
-        &slots,
+        &op.params,
+        Some(&op.signature),
+        &type_bindings,
         vocabulary,
-        expressions,
     )?;
     Ok(op)
 }
@@ -217,6 +218,7 @@ struct CheckedSignature {
     params: Vec<Param>,
     types: TypeDef,
     slots: BTreeMap<String, Slot>,
+    type_bindings: BTreeMap<String, Slot>,
 }
 
 fn signature(
@@ -264,7 +266,7 @@ fn signature(
     }
     let mut params = Vec::new();
     let mut patterns = Vec::new();
-    let mut names = BTreeSet::new();
+    let mut names = variables.keys().cloned().collect::<BTreeSet<_>>();
     let mut slots = BTreeMap::new();
     let mut variadic = false;
     for param in sig.params {
@@ -400,6 +402,11 @@ fn signature(
             TypeList::Fixed(patterns)
         }
     };
+    let mut type_bindings = slots
+        .iter()
+        .filter(|(_, s)| s.result)
+        .map(|(n, s)| (n.clone(), *s))
+        .collect::<BTreeMap<_, _>>();
     for (name, var) in variables {
         if !var.bound {
             return Err(Error::at(
@@ -408,11 +415,25 @@ fn signature(
                 format!("unused type variable `{name}`"),
             ));
         }
+        let slot = [(false, &operands), (true, &results)]
+            .into_iter()
+            .find_map(|(result, list)| {
+                list.patterns()?
+                    .iter()
+                    .position(|p| matches!(p, Pattern::Bind(id, _) if *id == var.slot))
+                    .map(|index| Slot {
+                        result,
+                        index: index as u8,
+                    })
+            })
+            .expect("bound generic has a defining type slot");
+        type_bindings.insert(name, slot);
     }
     Ok(CheckedSignature {
         params,
         types: TypeDef { operands, results },
         slots,
+        type_bindings,
     })
 }
 

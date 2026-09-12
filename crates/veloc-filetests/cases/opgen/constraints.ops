@@ -235,7 +235,7 @@ op Example(@data: Bytes) -> Vector {
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: "{data:bytes}",
     verify {
-        len(data) == min_bytes(result_type(0)); all(data, |i| i);
+        len(data) == result_type(0).min_size_bytes()?; all(data, |i| i);
     }
 }
 
@@ -248,7 +248,7 @@ op Example(@data: Bytes) -> () {
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: "{data:bytes}",
     verify {
-        len(data) == min_bytes(result_type(0)); all(data, |i| i < 2 * lanes(result_type(0)));
+        len(data) == result_type(0).min_size_bytes()?; all(data, |i| i < 2 * result_type(0).lanes()?);
     }
 }
 
@@ -279,12 +279,12 @@ op PtrIndex(ptr: PTR, index: ScalarInteger, @imm: PtrIndexImm) -> PTR {
 
 // ----- type-queries-use-static-signatures-and-operand-positions-1
 // run: opgen-error
-// check: constraint is always false: is_ptr(type(input))
+// check: constraint is always false: type(input).is_ptr()
 struct Unary { arg: Value }
 op Example<T: Integer>(input: T) -> T {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "example", storage: Unary { arg: input },
     verify {
-        is_ptr(type(input)); lanes(type(input)) > 0;
+        type(input).is_ptr(); type(input).lanes()? > 0;
     }
 }

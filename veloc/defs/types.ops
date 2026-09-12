@@ -1,6 +1,33 @@
-// Host representation of IR types and SSA identities, not SSA value types.
-type Type = rust("crate::Type");
+// Rust representation and method interface are declared together.
+// Methods without bodies bind same-named Rust methods; defs bodies expand normally.
+type Type = rust("crate::Type") {
+    fn element_bits(self) -> optional(u32);
+    fn bit_size(self) -> optional(TypeBits);
+    fn min_size_bytes(self) -> optional(u32);
+    fn lanes(self) -> optional(u32);
+    fn shape(self) -> optional(Shape);
+    fn is_fixed(self) -> bool;
+    fn is_scalar(self) -> bool;
+    fn is_vector(self) -> bool;
+    fn is_ptr(self) -> bool;
+    fn is_predicate(self) -> bool;
+    fn is_callable(self) -> bool;
+    fn is_owned(self) -> bool;
+    fn is_local(self) -> bool;
+    fn is_shared(self) -> bool;
+    fn is_compact(self) -> bool;
+
+    fn same_shape(self, other: Type) -> bool {
+        value: (self.is_scalar() && other.is_scalar())
+            || (self.is_vector() && other.is_vector() && self.shape()? == other.shape()?)
+    }
+
+    fn wider_than(self, other: Type) -> bool {
+        value: self.element_bits()? > other.element_bits()?
+    }
+}
 type TypeBits = rust("crate::TypeBits");
+type Shape = rust("veloc_types::Shape");
 type Value = rust("crate::Value");
 
 // The compact scalar/vector payload of Type, packed least significant bit first.

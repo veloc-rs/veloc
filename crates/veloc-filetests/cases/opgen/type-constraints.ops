@@ -5,12 +5,15 @@
 storage Operands { prefix: "G_" }
 struct Unary { dst: Def, src: Use }
 fn double_bits(from: Type, to: Type) -> bool {
-    value: element_bits(to) == element_bits(from) * 2
+    value: to.element_bits()? == from.element_bits()? * 2
 }
-op G_WIDEN<T: Integer>(src: T) -> (dst: shape(T, Integer)) {
+op G_WIDEN<T: Integer, U: Integer>(src: T) -> (dst: U) {
     meta: OpInfo {},
     storage: Unary { dst, src },
-    verify { require(double_bits(type(src), type(dst)), "double width"); }
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(double_bits(T, dst), "double width");
+    }
     semantics: bv.sext(src, result(0))
 }
 
@@ -31,7 +34,7 @@ struct Unary { arg: Value }
 op Impossible<T: Integer>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "impossible", storage: Unary { arg },
-    verify { require(element_bits(type(arg)) > 128, "too wide"); }
+    verify { require(type(arg).element_bits()? > 128, "too wide"); }
     semantics: bv.neg(arg)
 }
 
@@ -42,7 +45,7 @@ struct Unary { arg: Value }
 op IntegerOnly<T: ScalarInteger | PTR>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "integer-only", storage: Unary { arg },
-    verify { require(!is_ptr(type(arg)), "no pointers"); }
+    verify { require(!type(arg).is_ptr(), "no pointers"); }
     semantics: bv.neg(arg)
 }
 
@@ -53,6 +56,6 @@ struct Unary { arg: Value }
 op Guarded<T: Integer>(arg: T) -> T {
     meta: OpInfo {},
     mnemonic: "guarded", storage: Unary { arg },
-    verify { require(is_scalar(type(arg)) || shape(type(arg)) == shape(type(arg)), "short circuit"); }
+    verify { require(type(arg).is_scalar() || type(arg).shape()? == type(arg).shape()?, "short circuit"); }
     semantics: bv.neg(arg)
 }

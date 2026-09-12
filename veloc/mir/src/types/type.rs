@@ -5,19 +5,7 @@ use core::fmt;
 
 include!(concat!(env!("OUT_DIR"), "/types.rs"));
 
-/// Supported callable environment contracts. These describe values, not a CPS
-/// calling convention: each kind supports ordinary calls as well as tail calls.
-/// Lifetime and call multiplicity are distinct concepts; these are the currently
-/// supported combinations, not a claim that every owned closure must be one-shot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CallableKind {
-    /// Borrows the creating activation; reusable while that activation is alive.
-    Local,
-    /// Owns its captures; must be called, transferred or explicitly dropped once.
-    Owned,
-    /// Reentrant immutable environments containing only duplicable values.
-    Shared,
-}
+pub use veloc_types::{CallableKind, Shape, TypeBits, TypeSize};
 
 impl Type {
     /// Signatures belong to the containing module, just like function signatures.
@@ -115,97 +103,68 @@ impl Default for Type {
     }
 }
 
-/// Storage size in bytes in the MIR's byte representation.
-/// This is separate from logical bit width and target register layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeSize {
-    Fixed(u32),
-    Scalable { min_bytes: u32 },
-    TargetDependent,
-}
-
-impl TypeSize {
-    /// Return the exact size when it is independent of the target and runtime.
-    pub const fn fixed_bytes(self) -> Option<u32> {
-        match self {
-            Self::Fixed(bytes) => Some(bytes),
-            Self::Scalable { .. } | Self::TargetDependent => None,
-        }
-    }
-
-    /// Return the statically known minimum size, if one exists.
-    pub const fn min_bytes(self) -> Option<u32> {
-        match self {
-            Self::Fixed(bytes) | Self::Scalable { min_bytes: bytes } => Some(bytes),
-            Self::TargetDependent => None,
-        }
-    }
-}
-
-/// Logical size in bits, preserving a vector's runtime scale factor.
-///
-/// `Scalable { min_bits: n }` denotes `vscale * n` bits, where the same positive
-/// runtime `vscale` applies throughout an execution. It is not equal to
-/// `Fixed(n)`, even though both have the same minimum size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeBits {
-    Fixed(u32),
-    Scalable { min_bits: u32 },
-}
-
-impl TypeBits {
-    pub const fn fixed_bits(self) -> Option<u32> {
-        match self {
-            Self::Fixed(bits) => Some(bits),
-            Self::Scalable { .. } => None,
-        }
-    }
-
-    pub const fn min_bits(self) -> u32 {
-        match self {
-            Self::Fixed(bits) | Self::Scalable { min_bits: bits } => bits,
-        }
-    }
-}
-
 impl Type {
-    /// Logical size of the whole value, including its runtime scale factor.
-    /// Pointers have no target-independent bit size.
-    pub fn bit_size(self) -> Option<TypeBits> {
-        let min_bits = self.element_bits()? * u32::from(self.lane_count());
-        Some(if self.is_scalable() {
-            TypeBits::Scalable { min_bits }
+    /// Decode storage into encoding-independent facts. No allocation or module lookup.
+    #[inline]
+    const fn facts(self) -> veloc_types::Type {
+        if let Some((_, kind)) = self.as_callable() {
+            return veloc_types::Type::callable(kind);
+        }
+        assert!(self.is_valid(), "invalid type has no concrete facts");
+        let element = self.element_facts();
+        if self.lanes_log2() == 0 {
+            veloc_types::Type::scalar(element)
         } else {
-            TypeBits::Fixed(min_bits)
-        })
-    }
-
-    /// Storage size of the value in the MIR's byte representation.
-    /// Boolean vectors use one byte per lane, not packed logical bits.
-    pub fn storage_size(self) -> TypeSize {
-        let Some(lane_bits) = self.element_bits() else {
-            return TypeSize::TargetDependent;
-        };
-        let min_bytes = lane_bits.div_ceil(8) * u32::from(self.lane_count());
-        if self.is_scalable() {
-            TypeSize::Scalable { min_bytes }
-        } else {
-            TypeSize::Fixed(min_bytes)
+            veloc_types::Type::vector(element, self.lane_count(), self.is_scalable())
+                .expect("validated vector")
         }
     }
 
+    #[inline]
+    pub const fn element_bits(self) -> Option<u32> {
+        self.facts().element_bits()
+    }
+    #[inline]
+    pub fn bit_size(self) -> Option<TypeBits> {
+        self.facts().bit_size()
+    }
+    #[inline]
+    pub fn storage_size(self) -> TypeSize {
+        self.facts().storage_size()
+    }
+    #[inline]
     pub fn fixed_size_bytes(self) -> Option<u32> {
         self.storage_size().fixed_bytes()
     }
-
+    #[inline]
     pub fn min_size_bytes(self) -> Option<u32> {
         self.storage_size().min_bytes()
     }
-
-    /// Minimum logical bit width. Equal minima do not imply equal sizes;
-    /// use [`Self::bit_size`] when checking bitcast compatibility.
+    #[inline]
     pub fn min_bit_width(self) -> Option<u32> {
         self.bit_size().map(TypeBits::min_bits)
+    }
+
+    // Total query interfaces used by defs; scalar and callable inputs need no unchecked view.
+    #[inline]
+    pub const fn lanes(self) -> Option<u32> {
+        self.facts().lanes()
+    }
+    #[inline]
+    pub const fn shape(self) -> Option<Shape> {
+        self.facts().shape()
+    }
+    #[inline]
+    pub const fn is_fixed(self) -> bool {
+        self.facts().is_fixed()
+    }
+    #[inline]
+    pub const fn is_local(self) -> bool {
+        self.facts().is_local()
+    }
+    #[inline]
+    pub const fn is_shared(self) -> bool {
+        self.facts().is_shared()
     }
 }
 

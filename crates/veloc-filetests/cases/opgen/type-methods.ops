@@ -1,0 +1,175 @@
+// ----- methods-share-the-type-declaration-and-expand-defs-bodies
+// run: opgen
+// check: crate::tokens::Token::number
+// check: checked_mul
+type Token = rust("crate::tokens::Token") {
+    fn number(self) -> u32;
+    fn twice(self) -> u32 { value: self.number() * 2 }
+}
+extern interface Tokens { fn read(number: u32) -> Token; }
+struct Input { number: u32 }
+op Check(@number: u32) -> () {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Input { number },
+    verify { require(Tokens.read(number).twice() > 0, "positive"); }
+}
+
+// ----- explicit-binding-can-rename-a-method
+// run: opgen
+// check: crate::tokens::read
+type Token = rust("crate::tokens::Token") {
+    fn number(self) -> u32 = rust("crate::tokens::read");
+}
+extern interface Tokens { fn read(number: u32) -> Token; }
+struct Input { number: u32 }
+op Check(@number: u32) -> () {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Input { number },
+    verify { require(Tokens.read(number).number() > 0, "positive"); }
+}
+
+// ----- methods-must-be-declared
+// run: opgen-error
+// check: unknown projection function
+fn wrong(ty: Type) -> bool { value: ty.undeclared() }
+
+// ----- results-are-types-not-fake-ssa-values
+// run: opgen-error
+// check: type expects an SSA value
+struct Unary { arg: Value }
+op Check(arg: I8) -> (result: I16) {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg },
+    verify { require(type(result).is_scalar(), "scalar"); }
+}
+
+// ----- result-only-generic-has-a-concrete-slot
+// run: opgen
+// check: crate::Type::element_bits(results[0])
+struct Empty {}
+op Check<T: Integer>() -> (result: T) {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Empty {},
+    verify { require(T.element_bits()? > 8, "wide"); }
+}
+
+// ----- generic-and-value-names-cannot-collide
+// run: opgen-error
+// check: duplicate parameter
+struct Unary { arg: Value }
+op Check<T: Integer>(T: T) -> T {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg: T },
+}
+
+// ----- rust-query-signature-is-checked
+// run: opgen-error
+// check: Rust type-query signature mismatch
+fn wrong(ty: Type) -> bool = rust("crate::Type::element_bits");
+
+// ----- optional-query-needs-an-explicit-unwrapping-policy
+// run: opgen-error
+// check: optional operands
+fn wrong(ty: Type) -> bool { value: ty.element_bits() > 8 }
+
+// ----- old-intrinsic-binding-is-not-kept-as-an-alias
+// run: opgen-error
+// check: expected rust binding
+fn old(ty: Type) -> bool = intrinsic("type.is_owned");
+
+// ----- missing-offline-support-is-not-silently-ignored
+// run: opgen-error
+// check: without offline evaluation support
+fn runtime_only(ty: Type) -> bool = rust("crate::Type::is_valid");
+struct Unary { arg: Value }
+op Check<T: Integer>(arg: T) -> T {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg },
+    verify { require(runtime_only(T), "valid"); }
+    semantics: bv.neg(arg)
+}
+
+// ----- runtime-only-query-is-allowed-without-offline-semantics
+// run: opgen
+// check: crate::Type::is_scalable(operands[0])
+fn runtime_only(ty: Type) -> bool = rust("crate::Type::is_scalable");
+struct Unary { arg: Value }
+op Check<T: Integer>(arg: T) -> T {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg },
+    verify { require(runtime_only(T), "scalable"); }
+}
+
+// ----- type-methods-can-be-used-in-constant-metadata
+// run: opgen
+// check: count: 64
+struct Info { count: u32, memory: MemoryEffect }
+struct Empty {}
+op Check() -> () {
+    meta: Info { count: I64.element_bits()?, memory: Known([]) },
+    mnemonic: "check", storage: Empty {},
+}
+
+// ----- declared-methods-cannot-recurse
+// run: opgen-error
+// check: recursive projection
+type Token = rust("crate::tokens::Token") {
+    fn first(self) -> bool { value: self.second() }
+    fn second(self) -> bool { value: self.first() }
+}
+
+// ----- short-circuit-and-absence-use-the-shared-type-kernel
+// run: opgen
+// check: Opcode::Check
+struct Unary { arg: Value }
+op Check<T: ScalarInteger | PTR>(arg: T) -> T {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg },
+    verify { require(!T.is_ptr() && T.element_bits()? > 0, "sized integer"); }
+    semantics: bv.neg(arg)
+}
+
+// ----- malformed-default-binding-reports-an-error
+// run: opgen-error
+// check: unknown function field `rust`
+fn wrong() -> bool { rust: default }
+
+// ----- user-predicate-bindings-use-the-declared-set-offline
+// run: opgen
+// check: crate::Type::is_wide
+predicate is_wide = I32 | I64;
+fn wide(ty: Type) -> bool = rust("crate::Type::is_wide");
+struct Unary { arg: Value }
+op Check<T: Integer>(arg: T) -> T {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Unary { arg },
+    verify { require(wide(T), "wide"); }
+    semantics: bv.neg(arg)
+}
+
+// ----- postfix-fields-and-methods-use-the-same-grammar
+// run: opgen
+// check: crate::tokens::Token::number
+type Token = rust("crate::tokens::Token") {
+    fn number(self) -> u32;
+}
+extern interface Tokens { fn read(number: u32) -> Token; }
+struct Input { number: u32 }
+struct Boxed { token: Token }
+fn unwrap(boxed: Boxed) -> u32 { value: (boxed) . token . number() }
+op Check(@number: u32) -> () {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Input { number },
+    verify { require(unwrap(Boxed { token: Tokens . read(number) }) > 0, "positive"); }
+}
+
+// ----- constant-projections-share-the-typed-evaluator
+// run: opgen
+// check: MemoryEffect::Known
+struct Pair { lhs: u32, rhs: u32 }
+fn same(pair: Pair) -> bool { value: (pair).lhs == pair.rhs }
+struct Empty {}
+op Check() -> () {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "check", storage: Empty {},
+    verify { require(same(Pair { lhs: 3 * 7, rhs: 21 }), "same"); }
+}
+
+// ----- methods-respect-the-declared-return-type
+// run: opgen-error
+// check: projection type mismatch
+type Token = rust("crate::tokens::Token") {
+    fn erase(self, value: Value(I32)) -> Value { value: value }
+}
+fn narrow(token: Token, value: Value(I32)) -> Value(I32) {
+    value: token.erase(value)
+}

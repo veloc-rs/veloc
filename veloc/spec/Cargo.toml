@@ -5,4 +5,5 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
+veloc-types = { workspace = true }
 veloc-semantics = { workspace = true }

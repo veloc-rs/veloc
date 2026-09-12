@@ -60,30 +60,7 @@ impl RustTypes {
                     "rust requires one type path string",
                 ));
             };
-            // Accept paths, not arbitrary Rust code, references or generic types.
-            let mut parts = path.split("::");
-            let first = parts.next().unwrap_or_default();
-            if first.is_empty() {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "Rust type path must be nonempty and qualified",
-                ));
-            }
-            if !matches!(first, "crate") {
-                model::identifier(source, node.offset, first)?;
-            }
-            let rest = parts.collect::<Vec<_>>();
-            if rest.is_empty() {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "Rust type path must be qualified",
-                ));
-            }
-            for part in rest {
-                model::identifier(source, node.offset, part)?;
-            }
+            rust_path(source, node.offset, path)?;
             if result
                 .external
                 .insert(record.name.clone(), path.clone())
@@ -265,6 +242,36 @@ pub(crate) fn generate(records: &[RecordDef]) -> String {
         out.push_str("}\n");
     }
     out
+}
+
+/// The binding boundary accepts qualified paths, never embedded Rust expressions.
+pub(crate) fn rust_path(source: &str, offset: usize, path: &str) -> Result<(), Error> {
+    // Accept paths, not arbitrary Rust code, references or generic types.
+    let mut parts = path.split("::");
+    let first = parts.next().unwrap_or_default();
+    if first.is_empty() {
+        return Err(Error::at(
+            source,
+            offset,
+            "Rust type path must be nonempty and qualified",
+        ));
+    }
+    if !matches!(first, "crate") {
+        model::identifier(source, offset, first)?;
+    }
+    let rest = parts.collect::<Vec<_>>();
+    if rest.is_empty() {
+        return Err(Error::at(
+            source,
+            offset,
+            "Rust type path must be qualified",
+        ));
+    }
+    for part in rest {
+        model::identifier(source, offset, part)?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

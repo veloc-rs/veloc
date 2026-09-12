@@ -51,7 +51,7 @@ impl<'a> Lexer<'a> {
                 self.offset += 1;
                 while bytes
                     .get(self.offset)
-                    .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.'))
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
                 {
                     self.offset += 1;
                 }
@@ -70,7 +70,7 @@ impl<'a> Lexer<'a> {
                 let tail = &self.source[offset..];
                 let symbol = [
                     "->", "||", "&&", "==", "!=", "<=", ">=", "{", "}", "(", ")", "[", "]", "<",
-                    ">", ":", ",", ";", "=", "@", "|", "&", "!", "-", "+", "*", "?",
+                    ">", ":", ",", ";", "=", "@", "|", "&", "!", "-", "+", "*", "?", ".",
                 ]
                 .into_iter()
                 .find(|s| tail.starts_with(s))

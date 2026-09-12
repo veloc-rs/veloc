@@ -10,7 +10,7 @@ use veloc_semantics::{BvOp, ComparisonRef, Conversion, IntPredicate, Sort, Step,
 use crate::Error;
 use crate::model::{Binding, Definitions, Semantic};
 use crate::semantic::Instance;
-use crate::types::{Scalar, ScalarKind};
+use crate::types::{Primitive, Scalar};
 
 pub(crate) struct Plan {
     operations: Vec<Operation>,
@@ -34,7 +34,7 @@ impl Plan {
         for (opcode, op) in defs.ops.iter().enumerate() {
             let Some(sem) = &op.semantics else { continue };
             let mut cases = Vec::new();
-            for instance in crate::semantic::instances(source, op, &defs.types)? {
+            for instance in &sem.instances {
                 if !instance.scalar {
                     continue;
                 }
@@ -57,7 +57,7 @@ impl Plan {
                     continue;
                 };
                 cases.push(Case {
-                    instance,
+                    instance: instance.clone(),
                     scalars,
                     variants,
                 });
@@ -181,13 +181,13 @@ fn properties(defs: &Definitions, plan: &Plan) -> String {
 }
 
 fn constant(scalar: &Scalar) -> Option<String> {
-    match scalar.kind {
-        ScalarKind::Boolean => Some("Bool".into()),
-        ScalarKind::Integer => match scalar.bits? {
+    match scalar.ty {
+        Primitive::Bool => Some("Bool".into()),
+        Primitive::Int(bits) => match bits {
             bits @ (8 | 16 | 32 | 64) => Some(format!("I{bits}")),
             _ => None,
         },
-        ScalarKind::Float | ScalarKind::Pointer => None,
+        Primitive::Float(_) | Primitive::Ptr => None,
     }
 }
 

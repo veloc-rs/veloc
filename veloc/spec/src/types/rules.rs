@@ -17,7 +17,6 @@ fn pattern(p: &Pattern, classes: &Classes) -> String {
         Pattern::Same(var) => format!("T{var}"),
         Pattern::ElementOf(var) => format!("element(T{var})"),
         Pattern::VectorOf(var) => format!("vector(T{var})"),
-        Pattern::ShapeOf(var, class) => format!("shape(T{var}, {})", classes.describe(class)),
     }
 }
 
@@ -241,11 +240,6 @@ fn check_list(
                 "{}.as_scalar().is_some_and(|scalar| {value}.as_vector().is_some_and(|vector| vector.element_type() == scalar))",
                 binding(bindings, *var)
             ),
-            Pattern::ShapeOf(var, class) => format!(
-                "{}.accepts({value}) && same_shape({}, {value})",
-                classes.reference(class),
-                binding(bindings, *var)
-            ),
         };
         writeln!(out, "    if !({condition}) {{\n        return Err(super::TypeError::Pattern {{\n            results: {results}, index: {index}, expected: {:?}, got: {value},\n        }});\n    }}", pattern(p, classes)).unwrap();
     }
@@ -306,7 +300,6 @@ fn validation_rules<'a>(
     opcode: &str,
     validation: &mut String,
 ) -> (BTreeMap<&'a TypeDef, usize>, Vec<Vec<&'a str>>) {
-    validation.push_str("#[allow(dead_code)]\nfn same_shape(bound: Type, ty: Type) -> bool {\nif let Some(bound) = bound.as_vector() {\nty.as_vector().is_some_and(|vector| vector.shape() == bound.shape())\n} else { ty.as_scalar().is_some() }\n}\n");
     let mut ids = BTreeMap::new();
     let mut groups: Vec<Vec<&str>> = Vec::new();
     for op in &defs.ops {
@@ -340,7 +333,7 @@ fn validation_rules<'a>(
             .map(|(i, p)| (p.name.clone(), format!("operands[{i}]")))
             .collect();
         for constraint in &op.constraints {
-            if !constraint.condition.type_only(&op.params) || constraint.condition.is_bool(true) {
+            if !constraint.type_only || constraint.condition.is_bool(true) {
                 continue;
             }
             let error = format!("super::TypeError::Constraint({:?})", constraint.text);

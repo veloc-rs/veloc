@@ -1764,6 +1764,7 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "veloc-opgen",
+ "veloc-types",
 ]
 
 [[package]]
@@ -1771,6 +1772,7 @@ name = "veloc-opgen"
 version = "0.1.0"
 dependencies = [
  "veloc-semantics",
+ "veloc-types",
 ]
 
 [[package]]
@@ -1815,7 +1817,12 @@ dependencies = [
  "veloc-lir",
  "veloc-opgen",
  "veloc-semantics",
+ "veloc-types",
 ]
+
+[[package]]
+name = "veloc-types"
+version = "0.1.0"
 
 [[package]]
 name = "veloc-wasm"

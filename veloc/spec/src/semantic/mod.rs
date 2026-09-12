@@ -39,6 +39,7 @@ pub(crate) fn parse(source: &str, node: Node, params: &[Param]) -> Result<Semant
         steps: (0..inputs).map(SemanticStep::Input).collect(),
         outputs: Vec::new(),
         traps: Vec::new(),
+        instances: Vec::new(),
     };
     let outputs = match node.kind {
         Kind::List(outputs) => outputs,
@@ -128,7 +129,17 @@ fn expression(
 ) -> Result<u16, Error> {
     let offset = node.offset;
     let fail = |message| Error::at(source, offset, message);
-    let step = match node.kind {
+    // Primitive namespaces use the same structural postfix syntax as methods.
+    let kind = match node.kind {
+        Kind::Method(receiver, name, args) => {
+            let Kind::Name(namespace) = receiver.kind else {
+                return Err(fail("semantic primitive requires a namespace".into()));
+            };
+            Kind::Call(format!("{namespace}.{name}"), args)
+        }
+        kind => kind,
+    };
+    let step = match kind {
         Kind::Name(name) => {
             return params
                 .iter()
@@ -239,9 +250,13 @@ fn expression(
 /// Validate every scalar element type admitted by the signature. The compact
 /// type universe is finite; no solver or sampled-width proof is involved.
 /// Shape-changing operations are not admitted as per-lane semantic recipes.
-pub(crate) fn validate(source: &str, op: &Op, types: &crate::types::Types) -> Result<(), Error> {
+pub(crate) fn validate(
+    source: &str,
+    op: &Op,
+    types: &crate::types::Types,
+) -> Result<Vec<Instance>, Error> {
     let Some(sem) = &op.semantics else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let fail = |message| Error::at(source, op.offset, message);
     if !op.memory.is_none() || op.traits.iter().any(|t| t == "TERMINATOR") {
@@ -268,64 +283,37 @@ pub(crate) fn validate(source: &str, op: &Op, types: &crate::types::Types) -> Re
         ));
     }
     sem.program().validate().map_err(|e| fail(e.to_string()))?;
-    // A recipe describes one lane. All values must have the same lane shape;
-    // scalar broadcasts, reductions and permutations need an explicit model.
-    let mut shapes = std::collections::BTreeMap::new();
-    let mut common_shape = None;
-    for (index, pattern) in inputs.iter().chain(outputs).enumerate() {
-        let shape = match pattern {
-            Pattern::Same(var) | Pattern::ShapeOf(var, _) => *shapes
-                .get(var)
-                .ok_or_else(|| fail("unbound semantic shape".into()))?,
-            Pattern::Class(set) | Pattern::Bind(_, set) => {
-                let mask = set.shapes();
-                let shape = if mask.count_ones() == 1 {
-                    (false, mask)
-                } else {
-                    (true, index as u32)
-                };
-                if let Pattern::Bind(var, _) = pattern {
-                    shapes.insert(*var, shape);
-                }
-                shape
-            }
-            Pattern::Exact(name) => (false, types.exact[name].shapes()),
-            _ => {
-                return Err(fail(
-                    "shape-changing semantic recipes are not supported".into(),
-                ));
-            }
-        };
-        if common_shape.is_some_and(|previous| previous != shape) {
-            return Err(fail("semantic recipes require a shared lane shape".into()));
-        }
-        common_shape = Some(shape);
-    }
     let instances = instances(source, op, types)?;
-    for instance in instances {
+    for instance in &instances {
         let (ins, outs) = instance.sorts.split_at(inputs.len());
         let properties = vec![IntPredicate::new(false, 2); sem.properties.len()];
         sem.program()
             .instantiate(ins, outs, &properties)
             .map_err(|e| fail(format!("invalid semantic types {ins:?} -> {outs:?}: {e}")))?;
     }
-    Ok(())
+    Ok(instances)
 }
 
 /// Concrete lane signatures shared by semantic validation and code generation.
 /// `scalar` distinguishes genuinely scalar signatures from vector-only recipes.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Instance {
     pub codes: Vec<u8>,
     pub sorts: Vec<Sort>,
     pub scalar: bool,
 }
 
-pub(crate) fn instances(
-    source: &str,
-    op: &Op,
-    types: &crate::types::Types,
-) -> Result<Vec<Instance>, Error> {
+fn instances(source: &str, op: &Op, types: &crate::types::Types) -> Result<Vec<Instance>, Error> {
+    let constraints: Vec<_> = op.constraints.iter().filter(|c| c.type_only).collect();
+    for constraint in &constraints {
+        if !constraint.offline {
+            return Err(Error::at(
+                source,
+                op.offset,
+                "type constraint uses a Rust binding without offline evaluation support",
+            ));
+        }
+    }
     let sem = op.semantics.as_ref().expect("semantic operation");
     let inputs = op.signature.operands.patterns().expect("fixed signature");
     let outputs = op.signature.results.patterns().expect("fixed signature");
@@ -333,88 +321,66 @@ pub(crate) fn instances(
     // Pointer values are only modeled for comparisons. Their target width is
     // bound externally, never silently inferred from the build host.
     let mut instances = Vec::new();
-    for pointer_width in [32, 64] {
-        let mut assignments = vec![(
-            std::collections::BTreeMap::<u8, u8>::new(),
-            Vec::<u8>::new(),
-            u32::MAX,
-        )];
-        for pattern in inputs.iter().chain(outputs) {
-            let mut next = Vec::new();
-            for (bindings, codes, scalar_shape) in assignments {
-                let set = match pattern {
-                    Pattern::Class(set) | Pattern::Bind(_, set) | Pattern::ShapeOf(_, set) => {
-                        set.clone()
-                    }
-                    Pattern::Exact(name) => types.exact[name].clone(),
-                    Pattern::Same(var) => crate::types::TypeSet(std::collections::BTreeMap::from(
-                        [(bindings[var], u32::MAX)],
-                    )),
-                    _ => {
-                        return Err(fail(
-                            "shape-changing semantic recipes are not supported".into(),
-                        ));
-                    }
-                };
-                for (&code, &shapes) in &set.0 {
-                    if let Pattern::Bind(var, _) = pattern
-                        && bindings.get(var).is_some_and(|&bound| bound != code)
-                    {
-                        continue;
-                    }
-                    let mut bindings = bindings.clone();
-                    if let Pattern::Bind(var, _) = pattern {
-                        bindings.insert(*var, code);
-                    }
-                    let mut codes = codes.clone();
-                    codes.push(code);
-                    let shapes = scalar_shape & shapes;
-                    if shapes != 0 {
-                        next.push((bindings, codes, shapes));
-                    }
-                }
+    // Enumerate each independent type variable, not an assumed common shape.
+    // Ordinary checked constraints determine which combinations are admissible.
+    let mut bindings = std::collections::BTreeMap::new();
+    let mut domains = Vec::new();
+    for pattern in inputs.iter().chain(outputs) {
+        let domain = match pattern {
+            Pattern::Class(set) => Domain::Set(set),
+            Pattern::Bind(var, set) => {
+                bindings.insert(*var, domains.len());
+                Domain::Set(set)
             }
-            assignments = next;
-            if assignments.len() > 65536 {
+            Pattern::Same(var) => Domain::Same(bindings[var]),
+            Pattern::Exact(name) => Domain::Set(&types.exact[name]),
+            _ => {
                 return Err(fail(
-                    "semantic signature has too many type combinations".into(),
+                    "shape-changing semantic recipes are not supported".into(),
                 ));
             }
+        };
+        domains.push(domain);
+    }
+    let mut accepted = std::collections::BTreeMap::<Vec<u8>, bool>::new();
+    enumerate(&domains, &mut Vec::new(), &mut 0, &mut |values| {
+        if !constraints.iter().all(|c| {
+            c.condition
+                .accepts_types(types, &op.params, values, inputs.len())
+        }) {
+            return Ok(());
         }
-        for (_, codes, shapes) in assignments {
-            // A lane recipe can serve several shapes. Test the exact same
-            // constraints on each admitted shape, retaining scalar eligibility
-            // only when the scalar instantiation itself satisfies them.
-            let accepted = (0..32)
-                .filter(|shape| shapes & (1 << shape) != 0)
-                .filter(|shape| {
-                    op.constraints
-                        .iter()
-                        .filter(|c| c.condition.type_only(&op.params))
-                        .all(|c| {
-                            c.condition.accepts_types(
-                                types,
-                                &op.params,
-                                &codes,
-                                inputs.len(),
-                                *shape,
-                            )
-                        })
-                })
-                .fold(0u32, |mask, shape| mask | (1 << shape));
-            if accepted == 0 {
-                continue;
-            }
+        // A recipe describes one lane. Broadcasts, reductions and permutations
+        // need their own model, even if their widths happen to agree.
+        if values.windows(2).any(|pair| pair[0].1 != pair[1].1) {
+            return Err("semantic recipes require a shared lane shape");
+        }
+        let scalar = values.iter().all(|(_, shape)| *shape == 0);
+        *accepted
+            .entry(values.iter().map(|(code, _)| *code).collect())
+            .or_default() |= scalar;
+        Ok(())
+    })
+    .map_err(|message| fail(message.into()))?;
+    for (codes, scalar) in accepted {
+        let has_pointer = codes.iter().any(|code| {
+            types
+                .scalars
+                .iter()
+                .any(|s| s.code == *code && s.ty == crate::types::Primitive::Ptr)
+        });
+        let widths: &[u16] = if has_pointer { &[32, 64] } else { &[32] };
+        for &pointer_width in widths {
             let sorts = codes
                 .iter()
                 .map(|code| {
                     let scalar = types.scalars.iter().find(|s| s.code == *code).unwrap();
-                    match scalar.kind {
-                        crate::types::ScalarKind::Integer => {
-                            Ok(Sort::bv(scalar.bits.unwrap() as u16).unwrap())
+                    match scalar.ty {
+                        crate::types::Primitive::Int(bits) => {
+                            Ok(Sort::bv(bits as u16).unwrap())
                         }
-                        crate::types::ScalarKind::Boolean => Ok(Sort::Bool),
-                        crate::types::ScalarKind::Pointer => {
+                        crate::types::Primitive::Bool => Ok(Sort::Bool),
+                        crate::types::Primitive::Ptr => {
                             let comparison_only = sem.steps.iter().all(|step| matches!(
                                 step,
                                 SemanticStep::Input(_) | SemanticStep::Compare {
@@ -428,27 +394,66 @@ pub(crate) fn instances(
                             }
                             Ok(Sort::bv(pointer_width).unwrap())
                         }
-                        crate::types::ScalarKind::Float => Err(fail(
+                        crate::types::Primitive::Float(_) => Err(fail(
                             "floating-point execution semantics are not modeled".into()
                         )),
                     }
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
-            let scalar = accepted & 1 != 0;
             let instance = Instance {
-                codes,
+                codes: codes.clone(),
                 sorts,
                 scalar,
             };
-            if !instances.contains(&instance) {
-                instances.push(instance);
-            }
+            instances.push(instance);
         }
     }
     if instances.is_empty() {
         return Err(fail("no admissible semantic signature".into()));
     }
     Ok(instances)
+}
+
+/// Signature domains preserve exact generic equality while allowing arbitrary
+/// declared relationships between independent variables to be checked normally.
+enum Domain<'a> {
+    Set(&'a crate::types::TypeSet),
+    Same(usize),
+}
+
+fn enumerate(
+    domains: &[Domain<'_>],
+    values: &mut Vec<(u8, u32)>,
+    visits: &mut usize,
+    accept: &mut impl FnMut(&[(u8, u32)]) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    *visits += 1;
+    if *visits > 1_000_000 {
+        return Err("semantic signature has too many type combinations");
+    }
+    let Some(domain) = domains.get(values.len()) else {
+        return accept(values);
+    };
+    match domain {
+        Domain::Same(index) => {
+            values.push(values[*index]);
+            enumerate(domains, values, visits, accept)?;
+            values.pop();
+        }
+        Domain::Set(set) => {
+            for (&code, &mask) in &set.0 {
+                let mut shapes = mask;
+                while shapes != 0 {
+                    let shape = shapes.trailing_zeros();
+                    shapes &= shapes - 1;
+                    values.push((code, shape));
+                    enumerate(domains, values, visits, accept)?;
+                    values.pop();
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Only direct primitive applications inherit reviewed algebraic facts. A

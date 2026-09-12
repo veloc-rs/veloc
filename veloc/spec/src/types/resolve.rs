@@ -7,22 +7,14 @@ use crate::model::Fields;
 use crate::syntax::{Kind, Node, Record};
 use crate::types::TypeSet;
 use crate::types::encoding::TypeEncoding;
-use crate::types::{Scalar, ScalarKind, Vector};
+use crate::types::{Primitive, Scalar, Vector};
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Primitive {
-    kind: ScalarKind,
-    bits: Option<u32>,
-}
-
-impl Primitive {
-    fn name(self) -> String {
-        match self.kind {
-            ScalarKind::Integer => format!("I{}", self.bits.unwrap()),
-            ScalarKind::Float => format!("F{}", self.bits.unwrap()),
-            ScalarKind::Boolean => "Bool".into(),
-            ScalarKind::Pointer => "Ptr".into(),
-        }
+fn primitive_name(ty: Primitive) -> String {
+    match ty {
+        Primitive::Int(bits) => format!("I{bits}"),
+        Primitive::Float(bits) => format!("F{bits}"),
+        Primitive::Bool => "Bool".into(),
+        Primitive::Ptr => "Ptr".into(),
     }
 }
 
@@ -101,7 +93,7 @@ pub(crate) fn compile(
                 "scalar encoding cannot assign a code to a vector",
             ));
         };
-        let canonical = primitive.name();
+        let canonical = primitive_name(primitive);
         if *name != canonical.to_ascii_uppercase() {
             return Err(Error::at(
                 source,
@@ -116,8 +108,7 @@ pub(crate) fn compile(
         scalars.push(Scalar {
             name: canonical,
             code: entry.code,
-            kind: primitive.kind,
-            bits: primitive.bits,
+            ty: primitive,
         });
     }
     let mut exact = BTreeMap::new();
@@ -134,7 +125,7 @@ pub(crate) fn compile(
                 offset,
                 format!(
                     "missing scalar encoding for `{}`",
-                    primitive.name().to_ascii_uppercase()
+                    primitive_name(primitive).to_ascii_uppercase()
                 ),
             )
         })?;
@@ -200,18 +191,14 @@ fn resolve(
                 return Err(fail(format!("{constructor} expects one bit width")));
             };
             let bits = number(source, bits)?;
-            let kind = match (constructor.as_str(), bits) {
-                ("int", 8 | 16 | 32 | 64) => ScalarKind::Integer,
-                ("float", 32 | 64) => ScalarKind::Float,
+            match (constructor.as_str(), bits) {
+                ("int", 8 | 16 | 32 | 64) => Primitive::Int(bits),
+                ("float", 32 | 64) => Primitive::Float(bits),
                 _ => {
                     return Err(fail(
                         "unsupported scalar kind or width for the MIR codecs".into(),
                     ));
                 }
-            };
-            Primitive {
-                kind,
-                bits: Some(bits),
             }
         }
         "bool" | "ptr" => {
@@ -219,15 +206,9 @@ fn resolve(
                 return Err(fail(format!("{constructor} expects no arguments")));
             }
             if constructor == "bool" {
-                Primitive {
-                    kind: ScalarKind::Boolean,
-                    bits: Some(1),
-                }
+                Primitive::Bool
             } else {
-                Primitive {
-                    kind: ScalarKind::Pointer,
-                    bits: None,
-                }
+                Primitive::Ptr
             }
         }
         "vector" => {
@@ -258,7 +239,7 @@ fn resolve(
             let TypeExpr::Scalar(element) = element else {
                 return Err(fail("vector element must be a scalar type".into()));
             };
-            if element.kind == ScalarKind::Pointer {
+            if element == Primitive::Ptr {
                 return Err(fail("pointer vectors are not supported".into()));
             }
             return Ok(Some(TypeExpr::Vector {

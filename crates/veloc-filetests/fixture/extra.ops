@@ -128,7 +128,7 @@ op Sized<T: Scalar>(arg: T) -> (result: I8) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "sized", storage: Unary { arg },
 verify {
-        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
     } }
 op First<T: Integer>(lhs: T, rhs: T) -> T {
     meta: OpInfo { memory: Known([]) },
@@ -160,7 +160,7 @@ op WidePair<T: ScalarInteger>(lhs: T, rhs: T) -> (T, wide: I64) {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "wide-pair", storage: Pair { inputs: [lhs, rhs] },
 verify {
-        require(element_bits(type(wide)) > element_bits(type(lhs)), "wide must have more bits per lane than lhs");
+        require(wide.element_bits()? > type(lhs).element_bits()?, "wide must have more bits per lane than lhs");
     } }
 op Triple<T: Integer>(base: T, index: T, increment: T) -> T {
     meta: OpInfo { memory: Known([]) },
@@ -192,7 +192,8 @@ mnemonic: "inline", storage: Binary { args: [lhs, rhs] }, }
 op Lane<T: vectors(I32 | I64)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "lane", storage: Unary { arg }, }
-op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Scalar) {
+op Convert<T: I32 | I64, U: Float & Scalar>(arg: T) -> U {
+    verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { memory: Known([]) },
 mnemonic: "convert", storage: Unary { arg }, }
 
@@ -273,32 +274,36 @@ op Wrapped(@inner: LiteralPayload) -> I32 {
     text: "{inner.bits}"
 }
 
-type Stamp = rust("crate::tokens::Stamp");
+type Stamp = rust("crate::tokens::Stamp") {
+    fn number(self) -> u32;
+    fn twice(self) -> u32 { value: self.number() * 2 }
+}
 extern interface Tokens {
     fn stamp(number: u32) -> Stamp;
 }
 struct StampRecord { stamp: Stamp }
 enum StampResult { variants: [Present(Stamp), Absent] }
-interface StampInfo { stamp: Stamp }
+interface StampInfo { stamp: Stamp, doubled: u32 }
 struct StampInput { number: u32 }
 op ReadStamp(@number: u32) -> () {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "read-stamp", storage: StampInput { number },
     text: "{number}",
-    implements: [StampInfo { stamp: Tokens.stamp(number) }],
+    implements: [StampInfo { stamp: Tokens.stamp(number), doubled: Tokens.stamp(number).twice() }],
 }
 
 fn double_bits(from: Type, to: Type) -> bool {
-    value: element_bits(to) == element_bits(from) * 2
+    value: to.element_bits()? == from.element_bits()? * 2
 }
 
-op DoubleWidth<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+op DoubleWidth<T: Integer, U: Integer>(arg: T) -> (result: U) {
     meta: OpInfo {},
     mnemonic: "double-width",
     storage: Unary { arg },
     verify {
-        require(double_bits(type(arg), type(result)), "result must have twice the element width");
-        require(!is_vector(type(arg)) || lanes(type(arg)) == 4, "only four-lane vectors");
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(double_bits(T, result), "result must have twice the element width");
+        require(!T.is_vector() || T.lanes()? == 4, "only four-lane vectors");
     }
     semantics: bv.sext(arg, result(0))
 }
@@ -308,7 +313,21 @@ op FourLane<T: Integer>(arg: T) -> T {
     mnemonic: "four-lane",
     storage: Unary { arg },
     verify {
-        require(lanes(type(arg)) == 4, "requires four lanes");
+        require(type(arg).lanes()? == 4, "requires four lanes");
     }
+    semantics: bv.neg(arg)
+}
+
+fn scalable(ty: Type) -> bool = rust("crate::Type::is_scalable");
+op RuntimeScalable<T: Integer>(arg: T) -> T {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "runtime-scalable", storage: Unary { arg },
+    verify { require(scalable(T), "scalable only"); }
+}
+
+predicate is_fixture_width = I16 | I32;
+fn fixture_width(ty: Type) -> bool = rust("crate::Type::is_fixture_width");
+op CheckedWidth<T: ScalarInteger>(arg: T) -> T {
+    meta: OpInfo {}, mnemonic: "checked-width", storage: Unary { arg },
+    verify { require(fixture_width(T), "fixture width"); }
     semantics: bv.neg(arg)
 }

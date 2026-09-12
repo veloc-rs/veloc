@@ -25,7 +25,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> Integer {
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
 verify {
-        require(element_bits(type(result)) > element_bits(type(left)), "result must have more bits per lane than left");
+        require(result.element_bits()? > type(left).element_bits()?, "result must have more bits per lane than left");
     } }
 
 // ----- anonymous-results-have-no-synthetic-names-2
@@ -39,7 +39,7 @@ op PairAdd<T: Integer>(left: T, right: T) -> Integer {
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },
 verify {
-        require(element_bits(type(result0)) > element_bits(type(left)), "result0 must have more bits per lane than left");
+        require(result0.element_bits()? > type(left).element_bits()?, "result0 must have more bits per lane than left");
     } }
 
 // ----- bare-result-types-leave-the-operation-body-unconsumed-1
@@ -212,11 +212,12 @@ op PairAdd<T: Vector>(left: T, right: vector(T)) -> (result: T) {
 
 // ----- generic-declarations-and-type-domains-are-checked-6
 // run: opgen-error
-// check: impossible shape constraint on type variable `T`
+// check: constraint is always false
 struct Pair {
     args: values(2),
 }
-op PairAdd<T: ScalarInteger>(left: T, right: shape(T, Vector)) -> (result: T) {
+op PairAdd<T: ScalarInteger, U: Vector>(left: T, right: U) -> (result: T) {
+    verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { memory: Known([]) },
     mnemonic: "pair-add",
     storage: Pair { args: [left, right] },

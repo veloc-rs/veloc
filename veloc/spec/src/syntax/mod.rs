@@ -20,6 +20,8 @@ pub(crate) enum Kind {
     Number(u32),
     List(Vec<Node>),
     Call(String, Vec<Node>),
+    Member(Box<Node>, String),
+    Method(Box<Node>, String, Vec<Node>),
     Object(String, BTreeMap<String, Node>),
     Union(Vec<Node>),
     Intersection(Vec<Node>),
@@ -60,12 +62,19 @@ pub(crate) struct Signature {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) enum FunctionBody {
+    Value(Node),
+    Rust { offset: usize, path: Option<String> },
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct Record {
     pub offset: usize,
     pub kind: String,
     pub name: String,
     pub fields: BTreeMap<String, Node>,
     pub signature: Option<Signature>,
+    pub body: Option<FunctionBody>,
 }
 
 impl Record {
@@ -74,6 +83,11 @@ impl Record {
         self.offset += base;
         for node in self.fields.values_mut() {
             node.relocate(base);
+        }
+        match &mut self.body {
+            Some(FunctionBody::Value(node)) => node.relocate(base),
+            Some(FunctionBody::Rust { offset, .. }) => *offset += base,
+            None => {}
         }
         if let Some(signature) = &mut self.signature {
             for param in signature.generics.iter_mut().chain(&mut signature.params) {
@@ -102,12 +116,21 @@ impl Node {
                     node.relocate(base);
                 }
             }
+            Kind::Method(receiver, _, args) => {
+                receiver.relocate(base);
+                for arg in args {
+                    arg.relocate(base);
+                }
+            }
             Kind::Object(_, fields) => {
                 for node in fields.values_mut() {
                     node.relocate(base);
                 }
             }
-            Kind::Unary(_, node) | Kind::Lambda(_, node) | Kind::Try(node) => node.relocate(base),
+            Kind::Member(node, _)
+            | Kind::Unary(_, node)
+            | Kind::Lambda(_, node)
+            | Kind::Try(node) => node.relocate(base),
             Kind::Binary(_, lhs, rhs) => {
                 lhs.relocate(base);
                 rhs.relocate(base);

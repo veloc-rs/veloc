@@ -148,6 +148,61 @@ remain built in, and defs-owned structs/enums/comparisons register themselves.
 MIR operand-list and successor storage roles remain structural, not opaque
 Rust type bindings.
 
+### Type method interfaces
+
+A Rust-bound type can declare its methods alongside its representation:
+
+```text
+type Type = rust("crate::Type") {
+    fn element_bits(self) -> optional(u32);
+    fn wider_than(self, other: Type) -> bool {
+        value: self.element_bits()? > other.element_bits()?
+    }
+}
+```
+
+A declaration without a body binds the same-named Rust associated method.
+A defs body is checked and inlined into the shared expression tree. An explicit
+`= rust("crate::path::function");` binding can adapt naming; its first argument
+is the receiver. The same binding syntax is available for free functions.
+There is no separate `impl` or `intrinsic` declaration mechanism.
+
+Every method must be declared. Calls are resolved by the nominal receiver type,
+not by a global method-name whitelist. Defs checks arguments/results against the
+declaration; compiling generated Rust checks the actual Rust interface.
+Free functions and methods share argument checking and normalize their expanded
+body to the declared return type. Field access and calls use structural postfix
+syntax: `object.field`, `object.method(args)`, and `Interface.method(args)`.
+Parentheses and whitespace do not change name resolution.
+Bound functions are trusted pure, deterministic, read-only operations. Context
+capabilities still use host interfaces; these declarations do not inject module
+state or turn arbitrary Rust code into an offline evaluator.
+
+`veloc-types` is a dependency-free, no_std concrete-facts kernel. MIR decodes its
+generated compact representation into those facts; opgen constructs the same
+facts from checked scalar definitions and vector shapes. Both use the same
+bit/byte-size and shape operations, including scalable sizes and absent pointer
+widths. Nominal scalar codes and module-owned callable signature identities stay
+in their owners; equal facts do not establish IR type equality. This separation
+avoids a build cycle between opgen and MIR's generated type encoding.
+
+Offline Rust-call adapters only convert arguments/results and invoke that kernel.
+Predicate adapters use the same exact sets as generated runtime predicates,
+including user-defined predicates. An unregistered Rust binding can be emitted
+for runtime checks, but a type-only constraint using it is rejected when preparing
+offline semantic instances; it is never silently ignored. No arbitrary Rust
+function is executed merely by interpreting a path string.
+
+Constant metadata and concrete type constraints share one typed evaluator,
+including checked arithmetic and short circuiting. Missing inputs prevent
+constant folding; undefined computations reject a concrete instantiation.
+Constraint dependencies and offline support are classified once when checked.
+Semantic instances are prepared during validation and reused by code generation;
+independent type variables are enumerated separately and predicates filter their
+combinations. Per-lane recipes reject any admitted shape-changing combination;
+only pointer instances are expanded for both target widths. Runtime type-class
+tables include only sets referenced by operation signatures.
+
 ### Rust host interfaces
 
 `extern interface` declares a read-only, deterministic host capability, not a
@@ -429,8 +484,11 @@ is just a reusable alias, not a required declaration for every combination:
 
 ```text
 op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T { meta: OpInfo {}, ... }
-op Gather<T: Integer & Vector>(ptr: PTR, index: T) -> shape(T, Vector) { meta: OpInfo {}, ... }
-op Convert<T: I32 | I64>(arg: T) -> shape(T, F32 | F64) { meta: OpInfo {}, ... }
+op Gather<T: Integer & Vector, U: Vector>(ptr: PTR, index: T) -> U {
+    verify { require(U.same_shape(T), "index and result must have the same shape"); }
+    meta: OpInfo {}, ...
+}
+op Convert<T: I32 | I64, U: F32 | F64>(arg: T) -> U { meta: OpInfo {}, ... }
 ```
 
 `|` means union and `&` means intersection; `&` binds more tightly. Parentheses
@@ -442,8 +500,9 @@ invalid vector inputs are checked even in branches whose intersection is empty.
 `T: I32 | I64` selects one concrete type for `T`; all occurrences of `T` must match.
 By contrast, `lhs: I32 | I64, rhs: I32 | I64` allows the operands to independently
 select their types. Set expressions contain concrete types and class aliases, not
-type variables; dependent constraints still use `element(T)`, `vector(T)` and
-`shape(T, set)`.
+type variables. Independent generics and ordinary `verify` predicates express
+relations such as `U.same_shape(T)`. `element(T)` and `vector(T)` remain
+structural type patterns. There is no separate `shape(T, set)` pattern.
 
 Generation evaluates and interns equal sets, including anonymous expressions.
 Named aliases and inline constraints share the same compact runtime membership
@@ -572,12 +631,13 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> T {
     semantics: bv.add(lhs, rhs)
 }
 
-op ExtendU<T: Integer | BOOL | vectors(BOOL)>(arg: T) -> (result: shape(T, Integer)) {
+op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: T) -> U {
     meta: OpInfo { memory: Known([]) },
     mnemonic: "extendu",
     storage: Unary { arg: arg },
     verify {
-        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(U.wider_than(T), "result must have more bits per lane than arg");
     }
     }
 
@@ -592,9 +652,11 @@ op Load(ptr: PTR, @offset: u32, @flags: MemFlags) -> Any {
 
 Type requirements use the same `verify { require(predicate, diagnostic); }`
 expressions as structural checks; the old `where` relation list is not supported.
-Named results are available through `type(result_name)`; anonymous results use
-`result_type(index)`. `element_bits(type)` is a logical per-lane width, while
-`bit_size(type)` preserves the whole-value fixed/scalable distinction. Undefined
+Named results and generic variables directly denote types: `result.wider_than(T)`.
+Operand names denote SSA values, so their types use `type(arg)`. Anonymous results
+use `result_type(index)`. Result/type bindings resolve to signature slots at build
+time; no runtime name lookup or generic environment is stored. `type.element_bits()?` is a logical per-lane width, while
+`type.bit_size()?` preserves the whole-value fixed/scalable distinction. Undefined
 width queries (e.g. target-dependent pointers) fail the requirement; boolean
 short-circuiting can guard such queries.
 
@@ -693,13 +755,16 @@ on the selected edge, without a separate annotation. There is no `moves` list.
 SSA operands have names and types in the operation signature. Result names are
 optional: a single result is `-> T`, multiple results are `-> (T, BOOL)`, and
 zero results are `-> ()`. Parenthesized results may be named when a constraint
-needs to reference them, as in `-> (result: shape(T, Integer))`. Otherwise the
+needs to reference them, as in `-> (result: U)`. Otherwise the
 MIR definitions omit result names, including overflow operations (`-> (T, BOOL)`).
 Names do not affect the
 generated representation; anonymous results have no implicit names or aliases.
 Generic variables such as `T` are scoped to that operation; their first direct
-occurrence binds the type. Derived types use `element(T)`, `vector(T)` or
-`shape(T, Integer)`. Relations refer to operand/result names, not numeric slots.
+occurrence binds the type, including a result-only generic such as `U`.
+Derived types use `element(T)` or `vector(T)`. Other type relationships use
+ordinary declared methods in `verify`; generics are bound from actual operand
+and result types, not solved by those predicates. Construction does not validate
+these relationships. Relations refer to generic or operand/result names, not numeric slots.
 There are no separate `types` structs or references to named type schemes.
 
 An `@` parameter is a property, not an SSA use: `@offset: u32` and
@@ -823,8 +888,8 @@ Rust checks. For example:
 ```text
 verify {
     require(imm.scale != 0, "scale must be non-zero");
-    len(mask) == lanes(type(lhs));
-    all(mask, |i| i < 2 * lanes(type(lhs)));
+    len(mask) == type(lhs).lanes()?;
+    all(mask, |i| i < 2 * type(lhs).lanes()?);
 }
 ```
 
@@ -841,8 +906,8 @@ Constant arithmetic overflow is a definition error; dynamic overflow fails
 validation (or returns `None` from an interface query). Neither path wraps.
 
 Queries are `type(value)`, `result_type(constant_index)`, `len(sequence)`,
-`lanes(type)`, `min_bytes(type)`, `is_ptr(type)`, `is_scalar(type)`,
-`is_vector(type)` and `is_fixed(type)` (a fixed-width vector).
+`type.lanes()?`, `type.min_size_bytes()?`, `type.is_ptr()`, `type.is_scalar()`,
+`type.is_vector()` and `type.is_fixed()` (a fixed-width vector).
 Lane counts and byte sizes are minima for scalable types. A target-dependent
 byte size is an evaluation error. Result indices must refer to declared fixed
 results. Enum literals are checked against the comparison definitions; struct

@@ -9,6 +9,7 @@ members = [
 	"crates/*",
 	"crates/veloc-wasm/tests/spec_test",
 	"veloc/mir",
+	"veloc/types",
 	"veloc/lir",
 	"veloc/interpreter",
 	"veloc/codegen",
@@ -26,6 +27,7 @@ rust-version = "1.93.0"
 [workspace.dependencies]
 # --- Internal Crates ---
 veloc = { path = "." }
+veloc-types = { path = "veloc/types" }
 veloc-mir = { path = "veloc/mir" }
 veloc-lir = { path = "veloc/lir" }
 veloc-optimizer = { path = "veloc/optimizer" }

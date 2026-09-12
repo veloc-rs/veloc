@@ -75,11 +75,12 @@ op Divide<T: ScalarInteger>(lhs: T, rhs: T) -> T {
 // run: opgen-error
 // check: invalid semantic types [Bv(Width(16))] -> [Bv(Width(8))]: cannot extend bv16 to bv8
 struct Unary { arg: Value }
-op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
-        require(element_bits(type(result)) < element_bits(type(arg)), "result must have fewer bits per lane than arg");
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(result.element_bits()? < type(arg).element_bits()?, "result must have fewer bits per lane than arg");
     } semantics: bv.sext(arg, result(0))
 }
 
@@ -87,11 +88,12 @@ op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
 // run: opgen-error
 // check: expected 2 results, got 1
 struct Unary { arg: Value }
-op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
-        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
     } semantics: bv.sext(arg, result(1))
 }
 
@@ -99,11 +101,12 @@ op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
 // run: opgen-error
 // check: expected type(operand) or result(index)
 struct Unary { arg: Value }
-op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
-        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
     } semantics: bv.sext(arg, type(missing))
 }
 
@@ -111,11 +114,12 @@ op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
 // run: opgen-error
 // check: invalid semantic types [Bv(Width(8))] -> [Bv(Width(16))]: expected bv16, got bv8
 struct Unary { arg: Value }
-op Convert<T: Integer>(arg: T) -> (result: shape(T, Integer)) {
+op Convert<T: Integer, U: Integer>(arg: T) -> (result: U) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
-        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
     } semantics: arg
 }
 
@@ -127,6 +131,39 @@ op Convert<T: Integer>(arg: T) -> (result: I32X4) {
     meta: OpInfo {},
     mnemonic: "convert", storage: Unary { arg: arg },
     verify {
-        require(element_bits(type(result)) > element_bits(type(arg)), "result must have more bits per lane than arg");
+        require(result.element_bits()? > type(arg).element_bits()?, "result must have more bits per lane than arg");
     } semantics: bv.sext(arg, result(0))
+}
+
+// ----- independent-generics-do-not-imply-equal-shapes
+// run: opgen-error
+// check: semantic recipes require a shared lane shape
+struct Unary { arg: Value }
+op Convert<T: Integer, U: Integer>(arg: T) -> U {
+    meta: OpInfo {},
+    mnemonic: "convert", storage: Unary { arg },
+    verify { require(U.wider_than(T), "wider"); }
+    semantics: bv.sext(arg, result(0))
+}
+
+// ----- equal-lane-counts-do-not-imply-equal-scalability
+// run: opgen-error
+// check: semantic recipes require a shared lane shape
+struct Unary { arg: Value }
+op Convert<T: Integer & Vector, U: Integer & Vector>(arg: T) -> U {
+    meta: OpInfo {},
+    mnemonic: "convert", storage: Unary { arg },
+    verify {
+        require(U.lanes()? == T.lanes()?, "equal lane counts");
+        require(U.wider_than(T), "wider");
+    }
+    semantics: bv.sext(arg, result(0))
+}
+
+// ----- shape-is-an-ordinary-predicate-not-a-type-pattern
+// run: opgen-error
+// check: unknown type pattern `shape`
+struct Unary { arg: Value }
+op Convert<T: Integer>(arg: T) -> shape(T, Integer) {
+    meta: OpInfo {}, mnemonic: "convert", storage: Unary { arg },
 }

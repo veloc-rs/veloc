@@ -5,6 +5,12 @@ pub use inst::{FloatOrderCC, OrderCC};
 pub mod tokens {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Stamp(pub u32);
+
+    impl Stamp {
+        pub fn number(self) -> u32 {
+            self.0
+        }
+    }
 }
 
 impl<M> host::traits::Tokens for host::Context<'_, M> {

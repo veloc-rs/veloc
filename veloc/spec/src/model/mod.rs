@@ -107,7 +107,6 @@ pub(crate) enum Pattern {
     Same(u8),
     ElementOf(u8),
     VectorOf(u8),
-    ShapeOf(u8, TypeSet),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -193,6 +192,7 @@ pub(crate) struct Semantic {
     pub inputs: u8,
     pub properties: Vec<String>,
     pub traps: Vec<(u16, veloc_semantics::Trap)>,
+    pub instances: Vec<crate::semantic::Instance>,
 }
 
 pub(crate) type SemanticStep = veloc_semantics::Step<Vec<u16>>;
@@ -240,7 +240,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 format!("duplicate {} `{}`", record.kind, record.name),
             ));
         }
-        if record.kind == "extern-fn" {
+        if matches!(record.kind.as_str(), "extern-fn" | "fn") {
             for part in record.name.split('.') {
                 identifier(source, record.offset, part)?;
             }
@@ -307,7 +307,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
             }
         }
     }
-    let definitions = Definitions {
+    let mut definitions = Definitions {
         encoding,
         builtins,
         data,
@@ -323,12 +323,13 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
 }
 
 impl Definitions {
-    fn validate(&self, source: &str) -> Result<(), Error> {
+    fn validate(&mut self, source: &str) -> Result<(), Error> {
         let mut mnemonics = BTreeSet::new();
         let mut methods = BTreeMap::new();
-        for op in &self.ops {
+        let meta_type = crate::model::metadata::record_type(&self.ops).map(str::to_owned);
+        for op in &mut self.ops {
             if let crate::model::data::Value::Record(ty, _) = &op.meta
-                && Some(ty.as_str()) != crate::model::metadata::record_type(&self.ops)
+                && Some(ty.as_str()) != meta_type.as_deref()
             {
                 return Err(Error::at(
                     source,
@@ -385,7 +386,10 @@ impl Definitions {
                     "algebraic shortcuts require associative and commutative operations".into(),
                 ));
             }
-            crate::semantic::validate(source, op, &self.types)?;
+            let instances = crate::semantic::validate(source, op, &self.types)?;
+            if let Some(sem) = &mut op.semantics {
+                sem.instances = instances;
+            }
         }
         Ok(())
     }
@@ -424,7 +428,6 @@ fn pattern(
         }
         Kind::Call(kind, args) => {
             let expected = match kind.as_str() {
-                "shape" => 2,
                 "element" | "vector" => 1,
                 _ => {
                     return Err(Error::at(
@@ -443,11 +446,6 @@ fn pattern(
             }
             let mut args = args.into_iter();
             let variable = name(source, args.next().unwrap())?;
-            let class = if expected == 2 {
-                Some(types.set(source, &args.next().unwrap())?)
-            } else {
-                None
-            };
             let binding = variables
                 .get_mut(&variable)
                 .filter(|var| var.bound)
@@ -461,9 +459,6 @@ fn pattern(
             match kind.as_str() {
                 "element" => binding.possible.retain_shapes(!1),
                 "vector" => binding.possible.intersect(&types.lanes),
-                "shape" => binding
-                    .possible
-                    .retain_shapes(class.as_ref().unwrap().shapes()),
                 _ => unreachable!("type pattern kind has been checked"),
             }
             if binding.possible.is_empty() {
@@ -477,7 +472,6 @@ fn pattern(
             Ok(match kind.as_str() {
                 "element" => Pattern::ElementOf(var),
                 "vector" => Pattern::VectorOf(var),
-                "shape" => Pattern::ShapeOf(var, class.unwrap()),
                 _ => unreachable!(),
             })
         }

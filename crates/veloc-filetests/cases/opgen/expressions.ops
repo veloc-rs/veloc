@@ -51,7 +51,7 @@ op Example(@n: u64) -> () {
 // ----- helpers-cannot-shadow-primitives
 // run: opgen-error
 // check: function conflicts with a projection primitive
-fn lanes(n: u32) -> u32 { value: n }
+fn len(n: u32) -> u32 { value: n }
 
 // ----- legacy-constraints-have-no-compatibility-layer
 // run: opgen-error

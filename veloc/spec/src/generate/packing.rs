@@ -145,10 +145,11 @@ pub(crate) fn prepare_alternatives(
             continue;
         };
         let (mut op, format) = alternate(base, alt, source)?;
-        op.constraints = crate::model::constraints::check(
+        op.constraints = expressions.verify(
             source,
             alt.constraints.clone(),
-            &op,
+            &op.params,
+            Some(&op.signature),
             &BTreeMap::new(),
             crate::model::Vocabulary {
                 types: &defs.types,
@@ -156,7 +157,6 @@ pub(crate) fn prepare_alternatives(
                 builtins: &defs.builtins,
                 comparisons: &defs.comparisons,
             },
-            &mut expressions,
         )?;
         alternatives.push(Alternative {
             op,

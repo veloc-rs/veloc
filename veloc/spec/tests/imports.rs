@@ -37,7 +37,7 @@ fn diamond_imports_generate_each_definition_once() {
     let files = Files::new();
     files.write(
         "shared.ops",
-        "// no final newline\nclass Small { members: [I8, I16] }",
+        "// no final newline\nclass Small { members: [I8, I16] }\nclass Unused { members: [I8] }",
     );
     files.write(
         "left.ops",
@@ -46,11 +46,20 @@ fn diamond_imports_generate_each_definition_once() {
     files.write("right.ops", "import \"./shared.ops\";\n");
     files.write(
         "root.ops",
-        "// import \"not-a-dependency\";\nimport \"left.ops\";\nimport \"right.ops\";\n",
+        r#"// import "not-a-dependency";
+import "left.ops";
+import "right.ops";
+struct Unary { arg: Value }
+op Example<T: Small>(arg: T) -> T {
+    meta: OpInfo { memory: Known([]) }, mnemonic: "example",
+    storage: Unary { arg },
+}
+"#,
     );
     let source = files.load("root.ops").unwrap();
     let generated = source.compile().unwrap();
     assert_eq!(generated.opcodes.matches("pub const Small:").count(), 1);
+    assert!(!generated.opcodes.contains("pub const Unused:"));
     for name in [
         "root.ops",
         "left.ops",

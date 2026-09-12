@@ -1048,6 +1048,7 @@ fn rust_type_bindings_preserve_paths_in_records_enums_and_host_queries() {
         .query::<StampInfo>(&DataFlowGraph::new(), &[])
         .unwrap();
     assert_eq!(info.stamp, Stamp(17));
+    assert_eq!(info.doubled, 34);
     let record = StampRecord { stamp: info.stamp };
     assert_eq!(
         StampResult::Present(record.stamp),
@@ -1069,6 +1070,34 @@ fn rust_type_bindings_preserve_paths_in_records_enums_and_host_queries() {
 fn type_constraints_drive_validation_and_generated_evaluation() {
     for (from, to, valid) in [
         (Type::I8, Type::I16, true),
+        (Type::I8, Type::I16X8, false),
+        (Type::I8X16, Type::I16, false),
+        (Type::I8X16, Type::I16X8, false),
+        (
+            Type::I32X4,
+            Type::I64
+                .as_scalar()
+                .unwrap()
+                .vector(4, true)
+                .unwrap()
+                .as_type(),
+            false,
+        ),
+        (
+            Type::I32
+                .as_scalar()
+                .unwrap()
+                .vector(4, true)
+                .unwrap()
+                .as_type(),
+            Type::I64
+                .as_scalar()
+                .unwrap()
+                .vector(4, true)
+                .unwrap()
+                .as_type(),
+            true,
+        ),
         (Type::I8, Type::I32, false),
         (Type::I64, Type::I32, false),
         (
@@ -1085,6 +1114,22 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
     ] {
         assert_eq!(
             Opcode::DoubleWidth.validate_types(&[from], &[to]).is_ok(),
+            valid
+        );
+    }
+    for (value, valid) in [
+        (ScalarConst::from(1i8), false),
+        (ScalarConst::from(1i16), true),
+        (ScalarConst::from(1i32), true),
+        (ScalarConst::from(1i64), false),
+    ] {
+        let ty = value.ty();
+        assert_eq!(
+            Opcode::CheckedWidth.validate_types(&[ty], &[ty]).is_ok(),
+            valid
+        );
+        assert_eq!(
+            evaluator::evaluate(Opcode::CheckedWidth, &[value], &[ty], &[]).is_some(),
             valid
         );
     }
@@ -1119,6 +1164,24 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
             .validate_types(&[Type::I32], &[Type::I32])
             .is_err()
     );
+    let scalable4 = Type::I32
+        .as_scalar()
+        .unwrap()
+        .vector(4, true)
+        .unwrap()
+        .as_type();
+    assert!(
+        Opcode::RuntimeScalable
+            .validate_types(&[scalable4], &[scalable4])
+            .is_ok()
+    );
+    for ty in [Type::I32, Type::I32X4] {
+        assert!(
+            Opcode::RuntimeScalable
+                .validate_types(&[ty], &[ty])
+                .is_err()
+        );
+    }
     // Vector-admitted lanes must not leak into scalar constant evaluation.
     assert!(!evaluator::can_fold(Opcode::FourLane));
     assert!(

@@ -49,10 +49,6 @@ impl TypeSet {
         });
     }
 
-    pub fn shapes(&self) -> u32 {
-        self.0.values().fold(0, |all, shapes| all | shapes)
-    }
-
     pub fn retain_shapes(&mut self, allowed: u32) {
         self.0.retain(|_, shapes| {
             *shapes &= allowed;
@@ -68,20 +64,13 @@ impl TypeSet {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum ScalarKind {
-    Integer,
-    Float,
-    Boolean,
-    Pointer,
-}
+pub(crate) use veloc_types::Scalar as Primitive;
 
 #[derive(Debug)]
 pub(crate) struct Scalar {
     pub name: String,
     pub code: u8,
-    pub bits: Option<u32>,
-    pub kind: ScalarKind,
+    pub ty: Primitive,
 }
 
 impl Scalar {
@@ -156,14 +145,14 @@ impl Types {
         for scalar in &types.scalars {
             let single = TypeSet::singleton(scalar.code, 0, false);
             let mut family = single.clone();
-            if scalar.kind != ScalarKind::Pointer {
+            if scalar.ty != Primitive::Ptr {
                 types.lanes.union(&single);
                 family.union(&single.vectors(encoding.lanes_log2_max()));
             }
-            if matches!(scalar.kind, ScalarKind::Integer | ScalarKind::Boolean) {
+            if matches!(scalar.ty, Primitive::Int(_) | Primitive::Bool) {
                 types.integers.union(&family);
             }
-            if scalar.kind == ScalarKind::Float {
+            if matches!(scalar.ty, Primitive::Float(_)) {
                 types.scalar_floats.union(&single);
             }
         }
@@ -393,7 +382,7 @@ mod tests {
     fn shape_constraints_retain_the_exact_type_set() {
         let types = crate::fixtures::types();
         let mut set = types.classes["Integer"].clone();
-        set.retain_shapes(types.exact["I32X4"].shapes());
+        set.retain_shapes(1 << 2); // Fixed vectors with four lanes.
         assert_eq!(set.0, BTreeMap::from([(1, 4), (2, 4), (3, 4), (4, 4)]));
         set.intersect(&types.exact["I32X4"]);
         assert_eq!(set, types.exact["I32X4"]);

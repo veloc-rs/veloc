@@ -58,9 +58,10 @@ pub(crate) fn scalars(types: &Types) -> String {
         )
         .unwrap();
     }
-    out.push_str("_ => None, } }\n/// Logical bits per lane; pointers and callables have no fixed width.\npub const fn element_bits(self) -> Option<u32> {\nassert!(self.is_valid(), \"invalid MIR type has no element width\");\nif !self.is_compact() { return None; }\nmatch self.element_code() {\n");
+    out.push_str("_ => None, } }\nconst fn element_facts(self) -> veloc_types::Scalar { match self.element_code() {\n");
     for s in &types.scalars {
-        writeln!(out, "{} => {:?},", s.code, s.bits).unwrap();
+        let fact = format!("{:?}", s.ty);
+        writeln!(out, "{} => veloc_types::Scalar::{fact},", s.code).unwrap();
     }
     out.push_str("_ => unreachable!(), } }\nfn element_name(self, debug: bool) -> &'static str { match self.element_code() {\n");
     for s in &types.scalars {
@@ -106,8 +107,6 @@ impl Classes {
         let mut sets = BTreeMap::new();
         let mut names = BTreeMap::new();
         for (name, set) in &defs.types.classes {
-            let next = sets.len();
-            sets.entry(set.clone()).or_insert(next);
             names.entry(set.clone()).or_insert_with(|| name.clone());
         }
         for op in &defs.ops {
@@ -116,10 +115,8 @@ impl Classes {
                     continue;
                 };
                 for pattern in patterns {
-                    if let Pattern::Class(set)
-                    | Pattern::Bind(_, set)
-                    | Pattern::ShapeOf(_, set)
-                    | Pattern::Property(_, set) = pattern
+                    if let Pattern::Class(set) | Pattern::Bind(_, set) | Pattern::Property(_, set) =
+                        pattern
                     {
                         let next = sets.len();
                         sets.entry(set.clone()).or_insert(next);
@@ -150,7 +147,7 @@ impl Classes {
         }
     }
 
-    pub fn generate(&self, types: &Types) -> String {
+    pub fn generate(&self) -> String {
         let mut out = HEADER.to_owned();
         let repr = if self.sets.len() <= 256 {
             "u8"
@@ -160,8 +157,10 @@ impl Classes {
             "usize"
         };
         writeln!(out, "/// An interned, checked set of exact scalar and vector types.\n/// The identifier is private and is not a stable serialized encoding.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct TypeClass({repr});\n#[allow(non_upper_case_globals)]\nimpl TypeClass {{").unwrap();
-        for (name, set) in &types.classes {
-            writeln!(out, "pub const {name}: Self = Self({});", self.sets[set]).unwrap();
+        for (set, name) in &self.names {
+            if let Some(id) = self.sets.get(set) {
+                writeln!(out, "pub const {name}: Self = Self({id});").unwrap();
+            }
         }
         out.push_str("pub fn accepts(self, ty: crate::Type) -> bool {\nif !ty.is_compact() || !ty.is_valid() { return false; }\nlet code = ty.as_scalar().or_else(|| ty.as_vector().map(|v| v.element_type())).expect(\"checked compact type\").code();\nlet shape = ty.lane_count().trailing_zeros() + if ty.is_scalable() { 16 } else { 0 };\nlet shapes: u32 = match self.0 {\n");
         for (set, id) in &self.sets {

@@ -12,6 +12,7 @@ test = false
 doctest = false
 
 [dependencies]
+veloc-types = { workspace = true }
 cranelift-entity = { workspace = true }
 hashbrown = { workspace = true, features = ["ahash", "inline-more"] }
 thiserror = { version = "2.0", default-features = false }

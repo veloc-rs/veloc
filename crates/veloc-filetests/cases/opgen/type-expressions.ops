@@ -1,6 +1,6 @@
 // ----- direct-patterns-and-shape-constraints-accept-expressions-1
 // run: opgen-error
-// check: impossible shape constraint on type variable `T`
+// check: constraint is always false
 struct Unary { arg: Value }
 op Copy(arg: I32 | I64) -> I32 | I64 {
     meta: OpInfo { memory: Known([]) },
@@ -8,7 +8,8 @@ mnemonic: "copy", storage: Unary { arg: arg }, }
 op Lane<T: vectors(I32 | I64)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "lane", storage: Unary { arg: arg }, }
-op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Vector) {
+op Convert<T: I32 | I64, U: Float & Vector>(arg: T) -> U {
+    verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { memory: Known([]) },
 mnemonic: "convert", storage: Unary { arg: arg }, }
 
@@ -22,7 +23,8 @@ mnemonic: "copy", storage: Unary { arg: arg }, }
 op Lane<T: vectors(T)>(arg: T) -> element(T) {
     meta: OpInfo { memory: Known([]) },
 mnemonic: "lane", storage: Unary { arg: arg }, }
-op Convert<T: I32 | I64>(arg: T) -> shape(T, Float & Scalar) {
+op Convert<T: I32 | I64, U: Float & Scalar>(arg: T) -> U {
+    verify { require(U.same_shape(T), "input and result must have the same shape"); }
     meta: OpInfo { memory: Known([]) },
 mnemonic: "convert", storage: Unary { arg: arg }, }
 
