@@ -62,6 +62,7 @@ pub(crate) struct VMInstance {
     pub(crate) interpreter: Option<Interpreter>,
     pub(crate) interp_module_id: Option<veloc::interpreter::ModuleId>,
     pub(crate) host_state: Box<dyn core::any::Any + Send + Sync>,
+    pub(crate) host_imports: Vec<Option<alloc::sync::Arc<veloc::interpreter::host::HostFunction>>>,
     pub(crate) element_lengths: Vec<usize>,
     pub(crate) data_lengths: Vec<usize>,
     pub(crate) vmctx_self_reference: *mut VMContext,
@@ -694,6 +695,19 @@ impl VMInstance {
                 interpreter: interp_module_id.map(|_| Interpreter::new()),
                 interp_module_id,
                 host_state: Box::new(()),
+                host_imports: imported_funcs
+                    .iter()
+                    .map(|func| {
+                        if func.vmctx.is_null() {
+                            if let Some(CallTarget::Host(id)) =
+                                store.program.resolve_ref(func.native_call as usize)
+                            {
+                                return store.program.host(id).cloned().map(alloc::sync::Arc::new);
+                            }
+                        }
+                        None
+                    })
+                    .collect(),
                 vmctx_self_reference: vmctx_ptr,
                 vmctx: VMContext {
                     _maker: core::marker::PhantomPinned,
@@ -759,6 +773,20 @@ impl VMInstance {
                 // If it's a host function (vmctx is null), set it to the current vmctx
                 if func_ref.vmctx.is_null() {
                     func_ref.vmctx = vmctx_ptr;
+                    if let Some(loaded) = module.loaded() {
+                        if instance.host_imports[i].is_none() {
+                            return Err(crate::error::Error::Message(
+                                "JIT host import has no callback".into(),
+                            ));
+                        }
+                        let symbol = format!("__veloc_host_{i}");
+                        func_ref.native_call =
+                            *loaded.get::<*const ()>(&symbol).ok_or_else(|| {
+                                crate::error::Error::Message(format!(
+                                    "Missing host bridge {symbol}"
+                                ))
+                            })? as *const core::ffi::c_void;
+                    }
                 }
 
                 vm_functions[i] = func_ref;
@@ -1113,29 +1141,20 @@ impl TypedFunc {
 
             let res_bits = match self.kind {
                 TypedFuncKind::JIT { trampoline_ptr } => {
-                    let mut storage = [0i64; 17];
-                    for (i, arg) in args.iter().enumerate() {
-                        storage[i] = arg.as_i64();
-                    }
-                    let mut actual_len = args.len();
-                    if self.results.len() > 1 {
-                        storage[actual_len] = results_raw.as_mut_ptr() as i64;
-                        actual_len += 1;
-                    }
-
-                    if actual_len > 16 {
-                        return Err(crate::error::Error::Message("Too many arguments".into()));
-                    }
-
-                    let trampoline: extern "C" fn(*const VMContext, *const i64) -> i64 =
+                    let storage: Vec<i64> = args.iter().map(Val::as_i64).collect();
+                    let trampoline: extern "C" fn(*const VMContext, *const i64, *mut i64) -> i64 =
                         mem::transmute(trampoline_ptr);
-                    trampoline(vmctx_ptr, storage.as_ptr())
+                    trampoline(vmctx_ptr, storage.as_ptr(), results_raw.as_mut_ptr())
                 }
                 TypedFuncKind::Interpreter { target_func_id } => {
                     let mut int_args = Vec::with_capacity(args.len() + 1);
                     int_args.push(InterpreterValue::i64(vmctx_ptr as i64));
                     for arg in args {
                         int_args.push(arg.to_interpreter_val());
+                    }
+
+                    if self.results.len() > 1 {
+                        int_args.push(InterpreterValue::i64(results_raw.as_mut_ptr() as i64));
                     }
 
                     let mut interpreter = if let Some(int) = instance.interpreter.take() {

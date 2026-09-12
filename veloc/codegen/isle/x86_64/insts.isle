@@ -163,22 +163,22 @@
     (operands (use $lhs) (use $rhs))
     (clobbers EFLAGS)
     (encode
-        (if (needs-rex (hw-enc $rhs) (hw-enc $lhs))
-            (byte (rex-rr (hw-enc $rhs) (hw-enc $lhs))))
+        (if (needs-rex (hw-enc $lhs) (hw-enc $rhs))
+            (byte (rex-rr (hw-enc $lhs) (hw-enc $rhs))))
         (byte 0x0F)
         (byte 0x2E)
-        (byte (modrm-rr (hw-enc $rhs) (hw-enc $lhs)))))
+        (byte (modrm-rr (hw-enc $lhs) (hw-enc $rhs)))))
 
 (def-template Ucomisdrr ()
     (operands (use $lhs) (use $rhs))
     (clobbers EFLAGS)
     (encode
         (byte 0x66)
-        (if (needs-rex (hw-enc $rhs) (hw-enc $lhs))
-            (byte (rex-rr (hw-enc $rhs) (hw-enc $lhs))))
+        (if (needs-rex (hw-enc $lhs) (hw-enc $rhs))
+            (byte (rex-rr (hw-enc $lhs) (hw-enc $rhs))))
         (byte 0x0F)
         (byte 0x2E)
-        (byte (modrm-rr (hw-enc $rhs) (hw-enc $lhs)))))
+        (byte (modrm-rr (hw-enc $lhs) (hw-enc $rhs)))))
 
 (def-template Setcc8r ($cc)
     (operands (def $dst))
@@ -295,8 +295,8 @@
 (def-template MovqToXmmrr ()
     (operands (def $dst) (use $src))
     (encode
-        (byte (rex-w (hw-enc $dst) (hw-enc $src)))
         (byte 0x66)
+        (byte (rex-w (hw-enc $dst) (hw-enc $src)))
         (byte 0x0F)
         (byte 0x6E)
         (byte (modrm-rr (hw-enc $dst) (hw-enc $src)))))
@@ -304,8 +304,8 @@
 (def-template MovqFromXmmrr ()
     (operands (def $dst) (use $src))
     (encode
-        (byte (rex-w (hw-enc $src) (hw-enc $dst)))
         (byte 0x66)
+        (byte (rex-w (hw-enc $src) (hw-enc $dst)))
         (byte 0x0F)
         (byte 0x7E)
         (byte (modrm-rr (hw-enc $src) (hw-enc $dst)))))
@@ -838,6 +838,8 @@
     (implicit-defs EAX EDX)
     (clobbers EFLAGS)
     (encode
+        (if (needs-rex 0 (hw-enc $src))
+            (byte (rex-rr 0 (hw-enc $src))))
         (byte 0xf7)
         (byte (modrm-rr 7 (hw-enc $src)))))
 
@@ -847,7 +849,7 @@
     (implicit-defs RAX RDX)
     (clobbers EFLAGS)
     (encode
-        (byte 0x48)
+        (byte (rex-w 0 (hw-enc $src)))
         (byte 0xf7)
         (byte (modrm-rr 7 (hw-enc $src)))))
 
@@ -857,6 +859,8 @@
     (implicit-defs EAX EDX)
     (clobbers EFLAGS)
     (encode
+        (if (needs-rex 0 (hw-enc $src))
+            (byte (rex-rr 0 (hw-enc $src))))
         (byte 0xf7)
         (byte (modrm-rr 6 (hw-enc $src)))))
 
@@ -866,7 +870,7 @@
     (implicit-defs RAX RDX)
     (clobbers EFLAGS)
     (encode
-        (byte 0x48)
+        (byte (rex-w 0 (hw-enc $src)))
         (byte 0xf7)
         (byte (modrm-rr 6 (hw-enc $src)))))
 

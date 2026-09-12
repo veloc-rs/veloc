@@ -1,3 +1,4 @@
+mod host;
 pub mod metadata;
 pub mod runtime;
 pub mod types;
@@ -218,6 +219,9 @@ impl Module {
 
         // 2. Generate function declarations and trampolines
         generate_trampolines(&mut ir, &mut metadata);
+        if strategy == Strategy::Jit {
+            host::generate(&mut ir, &metadata);
+        }
 
         // 3. Generate __veloc_init function
         let init_func_id = generate_veloc_init(&mut ir, &metadata, &offsets, &runtime);
@@ -324,6 +328,7 @@ impl Module {
             let loaded = lib
                 .relocator()
                 .pre_find_fn(|name| match name {
+                    "wasm_host_call" => Some(host::wasm_host_call as *const ()),
                     "wasm_trap_handler" => Some(runtime::wasm_trap_handler as *const ()),
                     "wasm_memory_size" => Some(runtime::wasm_memory_size as *const ()),
                     "wasm_memory_grow" => Some(runtime::wasm_memory_grow as *const ()),
@@ -465,12 +470,9 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
         // 仅为本地定义的函数生成 Array-to-Wasm Trampoline
         if !is_import {
             let tramp_name = format!("{}_trampoline", func_name);
-            // JIT 调用端统一按 `extern "C" fn(*const VMContext, *const i64) -> i64` 调用，
+            // JIT 调用端统一传递 vmctx、参数数组和结果缓冲区，
             // 多返回值通过隐藏 results buffer 传递。
-            let mut tramp_params = vec![VelocType::PTR, VelocType::PTR];
-            if wasm_sig.results.len() > 1 {
-                tramp_params.push(VelocType::PTR);
-            }
+            let tramp_params = vec![VelocType::PTR, VelocType::PTR, VelocType::PTR];
             let tramp_sig_id =
                 ir.make_signature(tramp_params, vec![VelocType::I64], CallConv::SystemV);
             let tramp_id = ir.declare_function(tramp_name, tramp_sig_id, Linkage::Export);

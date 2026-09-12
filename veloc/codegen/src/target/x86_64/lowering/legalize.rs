@@ -41,7 +41,7 @@ impl TargetLegalizer for X86_64Legalizer {
             G_CALLIND => {
                 seq[..def(any), use(PTR), ..use(any)] => legal,
             };
-            G_ADD | G_SUB | G_MUL | G_AND | G_OR | G_XOR => {
+            G_ADD | G_SUB | G_MUL => {
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
                     if same_types(0, 1, 2) => legal,
                 [def(scalar_int(8, 16)), use(scalar_int(8, 16)), use(scalar_int(8, 16))]
@@ -49,6 +49,10 @@ impl TargetLegalizer for X86_64Legalizer {
             };
             G_AND | G_OR | G_XOR => {
                 [def(BOOL), use(BOOL), use(BOOL)] => legal,
+                [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
+                    if same_types(0, 1, 2) => legal,
+                [def(scalar_int(8, 16)), use(scalar_int(8, 16)), use(scalar_int(8, 16))]
+                    if same_types(0, 1, 2) => widen_scalar(I32),
             };
             G_SHL | G_LSHR | G_ASHR | G_ROTL | G_ROTR | G_SDIV | G_UDIV | G_SREM | G_UREM => {
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
@@ -97,7 +101,7 @@ impl TargetLegalizer for X86_64Legalizer {
             };
             G_CONSTANT => {
                 [def(BOOL), imm] => legal,
-                [def(int_or_ptr_scalar(32, 64)), imm] => legal,
+                [def(int_or_ptr_scalar(8, 16, 32, 64)), imm] => legal,
             };
             G_IEQZ => {
                 [def(BOOL), use(scalar_int(32, 64))] => legal,

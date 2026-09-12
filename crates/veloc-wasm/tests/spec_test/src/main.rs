@@ -116,6 +116,7 @@ impl SpecRunner {
         );
 
         let mut linker = Linker::new();
+        linker.func_wrap(&mut store, "spectest", "print", || {});
         linker.func_wrap(&mut store, "spectest", "print_i32", |val: i32| {
             println!("{}: i32", val);
         });
@@ -269,17 +270,12 @@ impl SpecRunner {
             .and_then(|m| self.named_instances.get(m).copied())
             .or_else(|| self.instances.last().copied());
 
-        if inst.is_none() {
-            return;
-        }
-        let inst = inst.unwrap();
-
-        let func = match inst.get_func(&self.store, name) {
-            Some(f) => f,
-            None => return,
-        };
+        let inst = inst.expect("assert_trap instance not found");
+        let func = inst
+            .get_func(&self.store, name)
+            .expect("assert_trap function not found");
         let result = func.call(&mut self.store, &val_args);
-        if result.is_ok() {
+        if !matches!(result, Err(veloc_wasm::error::Error::Trap(_))) {
             if self.dump_ir {
                 self.dump_ir_for(module);
             }
@@ -360,8 +356,22 @@ pub fn run_wast_file(
     );
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut checked = 0;
+        let mut skipped = 0;
         for directive in wast.directives {
             match directive {
+                WastDirective::ModuleDefinition(mut module) => {
+                    let id = match &module {
+                        QuoteWat::Wat(Wat::Module(m)) => m.id.map(|i| i.name()),
+                        _ => None,
+                    };
+                    let bytes = module.encode().unwrap();
+                    let module = Module::new(&runner.engine, &bytes).unwrap();
+                    if let Some(id) = id {
+                        runner.named_modules.insert(id.to_string(), module.clone());
+                    }
+                    runner.modules.push(module);
+                }
                 WastDirective::Module(mut module) => {
                     let id = match &module {
                         QuoteWat::Wat(Wat::Module(m)) => m.id.map(|i| i.name()),
@@ -369,19 +379,7 @@ pub fn run_wast_file(
                     };
                     let wasm_bin = module.encode().unwrap();
                     let res = runner.instantiate(&wasm_bin, id);
-                    if let Err(e) = res {
-                        let e_str = e.to_string();
-                        if e_str.contains("Unsupported feature")
-                            || e_str.contains("Import not found")
-                            || e_str.contains("Incompatible import")
-                        {
-                            if verbose {
-                                println!("  skipped module due to: {}", e);
-                            }
-                            continue;
-                        }
-                        panic!("instantiation failed: {}", e);
-                    }
+                    res.unwrap_or_else(|e| panic!("instantiation failed: {e}"));
                 }
                 WastDirective::Register { name, module, .. } => {
                     runner.register(name, module.map(|m| m.name()));
@@ -391,8 +389,9 @@ pub fn run_wast_file(
                         let (line, _) = invoke.span.linecol_in(&contents);
                         println!("  invoke {} (line {})", invoke.name, line + 1);
                     }
-                    let _ =
-                        runner.call(invoke.module.map(|m| m.name()), &invoke.name, &invoke.args);
+                    runner
+                        .call(invoke.module.map(|m| m.name()), &invoke.name, &invoke.args)
+                        .unwrap();
                 }
                 WastDirective::AssertReturn {
                     exec,
@@ -425,17 +424,19 @@ pub fn run_wast_file(
                                 &invoke.args,
                             ) {
                                 Ok(v) => v,
-                                Err(_) => continue,
+                                Err(e) => panic!("assert_return execution failed: {e}"),
                             }
                         }
                         WastExecute::Get { module, global, .. } => {
                             match runner.get_global(module.map(|m| m.name()), global) {
                                 Ok(v) => vec![v],
-                                Err(_) => continue,
+                                Err(e) => panic!("assert_return execution failed: {e}"),
                             }
                         }
-                        _ => continue,
+                        _ => panic!("unsupported assert_return execution"),
                     };
+                    checked += 1;
+                    assert_eq!(actuals.len(), results.len(), "return count mismatch");
                     for (j, expected) in results.iter().enumerate() {
                         let actual = actuals[j];
                         match expected {
@@ -472,46 +473,61 @@ pub fn run_wast_file(
                                 }
                             }
                             WastRet::Core(wast::core::WastRetCore::F32(val)) => {
-                                if let wast::core::NanPattern::Value(v) = val {
-                                    if actual as u32 != v.bits {
-                                        if verbose {
-                                            let (line, col) = span.linecol_in(&contents);
-                                            println!(
-                                                "Assertion failed at {}:{}:{}: expected f32 bits {:x}, got {:x}",
-                                                path.display(),
-                                                line + 1,
-                                                col + 1,
-                                                v.bits,
-                                                actual as u32
-                                            );
-                                        }
-                                        panic!("f32 mismatch");
+                                let bits = actual as u32;
+                                let matches = match val {
+                                    wast::core::NanPattern::Value(v) => bits == v.bits,
+                                    wast::core::NanPattern::CanonicalNan => {
+                                        bits & 0x7fffffff == 0x7fc00000
                                     }
-                                }
+                                    wast::core::NanPattern::ArithmeticNan => {
+                                        bits & 0x7fc00000 == 0x7fc00000
+                                    }
+                                };
+                                let (line, _) = span.linecol_in(&contents);
+                                assert!(
+                                    matches,
+                                    "{}:{}: expected f32 {:?}, got bits {bits:x}",
+                                    path.display(),
+                                    line + 1,
+                                    val
+                                );
                             }
                             WastRet::Core(wast::core::WastRetCore::F64(val)) => {
-                                if let wast::core::NanPattern::Value(v) = val {
-                                    if actual as u64 != v.bits {
-                                        if verbose {
-                                            let (line, col) = span.linecol_in(&contents);
-                                            println!(
-                                                "Assertion failed at {}:{}:{}: expected f64 bits {:x}, got {:x}",
-                                                path.display(),
-                                                line + 1,
-                                                col + 1,
-                                                v.bits,
-                                                actual as u64
-                                            );
-                                        }
-                                        panic!("f64 mismatch");
+                                let bits = actual as u64;
+                                let matches = match val {
+                                    wast::core::NanPattern::Value(v) => bits == v.bits,
+                                    wast::core::NanPattern::CanonicalNan => {
+                                        bits & 0x7fffffffffffffff == 0x7ff8000000000000
                                     }
-                                }
+                                    wast::core::NanPattern::ArithmeticNan => {
+                                        bits & 0x7ff8000000000000 == 0x7ff8000000000000
+                                    }
+                                };
+                                let (line, _) = span.linecol_in(&contents);
+                                assert!(
+                                    matches,
+                                    "{}:{}: expected f64 {:?}, got bits {bits:x}",
+                                    path.display(),
+                                    line + 1,
+                                    val
+                                );
                             }
-                            _ => {}
+                            WastRet::Core(wast::core::WastRetCore::RefNull(_)) => {
+                                assert_eq!(actual, 0)
+                            }
+                            WastRet::Core(wast::core::WastRetCore::RefExtern(Some(value))) => {
+                                assert_eq!(actual, i64::from(*value) + 0x1000)
+                            }
+                            WastRet::Core(
+                                wast::core::WastRetCore::RefExtern(None)
+                                | wast::core::WastRetCore::RefFunc(None),
+                            ) => assert_ne!(actual, 0),
+                            _ => panic!("unsupported expected result: {expected:?}"),
                         }
                     }
                 }
                 WastDirective::AssertTrap { exec, span, .. } => {
+                    checked += 1;
                     if verbose {
                         let (line, _) = span.linecol_in(&contents);
                         match &exec {
@@ -534,16 +550,23 @@ pub fn run_wast_file(
                         WastExecute::Wat(mut module) => {
                             let wasm_bin = module.encode().unwrap();
                             let res = runner.instantiate(&wasm_bin, None);
-                            if let Ok(_) = res {
-                                panic!("expected trap but instantiation succeeded");
-                            }
+                            assert!(
+                                matches!(
+                                    res.as_ref()
+                                        .err()
+                                        .and_then(|e| e.downcast_ref::<veloc_wasm::error::Error>()),
+                                    Some(veloc_wasm::error::Error::Trap(_))
+                                ),
+                                "expected instantiation trap, got {res:?}"
+                            );
                         }
-                        _ => {}
+                        _ => panic!("unsupported assert_trap execution"),
                     }
                 }
                 WastDirective::AssertUnlinkable {
                     mut module, span, ..
                 } => {
+                    checked += 1;
                     let (line, _) = span.linecol_in(&contents);
                     if verbose {
                         println!("  assert_unlinkable (line {})", line + 1);
@@ -565,19 +588,33 @@ pub fn run_wast_file(
                         println!("  assert_invalid (line {})", line + 1);
                     }
                     let wasm_bin = module.encode().unwrap();
-                    let res = runner.instantiate(&wasm_bin, None);
-                    if res.is_ok() {
-                        panic!("expected invalid but instantiation succeeded");
+                    checked += 1;
+                    assert!(
+                        wasmparser::Validator::new()
+                            .validate_all(&wasm_bin)
+                            .is_err(),
+                        "expected invalid module"
+                    );
+                }
+                WastDirective::AssertMalformed { mut module, .. } => {
+                    checked += 1;
+                    if let Ok(bytes) = module.encode() {
+                        assert!(
+                            wasmparser::Validator::new().validate_all(&bytes).is_err(),
+                            "expected malformed module"
+                        );
                     }
                 }
                 WastDirective::AssertExhaustion { .. } => {
+                    skipped += 1;
                     if verbose {
                         println!("  skipping assert_exhaustion");
                     }
                 }
-                _ => {}
+                _ => panic!("unsupported WAST directive"),
             }
         }
+        println!("Assertions: {checked} checked, {skipped} skipped (stack exhaustion)");
     }));
 
     match result {
@@ -586,7 +623,12 @@ pub fn run_wast_file(
             if dump_ir {
                 runner.dump_all_ir();
             }
-            std::panic::resume_unwind(e);
+            let message = e
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| e.downcast_ref::<&str>().copied())
+                .unwrap_or("panic");
+            Err(anyhow::anyhow!("{message}"))
         }
     }
 }

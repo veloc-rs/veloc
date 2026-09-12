@@ -27,6 +27,13 @@ impl TargetInstructionSelector for X86_64Selector {
 
         let view = inst.generic_view()?;
         match view {
+            veloc_lir::InstView::Return(_) => {
+                // ABI result registers stay live through RET, including across
+                // otherwise dead instructions moved by the scheduler.
+                ctx.selected
+                    .push(build_target_inst(TargetInst::X86Ret, inst.operands.clone()));
+                return Ok(SelectResult::InPlace);
+            }
             veloc_lir::InstView::UnaryReg(copy)
                 if copy.opcode == veloc_lir::UnaryRegOpcode::COPY =>
             {
@@ -34,18 +41,16 @@ impl TargetInstructionSelector for X86_64Selector {
                     .push(build_x86_copy_inst(ctx.mfunc, copy.dst, copy.src)?);
                 return Ok(SelectResult::InPlace);
             }
-            veloc_lir::InstView::FCmp(fcmp) if matches!(fcmp.cc, FloatCC::Eq | FloatCC::Ne) => {
+            veloc_lir::InstView::FCmp(fcmp)
+                if matches!(
+                    fcmp.cc,
+                    FloatCC::Eq | FloatCC::Ne | FloatCC::Lt | FloatCC::Le
+                ) =>
+            {
                 return self.lowering.select_fcmp(ctx, fcmp);
             }
             veloc_lir::InstView::Select(select) => {
-                let dst_ty = if select.dst.is_vreg() {
-                    ctx.mfunc.vreg_data(select.dst).ty
-                } else {
-                    panic!("select destination must be a virtual register before regalloc");
-                };
-                if dst_ty.is_float() {
-                    return self.lowering.select_select(ctx, select);
-                }
+                return self.lowering.select_select(ctx, select);
             }
             _ => {}
         }

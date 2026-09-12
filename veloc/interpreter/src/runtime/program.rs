@@ -167,6 +167,10 @@ impl Program {
         self.host_refs.get(host).copied()
     }
 
+    pub fn host(&self, host: HostFuncId) -> Option<&HostFunction> {
+        self.hosts.get(host)
+    }
+
     /// Get the stable reference assigned to a compiled bytecode function.
     pub fn func_ref(&self, module: ModuleId, func: FuncId) -> Option<FunctionRef> {
         self.modules

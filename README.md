@@ -22,7 +22,7 @@ cargo build --workspace --release
 Run the bundled CoreMark WebAssembly module with the interpreter:
 
 ```bash
-cargo run --release -p veloc-wasm -- \
+cargo run --release -p veloc-wasm --bin veloc-wasm -- \
   crates/veloc-wasm/tests/wasm/coremark.wasm \
   --strategy interpreter
 ```
@@ -30,7 +30,14 @@ cargo run --release -p veloc-wasm -- \
 Use the native x86-64 JIT instead:
 
 ```bash
-cargo run --release -p veloc-wasm -- path/to/module.wasm --strategy jit
+cargo run --release -p veloc-wasm --bin veloc-wasm -- crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit
+```
+
+On x86-64 Linux, run the full JIT CoreMark regression (checks the validation message and CRCs):
+
+```bash
+CARGO_INCREMENTAL=0 cargo test --release -p veloc-wasm --test jit \
+  coremark_validates_under_jit -- --ignored --nocapture
 ```
 
 The CLI accepts `.wasm` and `.wat` files, invokes `_start` by default, and supports `interpreter`, `jit`, and `auto` execution strategies.
@@ -39,22 +46,22 @@ The CLI accepts `.wasm` and `.wat` files, invokes `_start` by default, and suppo
 
 ```bash
 # Print Veloc IR without executing the module
-cargo run -p veloc-wasm -- path/to/module.wat --dump-ir
+cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wat --dump-ir
 
 # Write Veloc IR to a file
-cargo run -p veloc-wasm -- path/to/module.wasm \
+cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
   --output-ir module.veloc-mir
 
 # Print interpreter bytecode
-cargo run -p veloc-wasm -- path/to/module.wasm \
+cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
   --strategy interpreter --dump-bytecode
 
 # Print optimizer statistics and write a Chrome trace
-cargo run -p veloc-wasm -- path/to/module.wasm \
+cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
   -O 1 --print-stats --trace-file optimizer-trace.json
 ```
 
-Run `cargo run -p veloc-wasm -- --help` for all CLI options.
+Run `cargo run -p veloc-wasm --bin veloc-wasm -- --help` for all CLI options.
 
 ## How it works
 
@@ -123,6 +130,16 @@ cargo run --release -p veloc-spec -- \
 ```
 
 Replace `interp` with `jit` to exercise the native backend.
+
+To use the pinned testsuite submodule, for example the integer suite:
+
+```bash
+git submodule update --init crates/veloc-wasm/tests/testsuite
+CARGO_INCREMENTAL=0 cargo run -p veloc-spec -- \
+  crates/veloc-wasm/tests/testsuite/i32.wast --strategy jit --opt-level 1 --verbose
+```
+
+The runner reports skipped stack-exhaustion assertions separately. Passing CoreMark does not imply full WebAssembly conformance: the complete floating-point suites still require additional lowering, including min/max and saturating conversions.
 
 ## Documentation
 

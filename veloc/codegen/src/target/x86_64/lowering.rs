@@ -560,8 +560,14 @@ impl X86_64Lowering {
             };
 
         match fcmp.cc {
-            FloatCC::Eq => {
-                let is_eq = emit_setcc_i32(ctx, TargetInst::X86Sete);
+            FloatCC::Eq | FloatCC::Lt | FloatCC::Le => {
+                let predicate = match fcmp.cc {
+                    FloatCC::Eq => TargetInst::X86Sete,
+                    FloatCC::Lt => TargetInst::X86Setb,
+                    FloatCC::Le => TargetInst::X86Setbe,
+                    _ => unreachable!(),
+                };
+                let is_eq = emit_setcc_i32(ctx, predicate);
                 let ordered = emit_setcc_i32(ctx, TargetInst::X86Setnp);
                 ctx.selected.push(MachineInst::build_unary(
                     MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
@@ -590,7 +596,7 @@ impl X86_64Lowering {
             }
             other => {
                 panic!(
-                    "x86_64 special FCMP selector should only handle Eq/Ne, found {:?}",
+                    "x86_64 ordered/unordered FCMP selector received {:?}",
                     other
                 );
             }

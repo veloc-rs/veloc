@@ -270,6 +270,212 @@ impl Drop for Workspace {
     }
 }
 
+#[test]
+fn scalar_division_remainders_and_rotations_execute() {
+    let mut source = String::new();
+    let mut harness = String::from("#include <stdint.h>\n#include <assert.h>\n");
+    let mut checks = String::new();
+    for bits in [32, 64] {
+        for (op, signed, expr) in [
+            ("idiv-s", true, "a / b"),
+            ("idiv-u", false, "a / b"),
+            ("irem-s", true, "a % b"),
+            ("irem-u", false, "a % b"),
+            (
+                "irotl",
+                false,
+                "(a << (b % WIDTH)) | (a >> ((WIDTH - b % WIDTH) % WIDTH))",
+            ),
+            (
+                "irotr",
+                false,
+                "(a >> (b % WIDTH)) | (a << ((WIDTH - b % WIDTH) % WIDTH))",
+            ),
+        ] {
+            let name = format!("{}_{bits}", op.replace('-', "_"));
+            let ty = format!("{}int{bits}_t", if signed { "" } else { "u" });
+            source += &format!(
+                "\nexport function {name}(i{bits}, i{bits}) -> i{bits}\nblock0(v0: i{bits}, v1: i{bits}):\n  v2: i{bits} = {op} v0, v1\n  return v2\n"
+            );
+            harness += &format!("extern {ty} {name}({ty}, {ty});\n");
+            checks += &format!(
+                "{{ {ty} a=({ty})state, b=({ty})((state>>17)%123 + 1); assert({name}(a,b)==({})); }}\n",
+                expr.replace("WIDTH", &bits.to_string())
+            );
+        }
+    }
+    harness += &format!(
+        "int main(void) {{ uint64_t state=123; for(int i=0;i<1000;i++) {{ state=state*6364136223846793005ULL+1; {checks} }} }}"
+    );
+    run(&source, &harness);
+}
+
+#[test]
+fn scalar_float_conversions_and_sign_bits_execute() {
+    let mut source = String::new();
+    let mut harness = String::from(
+        "#include <stdint.h>\n#include <assert.h>\n#include <string.h>\n#include <stdio.h>\n",
+    );
+    let mut checks = String::new();
+    for bits in [32, 64] {
+        let cfloat = if bits == 32 { "float" } else { "double" };
+        for integer in [32, 64] {
+            for (sign, prefix) in [("s", ""), ("u", "u")] {
+                let ctype = format!("{prefix}int{integer}_t");
+                let name = format!("convert_{sign}_{integer}_{bits}");
+                source += &format!(
+                    "\nexport function {name}(i{integer}) -> f{bits}\nblock0(v0: i{integer}):\n  v1: f{bits} = int-to-float-{sign} v0\n  return v1\n"
+                );
+                harness += &format!("extern {cfloat} {name}({ctype});\n");
+                checks += &format!("assert({name}(({ctype})state)==({cfloat})({ctype})state);\n");
+                let name = format!("back_{sign}_{integer}_{bits}");
+                source += &format!(
+                    "\nexport function {name}(f{bits}) -> i{integer}\nblock0(v0: f{bits}):\n  v1: i{integer} = float-to-int-{sign} v0\n  return v1\n"
+                );
+                harness += &format!("extern {ctype} {name}({cfloat});\n");
+                // Keep rounding away from overflow while covering both halves
+                // of the unsigned range and positive/negative signed values.
+                let discarded = if integer == 64 {
+                    "0xffffffffffULL"
+                } else {
+                    "0xffff"
+                };
+                checks += &format!(
+                    "{{ {ctype} n=({ctype})state; n &= ~(({ctype}){discarded}); {cfloat} x=({cfloat})n; {ctype} got={name}(x); if(got!=({ctype})x) {{ fprintf(stderr, \"{name}: x=%a got=%llx expected=%llx\\n\", (double)x, (unsigned long long)got, (unsigned long long)({ctype})x); return 1; }} }}\n"
+                );
+            }
+        }
+        for (op, mask) in [
+            (
+                "fneg",
+                if bits == 32 {
+                    "0x80000000ULL"
+                } else {
+                    "0x8000000000000000ULL"
+                },
+            ),
+            (
+                "fabs",
+                if bits == 32 {
+                    "0x7fffffffULL"
+                } else {
+                    "0x7fffffffffffffffULL"
+                },
+            ),
+        ] {
+            let name = format!("bits_{op}_{bits}");
+            source += &format!(
+                "\nexport function {name}(i{bits}) -> i{bits}\nblock0(v0: i{bits}):\n  v1: f{bits} = reinterpret v0\n  v2: f{bits} = {op} v1\n  v3: i{bits} = reinterpret v2\n  return v3\n"
+            );
+            harness += &format!("extern uint{bits}_t {name}(uint{bits}_t);\n");
+            checks += &format!(
+                "assert({name}((uint{bits}_t)state)==(((uint{bits}_t)state) {} {mask}));\n",
+                if op == "fabs" { "&" } else { "^" }
+            );
+        }
+    }
+    harness += &format!(
+        "int main(void) {{ uint64_t state=0; for(int i=0;i<10000;i++) {{ {checks} state=state*6364136223846793005ULL+1; }} }}"
+    );
+    run(&source, &harness);
+}
+
+#[test]
+fn floating_comparisons_and_shared_select_inputs_execute() {
+    let mut source = String::new();
+    let mut harness = String::from("#include <stdint.h>\n#include <assert.h>\n#include <math.h>\n");
+    let mut checks = String::new();
+    for bits in [32, 64] {
+        let ctype = if bits == 32 { "float" } else { "double" };
+        for (cc, op) in [
+            ("eq", "=="),
+            ("ne", "!="),
+            ("lt", "<"),
+            ("le", "<="),
+            ("gt", ">"),
+            ("ge", ">="),
+        ] {
+            let name = format!("cmp_{cc}_{bits}");
+            source += &format!(
+                "\nexport function {name}(f{bits}, f{bits}) -> i32\nblock0(v0: f{bits}, v1: f{bits}):\n  v2: bool = fcmp {cc} v0, v1\n  v3: i32 = extendu v2\n  return v3\n"
+            );
+            harness += &format!("extern int {name}({ctype}, {ctype});\n");
+            checks += &format!("assert({name}(a,b) == (a {op} b));\n");
+        }
+        source += &format!(
+            "\nexport function select_{bits}(i{bits}, i{bits}, i{bits}) -> i{bits}\nblock0(v0: i{bits}, v1: i{bits}, v2: i{bits}):\n  v3: bool = icmp gtu v0, v1\n  v4: i{bits} = select v3, v1, v2\n  v5: i{bits} = iadd v4, v1\n  v6: i{bits} = iadd v5, v2\n  v7: i{bits} = extendu v3\n  v8: i{bits} = iadd v6, v7\n  return v8\n"
+        );
+        harness += &format!(
+            "extern uint{bits}_t select_{bits}(uint{bits}_t,uint{bits}_t,uint{bits}_t);\n"
+        );
+    }
+    harness += &format!(
+        "int main(void) {{ double values[]={{-INFINITY,-3.5,-0.0,0.0,1.25,INFINITY,NAN}}; for(int i=0;i<7;i++) for(int j=0;j<7;j++) {{ double a=values[i], b=values[j]; {checks} }} for(uint64_t i=0;i<100;i++) {{ assert(select_32(i,42,9)==(i>42?42:9)+42+9+(i>42)); assert(select_64(i,42,9)==(i>42?42:9)+42+9+(i>42)); }} }}"
+    );
+    run(&source, &harness);
+}
+
+#[test]
+fn loop_parameters_preserve_parallel_assignment() {
+    run(
+        r#"
+export function rotate(i64, i64, i64, i64) -> i64
+block0(v0: i64, v1: i64, v2: i64, v3: i64):
+  jump block1(v0, v1, v2, v3)
+block1(v4: i64, v5: i64, v6: i64, v7: i64):
+  v8: i64 = iconst 0
+  v9: bool = icmp eq v7, v8
+  br v9, block2(), block3()
+block3():
+  v10: i64 = iconst 1
+  v11: i64 = isub v7, v10
+  jump block1(v5, v6, v4, v11)
+block2():
+  v12: i64 = iconst 100
+  v13: i64 = imul v4, v12
+  v14: i64 = iconst 10
+  v15: i64 = imul v5, v14
+  v16: i64 = iadd v13, v15
+  v17: i64 = iadd v16, v6
+  return v17
+
+export function chain(i64, i64, i64, i64) -> i64
+block0(v0: i64, v1: i64, v2: i64, v3: i64):
+  jump block1(v0, v1, v2, v3)
+block1(v4: i64, v5: i64, v6: i64, v7: i64):
+  v8: i64 = iconst 0
+  v9: bool = icmp eq v7, v8
+  br v9, block2(), block3()
+block3():
+  v10: i64 = iconst 1
+  v11: i64 = isub v7, v10
+  v12: i64 = iadd v6, v10
+  jump block1(v5, v6, v12, v11)
+block2():
+  v13: i64 = iconst 100
+  v14: i64 = imul v4, v13
+  v15: i64 = iconst 10
+  v16: i64 = imul v5, v15
+  v17: i64 = iadd v14, v16
+  v18: i64 = iadd v17, v6
+  return v18
+"#,
+        r#"
+#include <stdint.h>
+#include <assert.h>
+extern uint64_t rotate(uint64_t,uint64_t,uint64_t,uint64_t);
+extern uint64_t chain(uint64_t,uint64_t,uint64_t,uint64_t);
+int main(void) {
+  const uint64_t rotations[]={123,231,312};
+  for(uint64_t n=0;n<100;n++) {
+    assert(rotate(1,2,3,n)==rotations[n%3]);
+    assert(chain(1,2,3,n)==(n+1)*100+(n+2)*10+n+3);
+  }
+}
+"#,
+    );
+}
+
 fn run(source: &str, harness: &str) {
     let module = ModuleParser::new().parse(source).unwrap();
     module.validate().unwrap();

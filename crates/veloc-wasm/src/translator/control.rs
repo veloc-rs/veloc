@@ -43,13 +43,8 @@ impl<'a> WasmTranslator<'a> {
                         args.push(self.pop_typed(ty));
                     }
                     args.reverse();
-                } else {
-                    for &ty in &params_ty {
-                        let zero = self.zero_const(ty);
-                        args.push(zero);
-                    }
+                    self.builder.ins().jump(header_block, &args);
                 }
-                self.builder.ins().jump(header_block, &args);
                 let reachable_at_start = !self.terminated;
                 self.builder.switch_to_block(header_block);
                 if self.terminated {
@@ -73,11 +68,7 @@ impl<'a> WasmTranslator<'a> {
                 });
             }
             Operator::If { blockty } => {
-                let cond = if !self.terminated {
-                    self.pop_cond()
-                } else {
-                    self.builder.ins().bconst(false)
-                };
+                let cond = (!self.terminated).then(|| self.pop_cond());
                 let (params_ty, results_ty) = self.block_params_results(blockty);
                 let then_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
@@ -96,15 +87,10 @@ impl<'a> WasmTranslator<'a> {
                         args.push(self.pop_typed(ty));
                     }
                     args.reverse();
-                } else {
-                    for &ty in &params_ty {
-                        let zero = self.zero_const(ty);
-                        args.push(zero);
-                    }
+                    self.builder
+                        .ins()
+                        .br(cond.unwrap(), then_block, &args, else_block, &args);
                 }
-                self.builder
-                    .ins()
-                    .br(cond, then_block, &args, else_block, &args);
                 self.builder.seal_block(then_block);
                 self.builder.seal_block(else_block);
                 self.builder.switch_to_block(then_block);

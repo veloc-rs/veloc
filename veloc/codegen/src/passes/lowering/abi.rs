@@ -278,8 +278,17 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                             for inst in pre {
                                 cursor.emit_before(inst);
                             }
-                            cursor.emit_existing_before(inst_id);
-                            cursor.remove_current();
+                            let regs = ret_plan
+                                .returns
+                                .iter()
+                                .flat_map(|assignment| {
+                                    assignment.parts.iter().filter_map(|part| match part.loc {
+                                        AbiLocation::Reg(reg) => Some(reg),
+                                        _ => None,
+                                    })
+                                })
+                                .collect();
+                            cursor.replace_current(MachineInst::build_ret(regs));
                         }
                         _ => cursor.keep_current(),
                     }

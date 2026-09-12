@@ -38,20 +38,31 @@ impl HostFunction {
         &self.signature
     }
 
+    /// Invoke the callback using an in-place argument/result buffer.
+    pub fn invoke(&self, values: &mut [InterpreterValue]) -> crate::Result<()> {
+        let slots = self
+            .signature
+            .params()
+            .len()
+            .max(self.signature.returns().len())
+            .max(1);
+        if values.len() < slots {
+            return Err(crate::Error::InvalidHostCall);
+        }
+        (self.callback)(values);
+        Ok(())
+    }
+
     pub(crate) fn call(
         &self,
         values: &mut [InterpreterValue],
         args: usize,
         results: usize,
     ) -> crate::Result<()> {
-        if args != self.signature.params().len()
-            || results != self.signature.returns().len()
-            || values.len() < args.max(results).max(1)
-        {
+        if args != self.signature.params().len() || results != self.signature.returns().len() {
             return Err(crate::Error::InvalidHostCall);
         }
-        (self.callback)(values);
-        Ok(())
+        self.invoke(values)
     }
 }
 

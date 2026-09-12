@@ -22,7 +22,7 @@ cargo build --workspace --release
 使用解释器运行仓库内置的 CoreMark WebAssembly 模块：
 
 ```bash
-cargo run --release -p veloc-wasm -- \
+cargo run --release -p veloc-wasm --bin veloc-wasm -- \
   crates/veloc-wasm/tests/wasm/coremark.wasm \
   --strategy interpreter
 ```
@@ -30,7 +30,14 @@ cargo run --release -p veloc-wasm -- \
 也可以使用 x86-64 原生 JIT：
 
 ```bash
-cargo run --release -p veloc-wasm -- path/to/module.wasm --strategy jit
+cargo run --release -p veloc-wasm --bin veloc-wasm -- crates/veloc-wasm/tests/wasm/coremark.wasm --strategy jit
+```
+
+在 x86-64 Linux 上运行完整的 JIT CoreMark 回归测试（检查验证信息和 CRC）：
+
+```bash
+CARGO_INCREMENTAL=0 cargo test --release -p veloc-wasm --test jit \
+  coremark_validates_under_jit -- --ignored --nocapture
 ```
 
 CLI 接受 `.wasm` 和 `.wat` 文件，默认调用 `_start`，并提供 `interpreter`、`jit` 和 `auto` 三种执行策略。
@@ -39,22 +46,22 @@ CLI 接受 `.wasm` 和 `.wat` 文件，默认调用 `_start`，并提供 `interp
 
 ```bash
 # 打印 Veloc IR，不执行模块
-cargo run -p veloc-wasm -- path/to/module.wat --dump-ir
+cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wat --dump-ir
 
 # 将 Veloc IR 写入文件
-cargo run -p veloc-wasm -- path/to/module.wasm \
+cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
   --output-ir module.veloc-mir
 
 # 打印解释器字节码
-cargo run -p veloc-wasm -- path/to/module.wasm \
+cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
   --strategy interpreter --dump-bytecode
 
 # 打印优化统计信息并生成 Chrome Trace
-cargo run -p veloc-wasm -- path/to/module.wasm \
+cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \
   -O 1 --print-stats --trace-file optimizer-trace.json
 ```
 
-运行 `cargo run -p veloc-wasm -- --help` 可以查看完整的 CLI 参数。
+运行 `cargo run -p veloc-wasm --bin veloc-wasm -- --help` 可以查看完整的 CLI 参数。
 
 ## 工作原理
 
@@ -123,6 +130,16 @@ cargo run --release -p veloc-spec -- \
 ```
 
 将 `interp` 替换为 `jit`，即可使用同一套测试验证原生后端。
+
+也可以使用仓库固定版本的 testsuite 子模块，例如运行整数测试：
+
+```bash
+git submodule update --init crates/veloc-wasm/tests/testsuite
+CARGO_INCREMENTAL=0 cargo run -p veloc-spec -- \
+  crates/veloc-wasm/tests/testsuite/i32.wast --strategy jit --opt-level 1 --verbose
+```
+
+运行器会单独报告跳过的栈耗尽断言。CoreMark 通过不代表完整支持 WebAssembly：完整浮点套件仍需要补充 min/max、饱和转换等 lowering。
 
 ## 文档
 

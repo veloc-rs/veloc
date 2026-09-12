@@ -65,7 +65,7 @@
 
 ;; 常量
 (select-rule
-    (match (schema Constant G_CONSTANT (dst (GPR32 $unused)) (imm $imm) @n))
+    (match (schema Constant G_CONSTANT (dst (GPR32Like $unused)) (imm $imm) @n))
     (emit (X86Mov32Imm $imm))
     (covers (@n))
     (cost 1))
@@ -911,13 +911,9 @@ do
 end
 
 for (cmp, src_ty, cc, setcc) in
-  X86Ucomiss, FPR32, B, X86Setb
   X86Ucomiss, FPR32, A, X86Seta
-  X86Ucomiss, FPR32, BE, X86Setbe
   X86Ucomiss, FPR32, AE, X86Setae
-  X86Ucomisd, FPR64, B, X86Setb
   X86Ucomisd, FPR64, A, X86Seta
-  X86Ucomisd, FPR64, BE, X86Setbe
   X86Ucomisd, FPR64, AE, X86Setae
 do
 (select-rule
@@ -938,26 +934,7 @@ do
     (cost 1))
 end
 
-for (test, movimm, movop, xorop, subop, andop, ty) in
-  X86Test32, X86Mov32Imm, X86Mov32, X86Xor32, X86Sub32, X86And32, BOOL
-  X86Test32, X86Mov32Imm, X86Mov32, X86Xor32, X86Sub32, X86And32, GPR32Like
-  X86Test64, X86Mov64Imm32, X86Mov64, X86Xor64, X86Sub64, X86And64, GPR64Like
-do
-(select-rule
-    (match (schema Select G_SELECT (dst ({{ty}} $dst)) (cond (BOOL $cond)) (v1 ({{ty}} $v1)) (v2 ({{ty}} $v2)) @n))
-    (emit (seq
-        ({{test}} $cond $cond)
-        (X86Setne $cond)
-        (X86Movzx8to32 $cond $cond)
-        ({{movop}} $dst $v2)
-        ({{xorop}} $dst $v1)
-        ({{movimm}} $v1 0)
-        ({{subop}} $v1 $cond)
-        ({{andop}} $dst $v1)
-        ({{xorop}} $dst $v2)))
-    (covers (@n))
-    (cost 1))
-end
+
 
 ;; 
 (select-rule
@@ -985,45 +962,45 @@ end
 ;; 指令融合路径：有符号/无符号的 div 与 rem 使用同一条底层除法序列。
 (select-rule
     (match (schema BinaryReg G_SDIV (dst $dst) (lhs $lhs) (rhs (GPR64 $rhs)) @n))
-    (emit (seq (X86Cqo) (X86IDiv64 $rhs)))
+    (emit (seq (X86Mov64 (reg RAX) $lhs) (X86Cqo) (X86IDiv64 $rhs) (X86Mov64 $dst (reg RAX))))
     (covers (@n))
     (cost 1))
 (select-rule
     (match (schema BinaryReg G_SDIV (dst $dst) (lhs $lhs) (rhs (GPR32 $rhs)) @n))
-    (emit (seq (X86Cdq) (X86IDiv32 $rhs)))
+    (emit (seq (X86Mov32 (reg RAX) $lhs) (X86Cdq) (X86IDiv32 $rhs) (X86Mov32 $dst (reg RAX))))
     (covers (@n))
     (cost 1))
 
 (select-rule
     (match (schema BinaryReg G_SREM (dst $dst) (lhs $lhs) (rhs (GPR64 $rhs)) @n))
-    (emit (seq (X86Cqo) (X86IDiv64 $rhs)))
+    (emit (seq (X86Mov64 (reg RAX) $lhs) (X86Cqo) (X86IDiv64 $rhs) (X86Mov64 $dst (reg RDX))))
     (covers (@n))
     (cost 1))
 (select-rule
     (match (schema BinaryReg G_SREM (dst $dst) (lhs $lhs) (rhs (GPR32 $rhs)) @n))
-    (emit (seq (X86Cdq) (X86IDiv32 $rhs)))
+    (emit (seq (X86Mov32 (reg RAX) $lhs) (X86Cdq) (X86IDiv32 $rhs) (X86Mov32 $dst (reg RDX))))
     (covers (@n))
     (cost 1))
 
 (select-rule
     (match (schema BinaryReg G_UDIV (dst $dst) (lhs $lhs) (rhs (GPR64 $rhs)) @n))
-    (emit (seq (X86Xor64 (reg RDX) (reg RDX)) (X86Div64 $rhs)))
+    (emit (seq (X86Mov64 (reg RAX) $lhs) (X86Xor64 (reg RDX) (reg RDX)) (X86Div64 $rhs) (X86Mov64 $dst (reg RAX))))
     (covers (@n))
     (cost 1))
 (select-rule
     (match (schema BinaryReg G_UDIV (dst $dst) (lhs $lhs) (rhs (GPR32 $rhs)) @n))
-    (emit (seq (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs)))
+    (emit (seq (X86Mov32 (reg RAX) $lhs) (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs) (X86Mov32 $dst (reg RAX))))
     (covers (@n))
     (cost 1))
 
 (select-rule
     (match (schema BinaryReg G_UREM (dst $dst) (lhs $lhs) (rhs (GPR64 $rhs)) @n))
-    (emit (seq (X86Xor64 (reg RDX) (reg RDX)) (X86Div64 $rhs)))
+    (emit (seq (X86Mov64 (reg RAX) $lhs) (X86Xor64 (reg RDX) (reg RDX)) (X86Div64 $rhs) (X86Mov64 $dst (reg RDX))))
     (covers (@n))
     (cost 1))
 (select-rule
     (match (schema BinaryReg G_UREM (dst $dst) (lhs $lhs) (rhs (GPR32 $rhs)) @n))
-    (emit (seq (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs)))
+    (emit (seq (X86Mov32 (reg RAX) $lhs) (X86Xor32 (reg RDX) (reg RDX)) (X86Div32 $rhs) (X86Mov32 $dst (reg RDX))))
     (covers (@n))
     (cost 1))
 

@@ -16,8 +16,8 @@ pub struct BlockParamLoweringPass;
 struct ParallelCopyScratch {
     pending: Vec<Option<(Reg, Reg)>>,
     out: Vec<MachineInst>,
-    dest_counts: HashMap<Reg, usize>,
-    source_users: HashMap<Reg, SmallVec<[usize; 4]>>,
+    source_counts: HashMap<Reg, usize>,
+    destinations: HashMap<Reg, usize>,
     ready: Vec<usize>,
 }
 
@@ -26,8 +26,8 @@ impl ParallelCopyScratch {
         Self {
             pending: Vec::new(),
             out: Vec::new(),
-            dest_counts: HashMap::new(),
-            source_users: HashMap::new(),
+            source_counts: HashMap::new(),
+            destinations: HashMap::new(),
             ready: Vec::new(),
         }
     }
@@ -35,8 +35,8 @@ impl ParallelCopyScratch {
     fn clear(&mut self) {
         self.pending.clear();
         self.out.clear();
-        self.dest_counts.clear();
-        self.source_users.clear();
+        self.source_counts.clear();
+        self.destinations.clear();
         self.ready.clear();
     }
 }
@@ -225,90 +225,71 @@ impl BlockParamLoweringPass {
         scratch.clear();
         scratch.pending.reserve(dsts.len());
         scratch.out.reserve(dsts.len());
-        scratch.dest_counts.reserve(dsts.len());
-        scratch.source_users.reserve(dsts.len());
+        scratch.source_counts.reserve(dsts.len());
+        scratch.destinations.reserve(dsts.len());
         scratch.ready.reserve(dsts.len());
 
         scratch
             .pending
             .extend(dsts.iter().copied().zip(srcs.iter().copied()).map(Some));
 
-        for (index, copy) in scratch.pending.iter().enumerate() {
-            let (dst, src) = copy.as_ref().copied().expect("pending copy must exist");
-            *scratch.dest_counts.entry(dst).or_insert(0) += 1;
-            scratch.source_users.entry(src).or_default().push(index);
+        // A destination can be overwritten only after every pending read of
+        // its old value has been emitted. Testing the source instead reverses
+        // dependency chains and corrupts loop-carried block arguments.
+        for (index, copy) in scratch.pending.iter_mut().enumerate() {
+            let (dst, src) = copy.unwrap();
+            if dst == src {
+                *copy = None;
+                continue;
+            }
+            *scratch.source_counts.entry(src).or_insert(0) += 1;
+            assert!(scratch.destinations.insert(dst, index).is_none());
         }
-
         for (index, copy) in scratch.pending.iter().enumerate() {
-            let (dst, src) = copy.as_ref().copied().expect("pending copy must exist");
-            if dst == src || scratch.dest_counts.get(&src).copied().unwrap_or(0) == 0 {
-                scratch.ready.push(index);
+            if let Some((dst, _)) = copy {
+                if !scratch.source_counts.contains_key(dst) {
+                    scratch.ready.push(index);
+                }
             }
         }
-
-        let mut remaining = scratch.pending.len();
-
+        let mut remaining = scratch.destinations.len();
         while remaining > 0 {
             if let Some(index) = scratch.ready.pop() {
                 let Some((dst, src)) = scratch.pending[index].take() else {
                     continue;
                 };
-
                 remaining -= 1;
-                if dst != src {
-                    scratch
-                        .out
-                        .push(MachineInst::build_copy(Writable(dst), src));
-                }
-
-                let became_free = if let Some(count) = scratch.dest_counts.get_mut(&dst) {
-                    *count -= 1;
-                    *count == 0
-                } else {
-                    false
-                };
-
-                if became_free {
-                    if let Some(users) = scratch.source_users.remove(&dst) {
-                        for user_index in users {
-                            if scratch.pending[user_index].is_some() {
-                                scratch.ready.push(user_index);
-                            }
+                scratch
+                    .out
+                    .push(MachineInst::build_copy(Writable(dst), src));
+                let count = scratch.source_counts.get_mut(&src).unwrap();
+                *count -= 1;
+                if *count == 0 {
+                    if let Some(&writer) = scratch.destinations.get(&src) {
+                        if scratch.pending[writer].is_some() {
+                            scratch.ready.push(writer);
                         }
                     }
                 }
-
                 continue;
             }
 
-            let cycle_index = scratch
-                .pending
-                .iter()
-                .position(|copy| copy.is_some())
-                .expect("pending copy list should contain an unfinished entry");
-            let cycle_src = scratch.pending[cycle_index]
-                .as_ref()
-                .expect("pending copy must exist")
-                .1;
-            let temp = mfunc.alloc_vreg(Self::copy_temp_type(mfunc, cycle_src));
-            let save = MachineInst::build_copy(Writable(temp), cycle_src);
-            scratch.out.push(save);
-
-            if let Some(users) = scratch.source_users.remove(&cycle_src) {
-                for user_index in users {
-                    let Some((_, src)) = scratch.pending[user_index].as_mut() else {
-                        continue;
-                    };
-
+            // Break a cycle by saving the destination's OLD value, then redirect
+            // all reads of it. The selected destination is now safe to overwrite.
+            let index = scratch.pending.iter().position(Option::is_some).unwrap();
+            let dst = scratch.pending[index].unwrap().0;
+            let temp = mfunc.alloc_vreg(Self::copy_temp_type(mfunc, dst));
+            scratch
+                .out
+                .push(MachineInst::build_copy(Writable(temp), dst));
+            let count = scratch.source_counts.remove(&dst).unwrap();
+            scratch.source_counts.insert(temp, count);
+            for (_, src) in scratch.pending.iter_mut().flatten() {
+                if *src == dst {
                     *src = temp;
-                    scratch
-                        .source_users
-                        .entry(temp)
-                        .or_default()
-                        .push(user_index);
-                    scratch.ready.push(user_index);
                 }
             }
+            scratch.ready.push(index);
         }
 
         &scratch.out
@@ -554,20 +535,20 @@ mod tests {
             panic!("expected UnaryReg");
         };
         assert!(save.dst.is_vreg());
-        assert_eq!(save.src, b);
+        assert_eq!(save.src, a);
         let veloc_lir::InstView::UnaryReg(copy0) =
             mfunc.dfg[mfunc.blocks[0].insts[1]].generic_view().unwrap()
         else {
             panic!("expected UnaryReg");
         };
         assert_eq!(copy0.dst, a);
-        assert_eq!(copy0.src, save.dst);
+        assert_eq!(copy0.src, b);
         let veloc_lir::InstView::UnaryReg(copy1) =
             mfunc.dfg[mfunc.blocks[0].insts[2]].generic_view().unwrap()
         else {
             panic!("expected UnaryReg");
         };
         assert_eq!(copy1.dst, b);
-        assert_eq!(copy1.src, a);
+        assert_eq!(copy1.src, save.dst);
     }
 }
