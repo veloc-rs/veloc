@@ -216,7 +216,6 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
             params,
             projection: crate::model::Projection::Packed(packing),
             signature_source: None,
-            control: None,
             text: Some(alt.text.clone()),
             traits: Vec::new(),
             memory: crate::model::builtins::Effect::Known(Vec::new()),

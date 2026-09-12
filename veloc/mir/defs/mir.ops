@@ -31,11 +31,10 @@ fn WriteAccess(ptr: Value(PTR), offset: i64, value: Value, flags: MemFlags) -> M
 // the resulting callable signature describes the remaining inputs and answer.
 // Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
 op ClosureNew(@func_id: FuncId, move captures: values, @cleanup: FuncId) -> Callable {
-    meta: OpInfo { memory: Unknown },
+    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "closure-new",
     storage: ClosureNew { func_id, captures, cleanup },
     text: "{func_id}({captures}) : {function(func_id)}, {cleanup}",
-    control: owned(func_id, captures, cleanup),
 
     verify {
         require(result_type(0).is_owned(), "callable ownership kind mismatch");
@@ -47,11 +46,10 @@ op ClosureNew(@func_id: FuncId, move captures: values, @cleanup: FuncId) -> Call
 }
 
 op ClosureLocal(@func_id: FuncId, captures: values) -> Callable {
-    meta: OpInfo { memory: Unknown },
+    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "closure-local",
     storage: Closure { func_id, captures },
     text: "{func_id}({captures}) : {function(func_id)}",
-    control: local(func_id, captures),
 
     verify {
         require(result_type(0).is_local(), "callable ownership kind mismatch");
@@ -62,11 +60,10 @@ op ClosureLocal(@func_id: FuncId, captures: values) -> Callable {
 }
 
 op ClosureShared(@func_id: FuncId, captures: values) -> Callable {
-    meta: OpInfo { memory: Unknown },
+    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "closure-shared",
     storage: Closure { func_id, captures },
     text: "{func_id}({captures}) : {function(func_id)}",
-    control: shared(func_id, captures),
 
     verify {
         require(result_type(0).is_shared(), "callable ownership kind mismatch");
@@ -77,11 +74,10 @@ op ClosureShared(@func_id: FuncId, captures: values) -> Callable {
 }
 
 op TailCall(@func_id: FuncId, move args: values) -> () {
-    meta: OpInfo { memory: Unknown },
+    meta: OpInfo { traits: [TERMINATOR, MAY_TRAP], memory: Unknown },
     mnemonic: "tail-call",
     storage: TailCall { func_id, args },
     text: "{func_id}({args}) : {function(func_id)}",
-    control: tail_call(func_id, args),
 
     verify {
         require(matches(args, Module.params(Module.signature(func_id)?)?), "tail-call parameter type mismatch");
@@ -90,11 +86,10 @@ op TailCall(@func_id: FuncId, move args: values) -> () {
 }
 
 op TailCallValue(move callee: Callable, move args: values) -> () {
-    meta: OpInfo { memory: Unknown },
+    meta: OpInfo { traits: [TERMINATOR, MAY_TRAP], memory: Unknown },
     mnemonic: "tail-call-value",
     storage: CallValue { callee, args },
     text: "{callee}({args})",
-    control: tail_call_value(callee, args),
 
     verify {
         require(matches(args, Module.params(Types.signature(type(callee))?)?), "tail-call-value parameter type mismatch");
@@ -103,19 +98,17 @@ op TailCallValue(move callee: Callable, move args: values) -> () {
 }
 
 op CallValue(move callee: Callable, move args: values) -> signature {
-    meta: OpInfo { memory: Unknown },
+    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "call-value",
     storage: CallValue { callee, args },
     signature: callable(callee),
     text: "{callee}({args})",
-    control: call(callee, args),
 }
 
 op ClosureDrop(move callee: Callable) -> () {
-    meta: OpInfo { memory: Unknown },
+    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
     mnemonic: "closure-drop",
     storage: Unary { arg: callee },
-    control: drop(callee),
 
     verify {
         require(type(callee).is_owned(), "only an owned one-shot callable can be dropped");

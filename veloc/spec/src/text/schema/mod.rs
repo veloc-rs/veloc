@@ -329,7 +329,6 @@ mod tests {
                 .collect(),
             projection: crate::model::Projection::Packed(BTreeMap::new()),
             signature_source: None,
-            control: None,
             text,
             traits: vec![],
             memory: crate::model::builtins::Effect::Known(Vec::new()),

@@ -2,7 +2,6 @@
 pub(crate) mod builtins;
 pub(crate) mod comparisons;
 pub(crate) mod constraints;
-pub(crate) mod control;
 pub(crate) mod data;
 pub(crate) mod expr;
 pub(crate) mod interfaces;
@@ -125,7 +124,6 @@ pub(crate) struct Op {
     pub params: Vec<Param>,
     pub projection: Projection,
     pub signature_source: Option<SignatureSource>,
-    pub control: Option<crate::model::control::Control>,
     pub text: Option<Node>,
     pub traits: Vec<String>,
     pub memory: crate::model::builtins::Effect,

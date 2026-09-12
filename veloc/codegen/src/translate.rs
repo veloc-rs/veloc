@@ -116,10 +116,6 @@ impl<'a> IRTranslator<'a> {
                 .values()
                 .iter()
                 .any(|(_, value)| value.ty.is_callable())
-                || func
-                    .dfg()
-                    .instructions()
-                    .any(|(_, view)| view.opcode().has_control())
                 || self
                     .module
                     .get_signature(func.signature)
@@ -282,6 +278,9 @@ impl<'a> IRTranslator<'a> {
         }
 
         match inst_data {
+            InstView::TailCall { .. } => Err(Error::translate(
+                "tail calls require tail-call lowering before native code generation",
+            )),
             InstView::Alloca { .. } => {
                 let slot = ctx.slots[&inst_id];
                 Ok(MachineInst::build_stack_addr(defs[0].as_writable().unwrap(), slot).into())

@@ -141,9 +141,6 @@ fn generate(plan: &Plan) -> Generated {
         .unwrap();
     }
     ops.push_str("            _ => None,\n        }\n    }\n}\n");
-    ops.push_str(&classification(defs, "has_control", |op| {
-        op.control.is_some()
-    }));
     ops.push_str(&classification(defs, "has_signature", |op| {
         op.signature_source.is_some()
     }));

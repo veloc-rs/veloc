@@ -1264,12 +1264,64 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn lower_callable(&self, inst: Inst, idata: &InstView<'_>) -> Option<ControlSite> {
+        let regs = |values: &[Value]| {
+            values
+                .iter()
+                .map(|v| self.mapper.reg(*v))
+                .collect::<Vec<_>>()
+        };
+        Some(match idata {
+            InstView::ClosureNew {
+                func_id,
+                captures,
+                cleanup,
+            } => self.closure_site(inst, *func_id, captures, Some(*cleanup)),
+            InstView::Closure {
+                opcode: IrOpcode::ClosureLocal | IrOpcode::ClosureShared,
+                func_id,
+                captures,
+            } => self.closure_site(inst, *func_id, captures, None),
+            InstView::TailCall { func_id, args } => ControlSite::TailCall {
+                function: *func_id,
+                args: regs(args),
+            },
+            InstView::CallValue {
+                opcode: IrOpcode::TailCallValue,
+                callee,
+                args,
+            } => ControlSite::TailCallValue {
+                callee: self.mapper.reg(*callee),
+                ty: self.func.dfg().value_type(*callee),
+                args: regs(args),
+            },
+            InstView::CallValue {
+                opcode: IrOpcode::CallValue,
+                callee,
+                args,
+            } => ControlSite::Call {
+                callee: self.mapper.reg(*callee),
+                ty: self.func.dfg().value_type(*callee),
+                args: regs(args),
+                results: regs(self.func.dfg().inst_results(inst)),
+            },
+            InstView::Unary {
+                opcode: IrOpcode::ClosureDrop,
+                arg,
+            } => ControlSite::Drop {
+                callee: self.mapper.reg(*arg),
+            },
+            _ => return None,
+        })
+    }
+
     fn compile_inst(&mut self, inst: Inst) {
         let idata = &self.func.dfg().inst(inst);
+        let site = self.lower_callable(inst, idata);
 
-        if !self.callable_values.is_empty()
-            && (idata.opcode().has_control() || idata.opcode().has_signature())
-        {
+        // Callable runtime operations and ordinary calls keep the same live roots.
+        // This is an execution requirement, independent of MAY_TRAP metadata.
+        if !self.callable_values.is_empty() && (site.is_some() || idata.opcode().has_signature()) {
             let pc = self.liveness.inst_pcs[inst];
             let roots = self
                 .callable_values
@@ -1284,55 +1336,7 @@ impl<'a> Compiler<'a> {
                 .collect();
             self.roots.insert(self.code.len(), roots);
         }
-        if idata.opcode().has_control() {
-            let regs = |values: &[Value]| {
-                values
-                    .iter()
-                    .map(|v| self.mapper.reg(*v))
-                    .collect::<Vec<_>>()
-            };
-            let site = match idata {
-                InstView::ClosureNew {
-                    func_id,
-                    captures,
-                    cleanup,
-                } => self.closure_site(inst, *func_id, captures, Some(*cleanup)),
-                InstView::Closure {
-                    opcode: IrOpcode::ClosureLocal | IrOpcode::ClosureShared,
-                    func_id,
-                    captures,
-                } => self.closure_site(inst, *func_id, captures, None),
-                InstView::TailCall { func_id, args } => ControlSite::TailCall {
-                    function: *func_id,
-                    args: regs(args),
-                },
-                InstView::CallValue {
-                    opcode: IrOpcode::TailCallValue,
-                    callee,
-                    args,
-                } => ControlSite::TailCallValue {
-                    callee: self.mapper.reg(*callee),
-                    ty: self.func.dfg().value_type(*callee),
-                    args: regs(args),
-                },
-                InstView::CallValue {
-                    opcode: IrOpcode::CallValue,
-                    callee,
-                    args,
-                } => ControlSite::Call {
-                    callee: self.mapper.reg(*callee),
-                    ty: self.func.dfg().value_type(*callee),
-                    args: regs(args),
-                    results: regs(self.func.dfg().inst_results(inst)),
-                },
-                InstView::Unary {
-                    opcode: IrOpcode::ClosureDrop,
-                    arg,
-                } => ControlSite::Drop {
-                    callee: self.mapper.reg(*arg),
-                },
-                _ => unimplemented!("unsupported callable instruction {:?}", idata.opcode()),
-            };
+        if let Some(site) = site {
             let site_id = self.data_section.controls.len() as u32;
             self.data_section.controls.push(site);
             emit::Control(&mut self.code, site_id);

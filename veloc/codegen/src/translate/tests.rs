@@ -152,3 +152,25 @@ fn composed_semantic_fallback_still_validates_its_source_contract() {
         );
     }
 }
+
+#[test]
+fn unsupported_tail_calls_and_callable_types_return_errors() {
+    for source in [
+        "local function forward(i32) -> i32\nblock0(v0: i32):\n  tail-call forward(v0) : (i32) -> i32\n",
+        "local function apply(local<(i32) -> i32>, i32) -> i32\nblock0(v0: local<(i32) -> i32>, v1: i32):\n  tail-call-value v0(v1)\n",
+    ] {
+        let module = ModuleParser::new().parse(source).unwrap();
+        module.validate().unwrap();
+        let error = IRTranslator::new(
+            &module,
+            crate::target::arch::DataLayout {
+                pointer_size: 8,
+                little_endian: true,
+            },
+        )
+        .translate_module()
+        .err()
+        .expect("unsupported control transfer");
+        assert!(format!("{error}").contains("tail-call lowering"), "{error}");
+    }
+}

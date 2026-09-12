@@ -89,10 +89,6 @@ pub(super) fn parse(
         &types,
         vocabulary,
     )?;
-    let control = fields
-        .optional("control")
-        .map(|node| crate::model::control::check(source, node, &params))
-        .transpose()?;
     let mut meta_node = fields.take("meta")?;
     expressions.metadata(source, &mut meta_node, &implementations, vocabulary)?;
     let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
@@ -118,18 +114,6 @@ pub(super) fn parse(
         .map(|node| list(source, node))
         .transpose()?
         .unwrap_or_default();
-    if let Some(control) = &control {
-        for &name in control.traits() {
-            if !builtins.has_trait(name) {
-                return Err(fields.error(format!(
-                    "control interface requires undeclared trait `{name}`"
-                )));
-            }
-            if !traits.iter().any(|t| t == name) {
-                traits.push(name.into());
-            }
-        }
-    }
     if traits.iter().any(|t| t == "ABORT") && !traits.iter().any(|t| t == "TERMINATOR") {
         return Err(fields.error("ABORT requires TERMINATOR"));
     }
@@ -193,7 +177,6 @@ pub(super) fn parse(
         params,
         projection,
         signature_source,
-        control,
         text,
         traits,
         memory,
@@ -462,9 +445,6 @@ fn binding(source: &str, node: Node) -> Result<Binding, Error> {
 }
 
 pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result<(), Error> {
-    if let Some(control) = &op.control {
-        control.validate(source, op)?;
-    }
     let fail = |message| Error::at(source, op.offset, message);
     let params: BTreeMap<_, _> = op
         .params

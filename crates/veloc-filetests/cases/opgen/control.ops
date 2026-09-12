@@ -1,38 +1,12 @@
-// ----- reject-impure-control-without-effects
+// ----- control-is-not-a-separate-operation-contract
 // run: opgen-error
-// check: control interface must bind all parameters directly
-struct Apply {
-    cont: Value,
-    args: ValueList,
-}
-op Apply(cont: Callable, args: values) -> () {
-    meta: OpInfo { memory: Known([]) },
-    mnemonic: "apply", storage: Apply { cont: cont, args: args },
-control: tail_call_value(cont, args), }
-
-// ----- reject-wrong-control-operand-kind
-// run: opgen-error
-// check: invalid control interface or parameter kinds
-struct Apply {
-    cont: Value,
-    args: ValueList,
-}
+// check: unknown field `control`
+struct Apply { cont: Value, args: ValueList }
 op Apply(cont: Callable, args: values) -> () {
     meta: OpInfo { traits: [TERMINATOR, MAY_TRAP], memory: Unknown },
-    mnemonic: "apply", storage: Apply { cont: cont, args: args },
-control: tail_call(cont, args),  }
-
-// ----- reject-noncallable-tail-call-contract
-// run: opgen-error
-// check: control interface must bind all parameters directly
-struct Apply {
-    cont: Value,
-    args: ValueList,
+    mnemonic: "apply", storage: Apply { cont, args },
+    control: tail_call_value(cont, args),
 }
-op Apply(cont: I32, args: values) -> () {
-    meta: OpInfo { traits: [TERMINATOR, MAY_TRAP], memory: Unknown },
-    mnemonic: "apply", storage: Apply { cont: cont, args: args },
-control: tail_call_value(cont, args),  }
 
 // ----- structural-type-name-cannot-be-shadowed
 // run: opgen-error

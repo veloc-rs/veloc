@@ -7,19 +7,17 @@ const CALL_VALUE: &str = r#"
         args: ValueList,
     }
     op Apply(move callee: Callable, move args: values) -> signature {
-    meta: OpInfo { memory: Unknown },
+    meta: OpInfo { traits: [MAY_TRAP], memory: Unknown },
         mnemonic: "apply-value",
         storage: ApplyValue { callee: callee, args: args },
         signature: callable(callee),
         text: "{callee}({args})",
-        control: call(callee, args),
         }
 "#;
 
 #[test]
 fn callable_signature_source_requires_a_single_named_callable_operand() {
-    // Omit control so these failures exercise the signature contract directly.
-    let source = CALL_VALUE.replace("control: call(callee, args),", "");
+    compile(CALL_VALUE).unwrap();
     for (from, to, expected) in [
         (
             "signature: callable(callee),",
@@ -63,35 +61,7 @@ fn callable_signature_source_requires_a_single_named_callable_operand() {
             "signature source requires signature results",
         ),
     ] {
-        let error = compile(&source.replace(from, to)).err().unwrap();
-        assert!(error.message.contains(expected), "{to}: {error}");
-    }
-}
-
-#[test]
-fn callable_control_preserves_result_terminator_and_effect_contracts() {
-    for (from, to) in [
-        ("-> signature", "-> ()"),
-        ("callee: Callable", "callee: PTR"),
-        ("memory: Unknown", "memory: Known([])"),
-        ("memory: Unknown", "traits: [TERMINATOR], memory: Unknown"),
-        ("call(callee, args)", "tail_call_value(callee, args)"),
-        ("call(callee, args)", "call(args, callee)"),
-    ] {
         let error = compile(&CALL_VALUE.replace(from, to)).err().unwrap();
-        assert!(error.message.contains("control interface"), "{to}: {error}");
-    }
-    for legacy in [
-        "resume(callee, args)",
-        "invoke(callee, args)",
-        "cancel(callee)",
-    ] {
-        let error = compile(&CALL_VALUE.replace("call(callee, args)", legacy))
-            .err()
-            .unwrap();
-        assert!(
-            error.message.contains("invalid control interface"),
-            "{error}"
-        );
+        assert!(error.message.contains(expected), "{to}: {error}");
     }
 }

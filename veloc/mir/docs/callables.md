@@ -108,9 +108,13 @@ are not implemented by these operations.
 ## Definitions and validation
 
 `mir.ops` specifies callable operations, signatures, capture constraints, ownership
-transfers, effects and text syntax. Control contracts are checked at build time;
-`Opcode::has_control()` classifies these operations without unpacking operands.
+transfers, effects and text syntax. Ordinary signatures and `verify` predicates
+describe validity; `MAY_TRAP` and `TERMINATOR` are explicit metadata rather than
+facts inferred from a separate control declaration.
 The interpreter lowers instruction views directly into compiled control sites.
+It records live callable roots at those sites and ordinary calls; this execution
+requirement is independent of trap metadata. Native lowering rejects callable
+types and unsupported tail calls explicitly.
 The reserved `Callable` type pattern denotes structural callable values.
 
 The validator checks signature references and types, instruction and operand

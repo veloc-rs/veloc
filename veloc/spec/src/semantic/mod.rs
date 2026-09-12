@@ -678,7 +678,6 @@ mod tests {
                 results: TypeList::Fixed(vec![result]),
             },
             signature_source: None,
-            control: None,
             text: None,
             params,
             projection: crate::model::Projection::Packed(Default::default()),

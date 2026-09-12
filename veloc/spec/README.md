@@ -378,15 +378,14 @@ changes raw encodings; the checked-in layout preserves the existing representati
 Vector legality and type semantics remain Rust algorithms, separate from this
 MIR-specific physical representation. HIR and LIR need not share this layout.
 
-Callable operations additionally declare a typed `control` interface:
-`owned(function, captures, cleanup)`, `local(function, captures)`,
-`shared(function, captures)`, `tail_call(function, args)`,
-`call(callee, args)`, `tail_call_value(callee, args)` or `drop(callee)`.
-These are trusted semantic primitives, like the bitvector
-primitives, not arbitrary Rust snippets. The generator checks their operand,
-result, storage and effect contracts and emits `Opcode::has_control()` for
-classification. Backends lower instruction views directly; there is no runtime
-control wrapper or automatic implementation of new operations.
+Callable operations use ordinary signatures, `move` parameters, `verify`
+predicates and explicit metadata. Their definitions declare `MAY_TRAP`, and tail
+calls also declare `TERMINATOR`; there is no separate `control` contract or
+generated callable classification. Backends lower instruction views directly.
+The interpreter's callable lowering returns executable `ControlSite` data and
+records live roots at those operations and ordinary calls. Root recording is
+a runtime requirement, not a consequence of `MAY_TRAP`. Native lowering retains
+callable type guards and explicitly rejects unsupported tail-call instructions.
 Global signature/ownership dataflow remains a shared validator algorithm. The
 `Callable` type pattern and `apply(callee, args)` text projection require no
 opcode-specific parser switch. `signature: callable(callee)` selects the signature
@@ -595,8 +594,8 @@ fields; it need not be named `OpInfo`. MIR stores it inline in each static
 
 The operation-contract adapter interprets fields *typed* `OpTraits` and
 `MemoryEffect`, regardless of field names; more than one field of either type
-is ambiguous and rejected. Other fields are just typed data. Semantic laws,
-control contracts populate inferred facts before final struct checking. Pure
+is ambiguous and rejected. Other fields are just typed data. Semantic laws and
+LIR flow contracts populate inferred facts before final struct checking. Pure
 interface expressions may supply constant metadata fields explicitly. If a memory
 field exists, an unmodeled operation must supply it. A struct without a memory
 contract is conservatively unknown.

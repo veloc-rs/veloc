@@ -78,7 +78,6 @@ impl Plan {
                         || op.text.is_some()
                         || !op.interfaces.is_empty()
                         || op.params.iter().any(|p| p.moves)
-                        || op.control.is_some()
                         || op.signature_source.is_some()
                     {
                         return Err(Error::at(
