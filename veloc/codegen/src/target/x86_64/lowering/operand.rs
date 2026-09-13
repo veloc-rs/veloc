@@ -6,7 +6,7 @@ pub struct X86_64OperandLowering;
 impl TargetOperandLowering for X86_64OperandLowering {
     fn preselect_operand_constraints(
         &self,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         _mfunc: &MachineFunction<PreIselPrepared>,
     ) -> OperandConstraintSet {
         let Some(opcode) = inst.generic_opcode() else {
@@ -17,10 +17,10 @@ impl TargetOperandLowering for X86_64OperandLowering {
 
     fn postselect_operand_constraints(
         &self,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         _mfunc: &MachineFunction<SelectedLir>,
     ) -> OperandConstraintSet {
-        let MachineOpcode::Target(opcode) = inst.opcode else {
+        let MachineOpcode::Target(opcode) = inst.opcode() else {
             return OperandConstraintSet::default();
         };
         generated::target_inst_metadata(TargetInst::from_u32(opcode)).operand_constraints()
@@ -28,10 +28,10 @@ impl TargetOperandLowering for X86_64OperandLowering {
 
     fn build_preselect_reg_copy(
         &self,
-        mfunc: &MachineFunction<PreIselPrepared>,
+        mfunc: &mut MachineFunction<PreIselPrepared>,
         dst: Reg,
         src: Reg,
-    ) -> Result<MachineInst, crate::error::Error> {
+    ) -> Result<InstId, crate::error::Error> {
         Ok(build_x86_copy_inst(mfunc, dst, src).unwrap_or_else(|err| {
             panic!(
                 "failed to build x86_64 pre-select reg copy for {:?} <- {:?}: {}",
@@ -42,10 +42,10 @@ impl TargetOperandLowering for X86_64OperandLowering {
 
     fn build_postselect_reg_copy(
         &self,
-        mfunc: &MachineFunction<SelectedLir>,
+        mfunc: &mut MachineFunction<SelectedLir>,
         dst: Reg,
         src: Reg,
-    ) -> Result<MachineInst, crate::error::Error> {
+    ) -> Result<InstId, crate::error::Error> {
         Ok(build_x86_copy_inst(mfunc, dst, src).unwrap_or_else(|err| {
             panic!(
                 "failed to build x86_64 post-select reg copy for {:?} <- {:?}: {}",

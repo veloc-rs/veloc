@@ -8,7 +8,7 @@ mod tests;
 use crate::error::{Error, Result};
 use crate::target::arch::TargetLegalizer;
 use veloc_lir::stages::LegalizedLir;
-use veloc_lir::{GenericOpcode, MachineFunction, MachineInst};
+use veloc_lir::{GenericOpcode, MachineFunction};
 
 pub struct Legalizer<'a> {
     target: &'a dyn TargetLegalizer,
@@ -29,15 +29,15 @@ impl<'a> Legalizer<'a> {
             mfunc.rewrite_block(block, |cursor| {
                 pending.clear();
                 pending.push(cursor.current_inst_id());
-                cursor.remove_current();
+                cursor.detach_current();
                 let mut rewrites = 0;
                 while let Some(id) = pending.pop() {
-                    let inst = &cursor.mfunc().dfg[id];
+                    let inst = &cursor.mfunc().inst(id);
                     if inst.is_invalid() {
                         continue;
                     }
                     if inst.generic_opcode().is_none() {
-                        cursor.emit_existing_before(id);
+                        cursor.emit(id);
                         continue;
                     }
                     match self.target.legalize_action(inst, cursor.mfunc())? {
@@ -47,12 +47,12 @@ impl<'a> Legalizer<'a> {
                                 "missing legalization rule for {opcode:?} with signature {operands:?}"
                             )));
                         }
-                        Some(LegalizeAction::Legal) => cursor.emit_existing_before(id),
+                        Some(LegalizeAction::Legal) => cursor.emit(id),
                         Some(LegalizeAction::Lower) => {
                             if rewrites == MAX_REWRITES {
                                 return Err(Error::codegen(alloc::format!(
                                     "legalization did not converge after {MAX_REWRITES} rewrites: {:?}",
-                                    inst.opcode
+                                    inst.opcode()
                                 )));
                             }
                             rewrites += 1;
@@ -82,7 +82,7 @@ impl<'a> Legalizer<'a> {
 
     fn inst_signature_context(
         &self,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction<LegalizedLir>,
     ) -> Result<(GenericOpcode, alloc::string::String)> {
         let opcode = inst

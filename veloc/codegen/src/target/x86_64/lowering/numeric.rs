@@ -9,11 +9,11 @@ fn unary(
     src: Reg,
 ) -> Reg {
     let dst = mfunc.alloc_vreg(ty);
-    out.push(mfunc.alloc_inst(MachineInst::build_unary(
-        MachineOpcode::Generic(opcode),
-        Writable(dst),
-        src,
-    )));
+    out.push(
+        mfunc
+            .writer()
+            .unary(MachineOpcode::Generic(opcode), Writable(dst), src),
+    );
     dst
 }
 
@@ -72,19 +72,13 @@ impl X86_64Lowering {
                 );
                 let direct = unary(mfunc, out, GenericOpcode::G_SITOFP, dst_ty, src);
                 let high = mfunc.alloc_vreg(Type::BOOL);
-                out.push(mfunc.alloc_inst(MachineInst::build_icmp(
-                    Writable(high),
-                    src,
-                    zero,
-                    IntCC::LtS,
-                )));
+                out.push(mfunc.writer().icmp(Writable(high), src, zero, IntCC::LtS));
                 let result = mfunc.alloc_vreg(dst_ty);
-                out.push(mfunc.alloc_inst(MachineInst::build_select(
-                    Writable(result),
-                    high,
-                    doubled,
-                    direct,
-                )));
+                out.push(
+                    mfunc
+                        .writer()
+                        .select(Writable(result), high, doubled, direct),
+                );
                 result
             }
         } else {
@@ -103,12 +97,11 @@ impl X86_64Lowering {
                 let bits = self.emit_legalize_constant_reg(mfunc, out, bits_ty, bits);
                 let threshold = unary(mfunc, out, GenericOpcode::G_BITCAST, src_ty, bits);
                 let high = mfunc.alloc_vreg(Type::BOOL);
-                out.push(mfunc.alloc_inst(MachineInst::build_fcmp(
-                    Writable(high),
-                    src,
-                    threshold,
-                    FloatCC::Ge,
-                )));
+                out.push(
+                    mfunc
+                        .writer()
+                        .fcmp(Writable(high), src, threshold, FloatCC::Ge),
+                );
                 let reduced = self.emit_legalize_binary_reg(
                     mfunc,
                     out,
@@ -129,15 +122,14 @@ impl X86_64Lowering {
                 );
                 let direct = unary(mfunc, out, GenericOpcode::G_FPTOSI, Type::I64, src);
                 let result = mfunc.alloc_vreg(dst_ty);
-                out.push(mfunc.alloc_inst(MachineInst::build_select(
-                    Writable(result),
-                    high,
-                    restored,
-                    direct,
-                )));
+                out.push(
+                    mfunc
+                        .writer()
+                        .select(Writable(result), high, restored, direct),
+                );
                 result
             }
         };
-        out.push(mfunc.alloc_inst(MachineInst::build_copy(Writable(dst), result)));
+        out.push(mfunc.writer().copy(Writable(dst), result));
     }
 }

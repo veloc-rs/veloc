@@ -250,7 +250,7 @@ fn compile_def_inst_generates_operand_constraint_metadata() {
     let output = compile(input, "x86_64").expect("compile should succeed");
 
     assert!(output.contains("pub const TARGET_INST_X86SHL32CL_METADATA: TargetInstMetadata"));
-    assert!(output.contains("TargetTiedOperandMetadata { operand: 0 }"));
+    assert!(output.contains("TiedOperandConstraint { def_operand: 0, use_operand: 2 }"));
     assert!(output.contains("FixedUseConstraint { use_operand: 1, reg: REG_RCX }"));
     assert!(output.contains("clobbers: &[\"EFLAGS\"]"));
     assert!(output.contains("pub fn target_inst_metadata(opcode: TargetInst)"));
@@ -271,23 +271,22 @@ fn compile_select_rules_generate_generic_operand_constraint_metadata() {
 
         (select-rule
           (match (schema BinaryReg G_ADD (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
-          (emit (X86Add32 $y))
+          (emit (X86Add32 $y $x))
           (covers (@n))
           (cost 1))
 
         (select-rule
           (match (schema BinaryReg G_SHL (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
-          (emit (X86Shl32Cl $y))
+          (emit (X86Shl32Cl $y $x))
           (covers (@n))
           (cost 1))
     "#;
 
     let output = compile(input, "x86_64").expect("compile should succeed");
 
-    assert!(output.contains("pub const GENERIC_INST_G_ADD_METADATA: GenericInstMetadata"));
+    assert!(!output.contains("pub const GENERIC_INST_G_ADD_METADATA: GenericInstMetadata"));
     assert!(output.contains("pub const GENERIC_INST_G_SHL_METADATA: GenericInstMetadata"));
-    assert!(output.contains("TiedOperandConstraint { def_operand: 0, use_operand: 1 }"));
-    assert!(output.contains("commute_operand_pairs: &[(1, 2)]"));
+    assert!(!output.contains("TiedOperandConstraint { def_operand: 0, use_operand: 1 }"));
     assert!(output.contains("FixedUseConstraint { use_operand: 2, reg: REG_RCX }"));
     assert!(output.contains("pub fn generic_inst_metadata(opcode: veloc_lir::GenericOpcode)"));
 }

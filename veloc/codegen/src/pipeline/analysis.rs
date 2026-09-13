@@ -2,7 +2,7 @@ use crate::target::arch::TargetMachine;
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use hashbrown::{HashMap, HashSet};
-use veloc_lir::{MachineFunction, Reg, UseDefChain};
+use veloc_lir::{MachineFunction, Reg};
 use veloc_mir::Block;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -236,7 +236,6 @@ pub struct StackFrameSummary {
 pub struct FunctionAnalysisCtx {
     revision: u64,
     last_changed_revision: [u64; CHANGE_KIND_COUNT],
-    use_def: Option<AnalysisCache<UseDefChain>>,
     cfg: Option<AnalysisCache<CfgInfo>>,
     dominators: Option<AnalysisCache<DominatorTree>>,
     post_dominators: Option<AnalysisCache<PostDominatorTree>>,
@@ -266,18 +265,6 @@ impl FunctionAnalysisCtx {
     fn is_cache_stale(&self, built_revision: u64, deps: ChangeSet) -> bool {
         deps.kinds()
             .any(|kind| self.last_changed_revision[kind as usize] > built_revision)
-    }
-
-    pub fn use_def<S>(&mut self, mfunc: &mut MachineFunction<S>) -> &UseDefChain {
-        let deps = ChangeSet::INST_OPERANDS | ChangeSet::INST_SEMANTICS | ChangeSet::BLOCK_LAYOUT;
-        let stale = self
-            .use_def
-            .as_ref()
-            .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
-        if stale {
-            self.use_def = Some(AnalysisCache::new(self.revision, compute_use_def(mfunc)));
-        }
-        &self.use_def.as_ref().unwrap().value
     }
 
     pub fn cfg<S>(&mut self, mfunc: &MachineFunction<S>, target: &dyn TargetMachine) -> &CfgInfo {
@@ -443,17 +430,6 @@ impl FunctionAnalysisCtx {
     }
 }
 
-fn compute_use_def<S>(mfunc: &MachineFunction<S>) -> UseDefChain {
-    let mut use_def = UseDefChain::default();
-    for block in &mfunc.blocks {
-        for &inst_id in &block.insts {
-            let inst = &mfunc.dfg[inst_id];
-            use_def.add_inst(inst_id, inst);
-        }
-    }
-    use_def
-}
-
 /// 模块级分析上下文。
 #[derive(Debug, Clone, Default)]
 pub struct ModuleAnalysisCtx {
@@ -487,13 +463,13 @@ fn compute_cfg<S>(mfunc: &MachineFunction<S>, target: &dyn TargetMachine) -> Cfg
         let mut block_succs = Vec::new();
         let mut falls_through = true;
         for &id in &block.insts {
-            let inst = &mfunc.dfg[id];
+            let inst = &mfunc.inst(id);
             let flow = target.control_flow(inst);
             if matches!(
                 flow,
                 veloc_lir::ControlFlow::Branch | veloc_lir::ControlFlow::Jump
             ) {
-                for operand in &inst.operands {
+                for operand in inst.operands().iter() {
                     if let veloc_lir::MachineOperand::Block(target) = operand {
                         block_succs.push(*target);
                     }
@@ -631,9 +607,9 @@ fn compute_liveness<S>(mfunc: &MachineFunction<S>, cfg: &CfgInfo) -> LivenessInf
 
     for block in &mfunc.blocks {
         let mut uses = HashSet::new();
-        let mut defs = HashSet::new();
+        let mut defs: HashSet<_> = block.params.iter().copied().collect();
         for &inst_id in &block.insts {
-            let inst = &mfunc.dfg[inst_id];
+            let inst = &mfunc.inst(inst_id);
             for reg in inst.uses() {
                 if !defs.contains(&reg) {
                     uses.insert(reg);
@@ -710,7 +686,7 @@ mod tests {
     use crate::target::arch::TargetConfig;
     use crate::target::x86_64::X86_64TargetMachine;
     use veloc_lir::stages::RawLir;
-    use veloc_lir::{MachineBlock, MachineFunction, MachineInst};
+    use veloc_lir::{MachineBlock, MachineFunction};
     use veloc_mir::{Block, Type};
 
     #[test]
@@ -719,14 +695,29 @@ mod tests {
         for id in 0..4 {
             f.blocks.push(MachineBlock::new(Block(id)));
         }
-        f.alloc_inst_and_append_to_block(0, MachineInst::build_unreachable());
+        {
+            let id = f.writer().unreachable();
+            f.append_inst_id_to_block(0, id);
+            id
+        };
         // Dead instructions cannot introduce successors after a trap.
-        f.alloc_inst_and_append_to_block(0, MachineInst::build_br(Block(2)));
-        f.alloc_inst_and_append_to_block(
-            1,
-            MachineInst::build_brcond(veloc_lir::Reg::new_vreg(0), Block(0), Block(3)),
-        );
-        f.alloc_inst_and_append_to_block(2, MachineInst::build_ret(smallvec::smallvec![]));
+        {
+            let id = f.writer().br(Block(2));
+            f.append_inst_id_to_block(0, id);
+            id
+        };
+        {
+            let id = f
+                .writer()
+                .brcond(veloc_lir::Reg::new_vreg(0), Block(0), Block(3));
+            f.append_inst_id_to_block(1, id);
+            id
+        };
+        {
+            let id = f.writer().ret(smallvec::smallvec![]);
+            f.append_inst_id_to_block(2, id);
+            id
+        };
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg = analyses.cfg(&f, &target);
@@ -752,16 +743,17 @@ mod tests {
             f.blocks.push(MachineBlock::new(Block(id)));
         }
         let mut emit = |block, op: TargetInst, targets: &[u32]| {
-            f.alloc_inst_and_append_to_block(
-                block,
-                MachineInst::build_generic(
+            {
+                let id = f.writer().generic(
                     MachineOpcode::Target(op.as_u32()),
                     targets
                         .iter()
                         .map(|&b| MachineOperand::Block(Block(b)))
                         .collect(),
-                ),
-            );
+                );
+                f.append_inst_id_to_block(block, id);
+                id
+            };
         };
         emit(0, TargetInst::X86Ret, &[]);
         emit(0, TargetInst::X86Jmp, &[7]); // Dead after return.
@@ -798,13 +790,14 @@ mod tests {
         f.blocks.swap(1, 2);
         analyses.apply(ChangeSet::BLOCK_LAYOUT);
         assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(2)]);
-        f.alloc_inst_and_append_to_block(
-            0,
-            MachineInst::build_generic(
+        {
+            let id = f.writer().generic(
                 MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
                 smallvec::smallvec![],
-            ),
-        );
+            );
+            f.append_inst_id_to_block(0, id);
+            id
+        };
         analyses.apply(ChangeSet::SELECTED_OPCODES);
         assert!(analyses.cfg(&f, &target).succs(Block(0)).is_empty());
     }
@@ -816,9 +809,21 @@ mod tests {
             f.blocks.push(MachineBlock::new(Block(id)));
         }
         let value = f.alloc_vreg(Type::I64);
-        let jump = f.alloc_inst_and_append_to_block(0, MachineInst::build_br(Block(1)));
-        f.alloc_inst_and_append_to_block(1, MachineInst::build_ret(smallvec::smallvec![value]));
-        f.alloc_inst_and_append_to_block(2, MachineInst::build_ret(smallvec::smallvec![]));
+        let jump = {
+            let id = f.writer().br(Block(1));
+            f.append_inst_id_to_block(0, id);
+            id
+        };
+        {
+            let id = f.writer().ret(smallvec::smallvec![value]);
+            f.append_inst_id_to_block(1, id);
+            id
+        };
+        {
+            let id = f.writer().ret(smallvec::smallvec![]);
+            f.append_inst_id_to_block(2, id);
+            id
+        };
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut analyses = FunctionAnalysisCtx::default();
         assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(1)]);
@@ -829,7 +834,7 @@ mod tests {
                 .unwrap()
                 .contains(&value)
         );
-        f.dfg[jump] = MachineInst::build_br(Block(2));
+        f.rewriter(jump).br(Block(2));
         analyses.apply(ChangeSet::INST_OPERANDS);
         assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(2)]);
         assert!(

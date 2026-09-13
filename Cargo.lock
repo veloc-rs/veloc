@@ -1705,6 +1705,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "veloc-collections"
+version = "0.1.0"
+dependencies = [
+ "cranelift-entity 0.128.3",
+]
+
+[[package]]
 name = "veloc-filetests"
 version = "0.1.0"
 dependencies = [
@@ -1751,6 +1758,7 @@ dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "smallvec",
+ "veloc-collections",
  "veloc-mir",
  "veloc-opgen",
  "veloc-semantics",
@@ -1764,6 +1772,7 @@ dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "smallvec",
+ "veloc-collections",
  "veloc-opgen",
  "veloc-types",
 ]
@@ -1812,6 +1821,7 @@ dependencies = [
  "cranelift-entity 0.128.3",
  "hashbrown 0.14.5",
  "smallvec",
+ "veloc-collections",
  "veloc-opgen",
  "veloc-semantics",
  "veloc-types",

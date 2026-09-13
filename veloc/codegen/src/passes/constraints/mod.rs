@@ -1,10 +1,10 @@
 use crate::error::Result;
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{FixedUseConstraint, TargetOperandLowering, TiedOperandConstraint};
+use crate::target::arch::{FixedUseConstraint, TargetOperandLowering};
 use core::marker::PhantomData;
 use veloc_lir::MachineOperand;
 use veloc_lir::stages::{PreIselPrepared, SelectedLir};
-use veloc_lir::{MachineFunction, MachineInst, Reg, Writable};
+use veloc_lir::{InstId, MachineFunction, Reg, Writable};
 
 /// 在给定阶段应用 target/指令元数据定义的操作数约束。
 struct OperandConstraintPassImpl<'a, Stage> {
@@ -17,16 +17,16 @@ trait ConstraintStageSpec {
 
     fn operand_constraints(
         lowering: &dyn TargetOperandLowering,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction<Self::Stage>,
     ) -> crate::target::arch::OperandConstraintSet;
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &MachineFunction<Self::Stage>,
+        mfunc: &mut MachineFunction<Self::Stage>,
         dst: Reg,
         src: Reg,
-    ) -> MachineInst;
+    ) -> InstId;
 }
 
 struct PreSelectConstraintStage;
@@ -37,7 +37,7 @@ impl ConstraintStageSpec for PreSelectConstraintStage {
 
     fn operand_constraints(
         lowering: &dyn TargetOperandLowering,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction<PreIselPrepared>,
     ) -> crate::target::arch::OperandConstraintSet {
         lowering.preselect_operand_constraints(inst, mfunc)
@@ -45,12 +45,12 @@ impl ConstraintStageSpec for PreSelectConstraintStage {
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &MachineFunction<PreIselPrepared>,
+        mfunc: &mut MachineFunction<PreIselPrepared>,
         dst: Reg,
         src: Reg,
-    ) -> MachineInst {
+    ) -> InstId {
         if dst.is_vreg() && src.is_vreg() {
-            MachineInst::build_copy(Writable(dst), src)
+            mfunc.writer().copy(Writable(dst), src)
         } else {
             lowering
                 .build_preselect_reg_copy(mfunc, dst, src)
@@ -69,7 +69,7 @@ impl ConstraintStageSpec for PostSelectConstraintStage {
 
     fn operand_constraints(
         lowering: &dyn TargetOperandLowering,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction<SelectedLir>,
     ) -> crate::target::arch::OperandConstraintSet {
         lowering.postselect_operand_constraints(inst, mfunc)
@@ -77,10 +77,10 @@ impl ConstraintStageSpec for PostSelectConstraintStage {
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &MachineFunction<SelectedLir>,
+        mfunc: &mut MachineFunction<SelectedLir>,
         dst: Reg,
         src: Reg,
-    ) -> MachineInst {
+    ) -> InstId {
         lowering
             .build_postselect_reg_copy(mfunc, dst, src)
             .unwrap_or_else(|err| {
@@ -140,17 +140,20 @@ where
             return Ok(());
         }
 
-        let mut inst = cursor.current_inst_clone();
-        let constraints = Stage::operand_constraints(self.lowering, &inst, cursor.mfunc());
+        let constraints =
+            Stage::operand_constraints(self.lowering, &cursor.current_inst(), cursor.mfunc());
         if constraints.is_empty() {
             cursor.keep_current();
             return Ok(());
         }
 
+        let cursor_id = cursor.current_inst_id();
+        let mut inst = cursor.current_inst().operands().to_vec();
         let inst_changed = self.apply_constraints(cursor, &mut inst, &constraints)?;
         if inst_changed {
             *changed += 1;
-            cursor.replace_current(inst);
+            cursor.mfunc_mut().set_inst_operands(cursor_id, inst);
+            cursor.keep_current();
         } else {
             cursor.keep_current();
         }
@@ -160,22 +163,11 @@ where
     fn apply_constraints(
         &self,
         cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
-        inst: &mut MachineInst,
+        inst: &mut [MachineOperand],
         constraints: &crate::target::arch::OperandConstraintSet,
     ) -> Result<bool> {
         let mut changed = false;
-        for tied in &constraints.tied_operands {
-            if self.apply_tied_operand_constraint(
-                cursor,
-                inst,
-                tied,
-                &constraints.commute_operand_pairs,
-            )? {
-                changed = true;
-            }
-        }
-
-        for fixed in &constraints.fixed_uses {
+        for fixed in constraints.fixed_uses.iter() {
             if self.apply_fixed_use_constraint(cursor, inst, fixed)? {
                 changed = true;
             }
@@ -184,37 +176,10 @@ where
         Ok(changed)
     }
 
-    fn apply_tied_operand_constraint(
-        &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
-        inst: &mut MachineInst,
-        tied: &TiedOperandConstraint,
-        commute_pairs: &[(usize, usize)],
-    ) -> Result<bool> {
-        let def_reg = expect_operand_reg(inst, tied.def_operand, "def", operand_reg);
-        let mut source_reg = expect_operand_reg(inst, tied.use_operand, "use", use_reg);
-        let mut commuted = false;
-
-        if source_reg != def_reg
-            && try_commute_tied_use(inst, tied.use_operand, def_reg, commute_pairs)
-        {
-            source_reg = def_reg;
-            commuted = true;
-        }
-
-        if source_reg == def_reg {
-            return Ok(commuted);
-        }
-
-        self.emit_constraint_copy(cursor, def_reg, source_reg)?;
-        set_use_reg(inst, tied.use_operand, def_reg);
-        Ok(true)
-    }
-
     fn apply_fixed_use_constraint(
         &self,
         cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
-        inst: &mut MachineInst,
+        inst: &mut [MachineOperand],
         fixed: &FixedUseConstraint,
     ) -> Result<bool> {
         let current = expect_operand_reg(inst, fixed.use_operand, "fixed use", use_reg);
@@ -233,8 +198,8 @@ where
         dst: Reg,
         src: Reg,
     ) -> Result<()> {
-        let copy_inst = Stage::build_copy(self.lowering, cursor.mfunc(), dst, src);
-        cursor.emit_before(copy_inst);
+        let copy_inst = Stage::build_copy(self.lowering, cursor.mfunc_mut(), dst, src);
+        cursor.emit(copy_inst);
         Ok(())
     }
 }
@@ -299,43 +264,33 @@ impl<'a> FunctionPass<SelectedLir> for PostSelectOperandConstraintPass<'a> {
     }
 }
 
-fn operand_reg(operand: &MachineOperand) -> Option<Reg> {
-    match operand {
-        MachineOperand::Def(w) | MachineOperand::TiedDefUse(w) => Some(w.to_reg()),
-        MachineOperand::Use(reg) => Some(*reg),
-        _ => None,
-    }
-}
-
 fn use_reg(operand: &MachineOperand) -> Option<Reg> {
     match operand {
         MachineOperand::Use(reg) => Some(*reg),
-        MachineOperand::TiedDefUse(w) => Some(w.to_reg()),
         _ => None,
     }
 }
 
-fn missing_operand_error(inst: &MachineInst, role: &str, operand_idx: usize) -> ! {
+fn missing_operand_error(inst: &[MachineOperand], role: &str, operand_idx: usize) -> ! {
     panic!(
         "missing {} operand {} for instruction {:?} while applying operand constraints",
-        role, operand_idx, inst.opcode
+        role, operand_idx, inst
     )
 }
 
 fn expect_operand_reg(
-    inst: &MachineInst,
+    inst: &[MachineOperand],
     operand_idx: usize,
     role: &str,
     reg_of: fn(&MachineOperand) -> Option<Reg>,
 ) -> Reg {
-    inst.operands
-        .get(operand_idx)
+    inst.get(operand_idx)
         .and_then(reg_of)
         .unwrap_or_else(|| missing_operand_error(inst, role, operand_idx))
 }
 
-fn set_use_reg(inst: &mut MachineInst, operand_idx: usize, reg: Reg) {
-    let operand = inst.operands.get_mut(operand_idx).unwrap_or_else(|| {
+fn set_use_reg(inst: &mut [MachineOperand], operand_idx: usize, reg: Reg) {
+    let operand = inst.get_mut(operand_idx).unwrap_or_else(|| {
         panic!(
             "operand index {} out of bounds while applying operand constraints",
             operand_idx
@@ -343,7 +298,6 @@ fn set_use_reg(inst: &mut MachineInst, operand_idx: usize, reg: Reg) {
     });
     match operand {
         MachineOperand::Use(slot) => *slot = reg,
-        MachineOperand::TiedDefUse(slot) => *slot = Writable(reg),
         _ => {
             panic!(
                 "operand {} is not a use operand while applying operand constraints",
@@ -353,39 +307,13 @@ fn set_use_reg(inst: &mut MachineInst, operand_idx: usize, reg: Reg) {
     }
 }
 
-fn try_commute_tied_use(
-    inst: &mut MachineInst,
-    use_operand: usize,
-    required_reg: Reg,
-    commute_pairs: &[(usize, usize)],
-) -> bool {
-    for &(lhs, rhs) in commute_pairs {
-        let other_idx = if lhs == use_operand {
-            rhs
-        } else if rhs == use_operand {
-            lhs
-        } else {
-            continue;
-        };
-
-        if inst.operands.get(other_idx).and_then(use_reg) == Some(required_reg) {
-            inst.operands.swap(use_operand, other_idx);
-            return true;
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::PreSelectOperandConstraintPass;
-    use crate::target::arch::{
-        FixedUseConstraint, OperandConstraintSet, TargetOperandLowering, TiedOperandConstraint,
-    };
+    use crate::target::arch::{FixedUseConstraint, OperandConstraintSet, TargetOperandLowering};
     use alloc::vec;
-    use alloc::vec::Vec;
     use veloc_lir::stages::PreIselPrepared;
-    use veloc_lir::{MachineBlock, MachineFunction, MachineInst, Reg, Writable};
+    use veloc_lir::{InstId, MachineBlock, MachineFunction, Reg, Writable};
 
     struct DummyLowering {
         constraints: OperandConstraintSet,
@@ -400,7 +328,7 @@ mod tests {
     impl TargetOperandLowering for DummyLowering {
         fn preselect_operand_constraints(
             &self,
-            _inst: &MachineInst,
+            _inst: &veloc_lir::InstRef<'_>,
             _mfunc: &MachineFunction<PreIselPrepared>,
         ) -> OperandConstraintSet {
             self.constraints.clone()
@@ -408,83 +336,24 @@ mod tests {
 
         fn build_preselect_reg_copy(
             &self,
-            _mfunc: &MachineFunction<PreIselPrepared>,
+            mfunc: &mut MachineFunction<PreIselPrepared>,
             dst: Reg,
             src: Reg,
-        ) -> Result<MachineInst, crate::error::Error> {
-            Ok(MachineInst::build_copy(Writable(dst), src))
+        ) -> Result<InstId, crate::error::Error> {
+            Ok(mfunc.writer().copy(Writable(dst), src))
         }
     }
 
     fn make_function_with_inst(
-        inst: MachineInst,
+        build: impl FnOnce(veloc_lir::InstWriter<'_>) -> InstId,
     ) -> (MachineFunction<PreIselPrepared>, veloc_lir::InstId) {
         let mut mfunc = MachineFunction::<PreIselPrepared>::new("test".into());
         mfunc
             .blocks
             .push(MachineBlock::new(veloc_mir::Block::from_u32(0)));
-        let inst_id = mfunc.alloc_inst(inst);
+        let inst_id = build(mfunc.writer());
         mfunc.append_inst_id_to_block(0, inst_id);
         (mfunc, inst_id)
-    }
-
-    #[test]
-    fn tied_use_already_satisfied_inserts_no_copy() {
-        let reg = Reg::new_vreg(0);
-        let inst = MachineInst::build_binary(
-            veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_ADD),
-            Writable(reg),
-            reg,
-            Reg::new_vreg(1),
-        );
-        let (mut mfunc, inst_id) = make_function_with_inst(inst);
-        let lowering = DummyLowering::new(OperandConstraintSet {
-            tied_operands: vec![TiedOperandConstraint {
-                def_operand: 0,
-                use_operand: 1,
-            }],
-            commute_operand_pairs: vec![(1, 2)],
-            fixed_uses: Vec::new(),
-        });
-
-        PreSelectOperandConstraintPass::new(&lowering)
-            .run(&mut mfunc)
-            .unwrap();
-
-        assert_eq!(mfunc.blocks[0].insts, vec![inst_id]);
-    }
-
-    #[test]
-    fn tied_use_prefers_commutation_over_copy() {
-        let dst = Reg::new_vreg(0);
-        let lhs = Reg::new_vreg(1);
-        let inst = MachineInst::build_binary(
-            veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_ADD),
-            Writable(dst),
-            lhs,
-            dst,
-        );
-        let (mut mfunc, inst_id) = make_function_with_inst(inst);
-        let lowering = DummyLowering::new(OperandConstraintSet {
-            tied_operands: vec![TiedOperandConstraint {
-                def_operand: 0,
-                use_operand: 1,
-            }],
-            commute_operand_pairs: vec![(1, 2)],
-            fixed_uses: Vec::new(),
-        });
-
-        PreSelectOperandConstraintPass::new(&lowering)
-            .run(&mut mfunc)
-            .unwrap();
-
-        assert_eq!(mfunc.blocks[0].insts, vec![inst_id]);
-        let veloc_lir::InstView::BinaryReg(lowered) = mfunc.dfg[inst_id].generic_view().unwrap()
-        else {
-            panic!("expected BinaryReg");
-        };
-        assert_eq!(lowered.lhs, dst);
-        assert_eq!(lowered.rhs, lhs);
     }
 
     #[test]
@@ -492,19 +361,20 @@ mod tests {
         let dst = Reg::new_vreg(0);
         let src = Reg::new_vreg(1);
         let fixed = Reg::new_preg(7);
-        let inst = MachineInst::build_unary(
-            veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_NEG),
-            Writable(dst),
-            src,
-        );
+        let inst = |writer: veloc_lir::InstWriter<'_>| {
+            writer.unary(
+                veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_NEG),
+                Writable(dst),
+                src,
+            )
+        };
         let (mut mfunc, inst_id) = make_function_with_inst(inst);
         let lowering = DummyLowering::new(OperandConstraintSet {
-            tied_operands: Vec::new(),
-            commute_operand_pairs: Vec::new(),
             fixed_uses: vec![FixedUseConstraint {
                 use_operand: 1,
                 reg: fixed,
-            }],
+            }]
+            .into(),
         });
 
         PreSelectOperandConstraintPass::new(&lowering)
@@ -513,14 +383,14 @@ mod tests {
 
         assert_eq!(mfunc.blocks[0].insts.len(), 2);
         let veloc_lir::InstView::UnaryReg(copy) =
-            mfunc.dfg[mfunc.blocks[0].insts[0]].generic_view().unwrap()
+            mfunc.inst(mfunc.blocks[0].insts[0]).generic_view().unwrap()
         else {
             panic!("expected UnaryReg");
         };
         assert_eq!(copy.dst, fixed);
         assert_eq!(copy.src, src);
 
-        let veloc_lir::InstView::UnaryReg(lowered) = mfunc.dfg[inst_id].generic_view().unwrap()
+        let veloc_lir::InstView::UnaryReg(lowered) = mfunc.inst(inst_id).generic_view().unwrap()
         else {
             panic!("expected UnaryReg");
         };

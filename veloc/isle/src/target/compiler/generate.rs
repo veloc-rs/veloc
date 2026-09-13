@@ -43,9 +43,7 @@ fn generate_variable(var_name: &str, operands: &[OperandConstraint]) -> String {
                 OperandConstraint::Def(_) => {
                     "MachineOperand::Def(reg) => reg.to_reg().index() as u64"
                 }
-                OperandConstraint::TiedDef { .. } => {
-                    "MachineOperand::TiedDefUse(reg) => reg.to_reg().index() as u64"
-                }
+                OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
                 OperandConstraint::Block(_)
                 | OperandConstraint::Global(_)
                 | OperandConstraint::StackSlot(_) => {
@@ -53,7 +51,7 @@ fn generate_variable(var_name: &str, operands: &[OperandConstraint]) -> String {
                 }
             };
             format!(
-                "(match &inst.operands[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})",
+                "(match &inst.operands()[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})",
                 index, arm, index, var_name
             )
         }
@@ -71,9 +69,7 @@ fn generate_hw_enc(var_name: &str, operands: &[OperandConstraint]) -> String {
                 OperandConstraint::Def(_) => {
                     "MachineOperand::Def(reg) => reg.to_reg().index() as u8"
                 }
-                OperandConstraint::TiedDef { .. } => {
-                    "MachineOperand::TiedDefUse(reg) => reg.to_reg().index() as u8"
-                }
+                OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
                 OperandConstraint::Imm(_) => "MachineOperand::Imm(val) => *val as u8",
                 OperandConstraint::Block(_)
                 | OperandConstraint::Global(_)
@@ -85,7 +81,7 @@ fn generate_hw_enc(var_name: &str, operands: &[OperandConstraint]) -> String {
                 }
             };
             format!(
-                "(match &inst.operands[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }} as u64)",
+                "(match &inst.operands()[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }} as u64)",
                 index, arm, index, var_name
             )
         }
@@ -107,9 +103,9 @@ fn generate_stack_slot_expr(var_name: &str, operands: &[OperandConstraint], fiel
             };
             format!(
                 r#"{{
-                    let slot = match &inst.operands[{index}] {{
+                    let slot = match &inst.operands()[{index}] {{
                         MachineOperand::StackSlot(slot) => *slot,
-                        _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{var_name}"))),
+                        _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{var_name}"))),
                     }};
                     {access}
                 }}"#
@@ -298,11 +294,11 @@ fn generate_emit_expr(
                     let disp_offset = emitter.position();
                     emitter.write_bytes(&[0, 0, 0, 0]);
                     let next_offset = emitter.position();
-                    match &inst.operands[{index}] {{
+                    match &inst.operands()[{index}] {{
                         MachineOperand::Block(target) => {{
                             emitter.add_block_rel32_fixup(disp_offset, next_offset, *target);
                         }}
-                        _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
+                        _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
                     }}
                 }}"#
             ),
@@ -310,20 +306,20 @@ fn generate_emit_expr(
                 r#"{{
                     let disp_offset = emitter.position();
                     emitter.write_bytes(&[0, 0, 0, 0]);
-                    match &inst.operands[{index}] {{
+                    match &inst.operands()[{index}] {{
                         MachineOperand::Global(target) => {{
                             emitter.add_global_rel32_fixup(disp_offset, *target);
                         }}
-                        _ => return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
+                        _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
                     }}
                 }}"#
             ),
             Some((index, _)) => format!(
-                r#"return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("rel32 operand at index {} for {{}} must be a block or global target", "{}")));"#,
+                r#"return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("rel32 operand at index {} for {{}} must be a block or global target", "{}")));"#,
                 index, name
             ),
             None => format!(
-                r#"return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!("rel32 operand {{}} not found", "{}")));"#,
+                r#"return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("rel32 operand {{}} not found", "{}")));"#,
                 name
             ),
         },
@@ -365,12 +361,12 @@ pub(crate) fn generate_header(
     writeln!(output).unwrap();
     writeln!(
         output,
-        r#"use veloc_lir::{{MachineInst, MachineOperand, Reg}};
+        r#"use veloc_lir::{{MachineOperand, Reg}};
 use smallvec::SmallVec;
 use crate::target::arch::{{
     AbiDescriptor, AbiPreservedSet, AbiRegisterPool, AbiStackDescriptor, AbiValueClass,
     CpuDescription, FixedUseConstraint, GenericInstMetadata, LoweringContext, RegInfo,
-    SelectResult, TargetArch, TargetInstMetadata, TargetTiedOperandMetadata, TiedOperandConstraint,
+    SelectResult, TargetArch, TargetInstMetadata, TiedOperandConstraint,
 }};
 pub use veloc_mir::Type;
 
@@ -407,11 +403,11 @@ fn reg_value_to_vreg<R: IntoOptReg>(value: R) -> Option<veloc_lir::VReg> {{
         writeln!(
             output,
             r#"
-fn source_defs(inst: &MachineInst) -> SmallVec<[Reg; 2]> {{
+fn source_defs(inst: &veloc_lir::InstRef<'_>) -> SmallVec<[Reg; 2]> {{
     let mut defs = SmallVec::<[Reg; 2]>::new();
-    for op in &inst.operands {{
+    for op in inst.operands().iter() {{
         match op {{
-            MachineOperand::Def(w) | MachineOperand::TiedDefUse(w) => defs.push(w.to_reg()),
+            MachineOperand::Def(w) => defs.push(w.to_reg()),
             _ => {{}}
         }}
     }}
@@ -425,12 +421,12 @@ fn source_defs(inst: &MachineInst) -> SmallVec<[Reg; 2]> {{
         writeln!(
             output,
             r#"
-fn operand_by_index(inst: &MachineInst, index: usize) -> Option<MachineOperand> {{
-    inst.operands.get(index).cloned()
+fn operand_by_index(inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<MachineOperand> {{
+    inst.operands().get(index).cloned()
 }}
 
-fn vreg_by_index(inst: &MachineInst, index: usize) -> Option<veloc_lir::VReg> {{
-    let reg = inst.operands.get(index)?.as_reg()?;
+fn vreg_by_index(inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<veloc_lir::VReg> {{
+    let reg = inst.operands().get(index)?.as_reg()?;
     reg.is_vreg().then(|| veloc_lir::VReg::from_u32(reg.index()))
 }}
 "#
@@ -504,14 +500,14 @@ pub(crate) fn format_slice(entries: Vec<String>) -> String {
     }
 }
 
-fn format_tied_metadata_slice(operands: &[OperandConstraint]) -> String {
-    let entries = operands
-        .iter()
-        .enumerate()
-        .filter(|(_, operand)| matches!(operand, OperandConstraint::TiedDef { .. }))
-        .map(|(index, _)| format!("TargetTiedOperandMetadata {{ operand: {} }}", index))
-        .collect();
-    format_slice(entries)
+fn format_ties(ties: &[(usize, usize)]) -> String {
+    format_slice(
+        ties.iter()
+            .map(|(def, input)| {
+                format!("TiedOperandConstraint {{ def_operand: {def}, use_operand: {input} }}")
+            })
+            .collect(),
+    )
 }
 
 fn format_fixed_use_slice(
@@ -628,7 +624,7 @@ pub(crate) fn generate_target_inst_metadata(
         writeln!(
             output,
             "    tied_operands: {},",
-            format_tied_metadata_slice(&inst_def.operands)
+            format_ties(&inst_def.ties)
         )
         .unwrap();
         writeln!(
@@ -696,7 +692,7 @@ impl TargetInst {{
     pub fn emit<E: crate::target::arch::TargetEmitter>(
         &self,
         emitter: &mut crate::Emitter,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         mfunc: &veloc_lir::MachineFunction<veloc_lir::stages::PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {{
         match self {{"#
@@ -709,7 +705,7 @@ impl TargetInst {{
             if inst_def.is_pseudo {
                 writeln!(
                     output,
-                    "                return Err(crate::error::Error::emit(inst.opcode.clone(), alloc::format!(\"Pseudo instruction {} must be lowered before emission\")));",
+                    "                return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Pseudo instruction {} must be lowered before emission\")));",
                     name
                 )
                 .unwrap();

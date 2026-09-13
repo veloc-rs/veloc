@@ -5,7 +5,7 @@
 
 use crate::target::arch::TargetEmitter;
 use veloc_lir::stages::PrologueEpilogueInserted;
-use veloc_lir::{MachineBlock, MachineFunction, MachineInst, MachineOpcode};
+use veloc_lir::{MachineBlock, MachineFunction, MachineOpcode};
 
 /// x86_64 机器码发射器实现
 pub struct X86_64CodeEmitter;
@@ -30,10 +30,10 @@ impl TargetEmitter for X86_64CodeEmitter {
     fn emit_instruction(
         &self,
         emitter: &mut crate::Emitter,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error> {
-        match &inst.opcode {
+        match &inst.opcode() {
             MachineOpcode::Invalid => {
                 panic!("invalid opcode cannot be emitted: {:?}", inst);
             }
@@ -45,7 +45,7 @@ impl TargetEmitter for X86_64CodeEmitter {
             }
             MachineOpcode::Target(target_inst_code) => {
                 let target = crate::target::x86_64::isle::TargetInst::from_u32(*target_inst_code);
-                if let Some(access) = inst.memory {
+                if let Some(access) = inst.memory() {
                     let shape = super::isle::target_inst_metadata(target).memory;
                     if shape != Some((access.kind, access.bytes))
                         || !access.alignment.is_power_of_two()

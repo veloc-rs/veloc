@@ -5,8 +5,8 @@
 use crate::error::{Error, Result};
 use crate::object::ObjectFileBuilder;
 use crate::passes::{
-    BlockParamLoweringPass, FrameFinalizePass, InstructionSelectionPass, LegalizePass,
-    PostIselOptimizePass, PreIselPass, RegisterAllocationPass,
+    FrameFinalizePass, InstructionSelectionPass, LegalizePass, PostIselOptimizePass, PreIselPass,
+    RegisterAllocationPass,
 };
 use crate::pipeline::{
     CompiledFunction, CompiledModule, FunctionAnalysisCtx, FunctionPassContext, ModuleAnalysisCtx,
@@ -51,6 +51,8 @@ pub struct CodegenStats {
 /// 代码生成选项
 #[derive(Debug, Clone)]
 pub struct CodegenOptions {
+    /// Validate machine SSA between stages (enabled by default in debug builds).
+    pub verify: bool,
     /// 是否启用优化
     pub optimize: bool,
     /// 是否打印中间结果（调试用）
@@ -62,6 +64,7 @@ pub struct CodegenOptions {
 impl Default for CodegenOptions {
     fn default() -> Self {
         Self {
+            verify: cfg!(debug_assertions),
             optimize: true,
             dump_lir: false,
             opt_level: 2,
@@ -253,6 +256,9 @@ impl<'a> CodegenPipeline<'a> {
         function_analyses: &mut FunctionAnalysisCtx,
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<MachineFunction<PrologueEpilogueInserted>> {
+        if self.options.verify {
+            crate::pipeline::ssa::verify(&mfunc, self.target)?;
+        }
         let legalizer = self.target.target_legalizer();
         let selector = self.target.target_selector();
         let operand_lowering = self.target.target_operand_lowering();
@@ -260,7 +266,7 @@ impl<'a> CodegenPipeline<'a> {
         let frame_lowering = self.target.target_frame_lowering();
         let pass_config = self.target.target_pass_config();
 
-        let mut ctx = FunctionPassContext::<RawLir>::new(
+        let ctx = FunctionPassContext::<RawLir>::new(
             self.target,
             func_sig,
             &self.options,
@@ -268,7 +274,7 @@ impl<'a> CodegenPipeline<'a> {
             function_analyses,
             module_analyses,
         );
-        let mfunc = self.apply_stage_transform(&BlockParamLoweringPass, mfunc, &mut ctx)?;
+        let mfunc = mfunc.into_stage::<LegalizedLir>();
 
         let mut ctx = ctx.into_stage::<LegalizedLir>();
         let mfunc = self.apply_stage_transform(
@@ -378,6 +384,10 @@ impl<'a> CodegenPipeline<'a> {
         let stage_name = pass.name();
         let (mfunc, effect) = pass.run(mfunc, ctx)?;
         ctx.function_analyses.apply(effect.change_set);
+        if self.options.verify && !mfunc.is_regallocated {
+            crate::pipeline::ssa::verify(&mfunc, self.target)
+                .map_err(|e| Error::codegen(alloc::format!("{stage_name}: {e}")))?;
+        }
         self.maybe_dump_mfunc(stage_name, &mfunc);
         Ok(mfunc)
     }
@@ -390,6 +400,9 @@ impl<'a> CodegenPipeline<'a> {
         ctx: &mut FunctionPassContext<'_, S>,
     ) -> Result<()> {
         let _ = pipeline.run(mfunc, ctx)?;
+        if self.options.verify && !mfunc.is_regallocated {
+            crate::pipeline::ssa::verify(mfunc, self.target)?;
+        }
         self.maybe_dump_mfunc(stage_name, mfunc);
         Ok(())
     }
@@ -405,7 +418,7 @@ impl<'a> CodegenPipeline<'a> {
         for block in &mfunc.blocks {
             emitter.begin_block(&mut output, block, mfunc)?;
             for &inst_id in &block.insts {
-                let inst = &mfunc.dfg[inst_id];
+                let inst = &mfunc.inst(inst_id);
                 if inst.is_generic() || inst.defs().chain(inst.uses()).any(|r| r.is_vreg()) {
                     return Err(Error::codegen(alloc::format!(
                         "unlowered instruction reached emission in {}: {:?}",
@@ -464,14 +477,15 @@ block0(v0: ptr):
                 .iter()
                 .flat_map(|b| &b.insts)
                 .copied()
-                .find(|id| f.dfg[*id].memory.is_some())
+                .find(|id| f.inst(*id).memory().is_some())
                 .unwrap();
-            let access = f.dfg[id].memory.as_mut().unwrap();
+            let mut access = f.inst(id).memory().unwrap();
             if wrong_direction {
                 access.kind = MemoryKind::Write;
             } else {
                 access.bytes = 4;
             }
+            f.set_inst_memory(id, Some(access));
             let err = pipeline
                 .run_function_pipeline(
                     f,
@@ -528,7 +542,7 @@ block0(v0: ptr, v1: i64):
                 .blocks
                 .iter()
                 .flat_map(|b| &b.insts)
-                .filter_map(|id| f.dfg[*id].memory)
+                .filter_map(|id| f.inst(*id).memory())
                 .collect();
             assert_eq!(accesses.len(), 4);
             for (access, kind) in accesses.iter().zip([

@@ -2,9 +2,7 @@ use super::reassociate as run;
 use crate::pipeline::FunctionAnalysisCtx;
 use alloc::vec::Vec;
 use veloc_lir::stages::RawLir;
-use veloc_lir::{
-    GenericOpcode, MachineBlock, MachineFunction, MachineInst, MachineOpcode, Writable,
-};
+use veloc_lir::{GenericOpcode, MachineBlock, MachineFunction, MachineOpcode, Writable};
 use veloc_mir::{Block, Type};
 
 #[test]
@@ -16,15 +14,16 @@ fn reassociate_benchmark() {
     let mut acc = leaves[11];
     for &leaf in leaves[..11].iter().rev() {
         let result = source.alloc_vreg(Type::I64);
-        source.alloc_inst_and_append_to_block(
-            0,
-            MachineInst::build_binary(
+        {
+            let id = source.writer().binary(
                 MachineOpcode::Generic(GenericOpcode::G_ADD),
                 Writable(result),
                 acc,
                 leaf,
-            ),
-        );
+            );
+            source.append_inst_id_to_block(0, id);
+            id
+        };
         acc = result;
     }
     let start = std::time::Instant::now();

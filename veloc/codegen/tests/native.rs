@@ -94,9 +94,7 @@ int main(void) {
 #[test]
 fn extension_encodings_match_system_assembler_for_every_register_pair() {
     use veloc_codegen::target::x86_64::{X86_64CodeEmitter, isle::*};
-    use veloc_lir::{
-        MachineFunction, MachineInst, MachineOpcode, Writable, stages::PrologueEpilogueInserted,
-    };
+    use veloc_lir::{MachineFunction, MachineOpcode, Writable, stages::PrologueEpilogueInserted};
     let regs = [
         REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI, REG_R8, REG_R9,
         REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15,
@@ -117,7 +115,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
         "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
         "r13", "r14", "r15",
     ];
-    let f = MachineFunction::<PrologueEpilogueInserted>::new("encoding".into());
+    let mut f = MachineFunction::<PrologueEpilogueInserted>::new("encoding".into());
     let mut emitter = veloc_codegen::Emitter::new();
     let mut assembly = String::from(".text\n");
     let mut cases = Vec::new();
@@ -134,13 +132,13 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
                 let line = format!("{mnemonic} %{}, %{}\n", sources[src], destinations[dst]);
                 cases.push((emitter.position(), line.clone()));
                 assembly.push_str(&line);
-                let inst = MachineInst::build_unary(
+                let inst = f.writer().unary(
                     MachineOpcode::Target(opcode.as_u32()),
                     Writable(regs[dst]),
                     regs[src],
                 );
                 opcode
-                    .emit::<X86_64CodeEmitter>(&mut emitter, &inst, &f)
+                    .emit::<X86_64CodeEmitter>(&mut emitter, &f.inst(inst), &f)
                     .unwrap();
             }
         }
@@ -470,6 +468,87 @@ int main(void) {
   for(uint64_t n=0;n<100;n++) {
     assert(rotate(1,2,3,n)==rotations[n%3]);
     assert(chain(1,2,3,n)==(n+1)*100+(n+2)*10+n+3);
+  }
+}
+"#,
+    );
+}
+
+#[test]
+fn ssa_edges_execute_spilled_cycles_and_duplicate_targets() {
+    const N: usize = 40;
+    let mut source = String::from("export function rotate_spilled(i64) -> i64\nblock0(v0: i64):\n");
+    for i in 1..=N {
+        source += &format!("  v{i}: i64 = iconst {i}\n");
+    }
+    let initial = (1..=N)
+        .map(|i| format!("v{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let params = (N + 1..=2 * N + 1)
+        .map(|i| format!("v{i}: i64"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    source += &format!(
+        "  jump block1({initial}, v0)\nblock1({params}):\n  v82: i64 = iconst 0\n  v83: bool = icmp eq v81, v82\n  br v83, block2(), block3()\nblock3():\n  v84: i64 = iconst 1\n  v85: i64 = isub v81, v84\n"
+    );
+    let rotation = (N + 2..=2 * N)
+        .map(|i| format!("v{i}"))
+        .chain([format!("v{}", N + 1)])
+        .collect::<Vec<_>>()
+        .join(", ");
+    source += &format!("  jump block1({rotation}, v85)\nblock2():\n  v86: i64 = iconst 0\n");
+    let mut sum = 86;
+    for i in 0..N {
+        let weight = 87 + i * 3;
+        let product = weight + 1;
+        let next = weight + 2;
+        source += &format!(
+            "  v{weight}: i64 = iconst {}\n  v{product}: i64 = imul v{}, v{weight}\n  v{next}: i64 = iadd v{sum}, v{product}\n",
+            i + 1,
+            N + 1 + i
+        );
+        sum = next;
+    }
+    source += &format!("  return v{sum}\n");
+    source += r#"
+export function entry_loop(i64, i64) -> i64
+block0(v0: i64, v1: i64):
+  v2: i64 = iconst 0
+  v3: bool = icmp eq v0, v2
+  br v3, block1(), block2()
+block1():
+  return v1
+block2():
+  v4: i64 = iconst 1
+  v5: i64 = isub v0, v4
+  v6: i64 = iadd v1, v4
+  jump block0(v5, v6)
+
+export function same_target(i64, i64, i64) -> i64
+block0(v0: i64, v1: i64, v2: i64):
+  v3: i64 = iconst 0
+  v4: bool = icmp eq v0, v3
+  br v4, block1(v1, v2), block1(v2, v1)
+block1(v5: i64, v6: i64):
+  v7: i64 = isub v5, v6
+  return v7
+"#;
+    run(
+        &source,
+        r#"
+#include <stdint.h>
+#include <assert.h>
+extern int64_t rotate_spilled(int64_t);
+extern int64_t same_target(int64_t,int64_t,int64_t);
+extern int64_t entry_loop(int64_t,int64_t);
+int main(void) {
+  for(int n=0;n<83;n++) {
+    int64_t expected=0;
+    for(int i=0;i<40;i++) expected+=(i+1)*((i+n)%40+1);
+    assert(rotate_spilled(n)==expected);
+    assert(same_target(n,42,9)==(n==0?33:-33));
+    assert(entry_loop(n,17)==n+17);
   }
 }
 "#,

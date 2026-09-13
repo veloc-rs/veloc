@@ -1,5 +1,4 @@
 pub mod abi;
-pub mod block_params;
 pub mod legalize;
 pub(crate) mod reassociate;
 pub mod regbank;
@@ -13,7 +12,6 @@ use veloc_lir::stages::{LegalizedLir, PreIselPrepared};
 use self::reassociate::reassociate;
 
 pub use abi::AbiLoweringPass;
-pub use block_params::BlockParamLoweringPass;
 pub use legalize::{LegalizeAction, LegalizeResult, Legalizer};
 pub use regbank::RegisterBankSelectionPass;
 

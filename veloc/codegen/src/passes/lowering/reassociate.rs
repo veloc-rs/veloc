@@ -9,8 +9,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
 use veloc_lir::{
-    GenericOpcode, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand, Reg,
-    UseDefChain, Writable,
+    GenericOpcode, InstId, MachineFunction, MachineOpcode, MachineOperand, Reg, Writable,
 };
 use veloc_mir::TypeInfo;
 
@@ -33,7 +32,7 @@ struct Tree {
 }
 
 fn binary<S>(f: &MachineFunction<S>, id: InstId, opcode: GenericOpcode) -> Option<Node> {
-    let inst = &f.dfg[id];
+    let inst = &f.inst(id);
     if inst.generic_opcode() != Some(opcode) || f.inst_extra(id).is_some() {
         return None;
     }
@@ -41,7 +40,7 @@ fn binary<S>(f: &MachineFunction<S>, id: InstId, opcode: GenericOpcode) -> Optio
         MachineOperand::Def(dst),
         MachineOperand::Use(lhs),
         MachineOperand::Use(rhs),
-    ] = inst.operands.as_slice()
+    ] = inst.operands().as_ref()
     else {
         return None;
     };
@@ -67,11 +66,10 @@ fn binary<S>(f: &MachineFunction<S>, id: InstId, opcode: GenericOpcode) -> Optio
 
 fn tree<S>(
     f: &MachineFunction<S>,
-    uses: &UseDefChain,
     positions: &HashMap<InstId, usize>,
     root: InstId,
 ) -> Option<Tree> {
-    let opcode = f.dfg[root].generic_opcode()?;
+    let opcode = f.inst(root).generic_opcode()?;
     if !matches!(
         opcode,
         GenericOpcode::G_ADD
@@ -83,7 +81,7 @@ fn tree<S>(
         return None;
     }
     let first = binary(f, root, opcode)?;
-    if uses.single_def_of(first.dst) != Some(root) {
+    if f.defs(first.dst).single().map(|site| site.inst()) != Some(root) {
         return None;
     }
     let ty = f.vreg_data(first.dst).ty;
@@ -92,18 +90,20 @@ fn tree<S>(
     // An explicit stack handles long expressions without recursive stack growth.
     let mut pending = vec![(first.rhs, root), (first.lhs, root)];
     while let Some((reg, parent)) = pending.pop() {
-        if !reg.is_vreg() || f.vreg_data(reg).ty != ty || uses.def_count(reg) > 1 {
+        if !reg.is_vreg() || f.vreg_data(reg).ty != ty || f.defs(reg).nth(1).is_some() {
             // After phi destruction a register can have multiple definitions.
             // Reassociation is not allowed to change which definition it reads.
             return None;
         }
-        if let Some(def) = uses.single_def_of(reg)
+        if let Some(def) = f.defs(reg).single().map(|site| site.inst())
             && let Some(&pos) = positions.get(&def)
         {
             if pos >= positions[&parent] {
                 return None;
             }
-            if uses.is_single_use_by(reg, parent)
+            if f.uses(reg)
+                .single()
+                .is_some_and(|site| site.inst() == parent)
                 && let Some(node) = binary(f, def, opcode)
             {
                 nodes.push(node);
@@ -139,14 +139,11 @@ impl Tree {
     fn emit<S>(&self, f: &mut MachineFunction<S>, output: &mut Vec<InstId>) {
         let mut acc = self.leaves[0];
         for (node, &rhs) in self.nodes.iter().zip(&self.leaves[1..]) {
-            f.replace_inst(
-                node.id,
-                MachineInst::build_binary(
-                    MachineOpcode::Generic(self.opcode),
-                    Writable(node.dst),
-                    acc,
-                    rhs,
-                ),
+            f.rewriter(node.id).binary(
+                MachineOpcode::Generic(self.opcode),
+                Writable(node.dst),
+                acc,
+                rhs,
             );
             output.push(node.id);
             acc = node.dst;
@@ -154,13 +151,12 @@ impl Tree {
     }
 }
 
-/// One analysis snapshot, one maximal-tree traversal and one layout commit.
+/// Store-maintained references, one maximal-tree traversal and one layout commit.
 /// Existing instruction IDs and virtual registers are reused.
 pub(crate) fn reassociate<S>(
     f: &mut MachineFunction<S>,
     analyses: &mut FunctionAnalysisCtx,
 ) -> usize {
-    let uses = analyses.use_def(f);
     let mut changes = 0;
     for block in 0..f.num_blocks() {
         let ids = f.block_insts(block).to_vec();
@@ -172,7 +168,7 @@ pub(crate) fn reassociate<S>(
             if visited[positions[&root]] {
                 continue;
             }
-            let Some(tree) = tree(f, uses, &positions, root) else {
+            let Some(tree) = tree(f, &positions, root) else {
                 continue;
             };
             // Claim even already-canonical trees: don't rescan every subtree.

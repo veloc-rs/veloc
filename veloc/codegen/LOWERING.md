@@ -11,13 +11,42 @@ The native pipeline keeps three responsibilities separate:
 - Instruction selection chooses target instructions using the existing ISLE rules;
   ABI and register constraints remain separate concerns.
 
+## Machine SSA and allocation
+
+Virtual values have one definition through legalization, selection and scheduling.
+Non-entry block parameters remain SSA definitions; branches carry their edge
+arguments even when a generic conditional or jump table expands to several
+target branches. Function entry arguments use G_ARG/ABI definitions, or a fresh
+ABI predecessor when the original entry has backedges.
+
+Multi-instruction selection rules declare intermediates explicitly:
+
+```text
+(temp $bit $dst)
+(emit (seq (X86Cmp64 $x $y) (X86Sete $bit) (X86Movzx8to32 $dst $bit)))
+```
+
+A temporary inherits its exemplar's type and register bank, but has a fresh
+identity. It is allocated only after the rule's match conditions succeed.
+
+Allocation consumes unchanged SSA instructions and produces operand locations,
+spill/copy insertions and per-edge physical move plans. Materialization creates
+edge blocks, resolves branch targets, removes edge arguments and block parameters,
+and finally produces physical non-SSA instructions. Parallel-copy cycles use
+recyclable stack temporaries; stack-to-stack moves use reserved scratch registers.
+There is no pre-selection phi destruction or virtual-register parallel-copy pass.
+
+The optional machine SSA verifier runs at pipeline boundaries, not in builders.
+It checks virtual definitions/dominance and edge contracts; physical ABI
+registers and clobbers deliberately remain outside the SSA invariant.
+
 ## Memory representation
 
 Translation receives an explicit target `DataLayout`. Pointer loads/stores use
 its pointer size; other accesses require a fixed-size representation rather than
 treating a scalable type's minimum size as an exact access width.
 
-MIR load/store alignment and volatility survive as `MachineInst::memory`.
+MIR load/store alignment and volatility survive as `InstRef::memory()`.
 Stack accesses also receive a descriptor, with conservative alignment and MIR's
 nontrapping stack-access contract. Source offsets remain instruction operands.
 

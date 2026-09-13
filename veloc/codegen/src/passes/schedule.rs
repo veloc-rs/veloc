@@ -67,7 +67,7 @@ pub(crate) fn schedule<S>(
                 if f.inst_extra(id).is_some() {
                     break;
                 }
-                let Some(cost) = target.schedule_info(&f.dfg[id]) else {
+                let Some(cost) = target.schedule_info(&f.inst(id)) else {
                     break;
                 };
                 info.push(cost);
@@ -98,10 +98,10 @@ pub(crate) fn schedule<S>(
 }
 
 fn before<S>(f: &MachineFunction<S>, id: InstId, live: &mut HashSet<Reg>) {
-    for reg in f.dfg[id].defs() {
+    for reg in f.inst(id).defs() {
         live.remove(&reg);
     }
-    live.extend(f.dfg[id].uses());
+    live.extend(f.inst(id).uses());
 }
 
 fn bank(class: RegClass) -> usize {
@@ -139,10 +139,10 @@ fn region<S>(
         }
     };
     for (i, &id) in ids.iter().enumerate() {
-        let mut read: Vec<_> = f.dfg[id].uses().collect();
+        let mut read: Vec<_> = f.inst(id).uses().collect();
         read.sort();
         read.dedup();
-        let mut write: Vec<_> = f.dfg[id].defs().collect();
+        let mut write: Vec<_> = f.inst(id).defs().collect();
         write.sort();
         write.dedup();
         for &r in &read {

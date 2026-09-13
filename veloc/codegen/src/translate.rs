@@ -4,12 +4,12 @@
 //! 这是 GlobalISel 流程的第一步
 
 use crate::error::{Error, Result};
-use alloc::format;
+use alloc::{format, vec::Vec};
 use cranelift_entity::PrimaryMap;
 use veloc_lir::stages::RawLir;
 use veloc_lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
-    MachineBlock, MachineFunction, MachineInst, MachineModule, MachineOpcode, MachineOperand, Reg,
+    InstId, MachineBlock, MachineFunction, MachineModule, MachineOpcode, MachineOperand, Reg,
 };
 use veloc_mir::{Function, InstView, Module, TypeInfo, Value};
 
@@ -31,26 +31,6 @@ struct TranslationContext<'a> {
     mfunc: MachineFunction<RawLir>,
     value_map: PrimaryMap<Value, Reg>,
     slots: hashbrown::HashMap<veloc_mir::Inst, veloc_lir::StackSlot>,
-}
-
-struct TranslatedInst {
-    inst: MachineInst,
-    extra: Option<InstExtra>,
-}
-
-impl TranslatedInst {
-    fn with_extra(inst: MachineInst, extra: InstExtra) -> Self {
-        Self {
-            inst,
-            extra: Some(extra),
-        }
-    }
-}
-
-impl From<MachineInst> for TranslatedInst {
-    fn from(inst: MachineInst) -> Self {
-        Self { inst, extra: None }
-    }
 }
 
 impl<'a> IRTranslator<'a> {
@@ -89,23 +69,27 @@ impl<'a> IRTranslator<'a> {
     }
 
     /// 为函数参数生成 G_ARG 指令
-    fn lower_arguments(&self, ctx: &mut TranslationContext, mblock: &mut MachineBlock) {
-        use veloc_lir::Writable;
-        for (idx, &param_val) in ctx.func.params().iter().enumerate() {
-            let vreg = ctx.value_map[param_val];
-            let arg_inst = MachineInst::build_arg(Writable(vreg), idx as i64);
-            Self::emit_inst(ctx, mblock, arg_inst);
-        }
-    }
-
-    fn emit_inst(
+    fn lower_arguments(
+        &self,
         ctx: &mut TranslationContext,
         mblock: &mut MachineBlock,
-        inst: MachineInst,
-    ) -> veloc_lir::InstId {
-        let inst_id = ctx.mfunc.alloc_inst(inst);
-        mblock.append_inst_id(inst_id);
-        inst_id
+        fresh: bool,
+    ) -> Vec<Reg> {
+        use veloc_lir::Writable;
+        let mut args = Vec::new();
+        for (idx, &param_val) in ctx.func.params().iter().enumerate() {
+            let original = ctx.value_map[param_val];
+            let vreg = if fresh {
+                ctx.mfunc.alloc_vreg(ctx.mfunc.vreg_data(original).ty)
+            } else {
+                original
+            };
+            args.push(vreg);
+            ctx.mfunc.params.push(vreg);
+            let id = ctx.mfunc.writer().arg(Writable(vreg), idx as i64);
+            mblock.append_inst_id(id);
+        }
+        args
     }
 
     /// 将 IR 模块翻译为 MachineModule
@@ -203,27 +187,38 @@ impl<'a> IRTranslator<'a> {
 
             // 如果是入口块，先处理函数参数
             if idx == 0 {
-                self.lower_arguments(&mut ctx, &mut mblock);
+                if func.layout().blocks()[block_id].preds.is_empty() {
+                    // No backedge: G_ARG/ABI copies are the sole definitions.
+                    mblock.params.clear();
+                    self.lower_arguments(&mut ctx, &mut mblock, false);
+                } else {
+                    // An entry loop needs genuine phi parameters. Give incoming
+                    // ABI values a separate entry predecessor and fresh identities.
+                    let entry = veloc_mir::Block::from_u32(func.layout().blocks().len() as u32);
+                    let mut incoming = MachineBlock::new(entry);
+                    let args = self.lower_arguments(&mut ctx, &mut incoming, true);
+                    let jump = ctx.mfunc.writer().br(block_id);
+                    ctx.mfunc.set_inst_extra(
+                        jump,
+                        InstExtra::Branch(BranchInfo {
+                            args: args.into_iter().collect(),
+                        }),
+                    );
+                    incoming.append_inst_id(jump);
+                    ctx.mfunc.blocks.push(incoming);
+                }
             }
 
             for &inst_id in &func.layout().blocks()[block_id].insts {
                 if lower::instruction(inst_id, &mut ctx, &mut mblock)? {
                     continue;
                 }
-                let translated = self.translate_instruction(inst_id, &mut ctx, &mut mblock)?;
-                let m_inst_id = ctx.mfunc.alloc_inst(translated.inst);
-                if let Some(extra) = translated.extra {
-                    ctx.mfunc.set_inst_extra(m_inst_id, extra);
-                }
-                mblock.append_inst_id(m_inst_id);
+                let id = self.translate_instruction(inst_id, &mut ctx, &mut mblock)?;
+                mblock.append_inst_id(id);
             }
 
             ctx.mfunc.blocks.push(mblock);
         }
-
-        ctx.mfunc
-            .params
-            .extend(func.params().iter().map(|&param| ctx.value_map[param]));
 
         Ok(ctx.mfunc)
     }
@@ -234,7 +229,7 @@ impl<'a> IRTranslator<'a> {
         inst_id: veloc_mir::Inst,
         ctx: &mut TranslationContext,
         mblock: &mut MachineBlock,
-    ) -> Result<TranslatedInst> {
+    ) -> Result<InstId> {
         use smallvec::SmallVec;
         use veloc_lir::Writable;
 
@@ -254,38 +249,39 @@ impl<'a> IRTranslator<'a> {
             )),
             InstView::Alloca { .. } => {
                 let slot = ctx.slots[&inst_id];
-                Ok(MachineInst::build_stack_addr(defs[0].as_writable().unwrap(), slot).into())
+                Ok(ctx
+                    .mfunc
+                    .writer()
+                    .stack_addr(defs[0].as_writable().unwrap(), slot))
             }
             InstView::IntCompare { kind, args } => {
                 let src0 = ctx.value_map[args[0]];
                 let src1 = ctx.value_map[args[1]];
 
-                Ok(
-                    MachineInst::build_icmp(defs[0].as_writable().unwrap(), src0, src1, *kind)
-                        .into(),
-                )
+                Ok(ctx
+                    .mfunc
+                    .writer()
+                    .icmp(defs[0].as_writable().unwrap(), src0, src1, *kind))
             }
 
             InstView::FloatCompare { kind, args } => {
                 let src0 = ctx.value_map[args[0]];
                 let src1 = ctx.value_map[args[1]];
 
-                Ok(
-                    MachineInst::build_fcmp(defs[0].as_writable().unwrap(), src0, src1, *kind)
-                        .into(),
-                )
+                Ok(ctx
+                    .mfunc
+                    .writer()
+                    .fcmp(defs[0].as_writable().unwrap(), src0, src1, *kind))
             }
 
             InstView::Load { ptr, offset, .. } => {
                 let base = ctx.value_map[*ptr];
                 let access = self.memory_access(ctx.func, inst_id)?;
-                Ok(MachineInst::build_offset_load(
+                Ok(ctx.mfunc.writer().with_memory(access).offset_load(
                     defs[0].as_writable().unwrap(),
                     base,
                     *offset as i64,
-                )
-                .with_memory(access)
-                .into())
+                ))
             }
 
             InstView::Store {
@@ -294,22 +290,22 @@ impl<'a> IRTranslator<'a> {
                 let val = ctx.value_map[*value];
                 let base = ctx.value_map[*ptr];
                 let access = self.memory_access(ctx.func, inst_id)?;
-                Ok(MachineInst::build_offset_store(val, base, *offset as i64)
+                Ok(ctx
+                    .mfunc
+                    .writer()
                     .with_memory(access)
-                    .into())
+                    .offset_store(val, base, *offset as i64))
             }
 
-            InstView::Iconst { value: imm } => Ok(MachineInst::build_constant(
-                defs[0].as_writable().unwrap(),
-                imm.signed(),
-            )
-            .into()),
+            InstView::Iconst { value: imm } => Ok(ctx
+                .mfunc
+                .writer()
+                .constant(defs[0].as_writable().unwrap(), imm.signed())),
 
-            InstView::Bconst { value } => Ok(MachineInst::build_constant(
-                defs[0].as_writable().unwrap(),
-                i64::from(*value),
-            )
-            .into()),
+            InstView::Bconst { value } => Ok(ctx
+                .mfunc
+                .writer()
+                .constant(defs[0].as_writable().unwrap(), i64::from(*value))),
 
             InstView::Fconst { value } => {
                 let dst = defs[0].as_writable().unwrap();
@@ -327,15 +323,14 @@ impl<'a> IRTranslator<'a> {
                 };
 
                 let bits_reg = ctx.mfunc.alloc_vreg(bits_ty);
-                let bits_inst = MachineInst::build_constant(Writable(bits_reg), bits_imm);
-                Self::emit_inst(ctx, mblock, bits_inst);
+                let bits_inst = ctx.mfunc.writer().constant(Writable(bits_reg), bits_imm);
+                mblock.append_inst_id(bits_inst);
 
-                Ok(MachineInst::build_unary(
+                Ok(ctx.mfunc.writer().unary(
                     MachineOpcode::Generic(GenericOpcode::G_BITCAST),
                     dst,
                     bits_reg,
-                )
-                .into())
+                ))
             }
 
             InstView::Jump { dest } => {
@@ -345,14 +340,16 @@ impl<'a> IRTranslator<'a> {
                     .iter()
                     .map(|value| ctx.value_map[*value])
                     .collect::<SmallVec<[Reg; 2]>>();
-                let inst = MachineInst::build_br(target);
+                let inst = ctx.mfunc.writer().br(target);
                 if args.is_empty() {
-                    Ok(inst.into())
+                    Ok(inst)
                 } else {
-                    Ok(TranslatedInst::with_extra(
-                        inst,
-                        InstExtra::Branch(BranchInfo { args }),
-                    ))
+                    Ok({
+                        let id = inst;
+                        ctx.mfunc
+                            .set_inst_extra(id, InstExtra::Branch(BranchInfo { args }));
+                        id
+                    })
                 }
             }
 
@@ -373,17 +370,24 @@ impl<'a> IRTranslator<'a> {
                     .map(|value| ctx.value_map[*value])
                     .collect::<SmallVec<[Reg; 2]>>();
 
-                let inst = MachineInst::build_brcond(cond_vreg, then_dest.block, else_dest.block);
+                let inst = ctx
+                    .mfunc
+                    .writer()
+                    .brcond(cond_vreg, then_dest.block, else_dest.block);
                 if then_args.is_empty() && else_args.is_empty() {
-                    Ok(inst.into())
+                    Ok(inst)
                 } else {
-                    Ok(TranslatedInst::with_extra(
-                        inst,
-                        InstExtra::BranchCond(BranchCondInfo {
-                            then_args,
-                            else_args,
-                        }),
-                    ))
+                    Ok({
+                        let id = inst;
+                        ctx.mfunc.set_inst_extra(
+                            id,
+                            InstExtra::BranchCond(BranchCondInfo {
+                                then_args,
+                                else_args,
+                            }),
+                        );
+                        id
+                    })
                 }
             }
 
@@ -404,10 +408,12 @@ impl<'a> IRTranslator<'a> {
                     })
                     .collect();
 
-                Ok(TranslatedInst::with_extra(
-                    MachineInst::build_brjt(idx_vreg),
-                    InstExtra::BrTable(BrTableInfo { targets }),
-                ))
+                Ok({
+                    let id = ctx.mfunc.writer().brjt(idx_vreg);
+                    ctx.mfunc
+                        .set_inst_extra(id, InstExtra::BrTable(BrTableInfo { targets }));
+                    id
+                })
             }
 
             InstView::Return { values } => {
@@ -417,7 +423,7 @@ impl<'a> IRTranslator<'a> {
                     let vreg = ctx.value_map[v];
                     rets.push(vreg);
                 }
-                Ok(MachineInst::build_ret(rets).into())
+                Ok(ctx.mfunc.writer().ret(rets))
             }
 
             InstView::Call { func_id, args } => {
@@ -427,7 +433,7 @@ impl<'a> IRTranslator<'a> {
                     self.module.get_function_name(*func_id),
                     callee.linkage,
                 );
-                let call_inst = MachineInst::build_call(
+                let call_inst = ctx.mfunc.writer().call(
                     defs.iter().map(|operand| operand.as_writable().unwrap()),
                     sym_id,
                     call_args.iter().map(|value| ctx.value_map[*value]),
@@ -437,15 +443,16 @@ impl<'a> IRTranslator<'a> {
                     sig: self.module.get_signature(sig_id).clone(),
                 };
 
-                Ok(TranslatedInst::with_extra(
-                    call_inst,
-                    InstExtra::Call(call_info),
-                ))
+                Ok({
+                    let id = call_inst;
+                    ctx.mfunc.set_inst_extra(id, InstExtra::Call(call_info));
+                    id
+                })
             }
 
             InstView::CallIndirect { ptr, args, sig_id } => {
                 let call_args = *args;
-                let call_inst = MachineInst::build_call_indirect(
+                let call_inst = ctx.mfunc.writer().call_indirect(
                     defs.iter().map(|operand| operand.as_writable().unwrap()),
                     ctx.value_map[*ptr],
                     call_args.iter().map(|value| ctx.value_map[*value]),
@@ -454,10 +461,11 @@ impl<'a> IRTranslator<'a> {
                     sig: self.module.get_signature(*sig_id).clone(),
                 };
 
-                Ok(TranslatedInst::with_extra(
-                    call_inst,
-                    InstExtra::Call(call_info),
-                ))
+                Ok({
+                    let id = call_inst;
+                    ctx.mfunc.set_inst_extra(id, InstExtra::Call(call_info));
+                    id
+                })
             }
 
             InstView::PtrOffset { ptr, offset } => {
@@ -465,19 +473,22 @@ impl<'a> IRTranslator<'a> {
 
                 let addr = ctx.value_map[*ptr];
                 if *offset == 0 {
-                    Ok(MachineInst::build_copy(defs[0].as_writable().unwrap(), addr).into())
+                    Ok(ctx
+                        .mfunc
+                        .writer()
+                        .copy(defs[0].as_writable().unwrap(), addr))
                 } else {
                     let off_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
-                    Self::emit_inst(
-                        ctx,
-                        mblock,
-                        MachineInst::build_constant(Writable(off_reg), *offset as i64),
-                    );
+                    let id = ctx
+                        .mfunc
+                        .writer()
+                        .constant(Writable(off_reg), *offset as i64);
+                    mblock.append_inst_id(id);
 
-                    Ok(
-                        MachineInst::build_ptr_add(defs[0].as_writable().unwrap(), addr, off_reg)
-                            .into(),
-                    )
+                    Ok(ctx
+                        .mfunc
+                        .writer()
+                        .ptr_add(defs[0].as_writable().unwrap(), addr, off_reg))
                 }
             }
 
@@ -489,18 +500,20 @@ impl<'a> IRTranslator<'a> {
                 // 1. scale index: idx * scale
                 let scaled_idx = if imm.scale != 1 {
                     let scale_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
-                    let scale_inst =
-                        MachineInst::build_constant(Writable(scale_reg), imm.scale as i64);
-                    Self::emit_inst(ctx, mblock, scale_inst);
+                    let scale_inst = ctx
+                        .mfunc
+                        .writer()
+                        .constant(Writable(scale_reg), imm.scale as i64);
+                    mblock.append_inst_id(scale_inst);
 
                     let res_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
-                    let mul_inst = MachineInst::build_binary(
+                    let mul_inst = ctx.mfunc.writer().binary(
                         MachineOpcode::Generic(GenericOpcode::G_MUL),
                         Writable(res_reg),
                         idx,
                         scale_reg,
                     );
-                    Self::emit_inst(ctx, mblock, mul_inst);
+                    mblock.append_inst_id(mul_inst);
                     res_reg
                 } else {
                     idx
@@ -509,33 +522,34 @@ impl<'a> IRTranslator<'a> {
                 // 2. add offset if any: base_idx = (idx * scale) + offset
                 let base_idx = if imm.offset != 0 {
                     let off_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
-                    let off_inst =
-                        MachineInst::build_constant(Writable(off_reg), imm.offset as i64);
-                    Self::emit_inst(ctx, mblock, off_inst);
+                    let off_inst = ctx
+                        .mfunc
+                        .writer()
+                        .constant(Writable(off_reg), imm.offset as i64);
+                    mblock.append_inst_id(off_inst);
 
                     let res_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
-                    let add_inst = MachineInst::build_binary(
+                    let add_inst = ctx.mfunc.writer().binary(
                         MachineOpcode::Generic(GenericOpcode::G_ADD),
                         Writable(res_reg),
                         scaled_idx,
                         off_reg,
                     );
-                    Self::emit_inst(ctx, mblock, add_inst);
+                    mblock.append_inst_id(add_inst);
                     res_reg
                 } else {
                     scaled_idx
                 };
 
                 // 3. ptr_add: ptr + base_idx
-                Ok(MachineInst::build_binary(
+                Ok(ctx.mfunc.writer().binary(
                     MachineOpcode::Generic(GenericOpcode::G_PTR_ADD),
                     defs[0].as_writable().unwrap(),
                     base_ptr,
                     base_idx,
-                )
-                .into())
+                ))
             }
-            InstView::Unreachable => Ok(MachineInst::build_unreachable().into()),
+            InstView::Unreachable => Ok(ctx.mfunc.writer().unreachable()),
 
             _ => Err(Error::translate(format!(
                 "InstView variant not implemented for translation: {:?}",

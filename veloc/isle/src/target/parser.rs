@@ -539,6 +539,7 @@ impl<'a> Parser<'a> {
         let mut attrs = RuleAttrs::default();
         let mut patterns = Vec::new();
         let mut emit = None;
+        let mut temps = Vec::new();
         let rule_span = self.peek()?.map(|(_, span)| span).unwrap_or(0..0);
 
         while self.peek()?.map_or(false, |(t, _)| t != Token::RParen) {
@@ -560,6 +561,14 @@ impl<'a> Parser<'a> {
                 Token::EmitKw => {
                     self.next()?;
                     emit = Some(self.parse_constructor()?);
+                }
+                Token::Ident(ref name) if name == "temp" => {
+                    self.next()?;
+                    self.expect(Token::Dollar)?;
+                    let name = self.expect_ident()?;
+                    self.expect(Token::Dollar)?;
+                    let like = self.expect_ident()?;
+                    temps.push((name, like));
                 }
                 Token::CoversKw => {
                     self.next()?;
@@ -600,6 +609,7 @@ impl<'a> Parser<'a> {
 
         Ok(Def::SelectRule(SelectRuleDef {
             attrs,
+            temps,
             patterns,
             emit,
         }))

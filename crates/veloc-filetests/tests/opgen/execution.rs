@@ -299,7 +299,7 @@ op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I
     // observes encoded operand order without duplicating the projection logic.
     let start = generated
         .instructions
-        .find("impl MachineInst { pub fn build_pair")
+        .find("impl crate::InstWriter<'_> { pub fn pair")
         .unwrap();
     let mut depth = 0;
     let mut end = start;
@@ -321,24 +321,26 @@ op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I
         r#"
 #![allow(dead_code, non_camel_case_types)]
 type Reg = u32;
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Writable<T>(T);
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum MachineOperand {{ Def(Writable<Reg>), Use(Reg) }}
 enum GenericOpcode {{ G_PAIR }}
 enum MachineOpcode {{ Generic(GenericOpcode) }}
-struct MachineInst {{ operands: Vec<MachineOperand> }}
-impl MachineInst {{
-    fn build_generic(_: MachineOpcode, operands: Vec<MachineOperand>) -> Self {{ Self {{ operands }} }}
-}}
-mod smallvec {{
-    macro_rules! smallvec {{ ($($operand:expr),* $(,)?) => {{ vec![$($operand),*] }}; }}
-    pub(crate) use smallvec;
+type InstId = usize;
+struct InstWriter<'a> {{ store: &'a mut Vec<Vec<MachineOperand>> }}
+impl InstWriter<'_> {{
+    fn write(self, _: MachineOpcode, operands: &[MachineOperand]) -> InstId {{
+        let id = self.store.len();
+        self.store.push(operands.to_vec());
+        id
+    }}
 }}
 {builder}
 fn main() {{
-    let inst = MachineInst::build_pair(Writable(10), Writable(20), 30, 40);
-    assert_eq!(inst.operands, vec![
+    let mut store = Vec::new();
+    let id = InstWriter {{ store: &mut store }}.pair(Writable(10), Writable(20), 30, 40);
+    assert_eq!(store[id], vec![
         MachineOperand::Use(40), MachineOperand::Def(Writable(20)),
         MachineOperand::Use(30), MachineOperand::Def(Writable(10)),
     ]);

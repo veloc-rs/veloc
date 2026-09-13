@@ -5,6 +5,7 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
+veloc-collections = { workspace = true }
 veloc-types = { workspace = true }
 cranelift-entity = { workspace = true }
 hashbrown = { workspace = true, features = ["ahash", "inline-more"] }

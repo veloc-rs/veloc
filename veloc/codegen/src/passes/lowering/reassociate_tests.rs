@@ -9,16 +9,19 @@ fn function() -> MachineFunction<RawLir> {
 }
 
 fn add(f: &mut MachineFunction<RawLir>, op: GenericOpcode, dst: Reg, a: Reg, b: Reg) -> InstId {
-    f.alloc_inst_and_append_to_block(
-        0,
-        MachineInst::build_binary(MachineOpcode::Generic(op), Writable(dst), a, b),
-    )
+    {
+        let id = f
+            .writer()
+            .binary(MachineOpcode::Generic(op), Writable(dst), a, b);
+        f.append_inst_id_to_block(0, id);
+        id
+    }
 }
 
 fn eval(f: &MachineFunction<RawLir>, inputs: &[(Reg, u64)], output: Reg, mask: u64) -> u64 {
     let mut values: HashMap<_, _> = inputs.iter().copied().collect();
     for &id in f.block_insts(0) {
-        let op = f.dfg[id].generic_opcode().unwrap();
+        let op = f.inst(id).generic_opcode().unwrap();
         let node = binary(f, id, op).unwrap();
         let (a, b) = (values[&node.lhs], values[&node.rhs]);
         let value = match op {
@@ -56,7 +59,7 @@ fn preserves_wrapping_semantics_and_reuses_ids() {
             let original = f.clone();
             let mut analyses = FunctionAnalysisCtx::default();
             assert_eq!(reassociate(&mut f, &mut analyses), 1);
-            assert_eq!(f.dfg.len(), original.dfg.len());
+            assert_eq!(f.inst_count(), original.inst_count());
             assert_eq!(f.vregs.len(), original.vregs.len());
             assert_eq!(reassociate(&mut f, &mut analyses), 0);
             for seed in 0u64..64 {
@@ -111,9 +114,9 @@ fn leaves_with_multiple_definitions_and_non_integer_types_are_untouched() {
         if ty == Type::I32 {
             add(&mut f, GenericOpcode::G_ADD, t, a, b);
         }
-        let before = alloc::format!("{:?}", f.dfg);
+        let before = f.format_for_dump();
         assert_eq!(reassociate(&mut f, &mut FunctionAnalysisCtx::default()), 0);
-        assert_eq!(alloc::format!("{:?}", f.dfg), before);
+        assert_eq!(f.format_for_dump(), before);
     }
 }
 
@@ -151,15 +154,16 @@ fn trees_are_not_fused_across_blocks() {
     let t = f.alloc_vreg(Type::I32);
     let out = f.alloc_vreg(Type::I32);
     let first = add(&mut f, GenericOpcode::G_ADD, t, b, a);
-    let root = f.alloc_inst_and_append_to_block(
-        1,
-        MachineInst::build_binary(
+    let root = {
+        let id = f.writer().binary(
             MachineOpcode::Generic(GenericOpcode::G_ADD),
             Writable(out),
             t,
             c,
-        ),
-    );
+        );
+        f.append_inst_id_to_block(1, id);
+        id
+    };
     reassociate(&mut f, &mut FunctionAnalysisCtx::default());
     assert_eq!(f.block_insts(0), &[first]);
     assert_eq!(f.block_insts(1), &[root]);
@@ -179,6 +183,6 @@ fn long_trees_do_not_recurse_or_grow_storage() {
     }
     let mut analyses = FunctionAnalysisCtx::default();
     assert_eq!(reassociate(&mut f, &mut analyses), 1);
-    assert_eq!(f.dfg.len(), 4095);
+    assert_eq!(f.inst_count(), 4095);
     assert_eq!(reassociate(&mut f, &mut analyses), 0);
 }

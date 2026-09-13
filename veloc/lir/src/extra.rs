@@ -1,16 +1,10 @@
 //! Low-level IR (LIR) 指令附加信息定义
 
 use alloc::vec::Vec;
-use cranelift_entity::entity_impl;
 use smallvec::SmallVec;
 use veloc_mir::{Block, Signature};
 
 use crate::Reg;
-
-/// 指令额外信息索引
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct InstExtraId(u32);
-entity_impl!(InstExtraId, "inst_extra");
 
 /// 调用指令的附加信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,4 +57,44 @@ pub enum InstExtra {
     BranchCond(BranchCondInfo),
     BrTable(BrTableInfo),
     AMode(AMode),
+}
+
+impl InstExtra {
+    /// One flattened order for edge-argument traversal and controlled editing.
+    pub fn edge_args(&self) -> impl Iterator<Item = Reg> + '_ {
+        let (first, second, table): (&[Reg], &[Reg], &[BrTableTarget]) = match self {
+            Self::Branch(info) => (&info.args, &[], &[]),
+            Self::BranchCond(info) => (&info.then_args, &info.else_args, &[]),
+            Self::BrTable(info) => (&[], &[], &info.targets),
+            Self::Call(_) | Self::AMode(_) => (&[], &[], &[]),
+        };
+        first
+            .iter()
+            .chain(second)
+            .chain(table.iter().flat_map(|t| &t.args))
+            .copied()
+    }
+
+    pub(crate) fn edge_arg_mut(&mut self, mut index: usize) -> &mut Reg {
+        match self {
+            Self::Branch(info) => &mut info.args[index],
+            Self::BranchCond(info) => {
+                if index < info.then_args.len() {
+                    &mut info.then_args[index]
+                } else {
+                    &mut info.else_args[index - info.then_args.len()]
+                }
+            }
+            Self::BrTable(info) => {
+                for target in &mut info.targets {
+                    if index < target.args.len() {
+                        return &mut target.args[index];
+                    }
+                    index -= target.args.len();
+                }
+                panic!("edge argument index out of bounds");
+            }
+            Self::Call(_) | Self::AMode(_) => panic!("payload has no edge arguments"),
+        }
+    }
 }

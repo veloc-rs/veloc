@@ -137,15 +137,11 @@ impl X86_64TargetMachine {
 }
 
 impl TargetMachine for X86_64TargetMachine {
-    fn schedule_info(
+    fn target_inst_metadata(
         &self,
-        inst: &veloc_lir::MachineInst,
-    ) -> Option<crate::target::arch::ScheduleInfo> {
-        machine::schedule_info(inst)
-    }
-
-    fn target_control(&self, opcode: u32) -> veloc_lir::ControlFlow {
-        isle::target_inst_metadata(isle::TargetInst::from_u32(opcode)).flow
+        opcode: u32,
+    ) -> &'static crate::target::arch::TargetInstMetadata {
+        isle::target_inst_metadata(isle::TargetInst::from_u32(opcode))
     }
 
     fn spill_scratch(&self, class: RegClass) -> &'static [veloc_lir::Reg] {
@@ -156,15 +152,42 @@ impl TargetMachine for X86_64TargetMachine {
         }
     }
 
+    fn jump_instruction(
+        &self,
+        writer: veloc_lir::InstWriter<'_>,
+        target: veloc_mir::Block,
+    ) -> crate::Result<veloc_lir::InstId> {
+        Ok(writer.generic(
+            veloc_lir::MachineOpcode::Target(isle::TargetInst::X86Jmp.as_u32()),
+            smallvec::smallvec![veloc_lir::MachineOperand::Block(target)],
+        ))
+    }
+
+    fn copy_instruction(
+        &self,
+        writer: veloc_lir::InstWriter<'_>,
+        dst: veloc_lir::Reg,
+        src: veloc_lir::Reg,
+        ty: veloc_mir::Type,
+    ) -> crate::Result<veloc_lir::InstId> {
+        let opcode = lowering::x86_mov_opcode_for_type(ty)?;
+        Ok(writer.unary(
+            veloc_lir::MachineOpcode::Target(opcode.as_u32()),
+            veloc_lir::Writable(dst),
+            src,
+        ))
+    }
+
     fn spill_instruction(
         &self,
+        writer: veloc_lir::InstWriter<'_>,
         load: bool,
         reg: veloc_lir::Reg,
         base: veloc_lir::Reg,
         offset: i64,
         ty: veloc_mir::Type,
-    ) -> crate::error::Result<veloc_lir::MachineInst> {
-        machine::spill_instruction(load, reg, base, offset, ty)
+    ) -> crate::error::Result<veloc_lir::InstId> {
+        machine::spill_instruction(writer, load, reg, base, offset, ty)
     }
 
     fn config(&self) -> &TargetConfig {

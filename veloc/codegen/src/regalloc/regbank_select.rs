@@ -86,13 +86,12 @@ impl RegisterBankSelector {
         let mut updates = Vec::new();
         for block in &mfunc.blocks {
             for &inst_id in &block.insts {
-                let inst = &mfunc.dfg[inst_id];
-                if let veloc_lir::MachineOpcode::Generic(opcode) = inst.opcode {
-                    for (op_idx, op) in inst.operands.iter().enumerate() {
+                let inst = &mfunc.inst(inst_id);
+                if let veloc_lir::MachineOpcode::Generic(opcode) = inst.opcode() {
+                    for (op_idx, op) in inst.operands().iter().enumerate() {
                         let reg = match op {
                             MachineOperand::Use(r) => Some(*r),
                             MachineOperand::Def(w) => Some(w.to_reg()),
-                            MachineOperand::TiedDefUse(w) => Some(w.to_reg()),
                             _ => None,
                         };
                         if let Some(r) = reg {
@@ -118,9 +117,9 @@ impl RegisterBankSelector {
             let mut local_updates = Vec::new();
             for block in &mfunc.blocks {
                 for &inst_id in &block.insts {
-                    let inst = &mfunc.dfg[inst_id];
+                    let inst = &mfunc.inst(inst_id);
                     if let veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_COPY) =
-                        inst.opcode
+                        inst.opcode()
                     {
                         let dst = inst.defs().next();
                         let src = inst.uses().next();

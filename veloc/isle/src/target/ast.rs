@@ -135,6 +135,8 @@ pub struct RuleAttrs {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectRuleDef {
     pub attrs: RuleAttrs,
+    /// Fresh rule-local registers, each inheriting a bound value's type and bank.
+    pub temps: Vec<(String, String)>,
     pub patterns: Vec<Pattern>,
     pub emit: Constructor,
 }

@@ -54,7 +54,7 @@ block0(v0: ptr):
             .flat_map(|(_, f)| {
                 f.blocks
                     .iter()
-                    .flat_map(move |b| b.insts.iter().filter_map(move |id| f.dfg[*id].memory))
+                    .flat_map(move |b| b.insts.iter().filter_map(move |id| f.inst(*id).memory()))
             })
             .collect();
         assert_eq!(accesses.len(), 1);

@@ -30,8 +30,8 @@ use smallvec::smallvec;
 use veloc_lir::RegisterBank;
 use veloc_lir::stages::{LegalizedLir, PreIselPrepared, RegAllocated, SelectedLir};
 use veloc_lir::{
-    GenericOpcode, InstExtra, InstId, MachineFunction, MachineInst, MachineOpcode, MachineOperand,
-    Reg, VReg, Writable,
+    GenericOpcode, InstExtra, InstId, MachineFunction, MachineOpcode, MachineOperand, Reg, VReg,
+    Writable,
 };
 use veloc_mir::{FloatCC, IntCC, Type, TypeInfo};
 
@@ -42,7 +42,7 @@ pub trait X86LoweringContext: LoweringContext {
     fn has_avx2(&self) -> bool;
 }
 
-fn x86_mov_opcode_for_type(ty: Type) -> Result<TargetInst, crate::error::Error> {
+pub(super) fn x86_mov_opcode_for_type(ty: Type) -> Result<TargetInst, crate::error::Error> {
     if ty == Type::F32 {
         Ok(TargetInst::X86Movss)
     } else if ty == Type::F64 {
@@ -74,39 +74,55 @@ fn x86_copy_type_for_regs<S>(
 }
 
 fn build_x86_copy_inst<S>(
-    mfunc: &MachineFunction<S>,
+    mfunc: &mut MachineFunction<S>,
     dst: Reg,
     src: Reg,
-) -> Result<MachineInst, crate::error::Error> {
+) -> Result<InstId, crate::error::Error> {
     let ty = x86_copy_type_for_regs(mfunc, dst, src)?;
     let opcode = x86_mov_opcode_for_type(ty)?;
-    Ok(MachineInst::build_unary(
-        MachineOpcode::Target(opcode.as_u32()),
-        Writable(dst),
-        src,
-    ))
+    Ok(mfunc
+        .writer()
+        .unary(MachineOpcode::Target(opcode.as_u32()), Writable(dst), src))
 }
 
 fn build_target_inst(
+    writer: veloc_lir::InstWriter<'_>,
     opcode: TargetInst,
     operands: smallvec::SmallVec<[MachineOperand; 4]>,
-) -> MachineInst {
-    MachineInst::build_generic(MachineOpcode::Target(opcode.as_u32()), operands)
+) -> InstId {
+    writer.generic(MachineOpcode::Target(opcode.as_u32()), operands)
 }
 
-fn build_target_imm(opcode: TargetInst, dst: Writable<Reg>, imm: i64) -> MachineInst {
+fn build_target_imm(
+    writer: veloc_lir::InstWriter<'_>,
+    opcode: TargetInst,
+    dst: Writable<Reg>,
+    imm: i64,
+) -> InstId {
     build_target_inst(
+        writer,
         opcode,
         smallvec![MachineOperand::Def(dst), MachineOperand::Imm(imm)],
     )
 }
 
-fn build_target_unary(opcode: TargetInst, dst: Writable<Reg>, src: Reg) -> MachineInst {
-    MachineInst::build_unary(MachineOpcode::Target(opcode.as_u32()), dst, src)
+fn build_target_unary(
+    writer: veloc_lir::InstWriter<'_>,
+    opcode: TargetInst,
+    dst: Writable<Reg>,
+    src: Reg,
+) -> InstId {
+    writer.unary(MachineOpcode::Target(opcode.as_u32()), dst, src)
 }
 
-fn build_target_binary_uses(opcode: TargetInst, lhs: Reg, rhs: Reg) -> MachineInst {
+fn build_target_binary_uses(
+    writer: veloc_lir::InstWriter<'_>,
+    opcode: TargetInst,
+    lhs: Reg,
+    rhs: Reg,
+) -> InstId {
     build_target_inst(
+        writer,
         opcode,
         smallvec![MachineOperand::Use(lhs), MachineOperand::Use(rhs)],
     )
@@ -128,17 +144,6 @@ impl X86_64Lowering {
         mfunc.alloc_vreg_in_bank(ty, RegisterBank::GPR)
     }
 
-    fn push_legalized_inst(
-        &self,
-        mfunc: &mut MachineFunction<LegalizedLir>,
-        output: &mut Vec<InstId>,
-        inst: MachineInst,
-    ) -> InstId {
-        let inst_id = mfunc.alloc_inst(inst);
-        output.push(inst_id);
-        inst_id
-    }
-
     fn emit_legalize_constant_reg(
         &self,
         mfunc: &mut MachineFunction<LegalizedLir>,
@@ -147,11 +152,7 @@ impl X86_64Lowering {
         imm: i64,
     ) -> Reg {
         let reg = mfunc.alloc_vreg(ty);
-        self.push_legalized_inst(
-            mfunc,
-            output,
-            MachineInst::build_constant(Writable(reg), imm),
-        );
+        output.push(mfunc.writer().constant(Writable(reg), imm));
         reg
     }
 
@@ -165,10 +166,10 @@ impl X86_64Lowering {
         rhs: Reg,
     ) -> Reg {
         let dst = mfunc.alloc_vreg(ty);
-        self.push_legalized_inst(
-            mfunc,
-            output,
-            MachineInst::build_binary(MachineOpcode::Generic(opcode), Writable(dst), lhs, rhs),
+        output.push(
+            mfunc
+                .writer()
+                .binary(MachineOpcode::Generic(opcode), Writable(dst), lhs, rhs),
         );
         dst
     }
@@ -273,7 +274,7 @@ impl X86_64Lowering {
             final_mask,
         );
         if pop != dst {
-            self.push_legalized_inst(mfunc, output, MachineInst::build_copy(Writable(dst), pop));
+            output.push(mfunc.writer().copy(Writable(dst), pop));
         }
         Ok(())
     }
@@ -298,11 +299,7 @@ impl X86_64Lowering {
         let one = self.emit_legalize_constant_reg(mfunc, output, ty, 1);
         let bit_width = self.emit_legalize_constant_reg(mfunc, output, ty, bits);
         let is_zero = mfunc.alloc_vreg(Type::BOOL);
-        self.push_legalized_inst(
-            mfunc,
-            output,
-            MachineInst::build_icmp(Writable(is_zero), src, zero, IntCC::Eq),
-        );
+        output.push(mfunc.writer().icmp(Writable(is_zero), src, zero, IntCC::Eq));
 
         let neg = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_SUB, ty, zero, src);
         let lowbit =
@@ -312,10 +309,10 @@ impl X86_64Lowering {
         let pop = mfunc.alloc_vreg(ty);
         self.legalize_ctpop_into(mfunc, output, lowbit_minus_one, pop, ty)?;
 
-        self.push_legalized_inst(
-            mfunc,
-            output,
-            MachineInst::build_select(Writable(dst), is_zero, bit_width, pop),
+        output.push(
+            mfunc
+                .writer()
+                .select(Writable(dst), is_zero, bit_width, pop),
         );
         Ok(())
     }
@@ -339,11 +336,7 @@ impl X86_64Lowering {
         let zero = self.emit_legalize_constant_reg(mfunc, output, ty, 0);
         let bit_width = self.emit_legalize_constant_reg(mfunc, output, ty, bits);
         let is_zero = mfunc.alloc_vreg(Type::BOOL);
-        self.push_legalized_inst(
-            mfunc,
-            output,
-            MachineInst::build_icmp(Writable(is_zero), src, zero, IntCC::Eq),
-        );
+        output.push(mfunc.writer().icmp(Writable(is_zero), src, zero, IntCC::Eq));
 
         let shift1 = self.emit_legalize_constant_reg(mfunc, output, ty, 1);
         let shift2 = self.emit_legalize_constant_reg(mfunc, output, ty, 2);
@@ -386,10 +379,10 @@ impl X86_64Lowering {
         self.legalize_ctpop_into(mfunc, output, filled, pop, ty)?;
         let clz =
             self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_SUB, ty, bit_width, pop);
-        self.push_legalized_inst(
-            mfunc,
-            output,
-            MachineInst::build_select(Writable(dst), is_zero, bit_width, clz),
+        output.push(
+            mfunc
+                .writer()
+                .select(Writable(dst), is_zero, bit_width, clz),
         );
         Ok(())
     }
@@ -408,13 +401,19 @@ impl X86_64Lowering {
         let cond_byte = self.alloc_gpr_temp(ctx.mfunc, Type::I8);
         let cond_i32 = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
 
-        ctx.selected
-            .push(build_target_binary_uses(test_opcode, cond, cond));
+        ctx.selected.push(build_target_binary_uses(
+            ctx.mfunc.writer(),
+            test_opcode,
+            cond,
+            cond,
+        ));
         ctx.selected.push(build_target_inst(
+            ctx.mfunc.writer(),
             TargetInst::X86Setne,
             smallvec![MachineOperand::Def(Writable(cond_byte))],
         ));
         ctx.selected.push(build_target_unary(
+            ctx.mfunc.writer(),
             TargetInst::X86Movzx8to32,
             Writable(cond_i32),
             cond_byte,
@@ -427,100 +426,75 @@ impl X86_64Lowering {
         &self,
         ctx: &mut SelectionContext<'_, PreIselPrepared>,
         dst: Reg,
-        cond_i32: Reg,
+        cond: Reg,
         true_val: Reg,
         false_val: Reg,
     ) {
-        let mask = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
-        let diff = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
-
-        ctx.selected
-            .push(build_target_imm(TargetInst::X86Mov32Imm, Writable(mask), 0));
-        ctx.selected.push(MachineInst::build_tied_binary(
-            MachineOpcode::Target(TargetInst::X86Sub32.as_u32()),
-            Writable(mask),
-            cond_i32,
-        ));
-        ctx.selected.push(MachineInst::build_unary(
-            MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-            Writable(diff),
-            true_val,
-        ));
-        ctx.selected.push(MachineInst::build_tied_binary(
-            MachineOpcode::Target(TargetInst::X86Xor32.as_u32()),
-            Writable(diff),
-            false_val,
-        ));
-        ctx.selected.push(MachineInst::build_unary(
-            MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-            Writable(dst),
-            false_val,
-        ));
-        ctx.selected.push(MachineInst::build_tied_binary(
-            MachineOpcode::Target(TargetInst::X86And32.as_u32()),
-            Writable(diff),
-            mask,
-        ));
-        ctx.selected.push(MachineInst::build_tied_binary(
-            MachineOpcode::Target(TargetInst::X86Xor32.as_u32()),
-            Writable(dst),
-            diff,
-        ));
+        self.emit_select_bits(ctx, dst, cond, true_val, false_val, Type::I32);
     }
 
     fn emit_select_i64_like(
         &self,
         ctx: &mut SelectionContext<'_, PreIselPrepared>,
         dst: Reg,
-        cond_i32: Reg,
+        cond: Reg,
         true_val: Reg,
         false_val: Reg,
-        wide_ty: Type,
+        ty: Type,
     ) {
-        let cond_i64 = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
-        let mask = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
-        let diff = self.alloc_gpr_temp(ctx.mfunc, wide_ty);
-
-        ctx.selected.push(MachineInst::build_unary(
+        let wide = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
+        ctx.selected.push(ctx.mfunc.writer().unary(
             MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-            Writable(cond_i64),
-            cond_i32,
+            Writable(wide),
+            cond,
         ));
-        ctx.selected.push(build_target_imm(
-            TargetInst::X86Mov64Imm32,
-            Writable(mask),
-            0,
-        ));
-        ctx.selected.push(MachineInst::build_tied_binary(
-            MachineOpcode::Target(TargetInst::X86Sub64.as_u32()),
-            Writable(mask),
-            cond_i64,
-        ));
-        ctx.selected.push(MachineInst::build_unary(
-            MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
-            Writable(diff),
-            true_val,
-        ));
-        ctx.selected.push(MachineInst::build_tied_binary(
-            MachineOpcode::Target(TargetInst::X86Xor64.as_u32()),
-            Writable(diff),
-            false_val,
-        ));
-        ctx.selected.push(MachineInst::build_unary(
-            MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
-            Writable(dst),
-            false_val,
-        ));
-        ctx.selected.push(MachineInst::build_tied_binary(
-            MachineOpcode::Target(TargetInst::X86And64.as_u32()),
-            Writable(diff),
-            mask,
-        ));
-        ctx.selected.push(MachineInst::build_tied_binary(
-            MachineOpcode::Target(TargetInst::X86Xor64.as_u32()),
-            Writable(dst),
-            diff,
-        ));
+        self.emit_select_bits(ctx, dst, wide, true_val, false_val, ty);
+    }
+
+    fn emit_select_bits(
+        &self,
+        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        dst: Reg,
+        cond: Reg,
+        true_val: Reg,
+        false_val: Reg,
+        ty: Type,
+    ) {
+        let (mov, sub, xor, and) = if ty == Type::I32 {
+            (
+                TargetInst::X86Mov32Imm,
+                TargetInst::X86Sub32,
+                TargetInst::X86Xor32,
+                TargetInst::X86And32,
+            )
+        } else {
+            (
+                TargetInst::X86Mov64Imm32,
+                TargetInst::X86Sub64,
+                TargetInst::X86Xor64,
+                TargetInst::X86And64,
+            )
+        };
+        let zero = self.alloc_gpr_temp(ctx.mfunc, ty);
+        let mask = self.alloc_gpr_temp(ctx.mfunc, ty);
+        let diff = self.alloc_gpr_temp(ctx.mfunc, ty);
+        let masked = self.alloc_gpr_temp(ctx.mfunc, ty);
+        ctx.selected
+            .push(build_target_imm(ctx.mfunc.writer(), mov, Writable(zero), 0));
+        // false ^ ((true ^ false) & -cond), with a distinct value at each step.
+        for (op, output, lhs, rhs) in [
+            (sub, mask, zero, cond),
+            (xor, diff, true_val, false_val),
+            (and, masked, diff, mask),
+            (xor, dst, false_val, masked),
+        ] {
+            ctx.selected.push(ctx.mfunc.writer().tied_binary(
+                MachineOpcode::Target(op.as_u32()),
+                Writable(output),
+                rhs,
+                lhs,
+            ));
+        }
     }
 
     fn select_fcmp(
@@ -540,18 +514,24 @@ impl X86_64Lowering {
             }
         };
 
-        ctx.selected
-            .push(build_target_binary_uses(compare_opcode, fcmp.lhs, fcmp.rhs));
+        ctx.selected.push(build_target_binary_uses(
+            ctx.mfunc.writer(),
+            compare_opcode,
+            fcmp.lhs,
+            fcmp.rhs,
+        ));
 
         let emit_setcc_i32 =
             |ctx: &mut SelectionContext<'_, PreIselPrepared>, opcode: TargetInst| -> Reg {
                 let tmp8 = self.alloc_gpr_temp(ctx.mfunc, Type::I8);
                 let tmp32 = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
                 ctx.selected.push(build_target_inst(
+                    ctx.mfunc.writer(),
                     opcode,
                     smallvec![MachineOperand::Def(Writable(tmp8))],
                 ));
                 ctx.selected.push(build_target_unary(
+                    ctx.mfunc.writer(),
                     TargetInst::X86Movzx8to32,
                     Writable(tmp32),
                     tmp8,
@@ -569,29 +549,21 @@ impl X86_64Lowering {
                 };
                 let is_eq = emit_setcc_i32(ctx, predicate);
                 let ordered = emit_setcc_i32(ctx, TargetInst::X86Setnp);
-                ctx.selected.push(MachineInst::build_unary(
-                    MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-                    Writable(fcmp.dst),
-                    is_eq,
-                ));
-                ctx.selected.push(MachineInst::build_tied_binary(
+                ctx.selected.push(ctx.mfunc.writer().tied_binary(
                     MachineOpcode::Target(TargetInst::X86And32.as_u32()),
                     Writable(fcmp.dst),
                     ordered,
+                    is_eq,
                 ));
             }
             FloatCC::Ne => {
                 let is_ne = emit_setcc_i32(ctx, TargetInst::X86Setne);
                 let unordered = emit_setcc_i32(ctx, TargetInst::X86Setp);
-                ctx.selected.push(MachineInst::build_unary(
-                    MachineOpcode::Target(TargetInst::X86Mov32.as_u32()),
-                    Writable(fcmp.dst),
-                    is_ne,
-                ));
-                ctx.selected.push(MachineInst::build_tied_binary(
+                ctx.selected.push(ctx.mfunc.writer().tied_binary(
                     MachineOpcode::Target(TargetInst::X86Or32.as_u32()),
                     Writable(fcmp.dst),
                     unordered,
+                    is_ne,
                 ));
             }
             other => {
@@ -629,17 +601,20 @@ impl X86_64Lowering {
                 let dst_bits = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
 
                 ctx.selected.push(build_target_unary(
+                    ctx.mfunc.writer(),
                     TargetInst::X86MovdFromXmm,
                     Writable(true_bits),
                     select.v1,
                 ));
                 ctx.selected.push(build_target_unary(
+                    ctx.mfunc.writer(),
                     TargetInst::X86MovdFromXmm,
                     Writable(false_bits),
                     select.v2,
                 ));
                 self.emit_select_i32(ctx, dst_bits, cond_i32, true_bits, false_bits);
                 ctx.selected.push(build_target_unary(
+                    ctx.mfunc.writer(),
                     TargetInst::X86MovdToXmm,
                     Writable(select.dst),
                     dst_bits,
@@ -651,11 +626,13 @@ impl X86_64Lowering {
                 let dst_bits = self.alloc_gpr_temp(ctx.mfunc, Type::I64);
 
                 ctx.selected.push(build_target_unary(
+                    ctx.mfunc.writer(),
                     TargetInst::X86MovqFromXmm,
                     Writable(true_bits),
                     select.v1,
                 ));
                 ctx.selected.push(build_target_unary(
+                    ctx.mfunc.writer(),
                     TargetInst::X86MovqFromXmm,
                     Writable(false_bits),
                     select.v2,
@@ -669,6 +646,7 @@ impl X86_64Lowering {
                     Type::I64,
                 );
                 ctx.selected.push(build_target_unary(
+                    ctx.mfunc.writer(),
                     TargetInst::X86MovqToXmm,
                     Writable(select.dst),
                     dst_bits,
@@ -690,30 +668,34 @@ impl X86_64Lowering {
 }
 
 /// x86_64 专属的 Context 扩展实现
-pub struct X86SelectionContext<'a, 'b> {
-    pub base: &'a mut SelectionContext<'b, PreIselPrepared>,
+pub struct X86SelectionContext<'a> {
+    pub vregs: &'a mut cranelift_entity::PrimaryMap<VReg, veloc_lir::VRegData>,
     pub cpu: CpuDescription,
 }
-
-impl<'a, 'b> LoweringContext for X86SelectionContext<'a, 'b> {
+impl LoweringContext for X86SelectionContext<'_> {
+    fn alloc_tmp(&mut self, like: Reg) -> Reg {
+        let data = self.vregs[like.as_vreg().expect("temporary exemplar must be virtual")].clone();
+        Reg::new_vreg(self.vregs.push(data).as_u32())
+    }
     fn get_type(&self, vreg: VReg) -> Type {
-        self.base.get_type(vreg)
+        self.vregs[vreg].ty
     }
-
     fn get_bank(&self, vreg: VReg) -> Option<RegisterBank> {
-        self.base.get_bank(vreg)
+        self.vregs[vreg].bank
     }
-
-    fn get_vreg(&self, inst: &MachineInst, index: usize) -> Option<VReg> {
-        self.base.get_vreg(inst, index)
+    fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<VReg> {
+        let reg = inst
+            .operands()
+            .iter()
+            .filter_map(MachineOperand::as_reg)
+            .nth(index)?;
+        reg.is_vreg().then(|| VReg::from_u32(reg.index()))
     }
 }
-
-impl<'a, 'b> X86LoweringContext for X86SelectionContext<'a, 'b> {
+impl X86LoweringContext for X86SelectionContext<'_> {
     fn has_bmi2(&self) -> bool {
         self.cpu.has_feature("BMI2")
     }
-
     fn has_avx2(&self) -> bool {
         self.cpu.has_feature("AVX2")
     }

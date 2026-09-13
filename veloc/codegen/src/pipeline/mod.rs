@@ -3,6 +3,7 @@ pub mod compiled;
 pub mod context;
 pub mod pass;
 pub mod pipeline;
+pub mod ssa;
 
 pub use analysis::{
     AnalysisCache, CfgInfo, ChangeSet, DominatorTree, FunctionAnalysisCtx, LivenessInfo, LoopInfo,

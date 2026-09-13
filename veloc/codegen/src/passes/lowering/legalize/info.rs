@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use veloc_lir::{MachineFunction, MachineInst, MachineOperand, Reg};
+use veloc_lir::{MachineFunction, MachineOperand, Reg};
 use veloc_mir::{Type, TypeInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,7 +217,6 @@ pub fn type_width_is_one_of(ty: Type, widths: &[u16]) -> bool {
 pub enum OperandPattern {
     Def(TypePattern),
     Use(TypePattern),
-    TiedDefUse(TypePattern),
     Imm,
     FImm,
     Block,
@@ -232,24 +231,27 @@ pub enum OperandSeqPattern {
     Rest(OperandPattern),
 }
 
-pub fn format_inst_operands<S>(inst: &MachineInst, mfunc: &MachineFunction<S>) -> Result<String> {
-    let mut operands = Vec::with_capacity(inst.operands.len());
-    for operand in &inst.operands {
+pub fn format_inst_operands<S>(
+    inst: &veloc_lir::InstRef<'_>,
+    mfunc: &MachineFunction<S>,
+) -> Result<String> {
+    let mut operands = Vec::with_capacity(inst.operands().len());
+    for operand in inst.operands().iter() {
         operands.push(format_operand_debug(mfunc, operand)?);
     }
     Ok(format!("[{}]", operands.join(", ")))
 }
 
 pub fn inst_matches_operands<S>(
-    inst: &MachineInst,
+    inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     patterns: &[OperandPattern],
 ) -> Result<bool> {
-    if inst.operands.len() != patterns.len() {
+    if inst.operands().len() != patterns.len() {
         return Ok(false);
     }
 
-    for (operand, pattern) in inst.operands.iter().zip(patterns.iter().copied()) {
+    for (operand, pattern) in inst.operands().iter().zip(patterns.iter().copied()) {
         if !operand_matches(mfunc, operand, pattern)? {
             return Ok(false);
         }
@@ -259,32 +261,31 @@ pub fn inst_matches_operands<S>(
 }
 
 pub fn inst_matches_operand_sequence<S>(
-    inst: &MachineInst,
+    inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     patterns: &[OperandSeqPattern],
 ) -> Result<bool> {
-    match_operand_sequence_impl(&inst.operands, mfunc, patterns)
+    match_operand_sequence_impl(&inst.operands(), mfunc, patterns)
 }
 
 pub fn operand_type_at<S>(
-    inst: &MachineInst,
+    inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     index: usize,
 ) -> Result<Option<Type>> {
-    let Some(operand) = inst.operands.get(index) else {
+    let Some(operand) = inst.operands().get(index) else {
         return Ok(None);
     };
 
     match operand {
         MachineOperand::Def(w) => Ok(Some(reg_type(mfunc, w.to_reg())?)),
         MachineOperand::Use(r) => Ok(Some(reg_type(mfunc, *r)?)),
-        MachineOperand::TiedDefUse(w) => Ok(Some(reg_type(mfunc, w.to_reg())?)),
         _ => Ok(None),
     }
 }
 
 pub fn operand_bit_width_at<S>(
-    inst: &MachineInst,
+    inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     index: usize,
 ) -> Result<Option<usize>> {
@@ -294,7 +295,7 @@ pub fn operand_bit_width_at<S>(
 }
 
 pub fn same_operand_types<S>(
-    inst: &MachineInst,
+    inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     indices: &[usize],
 ) -> Result<bool> {
@@ -302,7 +303,7 @@ pub fn same_operand_types<S>(
 }
 
 pub fn same_operand_widths<S>(
-    inst: &MachineInst,
+    inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     indices: &[usize],
 ) -> Result<bool> {
@@ -310,14 +311,14 @@ pub fn same_operand_widths<S>(
 }
 
 fn same_operand_property<S, T, F>(
-    inst: &MachineInst,
+    inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     indices: &[usize],
     mut property_at: F,
 ) -> Result<bool>
 where
     T: Copy + PartialEq,
-    F: FnMut(&MachineInst, &MachineFunction<S>, usize) -> Result<Option<T>>,
+    F: FnMut(&veloc_lir::InstRef<'_>, &MachineFunction<S>, usize) -> Result<Option<T>>,
 {
     let Some((&first_index, rest)) = indices.split_first() else {
         return Ok(true);
@@ -386,9 +387,6 @@ fn format_operand_debug<S>(mfunc: &MachineFunction<S>, operand: &MachineOperand)
     Ok(match operand {
         MachineOperand::Def(w) => format!("def({:?})", reg_type(mfunc, w.to_reg())?),
         MachineOperand::Use(r) => format!("use({:?})", reg_type(mfunc, *r)?),
-        MachineOperand::TiedDefUse(w) => {
-            format!("tied_def_use({:?})", reg_type(mfunc, w.to_reg())?)
-        }
         MachineOperand::Imm(_) => "imm".to_string(),
         MachineOperand::FImm(_) => "fimm".to_string(),
         MachineOperand::Block(_) => "block".to_string(),
@@ -408,9 +406,6 @@ fn operand_matches<S>(
             ty.matches(reg_type(mfunc, w.to_reg())?)
         }
         (MachineOperand::Use(r), OperandPattern::Use(ty)) => ty.matches(reg_type(mfunc, *r)?),
-        (MachineOperand::TiedDefUse(w), OperandPattern::TiedDefUse(ty)) => {
-            ty.matches(reg_type(mfunc, w.to_reg())?)
-        }
         (MachineOperand::Imm(_), OperandPattern::Imm) => true,
         (MachineOperand::FImm(_), OperandPattern::FImm) => true,
         (MachineOperand::Block(_), OperandPattern::Block) => true,
@@ -1024,11 +1019,6 @@ macro_rules! legalize_matcher {
             $crate::legalize_matcher!(@type_pattern $($ty)+)
         )
     };
-    (@pattern tied($($ty:tt)+)) => {
-        $crate::passes::lowering::legalize::info::OperandPattern::TiedDefUse(
-            $crate::legalize_matcher!(@type_pattern $($ty)+)
-        )
-    };
     (@pattern imm) => {
         $crate::passes::lowering::legalize::info::OperandPattern::Imm
     };
@@ -1252,8 +1242,7 @@ mod tests {
     use smallvec::smallvec;
     use veloc_lir::stages::RawLir;
     use veloc_lir::{
-        GenericOpcode, MachineBlock, MachineFunction, MachineInst, MachineOpcode, SymbolId,
-        Writable,
+        GenericOpcode, MachineBlock, MachineFunction, MachineOpcode, SymbolId, Writable,
     };
     use veloc_mir::{Block, Type};
 
@@ -1269,13 +1258,13 @@ mod tests {
         let dst = mfunc.alloc_vreg(Type::I64);
         let lhs = mfunc.alloc_vreg(Type::I64);
         let rhs = mfunc.alloc_vreg(Type::I64);
-        let inst = MachineInst::build_binary(
+        let inst = mfunc.writer().binary(
             MachineOpcode::Generic(GenericOpcode::G_ADD),
             Writable(dst),
             lhs,
             rhs,
         );
-        let inst_ref = &inst;
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_ADD => {
@@ -1294,13 +1283,13 @@ mod tests {
         let dst = mfunc.alloc_vreg(Type::I32);
         let lhs = mfunc.alloc_vreg(Type::I32);
         let rhs = mfunc.alloc_vreg(Type::I32);
-        let inst = MachineInst::build_binary(
+        let inst = mfunc.writer().binary(
             MachineOpcode::Generic(GenericOpcode::G_ADD),
             Writable(dst),
             lhs,
             rhs,
         );
-        let inst_ref = &inst;
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_ADD => {
@@ -1318,12 +1307,12 @@ mod tests {
         let mut mfunc = make_function();
         let dst = mfunc.alloc_vreg(Type::F32);
         let src = mfunc.alloc_vreg(Type::I32);
-        let inst = MachineInst::build_unary(
+        let inst = mfunc.writer().unary(
             MachineOpcode::Generic(GenericOpcode::G_BITCAST),
             Writable(dst),
             src,
         );
-        let inst_ref = &inst;
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_BITCAST => {
@@ -1340,8 +1329,8 @@ mod tests {
     fn matcher_supports_any_type_pattern() {
         let mut mfunc = make_function();
         let dst = mfunc.alloc_vreg(Type::PTR);
-        let inst = MachineInst::build_arg(Writable(dst), 3);
-        let inst_ref = &inst;
+        let inst = mfunc.writer().arg(Writable(dst), 3);
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_ARG => {
@@ -1357,8 +1346,8 @@ mod tests {
     fn matcher_supports_ptr_sized_pattern() {
         let mut mfunc = make_function();
         let dst = mfunc.alloc_vreg(Type::PTR);
-        let inst = MachineInst::build_constant(Writable(dst), 42);
-        let inst_ref = &inst;
+        let inst = mfunc.writer().constant(Writable(dst), 42);
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_CONSTANT => {
@@ -1382,13 +1371,13 @@ mod tests {
         let dst = mfunc.alloc_vreg(vector_ty);
         let lhs = mfunc.alloc_vreg(vector_ty);
         let rhs = mfunc.alloc_vreg(vector_ty);
-        let inst = MachineInst::build_binary(
+        let inst = mfunc.writer().binary(
             MachineOpcode::Generic(GenericOpcode::G_ADD),
             Writable(dst),
             lhs,
             rhs,
         );
-        let inst_ref = &inst;
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_ADD => {
@@ -1416,13 +1405,13 @@ mod tests {
         let dst = mfunc.alloc_vreg(vector_ty);
         let lhs = mfunc.alloc_vreg(vector_ty);
         let rhs = mfunc.alloc_vreg(vector_ty);
-        let inst = MachineInst::build_binary(
+        let inst = mfunc.writer().binary(
             MachineOpcode::Generic(GenericOpcode::G_FADD),
             Writable(dst),
             lhs,
             rhs,
         );
-        let inst_ref = &inst;
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_FADD => {
@@ -1443,8 +1432,8 @@ mod tests {
         let mut mfunc = make_function();
         let dst = mfunc.alloc_vreg(Type::PTR);
         let src = mfunc.alloc_vreg(Type::PTR);
-        let inst = MachineInst::build_copy(Writable(dst), src);
-        let inst_ref = &inst;
+        let inst = mfunc.writer().copy(Writable(dst), src);
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_COPY => {
@@ -1461,20 +1450,30 @@ mod tests {
     fn operand_type_helpers_ignore_non_register_operands() {
         let mut mfunc = make_function();
         let dst = mfunc.alloc_vreg(Type::I32);
-        let inst = MachineInst::build_arg(Writable(dst), 7);
+        let inst = mfunc.writer().arg(Writable(dst), 7);
 
-        assert_eq!(operand_type_at(&inst, &mfunc, 0).unwrap(), Some(Type::I32));
-        assert_eq!(operand_bit_width_at(&inst, &mfunc, 0).unwrap(), Some(32));
-        assert_eq!(operand_type_at(&inst, &mfunc, 1).unwrap(), None);
-        assert_eq!(operand_bit_width_at(&inst, &mfunc, 1).unwrap(), None);
-        assert!(!same_operand_types(&inst, &mfunc, &[0, 1]).unwrap());
-        assert!(!same_operand_widths(&inst, &mfunc, &[0, 1]).unwrap());
+        assert_eq!(
+            operand_type_at(&mfunc.inst(inst), &mfunc, 0).unwrap(),
+            Some(Type::I32)
+        );
+        assert_eq!(
+            operand_bit_width_at(&mfunc.inst(inst), &mfunc, 0).unwrap(),
+            Some(32)
+        );
+        assert_eq!(operand_type_at(&mfunc.inst(inst), &mfunc, 1).unwrap(), None);
+        assert_eq!(
+            operand_bit_width_at(&mfunc.inst(inst), &mfunc, 1).unwrap(),
+            None
+        );
+        assert!(!same_operand_types(&mfunc.inst(inst), &mfunc, &[0, 1]).unwrap());
+        assert!(!same_operand_widths(&mfunc.inst(inst), &mfunc, &[0, 1]).unwrap());
     }
 
     #[test]
     fn matcher_returns_none_when_no_opcode_branch_matches() {
         let _mfunc = make_function();
-        let inst = MachineInst::build_ret(smallvec![]);
+        let mut mfunc = make_function();
+        let inst = mfunc.writer().ret(smallvec![]);
         let _inst_ref = &inst;
 
         let action = crate::legalize_matcher!(_inst_ref, &_mfunc, {}).unwrap();
@@ -1487,8 +1486,8 @@ mod tests {
         let mut mfunc = make_function();
         let r0 = mfunc.alloc_vreg(Type::I32);
         let r1 = mfunc.alloc_vreg(Type::F64);
-        let inst = MachineInst::build_ret(smallvec![r0, r1]);
-        let inst_ref = &inst;
+        let inst = mfunc.writer().ret(smallvec![r0, r1]);
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_RET => {
@@ -1507,12 +1506,12 @@ mod tests {
         let ret1 = mfunc.alloc_vreg(Type::PTR);
         let arg0 = mfunc.alloc_vreg(Type::I64);
         let arg1 = mfunc.alloc_vreg(Type::F32);
-        let inst = MachineInst::build_call(
+        let inst = mfunc.writer().call(
             [Writable(ret0), Writable(ret1)],
             SymbolId::from_u32(4),
             [arg0, arg1],
         );
-        let inst_ref = &inst;
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_CALL => {
@@ -1531,8 +1530,10 @@ mod tests {
         let callee = mfunc.alloc_vreg(Type::PTR);
         let arg0 = mfunc.alloc_vreg(Type::I32);
         let arg1 = mfunc.alloc_vreg(Type::I32);
-        let inst = MachineInst::build_call_indirect([Writable(ret)], callee, [arg0, arg1]);
-        let inst_ref = &inst;
+        let inst = mfunc
+            .writer()
+            .call_indirect([Writable(ret)], callee, [arg0, arg1]);
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_CALLIND => {
@@ -1550,13 +1551,13 @@ mod tests {
         let dst = mfunc.alloc_vreg(Type::F32);
         let lhs = mfunc.alloc_vreg(Type::F32);
         let rhs = mfunc.alloc_vreg(Type::F32);
-        let inst = MachineInst::build_binary(
+        let inst = mfunc.writer().binary(
             MachineOpcode::Generic(GenericOpcode::G_FADD),
             Writable(dst),
             lhs,
             rhs,
         );
-        let inst_ref = &inst;
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_FADD => {
@@ -1578,8 +1579,8 @@ mod tests {
         let mut mfunc = make_function();
         let dst = mfunc.alloc_vreg(Type::PTR);
         let src = mfunc.alloc_vreg(Type::PTR);
-        let inst = MachineInst::build_copy(Writable(dst), src);
-        let inst_ref = &inst;
+        let inst = mfunc.writer().copy(Writable(dst), src);
+        let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
             G_COPY => {

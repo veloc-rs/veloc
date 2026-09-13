@@ -9,13 +9,14 @@ mod types;
 use crate::Emitter;
 pub use crate::passes::lowering::{LegalizeAction, LegalizeResult};
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 pub use veloc_lir::ValueId;
 use veloc_lir::stages::{
     LegalizedLir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedLir,
 };
-pub use veloc_lir::{InstId, MachineFunction, MachineInst, Reg, VReg};
+pub use veloc_lir::{InstId, MachineFunction, Reg, VReg};
 use veloc_mir::{Type, TypeInfo};
 
 pub use abi::{
@@ -31,6 +32,8 @@ pub use types::{
 
 /// 基础 Lowering Context 接口 (所有后端共用)
 pub trait LoweringContext {
+    /// Create a fresh machine SSA temporary with the exemplar's type and bank.
+    fn alloc_tmp(&mut self, like: Reg) -> Reg;
     /// 获取值的类型
     fn get_type(&self, val: VReg) -> Type;
 
@@ -95,30 +98,36 @@ pub trait LoweringContext {
     }
 
     /// 获取指定的寄存器操作数
-    fn get_vreg(&self, inst: &MachineInst, index: usize) -> Option<VReg>;
+    fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<VReg>;
 }
 
 /// Target Machine: 封装特定目标架构的所有组件和策略。
 /// 模仿 LLVM TargetMachine，作为从通用流程获取架构特定逻辑的统一入口。
 pub trait TargetMachine {
-    /// Authoritative control descriptor for a selected target opcode.
-    fn target_control(&self, opcode: u32) -> veloc_lir::ControlFlow;
+    /// Static instruction facts shared by control-flow and scheduling queries.
+    fn target_inst_metadata(&self, opcode: u32) -> &'static TargetInstMetadata;
 
-    fn control_flow(&self, inst: &MachineInst) -> veloc_lir::ControlFlow {
-        match inst.opcode {
+    fn control_flow(&self, inst: &veloc_lir::InstRef<'_>) -> veloc_lir::ControlFlow {
+        match inst.opcode() {
             veloc_lir::MachineOpcode::Invalid => veloc_lir::ControlFlow::Next,
             veloc_lir::MachineOpcode::Generic(op) => op.control(),
-            veloc_lir::MachineOpcode::Target(op) => self.target_control(op),
+            veloc_lir::MachineOpcode::Target(op) => self.target_inst_metadata(op).flow,
         }
     }
 
     /// Unknown operations are scheduling barriers. Costs are estimates, not
     /// cycle-accurate promises for every CPU implementing an ISA.
-    fn schedule_info(&self, _inst: &MachineInst) -> Option<ScheduleInfo> {
-        None
+    fn schedule_info(&self, inst: &veloc_lir::InstRef<'_>) -> Option<ScheduleInfo> {
+        if inst.memory().is_some() {
+            return None;
+        }
+        let veloc_lir::MachineOpcode::Target(op) = inst.opcode() else {
+            return None;
+        };
+        self.target_inst_metadata(op).schedule
     }
 
-    fn is_call(&self, inst: &MachineInst) -> bool {
+    fn is_call(&self, inst: &veloc_lir::InstRef<'_>) -> bool {
         self.control_flow(inst) == veloc_lir::ControlFlow::Call
     }
 
@@ -127,14 +136,36 @@ pub trait TargetMachine {
         &[]
     }
 
+    /// A physical register copy for allocation edits, with the value's type.
+    fn jump_instruction(
+        &self,
+        _writer: veloc_lir::InstWriter<'_>,
+        _target: veloc_mir::Block,
+    ) -> crate::Result<InstId> {
+        Err(crate::Error::codegen("target does not support edge jumps"))
+    }
+
+    fn copy_instruction(
+        &self,
+        _writer: veloc_lir::InstWriter<'_>,
+        _dst: Reg,
+        _src: Reg,
+        _ty: Type,
+    ) -> crate::Result<InstId> {
+        Err(crate::Error::codegen(
+            "target does not support allocation copies",
+        ))
+    }
+
     fn spill_instruction(
         &self,
+        _writer: veloc_lir::InstWriter<'_>,
         _load: bool,
         _reg: Reg,
         _base: Reg,
         _offset: i64,
         _ty: Type,
-    ) -> crate::error::Result<MachineInst> {
+    ) -> crate::error::Result<InstId> {
         Err(crate::error::Error::codegen(
             "target does not support spill expansion",
         ))
@@ -195,7 +226,7 @@ pub trait TargetEmitter: Send + Sync {
     fn emit_instruction(
         &self,
         emitter: &mut Emitter,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction<PrologueEpilogueInserted>,
     ) -> Result<(), crate::error::Error>;
 
@@ -219,15 +250,11 @@ pub enum RewriteResult {
     Remove,
 }
 
+/// Two distinct operand slots that must use the same register after legalization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TiedOperandConstraint {
     pub def_operand: usize,
     pub use_operand: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TargetTiedOperandMetadata {
-    pub operand: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,8 +265,6 @@ pub struct FixedUseConstraint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GenericInstMetadata {
-    pub tied_operands: &'static [TiedOperandConstraint],
-    pub commute_operand_pairs: &'static [(usize, usize)],
     pub fixed_uses: &'static [FixedUseConstraint],
 }
 
@@ -268,31 +293,21 @@ pub struct PreIselRewriteRuleData {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OperandConstraintSet {
-    pub tied_operands: Vec<TiedOperandConstraint>,
-    pub commute_operand_pairs: Vec<(usize, usize)>,
-    pub fixed_uses: Vec<FixedUseConstraint>,
+    pub fixed_uses: Cow<'static, [FixedUseConstraint]>,
 }
 
 impl OperandConstraintSet {
     pub fn is_empty(&self) -> bool {
-        self.tied_operands.is_empty()
-            && self.commute_operand_pairs.is_empty()
-            && self.fixed_uses.is_empty()
+        self.fixed_uses.is_empty()
     }
 }
 
 impl GenericInstMetadata {
-    pub const EMPTY: Self = Self {
-        tied_operands: &[],
-        commute_operand_pairs: &[],
-        fixed_uses: &[],
-    };
+    pub const EMPTY: Self = Self { fixed_uses: &[] };
 
     pub fn operand_constraints(&self) -> OperandConstraintSet {
         OperandConstraintSet {
-            tied_operands: self.tied_operands.to_vec(),
-            commute_operand_pairs: self.commute_operand_pairs.to_vec(),
-            fixed_uses: self.fixed_uses.to_vec(),
+            fixed_uses: self.fixed_uses.into(),
         }
     }
 }
@@ -303,7 +318,7 @@ pub struct TargetInstMetadata {
     pub memory: Option<(veloc_lir::MemoryKind, u32)>,
     pub flow: veloc_lir::ControlFlow,
     pub schedule: Option<ScheduleInfo>,
-    pub tied_operands: &'static [TargetTiedOperandMetadata],
+    pub tied_operands: &'static [TiedOperandConstraint],
     pub fixed_uses: &'static [FixedUseConstraint],
     pub implicit_uses: &'static [Reg],
     pub implicit_defs: &'static [Reg],
@@ -324,9 +339,7 @@ impl TargetInstMetadata {
 
     pub fn operand_constraints(&self) -> OperandConstraintSet {
         OperandConstraintSet {
-            tied_operands: Vec::new(),
-            commute_operand_pairs: Vec::new(),
-            fixed_uses: self.fixed_uses.to_vec(),
+            fixed_uses: self.fixed_uses.into(),
         }
     }
 }
@@ -335,7 +348,7 @@ pub trait TargetLegalizer: Send + Sync {
     /// 查询一条 generic LIR 指令在当前目标上的 legalize 动作。
     fn legalize_action(
         &self,
-        _inst: &MachineInst,
+        _inst: &veloc_lir::InstRef<'_>,
         _mfunc: &MachineFunction<LegalizedLir>,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
         Ok(None)
@@ -372,7 +385,7 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 适合处理会在 isel 后丢失语义信息的 destructive/two-address 约束。
     fn preselect_operand_constraints(
         &self,
-        _inst: &MachineInst,
+        _inst: &veloc_lir::InstRef<'_>,
         _mfunc: &MachineFunction<PreIselPrepared>,
     ) -> OperandConstraintSet {
         OperandConstraintSet::default()
@@ -383,7 +396,7 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 适合处理固定寄存器等 target instruction 级别的约束。
     fn postselect_operand_constraints(
         &self,
-        _inst: &MachineInst,
+        _inst: &veloc_lir::InstRef<'_>,
         _mfunc: &MachineFunction<SelectedLir>,
     ) -> OperandConstraintSet {
         OperandConstraintSet::default()
@@ -396,20 +409,20 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 目标相关语义在进入后续阶段前已经明确。
     fn build_preselect_reg_copy(
         &self,
-        _mfunc: &MachineFunction<PreIselPrepared>,
+        _mfunc: &mut MachineFunction<PreIselPrepared>,
         _dst: Reg,
         _src: Reg,
-    ) -> Result<MachineInst, crate::error::Error> {
+    ) -> Result<InstId, crate::error::Error> {
         panic!("target does not support pre-select register copy construction",)
     }
 
     /// 为 post-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
     fn build_postselect_reg_copy(
         &self,
-        _mfunc: &MachineFunction<SelectedLir>,
+        _mfunc: &mut MachineFunction<SelectedLir>,
         _dst: Reg,
         _src: Reg,
-    ) -> Result<MachineInst, crate::error::Error> {
+    ) -> Result<InstId, crate::error::Error> {
         panic!("target does not support post-select register copy construction",)
     }
 }

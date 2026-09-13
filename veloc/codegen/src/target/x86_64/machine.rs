@@ -1,26 +1,16 @@
 //! Target facts used by scheduling and allocation, not by generic algorithms.
 use super::isle::TargetInst;
-use crate::target::arch::ScheduleInfo;
-use veloc_lir::{MachineInst, MachineOpcode, MachineOperand, Reg, Writable};
+use veloc_lir::{InstId, MachineOpcode, MachineOperand, Reg, Writable};
 use veloc_mir::{Type, TypeInfo};
 
-pub(super) fn schedule_info(inst: &MachineInst) -> Option<ScheduleInfo> {
-    if inst.memory.is_some() {
-        return None;
-    }
-    let MachineOpcode::Target(op) = inst.opcode else {
-        return None;
-    };
-    super::isle::target_inst_metadata(TargetInst::from_u32(op)).schedule
-}
-
 pub(super) fn spill_instruction(
+    writer: veloc_lir::InstWriter<'_>,
     load: bool,
     reg: Reg,
     base: Reg,
     offset: i64,
     ty: Type,
-) -> crate::Result<MachineInst> {
+) -> crate::Result<InstId> {
     use TargetInst::*;
     let op = match (load, ty) {
         (true, Type::F32) => X86LoadF32,
@@ -54,7 +44,7 @@ pub(super) fn spill_instruction(
     } else {
         MachineOperand::Use(reg)
     };
-    Ok(MachineInst::build_generic(
+    Ok(writer.generic(
         MachineOpcode::Target(op.as_u32()),
         smallvec::smallvec![
             value,

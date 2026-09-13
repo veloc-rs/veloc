@@ -1,5 +1,6 @@
 //! One authoritative, contiguous operand array, with parallel reverse links.
 use super::DataFlowGraph;
+use veloc_collections::{LinkId as Operand, Links};
 use crate::{Inst, Value};
 use alloc::vec::Vec;
 use cranelift_entity::{EntityRef, SecondaryMap, packed_option::PackedOption};
@@ -16,21 +17,10 @@ impl OperandRange {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Operand(u32);
-cranelift_entity::entity_impl!(Operand, "operand");
-
-#[derive(Debug, Clone)]
-struct Link {
-    owner: Inst,
-    prev: PackedOption<Operand>,
-    next: PackedOption<Operand>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(super) struct Operands {
     values: Vec<Value>,
-    links: Vec<Link>,
+    links: Links<Inst>,
     heads: SecondaryMap<Value, PackedOption<Operand>>,
     // Power-of-two ranges are recycled as units. No per-use allocation.
     free: Vec<Vec<u32>>,
@@ -61,14 +51,7 @@ impl Operands {
                 .expect("too many operands");
             assert!(end < u32::MAX as usize, "too many operands");
             self.values.resize(end, Value::default());
-            self.links.resize(
-                end,
-                Link {
-                    owner,
-                    prev: None.into(),
-                    next: None.into(),
-                },
-            );
+            self.links.resize(end, owner);
             start
         });
         let range = OperandRange {
@@ -77,8 +60,8 @@ impl Operands {
         };
         self.values[range.range()].copy_from_slice(values);
         for offset in 0..range.len {
-            let id = Operand(start + offset);
-            self.links[id.index()].owner = owner;
+            let id = Operand::from_u32(start + offset);
+            self.links.set_owner(id, owner);
             self.link(id);
         }
         range
@@ -86,26 +69,12 @@ impl Operands {
 
     fn link(&mut self, id: Operand) {
         let value = self.values[id.index()];
-        let next = self.heads[value];
-        self.links[id.index()].prev = None.into();
-        self.links[id.index()].next = next;
-        if let Some(next) = next.expand() {
-            self.links[next.index()].prev = Some(id).into();
-        }
-        self.heads[value] = Some(id).into();
+        self.links.attach(id, &mut self.heads[value]);
     }
 
     fn unlink(&mut self, id: Operand) {
-        let link = &self.links[id.index()];
-        let (prev, next) = (link.prev, link.next);
-        if let Some(prev) = prev.expand() {
-            self.links[prev.index()].next = next;
-        } else {
-            self.heads[self.values[id.index()]] = next;
-        }
-        if let Some(next) = next.expand() {
-            self.links[next.index()].prev = prev;
-        }
+        let value = self.values[id.index()];
+        self.links.detach(id, &mut self.heads[value]);
     }
 
     pub fn release(&mut self, range: OperandRange) {
@@ -113,7 +82,7 @@ impl Operands {
             return;
         }
         for offset in 0..range.len {
-            self.unlink(Operand(range.start + offset));
+            self.unlink(Operand::from_u32(range.start + offset));
         }
         self.free[range.len.next_power_of_two().trailing_zeros() as usize].push(range.start);
     }
@@ -147,10 +116,10 @@ pub struct Use<'a> {
 
 impl Use<'_> {
     pub fn inst(self) -> Inst {
-        self.dfg.operands.links[self.id.index()].owner
+        self.dfg.operands.links.owner(self.id)
     }
     pub fn index(self) -> u32 {
-        self.id.0 - self.dfg.instructions[self.inst()].operands.start
+        self.id.as_u32() - self.dfg.instructions[self.inst()].operands.start
     }
     pub fn value(self) -> Value {
         self.dfg.operands.values[self.id.index()]
@@ -166,7 +135,7 @@ impl<'a> Iterator for Uses<'a> {
     type Item = Use<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         let id = self.next.expand()?;
-        self.next = self.dfg.operands.links[id.index()].next;
+        self.next = self.dfg.operands.links.next(id);
         Some(Use { dfg: self.dfg, id })
     }
 }
@@ -190,13 +159,13 @@ impl DataFlowGraph {
     pub fn has_one_use(&self, value: Value) -> bool {
         self.operands.heads[value]
             .expand()
-            .is_some_and(|id| self.operands.links[id.index()].next.is_none())
+            .is_some_and(|id| self.operands.links.next(id).is_none())
     }
 
     pub fn set_operand(&mut self, inst: Inst, index: u32, value: Value) {
         let range = self.instructions[inst].operands;
         assert!(index < range.len, "operand index out of bounds");
-        self.operands.set(Operand(range.start + index), value);
+        self.operands.set(Operand::from_u32(range.start + index), value);
     }
 
     pub fn replace_all_uses(&mut self, old: Value, new: Value) {
@@ -233,7 +202,7 @@ impl DataFlowGraph {
                 }
             }
             for index in range.range() {
-                if store.links[index].owner != inst {
+                if store.links.owner(Operand::new(index)) != inst {
                     return Err("incorrect operand owner");
                 }
                 expected += 1;
@@ -271,16 +240,16 @@ impl DataFlowGraph {
                 if core::mem::replace(slot, true) {
                     return Err("cyclic or duplicate use link");
                 }
-                let link = &store.links[id.index()];
-                let range = self.instructions[link.owner].operands;
+                let owner = store.links.owner(id);
+                let range = self.instructions[owner].operands;
                 if !range.range().contains(&id.index()) {
                     return Err("use outside owner range");
                 }
-                if link.prev != prev || store.values[id.index()] != value {
+                if store.links.prev(id) != prev || store.values[id.index()] != value {
                     return Err("incorrect use link");
                 }
                 prev = Some(id).into();
-                next = link.next;
+                next = store.links.next(id);
                 count += 1;
             }
         }

@@ -94,9 +94,7 @@ impl Definitions {
             };
             let constructor = if signature.is_ok() {
                 match &self.storage.strategy {
-                    crate::storage::Strategy::Operands(storage) => {
-                        Some(format!("build_{}", storage.mnemonic(&op.name)))
-                    }
+                    crate::storage::Strategy::Operands(storage) => Some(storage.mnemonic(&op.name)),
                     crate::storage::Strategy::Packed => None,
                 }
             } else {

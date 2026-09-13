@@ -13,7 +13,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
         let mut used_callee_saved = Vec::new();
         for block in &mfunc.blocks {
             for &inst_id in &block.insts {
-                for reg in mfunc.dfg[inst_id].defs() {
+                for reg in mfunc.inst(inst_id).defs() {
                     if reg != generated::REG_RBP
                         && reg != generated::REG_RSP
                         && preserved_regs.contains(&reg)
@@ -50,32 +50,33 @@ impl TargetFrameLowering for X86_64FrameLowering {
         if !mfunc.blocks.is_empty() {
             let mut pending_prologue = Vec::new();
 
-            let push_inst = MachineInst::build_generic(
+            let push_inst = mfunc.writer().generic(
                 MachineOpcode::Target(TargetInst::X86PushRbp.as_u32()),
                 smallvec::SmallVec::new(),
             );
-            pending_prologue.push(mfunc.alloc_inst(push_inst));
+            pending_prologue.push(push_inst);
 
-            let mov_inst = MachineInst::build_generic(
+            let mov_inst = mfunc.writer().generic(
                 MachineOpcode::Target(TargetInst::X86MovRbpRsp.as_u32()),
                 smallvec::SmallVec::new(),
             );
-            pending_prologue.push(mfunc.alloc_inst(mov_inst));
+            pending_prologue.push(mov_inst);
 
             if stack_size > 0 {
-                let sub_inst = MachineInst::build_generic(
+                let sub_inst = mfunc.writer().generic(
                     MachineOpcode::Target(TargetInst::X86Sub64ri.as_u32()),
                     smallvec::smallvec![
-                        veloc_lir::MachineOperand::TiedDefUse(veloc_lir::Writable(REG_RSP)),
+                        veloc_lir::MachineOperand::Def(veloc_lir::Writable(REG_RSP)),
                         veloc_lir::MachineOperand::Imm(stack_size as i64),
+                        veloc_lir::MachineOperand::Use(REG_RSP),
                     ],
                 );
-                pending_prologue.push(mfunc.alloc_inst(sub_inst));
+                pending_prologue.push(sub_inst);
             }
 
             for (idx, reg) in saved_regs.iter().copied().enumerate() {
                 let offset = -(local_size + ((idx as i32 + 1) * 8));
-                let save_inst = MachineInst::build_generic(
+                let save_inst = mfunc.writer().generic(
                     MachineOpcode::Target(TargetInst::X86Store64.as_u32()),
                     smallvec::smallvec![
                         veloc_lir::MachineOperand::Use(reg),
@@ -83,18 +84,17 @@ impl TargetFrameLowering for X86_64FrameLowering {
                         veloc_lir::MachineOperand::Imm(offset as i64),
                     ],
                 );
-                pending_prologue.push(mfunc.alloc_inst(save_inst));
+                pending_prologue.push(save_inst);
             }
 
             mfunc
                 .rewrite_block(0, |cursor| {
                     if !pending_prologue.is_empty() {
                         for inst_id in pending_prologue.drain(..) {
-                            cursor.emit_existing_before(inst_id);
+                            cursor.emit(inst_id);
                         }
                     }
-                    cursor.emit_existing_before(cursor.current_inst_id());
-                    cursor.remove_current();
+                    cursor.keep_current();
                     Ok::<(), crate::error::Error>(())
                 })
                 .expect("x86_64 prologue rewriting should not fail");
@@ -103,16 +103,15 @@ impl TargetFrameLowering for X86_64FrameLowering {
         for block_idx in 0..mfunc.blocks.len() {
             mfunc
                 .rewrite_block(block_idx, |cursor| {
-                    let inst_id = cursor.current_inst_id();
                     let is_ret = matches!(
-                        cursor.current_inst().opcode,
+                        cursor.current_inst().opcode(),
                         MachineOpcode::Target(code) if code == TargetInst::X86Ret.as_u32()
                     );
 
                     if is_ret {
                         for (idx, reg) in saved_regs.iter().copied().enumerate().rev() {
                             let offset = -(local_size + ((idx as i32 + 1) * 8));
-                            let restore_inst = MachineInst::build_generic(
+                            let restore_inst = cursor.mfunc_mut().writer().generic(
                                 MachineOpcode::Target(TargetInst::X86Load64.as_u32()),
                                 smallvec::smallvec![
                                     veloc_lir::MachineOperand::Def(veloc_lir::Writable(reg)),
@@ -120,31 +119,29 @@ impl TargetFrameLowering for X86_64FrameLowering {
                                     veloc_lir::MachineOperand::Imm(offset as i64),
                                 ],
                             );
-                            cursor.emit_before(restore_inst);
+                            cursor.emit(restore_inst);
                         }
 
                         if stack_size > 0 {
-                            let add_inst = MachineInst::build_generic(
+                            let add_inst = cursor.mfunc_mut().writer().generic(
                                 MachineOpcode::Target(TargetInst::X86Add64ri.as_u32()),
                                 smallvec::smallvec![
-                                    veloc_lir::MachineOperand::TiedDefUse(veloc_lir::Writable(
-                                        REG_RSP
-                                    )),
+                                    veloc_lir::MachineOperand::Def(veloc_lir::Writable(REG_RSP)),
                                     veloc_lir::MachineOperand::Imm(stack_size as i64),
+                                    veloc_lir::MachineOperand::Use(REG_RSP),
                                 ],
                             );
-                            cursor.emit_before(add_inst);
+                            cursor.emit(add_inst);
                         }
 
-                        let pop_inst = MachineInst::build_generic(
+                        let pop_inst = cursor.mfunc_mut().writer().generic(
                             MachineOpcode::Target(TargetInst::X86PopRbp.as_u32()),
                             smallvec::SmallVec::new(),
                         );
-                        cursor.emit_before(pop_inst);
+                        cursor.emit(pop_inst);
                     }
 
-                    cursor.emit_existing_before(inst_id);
-                    cursor.remove_current();
+                    cursor.keep_current();
                     Ok::<(), crate::error::Error>(())
                 })
                 .expect("x86_64 prologue/epilogue rewriting should not fail");

@@ -1,8 +1,7 @@
 //! LIR 机器函数与基本块定义
 
-use super::{
-    CallInfo, InstExtra, InstExtraId, InstId, MachineInst, Reg, StackSlot, VReg, VRegData,
-};
+use super::{CallInfo, InstExtra, InstId, InstRef, Reg, StackSlot, VReg, VRegData};
+use crate::InstWriter;
 use crate::RegisterBank;
 use crate::stages::AllowsUnbankedVRegAlloc;
 use alloc::format;
@@ -11,7 +10,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use cranelift_entity::{PrimaryMap, SecondaryMap};
+use cranelift_entity::PrimaryMap;
 use veloc_mir::{Block, Type};
 
 /// 机器基本块
@@ -78,14 +77,32 @@ pub struct StackFrame {
     pub slots: cranelift_entity::PrimaryMap<StackSlot, StackSlotData>,
 }
 
+impl StackFrame {
+    /// Allocate frame-relative storage without modifying instructions.
+    pub fn alloc_slot(&mut self, size: u32, align: u32) -> StackSlot {
+        assert!(align.is_power_of_two(), "invalid stack alignment");
+        let end = self
+            .local_size
+            .checked_add(size)
+            .expect("stack frame overflow");
+        let end = end.checked_add(align - 1).expect("stack frame overflow") & !(align - 1);
+        let offset = -i32::try_from(end).expect("stack frame exceeds signed offsets");
+        self.local_size = end;
+        self.slots.push(StackSlotData {
+            base: StackBase::Frame,
+            size,
+            align,
+            offset,
+        })
+    }
+}
+
 /// 机器函数主体数据。
 #[derive(Debug, Clone)]
 pub struct MachineFunctionData {
     pub name: String,
     pub blocks: Vec<MachineBlock>,
-    pub dfg: PrimaryMap<InstId, MachineInst>,
-    inst_extra: SecondaryMap<InstId, Option<InstExtraId>>,
-    extras: PrimaryMap<InstExtraId, InstExtra>,
+    store: crate::store::InstStore,
     pub vregs: PrimaryMap<VReg, VRegData>,
     pub stack_frame: StackFrame,
     /// 函数参数对应的虚拟寄存器
@@ -106,8 +123,6 @@ pub struct MachineFunction<S> {
 }
 
 /// 基本块重写游标。
-///
-/// 适合在“单次扫描、单次提交”的 block 布局重写里使用。游标负责跟踪当前指令、
 /// 向输出布局写入新顺序，并提供更语义化的 keep/remove/replace/insert 操作。
 pub struct BlockRewriteCursor<'a, S> {
     mfunc: &'a mut MachineFunction<S>,
@@ -134,20 +149,12 @@ impl<'a, S> BlockRewriteCursor<'a, S> {
         self.current
     }
 
-    pub fn current_inst(&self) -> &MachineInst {
-        &self.mfunc.dfg[self.current]
-    }
-
-    pub fn current_inst_clone(&self) -> MachineInst {
-        self.mfunc.dfg[self.current].clone()
+    pub fn current_inst(&self) -> InstRef<'_> {
+        self.mfunc.inst(self.current)
     }
 
     pub fn current_extra(&self) -> Option<&InstExtra> {
         self.mfunc.inst_extra(self.current)
-    }
-
-    pub fn current_extra_cloned(&self) -> Option<InstExtra> {
-        self.current_extra().cloned()
     }
 
     pub fn clear_current_extra(&mut self) {
@@ -166,25 +173,14 @@ impl<'a, S> BlockRewriteCursor<'a, S> {
         self.mfunc
     }
 
-    pub fn emit_before(&mut self, inst: MachineInst) -> InstId {
-        let inst_id = self.mfunc.alloc_inst(inst);
-        self.output.push(inst_id);
-        inst_id
+    /// Append a stored instruction to the rewritten block's output.
+    /// Call before or after keep_current() to position it on either side.
+    pub fn emit(&mut self, id: InstId) {
+        self.output.push(id);
     }
 
-    pub fn emit_before_many<I>(&mut self, insts: I) -> Vec<InstId>
-    where
-        I: IntoIterator<Item = MachineInst>,
-    {
-        let mut ids = Vec::new();
-        for inst in insts {
-            ids.push(self.emit_before(inst));
-        }
-        ids
-    }
-
-    pub fn emit_existing_before(&mut self, inst_id: InstId) {
-        self.output.push(inst_id);
+    pub fn emit_many(&mut self, ids: impl IntoIterator<Item = InstId>) {
+        self.output.extend(ids);
     }
 
     pub fn keep_current(&mut self) {
@@ -197,16 +193,27 @@ impl<'a, S> BlockRewriteCursor<'a, S> {
         self.resolved_current = true;
     }
 
+    /// Remove the current ID from this layout without deleting its contents.
+    /// Used by worklist-based rewrites that may reinsert the same instruction.
+    pub fn detach_current(&mut self) {
+        assert!(
+            !self.resolved_current,
+            "current instruction already resolved"
+        );
+        self.resolved_current = true;
+    }
+
     pub fn remove_current(&mut self) {
         debug_assert!(
             !self.resolved_current,
             "current instruction {:?} has already been resolved",
             self.current
         );
+        self.mfunc.invalidate_inst(self.current);
         self.resolved_current = true;
     }
 
-    pub fn replace_current(&mut self, inst: MachineInst) {
+    pub fn replace_current(&mut self, inst: InstId) {
         debug_assert!(
             !self.resolved_current,
             "current instruction {:?} has already been resolved",
@@ -214,23 +221,6 @@ impl<'a, S> BlockRewriteCursor<'a, S> {
         );
         self.mfunc.replace_inst(self.current, inst);
         self.output.push(self.current);
-        self.resolved_current = true;
-    }
-
-    pub fn replace_current_with_many<I>(&mut self, insts: I)
-    where
-        I: IntoIterator<Item = MachineInst>,
-    {
-        debug_assert!(
-            !self.resolved_current,
-            "current instruction {:?} has already been resolved",
-            self.current
-        );
-        self.mfunc.invalidate_inst(self.current);
-        for inst in insts {
-            let inst_id = self.mfunc.alloc_inst(inst);
-            self.output.push(inst_id);
-        }
         self.resolved_current = true;
     }
 
@@ -262,9 +252,7 @@ impl<S> MachineFunction<S> {
             data: MachineFunctionData {
                 name,
                 blocks: Vec::new(),
-                dfg: PrimaryMap::new(),
-                inst_extra: SecondaryMap::new(),
-                extras: PrimaryMap::new(),
+                store: crate::InstStore::default(),
                 vregs: PrimaryMap::new(),
                 stack_frame: StackFrame {
                     local_size: 0,
@@ -343,18 +331,20 @@ impl<S> MachineFunction<S> {
         self.blocks[block_idx].insts = new_insts;
     }
 
-    /// 以“编辑单条指令内容”的方式修改指定指令。
-    ///
-    /// 该接口不会修改 block 布局，只会在回调成功后用新指令覆盖旧指令，并同步
-    /// use-def 链。适合做 opcode/operand 的原地改写。
-    pub fn edit_inst<E, F>(&mut self, inst_id: InstId, f: F) -> Result<(), E>
-    where
-        F: FnOnce(&mut MachineInst) -> Result<(), E>,
-    {
-        let mut inst = self.dfg[inst_id].clone();
-        f(&mut inst)?;
-        self.replace_inst(inst_id, inst);
-        Ok(())
+    pub fn writer(&mut self) -> InstWriter<'_> {
+        self.store.writer()
+    }
+
+    pub fn rewriter(&mut self, id: InstId) -> InstWriter<'_> {
+        self.store.rewriter(id)
+    }
+
+    pub fn set_inst_operands(
+        &mut self,
+        inst_id: InstId,
+        operands: impl AsRef<[crate::MachineOperand]>,
+    ) {
+        self.store.set_operands(inst_id, operands.as_ref());
     }
 
     /// 以 `BlockRewriteCursor` 的方式重写一个 block 的布局。
@@ -377,17 +367,6 @@ impl<S> MachineFunction<S> {
         Ok(())
     }
 
-    /// 分配并追加指令到指定基本块末尾。
-    pub fn alloc_inst_and_append_to_block(
-        &mut self,
-        block_idx: usize,
-        inst: MachineInst,
-    ) -> InstId {
-        let inst_id = self.alloc_inst(inst);
-        self.append_inst_id_to_block(block_idx, inst_id);
-        inst_id
-    }
-
     fn alloc_vreg_with_bank_opt(&mut self, ty: Type, bank: Option<RegisterBank>) -> Reg {
         let vreg = self.vregs.push(VRegData { ty, bank });
         Reg::new_vreg(vreg.as_u32())
@@ -398,11 +377,40 @@ impl<S> MachineFunction<S> {
         self.alloc_vreg_with_bank_opt(ty, Some(bank))
     }
 
-    /// 在 DFG 中分配新指令
-    pub fn alloc_inst(&mut self, inst: MachineInst) -> InstId {
-        let inst_id = self.dfg.push(inst);
-        self.inst_extra[inst_id] = None;
-        inst_id
+    /// Split immutable register facts from mutable instruction storage.
+    pub fn instruction_parts(
+        &mut self,
+    ) -> (&mut PrimaryMap<VReg, VRegData>, &mut crate::InstStore) {
+        (&mut self.data.vregs, &mut self.data.store)
+    }
+
+    pub fn inst(&self, id: InstId) -> InstRef<'_> {
+        self.store.get(id)
+    }
+
+    pub fn inst_count(&self) -> usize {
+        self.store.len()
+    }
+
+    pub fn set_inst_operand(&mut self, id: InstId, index: usize, operand: crate::MachineOperand) {
+        self.store.set_operand(id, index, operand);
+    }
+
+    pub fn uses(&self, reg: Reg) -> crate::RegRefs<'_> {
+        self.store.uses(reg)
+    }
+    pub fn defs(&self, reg: Reg) -> crate::RegRefs<'_> {
+        self.store.defs(reg)
+    }
+    pub fn replace_uses(&mut self, old: VReg, new: VReg) {
+        self.store.replace_uses(old, new)
+    }
+    pub fn check_refs(&self) -> Result<(), &'static str> {
+        self.store.check_refs()
+    }
+
+    pub fn set_inst_memory(&mut self, id: InstId, access: Option<crate::MemoryAccess>) {
+        self.store.set_memory(id, access);
     }
 
     /// 获取虚拟寄存器数据
@@ -419,20 +427,7 @@ impl<S> MachineFunction<S> {
 
     /// 分配栈槽
     pub fn alloc_stack_slot(&mut self, size: u32, align: u32) -> StackSlot {
-        self.stack_frame.local_size += size;
-        // 对齐
-        let misalign = self.stack_frame.local_size % align;
-        if misalign != 0 {
-            self.stack_frame.local_size += align - misalign;
-        }
-        let offset = -(self.stack_frame.local_size as i32);
-
-        self.stack_frame.slots.push(StackSlotData {
-            base: StackBase::Frame,
-            size,
-            align,
-            offset,
-        })
+        self.stack_frame.alloc_slot(size, align)
     }
 
     /// 分配一个具有显式基址寄存器/偏移的栈槽。
@@ -451,31 +446,32 @@ impl<S> MachineFunction<S> {
         })
     }
 
-    /// 替换指令。
-    pub fn replace_inst(&mut self, inst_id: InstId, inst: MachineInst) {
-        self.clear_inst_extra(inst_id);
-        self.dfg[inst_id] = inst;
+    /// Transfer a detached source into a stable destination ID without copying.
+    /// Discards the destination's old payloads and invalidates the source ID.
+    /// Passing the same ID is a no-op; this does not change block layout.
+    pub fn replace_inst(&mut self, inst_id: InstId, source: InstId) {
+        self.store.replace(inst_id, source);
     }
 
     /// 将指令标记为无效。
     pub fn invalidate_inst(&mut self, inst_id: InstId) {
-        self.replace_inst(inst_id, MachineInst::invalid());
+        self.store
+            .write_at(inst_id, crate::MachineOpcode::Invalid, &[], None);
     }
 
     /// 为指令挂载额外 payload。
     pub fn set_inst_extra(&mut self, inst_id: InstId, extra: InstExtra) {
-        let extra_id = self.extras.push(extra);
-        self.inst_extra[inst_id] = Some(extra_id);
+        self.store.set_extra(inst_id, extra);
     }
 
     /// 清理指令的额外 payload。
     pub fn clear_inst_extra(&mut self, inst_id: InstId) {
-        self.inst_extra[inst_id] = None;
+        self.store.clear_extra(inst_id);
     }
 
     /// 获取指令的额外 payload。
     pub fn inst_extra(&self, inst_id: InstId) -> Option<&InstExtra> {
-        self.inst_extra[inst_id].map(|extra_id| &self.extras[extra_id])
+        self.store.extra(inst_id)
     }
 
     /// 获取调用指令的签名信息。
@@ -524,7 +520,7 @@ impl<S> MachineFunction<S> {
                 let _ = writeln!(out, "    params: {}", params);
             }
             for &inst_id in &block.insts {
-                let inst = &self.dfg[inst_id];
+                let inst = self.inst(inst_id);
                 let _ = write!(out, "    {:?}: {:?}", inst_id, inst);
                 if let Some(extra) = self.inst_extra(inst_id) {
                     let _ = write!(out, " extra={:?}", extra);

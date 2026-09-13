@@ -68,7 +68,6 @@ struct Argument {
 enum Role {
     Def,
     Use,
-    TiedDefUse,
     Imm,
     FImm,
     StackSlot,
@@ -86,7 +85,6 @@ impl Role {
         Some(match name {
             "Def" => Self::Def,
             "Use" => Self::Use,
-            "TiedDefUse" => Self::TiedDefUse,
             "Imm" => Self::Imm,
             "FImm" => Self::FImm,
             "StackSlot" => Self::StackSlot,
@@ -103,7 +101,7 @@ impl Role {
 
     fn view_type(self) -> &'static str {
         match self {
-            Self::Def | Self::Use | Self::TiedDefUse => "Reg",
+            Self::Def | Self::Use => "Reg",
             Self::Imm => "i64",
             Self::FImm => "f64",
             Self::StackSlot => "StackSlot",
@@ -121,7 +119,6 @@ impl Role {
         match self {
             Self::Def => "expect_def_reg",
             Self::Use => "expect_use_reg",
-            Self::TiedDefUse => "expect_tied_def_reg",
             Self::Imm => "expect_imm",
             Self::FImm => "expect_fimm",
             Self::StackSlot => "expect_stackslot",
@@ -137,7 +134,7 @@ impl Role {
 
     fn builder_type(self) -> &'static str {
         match self {
-            Self::Def | Self::TiedDefUse => "Writable<Reg>",
+            Self::Def => "Writable<Reg>",
             Self::OptionalUse => "Reg",
             Self::Index => "i64",
             _ => self.view_type(),
@@ -148,7 +145,6 @@ impl Role {
         let variant = match self {
             Self::Def => "Def",
             Self::Use | Self::OptionalUse => "Use",
-            Self::TiedDefUse => "TiedDefUse",
             Self::Imm | Self::Index => "Imm",
             Self::FImm => "FImm",
             Self::StackSlot => "StackSlot",
@@ -363,17 +359,6 @@ impl Operands {
             }
             let value = match role {
                 Role::Def => binding.result(node, *role)?,
-                Role::TiedDefUse => {
-                    let [input, result] = call_args(source, node, "tied")? else {
-                        return Err(Error::at(
-                            source,
-                            node.offset,
-                            "tied requires an input and a result",
-                        ));
-                    };
-                    binding.input(input, *role, false)?;
-                    binding.result(result, *role)?
-                }
                 Role::OptionalUse => {
                     let [input] = call_args(source, node, "some")? else {
                         return Err(Error::at(
@@ -514,8 +499,8 @@ impl Operands {
             }
             out.push_str("}\n");
         }
-        let borrowed = if lifetime.is_empty() { "" } else { "<'_>" };
-        writeln!(out, "impl MachineInst {{ pub fn generic_view(&self) -> crate::error::Result<InstView{borrowed}> {{").unwrap();
+        let borrowed = if lifetime.is_empty() { "" } else { "<'a>" };
+        writeln!(out, "impl<'a> InstRef<'a> {{ pub fn generic_view(self) -> crate::error::Result<InstView{borrowed}> {{").unwrap();
         out.push_str("Ok(match self.generic_opcode() {\n");
         for op in &defs.ops {
             let f = &self.formats[&op.format];
@@ -529,9 +514,9 @@ impl Operands {
             if !f.fields.iter().any(|(_, r)| r.variable()) {
                 let count = op.operands().arity;
                 let invalid = if count == 0 {
-                    "!self.operands.is_empty()".to_owned()
+                    "!self.operands().is_empty()".to_owned()
                 } else {
-                    format!("self.operands.len() != {count}")
+                    format!("self.operands().len() != {count}")
                 };
                 writeln!(out, "if {invalid} {{ return Err(self.decode_error(\"invalid {} operand count\")); }}", f.name).unwrap();
             }
@@ -572,19 +557,20 @@ impl Operands {
         }
         let projection = inst.operands();
         let name = self.mnemonic(&inst.name);
-        writeln!(
-            out,
-            "impl MachineInst {{ pub fn build_{name}({}) -> Self {{",
-            projection
-                .args
-                .iter()
-                .map(|arg| format!("{}: {}", arg.name, arg.role.builder_type()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-        .unwrap();
-        writeln!(out, "Self::build_generic(MachineOpcode::Generic(GenericOpcode::{}), smallvec::smallvec![{}])\n}} }}", inst.name,
-            f.fields.iter().zip(&projection.fields).map(|((_, role), name)| role.encode(name)).collect::<Vec<_>>().join(", ")).unwrap();
+        let args = projection
+            .args
+            .iter()
+            .map(|arg| format!("{}: {}", arg.name, arg.role.builder_type()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let fields = f
+            .fields
+            .iter()
+            .zip(&projection.fields)
+            .map(|((_, role), name)| role.encode(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(out, "impl crate::InstWriter<'_> {{ pub fn {name}(self, {args}) -> crate::InstId {{ self.write(MachineOpcode::Generic(GenericOpcode::{}), &[{fields}]) }} }}", inst.name).unwrap();
     }
 }
 
@@ -625,7 +611,7 @@ impl Bindings<'_> {
                 )
             })?;
         let valid = match role {
-            Role::Use | Role::OptionalUse | Role::TiedDefUse => param.kind == ParamKind::Value,
+            Role::Use | Role::OptionalUse => param.kind == ParamKind::Value,
             Role::Uses => param.kind == ParamKind::Values,
             Role::CallShape => {
                 param.kind == ParamKind::Value

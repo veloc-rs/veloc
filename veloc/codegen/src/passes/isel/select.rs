@@ -8,7 +8,7 @@
 use crate::target::arch::TargetInstructionSelector;
 use alloc::vec::Vec;
 use veloc_lir::stages::PreIselPrepared;
-use veloc_lir::{BlockRewriteCursor, InstId, MachineFunction, MachineInst};
+use veloc_lir::{BlockRewriteCursor, InstId, MachineFunction};
 
 fn format_select_failure_inst<S>(
     mfunc: &MachineFunction<S>,
@@ -16,15 +16,14 @@ fn format_select_failure_inst<S>(
 ) -> alloc::string::String {
     use alloc::format;
 
-    let inst = &mfunc.dfg[inst_id];
+    let inst = &mfunc.inst(inst_id);
     let operand_types = inst
-        .operands
+        .operands()
         .iter()
         .filter_map(|operand| {
             let reg = match operand {
                 veloc_lir::MachineOperand::Def(w) => Some(w.to_reg()),
                 veloc_lir::MachineOperand::Use(reg) => Some(*reg),
-                veloc_lir::MachineOperand::TiedDefUse(w) => Some(w.to_reg()),
                 _ => None,
             }?;
 
@@ -61,10 +60,14 @@ pub enum SelectResult {
 pub struct SelectionContext<'a, S> {
     pub mfunc: &'a mut MachineFunction<S>,
     pub inst_id: InstId,
-    pub selected: &'a mut Vec<MachineInst>,
+    pub selected: &'a mut Vec<InstId>,
 }
 
 impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
+    fn alloc_tmp(&mut self, like: veloc_lir::Reg) -> veloc_lir::Reg {
+        let data = self.mfunc.vreg_data(like).clone();
+        veloc_lir::Reg::new_vreg(self.mfunc.vregs.push(data).as_u32())
+    }
     fn get_type(&self, vreg: veloc_lir::VReg) -> veloc_mir::Type {
         self.mfunc.vregs[vreg].ty
     }
@@ -73,13 +76,12 @@ impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
         self.mfunc.vregs[vreg].bank
     }
 
-    fn get_vreg(&self, inst: &MachineInst, index: usize) -> Option<veloc_lir::VReg> {
+    fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<veloc_lir::VReg> {
         let mut current = 0;
-        for op in &inst.operands {
+        for op in inst.operands().iter() {
             let reg = match op {
                 veloc_lir::MachineOperand::Def(reg) => Some(reg.to_reg()),
                 veloc_lir::MachineOperand::Use(reg) => Some(*reg),
-                veloc_lir::MachineOperand::TiedDefUse(reg) => Some(reg.to_reg()),
                 _ => None,
             };
             if let Some(r) = reg {
@@ -100,7 +102,7 @@ impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
 
 fn apply_select_result<'a, S>(
     cursor: &mut BlockRewriteCursor<'a, S>,
-    selected: &mut Vec<MachineInst>,
+    selected: &mut Vec<InstId>,
     result: SelectResult,
 ) -> Result<(), crate::error::Error> {
     match result {
@@ -111,7 +113,7 @@ fn apply_select_result<'a, S>(
         SelectResult::InPlace => {
             let inst = selected.pop().ok_or_else(|| {
                 crate::error::Error::select(
-                    cursor.current_inst().opcode.clone(),
+                    cursor.current_inst().opcode().clone(),
                     alloc::string::String::from("InPlace expects one selected inst"),
                 )
             })?;
@@ -121,7 +123,7 @@ fn apply_select_result<'a, S>(
         SelectResult::Replace => {
             cursor.remove_current();
             for inst in selected.drain(..) {
-                cursor.emit_before(inst);
+                cursor.emit(inst);
             }
         }
         SelectResult::Remove => {
@@ -155,12 +157,13 @@ impl<'a> InstructionSelector<'a> {
     ) -> Result<(), crate::error::Error> {
         let num_blocks = mfunc.blocks.len();
         // 复用的临时缓冲区，避免每条指令分配
-        let mut selected: Vec<MachineInst> = Vec::with_capacity(4);
+        let mut selected: Vec<InstId> = Vec::with_capacity(4);
         for i in 0..num_blocks {
             mfunc.rewrite_block(i, |cursor| {
                 let inst_id = cursor.current_inst_id();
                 // 如果指令在之前的融合中已被标记为无效，则跳过
                 if cursor.current_inst().is_invalid() {
+                    cursor.remove_current();
                     return Ok(());
                 }
 

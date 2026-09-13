@@ -40,7 +40,7 @@ fn generate_lowering() -> PathBuf {
     use std::fmt::Write;
     let operations: std::collections::BTreeMap<_, _> =
         lir.operations().map(|op| (op.name.clone(), op)).collect();
-    code.push_str("fn build(opcode: GenericOpcode, results: &[Reg], inputs: &[Reg]) -> MachineInst { match opcode {\n");
+    code.push_str("fn build(writer: veloc_lir::InstWriter<'_>, opcode: GenericOpcode, results: &[Reg], inputs: &[Reg]) -> veloc_lir::InstId { match opcode {\n");
     for target in program.targets() {
         let name = target.strip_prefix("lir.").expect("LIR constructor");
         let op = &operations[name];
@@ -54,11 +54,7 @@ fn generate_lowering() -> PathBuf {
             .chain((0..signature.inputs.len()).map(|i| format!("inputs[{i}]")))
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(
-            code,
-            "GenericOpcode::{name} => MachineInst::{builder}({args}),"
-        )
-        .unwrap();
+        writeln!(code, "GenericOpcode::{name} => writer.{builder}({args}),").unwrap();
     }
     code.push_str("_ => unreachable!(\"unbound rule constructor\"),\n} }\n");
     let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));

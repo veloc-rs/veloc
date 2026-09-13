@@ -1,6 +1,6 @@
 // ----- storage/lir-mappings-can-reorder-inputs-and-results
 // run: opgen
-// check: pub fn build_pair(low: Writable<Reg>, high: Writable<Reg>, first: Reg, second: Reg)
+// check: pub fn pair(self, low: Writable<Reg>, high: Writable<Reg>, first: Reg, second: Reg)
 // check: MachineOperand::Use(second), MachineOperand::Def(high), MachineOperand::Use(first), MachineOperand::Def(low)
 storage Operands { prefix: "G_" }
 struct Pair { right: Use, upper: Def, left: Use, lower: Def }
@@ -11,7 +11,7 @@ op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I
 
 // ----- storage/empty-mappings-are-explicit
 // run: opgen
-// check: pub fn build_stop()
+// check: pub fn stop(self, )
 storage Operands { prefix: "G_" }
 struct Empty {}
 op G_STOP() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty {} }
@@ -67,11 +67,11 @@ op Example(value: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }
 
 // ----- storage/tied-input-and-output-are-explicit
 // run: opgen
-// check: pub fn build_update(next: Writable<Reg>)
-// check: MachineOperand::TiedDefUse(next)
+// check: pub fn update(self, next: Writable<Reg>, previous: Reg)
+// check: MachineOperand::Def(next)
 storage Operands { prefix: "G_" }
-struct Update { register: TiedDefUse }
-op G_UPDATE(previous: Type::PTR) -> (next: Type::PTR) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Update { register: tied(previous, next) } }
+struct Update { next: Def, previous: Use }
+op G_UPDATE(previous: Type::PTR) -> (next: Type::PTR) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Update { next, previous } }
 
 // ----- storage/absent-optional-fields-still-require-a-mapping
 // run: opgen-error

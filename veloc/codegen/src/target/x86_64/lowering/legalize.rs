@@ -16,7 +16,7 @@ impl X86_64Legalizer {
 impl TargetLegalizer for X86_64Legalizer {
     fn legalize_action(
         &self,
-        inst: &MachineInst,
+        inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction<LegalizedLir>,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
         let action = crate::legalize_matcher!(inst, mfunc, {
@@ -94,10 +94,10 @@ impl TargetLegalizer for X86_64Legalizer {
                 [use(scalar_value(8, 16, 32, 64)), use(PTR), imm] => legal,
             };
             G_INDEXED_LOAD => {
-                [def(scalar_numeric(32, 64)), tied(PTR), use(PTR), imm] => legal,
+                [def(scalar_numeric(32, 64)), def(PTR), use(PTR), imm] => legal,
             };
             G_INDEXED_STORE => {
-                [tied(PTR), use(scalar_numeric(32, 64)), use(PTR), imm] => legal,
+                [def(PTR), use(scalar_numeric(32, 64)), use(PTR), imm] => legal,
             };
             G_CONSTANT => {
                 [def(BOOL), imm] => legal,
@@ -189,11 +189,11 @@ impl TargetLegalizer for X86_64Legalizer {
         mfunc: &mut veloc_lir::MachineFunction<LegalizedLir>,
     ) -> Result<LegalizeResult, crate::error::Error> {
         let mut output = Vec::new();
-        let opcode = mfunc.dfg[inst_id].generic_opcode();
+        let opcode = mfunc.inst(inst_id).generic_opcode();
         if let Some(opcode) = opcode {
             match opcode {
                 GenericOpcode::G_UITOFP | GenericOpcode::G_FPTOUI => {
-                    let inst = mfunc.dfg[inst_id].clone();
+                    let inst = mfunc.inst(inst_id);
                     let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
                         unreachable!()
                     };
@@ -207,7 +207,7 @@ impl TargetLegalizer for X86_64Legalizer {
                     return Ok(LegalizeResult::Replace(output));
                 }
                 GenericOpcode::G_FNEG | GenericOpcode::G_FABS => {
-                    let inst = mfunc.dfg[inst_id].clone();
+                    let inst = mfunc.inst(inst_id);
                     let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
                         unreachable!()
                     };
@@ -218,11 +218,11 @@ impl TargetLegalizer for X86_64Legalizer {
                         (Type::I64, i64::MIN)
                     };
                     let bits = mfunc.alloc_vreg(integer);
-                    output.push(mfunc.alloc_inst(MachineInst::build_unary(
+                    output.push(mfunc.writer().unary(
                         MachineOpcode::Generic(GenericOpcode::G_BITCAST),
                         Writable(bits),
                         unary.src,
-                    )));
+                    ));
                     let mask = self.lowering.emit_legalize_constant_reg(
                         mfunc,
                         &mut output,
@@ -245,15 +245,15 @@ impl TargetLegalizer for X86_64Legalizer {
                         bits,
                         mask,
                     );
-                    output.push(mfunc.alloc_inst(MachineInst::build_unary(
+                    output.push(mfunc.writer().unary(
                         MachineOpcode::Generic(GenericOpcode::G_BITCAST),
                         Writable(unary.dst),
                         changed,
-                    )));
+                    ));
                     return Ok(LegalizeResult::Replace(output));
                 }
                 GenericOpcode::G_OFFSET_LOAD | GenericOpcode::G_OFFSET_STORE => {
-                    let inst = mfunc.dfg[inst_id].clone();
+                    let inst = mfunc.inst(inst_id);
                     let (base, offset, value) = match inst.generic_view()? {
                         veloc_lir::InstView::LoadOffset(load) => (load.base, load.offset, load.dst),
                         veloc_lir::InstView::StoreOffset(store) => {
@@ -261,28 +261,26 @@ impl TargetLegalizer for X86_64Legalizer {
                         }
                         _ => unreachable!("offset memory opcode"),
                     };
+                    let memory = inst.memory();
                     // x86 disp32 sign-extends. Materialize the full displacement
                     // before the access rather than silently truncating it.
                     let displacement = mfunc.alloc_vreg(Type::I64);
                     let address = mfunc.alloc_vreg(Type::PTR);
-                    let constant = mfunc
-                        .alloc_inst(MachineInst::build_constant(Writable(displacement), offset));
-                    let add = mfunc.alloc_inst(MachineInst::build_ptr_add(
-                        Writable(address),
-                        base,
-                        displacement,
-                    ));
-                    let mut access = if opcode == GenericOpcode::G_OFFSET_LOAD {
-                        MachineInst::build_offset_load(Writable(value), address, 0)
+                    let constant = mfunc.writer().constant(Writable(displacement), offset);
+                    let add = mfunc
+                        .writer()
+                        .ptr_add(Writable(address), base, displacement);
+                    let access = if opcode == GenericOpcode::G_OFFSET_LOAD {
+                        mfunc.writer().offset_load(Writable(value), address, 0)
                     } else {
-                        MachineInst::build_offset_store(value, address, 0)
+                        mfunc.writer().offset_store(value, address, 0)
                     };
-                    access.memory = inst.memory;
+                    mfunc.set_inst_memory(access, memory);
                     mfunc.replace_inst(inst_id, access);
                     return Ok(LegalizeResult::Replace(alloc::vec![constant, add, inst_id]));
                 }
                 GenericOpcode::G_CTPOP | GenericOpcode::G_CTLZ | GenericOpcode::G_CTTZ => {
-                    let inst = mfunc.dfg[inst_id].clone();
+                    let inst = mfunc.inst(inst_id);
                     let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
                         unreachable!("unary legalization opcode");
                     };
@@ -291,7 +289,7 @@ impl TargetLegalizer for X86_64Legalizer {
                     } else {
                         panic!(
                             "x86_64 legalization expected virtual register destination for {:?}",
-                            inst.opcode
+                            inst.opcode()
                         );
                     };
                     match opcode {
@@ -331,13 +329,13 @@ impl TargetLegalizer for X86_64Legalizer {
         }
 
         if matches!(
-            mfunc.dfg[inst_id].opcode,
+            mfunc.inst(inst_id).opcode(),
             MachineOpcode::Generic(veloc_lir::GenericOpcode::G_BRJT)
         ) {
             let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).cloned() else {
                 panic!("missing br_table extra during x86_64 br_table legalization");
             };
-            let veloc_lir::InstView::BranchTable(brjt) = mfunc.dfg[inst_id].generic_view()? else {
+            let veloc_lir::InstView::BranchTable(brjt) = mfunc.inst(inst_id).generic_view()? else {
                 panic!("invalid br_table instruction during x86_64 legalization");
             };
 
@@ -347,39 +345,47 @@ impl TargetLegalizer for X86_64Legalizer {
 
             let index = brjt.index;
             let default_target = info.targets.last().unwrap();
-            debug_assert!(
-                info.targets.iter().all(|target| target.args.is_empty()),
-                "edge arguments should be lowered before x86_64 br_table legalization"
-            );
 
             for (case_idx, target) in info.targets[..info.targets.len() - 1].iter().enumerate() {
-                let cmp_inst = MachineInst::build_generic(
+                let cmp_inst = mfunc.writer().generic(
                     MachineOpcode::Target(TargetInst::X86Cmp32ri.as_u32()),
                     smallvec::smallvec![
                         MachineOperand::Use(index),
                         MachineOperand::Imm(case_idx as i64),
                     ],
                 );
-                output.push(mfunc.alloc_inst(cmp_inst));
+                output.push(cmp_inst);
 
-                let je_inst = MachineInst::build_generic(
+                let je_inst = mfunc.writer().generic(
                     MachineOpcode::Target(TargetInst::X86Je.as_u32()),
                     smallvec::smallvec![MachineOperand::Block(target.block)],
                 );
-                output.push(mfunc.alloc_inst(je_inst));
+                mfunc.set_inst_extra(
+                    je_inst,
+                    InstExtra::Branch(veloc_lir::BranchInfo {
+                        args: target.args.clone(),
+                    }),
+                );
+                output.push(je_inst);
             }
 
-            let jmp_inst = MachineInst::build_generic(
+            let jmp_inst = mfunc.writer().generic(
                 MachineOpcode::Target(TargetInst::X86Jmp.as_u32()),
                 smallvec::smallvec![MachineOperand::Block(default_target.block)],
             );
-            output.push(mfunc.alloc_inst(jmp_inst));
+            mfunc.set_inst_extra(
+                jmp_inst,
+                InstExtra::Branch(veloc_lir::BranchInfo {
+                    args: default_target.args.clone(),
+                }),
+            );
+            output.push(jmp_inst);
             return Ok(LegalizeResult::Replace(output));
         }
 
         Err(crate::error::Error::codegen(alloc::format!(
             "x86_64 missing custom legalizer for opcode {:?}",
-            mfunc.dfg[inst_id].opcode
+            mfunc.inst(inst_id).opcode()
         )))
     }
 }

@@ -3,9 +3,7 @@ use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransform
 use crate::target::arch::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
 use alloc::vec::Vec;
 use veloc_lir::stages::LegalizedLir;
-use veloc_lir::{
-    GenericOpcode, MachineFunction, MachineInst, MachineOpcode, Reg, StackSlot, Writable,
-};
+use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot, Writable};
 
 pub struct AbiLoweringPass;
 
@@ -21,10 +19,6 @@ fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Res
 
 fn plan_callsite(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<CallConvPlan> {
     CallConv::from(sig.call_conv).plan_callsite(target.desc().arch, sig.params(), sig.returns())
-}
-
-fn reg_copy_inst(dst: Reg, src: Reg) -> MachineInst {
-    MachineInst::build_copy(Writable(dst), src)
 }
 
 fn single_part_assignment<'a>(
@@ -70,13 +64,13 @@ fn build_load_from_assignment<S>(
     assignment: &AbiAssignment,
     dst: Reg,
     kind: &'static str,
-) -> MachineInst {
+) -> InstId {
     let part = single_part_assignment(assignment, kind);
     match part.loc {
-        AbiLocation::Reg(reg) => reg_copy_inst(dst, reg),
+        AbiLocation::Reg(reg) => mfunc.writer().copy(Writable(dst), reg),
         AbiLocation::Stack { .. } => {
             let slot = stack_slot_for_assignment(target, mfunc, part);
-            MachineInst::build_stack_load(Writable(dst), slot)
+            mfunc.writer().stack_load(Writable(dst), slot)
         }
     }
 }
@@ -87,13 +81,13 @@ fn build_store_to_assignment<S>(
     src: Reg,
     assignment: &AbiAssignment,
     kind: &'static str,
-) -> MachineInst {
+) -> InstId {
     let part = single_part_assignment(assignment, kind);
     match part.loc {
-        AbiLocation::Reg(reg) => reg_copy_inst(reg, src),
+        AbiLocation::Reg(reg) => mfunc.writer().copy(Writable(reg), src),
         AbiLocation::Stack { .. } => {
             let slot = stack_slot_for_assignment(target, mfunc, part);
-            MachineInst::build_stack_store(src, slot)
+            mfunc.writer().stack_store(src, slot)
         }
     }
 }
@@ -110,7 +104,7 @@ fn lower_formal_arguments(
     let func_name = mfunc.name.clone();
     mfunc
         .rewrite_block::<(), _>(0, |cursor| {
-            let inst = cursor.current_inst_clone();
+            let inst = cursor.current_inst();
             // Legalization may already have introduced target instructions.
             if !inst.is_generic() {
                 cursor.keep_current();
@@ -146,10 +140,8 @@ fn lower_callsite<S>(
     target: &dyn TargetMachine,
     cursor: &mut veloc_lir::BlockRewriteCursor<'_, S>,
     plan: &CallConvPlan,
-    inst_id: veloc_lir::InstId,
-    inst: &MachineInst,
 ) {
-    // Borrow the caller's snapshot while mutating the function.
+    let inst = cursor.current_inst();
     let veloc_lir::InstView::Call(call) = inst.generic_view().expect("valid call") else {
         unreachable!("callsite lowering");
     };
@@ -169,24 +161,46 @@ fn lower_callsite<S>(
         );
     }
 
-    for (src, assignment) in shape.args.iter().zip(plan.args.iter()) {
+    let args: Vec<_> = shape.args.iter().collect();
+    let defs: Vec<_> = shape.defs.iter().collect();
+    let mut operands: Vec<_> = inst
+        .operands()
+        .iter()
+        .filter(|op| !op.is_def())
+        .cloned()
+        .collect();
+    let returns: Vec<_> = plan
+        .returns
+        .iter()
+        .flat_map(|a| &a.parts)
+        .filter_map(|p| {
+            if let AbiLocation::Reg(reg) = p.loc {
+                Some(veloc_lir::MachineOperand::Def(Writable(reg)))
+            } else {
+                None
+            }
+        })
+        .collect();
+    operands.splice(0..0, returns);
+    let id = cursor.current_inst_id();
+    cursor.mfunc_mut().set_inst_operands(id, operands);
+    for (src, assignment) in args.into_iter().zip(plan.args.iter()) {
         let inst =
             build_store_to_assignment(target, cursor.mfunc_mut(), src, assignment, "call argument");
-        cursor.emit_before(inst);
+        cursor.emit(inst);
     }
 
-    cursor.emit_existing_before(inst_id);
-    cursor.remove_current();
+    cursor.keep_current();
     cursor.mfunc_mut().stack_frame.arg_size = cursor
         .mfunc()
         .stack_frame
         .arg_size
         .max(plan.stack_arg_bytes);
 
-    for (dst, assignment) in shape.defs.iter().zip(plan.returns.iter()) {
+    for (dst, assignment) in defs.into_iter().zip(plan.returns.iter()) {
         let inst =
             build_load_from_assignment(target, cursor.mfunc_mut(), assignment, dst, "call return");
-        cursor.emit_before(inst);
+        cursor.emit(inst);
     }
 }
 
@@ -195,12 +209,8 @@ fn lower_return<S>(
     mfunc: &mut MachineFunction<S>,
     sig: &veloc_mir::Signature,
     plan: &CallConvPlan,
-    inst: &MachineInst,
-) -> Vec<MachineInst> {
-    let veloc_lir::InstView::Return(ret) = inst.generic_view().expect("valid return") else {
-        unreachable!("return lowering");
-    };
-    let values = ret.values;
+    values: &[Reg],
+) -> Vec<InstId> {
     if values.len() != plan.returns.len() {
         panic!(
             "return value count mismatch: LIR has {}, ABI plan has {}",
@@ -217,7 +227,7 @@ fn lower_return<S>(
     }
 
     let mut pre = Vec::with_capacity(values.len());
-    for (src, assignment) in values.iter().zip(plan.returns.iter()) {
+    for (&src, assignment) in values.iter().zip(plan.returns.iter()) {
         pre.push(build_store_to_assignment(
             target,
             mfunc,
@@ -249,10 +259,10 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
         for block_idx in 0..num_blocks {
             mfunc
                 .rewrite_block::<(), _>(block_idx, |cursor| {
-                    let inst = cursor.current_inst_clone();
+                    let inst = cursor.current_inst();
                     let inst_id = cursor.current_inst_id();
 
-                    match inst.opcode {
+                    match inst.opcode() {
                         MachineOpcode::Generic(GenericOpcode::G_CALL)
                         | MachineOpcode::Generic(GenericOpcode::G_CALLIND) => {
                             let call_plan = {
@@ -264,19 +274,25 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                                 );
                                 })
                             };
-                            lower_callsite(ctx.target, cursor, &call_plan, inst_id, &inst);
+                            lower_callsite(ctx.target, cursor, &call_plan);
                         }
                         MachineOpcode::Generic(GenericOpcode::G_RET) => {
+                            let veloc_lir::InstView::Return(ret) =
+                                inst.generic_view().expect("valid return")
+                            else {
+                                unreachable!()
+                            };
+                            let values: Vec<_> = ret.values.iter().collect();
                             let ret_plan = &plan;
                             let pre = lower_return(
                                 ctx.target,
                                 cursor.mfunc_mut(),
                                 ctx.func_sig,
                                 ret_plan,
-                                &inst,
+                                &values,
                             );
                             for inst in pre {
-                                cursor.emit_before(inst);
+                                cursor.emit(inst);
                             }
                             let regs = ret_plan
                                 .returns
@@ -288,7 +304,8 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                                     })
                                 })
                                 .collect();
-                            cursor.replace_current(MachineInst::build_ret(regs));
+                            let id = cursor.mfunc_mut().writer().ret(regs);
+                            cursor.replace_current(id);
                         }
                         _ => cursor.keep_current(),
                     }

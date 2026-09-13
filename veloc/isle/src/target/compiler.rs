@@ -9,6 +9,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub(crate) struct FinalInstDef {
     operands: Vec<OperandConstraint>,
+    ties: Vec<(usize, usize)>,
     implicit_uses: Vec<String>,
     implicit_defs: Vec<String>,
     clobbers: Vec<String>,
@@ -196,6 +197,7 @@ fn instantiate_templates(
                 final_inst_defs.insert(
                     inst.name.clone(),
                     FinalInstDef {
+                        ties: Vec::new(),
                         operands: inst.operands,
                         implicit_uses: inst.implicit_uses,
                         implicit_defs: inst.implicit_defs,
@@ -212,6 +214,7 @@ fn instantiate_templates(
                 final_inst_defs.insert(
                     inst.name.clone(),
                     FinalInstDef {
+                        ties: Vec::new(),
                         operands: inst.operands.clone(),
                         implicit_uses: inst.implicit_uses.clone(),
                         implicit_defs: inst.implicit_defs.clone(),
@@ -228,12 +231,32 @@ fn instantiate_templates(
         }
     }
 
+    // A destructive encoding is a location constraint, not a shared SSA value.
+    // Keep encoded operand positions stable and append each tied input.
+    for inst in final_inst_defs.values_mut() {
+        let mut inputs = Vec::new();
+        for (def, operand) in inst.operands.iter_mut().enumerate() {
+            if let OperandConstraint::TiedDef { dst, src } = operand {
+                inputs.push((def, src.clone()));
+                *operand = OperandConstraint::Def(dst.clone());
+            }
+        }
+        for (def, src) in inputs {
+            inst.ties.push((def, inst.operands.len()));
+            inst.operands.push(OperandConstraint::Use(src));
+        }
+    }
     final_inst_defs
 }
 
 pub fn compile(input: &str, arch: &str) -> Result<String, String> {
     let input = preprocess::preprocess_isle(input)?;
     let module = parse_input(&input)?;
+    for def in &module.defs {
+        if let Def::SelectRule(rule) = def {
+            select::check_temps(rule)?;
+        }
+    }
     let (extractors, templates, macros) = collect_definitions(&module);
     let final_inst_defs = instantiate_templates(&module, &templates);
     for (name, inst) in &final_inst_defs {

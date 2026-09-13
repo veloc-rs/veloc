@@ -28,16 +28,14 @@ impl Context for Lower<'_, '_> {
         self.ctx.mfunc.alloc_vreg(ty)
     }
     fn emit(&mut self, opcode: GenericOpcode, results: &[Reg], inputs: &[Reg]) {
-        IRTranslator::emit_inst(self.ctx, self.block, build(opcode, results, inputs));
+        let id = build(self.ctx.mfunc.writer(), opcode, results, inputs);
+        self.block.append_inst_id(id);
     }
     fn bind(&mut self, result: usize, value: Reg) {
         let dst = self.result(result);
         if dst != value {
-            IRTranslator::emit_inst(
-                self.ctx,
-                self.block,
-                MachineInst::build_copy(Writable(dst), value),
-            );
+            let id = self.ctx.mfunc.writer().copy(Writable(dst), value);
+            self.block.append_inst_id(id);
         }
     }
 }

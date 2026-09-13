@@ -38,7 +38,7 @@ struct LoadOffset {
 
 struct IndexedLoad {
     dst: Def,
-    wb_dst: TiedDefUse,
+    wb_dst: Def,
     base: Use,
     offset: Imm,
 }
@@ -70,7 +70,7 @@ struct StoreOffset {
 }
 
 struct IndexedStore {
-    wb_dst: TiedDefUse,
+    wb_dst: Def,
     src: Use,
     base: Use,
     offset: Imm,
@@ -452,14 +452,14 @@ op G_OFFSET_STORE(src: Any, base: Type::PTR, offset: i64) -> () {
     storage: StoreOffset { src, base, offset },
 }
 
-op G_INDEXED_LOAD(wb_dst: Type::PTR, base: Type::PTR, offset: i64) -> (dst: Any, out_wb_dst: Type::PTR) {
+op G_INDEXED_LOAD(base: Type::PTR, offset: i64) -> (dst: Any, wb_dst: Type::PTR) {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
-    storage: IndexedLoad { dst, wb_dst: tied(wb_dst, out_wb_dst), base, offset },
+    storage: IndexedLoad { dst, wb_dst, base, offset },
 }
 
-op G_INDEXED_STORE(wb_dst: Type::PTR, src: Any, base: Type::PTR, offset: i64) -> (out_wb_dst: Type::PTR) {
+op G_INDEXED_STORE(src: Any, base: Type::PTR, offset: i64) -> (wb_dst: Type::PTR) {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
-    storage: IndexedStore { wb_dst: tied(wb_dst, out_wb_dst), src, base, offset },
+    storage: IndexedStore { wb_dst, src, base, offset },
 }
 
 op G_CONSTANT(imm: i64) -> (dst: ScalarInteger | Type::BOOL | Type::PTR) {
