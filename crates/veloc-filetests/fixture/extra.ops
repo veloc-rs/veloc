@@ -229,16 +229,6 @@ op VectorOnly<T: vectors(ScalarInteger)>(arg: T) -> T {
     mnemonic: "vector-only", storage: Unary { arg }, semantics: bv.sub(bv.zero(), arg)
 }
 
-comparison OrderCC {
-    domain: integer,
-    predicates: [Before(signed, [less]), After(signed, [greater]),
-                 NotBefore(signed, [equal, greater]), NotAfter(signed, [less, equal])]
-}
-comparison FloatOrderCC {
-    domain: float,
-    predicates: [Before([less]), After([greater]),
-                 NotBefore([equal, greater, unordered]), NotAfter([less, equal, unordered])]
-}
 encoding PackedRecord {
     storage: u8,
     fields: [enabled(1), count(3), tag(4)]

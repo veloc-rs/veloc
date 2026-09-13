@@ -488,7 +488,7 @@ impl X86_64Lowering {
             (and, masked, diff, mask),
             (xor, dst, false_val, masked),
         ] {
-            ctx.selected.push(ctx.mfunc.writer().tied_binary(
+            ctx.selected.push(ctx.mfunc.writer().binary(
                 MachineOpcode::Target(op.as_u32()),
                 Writable(output),
                 rhs,
@@ -549,7 +549,7 @@ impl X86_64Lowering {
                 };
                 let is_eq = emit_setcc_i32(ctx, predicate);
                 let ordered = emit_setcc_i32(ctx, TargetInst::X86Setnp);
-                ctx.selected.push(ctx.mfunc.writer().tied_binary(
+                ctx.selected.push(ctx.mfunc.writer().binary(
                     MachineOpcode::Target(TargetInst::X86And32.as_u32()),
                     Writable(fcmp.dst),
                     ordered,
@@ -559,7 +559,7 @@ impl X86_64Lowering {
             FloatCC::Ne => {
                 let is_ne = emit_setcc_i32(ctx, TargetInst::X86Setne);
                 let unordered = emit_setcc_i32(ctx, TargetInst::X86Setp);
-                ctx.selected.push(ctx.mfunc.writer().tied_binary(
+                ctx.selected.push(ctx.mfunc.writer().binary(
                     MachineOpcode::Target(TargetInst::X86Or32.as_u32()),
                     Writable(fcmp.dst),
                     unordered,

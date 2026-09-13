@@ -80,3 +80,37 @@ type MemoryEffect = rust("veloc_types::MemoryEffect") {
     const fn is_none(self) -> bool;
 }
 type MemFlags = rust("veloc_types::MemFlags");
+
+// Rust owns condition codes and their finite outcome semantics.
+type IntCC = rust("veloc_types::IntCC") {
+    trait: rust("veloc_types::traits::IntCCInfo"),
+    const Eq: Self;
+    const Ne: Self;
+    const LtS: Self;
+    const LtU: Self;
+    const GtS: Self;
+    const GtU: Self;
+    const LeS: Self;
+    const LeU: Self;
+    const GeS: Self;
+    const GeU: Self;
+    const fn outcomes(self) -> u8;
+    const fn swap(self) -> Self;
+    const fn complement(self) -> Self;
+    const fn is_signed(self) -> bool;
+    const fn is_unsigned(self) -> bool;
+    const fn test(self, bits: u16, lhs: u128, rhs: u128) -> bool;
+}
+type FloatCC = rust("veloc_types::FloatCC") {
+    trait: rust("veloc_types::traits::FloatCCInfo"),
+    const Eq: Self;
+    const Ne: Self;
+    const Lt: Self;
+    const Gt: Self;
+    const Le: Self;
+    const Ge: Self;
+    const fn outcomes(self) -> u8;
+    const fn swap(self) -> Self;
+    const fn complement(self) -> optional(Self);
+    const fn complement_ordered(self) -> Self;
+}

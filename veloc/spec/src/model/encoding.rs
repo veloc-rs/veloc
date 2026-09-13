@@ -16,10 +16,10 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Encodings, Err
         if matches!(
             record.name.as_str(),
             "Opcode" | "OpFormat" | "TypeClass" | "OpSpec" | "TypeError" | "type_rules"
-        ) || records.iter().any(|other| {
-            (super::records::rust_binding(other).is_some() || other.kind == "comparison")
-                && other.name == record.name
-        }) {
+        ) || records
+            .iter()
+            .any(|other| super::records::rust_binding(other).is_some() && other.name == record.name)
+        {
             return Err(fields.error(format!(
                 "bit layout `{}` conflicts with a MIR opcode type or module",
                 record.name

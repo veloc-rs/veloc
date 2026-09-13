@@ -86,10 +86,8 @@ impl Types {
         let mut enums = Vec::new();
         let mut names = BTreeSet::new();
         for decl in declarations.iter().filter(|d| {
-            matches!(
-                d.kind.as_str(),
-                "struct" | "enum" | "encoding" | "comparison"
-            ) && !(d.kind == "encoding" && d.name == "Type")
+            matches!(d.kind.as_str(), "struct" | "enum" | "encoding")
+                && !(d.kind == "encoding" && d.name == "Type")
                 || super::records::rust_binding(d).is_some()
         }) {
             if !names.insert(decl.name.clone()) {

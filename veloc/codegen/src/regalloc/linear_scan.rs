@@ -382,7 +382,7 @@ mod tests {
             let lhs = f.alloc_vreg(Type::I64);
             let rhs = f.alloc_vreg(Type::I64);
             let dst = f.alloc_vreg(Type::I64);
-            let id = f.writer().tied_binary(
+            let id = f.writer().binary(
                 MachineOpcode::Target(TargetInst::X86Sub64.as_u32()),
                 Writable(dst),
                 rhs,

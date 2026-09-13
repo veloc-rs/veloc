@@ -20,20 +20,12 @@ pub(crate) fn generate(defs: &Definitions) -> String {
         }
     }
     code.push_str("];\n");
-    if let Some(comparison) = defs.comparisons.iter().find(|c| c.name == "IntCC")
-        && let Some(predicates) = comparison.integer_predicates()
-    {
-        code.push_str("#[allow(dead_code)] pub fn predicate(cc: IntCC) -> veloc_semantics::IntPredicate { match cc {\n");
-        for (name, p) in predicates {
-            writeln!(
-                code,
-                "IntCC::{name} => veloc_semantics::IntPredicate::new({}, {}),",
-                p.signed(),
-                p.outcomes()
-            )
-            .unwrap();
-        }
-        code.push_str("} }\n");
+    if defs.ops.iter().any(|op| {
+        op.semantics
+            .as_ref()
+            .is_some_and(|sem| !sem.properties.is_empty())
+    }) {
+        code.push_str("#[allow(dead_code)] pub fn predicate(cc: IntCC) -> veloc_semantics::IntPredicate { veloc_semantics::IntPredicate::new(cc.is_signed(), cc.outcomes()) }\n");
     }
     code
 }

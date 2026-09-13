@@ -391,7 +391,6 @@ struct Checker<'a> {
     data: &'a data::Types,
     encodings: &'a Encodings,
     types: &'a crate::types::Types,
-    comparisons: &'a [super::comparisons::Comparison],
     declarations: &'a [Record],
     active: BTreeSet<String>,
     // Verification arithmetic widens integers; typed helper arguments do not.
@@ -532,7 +531,6 @@ impl Library {
             types,
             encodings,
             data,
-            comparisons,
         } = vocabulary;
         let mut env = operands(params, signature, types);
         let Some(body) = body else {
@@ -547,7 +545,6 @@ impl Library {
             data,
             encodings,
             types,
-            comparisons,
             declarations: &[],
             active: BTreeSet::new(),
             verification: true,
@@ -654,7 +651,6 @@ impl Library {
             data,
             encodings,
             types,
-            comparisons,
         } = vocabulary;
         let mut library = Self {
             methods: crate::interfaces::declarations(declarations, source, "crate::type_methods")?,
@@ -667,7 +663,6 @@ impl Library {
             encodings,
             types,
             declarations,
-            comparisons,
             active: BTreeSet::new(),
             verification: false,
             next_local: 0,
@@ -702,7 +697,6 @@ impl Library {
             types,
             encodings,
             data,
-            comparisons,
         } = vocabulary;
         let mut bindings = BTreeMap::new();
         let Some(node) = node else {
@@ -717,7 +711,6 @@ impl Library {
             encodings,
             types,
             declarations: &[],
-            comparisons,
             active: BTreeSet::new(),
             verification: false,
             next_local: 0,
@@ -773,7 +766,6 @@ impl Library {
             data,
             encodings,
             types,
-            comparisons,
         } = vocabulary;
         let mut checker = Checker {
             source,
@@ -782,7 +774,6 @@ impl Library {
             encodings,
             types,
             declarations: &[],
-            comparisons,
             active: BTreeSet::new(),
             verification: false,
             next_local: 0,
@@ -845,7 +836,6 @@ impl Library {
             data,
             encodings,
             types,
-            comparisons,
         } = vocabulary;
         let mut checker = Checker {
             source,
@@ -854,7 +844,6 @@ impl Library {
             encodings,
             types,
             declarations: &[],
-            comparisons,
             active: BTreeSet::new(),
             verification: false,
             next_local: 0,
@@ -942,8 +931,8 @@ impl Checker<'_> {
             "==" | "!="
                 if numeric
                     || boolean
-                    || matches!(&a.ty, Ty::Named(n) if n=="Type" || n=="Shape" || n=="TypeBits" || self.comparisons.iter().any(|c|c.name==*n) || self.data.enums.iter().any(|e|e.name==*n))
-                    || matches!(&a.ty, Ty::Sequence(_)) =>
+                    || matches!(&a.ty, Ty::Sequence(_))
+                    || matches!(&a.ty, Ty::Named(n) if self.data.rust.contains(n) || self.data.enums.iter().any(|e|e.name==*n)) =>
             {
                 Ty::named("bool")
             }
@@ -983,15 +972,6 @@ impl Checker<'_> {
     }
 
     fn associated(&mut self, offset: usize, owner: &str, field: &str) -> Result<Expr, Error> {
-        if let Some(comparison) = self.comparisons.iter().find(|c| c.name == owner) {
-            if !comparison.has_variant(field) {
-                return Err(Error::at(self.source, offset, "unknown comparison variant"));
-            }
-            return Ok(Expr::new(
-                Ty::named(owner),
-                ExprKind::Variant(field.into(), Vec::new()),
-            ));
-        }
         let name = format!("{owner}::{field}");
         let function = self.function(&name, offset)?;
         if !function.constant {
@@ -1132,7 +1112,6 @@ impl Checker<'_> {
                     || self.data.rust.contains(name)
                     || self.data.records.iter().any(|r| r.name == *name)
                     || self.data.enums.iter().any(|e| e.name == *name)
-                    || self.comparisons.iter().any(|c| c.name == *name)
                     || self.encodings.contains_key(name) =>
             {
                 Ok(Ty::named(name))

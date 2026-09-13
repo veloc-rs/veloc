@@ -330,10 +330,7 @@ pub(crate) fn field_type(
         && !records.iter().any(|r| {
             r.name == *ty
                 && (rust_binding(r).is_some()
-                    || matches!(
-                        r.kind.as_str(),
-                        "struct" | "enum" | "encoding" | "comparison"
-                    ))
+                    || matches!(r.kind.as_str(), "struct" | "enum" | "encoding"))
         })
     {
         return Err(Error::at(

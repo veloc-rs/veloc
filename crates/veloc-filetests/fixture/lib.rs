@@ -2,8 +2,6 @@
 
 include!("../../../veloc/mir/src/root.rs");
 
-pub use inst::{FloatOrderCC, OrderCC};
-
 pub mod tokens {
     pub struct Tokens<'a>(pub &'a u32);
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

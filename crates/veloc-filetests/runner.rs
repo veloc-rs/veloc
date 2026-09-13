@@ -144,8 +144,6 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 include_str!("../../veloc/defs/types.ops"),
                 include_str!("../../veloc/mir/defs/types.ops"),
                 "\n",
-                include_str!("../../veloc/defs/comparisons.ops"),
-                "\n",
             );
             let builtins = builtins
                 .lines()

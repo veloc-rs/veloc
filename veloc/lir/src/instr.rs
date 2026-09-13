@@ -281,22 +281,6 @@ impl crate::InstWriter<'_> {
             ],
         )
     }
-    pub fn tied_binary(
-        self,
-        opcode: MachineOpcode,
-        dst: Writable<Reg>,
-        rhs: Reg,
-        lhs: Reg,
-    ) -> InstId {
-        self.write(
-            opcode,
-            &[
-                MachineOperand::Def(dst),
-                MachineOperand::Use(rhs),
-                MachineOperand::Use(lhs),
-            ],
-        )
-    }
     pub fn generic(self, opcode: MachineOpcode, operands: SmallVec<[MachineOperand; 4]>) -> InstId {
         self.write(opcode, &operands)
     }

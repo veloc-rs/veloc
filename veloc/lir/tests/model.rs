@@ -57,7 +57,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     // Replacing a tied input never renames its independent output.
     let rw = f
         .writer()
-        .tied_binary(veloc_lir::MachineOpcode::Target(0), Writable(a), b, a);
+        .binary(veloc_lir::MachineOpcode::Target(0), Writable(a), b, a);
     f.replace_uses(a.as_vreg().unwrap(), b.as_vreg().unwrap());
     assert_eq!(f.uses(a).count(), 0);
     assert_eq!(f.inst(rw).defs().collect::<Vec<_>>(), [a]);
@@ -166,7 +166,6 @@ fn decode_errors_are_owned_by_lir() {
 #[allow(dead_code)]
 mod offline {
     use veloc_lir::GenericOpcode as Opcode;
-    use veloc_mir::IntCC;
     include!(concat!(env!("OUT_DIR"), "/semantics.rs"));
 }
 

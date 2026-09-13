@@ -25,7 +25,7 @@ beside the implementation.
 File tests distinguish definition errors from Rust type errors and const-evaluation
 failures; moving a check to rustc does not remove its negative test.
 
-Shared vocabulary lives in `veloc/defs/`: `types.ops` and `comparisons.ops`, imported by `prelude.ops`. MIR owns its packed
+Shared vocabulary lives in `veloc/defs/`: `types.ops`, imported by `prelude.ops`. MIR owns its packed
 `formats.ops` and logical `mir.ops`; LIR owns `generic.ops` with operand-array
 formats and logical operations. Each consumer has a `defs/module.ops` entry:
 
@@ -134,7 +134,7 @@ from the crate root.
 Generated Rust artifacts follow their consumers, not the input file boundaries:
 
 - `types.rs`: compact type encoding, constants and type helpers.
-- `opcodes.rs`: opcode metadata, formats, type sets, packed encodings and comparisons.
+- `opcodes.rs`: opcode metadata, formats, type sets, packed encodings.
 - `instructions.rs`: storage, writers, views, accessors and result type inference.
 - `builders.rs`: operation-specific `InstBuilder` methods.
 - `type_rules.rs`: type validation dispatch and shared signature checks.
@@ -172,7 +172,7 @@ text projection.
 Paths must be qualified by `crate` or an external crate name, with identifier
 segments only: no references, generic arguments, relative `self/super` paths
 or embedded Rust code. Ordinary imports load these declarations; primitives
-remain built in, and defs-owned structs/enums/comparisons register themselves.
+remain built in, and defs-owned structs/enums register themselves.
 MIR operand-list and successor storage roles remain structural, not opaque
 Rust type bindings.
 
@@ -364,34 +364,19 @@ primitive; operations need not repeat them. Memory effects remain explicit.
 
 ## Comparison predicates
 
-```text
-comparison Conditions {
-    domain: float,
-    predicates: [
-        Eq([equal]), Ne([less, greater, unordered]),
-        Lt([less]), Gt([greater]),
-        Le([less, equal]), Ge([greater, equal]),
-    ],
-}
-```
+Condition codes are ordinary Rust-bound types declared in `veloc/types/defs/types.ops`.
+Rust owns `IntCC` and `FloatCC` in veloc-types; the definition language has no
+special comparison declaration. Associated constants and methods use the same
+generated trait contracts as other Rust-bound types.
 
-Predicates accept subsets of `less`, `equal`, `greater`, and, for floats,
-`unordered` (either operand is NaN). Integer ordering predicates specify
-`signed` or `unsigned`, e.g. `LtS(signed, [less])`; equality predicates omit
-signedness because their meaning does not depend on it. Variant names generate
-lowercase mnemonics, parsing and Display, but do not determine semantics.
+Predicates encode accepted less/equal/greater/unordered outcomes. Rust const
+methods derive swap and complement from these sets. Float `complement()`
+returns None when the exact IEEE complement is absent; `complement_ordered()`
+requires callers to establish that neither operand is NaN.
 
-The compiler derives swap by exchanging less/greater and complement by taking
-the outcome-set complement. Swap must be representable, as must integer
-complement. Float `complement()` returns `None` if the exact IEEE complement
-is absent. Float `complement_ordered()` excludes unordered outcomes and requires
-a representable complement; callers must establish that neither operand is NaN.
-If multiple predicates are equivalent in this restricted domain, generation
-prefers the exact outcome set, then the first declared equivalent. Duplicate
-full-domain meanings, mnemonic collisions and invalid outcomes are errors.
-All transforms run at build time and emit direct const Rust matches. Comparison
-evaluation and target lowering remain separate Rust/ISLE consumers; this finite
-model does not specify floating-point exceptions or memory behavior.
+Generated constant evaluators call `IntCC::test` at execution time. Offline
+verification converts the same condition code's signedness and outcomes into
+an IntPredicate. The generator does not execute Rust condition-code methods.
 
 ## Packed encodings
 
@@ -1017,7 +1002,7 @@ Queries use named results, `value.ty()`, `len(sequence)`,
 `type.is_vector()` and `type.is_fixed()` (a fixed-width vector).
 Lane counts and byte sizes are minima for scalable types. A target-dependent
 byte size is an evaluation error. Result names must refer to declared fixed
-results. Enum literals are checked against the comparison definitions; struct
+results. Associated constants are checked against their type declarations; struct
 fields against the struct definitions. Unsupported property kinds are rejected instead of guessed or silently coerced.
 
 `require(predicate, "diagnostic")` supplies an optional diagnostic; a bare
@@ -1292,7 +1277,7 @@ semantics: [bv.add(lhs, rhs), bv.ult(bv.add(lhs, rhs), lhs)]
 The last example returns a sum and UNSIGNED carry; MIR's `IAddWithOverflow`
 instead explicitly defines SIGNED overflow using sign-bit arithmetic.
 `type(operand)` and `result(index)` refer to signature sorts, not runtime values.
-`kind` is an `IntCC` property whose signedness/outcomes come from comparisons.ops,
+`kind` is an `IntCC` property whose signedness/outcomes come from the Rust condition-code implementation,
 not a runtime SSA input. Property extraction follows the storage mapping.
 Bool is a distinct sort: bitwise and/or/xor support it, arithmetic does not.
 Zero extension explicitly converts Bool to a zero-or-one bitvector.

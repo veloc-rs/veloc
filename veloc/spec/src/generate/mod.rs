@@ -86,9 +86,7 @@ fn generate(plan: &Plan) -> Generated {
     ops.push_str(&defs.storage.format_code());
     ops.push_str(&sets.generate());
     ops.push_str(&crate::model::encoding::generate(&defs.encodings));
-    for comparison in &defs.comparisons {
-        ops.push_str(&comparison.generate());
-    }
+
     ops.push_str(&opcode_enum(defs, "Opcode"));
     ops.push_str(&crate::model::metadata::value_contract(
         &defs.ops,

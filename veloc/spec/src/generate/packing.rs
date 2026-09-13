@@ -157,7 +157,6 @@ pub(crate) fn prepare_alternatives(
                 types: &defs.types,
                 data: &defs.data,
                 encodings: &defs.encodings,
-                comparisons: &defs.comparisons,
             },
         )?;
         alternatives.push(Alternative {

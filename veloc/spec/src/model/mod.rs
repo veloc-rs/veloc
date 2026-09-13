@@ -1,6 +1,5 @@
 //! Checked operation contracts, independent of runtime IR containers.
 
-pub(crate) mod comparisons;
 pub(crate) mod constraints;
 pub(crate) mod data;
 pub(crate) mod encoding;
@@ -23,7 +22,6 @@ mod operation;
 pub struct Definitions {
     pub(crate) encodings: Encodings,
     pub(crate) data: crate::model::data::Types,
-    pub(crate) comparisons: Vec<crate::model::comparisons::Comparison>,
     pub(crate) types: Types,
     pub(crate) storage: storage::Storage,
     pub(crate) ops: Vec<Op>,
@@ -37,7 +35,6 @@ pub(crate) struct Vocabulary<'a> {
     pub types: &'a Types,
     pub encodings: &'a Encodings,
     pub data: &'a data::Types,
-    pub comparisons: &'a [comparisons::Comparison],
 }
 
 pub(crate) struct Property {
@@ -232,14 +229,12 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
     }
     let types = Types::compile(&records, source)?;
     let encodings = encoding::compile(&records, source)?;
-    let comparisons = crate::model::comparisons::compile(&records, source)?;
     let data = crate::model::data::Types::compile(&records, source)?;
     let storage = storage::compile(&records, source, &data)?;
     let vocabulary = Vocabulary {
         types: &types,
         encodings: &encodings,
         data: &data,
-        comparisons: &comparisons,
     };
     let mut expressions = expr::Library::compile(&records, source, vocabulary)?;
     let mut ops = Vec::new();
@@ -275,8 +270,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 vocabulary,
                 &mut expressions,
             )?),
-            "layout" | "struct" | "enum" | "encoding" | "comparison" | "storage" | "fn"
-            | "const" => {}
+            "layout" | "struct" | "enum" | "encoding" | "storage" | "fn" | "const" => {}
             kind if Types::is_definition(kind) => {}
             _ => {
                 return Err(Error::at(
@@ -290,7 +284,6 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
     let mut definitions = Definitions {
         encodings,
         data,
-        comparisons,
         types,
         storage,
         ops,

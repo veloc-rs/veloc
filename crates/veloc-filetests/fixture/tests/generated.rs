@@ -826,18 +826,6 @@ fn generated_predicates_and_inline_sets_observe_actual_types() {
 }
 
 #[test]
-fn generated_comparison_transforms_follow_outcomes() {
-    use veloc_mir::{FloatOrderCC as F, OrderCC as I};
-    assert_eq!(I::Before.swap(), I::After);
-    assert_eq!(I::NotBefore.swap(), I::NotAfter);
-    assert_eq!(I::Before.complement(), I::NotBefore);
-    assert_eq!(I::After.complement(), I::NotAfter);
-    assert_eq!(I::from_mnemonic("notbefore"), Some(I::NotBefore));
-    assert_eq!(F::Before.complement(), Some(F::NotBefore));
-    assert_eq!(F::NotAfter.complement(), Some(F::After));
-}
-
-#[test]
 fn generated_evaluators_execute_compositions_properties_and_traps() {
     for (opcode, args, results, properties, expected) in [
         (
@@ -909,6 +897,57 @@ fn generated_evaluators_execute_compositions_properties_and_traps() {
             expected,
             "{opcode:?}"
         );
+    }
+    // The generated evaluator and offline graph consume the same Rust-owned
+    // condition codes, without generator-side predicate tables.
+    let compare = offline::SPECS
+        .iter()
+        .find(|spec| spec.opcode == Opcode::CompareValue)
+        .unwrap();
+    let sort = veloc_semantics::Sort::bv(32).unwrap();
+    for cc in [
+        IntCC::Eq,
+        IntCC::Ne,
+        IntCC::LtS,
+        IntCC::LtU,
+        IntCC::GtS,
+        IntCC::GtU,
+        IntCC::LeS,
+        IntCC::LeU,
+        IntCC::GeS,
+        IntCC::GeU,
+    ] {
+        let function = compare
+            .program
+            .instantiate(
+                &[sort, sort],
+                &[veloc_semantics::Sort::Bool],
+                &[offline::predicate(cc)],
+            )
+            .unwrap();
+        for lhs in [i32::MIN, -1, 0, 1, i32::MAX] {
+            for rhs in [i32::MIN, -1, 0, 1, i32::MAX] {
+                let expected = cc.test(32, lhs as u32 as u128, rhs as u32 as u128);
+                assert_eq!(
+                    evaluator::evaluate(
+                        Opcode::CompareValue,
+                        &[ScalarConst::from(lhs), ScalarConst::from(rhs)],
+                        &[Type::BOOL],
+                        &[cc]
+                    ),
+                    Some(vec![ScalarConst::from(expected)])
+                );
+                assert_eq!(
+                    function
+                        .execute(&[
+                            veloc_semantics::Value::Bv(lhs as u32 as u128),
+                            veloc_semantics::Value::Bv(rhs as u32 as u128)
+                        ])
+                        .unwrap(),
+                    veloc_semantics::Outcome::Values(vec![veloc_semantics::Value::Bool(expected)])
+                );
+            }
+        }
     }
     assert!(!evaluator::can_fold(Opcode::VectorOnly));
     assert!(!evaluator::can_fold(Opcode::Difference));

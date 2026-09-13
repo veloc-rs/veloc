@@ -36,7 +36,7 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
         id
     };
     let first = {
-        let id = f.writer().tied_binary(
+        let id = f.writer().binary(
             MachineOpcode::Target(TargetInst::X86IMul64.as_u32()),
             Writable(a),
             x,
@@ -46,7 +46,7 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
         id
     };
     let last = {
-        let id = f.writer().tied_binary(
+        let id = f.writer().binary(
             MachineOpcode::Target(TargetInst::X86IMul64.as_u32()),
             Writable(a),
             x,

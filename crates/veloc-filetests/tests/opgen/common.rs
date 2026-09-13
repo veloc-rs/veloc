@@ -18,11 +18,6 @@ pub static BUILTINS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         "\n",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../veloc/defs/comparisons.ops"
-        )),
-        "\n",
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
             "/../../veloc/mir/defs/types.ops"
         ))
     )

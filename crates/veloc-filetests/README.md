@@ -60,7 +60,7 @@ the presence of an opcode. Assertions belong in `//` comments.
 | `fixture-error` | Require a parser diagnostic from that test MIR |
 | `fixture-validate-error` | Parsing succeeds, but test MIR validation fails |
 
-The `.ops` driver prepends the shared `types.ops` and `comparisons.ops`. Input files explicitly supply their operation/storage records.
+The `.ops` driver prepends the shared type declarations. Input files explicitly supply their operation/storage records.
 This driver is for definitions using the standard type encoding; low-level
 encoding changes and definition-order metamorphic tests live in the `opgen` Rust suite.
 

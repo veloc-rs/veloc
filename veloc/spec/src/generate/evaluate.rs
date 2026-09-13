@@ -145,7 +145,7 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
                 format!(" if {enabled} && {guard}")
             };
             writeln!(arms, "([{args}], [{results}], [{properties}]){guard} => {{").unwrap();
-            emit(defs, sem, instance, &variants[inputs..], &mut arms);
+            emit(sem, instance, &variants[inputs..], &mut arms);
             arms.push_str("},\n");
         }
         if !arms.is_empty() {
@@ -220,13 +220,7 @@ fn mask(sort: Sort) -> u128 {
     veloc_semantics::Width::new(width(sort)).unwrap().mask()
 }
 
-fn emit(
-    defs: &Definitions,
-    sem: &Semantic,
-    instance: &Instance,
-    results: &[String],
-    code: &mut String,
-) {
+fn emit(sem: &Semantic, instance: &Instance, results: &[String], code: &mut String) {
     let inputs = sem.inputs as usize;
     let sort = |ty: TypeRef| match ty {
         TypeRef::Input(i) => instance.sorts[i as usize],
@@ -261,20 +255,7 @@ fn emit(
                 let value = match kind {
                     ComparisonRef::Fixed(p) => comparison(*p, bits, *lhs, *rhs),
                     ComparisonRef::Property(i) => {
-                        let predicates = defs
-                            .comparisons
-                            .iter()
-                            .find(|c| c.name == "IntCC")
-                            .expect("checked comparison type")
-                            .integer_predicates()
-                            .unwrap();
-                        let arms = predicates
-                            .into_iter()
-                            .map(|(name, p)| {
-                                format!("IntCC::{name} => {},", comparison(p, bits, *lhs, *rhs))
-                            })
-                            .collect::<String>();
-                        format!("match p{i} {{ {arms} }}")
+                        format!("u128::from(p{i}.test({bits}, s{lhs}, s{rhs}))")
                     }
                 };
                 (Sort::Bool, value)

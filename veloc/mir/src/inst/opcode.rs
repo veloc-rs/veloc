@@ -3,7 +3,7 @@
 //! Layouts, type checks and operation tables are compiled from `defs/*.ops`.
 //! Their shared runtime support lives alongside the generated definitions.
 
-pub use veloc_types::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
+pub use veloc_types::{IntCC, FloatCC, MemFlags, MemoryEffect, MemoryEffects, OpTraits};
 
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
 

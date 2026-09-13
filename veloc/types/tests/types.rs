@@ -118,3 +118,97 @@ fn import_remaps_nested_signatures_and_rejects_invalid_graphs_atomically() {
         assert_eq!(target.len(), before);
     }
 }
+
+#[test]
+fn comparison_semantics_and_transforms() {
+    use veloc_types::{FloatCC as F, IntCC as I};
+    let integers = &[
+        I::Eq,
+        I::Ne,
+        I::LtS,
+        I::LtU,
+        I::GtS,
+        I::GtU,
+        I::LeS,
+        I::LeU,
+        I::GeS,
+        I::GeU,
+    ];
+    let floats = &[F::Eq, F::Ne, F::Lt, F::Gt, F::Le, F::Ge];
+    for &cc in integers {
+        assert_eq!(I::from_mnemonic(cc.mnemonic()), Some(cc));
+        assert_eq!(cc.swap().swap(), cc);
+        assert_eq!(cc.complement().complement(), cc);
+        for x in 0..=255u128 {
+            for y in 0..=255u128 {
+                let actual = cc.test(8, x, y);
+                let expected = match cc {
+                    I::Eq => x == y,
+                    I::Ne => x != y,
+                    I::LtS => (x as i8) < (y as i8),
+                    I::LtU => x < y,
+                    I::GtS => (x as i8) > (y as i8),
+                    I::GtU => x > y,
+                    I::LeS => (x as i8) <= (y as i8),
+                    I::LeU => x <= y,
+                    I::GeS => (x as i8) >= (y as i8),
+                    I::GeU => x >= y,
+                };
+                assert_eq!(actual, expected);
+                assert_eq!(actual, cc.swap().test(8, y, x));
+                assert_ne!(actual, cc.complement().test(8, x, y));
+            }
+        }
+    }
+    for width in [1, 8, 16, 32, 64, 128] {
+        let sign = 1u128 << (width - 1);
+        assert!(I::LtS.test(width, sign, 0));
+        assert!(I::GtU.test(width, sign, 0));
+        assert!(I::Eq.test(width, u128::MAX, u128::MAX >> (128 - width)));
+    }
+    for &cc in floats {
+        assert_eq!(F::from_mnemonic(cc.mnemonic()), Some(cc));
+        assert_eq!(cc.swap().swap(), cc);
+        if let Some(complement) = cc.complement() {
+            assert_eq!(cc.outcomes() ^ complement.outcomes(), 15);
+            assert_eq!(complement.complement(), Some(cc));
+        } else {
+            assert!(
+                !floats
+                    .iter()
+                    .any(|other| other.outcomes() == cc.outcomes() ^ 15)
+            );
+        }
+        assert_eq!((cc.outcomes() ^ cc.complement_ordered().outcomes()) & 7, 7);
+        for x in [
+            f64::NAN,
+            f64::NEG_INFINITY,
+            -1.0,
+            -0.0,
+            0.0,
+            1.0,
+            f64::INFINITY,
+        ] {
+            for y in [f64::NAN, -1.0, 0.0, 1.0] {
+                let outcome = if x.is_nan() || y.is_nan() {
+                    8
+                } else if x < y {
+                    1
+                } else if x == y {
+                    2
+                } else {
+                    4
+                };
+                let expected = match cc {
+                    F::Eq => x == y,
+                    F::Ne => x != y,
+                    F::Lt => x < y,
+                    F::Gt => x > y,
+                    F::Le => x <= y,
+                    F::Ge => x >= y,
+                };
+                assert_eq!(cc.outcomes() & outcome != 0, expected);
+            }
+        }
+    }
+}

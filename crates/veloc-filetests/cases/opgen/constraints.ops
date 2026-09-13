@@ -120,7 +120,7 @@ op Example(number: u64, flag: bool) -> (result: ScalarInteger) {
 
 // ----- constraints/ill-typed-or-unbounded-expressions-are-definition-errors-10
 // run: opgen-error
-// check: unknown comparison variant
+// check: unknown projection function `IntCC::Unknown`
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: MemoryEffect::NONE },

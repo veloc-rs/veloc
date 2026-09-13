@@ -27,7 +27,7 @@ pub(super) fn check(
                 "type" | "typeset" => Space::Type,
                 "fn" => Space::Function,
                 "const" => Space::Value,
-                "struct" | "enum" | "encoding" | "comparison" => Space::Data,
+                "struct" | "enum" | "encoding" => Space::Data,
                 _ => continue,
             };
             symbols
@@ -46,24 +46,6 @@ pub(super) fn check(
                         .entry((Space::Value, name.clone()))
                         .or_default()
                         .insert(file);
-                }
-            }
-            if record.kind == "comparison" {
-                for field in ["variants", "members", "predicates"] {
-                    if let Some(Node {
-                        kind: Kind::List(items),
-                        ..
-                    }) = record.fields.get(field)
-                    {
-                        for item in items {
-                            if let Kind::Name(name) | Kind::Call(name, _) = &item.kind {
-                                symbols
-                                    .entry((Space::Value, name.clone()))
-                                    .or_default()
-                                    .insert(file);
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -312,7 +294,7 @@ impl Checker<'_> {
                     }
                 }
             }
-            "encoding" | "comparison" => {}
+            "encoding" => {}
             _ => {
                 for value in record.fields.values() {
                     self.node(value, None, &locals)?;
