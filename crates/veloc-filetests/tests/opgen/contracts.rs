@@ -53,7 +53,7 @@ const CALL_VALUE: &str = r#"
         callee: Value,
         args: ValueList,
     }
-    op Apply(move callee: Callable, move args: values) -> signature {
+    op Apply(move callee: Callable, move args: sequence(Value)) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
         mnemonic: "apply-value",
         storage: ApplyValue { callee: callee, args: args },

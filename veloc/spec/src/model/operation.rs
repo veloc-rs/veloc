@@ -94,15 +94,16 @@ pub(super) fn parse(
         })
         .transpose()?;
     let text = fields.optional("text");
-    let implementations = expressions.bind(
+    let queries = expressions.bind(
         source,
-        fields.optional("implements"),
+        fields.optional("queries"),
         &params,
         &types,
+        &type_bindings,
         vocabulary,
     )?;
     let mut meta_node = fields.take("meta")?;
-    expressions.metadata(source, &mut meta_node, &implementations, vocabulary)?;
+    expressions.metadata(source, &mut meta_node, &queries, vocabulary)?;
     let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
     let mut traits = BTreeSet::new();
     if let Projection::Operands(projection) = &projection {
@@ -148,7 +149,7 @@ pub(super) fn parse(
         source,
         data,
         expressions,
-        &implementations,
+        &queries,
         vocabulary,
         &traits,
         semantics.is_some(),
@@ -165,7 +166,7 @@ pub(super) fn parse(
         signature_source,
         text,
         traits,
-        interfaces: implementations,
+        queries: queries,
         constraints: Vec::new(),
         identity,
         absorbing,
@@ -267,12 +268,37 @@ fn signature(
                 ));
             }
             ParamKind::Property(ty)
+        } else if let Kind::Call(kind, args) = &param.ty.kind
+            && kind == "sequence"
+        {
+            let [
+                Node {
+                    kind: Kind::Name(element),
+                    ..
+                },
+            ] = args.as_slice()
+            else {
+                return Err(Error::at(
+                    source,
+                    param.ty.offset,
+                    "operand sequence requires one declared element type",
+                ));
+            };
+            // Reference behavior belongs to the element declaration, not its name.
+            if !data.rust.policy(element).references.is_operand() {
+                return Err(Error::at(
+                    source,
+                    param.ty.offset,
+                    "operand sequence element must be a declared SSA reference type",
+                ));
+            }
+            variadic = true;
+            ParamKind::Values
         } else if let Kind::Name(kind) = &param.ty.kind
-            && matches!(kind.as_str(), "values" | "successor" | "successors")
+            && matches!(kind.as_str(), "successor" | "successors")
         {
             variadic = true;
             match kind.as_str() {
-                "values" => ParamKind::Values,
                 "successor" => ParamKind::Successor,
                 "successors" => ParamKind::Successors,
                 _ => unreachable!(),
@@ -621,7 +647,7 @@ pub(super) fn validate_packing(source: &str, op: &Op, format: &Format) -> Result
                 != 1
             {
                 return Err(fail(
-                    "signature operation requires exactly one values parameter".into(),
+                    "signature operation requires exactly one operand sequence".into(),
                 ));
             }
         }

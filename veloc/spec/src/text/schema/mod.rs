@@ -338,7 +338,7 @@ mod tests {
             signature_source: None,
             text,
             traits: BTreeSet::new(),
-            interfaces: BTreeMap::new(),
+            queries: BTreeMap::new(),
             constraints: vec![],
             identity: None,
             absorbing: None,
@@ -351,24 +351,28 @@ mod tests {
             name: "Config".into(),
             fields: vec![
                 RecordField {
+                    logical: None,
                     policy: crate::fixtures::types_policy("Value"),
                     name: "mask".into(),
                     ty: PropertyType::Named("Value".into()),
                     rust: "crate::Value".into(),
                 },
                 RecordField {
+                    logical: None,
                     policy: crate::fixtures::types_policy("Value"),
                     name: "evl".into(),
                     ty: PropertyType::Optional("Value".into()),
                     rust: "Option<crate::Value>".into(),
                 },
                 RecordField {
+                    logical: None,
                     policy: crate::model::records::Policy::default(),
                     name: "scale".into(),
                     ty: PropertyType::Named("u8".into()),
                     rust: "u8".into(),
                 },
                 RecordField {
+                    logical: None,
                     policy: crate::model::records::Policy::default(),
                     name: "flags".into(),
                     ty: PropertyType::Named("MemFlags".into()),

@@ -295,16 +295,16 @@ automatically borrows a value for a declared `&self` receiver; helpers take
 references explicitly. Borrowed results from a method follow Rust's receiver
 lifetime elision, so the result cannot outlive that receiver.
 
-`verify(ctx: VerifyContext)` and `implements(ctx: SomeContext): [...]` bind a
+`verify(ctx: VerifyContext)` and `query name(ctx: SomeContext) -> Result { ... }` bind a
 read-only reference supplied by the caller. Generated validators take concrete
 context parameters; they never construct a context or invoke a conversion.
 The MIR validation entry creates `VerifyContext` and `ConstContext` once and
 passes them through its instruction checks. Standalone constant checks need only
 `ConstContext`, not module state.
 
-Each query struct has a generated `query` method whose parameters include its
+Each named query generates an `Inst` method whose parameters include its
 concrete context reference when needed. For example:
-`StampInfo::query(view, dfg, results, &tokens)`. Context-free queries omit that
+`inst.stamp_info(dfg, &tokens)`. Context-free queries omit that
 parameter. No generic query-dispatch trait is needed. One query's opcode
 implementations must agree on the context type; context-free arms may share that
 entry. No context provider trait, conversion registry, or generic adapter is needed.
@@ -352,7 +352,7 @@ Layout constraints describe auxiliary operands such as masks independently of
 the underlying opcode. A signature-selected call's argument/result checks and a
 `table(cases, default)` mapping's required default are derived automatically.
 
-`move operand: Type` or `move args: values` marks a non-edge parameter as
+`move operand: Type` or `move args: sequence(Value)` marks a non-edge parameter as
 transferring ownership. Unmarked inputs cannot consume owned values. Successor arguments
 transfer on their own mutually exclusive edges; non-edge inputs execute once
 before the branch. `ABORT` marks an abnormal exit that need not transfer remaining
@@ -681,20 +681,24 @@ op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: T) -> U {
     }
     }
 
-op Load(ptr: PTR, offset: u32, flags: MemFlags) -> Any {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(MemoryAccess, effects) },
+op Load(ptr: PTR, offset: u32, flags: MemFlags) -> (result: Any) {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
     text: "{.flags} {ptr}, offset={offset}",
-    implements: [ReadAccess(ptr, i64(offset), result_type(0), flags)],
+    query memory_access -> MemoryAccess {
+        ptr, offset: i64(offset), ty: result, stored: none, flags,
+        effects: MemoryEffect::known(MemoryEffects::READ),
+    }
     }
 ```
 
 Type requirements use the same `verify { require(predicate, diagnostic); }`
 expressions as structural checks; the old `where` relation list is not supported.
 Named results and generic variables directly denote types: `result.wider_than(T)`.
-Operand names denote SSA values, so their types use the declared `arg.ty()` method. Anonymous results
-use `result_type(index)`. Result/type bindings resolve to signature slots at build
+Operand names denote SSA values, so their types use the declared `arg.ty()` method.
+Give a result a name when referencing it in a verifier or instruction query.
+Result/type bindings resolve to signature slots at build
 time; no runtime name lookup or generic environment is stored. `type.element_bits()?` is a logical per-lane width, while
 `type.bit_size()?` preserves the whole-value fixed/scalable distinction. Undefined
 width queries (e.g. target-dependent pointers) fail the requirement; boolean
@@ -710,16 +714,14 @@ vector-only valid recipe into a scalar constant evaluator. Constraints requiring
 properties or DFG/host queries remain in the structural validator; alternate
 layout constraints remain local to that layout.
 
-### Typed query interfaces
+### Named instruction queries
 
-An `interface` declares query data, not instruction storage. Pure `fn` definitions
-assemble that data from explicitly bound logical parameters. These are ordinary
-library names: the generator has no `read/write` parser, pointer-field convention,
-implicit flags lookup, or special memory-access result rule.
+Query results are ordinary structs. Declaring a struct alone does not generate
+an instruction method or make that struct an instruction-storage layout.
 
 ```text
-interface MemoryAccess {
-    ptr: Value(PTR),
+struct MemoryAccess {
+    ptr: Value(Type::PTR),
     offset: i64,
     ty: Type,
     stored: optional(Value),
@@ -727,59 +729,63 @@ interface MemoryAccess {
     effects: MemoryEffect,
 }
 
-fn ReadAccess(ptr: Value(PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
-    value: MemoryAccess {
-        ptr: ptr, offset: offset, ty: ty, stored: none, flags: flags,
+op Load(ptr: Type::PTR, offset: u32, flags: MemFlags) -> (result: Any) {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) },
+    mnemonic: "load",
+    storage: Load { ptr, offset, flags },
+    query memory_access -> MemoryAccess {
+        ptr,
+        offset: i64(offset),
+        ty: result,
+        stored: none,
+        flags,
         effects: MemoryEffect::known(MemoryEffects::READ),
-    },
+    }
 }
 ```
 
-`Value(PTR)` is an SSA-reference refinement, checked against the operation
-signature at definition time and erased to `Value` in Rust. `Value` accepts any
-SSA type; `Type` denotes an IR type. Interface fields can use declared structs,
-enums and flags, `optional(T)`, and `array(T, N)` (up to 255 elements). Arrays
-generate inline Rust arrays, not `Vec`. All fields are required. The data
-declaration keyword is `struct`; the former `record` spelling is rejected.
+The query name determines the generated method: `inst.memory_access(dfg)`.
+The return type is independent of that name; different queries can return the
+same struct. Every implementation of a particular query must agree on its
+result type and any explicit context type. A query may occur only once per
+operation. Context-free implementations can participate in a contextual query.
 
-`implements: [ReadAccess(...)]` expands a checked helper. Direct interface
-constructors are also supported. Each operation may implement multiple different
-interfaces, but may not implement the same one twice. A helper may call another
-helper, including a forward declaration. Every body is checked even when unused;
-recursive functions and recursive inline interface types are rejected. Function
-parameters are immutable, nongeneric values, with one declared return type.
+The body uses ordinary checked struct construction with same-name field
+shorthand. All fields are required and helper calls are allowed in expressions.
+There is no separate interface field model, data emitter or recursive-type
+checker. The old `interface` declaration and `implements` field are rejected.
+`Value(Type::PTR)` refines an SSA reference at definition time but is represented
+as `Value` in Rust. Ordinary struct fields may also contain other structs,
+enums, optional values and fixed arrays; inline cycles are rejected.
 
-Projection expressions support parameter references, typed struct/enum
-constructors, flags, option constructors, fixed arrays, `field(value, name)`,
-declared `value.ty()` methods, `result_type(index)` and explicit lossless integer conversions.
-Result indices are checked against fixed operation signatures; there is no
-single-result restriction. Narrowing conversions are rejected. This is a
-restricted pure expression language, not arbitrary Rust or a runtime interpreter.
+For an external dependency, declare a concrete Rust context explicitly:
 
-Metadata can explicitly refer to a bound interface, for example
-`memory: field(MemoryAccess, effects)`. The selected expression must reduce to
-constant declaration data. Operand- or result-dependent metadata is rejected.
-The READ/WRITE mapping lives in the helper definitions, not in the generator.
-Missing interfaces never imply purity. These declarations are trusted contracts,
-not proofs that the declared effects agree with executable semantics.
+```text
+query stamp_info(ctx: Tokens) -> StampInfo {
+    stamp: ctx.stamp(number),
+    doubled: ctx.stamp(number).twice(),
+}
+```
 
-Generation emits an interface struct and its inherent `query` method
-with direct opcode dispatch. Consumers call
-`MemoryAccess::query(view, dfg, results)`; unsupported opcodes or unavailable
-result data return `None`. The queries do not revalidate MIR types and add no
-fields to stored instructions. MIR's `memory::Access` re-exports the generated
-query data, while bounds/provenance analysis remains ordinary Rust.
+This generates `inst.stamp_info(dfg, &tokens)`, without context construction or
+conversion. Queries dispatch by opcode and read fields and result types only
+when their expressions need them. Callers cannot supply an unrelated result
+list. Unsupported instructions or unavailable results return `None`; queries
+do not revalidate MIR, add persistent fields, or allocate a new instruction.
 
-This initial interface emitter targets packed MIR. Operand-array output rejects
-operation interface bindings at plan time. Control/ownership contracts, the
-constraint expression checker, and storage's existing flags classification have
-not yet been migrated to this mechanism. Multiple/masked accesses retain
-conservative effects until their runtime consumers support appropriate queries.
+Metadata can reference a query by its explicit name, for example
+`field(memory_access, effects)`. The selected field must be compile-time
+constant. Memory behavior remains a trusted declaration, not a generator
+special case or a proof about executable semantics.
+
+The query emitter currently targets packed MIR. Operand-array output rejects
+query declarations during planning. Bounds and provenance analyses remain
+ordinary Rust code consuming the generated query result.
 
 Ownership transfer is attached to the logical parameter:
 
 ```text
-op Call(func_id: FuncId, move args: values) -> signature {
+op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call",
     storage: Call { func_id: func_id, args: args },
@@ -811,11 +817,17 @@ Parameter roles are derived from the storage mapping, not an `@` marker.
 A mapping to an SSA field makes `ptr: PTR` an SSA input constrained to pointer
 type; mappings to ordinary data fields make `offset: u32` and `flags: MemFlags`
 properties. The signature is checked against this classification; it cannot
-override the field's role. Variable-length SSA groups use `args: values`; one successor uses
+override the field's role. Variable-length SSA groups use `args: sequence(Value)`; one successor uses
 `dest: successor`, and a successor group uses `cases: successors`. Empty input
 and result lists are `()`; signature-selected results use `-> signature`.
+The sequence element must be an imported Rust-bound type declared with
+`field: operand`; its spelling is not special. `move args: sequence(Value)`
+transfers each element. Sequence storage remains the existing compact operand
+list, not a newly allocated Rust collection. The old bare `values` parameter
+keyword is not accepted. Storage declarations such as `values(2)` describe
+fixed-size physical fields and are separate from operation parameter types.
 For example, an indirect call declares a statically checked `ptr: PTR`, a
-variable-length `args: values` group and `signature: sig_id`. Direct calls use
+variable-length `args: sequence(Value)` group and `signature: sig_id`. Direct calls use
 `signature: function(func_id)` to identify the callee's signature. The source of
 dynamic result types is explicit, not inferred from the opcode's name.
 
@@ -979,19 +991,32 @@ Expressions reference logical parameters and struct fields, not physical pool
 IDs or layout names. The existing storage projection resolves those references.
 The language provides Boolean logic (`!`, `&&`, `||`), comparisons, checked
 integer arithmetic (`+`, `-`, `*`) and bitwise operations (`&`, `|`), comparison-enum literals such as `IntCC::Eq`,
-and lexical `all(sequence, |element| predicate)` over finite byte/value lists.
+and lexical `all(sequence, |element| predicate)` over finite sequences and optional values.
+Multiple inputs use `all(lhs, rhs, |a, b| predicate)`: input expressions evaluate once,
+left-to-right; unequal lengths return false without running the predicate. Equal-length
+inputs are traversed in order and stop at the first false predicate. Empty inputs
+satisfy the predicate vacuously; an optional value has length zero or one.
+This emits a loop without temporary collections, including in Rust const contexts.
+Domain policies are ordinary helpers, for example:
+
+```text
+fn matches_types(values: sequence(Value), types: sequence(Type)) -> bool {
+    value: all(values, types, |value, ty| value.ty() == ty),
+}
+```
+
 It has no arbitrary Rust callbacks, user recursion or unbounded loops.
 Verification arithmetic uses checked signed 128-bit integers, not wrapping
 instruction values; property integers are widened without truncation.
 Typed helper bodies and arguments use their declared integer types instead.
 Constant arithmetic overflow is a definition error; dynamic overflow fails
-validation (or returns `None` from an interface query). Neither path wraps.
+validation (or returns `None` from an instruction query). Neither path wraps.
 
-Queries are `value.ty()`, `result_type(constant_index)`, `len(sequence)`,
+Queries use named results, `value.ty()`, `len(sequence)`,
 `type.lanes()?`, `type.min_size_bytes()?`, `type.is_ptr()`, `type.is_scalar()`,
 `type.is_vector()` and `type.is_fixed()` (a fixed-width vector).
 Lane counts and byte sizes are minima for scalable types. A target-dependent
-byte size is an evaluation error. Result indices must refer to declared fixed
+byte size is an evaluation error. Result names must refer to declared fixed
 results. Enum literals are checked against the comparison definitions; struct
 fields against the struct definitions. Unsupported property kinds are rejected instead of guessed or silently coerced.
 
@@ -1031,7 +1056,7 @@ Helpers are checked once and expanded at build time, with fresh names for
 lexical binders. They cannot recurse. Runtime value/type queries still need a
 DFG; module queries are only available to instruction verification. Pure helpers
 may call them; generated Rust trait calls enforce their transitive host requirements.
-An ordinary interface query cannot gain module access by hiding it in a helper.
+An ordinary instruction query cannot gain module access by hiding it in a helper.
 Static metadata must reduce to a constant; it cannot read runtime operands.
 The old `constraints: [...]` syntax is rejected; there is no compatibility path.
 These declarations do not add construction-time checks to builders.

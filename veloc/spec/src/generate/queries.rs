@@ -1,33 +1,24 @@
-//! Emit typed interface queries from the shared expression model.
+//! Emit named struct queries from the shared expression model.
 use crate::model::{Definitions, expr::Emitter};
 use std::fmt::Write;
 pub(crate) fn generate(defs: &Definitions, formats: &[usize]) -> String {
-    if defs.expressions.interfaces.is_empty() {
+    if defs.expressions.queries.is_empty() {
         return String::new();
     }
     let mut out = String::new();
-    for (name, interface) in &defs.expressions.interfaces {
-        writeln!(
-            out,
-            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct {name} {{"
-        )
-        .unwrap();
-        for (field, ty) in &interface.fields {
-            writeln!(out, "pub {field}: {},", ty.rust(&defs.data.rust)).unwrap();
-        }
-        out.push_str("}\n");
+    for (method, name) in &defs.expressions.queries {
         let context = defs
             .ops
             .iter()
-            .filter_map(|op| op.interfaces.get(name))
+            .filter_map(|op| op.queries.get(method))
             .find_map(|expr| expr.context_type())
             .map(|ty| format!("&{ty}"));
         let param = context
             .map(|ty| format!(", _context: {ty}"))
             .unwrap_or_default();
-        writeln!(out,"impl {name} {{ pub fn query(view: &InstView<'_>, dfg: &crate::dfg::DataFlowGraph, results: &[crate::Value]{param}) -> Option<Self> {{ let _ = (dfg, results); match view.opcode() {{").unwrap();
+        writeln!(out,"impl crate::Inst {{ pub fn {method}(self, dfg: &crate::dfg::DataFlowGraph{param}) -> Option<{name}> {{ match dfg.opcode(self) {{").unwrap();
         for (op, &format) in defs.ops.iter().zip(formats) {
-            let Some(expr) = op.interfaces.get(name) else {
+            let Some(expr) = op.queries.get(method) else {
                 continue;
             };
             let format = &defs.storage.formats[format];
@@ -52,7 +43,15 @@ pub(crate) fn generate(defs: &Definitions, formats: &[usize]) -> String {
             )
             .into_iter()
             .collect();
-            writeln!(out,"crate::Opcode::{} => {{ let InstView::{} {{ {fields} }} = view else {{ return None; }}; Some({}) }},",op.name,format.name,Emitter::query(locals).term(expr)).unwrap();
+            let mut emitter = Emitter::query(locals);
+            // Result information is fetched only when the projection uses it.
+            emitter.results = "dfg.inst_results(self)";
+            let value = emitter.term(expr);
+            writeln!(out, "crate::Opcode::{} => {{", op.name).unwrap();
+            if emitter.storage_used.get() {
+                writeln!(out, "let view = dfg.inst(self); let InstView::{} {{ {fields} }} = &view else {{ unreachable!(\"opcode and storage layout disagree\"); }};", format.name).unwrap();
+            }
+            writeln!(out, "Some({value}) }},").unwrap();
         }
         out.push_str("_ => None, } } }\n");
     }

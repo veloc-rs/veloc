@@ -176,7 +176,9 @@ impl Types {
             };
         for ty in fields {
             let name = match ty {
-                PropertyType::Named(name) | PropertyType::Optional(name) => name.as_str(),
+                PropertyType::Named(name)
+                | PropertyType::Optional(name)
+                | PropertyType::Array(name, _) => name.as_str(),
                 PropertyType::Values(_) => "Value",
             };
             self.check_cycle(source, name, active, done)?;
@@ -193,7 +195,9 @@ impl Types {
         }
         let has = |ty: &PropertyType| {
             let ty = match ty {
-                PropertyType::Named(ty) | PropertyType::Optional(ty) => ty.as_str(),
+                PropertyType::Named(ty)
+                | PropertyType::Optional(ty)
+                | PropertyType::Array(ty, _) => ty.as_str(),
                 PropertyType::Values(_) => "Value",
             };
             self.contains_value(ty)
@@ -323,7 +327,9 @@ impl Types {
                     .flat_map(|e| e.variants.iter().flat_map(|(_, args)| args)),
             )
             .filter_map(|ty| match ty {
-                PropertyType::Named(name) | PropertyType::Optional(name) => Some(name.as_str()),
+                PropertyType::Named(name)
+                | PropertyType::Optional(name)
+                | PropertyType::Array(name, _) => Some(name.as_str()),
                 PropertyType::Values(_) => None,
             })
             .chain(metadata)

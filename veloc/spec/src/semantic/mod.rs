@@ -626,7 +626,7 @@ mod tests {
             params,
             projection: crate::model::Projection::Packed(Default::default()),
             traits: BTreeSet::new(),
-            interfaces: Default::default(),
+            queries: Default::default(),
             constraints: vec![],
             identity: None,
             absorbing: None,

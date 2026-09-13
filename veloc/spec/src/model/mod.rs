@@ -111,7 +111,7 @@ pub(crate) struct Op {
     pub signature_source: Option<SignatureSource>,
     pub text: Option<Node>,
     pub traits: BTreeSet<String>,
-    pub interfaces: BTreeMap<String, expr::Expr>,
+    pub queries: BTreeMap<String, expr::Expr>,
     pub constraints: Vec<crate::model::constraints::Constraint>,
     pub identity: Option<BvConst>,
     pub absorbing: Option<BvConst>,
@@ -275,8 +275,8 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 vocabulary,
                 &mut expressions,
             )?),
-            "layout" | "struct" | "enum" | "encoding" | "comparison" | "storage" | "interface"
-            | "fn" | "const" => {}
+            "layout" | "struct" | "enum" | "encoding" | "comparison" | "storage" | "fn"
+            | "const" => {}
             kind if Types::is_definition(kind) => {}
             _ => {
                 return Err(Error::at(

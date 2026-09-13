@@ -94,11 +94,11 @@ fn Twice(ctx: &Numbers, n: u32) -> u32 { value: Next(ctx, Next(ctx, n)) }
 import "prelude.ops";
 import "helpers.ops";
 import "host.ops";
-interface Summary { count: u32 }
+struct Summary { count: u32 }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
-    storage: Data { n: n }, implements(ctx: Numbers): [Summary { count: Twice(ctx, n) }],
+    storage: Data { n: n }, query summary(ctx: Numbers) -> Summary { count: Twice(ctx, n) }
 }
 "#;
     files.write("consumer.ops", consumer);
@@ -343,6 +343,40 @@ fn imports_are_file_local_even_when_siblings_are_loaded_first() {
         files.write("consumer.ops", &format!("import \"prelude.ops\";\n{body}"));
         files.load("root.ops").unwrap().compile().unwrap();
     }
+
+    files.write(
+        "references.ops",
+        r#"type Ref = rust("crate::Value") { field: operand, }"#,
+    );
+    let consumer = r#"
+import "prelude.ops";
+struct Inputs { args: ValueList }
+op Consume(args: sequence(Ref)) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "consume", storage: Inputs { args },
+}
+"#;
+    files.write("consumer.ops", consumer);
+    files.write(
+        "root.ops",
+        r#"import "references.ops"; import "consumer.ops";"#,
+    );
+    let error = files
+        .load("root.ops")
+        .unwrap()
+        .parse()
+        .err()
+        .expect("sequence element import leaked");
+    assert_eq!(error.path, files.0.join("consumer.ops"));
+    assert!(
+        error.diagnostic.message.contains("`Ref` is not imported"),
+        "{error}"
+    );
+    files.write(
+        "consumer.ops",
+        &format!("import \"references.ops\";\n{consumer}"),
+    );
+    files.load("root.ops").unwrap().compile().unwrap();
 }
 
 #[test]

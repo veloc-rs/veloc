@@ -27,7 +27,7 @@ pub(super) fn check(
                 "type" | "typeset" => Space::Type,
                 "fn" => Space::Function,
                 "const" => Space::Value,
-                "struct" | "enum" | "encoding" | "comparison" | "interface" => Space::Data,
+                "struct" | "enum" | "encoding" | "comparison" => Space::Data,
                 _ => continue,
             };
             symbols
@@ -197,7 +197,7 @@ impl Checker<'_> {
                 locals.insert(param.name.clone());
                 self.node(body, space, &locals)?;
             }
-            Kind::Let(_, value) => self.node(value, None, locals)?,
+            Kind::Query(_, value) | Kind::Let(_, value) => self.node(value, None, locals)?,
             Kind::List(nodes) | Kind::Union(nodes) | Kind::Intersection(nodes) => {
                 let mut locals = locals.clone();
                 for node in nodes {
@@ -214,9 +214,9 @@ impl Checker<'_> {
                 self.node(a, None, locals)?;
                 self.node(b, None, locals)?;
             }
-            Kind::Lambda(name, body) => {
+            Kind::Lambda(names, body) => {
                 let mut locals = locals.clone();
-                locals.insert(name.clone());
+                locals.extend(names.iter().cloned());
                 self.node(body, None, &locals)?;
             }
             Kind::Text(_) | Kind::Number(_) | Kind::Integer(_) => {}
@@ -246,7 +246,7 @@ impl Checker<'_> {
             }
             for param in &signature.params {
                 let space = if record.kind == "op"
-                    && !self
+                    && self
                         .defs
                         .ops
                         .iter()
@@ -255,7 +255,7 @@ impl Checker<'_> {
                         .params
                         .iter()
                         .find(|p| p.name == param.name)
-                        .is_some_and(|p| matches!(p.kind, crate::model::ParamKind::Property(_)))
+                        .is_some_and(|p| p.kind == crate::model::ParamKind::Value)
                 {
                     Space::Type
                 } else {
@@ -282,7 +282,7 @@ impl Checker<'_> {
             self.node(body, None, &locals)?;
         }
         match record.kind.as_str() {
-            "struct" | "interface" => {
+            "struct" => {
                 for ty in record.fields.values() {
                     self.node(ty, Some(Space::Data), &locals)?;
                 }

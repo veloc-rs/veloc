@@ -63,8 +63,8 @@ impl<'a> IRTranslator<'a> {
         func: &Function,
         inst: veloc_mir::Inst,
     ) -> Result<veloc_lir::MemoryAccess> {
-        let source = func
-            .memory_access(inst)
+        let source = inst
+            .memory_access(func.dfg())
             .expect("memory lowering requires an access contract");
         let bytes = source
             .bytes(Some(u32::from(self.layout.pointer_size)))

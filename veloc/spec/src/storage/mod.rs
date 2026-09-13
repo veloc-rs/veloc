@@ -264,7 +264,7 @@ pub(crate) fn compile(
             use crate::model::records::PropertyType;
             let ty = match &field.ty {
                 PropertyType::Named(ty) | PropertyType::Optional(ty) => ty.as_str(),
-                PropertyType::Values(_) => {
+                PropertyType::Values(_) | PropertyType::Array(_, _) => {
                     return Err(Error::at(
                         source,
                         0,
@@ -426,11 +426,12 @@ fn parse_layout(
             let ty = match &f.ty {
                 crate::model::records::PropertyType::Named(name) => FieldType::Named(name.clone()),
                 crate::model::records::PropertyType::Values(n) => FieldType::Values(*n),
-                crate::model::records::PropertyType::Optional(_) => {
+                crate::model::records::PropertyType::Optional(_)
+                | crate::model::records::PropertyType::Array(_, _) => {
                     return Err(Error::at(
                         source,
                         record.offset,
-                        "optional primary fields require an operand storage adapter",
+                        "optional or array primary fields require an operand storage adapter",
                     ));
                 }
             };

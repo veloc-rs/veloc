@@ -60,7 +60,7 @@ op Example(number: u64, flag: bool) -> ScalarInteger {
 
 // ----- constraints/ill-typed-or-unbounded-expressions-are-definition-errors-5
 // run: opgen-error
-// check: all expects a finite sequence
+// check: all expects finite sequences or optional values
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: MemoryEffect::NONE },
@@ -72,7 +72,7 @@ op Example(number: u64, flag: bool) -> ScalarInteger {
 
 // ----- constraints/ill-typed-or-unbounded-expressions-are-definition-errors-6
 // run: opgen-error
-// check: all expects a sequence and |name| predicate
+// check: all expects sequences followed by a predicate
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> ScalarInteger {
     meta: OpInfo { memory: MemoryEffect::NONE },
@@ -98,23 +98,23 @@ op Example(number: u64, flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: unknown projection function `u64::ty`
 struct Custom { bits: u64, yes: bool }
-op Example(number: u64, flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> (result: ScalarInteger) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
-        number.ty() == result_type(0);
+        number.ty() == result;
     }
 }
 
 // ----- constraints/ill-typed-or-unbounded-expressions-are-definition-errors-9
 // run: opgen-error
-// check: result_type index is out of range
+// check: unknown expression name or operation: missing
 struct Custom { bits: u64, yes: bool }
-op Example(number: u64, flag: bool) -> ScalarInteger {
+op Example(number: u64, flag: bool) -> (result: ScalarInteger) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "example", storage: Custom { bits: number, yes: flag },
     verify {
-        result_type(1) == result_type(0);
+        missing == result;
     }
 }
 
@@ -230,25 +230,25 @@ op Example(number: u64, flag: bool) -> ScalarInteger {
 // run: opgen-error
 // check: projection type mismatch: expected Named("bool"), found Named("i128")
 struct Custom { pool_id: ConstantPoolId }
-op Example(data: Bytes) -> Vector {
+op Example(data: Bytes) -> (result: Vector) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: "{data:bytes}",
     verify {
-        len(data) == result_type(0).min_size_bytes()?; all(data, |i| i);
+        len(data) == result.min_size_bytes()?; all(data, |i| i);
     }
 }
 
 // ----- constraints/pool-properties-and-lexical-binders-are-generic-2
 // run: opgen-error
-// check: result_type index is out of range
+// check: unknown expression name or operation: result
 struct Custom { pool_id: ConstantPoolId }
 op Example(data: Bytes) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: "{data:bytes}",
     verify {
-        len(data) == result_type(0).min_size_bytes()?; all(data, |i| i < 2 * result_type(0).lanes()?);
+        len(data) == result.min_size_bytes()?; all(data, |i| i < 2 * result.lanes()?);
     }
 }
 
@@ -362,10 +362,10 @@ property VectorConst {
 
 // ----- property-constraints/property-result-context
 // run: opgen-error
-// check: result_type requires a fixed operation result signature
+// check: expected value of type veloc_types::Type
 property VectorConst {
     verify {
-        value.ty() == result_type(0);
+        value.ty() == result;
     }
 }
 
@@ -451,3 +451,33 @@ predicate is_other = Any
 // run: opgen-error
 // check: expected `=`
 predicate is_other { set: Any }
+
+// ----- constraints/all-checks-predicate-arity
+// run: opgen-error
+// check: all requires one predicate parameter per sequence
+fn invalid(a: sequence(u32), b: sequence(u32)) -> bool {
+    value: all(a, b, |x| x > 0),
+}
+
+// ----- constraints/all-rejects-duplicate-binders
+// run: opgen-error
+// check: duplicate predicate parameter
+fn invalid(a: sequence(u32), b: sequence(u32)) -> bool {
+    value: all(a, b, |x, x| x > 0),
+}
+
+// ----- constraints/all-is-not-specific-to-ssa
+// run: opgen
+// check: while
+// not: value_type
+// not: collect
+struct Summary { equal: bool }
+struct Data { left: u32, right: u32 }
+fn same(a: optional(u32), b: optional(u32)) -> bool {
+    value: all(a, b, |x, y| x == y),
+}
+op Example(left: u32, right: u32) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "example", storage: Data { left, right },
+    query summary -> Summary { equal: same(some(left), some(right)) }
+}

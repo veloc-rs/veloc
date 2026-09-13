@@ -6,7 +6,7 @@ struct CallIndirect {
     args: ValueList,
     sig_id: SigId,
 }
-op CallIndirect(sig_id: SigId, args: values, ptr: Type::PTR) -> signature {
+op CallIndirect(sig_id: SigId, args: sequence(Value), ptr: Type::PTR) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr: ptr, args: args, sig_id: sig_id },
@@ -429,7 +429,7 @@ op Load(ptr: Type::PTR, offset: u32, flags: MemFlags) -> (result: Any) {
 // run: opgen-error
 // check: unknown field `control`
 struct Apply { cont: Value, args: ValueList }
-op Apply(cont: Callable, args: values) -> () {
+op Apply(cont: Callable, args: sequence(Value)) -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN },
     mnemonic: "apply", storage: Apply { cont, args },
     control: tail_call_value(cont, args),
@@ -479,4 +479,32 @@ op Check(n: u32) -> () {
     verify {
         len(prefix(n, 0)) == 0;
     }
+}
+// ----- signatures/sequence-reference-policy
+// run: opgen
+// check: SequenceArgs
+// check: visit(value, true)?;
+type Ref = rust("crate::Value") { field: operand, }
+struct SequenceArgs { args: ValueList }
+op Consume(move args: sequence(Ref)) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "consume", storage: SequenceArgs { args },
+}
+
+// ----- signatures/sequence-rejects-data-elements
+// run: opgen-error
+// check: operand sequence element must be a declared SSA reference type
+struct SequenceArgs { args: ValueList }
+op Consume(args: sequence(u32)) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "consume", storage: SequenceArgs { args },
+}
+
+// ----- signatures/sequence-requires-one-element-type
+// run: opgen-error
+// check: operand sequence requires one declared element type
+struct SequenceArgs { args: ValueList }
+op Consume(args: sequence(Value, Value)) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "consume", storage: SequenceArgs { args },
 }

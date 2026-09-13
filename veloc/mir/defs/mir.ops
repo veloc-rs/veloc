@@ -6,7 +6,7 @@ import "formats.ops";
 
 // Query data, not instruction storage. Value(Type::PTR) checks the logical signature
 // at definition time; the runtime representation is an ordinary SSA Value.
-interface MemoryAccess {
+struct MemoryAccess {
     ptr: Value(Type::PTR),
     offset: i64,
     ty: Type,
@@ -15,24 +15,10 @@ interface MemoryAccess {
     effects: MemoryEffect,
 }
 
-fn ReadAccess(ptr: Value(Type::PTR), offset: i64, ty: Type, flags: MemFlags) -> MemoryAccess {
-    value: MemoryAccess {
-        ptr: ptr, offset: offset, ty: ty, stored: none, flags: flags,
-        effects: MemoryEffect::known(MemoryEffects::READ),
-    },
-}
-
-fn WriteAccess(ptr: Value(Type::PTR), offset: i64, value: Value, flags: MemFlags) -> MemoryAccess {
-    value: MemoryAccess {
-        ptr: ptr, offset: offset, ty: value.ty(), stored: some(value), flags: flags,
-        effects: MemoryEffect::known(MemoryEffects::WRITE),
-    },
-}
-
 // First-class callable values. Captures bind a prefix of the function parameters;
 // the resulting callable signature describes the remaining inputs and answer.
 // Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
-op ClosureNew(func_id: FuncId, move captures: values, cleanup: FuncId) -> Callable {
+op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) -> (result: Callable) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "closure-new",
     storage: ClosureNew { func_id, captures, cleanup },
@@ -40,17 +26,17 @@ op ClosureNew(func_id: FuncId, move captures: values, cleanup: FuncId) -> Callab
 
     verify(ctx: VerifyContext) {
         let func = ctx.function_signature(func_id)?;
-        let result = ctx.signature(result_type(0).signature()?)?;
+        let sig = ctx.signature(result.signature()?)?;
         let cleanup_sig = ctx.function_signature(cleanup)?;
-        require(result_type(0).is_owned(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
-        require(suffix(func.params(), len(captures)) == result.params() && func.returns() == result.returns(), "callable inputs or answer do not match the unbound function signature");
+        require(result.is_owned(), "callable ownership kind mismatch");
+        require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| !v.ty().is_local() && !v.ty().is_ptr()), "capture would escape a borrow or duplicate an owned environment");
         require(cleanup_sig.params() == prefix(func.params(), len(captures)) && len(cleanup_sig.returns()) == 0, "cleanup must consume the captured parameters and return void");
     }
 }
 
-op ClosureLocal(func_id: FuncId, captures: values) -> Callable {
+op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Callable) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "closure-local",
     storage: Closure { func_id, captures },
@@ -58,15 +44,15 @@ op ClosureLocal(func_id: FuncId, captures: values) -> Callable {
 
     verify(ctx: VerifyContext) {
         let func = ctx.function_signature(func_id)?;
-        let result = ctx.signature(result_type(0).signature()?)?;
-        require(result_type(0).is_local(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
-        require(suffix(func.params(), len(captures)) == result.params() && func.returns() == result.returns(), "callable inputs or answer do not match the unbound function signature");
+        let sig = ctx.signature(result.signature()?)?;
+        require(result.is_local(), "callable ownership kind mismatch");
+        require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| !v.ty().is_owned()), "capture would escape a borrow or duplicate an owned environment");
     }
 }
 
-op ClosureShared(func_id: FuncId, captures: values) -> Callable {
+op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Callable) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "closure-shared",
     storage: Closure { func_id, captures },
@@ -74,15 +60,15 @@ op ClosureShared(func_id: FuncId, captures: values) -> Callable {
 
     verify(ctx: VerifyContext) {
         let func = ctx.function_signature(func_id)?;
-        let result = ctx.signature(result_type(0).signature()?)?;
-        require(result_type(0).is_shared(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
-        require(suffix(func.params(), len(captures)) == result.params() && func.returns() == result.returns(), "callable inputs or answer do not match the unbound function signature");
+        let sig = ctx.signature(result.signature()?)?;
+        require(result.is_shared(), "callable ownership kind mismatch");
+        require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| (v.ty().is_compact() && !v.ty().is_ptr()) || v.ty().is_shared()), "capture would escape a borrow or duplicate an owned environment");
     }
 }
 
-op TailCall(func_id: FuncId, move args: values) -> () {
+op TailCall(func_id: FuncId, move args: sequence(Value)) -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN },
     mnemonic: "tail-call",
     storage: TailCall { func_id, args },
@@ -90,12 +76,12 @@ op TailCall(func_id: FuncId, move args: values) -> () {
 
     verify(ctx: VerifyContext) {
         let func = ctx.function_signature(func_id)?;
-        require(matches(args, func.params()), "tail-call parameter type mismatch");
+        require(matches_types(args, func.params()), "tail-call parameter type mismatch");
         require(func.returns() == ctx.current_signature()?.returns(), "tail-call answer type mismatch");
     }
 }
 
-op TailCallValue(move callee: Callable, move args: values) -> () {
+op TailCallValue(move callee: Callable, move args: sequence(Value)) -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN },
     mnemonic: "tail-call-value",
     storage: CallValue { callee, args },
@@ -103,12 +89,12 @@ op TailCallValue(move callee: Callable, move args: values) -> () {
 
     verify(ctx: VerifyContext) {
         let callee_sig = ctx.signature(callee.ty().signature()?)?;
-        require(matches(args, callee_sig.params()), "tail-call-value parameter type mismatch");
+        require(matches_types(args, callee_sig.params()), "tail-call-value parameter type mismatch");
         require(callee_sig.returns() == ctx.current_signature()?.returns(), "tail-call-value answer type mismatch");
     }
 }
 
-op CallValue(move callee: Callable, move args: values) -> signature {
+op CallValue(move callee: Callable, move args: sequence(Value)) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-value",
     storage: CallValue { callee, args },
@@ -583,20 +569,34 @@ op PtrToInt(arg: Type::PTR) -> ScalarInteger {
     storage: PtrToInt { arg },
 }
 
-op Load(ptr: Type::PTR, offset: u32, flags: MemFlags) -> Any {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(MemoryAccess, effects) },
+op Load(ptr: Type::PTR, offset: u32, flags: MemFlags) -> (result: Any) {
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) },
     mnemonic: "load",
     storage: Load { ptr, offset, flags },
     text: "{.flags} {ptr}, offset={offset}",
-    implements: [ReadAccess(ptr, i64(offset), result_type(0), flags)],
+    query memory_access -> MemoryAccess {
+        ptr,
+        offset: i64(offset),
+        ty: result,
+        stored: none,
+        flags,
+        effects: MemoryEffect::known(MemoryEffects::READ),
+    }
 }
 
 op Store(ptr: Type::PTR, value: Any, offset: u32, flags: MemFlags) -> () {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(MemoryAccess, effects) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) },
     mnemonic: "store",
     storage: Store { ptr, value, offset, flags },
     text: "{.flags} {value}, {ptr}, offset={offset}",
-    implements: [WriteAccess(ptr, i64(offset), value, flags)],
+    query memory_access -> MemoryAccess {
+        ptr,
+        offset: i64(offset),
+        ty: value.ty(),
+        stored: some(value),
+        flags,
+        effects: MemoryEffect::known(MemoryEffects::WRITE),
+    }
 }
 
 // A fresh, uninitialized local object, valid until the invocation returns.
@@ -631,7 +631,7 @@ op PtrIndex(ptr: Type::PTR, index: ScalarInteger, imm: PtrIndexImm) -> Type::PTR
     }
 }
 
-op Call(func_id: FuncId, move args: values) -> signature {
+op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call",
     storage: Call { func_id, args },
@@ -639,7 +639,7 @@ op Call(func_id: FuncId, move args: values) -> signature {
     text: "{func_id}({args}) : {function(func_id)}",
 }
 
-op CallIndirect(sig_id: SigId, ptr: Type::PTR, move args: values) -> signature {
+op CallIndirect(sig_id: SigId, ptr: Type::PTR, move args: sequence(Value)) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-indirect",
     storage: CallIndirect { ptr, args, sig_id },
@@ -652,7 +652,7 @@ op CallIndirect(sig_id: SigId, ptr: Type::PTR, move args: values) -> signature {
     }
 }
 
-op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: values) -> signature {
+op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: sequence(Value)) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     mnemonic: "call-intrinsic",
     storage: CallIntrinsic { intrinsic, args, sig_id },
@@ -683,13 +683,13 @@ op BrTable(index: Type::I32, cases: successors, default: successor) -> () {
     storage: BrTable { index, table: table(cases, default) },
 }
 
-op Return(move values: values) -> () {
+op Return(move values: sequence(Value)) -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     mnemonic: "return",
     storage: Return { values },
 
     verify(ctx: VerifyContext) {
-        require(matches(values, ctx.current_signature()?.returns()), "return value type mismatch");
+        require(matches_types(values, ctx.current_signature()?.returns()), "return value type mismatch");
     }
 }
 
@@ -784,14 +784,14 @@ op ReduceXor<T: Integer & Vector | vectors(Type::BOOL)>(arg: T) -> element(T) {
     storage: Unary { arg },
 }
 
-op LoadStride(ptr: Type::PTR, stride: ScalarInteger, mem: VectorMemOptions) -> Vector {
+op LoadStride(ptr: Type::PTR, stride: ScalarInteger, mem: VectorMemOptions) -> (result: Vector) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) },
     mnemonic: "load-stride",
     storage: VectorLoadStrided { ptr, stride, ext: mem },
     text: "{mem.scale=1} {.mem.flags} {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]",
 
     verify {
-        require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == result_type(0).shape()?), "mask must match vector shape");
+        require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == result.shape()?), "mask must match vector shape");
         require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
     }
 }
@@ -816,7 +816,7 @@ op Gather<T: Integer & Vector, U: Vector>(ptr: Type::PTR, index: T, mem: VectorM
 
     verify {
         require(U.same_shape(T), "index and result must have the same shape");
-        require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == result_type(0).shape()?), "mask must match vector shape");
+        require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == U.shape()?), "mask must match vector shape");
         require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
     }
 }

@@ -58,12 +58,4 @@ impl Function {
             && offset % access.flags.alignment() == 0)
             .then_some((object, offset))
     }
-
-    pub fn memory_access(&self, inst: Inst) -> Option<Access> {
-        Access::query(
-            &self.dfg().inst(inst),
-            self.dfg(),
-            self.dfg().inst_results(inst),
-        )
-    }
 }

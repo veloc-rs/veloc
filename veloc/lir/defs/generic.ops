@@ -550,19 +550,19 @@ op G_BRJT(index: ScalarInteger) -> () {
     flow: Jump,
 }
 
-op G_RET(values: values) -> () {
+op G_RET(values: sequence(Value)) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Return { values },
     flow: Return,
 }
 
-op G_CALL(callee: SymbolId, args: values) -> signature {
+op G_CALL(callee: SymbolId, args: sequence(Value)) -> signature {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     storage: Call { shape: call(callee, args) },
     flow: Call,
 }
 
-op G_CALLIND(callee: Type::PTR, args: values) -> signature {
+op G_CALLIND(callee: Type::PTR, args: sequence(Value)) -> signature {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     storage: Call { shape: call(callee, args) },
     flow: Call,

@@ -57,3 +57,9 @@ struct OpInfo {
 fn is_power_of_two(value: u32) -> bool {
     value: value != 0 && (value & (value - 1)) == 0,
 }
+
+// Pairwise type checking is an IR policy, not a language primitive.
+// all rejects unequal lengths before evaluating the predicate.
+fn matches_types(values: sequence(Value), types: sequence(Type)) -> bool {
+    value: all(values, types, |value, ty| value.ty() == ty),
+}

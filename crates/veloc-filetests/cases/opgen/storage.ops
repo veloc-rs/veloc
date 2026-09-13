@@ -358,7 +358,7 @@ struct Invoke {
     callee: FuncId,
     args: ValueList,
 }
-op Invoke(callee: FuncId, args: values) -> signature {
+op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
 }
@@ -370,7 +370,7 @@ struct Invoke {
     callee: FuncId,
     args: ValueList,
 }
-op Invoke(callee: FuncId, args: values) -> signature {
+op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
 signature: callee, }
@@ -382,7 +382,7 @@ struct Invoke {
     callee: FuncId,
     args: ValueList,
 }
-op Invoke(callee: FuncId, args: values) -> signature {
+op Invoke(callee: FuncId, args: sequence(Value)) -> signature {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
 signature: function(missing), }
@@ -394,7 +394,7 @@ struct Invoke {
     callee: FuncId,
     args: ValueList,
 }
-op Invoke(callee: FuncId, args: values) -> () {
+op Invoke(callee: FuncId, args: sequence(Value)) -> () {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     mnemonic: "invoke", storage: Invoke { callee: callee, args: args },
 signature: function(callee), }

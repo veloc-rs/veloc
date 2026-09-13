@@ -50,7 +50,7 @@ pub fn run_memory(func: &mut Function, metrics: &mut Metrics) -> bool {
     for &block in &blocks {
         for &inst in &func.layout().blocks()[block].insts {
             let view = func.dfg().inst(inst);
-            let access = func.memory_access(inst);
+            let access = inst.memory_access(func.dfg());
             for &value in func.dfg().operands(inst) {
                 let address_only = match view {
                     InstView::PtrOffset { .. } => true,
@@ -99,7 +99,7 @@ pub fn run_memory(func: &mut Function, metrics: &mut Metrics) -> bool {
                 }
             }
             let effect = view.memory_effect();
-            let known = func.memory_access(inst).and_then(|access| {
+            let known = inst.memory_access(func.dfg()).and_then(|access| {
                 if view.has_volatile_access() {
                     return None;
                 }

@@ -83,6 +83,21 @@ mod numeric_{index} {{
         ("all(data, |i| all(data, |i| i < 8) && i < 8)", true),
         ("all(data, |i| true)", true),
         ("all(data, |i| Above([2, 3], i))", true),
+        ("all(data, data, |a, b| a == b)", true),
+        ("all(data, data, data, |a, b, c| a == b && b == c)", true),
+        (
+            "all(data, suffix(data, len(data)), |a, b| len(other) > 0)",
+            false,
+        ),
+        ("all(data, data, |a, b| a != 0 && len(other) > 0)", false),
+        (
+            "all(suffix(data, len(data)), suffix(data, len(data)), |a, b| len(other) > 0)",
+            true,
+        ),
+        (
+            "all(data, data, |a, b| all(data, |a| a < 8) && a == b)",
+            true,
+        ),
     ]
     .iter()
     .enumerate()
@@ -396,6 +411,7 @@ op Check() -> () {
         wide: i128(token(7).number()?) + 10,
         ok: positive([token(7).number()?, 8])
             && all(token(7).number(), |n| n > 0)
+            && all(token(7).number(), token(7).number(), |a, b| a == b)
             && (token(7).number()? > 0 || token(0).number()? > 0),
         next: token(7).number(),
     },

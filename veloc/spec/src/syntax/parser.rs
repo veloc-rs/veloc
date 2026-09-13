@@ -333,20 +333,19 @@ impl<'a> Parser<'a> {
         context: Context,
         shorthand: bool,
     ) -> Result<BTreeMap<String, Node>, Error> {
+        self.check_depth(depth, context)?;
         self.expect("{")?;
         let mut fields = BTreeMap::new();
         while !self.at("}") {
             let offset = self.token.offset;
             let name = self.name()?;
-            if name == "constraints" {
-                return Err(self.error(offset, "use a verify block instead of constraints"));
-            }
-            let context_param =
-                if matches!(name.as_str(), "verify" | "implements") && self.eat("(")? {
+            if name == "query" && !self.at(":") {
+                let query = self.name()?;
+                let param = if self.eat("(")? {
                     let offset = self.token.offset;
                     let name = self.name()?;
                     self.expect(":")?;
-                    let ty = self.expression(depth + 1, Context::Expr)?;
+                    let ty = self.expression(depth + 1, Context::Type)?;
                     self.expect(")")?;
                     Some(Parameter {
                         offset,
@@ -357,6 +356,55 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
+                self.expect("->")?;
+                let result = self.name()?;
+                let body = Node {
+                    offset,
+                    kind: Kind::Object(result, self.fields(depth + 1, Context::Expr, true)?),
+                };
+                let body = if let Some(param) = param {
+                    Node {
+                        offset,
+                        kind: Kind::Scoped(Box::new(param), Box::new(body)),
+                    }
+                } else {
+                    body
+                };
+                let entry = fields.entry("queries".into()).or_insert_with(|| Node {
+                    offset,
+                    kind: Kind::List(Vec::new()),
+                });
+                let Kind::List(queries) = &mut entry.kind else {
+                    return Err(self.error(offset, "queries are declared with query blocks"));
+                };
+                queries.push(Node {
+                    offset,
+                    kind: Kind::Query(query, Box::new(body)),
+                });
+                self.eat(",")?;
+                continue;
+            }
+            if name == "queries" {
+                return Err(self.error(offset, "use named query blocks instead of a queries field"));
+            }
+            if name == "constraints" {
+                return Err(self.error(offset, "use a verify block instead of constraints"));
+            }
+            let context_param = if name == "verify" && self.eat("(")? {
+                let offset = self.token.offset;
+                let name = self.name()?;
+                self.expect(":")?;
+                let ty = self.expression(depth + 1, Context::Expr)?;
+                self.expect(")")?;
+                Some(Parameter {
+                    offset,
+                    name,
+                    moves: false,
+                    ty,
+                })
+            } else {
+                None
+            };
             let block = name == "verify" && self.at("{");
             let mut node = if block {
                 self.expect("{")?;
@@ -480,9 +528,12 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Symbol("|") => {
                 self.bump()?;
-                let name = self.name()?;
+                let mut names = vec![self.name()?];
+                while self.eat(",")? {
+                    names.push(self.name()?);
+                }
                 self.expect("|")?;
-                Kind::Lambda(name, Box::new(self.binary(depth + 1, 0)?))
+                Kind::Lambda(names, Box::new(self.binary(depth + 1, 0)?))
             }
             _ => self.atom(depth, Context::Expr)?.kind,
         };

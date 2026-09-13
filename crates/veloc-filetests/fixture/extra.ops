@@ -2,14 +2,15 @@ import "../../../veloc/mir/defs/module.ops";
 
 // Exercise contracts not represented by production MIR instructions.
 // These have no control lowering interface: validation comes only from defs.
-interface SizeInfo { next: u32, aligned: bool }
+struct SizeInfo { next: u32, aligned: bool }
 fn NextSize(size: u32) -> u32 { value: size + 1 }
 struct CheckedSize { size: u32 }
 op CheckedSize(size: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "checked-size", storage: CheckedSize { size },
     text: "size={size}",
-    implements: [SizeInfo { next: NextSize(size), aligned: is_power_of_two(size) }],
+    query size_info -> SizeInfo { next: NextSize(size), aligned: is_power_of_two(size) }
+    query original_size -> SizeInfo { next: size, aligned: false }
     verify {
         require(NextSize(size) > size, "size overflow");
         require(is_power_of_two(size), "invalid size alignment");
@@ -25,17 +26,17 @@ op VectorLiteral(data: VectorConst) -> type(data) {
     meta: OpInfo { memory: MemoryEffect::NONE },
 mnemonic: "vector-literal", storage: VectorLiteral { payload: data }, }
 
-interface CallableInfo { signature: optional(SigId) }
+struct CallableInfo { signature: optional(SigId) }
 fn InspectCallable(ty: Type) -> CallableInfo {
     value: CallableInfo { signature: ty.signature() },
 }
-op Rebind(move value: Callable) -> Callable {
+op Rebind(move value: Callable) -> (result: Callable) {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     mnemonic: "rebind", storage: Unary { arg: value },
-    implements: [InspectCallable(value.ty())],
+    query callable_info -> CallableInfo { signature: value.ty().signature() }
 
     verify {
-        require(value.ty() == result_type(0), "rebind type mismatch");
+        require(value.ty() == result, "rebind type mismatch");
     }
 }
 struct MoveBranch {
@@ -72,7 +73,7 @@ struct ExplicitCall {
     args: Inputs,
     sig: SigId,
 }
-op ExplicitCall(target: FuncId, args: values, sig: SigId) -> signature {
+op ExplicitCall(target: FuncId, args: sequence(Value), sig: SigId) -> signature {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "explicit-call", storage: ExplicitCall { target, args, sig },
     signature: sig,
@@ -283,13 +284,13 @@ type Tokens = rust("crate::tokens::Tokens") {
 }
 struct StampRecord { stamp: Stamp }
 enum StampResult { variants: [Present(Stamp), Absent] }
-interface StampInfo { stamp: Stamp, doubled: u32 }
+struct StampInfo { stamp: Stamp, doubled: u32 }
 struct StampInput { number: u32 }
 op ReadStamp(number: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "read-stamp", storage: StampInput { number },
     text: "{number}",
-    implements(ctx: Tokens): [StampInfo { stamp: ctx.stamp(number), doubled: ctx.stamp(number).twice() }],
+    query stamp_info(ctx: Tokens) -> StampInfo { stamp: ctx.stamp(number), doubled: ctx.stamp(number).twice() }
 }
 
 fn double_bits(from: Type, to: Type) -> bool {

@@ -1375,7 +1375,9 @@ impl<'a> Compiler<'a> {
                 emit::StackAddr(&mut self.code, dst, self.stack.offsets[inst]);
             }
             InstView::Load { ptr, offset, .. } => {
-                let access = self.func.memory_access(inst).expect("load access contract");
+                let access = inst
+                    .memory_access(self.func.dfg())
+                    .expect("load access contract");
                 if !access.flags.is_volatile()
                     && let Some((object, offset)) = self
                         .func
@@ -1395,9 +1397,8 @@ impl<'a> Compiler<'a> {
             InstView::Store {
                 ptr, value, offset, ..
             } => {
-                let access = self
-                    .func
-                    .memory_access(inst)
+                let access = inst
+                    .memory_access(self.func.dfg())
                     .expect("store access contract");
                 if !access.flags.is_volatile()
                     && let Some((object, offset)) = self

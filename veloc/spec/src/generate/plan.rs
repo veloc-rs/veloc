@@ -36,7 +36,7 @@ impl Plan {
                 // Context-free arms can still participate in that same query.
                 let mut contexts = BTreeMap::new();
                 for op in &definitions.ops {
-                    for (name, expr) in &op.interfaces {
+                    for (name, expr) in &op.queries {
                         if let Some(ty) = expr.context_type()
                             && let Some(previous) = contexts.insert(name, ty)
                             && previous != ty
@@ -93,7 +93,7 @@ impl Plan {
                 for op in &definitions.ops {
                     if op.constraints.iter().any(|c| !c.type_only)
                         || op.text.is_some()
-                        || !op.interfaces.is_empty()
+                        || !op.queries.is_empty()
                         || op.params.iter().any(|p| p.moves)
                         || op.signature_source.is_some()
                     {

@@ -44,17 +44,17 @@ impl Expr {
             | ExprKind::Some(v)
             | ExprKind::Try(v)
             | ExprKind::Field(v, _) => v.type_only(params),
-            ExprKind::Binary(_, a, b) | ExprKind::Slice(a, b, _) | ExprKind::All(a, _, b) => {
+            ExprKind::Binary(_, a, b) | ExprKind::Slice(a, b, _) => {
                 a.type_only(params) && b.type_only(params)
             }
             ExprKind::Record(fields) => fields.values().all(|v| v.type_only(params)),
             ExprKind::Rust(_, values) | ExprKind::Array(values) | ExprKind::Variant(_, values) => {
                 values.iter().all(|v| v.type_only(params))
             }
-            ExprKind::Matches(..)
-            | ExprKind::Context(_)
-            | ExprKind::Parameter(_)
-            | ExprKind::Operand(_) => false,
+            ExprKind::All(inputs, body) => {
+                inputs.iter().all(|(v, _)| v.type_only(params)) && body.type_only(params)
+            }
+            ExprKind::Context(_) | ExprKind::Parameter(_) | ExprKind::Operand(_) => false,
         }
     }
 }
@@ -240,30 +240,37 @@ impl Evaluator<'_> {
                     .to_vec(),
                 )
             }
-            E::All(sequence, id, body) => {
-                let values = match self.eval(sequence)? {
-                    V::Sequence(values) => values,
-                    V::Optional(value) => value.into_iter().map(|v| *v).collect(),
-                    _ => unreachable!("checked all"),
-                };
-                let old = self.locals.get(id).cloned();
-                let mut answer = true;
-                for value in values {
-                    self.locals.insert(*id, value);
-                    match self.eval(body)? {
-                        V::Bool(true) => {}
-                        V::Bool(false) => {
-                            answer = false;
-                            break;
+            E::All(inputs, body) => {
+                let inputs = inputs
+                    .iter()
+                    .map(|(sequence, id)| {
+                        let values = match self.eval(sequence)? {
+                            V::Sequence(values) => values,
+                            V::Optional(value) => value.into_iter().map(|v| *v).collect(),
+                            _ => unreachable!("checked all"),
+                        };
+                        Ok((values, *id))
+                    })
+                    .collect::<Result<Vec<_>, EvalError>>()?;
+                let len = inputs[0].0.len();
+                let mut answer = inputs.iter().all(|(values, _)| values.len() == len);
+                let old = self.locals.clone();
+                if answer {
+                    for index in 0..len {
+                        for (values, id) in &inputs {
+                            self.locals.insert(*id, values[index].clone());
                         }
-                        _ => unreachable!("checked predicate"),
+                        match self.eval(body)? {
+                            V::Bool(true) => {}
+                            V::Bool(false) => {
+                                answer = false;
+                                break;
+                            }
+                            _ => unreachable!("checked predicate"),
+                        }
                     }
                 }
-                if let Some(old) = old {
-                    self.locals.insert(*id, old);
-                } else {
-                    self.locals.remove(id);
-                }
+                self.locals = old;
                 V::Bool(answer)
             }
             E::Record(fields) => V::Record(

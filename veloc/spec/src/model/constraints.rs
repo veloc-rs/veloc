@@ -63,7 +63,8 @@ pub(crate) fn describe(node: &Node) -> String {
             "{name}({})",
             args.iter().map(describe).collect::<Vec<_>>().join(", ")
         ),
-        Kind::Lambda(name, body) => format!("|{name}| {}", describe(body)),
+        Kind::Query(name, _) => format!("query {name}"),
+        Kind::Lambda(names, body) => format!("|{}| {}", names.join(", "), describe(body)),
         _ => "invalid constraint".into(),
     }
 }

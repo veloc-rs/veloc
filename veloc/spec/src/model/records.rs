@@ -233,6 +233,8 @@ pub(crate) struct RecordField {
     pub name: String,
     pub ty: PropertyType,
     pub rust: String,
+    // A logical SSA refinement is checked in expressions but erased in storage.
+    pub logical: Option<Node>,
     pub policy: Policy,
 }
 
@@ -241,6 +243,7 @@ pub(crate) enum PropertyType {
     Named(String),
     Optional(String),
     Values(usize),
+    Array(String, usize),
 }
 
 impl PropertyType {
@@ -248,6 +251,7 @@ impl PropertyType {
         match self {
             Self::Named(ty) => types.rust(ty),
             Self::Optional(ty) => format!("Option<{}>", types.rust(ty)),
+            Self::Array(ty, n) => format!("[{}; {n}]", types.qualified(ty)),
             Self::Values(n) => format!("[{}; {n}]", types.rust("Value")),
         }
     }
@@ -276,6 +280,35 @@ pub(crate) fn field_type(
             node.offset,
             "operand group size must be in 1..=255",
         ));
+    }
+    if let Kind::Call(kind, args) = &node.kind
+        && kind == "array"
+    {
+        let [
+            element,
+            Node {
+                kind: Kind::Number(n),
+                ..
+            },
+        ] = args.as_slice()
+        else {
+            return Err(Error::at(
+                source,
+                node.offset,
+                "array requires an element type and length",
+            ));
+        };
+        if *n > 255 {
+            return Err(Error::at(source, node.offset, "array length exceeds 255"));
+        }
+        let PropertyType::Named(element) = field_type(records, source, element.clone())? else {
+            return Err(Error::at(
+                source,
+                node.offset,
+                "array requires a named element type",
+            ));
+        };
+        return Ok(PropertyType::Array(element, *n as usize));
     }
     let optional = matches!(&node.kind, Kind::Call(name, _) if name == "optional");
     let inner = if optional {
@@ -336,12 +369,17 @@ pub(crate) fn compile(
             .into_iter()
             .map(|(name, node)| {
                 model::identifier(source, node.offset, name)?;
-                let ty = field_type(records, source, node.clone())?;
+                let logical = matches!(&node.kind, Kind::Call(name, _) if rust.policy(name).references.is_operand()).then(|| node.clone());
+                let storage = if let Some(Node { kind: Kind::Call(name, _), .. }) = &logical {
+                    Node { offset: node.offset, kind: Kind::Name(name.clone()) }
+                } else { node.clone() };
+                let ty = field_type(records, source, storage)?;
                 Ok(RecordField {
                     name: name.clone(),
+                    logical,
                     rust: ty.rust(rust),
                     policy: match &ty {
-                        PropertyType::Named(name) | PropertyType::Optional(name) => {
+                        PropertyType::Named(name) | PropertyType::Optional(name) | PropertyType::Array(name, _) => {
                             rust.policy(name)
                         }
                         PropertyType::Values(_) => Policy {

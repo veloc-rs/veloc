@@ -68,7 +68,7 @@ pub(super) fn inline(layout: &Layout, records: &[RecordDef]) -> bool {
                     return false;
                 }
                 let s = match &member.ty {
-                    PropertyType::Values(_) => {
+                    PropertyType::Values(_) | PropertyType::Array(_, _) => {
                         unreachable!("nested fixed SSA arrays rejected by storage checking")
                     }
                     PropertyType::Named(_) if member.policy.references.is_operand() => continue,

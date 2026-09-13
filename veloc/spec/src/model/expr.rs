@@ -50,13 +50,6 @@ pub(crate) enum Ty {
 }
 
 impl Ty {
-    fn borrows(&self) -> bool {
-        match self {
-            Self::Sequence(_) | Self::Ref(_) => true,
-            Self::Optional(t) | Self::Array(t, _) => t.borrows(),
-            _ => false,
-        }
-    }
     pub(crate) fn rust(&self, types: &super::records::RustTypes) -> String {
         match self {
             Self::Named(n) => types.qualified(n),
@@ -101,6 +94,10 @@ impl Ty {
                 &PropertyType::Named(name.clone()),
                 rust,
             ))),
+            PropertyType::Array(name, n) => Self::Array(
+                Box::new(Self::property(&PropertyType::Named(name.clone()), rust)),
+                *n,
+            ),
             PropertyType::Values(n) => Self::Array(Box::new(Self::Value(None)), *n),
         }
     }
@@ -123,8 +120,8 @@ pub(crate) enum ExprKind {
     Results,
     Type(String),
     Slice(Box<Expr>, Box<Expr>, bool),
-    Matches(Box<Expr>, Box<Expr>),
-    All(Box<Expr>, usize, Box<Expr>),
+    // All sequences must have equal lengths; predicates run in order and short-circuit.
+    All(Vec<(Expr, usize)>, Box<Expr>),
     Bound(usize),
     Local(usize, std::rc::Rc<Expr>),
     Context(String),
@@ -166,7 +163,8 @@ impl Expr {
             | E::Try(v)
             | E::Field(v, _)
             | E::Query(Query::Len, v) => safe(v),
-            E::Binary(_, a, b) | E::All(a, _, b) => safe(a) && safe(b),
+            E::Binary(_, a, b) => safe(a) && safe(b),
+            E::All(inputs, body) => inputs.iter().all(|(v, _)| safe(v)) && safe(body),
             E::Record(fields) => fields.values().all(safe),
             E::Variant(_, args) | E::Array(args) => args.iter().all(safe),
             _ => false,
@@ -200,10 +198,13 @@ impl Expr {
             | ExprKind::Some(v)
             | ExprKind::Try(v)
             | ExprKind::Field(v, _) => v.context_type(),
-            ExprKind::Binary(_, a, b)
-            | ExprKind::Matches(a, b)
-            | ExprKind::Slice(a, b, _)
-            | ExprKind::All(a, _, b) => a.context_type().or_else(|| b.context_type()),
+            ExprKind::Binary(_, a, b) | ExprKind::Slice(a, b, _) => {
+                a.context_type().or_else(|| b.context_type())
+            }
+            ExprKind::All(inputs, body) => inputs
+                .iter()
+                .find_map(|(v, _)| v.context_type())
+                .or_else(|| body.context_type()),
             ExprKind::Record(fields) => fields.values().find_map(Self::context_type),
             ExprKind::Rust(_, args) | ExprKind::Array(args) | ExprKind::Variant(_, args) => {
                 args.iter().find_map(Self::context_type)
@@ -284,22 +285,27 @@ impl Expr {
                 Box::new(b.expand(args, locals, next)),
                 *prefix,
             ),
-            ExprKind::Matches(a, b) => ExprKind::Matches(
-                Box::new(a.expand(args, locals, next)),
-                Box::new(b.expand(args, locals, next)),
-            ),
-            ExprKind::All(a, id, body) => {
-                let sequence = a.expand(args, locals, next);
-                let fresh = *next;
-                *next += 1;
-                let old = locals.insert(*id, fresh);
+            ExprKind::All(inputs, body) => {
+                let mut bindings = Vec::new();
+                let inputs = inputs
+                    .iter()
+                    .map(|(value, id)| {
+                        let value = value.expand(args, locals, next);
+                        let fresh = *next;
+                        *next += 1;
+                        bindings.push((*id, locals.insert(*id, fresh)));
+                        (value, fresh)
+                    })
+                    .collect();
                 let body = body.expand(args, locals, next);
-                if let Some(old) = old {
-                    locals.insert(*id, old);
-                } else {
-                    locals.remove(id);
+                for (id, old) in bindings.into_iter().rev() {
+                    if let Some(old) = old {
+                        locals.insert(id, old);
+                    } else {
+                        locals.remove(&id);
+                    }
                 }
-                ExprKind::All(Box::new(sequence), fresh, Box::new(body))
+                ExprKind::All(inputs, Box::new(body))
             }
             ExprKind::Bound(id) => ExprKind::Bound(*locals.get(id).unwrap_or(id)),
             ExprKind::Try(e) => ExprKind::Try(Box::new(e.expand(args, locals, next))),
@@ -356,10 +362,6 @@ impl Expr {
 }
 
 #[derive(Clone)]
-pub(crate) struct Interface {
-    pub(crate) fields: Vec<(String, Ty)>,
-}
-#[derive(Clone)]
 pub(crate) struct RustCall {
     pub constant: bool,
     is_const: bool,
@@ -377,7 +379,7 @@ struct Function {
 
 #[derive(Clone, Default)]
 pub(crate) struct Library {
-    pub(crate) interfaces: BTreeMap<String, Interface>,
+    pub(crate) queries: BTreeMap<String, String>,
     functions: BTreeMap<String, Function>,
     methods: String,
     bindings: String,
@@ -431,6 +433,38 @@ fn operands(
     }
 
     env
+}
+
+fn bind_types(
+    env: &mut BTreeMap<String, Expr>,
+    params: &[Param],
+    signature: Option<&TypeDef>,
+    slots: &BTreeMap<String, super::Slot>,
+    types: &crate::types::Types,
+) {
+    for (name, slot) in slots {
+        let mut value = Expr::new(Ty::named("Type"), ExprKind::ResultType(slot.index as usize));
+        if !slot.result {
+            let operand = params
+                .iter()
+                .filter(|p| p.kind == ParamKind::Value)
+                .nth(slot.index as usize)
+                .expect("generic operand binding");
+            let input = env[&operand.name].clone();
+            value.kind = ExprKind::Query(Query::TypeOf, Box::new(input));
+        }
+        value.types = signature
+            .and_then(|s| {
+                if slot.result {
+                    s.results.patterns()
+                } else {
+                    s.operands.patterns()
+                }
+            })
+            .and_then(|p| p.get(slot.index as usize))
+            .and_then(|p| possible(types, p, signature));
+        env.insert(name.clone(), value);
+    }
 }
 
 impl Library {
@@ -504,31 +538,9 @@ impl Library {
         let Some(body) = body else {
             return Ok(Vec::new());
         };
+        bind_types(&mut env, params, signature, results, types);
         let body = self.context(source, body, &mut env, &data.rust)?;
         let nodes = super::list(source, body)?;
-        for (name, slot) in results {
-            let mut value = Expr::new(Ty::named("Type"), ExprKind::ResultType(slot.index as usize));
-            if !slot.result {
-                let operand = params
-                    .iter()
-                    .filter(|p| p.kind == ParamKind::Value)
-                    .nth(slot.index as usize)
-                    .expect("generic operand binding");
-                let input = env[&operand.name].clone();
-                value.kind = ExprKind::Query(Query::TypeOf, Box::new(input));
-            }
-            value.types = signature
-                .and_then(|s| {
-                    if slot.result {
-                        s.results.patterns()
-                    } else {
-                        s.operands.patterns()
-                    }
-                })
-                .and_then(|p| p.get(slot.index as usize))
-                .and_then(|p| possible(types, p, signature));
-            env.insert(name.clone(), value);
-        }
         let mut checker = Checker {
             source,
             library: self,
@@ -629,11 +641,7 @@ impl Library {
                 visit(ty, &mut names);
             }
         }
-        for interface in self.interfaces.values() {
-            for (_, ty) in &interface.fields {
-                visit(ty, &mut names);
-            }
-        }
+        names.extend(self.queries.values().map(String::as_str));
         names
     }
 
@@ -664,40 +672,12 @@ impl Library {
             verification: false,
             next_local: 0,
         };
-        for declaration in declarations.iter().filter(|d| d.kind == "interface") {
-            if matches!(declaration.name.as_str(), "Value" | "InstView")
-                || data.rust.contains(&declaration.name)
-                || data.records.iter().any(|r| r.name == declaration.name)
-                || data.enums.iter().any(|e| e.name == declaration.name)
-                || encodings.contains_key(&declaration.name)
-            {
-                return Err(Error::at(
-                    source,
-                    declaration.offset,
-                    "interface conflicts with a data type",
-                ));
+        for record in &data.records {
+            for field in &record.fields {
+                if let Some(ty) = &field.logical {
+                    checker.ty(ty)?;
+                }
             }
-            let mut fields = declaration.fields.iter().collect::<Vec<_>>();
-            fields.sort_by_key(|(_, node)| node.offset);
-            let fields = fields
-                .into_iter()
-                .map(|(name, node)| {
-                    super::identifier(source, node.offset, name)?;
-                    let ty = checker.ty(node)?;
-                    if ty.borrows() {
-                        return Err(Error::at(source,node.offset,"interface fields must be owned; consume borrowed host sequences inside a helper"));
-                    }
-                    Ok((name.clone(), ty))
-                })
-                .collect::<Result<_, Error>>()?;
-            checker
-                .library
-                .interfaces
-                .insert(declaration.name.clone(), Interface { fields });
-        }
-        // Inline query data must be finite, just like ordinary struct data.
-        for name in checker.library.interfaces.keys() {
-            checker.check_cycle(name, &mut BTreeSet::new())?;
         }
         for declaration in declarations
             .iter()
@@ -708,12 +688,14 @@ impl Library {
         Ok(library)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn bind(
         &mut self,
         source: &str,
         node: Option<Node>,
         params: &[Param],
         signature: &TypeDef,
+        slots: &BTreeMap<String, super::Slot>,
         vocabulary: super::Vocabulary<'_>,
     ) -> Result<BTreeMap<String, Expr>, Error> {
         let super::Vocabulary {
@@ -727,7 +709,7 @@ impl Library {
             return Ok(bindings);
         };
         let mut env = operands(params, Some(signature), types);
-        let node = self.context(source, node, &mut env, &data.rust)?;
+        bind_types(&mut env, params, Some(signature), slots, types);
         let mut checker = Checker {
             source,
             library: self,
@@ -741,26 +723,39 @@ impl Library {
             next_local: 0,
         };
         for node in super::list(source, node)? {
-            let expression = checker.expr(&node, None, &env, Some(signature))?;
-            let Ty::Named(name) = &expression.ty else {
+            let Kind::Query(name, body) = node.kind else {
                 return Err(Error::at(
                     source,
                     node.offset,
-                    "implementation must return an interface",
+                    "expected a query declaration",
                 ));
             };
-            if !checker.library.interfaces.contains_key(name) {
+            super::identifier(source, node.offset, &name)?;
+            let mut locals = env.clone();
+            let body = checker
+                .library
+                .context(source, *body, &mut locals, &data.rust)?;
+            let expression = checker.expr(&body, None, &locals, Some(signature))?;
+            let Ty::Named(result) = &expression.ty else {
+                return Err(Error::at(source, node.offset, "query must return a struct"));
+            };
+            if !data.records.iter().any(|r| r.name == *result) {
+                return Err(Error::at(source, node.offset, "query must return a struct"));
+            }
+            if let Some(previous) = checker.library.queries.insert(name.clone(), result.clone())
+                && previous != *result
+            {
                 return Err(Error::at(
                     source,
                     node.offset,
-                    "implementation must return an interface",
+                    format!("query `{name}` requires the same result type across operations"),
                 ));
             }
             if bindings.insert(name.clone(), expression).is_some() {
                 return Err(Error::at(
                     source,
                     node.offset,
-                    "duplicate interface implementation",
+                    format!("duplicate query `{name}`"),
                 ));
             }
         }
@@ -1058,52 +1053,52 @@ impl Checker<'_> {
             ));
         }
         if name == "all" {
-            let [
-                sequence,
+            let Some((
                 Node {
-                    kind: Kind::Lambda(name, body),
+                    kind: Kind::Lambda(names, body),
                     ..
                 },
-            ] = args
+                sequences,
+            )) = args.split_last()
             else {
-                return Err(fail("all expects a sequence and |name| predicate"));
+                return Err(fail("all expects sequences followed by a predicate"));
             };
-            let sequence = self.expr(sequence, None, env, signature)?;
-            let (Ty::Sequence(element) | Ty::Optional(element) | Ty::Array(element, _)) =
-                &sequence.ty
-            else {
-                return Err(fail("all expects a finite sequence or optional value"));
-            };
-            let id = self.next_local;
-            self.next_local += 1;
+            if sequences.is_empty() || names.len() != sequences.len() {
+                return Err(fail("all requires one predicate parameter per sequence"));
+            }
             let mut locals = env.clone();
-            locals.insert(
-                name.clone(),
-                Expr::new(*element.clone(), ExprKind::Bound(id)),
-            );
+            let mut inputs = Vec::new();
+            let mut bound = BTreeSet::new();
+            for (sequence, name) in sequences.iter().zip(names) {
+                if !bound.insert(name) {
+                    return Err(fail("duplicate predicate parameter"));
+                }
+                let sequence = self.expr(sequence, None, env, signature)?;
+                let (Ty::Sequence(element) | Ty::Optional(element) | Ty::Array(element, _)) =
+                    &sequence.ty
+                else {
+                    return Err(fail("all expects finite sequences or optional values"));
+                };
+                let id = self.next_local;
+                self.next_local += 1;
+                locals.insert(
+                    name.clone(),
+                    Expr::new(*element.clone(), ExprKind::Bound(id)),
+                );
+                inputs.push((sequence, id));
+            }
             let body = self.expr(body, Some(&Ty::named("bool")), &locals, signature)?;
             return Ok(Expr::new(
                 Ty::named("bool"),
-                ExprKind::All(Box::new(sequence), id, Box::new(body)),
+                ExprKind::All(inputs, Box::new(body)),
             ));
         }
-        if matches!(name, "prefix" | "suffix" | "matches") {
+        if matches!(name, "prefix" | "suffix") {
             let [lhs, rhs] = args else {
                 return Err(fail("sequence operation expects two arguments"));
             };
             let a = self.expr(lhs, None, env, signature)?;
             let b = self.expr(rhs, None, env, signature)?;
-            if name == "matches" {
-                if a.ty != Ty::Sequence(Box::new(Ty::Value(None)))
-                    || b.ty != Ty::Sequence(Box::new(Ty::named("Type")))
-                {
-                    return Err(fail("matches expects value and type sequences"));
-                }
-                return Ok(Expr::new(
-                    Ty::named("bool"),
-                    ExprKind::Matches(Box::new(a), Box::new(b)),
-                ));
-            }
             if !matches!(a.ty, Ty::Sequence(_)) || !b.ty.integer() {
                 return Err(fail("slice expects a sequence and integer"));
             }
@@ -1138,12 +1133,7 @@ impl Checker<'_> {
                     || self.data.records.iter().any(|r| r.name == *name)
                     || self.data.enums.iter().any(|e| e.name == *name)
                     || self.comparisons.iter().any(|c| c.name == *name)
-                    || self.encodings.contains_key(name)
-                    || self
-                        .declarations
-                        .iter()
-                        .any(|d| d.kind == "interface" && d.name == *name)
-                    || self.library.interfaces.contains_key(name) =>
+                    || self.encodings.contains_key(name) =>
             {
                 Ok(Ty::named(name))
             }
@@ -1177,42 +1167,19 @@ impl Checker<'_> {
     }
 
     fn fields(&self, name: &str) -> Option<Vec<(String, Ty)>> {
-        self.library
-            .interfaces
-            .get(name)
-            .map(|i| i.fields.clone())
-            .or_else(|| {
-                self.data.records.iter().find(|r| r.name == name).map(|r| {
-                    r.fields
-                        .iter()
-                        .map(|f| (f.name.clone(), Ty::property(&f.ty, &self.data.rust)))
-                        .collect()
+        self.data.records.iter().find(|r| r.name == name).map(|r| {
+            r.fields
+                .iter()
+                .map(|f| {
+                    let ty = if let Some(logical) = &f.logical {
+                        self.ty(logical).expect("checked struct field type")
+                    } else {
+                        Ty::property(&f.ty, &self.data.rust)
+                    };
+                    (f.name.clone(), ty)
                 })
-            })
-    }
-
-    fn check_cycle(&self, name: &str, active: &mut BTreeSet<String>) -> Result<(), Error> {
-        if !active.insert(name.into()) {
-            return Err(Error::at(self.source, 0, "recursive inline interface type"));
-        }
-        fn visit(
-            checker: &Checker<'_>,
-            ty: &Ty,
-            active: &mut BTreeSet<String>,
-        ) -> Result<(), Error> {
-            match ty {
-                Ty::Named(name) if checker.library.interfaces.contains_key(name) => {
-                    checker.check_cycle(name, active)
-                }
-                Ty::Optional(ty) | Ty::Array(ty, _) => visit(checker, ty, active),
-                _ => Ok(()),
-            }
-        }
-        for (_, ty) in &self.library.interfaces[name].fields {
-            visit(self, ty, active)?;
-        }
-        active.remove(name);
-        Ok(())
+                .collect()
+        })
     }
 
     fn function(&mut self, name: &str, offset: usize) -> Result<Function, Error> {
@@ -1242,7 +1209,6 @@ impl Checker<'_> {
             name,
             "field"
                 | "type"
-                | "result_type"
                 | "some"
                 | "i128"
                 | "i64"
@@ -1252,7 +1218,6 @@ impl Checker<'_> {
                 | "all"
                 | "prefix"
                 | "suffix"
-                | "matches"
                 | "results"
                 | "require"
         ) || name == "len"
@@ -1575,7 +1540,7 @@ impl Checker<'_> {
             Kind::Object(name, values) => {
                 let fields = self
                     .fields(name)
-                    .ok_or_else(|| fail("unknown projection struct or interface"))?;
+                    .ok_or_else(|| fail("unknown projection struct"))?;
                 if values.len() != fields.len()
                     || values.keys().any(|n| !fields.iter().any(|(f, _)| f == n))
                 {
@@ -1613,28 +1578,6 @@ impl Checker<'_> {
                     types: value.types.clone(),
                     ty: Ty::named("Type"),
                     kind: ExprKind::Query(Query::TypeOf, Box::new(value)),
-                }
-            }
-            Kind::Call(name, args) if name == "result_type" && args.len() == 1 => {
-                let index = match args[0].kind {
-                    Kind::Number(n) => n as usize,
-                    Kind::Integer(n) => {
-                        usize::try_from(n).map_err(|_| fail("result_type index is out of range"))?
-                    }
-                    _ => return Err(fail("result_type requires a constant index")),
-                };
-                let results = signature
-                    .and_then(|s| s.results.patterns())
-                    .ok_or_else(|| {
-                        fail("result_type requires a fixed operation result signature")
-                    })?;
-                if index >= results.len() {
-                    return Err(fail("result_type index is out of range"));
-                }
-                Expr {
-                    types: possible(self.types, &results[index], signature),
-                    ty: Ty::named("Type"),
-                    kind: ExprKind::ResultType(index),
                 }
             }
             Kind::Call(name, args)
@@ -1705,7 +1648,7 @@ impl Checker<'_> {
             Kind::Call(name, args)
                 if matches!(
                     name.as_str(),
-                    "len" | "all" | "prefix" | "suffix" | "matches" | "results"
+                    "len" | "all" | "prefix" | "suffix" | "results"
                 ) =>
             {
                 self.query(node.offset, name, args, env, signature)?
@@ -1922,12 +1865,6 @@ impl<'a> Emitter<'a> {
                 };
                 self.required(format!("({sequence}).get({range})"))
             }
-            ExprKind::Matches(values, types) => format!(
-                "{{ let values = {}; let types = {}; values.len() == types.len() && values.iter().zip(types.iter()).all(|(&v, &ty)| ({}).value_type(v) == ty) }}",
-                self.term(values),
-                self.term(types),
-                receiver
-            ),
             ExprKind::Unary("!", value) => format!("!({})", self.term(value)),
             ExprKind::Unary("-", value) => {
                 self.required(format!("({}).checked_neg()", self.term(value)))
@@ -2032,25 +1969,48 @@ impl<'a> Emitter<'a> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            ExprKind::All(sequence, id, body)
-                if self.constant && matches!(sequence.ty, Ty::Optional(_)) =>
-            {
-                format!(
-                    "(match {} {{ Some(_v{id}) => {}, None => true }})",
-                    self.term(sequence),
+            ExprKind::All(inputs, body) => {
+                use std::fmt::Write;
+                let id = inputs[0].1;
+                let mut code = String::from("{ ");
+                for (sequence, slot) in inputs {
+                    // A single temporary per input also gives borrowed Rust results
+                    // a lifetime covering the entire traversal.
+                    write!(code, "let seq{slot} = {}; ", self.term(sequence)).unwrap();
+                    let len = if matches!(sequence.ty, Ty::Optional(_)) {
+                        format!("if seq{slot}.is_some() {{ 1 }} else {{ 0 }}")
+                    } else {
+                        format!("seq{slot}.len()")
+                    };
+                    write!(code, "let len{slot} = {len}; ").unwrap();
+                }
+                write!(code, "let mut ok{id} = true; ").unwrap();
+                for (_, slot) in &inputs[1..] {
+                    write!(code, "ok{id} = ok{id} && len{id} == len{slot}; ").unwrap();
+                }
+                write!(
+                    code,
+                    "let mut i{id} = 0; while ok{id} && i{id} < len{id} {{ "
+                )
+                .unwrap();
+                for (sequence, slot) in inputs {
+                    let value = if matches!(sequence.ty, Ty::Optional(_)) {
+                        format!(
+                            "match seq{slot} {{ Some(value) => value, None => unreachable!() }}"
+                        )
+                    } else {
+                        format!("seq{slot}[i{id}]")
+                    };
+                    write!(code, "let _v{slot} = {value}; ").unwrap();
+                }
+                write!(
+                    code,
+                    "ok{id} = {}; i{id} += 1; }} ok{id} }}",
                     self.term(body)
                 )
+                .unwrap();
+                code
             }
-            ExprKind::All(sequence, id, body) if self.constant => format!(
-                "{{ let seq{id} = {}; let mut i{id} = 0; let mut ok{id} = true; while i{id} < seq{id}.len() {{ let _v{id} = seq{id}[i{id}]; if !({}) {{ ok{id} = false; break; }} i{id} += 1; }} ok{id} }}",
-                self.term(sequence),
-                self.term(body)
-            ),
-            ExprKind::All(sequence, id, body) => format!(
-                "{{ let mut ok{id} = true; for &_v{id} in ({}).iter() {{ if !({}) {{ ok{id} = false; break; }} }} ok{id} }}",
-                self.term(sequence),
-                self.term(body)
-            ),
         }
     }
 }
