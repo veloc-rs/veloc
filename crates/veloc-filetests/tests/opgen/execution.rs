@@ -127,37 +127,56 @@ mod sequences_{index} {{
 }}
 "#));
     }
-    let generated = common::compile(
-        r#"
-extern interface Arithmetic {
-    fn next(n: u64) -> optional(u64);
+    let ops = r#"
+type Arithmetic = rust("crate::host::Arithmetic") {
+    fn snapshot(&self) -> &Snapshot;
 }
-fn Next(n: u64) -> u64 { value: Arithmetic::next(n)? }
-fn Successor(n: u64) -> u64 { value: Next(n) }
+type Snapshot = rust("crate::host::Snapshot") {
+    fn next(&self, n: u64) -> optional(u64);
+    fn limit(&self) -> u64;
+}
+fn Next(ctx: &Snapshot, n: u64) -> u64 { value: ctx.next(n)? }
+fn Successor(ctx: &Snapshot, n: u64) -> u64 { value: Next(ctx, n) }
 struct Custom { bits: u64, yes: bool }
 op Example(number: u64, flag: bool) -> Type::I32 {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
     storage: Custom { bits: number, yes: flag },
-    verify { require(flag || Successor(number) > number, "host failure"); }
+    verify(ctx: Arithmetic) {
+        let snapshot = ctx.snapshot();
+        require(flag || Successor(snapshot, number) > number, "host failure");
+        require(snapshot.limit() >= number, "limit");
+    }
 }
-"#,
+"#;
+    let generated = common::compile(ops).unwrap();
+    let host = veloc_opgen::interfaces::declarations(
+        &veloc_opgen::syntax::parse(ops).unwrap(),
+        ops,
+        "crate::type_methods",
     )
     .unwrap();
-    let host = generated.host;
     let validation = generated.validation;
     code.push_str(&format!(r#"
 type VectorConst = ();
 type FuncId = u32;
 type SigId = u32;
+pub mod type_methods {{ {host} }}
 mod host {{
-    pub mod traits {{ {host} }}
-    pub struct Context;
+    pub type Arithmetic = Context;
+    pub type Snapshot = Context;
+    pub struct Context {{ reads: std::cell::Cell<u32> }}
     impl Context {{
-        pub fn new(_: &()) -> Self {{ Self }}
-        pub fn with_module(self, _: &(), _: ()) -> Self {{ self }}
+        pub fn new() -> Self {{ Self {{ reads: std::cell::Cell::new(0) }} }}
     }}
-    impl traits::Arithmetic for Context {{
+    impl crate::type_methods::Arithmetic for Context {{
+        fn snapshot(&self) -> &Snapshot {{
+            assert_eq!(self.reads.replace(1), 0, "binding must be evaluated once");
+            self
+        }}
+    }}
+    impl crate::type_methods::Snapshot for Context {{
         fn next(&self, n: u64) -> Option<u64> {{ n.checked_add(1) }}
+        fn limit(&self) -> u64 {{ u64::MAX }}
     }}
 }}
 mod host_calls {{
@@ -172,7 +191,8 @@ mod host_calls {{
     #[test] fn execute() {{
         let f = Function {{ dfg: (), signature: () }};
         for (bits, yes, valid) in [(3, false, true), (u64::MAX, false, false), (u64::MAX, true, true)] {{
-            let result = f.validate_constraints(&(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[]);
+            let context = host::Context::new();
+            let result = f.validate_constraints(&(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[], &context);
             assert_eq!(result.is_ok(), valid);
             if !valid {{ assert_eq!(result.unwrap_err(), "host failure"); }}
         }}
@@ -207,7 +227,10 @@ mod host_calls {{
     // even when an identically named inherent method is available.
     std::fs::write(
         &input,
-        code.replace("impl traits::Arithmetic for Context", "impl Context"),
+        code.replace(
+            "impl crate::type_methods::Arithmetic for Context",
+            "impl Context",
+        ),
     )
     .unwrap();
     let output = std::process::Command::new(&rustc)
@@ -226,6 +249,22 @@ mod host_calls {{
         diagnostic.contains("Arithmetic") && diagnostic.contains("not satisfied"),
         "{diagnostic}"
     );
+    // A returned view must borrow the receiver, not a temporary context.
+    let escaped = code.replace(
+        "            self\n        }",
+        "            &Self { reads: std::cell::Cell::new(0) }\n        }",
+    );
+    assert_ne!(escaped, code);
+    std::fs::write(&input, escaped).unwrap();
+    let output = std::process::Command::new(&rustc)
+        .args(["--edition=2024", "--test", "--emit=metadata"])
+        .arg(&input)
+        .arg("-o")
+        .arg(dir.join("escaped-view.rmeta"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("E0515"));
 }
 
 #[test]

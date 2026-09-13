@@ -304,7 +304,7 @@ fn instances(source: &str, op: &Op, types: &crate::types::Types) -> Result<Vec<I
     let constraints: Vec<_> = op
         .constraints
         .iter()
-        .filter(|c| c.type_only && !c.condition.is_bool(true))
+        .filter(|c| c.type_only && !c.redundant())
         .collect();
     for constraint in &constraints {
         if !constraint.condition.const_type_query(&op.params) {

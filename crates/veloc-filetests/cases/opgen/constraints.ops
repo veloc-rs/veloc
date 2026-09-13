@@ -355,8 +355,8 @@ op Guarded<T: Integer>(arg: T) -> T {
 // run: opgen-error
 // check: projection type mismatch: expected Named("bool"), found Named("u8")
 property VectorConst {
-    verify {
-        all(Constants::bytes(value)?, |byte| byte);
+    verify(ctx: ConstContext) {
+        all(ctx.bytes(value)?, |byte| byte);
     }
 }
 
@@ -371,10 +371,10 @@ property VectorConst {
 
 // ----- property-constraints/property-emits-declared-host-calls
 // run: opgen
-// check: crate::host::traits::Module::params(&_host, crate::host::traits::Module::current_signature
+// check: <crate::host::VerifyContext as crate::type_methods::VerifyContextInfo>::current_signature(_context)
 property VectorConst {
-    verify {
-        len(Module::params(Module::current_signature())?) == 0;
+    verify(ctx: VerifyContext) {
+        len(ctx.current_signature()?.params()) == 0;
     }
 }
 

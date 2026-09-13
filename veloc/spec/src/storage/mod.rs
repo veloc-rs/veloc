@@ -52,7 +52,7 @@ pub(crate) struct Alternative {
     pub fields: Vec<Field>,
     pub formats: Vec<String>,
     pub text: Node,
-    pub constraints: Vec<Node>,
+    pub constraints: Option<Node>,
 }
 
 #[derive(Debug)]
@@ -64,7 +64,7 @@ struct Layout {
     format: FormatSource,
     canonical: bool,
     text: Option<Node>,
-    constraints: Vec<Node>,
+    constraints: Option<Node>,
 }
 
 #[derive(Clone, Debug)]
@@ -560,13 +560,7 @@ fn parse_layout(
         (format, Some(text))
     };
     let layout = Layout {
-        constraints: record
-            .fields
-            .get("verify")
-            .cloned()
-            .map(|node| crate::model::list(source, node))
-            .transpose()?
-            .unwrap_or_default(),
+        constraints: record.fields.get("verify").cloned(),
         offset: record.offset,
         name: record.name.clone(),
         fields,

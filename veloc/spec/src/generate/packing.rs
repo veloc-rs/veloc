@@ -137,7 +137,7 @@ pub(crate) fn prepare_alternatives(
             .zip(formats)
             .find(|(_, index)| targets.contains(index));
         let Some((base, _)) = base else {
-            if !alt.constraints.is_empty() {
+            if alt.constraints.is_some() {
                 return Err(Error::at(
                     source,
                     alt.text.offset,

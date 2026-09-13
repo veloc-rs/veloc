@@ -2,7 +2,7 @@
 // run: opgen
 // check: pub struct Summary
 // check: pub count: u32
-// check: impl InstructionQuery for Summary
+// check: impl Summary
 // check: count: *_f0
 // check: MemoryEffects>::READ
 interface Summary { count: u32, effects: MemoryEffect }
@@ -146,35 +146,35 @@ op Example(n: u32) -> Type::I32 {
 // run: opgen
 // check: pub trait Numbers
 // check: fn next(&self, n: u32) -> Option<u32>
-// check: impl InstructionQuery for Summary
-// check: crate::host::traits::Numbers::next(&_host, *_f0)
-extern interface Numbers {
-    fn next(n: u32) -> optional(u32);
+// check: impl Summary
+// check: <crate::host::Numbers as crate::type_methods::Numbers>::next(_context, *_f0)
+type Numbers = rust("crate::host::Numbers") {
+    fn next(&self, n: u32) -> optional(u32);
 }
 interface Summary { count: u32 }
-fn Count(n: u32) -> u32 { value: Numbers::next(n)? }
+fn Count(ctx: &Numbers, n: u32) -> u32 { value: ctx.next(n)? }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
-    storage: Data { n: n }, implements: [Summary { count: Count(n) }],
-    verify { require(Count(n) > n, "no next value"); }
+    storage: Data { n: n }, implements(ctx: Numbers): [Summary { count: Count(ctx, n) }],
+    verify(ctx: Numbers) { require(Count(ctx, n) > n, "no next value"); }
 }
 
 // ----- host/helper-requirements-reach-the-caller
 // run: opgen
-// check: crate::host::traits::Module::params(&_host, *_f0)
-fn Count(sig: SigId) -> i128 { value: len(Module::params(sig)?) }
+// check: <crate::host::VerifyContext as crate::type_methods::VerifyContextInfo>::signature(_context, *_f0)
+fn Count(ctx: &VerifyContext, sig: SigId) -> i128 { value: len(ctx.signature(sig)?.params()) }
 interface Summary { count: i128 }
 struct Data { sig: SigId }
 op Example(sig: SigId) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
-    storage: Data { sig: sig }, implements: [Summary { count: Count(sig) }],
+    storage: Data { sig: sig }, implements(ctx: VerifyContext): [Summary { count: Count(ctx, sig) }],
 }
 
 // ----- host/optional-host-results-must-be-handled
 // run: opgen-error
 // check: projection type mismatch
-fn Count(sig: SigId) -> sequence(Type) { value: Module::params(sig) }
+fn Count(ctx: &VerifyContext, sig: SigId) -> &Signature { value: ctx.signature(sig) }
 
 // ----- host/try-only-applies-to-optionals
 // run: opgen-error
@@ -184,19 +184,21 @@ fn Next(n: u32) -> u32 { value: n? }
 // ----- host/host-method-signatures-are-checked
 // run: opgen-error
 // check: projection type mismatch
-fn Bad(n: u32) -> optional(SigId) { value: Module::signature(n) }
+fn Bad(ctx: &VerifyContext, n: u32) -> optional(&Signature) { value: ctx.function_signature(n) }
 
 // ----- host/opaque-host-queries-are-not-static-metadata
 // run: opgen-error
 // check: metadata projection must be compile-time constant
-extern interface Numbers {
-    fn next(n: u32) -> optional(u32);
+type Numbers = rust("crate::host::Numbers") {
+    fn next(&self, n: u32) -> optional(u32);
 }
-fn Count(n: u32) -> u32 { value: Numbers::next(n)? }
+fn Count(ctx: &Numbers, n: u32) -> u32 { value: ctx.next(n)? }
+interface Summary { count: u32 }
 struct Info { count: u32, memory: MemoryEffect }
 struct Empty {}
 op Example() -> () {
-    meta: Info { count: Count(1), memory: MemoryEffect::NONE },
+    meta: Info { count: field(Summary, count), memory: MemoryEffect::NONE },
+    implements(ctx: Numbers): [Summary { count: Count(ctx, 1) }],
     mnemonic: "example", storage: Empty {},
 }
 
@@ -218,9 +220,9 @@ context query {}
 // ----- host/unused-host-needs-no-adapter
 // run: opgen
 // check: pub trait Unused
-// check: impl InstructionQuery for Summary
+// check: impl Summary
 // not: let _host
-extern interface Unused { fn number() -> u32; }
+type Unused = rust("crate::host::Unused") { fn number(&self) -> u32; }
 interface Summary { count: u32 }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
@@ -230,11 +232,11 @@ op Example(n: u32) -> () {
 
 // ----- rust-types/declared-paths-are-shared-by-fields-and-host-signatures
 // run: opgen
-// check: fn read(&self, value: crate::tokens::Token) -> Option<crate::tokens::Token>
 // check: pub value: crate::tokens::Token
 // check: Some(crate::tokens::Token)
+// check: fn read(&self, value: crate::tokens::Token) -> Option<crate::tokens::Token>
 type Token = rust("crate::tokens::Token");
-extern interface Tokens { fn read(value: Token) -> optional(Token); }
+type Tokens = rust("crate::host::Tokens") { fn read(&self, value: Token) -> optional(Token); }
 struct Entry { value: Token }
 enum EntryResult { variants: [Some(Token), None] }
 
@@ -258,8 +260,8 @@ type BAD = vector(TOKEN, 4);
 // check: projection type mismatch
 type First = rust("crate::tokens::Token");
 type Second = rust("crate::tokens::Token");
-extern interface Tokens { fn first() -> First; }
-fn wrong() -> Second { value: Tokens::first() }
+type Tokens = rust("crate::host::Tokens") { fn first(&self) -> First; }
+fn wrong(ctx: &Tokens) -> Second { value: ctx.first() }
 
 // ----- rust-types/foreign-types-have-no-implicit-fields
 // run: opgen-error
@@ -296,8 +298,8 @@ struct Token { number: u32 }
 
 // ----- rust-types/binding-does-not-silently-declare-other-types
 // run: opgen-error
-// check: unknown projection type
-extern interface Tokens { fn read(value: Undeclared) -> u32; }
+// check: unknown interface type
+type Tokens = rust("crate::host::Tokens") { fn read(&self, value: Undeclared) -> u32; }
 
 // ----- type-methods/methods-share-the-type-declaration-and-expand-defs-bodies
 // run: opgen
@@ -309,11 +311,11 @@ type Token = rust("crate::tokens::Token") {
     fn number(self) -> u32;
     fn twice(self) -> u32 { value: self.number() * 2 }
 }
-extern interface Tokens { fn read(number: u32) -> Token; }
+type Tokens = rust("crate::host::Tokens") { fn read(&self, number: u32) -> Token; }
 struct Input { number: u32 }
 op Check(number: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Input { number },
-    verify { require(Tokens::read(number).twice() > 0, "positive"); }
+    verify(ctx: Tokens) { require(ctx.read(number).twice() > 0, "positive"); }
 }
 
 // ----- type-methods/external-trait-binding-selects-the-method-contract
@@ -323,11 +325,11 @@ type Token = rust("crate::tokens::Token") {
     trait: rust("crate::tokens::Read"),
     fn number(self) -> u32;
 }
-extern interface Tokens { fn read(number: u32) -> Token; }
+type Tokens = rust("crate::host::Tokens") { fn read(&self, number: u32) -> Token; }
 struct Input { number: u32 }
 op Check(number: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Input { number },
-    verify { require(Tokens::read(number).number() > 0, "positive"); }
+    verify(ctx: Tokens) { require(ctx.read(number).number() > 0, "positive"); }
 }
 
 // ----- type-methods/methods-must-be-declared
@@ -448,13 +450,13 @@ op Check<T: Integer>(arg: T) -> T {
 type Token = rust("crate::tokens::Token") {
     fn number(self) -> u32;
 }
-extern interface Tokens { fn read(number: u32) -> Token; }
+type Tokens = rust("crate::host::Tokens") { fn read(&self, number: u32) -> Token; }
 struct Input { number: u32 }
 struct Boxed { token: Token }
 fn unwrap(boxed: Boxed) -> u32 { value: (boxed) . token . number() }
 op Check(number: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Input { number },
-    verify { require(unwrap(Boxed { token: Tokens :: read(number) }) > 0, "positive"); }
+    verify(ctx: Tokens) { require(unwrap(Boxed { token: ctx . read(number) }) > 0, "positive"); }
 }
 
 // ----- type-methods/constant-projections-share-the-typed-evaluator
@@ -553,7 +555,7 @@ op Check() -> () {
 
 // ----- expressions/helpers-share-verification-query-and-metadata-expressions
 // run: opgen
-// check: impl InstructionQuery for Summary
+// check: impl Summary
 // check: checked_mul(2u64)
 // check: count: 14
 // check: valid: true
@@ -611,13 +613,70 @@ fn len(n: u32) -> u32 { value: n }
 // check: use a verify block instead of constraints
 property Int { constraints: [true] }
 
+// ----- borrowed-types/query-results-cannot-retain-borrowed-views
+// run: opgen-error
+// check: interface fields must be owned
+interface Escaped { signature: &Signature }
+
+// ----- borrowed-types/receiver-kind-is-checked
+// run: opgen-error
+// check: method receiver type mismatch
+type Token = rust("crate::tokens::Token") { fn consume(self) -> u32; }
+fn count(token: &Token) -> u32 { value: token.consume() }
+
+// ----- borrowed-types/context-must-bind-a-rust-type
+// run: opgen-error
+// check: context requires a Rust-bound type
+struct Empty {}
+op Example() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Empty {},
+    verify(ctx: Empty) { true; }
+}
+
+// ----- borrowed-types/legacy-extern-interface-is-rejected
+// run: opgen-error
+// check: expected `{`
+extern interface Legacy { fn count() -> u32; }
+
+// ----- borrowed-types/query-contexts-must-agree
+// run: opgen-error
+// check: query `Summary` requires incompatible context types
+type FirstContext = rust("crate::FirstContext") { fn count(&self) -> u32; }
+type SecondContext = rust("crate::SecondContext") { fn count(&self) -> u32; }
+interface Summary { count: u32 }
+struct Empty {}
+op First() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "first", storage: Empty {},
+    implements(ctx: FirstContext): [Summary { count: ctx.count() }],
+}
+op Second() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "second", storage: Empty {},
+    implements(ctx: SecondContext): [Summary { count: ctx.count() }],
+}
+
+// ----- borrowed-types/context-free-and-contextual-query-arms
+// run: opgen
+// check: _context: &crate::Counter
+// not: ::from(
+type Counter = rust("crate::Counter") { fn count(&self) -> u32; }
+interface Summary { count: u32 }
+struct Empty {}
+op First() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "first", storage: Empty {},
+    implements(ctx: Counter): [Summary { count: ctx.count() }],
+}
+op Second() -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "second", storage: Empty {},
+    implements: [Summary { count: 0 }],
+}
+
 // ----- expressions/query-emits-declared-host-calls
 // run: opgen
-// check: crate::host::traits::Module::params(&_host, (crate::host::traits::Module::signature
+// check: <crate::host::VerifyContext as crate::type_methods::VerifyContextInfo>::function_signature(_context, *_f0)
 interface Summary { count: i128 }
 struct Data { function: FuncId }
 op Example(function: FuncId) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "example", storage: Data { function: function },
-    implements: [Summary { count: len(Module::params(Module::signature(function)?)?) }],
+    implements(ctx: VerifyContext): [Summary { count: len(ctx.function_signature(function)?.params()) }],
 }

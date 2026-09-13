@@ -1,6 +1,6 @@
 //! Exact constants. Scalar views add guarantees, not another representation tag.
-use veloc_types::TypeInfo;
 use crate::{InstWriter, ScalarType, Type, VectorType, dfg::DataFlowGraph, inst::ConstantPoolId};
+use veloc_types::TypeInfo;
 
 /// A target-independent scalar bit pattern. Pointer constants are not modeled.
 /// Unused high bits are always zero; equality preserves NaN payloads and -0.
@@ -244,9 +244,6 @@ impl VectorConst {
     pub const fn data(self) -> ConstData {
         self.0.data
     }
-    pub const fn is_dense(self) -> bool {
-        matches!(self.data(), ConstData::Dense(_))
-    }
 
     pub fn bytes(self, dfg: &DataFlowGraph) -> Option<&[u8]> {
         match self.data() {
@@ -267,6 +264,12 @@ impl VectorConst {
                 .element_type(),
             bits,
         })
+    }
+}
+
+const impl crate::type_methods::VectorConstInfo for VectorConst {
+    fn is_dense(self) -> bool {
+        matches!(self.data(), ConstData::Dense(_))
     }
 }
 

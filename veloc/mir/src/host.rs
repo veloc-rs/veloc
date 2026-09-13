@@ -1,67 +1,53 @@
-//! Rust implementations of the read-only capabilities declared in defs.
+//! Rust implementations of the read-only type contracts declared in defs.
 //!
-//! The generated traits own signatures; this module owns access to MIR storage.
-//! Queries are deterministic for an unchanged context and do not mutate the IR.
+//! Callers construct and pass the concrete context directly. Constants need only
+//! a DFG; instruction verification can also inspect module signatures.
+use crate::type_methods::{ConstContextInfo, SignatureInfo, VerifyContextInfo};
 use crate::{ModuleData, SigId, Type, VectorConst, dfg::DataFlowGraph};
 
-pub mod traits {
-    include!(concat!(env!("OUT_DIR"), "/host_traits.rs"));
-}
-use traits::{Constants, Module, Types};
-
-pub(crate) struct Context<'a, M = ()> {
+pub struct ConstContext<'a> {
     dfg: &'a DataFlowGraph,
-    module: M,
 }
-
-pub(crate) struct ModuleState<'a> {
-    data: &'a ModuleData,
-    signature: SigId,
-}
-
-impl<'a> Context<'a> {
-    pub(crate) fn new(dfg: &'a DataFlowGraph) -> Self {
-        Self { dfg, module: () }
-    }
-
-    pub(crate) fn with_module(
-        self,
-        data: &'a ModuleData,
-        signature: SigId,
-    ) -> Context<'a, ModuleState<'a>> {
-        Context {
-            dfg: self.dfg,
-            module: ModuleState { data, signature },
-        }
+impl<'a> ConstContext<'a> {
+    pub fn new(dfg: &'a DataFlowGraph) -> Self {
+        Self { dfg }
     }
 }
-
-impl<M> Constants for Context<'_, M> {
-    fn is_dense(&self, value: VectorConst) -> bool {
-        value.is_dense()
-    }
+impl ConstContextInfo for ConstContext<'_> {
     fn bytes(&self, value: VectorConst) -> Option<&[u8]> {
         value.bytes(self.dfg)
     }
 }
 
-impl<M> Types for Context<'_, M> {
-    fn signature(&self, ty: Type) -> Option<SigId> {
-        ty.as_callable().map(|(sig, _)| sig)
+impl SignatureInfo for veloc_types::Signature {
+    fn params(&self) -> &[Type] {
+        self.params()
+    }
+    fn returns(&self) -> &[Type] {
+        self.returns()
+    }
+    fn types(&self) -> &[Type] {
+        self.types()
     }
 }
 
-impl Module for Context<'_, ModuleState<'_>> {
-    fn signature(&self, func: crate::FuncId) -> Option<SigId> {
-        self.module.data.functions.get(func).map(|f| f.signature)
+pub struct VerifyContext<'a> {
+    module: &'a ModuleData,
+    signature: SigId,
+}
+impl<'a> VerifyContext<'a> {
+    pub fn new(module: &'a ModuleData, signature: SigId) -> Self {
+        Self { module, signature }
     }
-    fn current_signature(&self) -> SigId {
-        self.module.signature
+}
+impl VerifyContextInfo for VerifyContext<'_> {
+    fn function_signature(&self, func: crate::FuncId) -> Option<&veloc_types::Signature> {
+        self.signature(self.module.functions.get(func)?.signature)
     }
-    fn params(&self, sig: SigId) -> Option<&[Type]> {
-        self.module.data.signatures.get(sig).map(|s| s.params())
+    fn current_signature(&self) -> Option<&veloc_types::Signature> {
+        self.signature(self.signature)
     }
-    fn returns(&self, sig: SigId) -> Option<&[Type]> {
-        self.module.data.signatures.get(sig).map(|s| s.returns())
+    fn signature(&self, sig: SigId) -> Option<&veloc_types::Signature> {
+        self.module.signatures.get(sig)
     }
 }

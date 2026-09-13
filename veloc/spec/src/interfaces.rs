@@ -159,6 +159,7 @@ pub(crate) fn primitive(name: &str) -> bool {
 #[derive(Debug, Clone)]
 pub enum Type {
     Named(String),
+    Ref(Box<Self>),
     Optional(Box<Self>),
     Sequence(Box<Self>),
     Array(Box<Self>, u32),
@@ -167,6 +168,7 @@ pub enum Type {
 impl Type {
     fn parse(node: &Node, source: &str, known: &BTreeSet<String>) -> Result<Self, Error> {
         match &node.kind {
+            Kind::Ref(inner) => Ok(Self::Ref(Box::new(Self::parse(inner, source, known)?))),
             Kind::Name(name) if name == "Self" || primitive(name) || known.contains(name) => {
                 Ok(Self::Named(name.clone()))
             }
@@ -198,6 +200,7 @@ impl Type {
     }
     fn rust(&self, bindings: &Bindings) -> String {
         match self {
+            Self::Ref(t) => format!("&{}", t.rust(bindings)),
             Self::Named(n) => bindings
                 .0
                 .get(n)
@@ -337,7 +340,11 @@ pub fn declarations(records: &[Record], source: &str, namespace: &str) -> Result
                 .iter()
                 .map(|(name, ty)| {
                     if name == "self" {
-                        "self".into()
+                        if matches!(ty, Type::Ref(_)) {
+                            "&self".into()
+                        } else {
+                            "self".into()
+                        }
                     } else {
                         format!("{name}: {}", ty.rust(&bindings))
                     }
@@ -387,6 +394,7 @@ pub fn generate(source: &Source, namespace: &str) -> Result<String, Error> {
         owners: &BTreeMap<&str, usize>,
     ) -> Result<(), Error> {
         match &node.kind {
+            Kind::Ref(inner) => check(inner, source, visible, owners),
             Kind::Name(name)
                 if owners
                     .get(name.as_str())

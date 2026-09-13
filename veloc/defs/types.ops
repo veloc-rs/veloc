@@ -37,10 +37,11 @@ type Float = rust("crate::Float") {
     fn ty(self) -> Type { value: type(self) }
 }
 type VectorConst = rust("crate::VectorConst") {
+    trait: rust("crate::type_methods::VectorConstInfo"),
     fn ty(self) -> Type { value: type(self) }
+    const fn is_dense(self) -> bool;
 }
 type FuncId = rust("crate::FuncId");
-type SigId = rust("crate::SigId");
 type Intrinsic = rust("crate::Intrinsic");
 type ConstantPoolId = rust("crate::inst::ConstantPoolId");
 type SymbolId = rust("crate::SymbolId");
@@ -55,21 +56,4 @@ struct OpInfo {
 // Reusable checked arithmetic, not a special verifier query.
 fn is_power_of_two(value: u32) -> bool {
     value: value != 0 && (value & (value - 1)) == 0,
-}
-
-// Read-only host capabilities. Calls are qualified by interface name.
-extern interface Constants {
-    fn is_dense(value: VectorConst) -> bool;
-    fn bytes(value: VectorConst) -> optional(sequence(u8));
-}
-
-extern interface Types {
-    fn signature(ty: Type) -> optional(SigId);
-}
-
-extern interface Module {
-    fn signature(func: FuncId) -> optional(SigId);
-    fn current_signature() -> SigId;
-    fn params(sig: SigId) -> optional(sequence(Type));
-    fn returns(sig: SigId) -> optional(sequence(Type));
 }

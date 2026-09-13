@@ -108,11 +108,7 @@ pub(super) fn parse(
     if let Projection::Operands(projection) = &projection {
         traits.extend(projection.flow.traits());
     }
-    let constraints = fields
-        .optional("verify")
-        .map(|node| list(source, node))
-        .transpose()?
-        .unwrap_or_default();
+    let constraints = fields.optional("verify");
     if traits.contains("ABORT") && !traits.contains("TERMINATOR") {
         return Err(fields.error("ABORT requires TERMINATOR"));
     }

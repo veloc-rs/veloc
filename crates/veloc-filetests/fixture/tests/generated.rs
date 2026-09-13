@@ -56,7 +56,7 @@ fn shared_expressions_execute_in_queries_and_explicit_validation() {
     ] {
         // Construction and parsing intentionally accept invalid contracts.
         let inst = dfg.writer().checked_size(size);
-        assert_eq!(dfg.inst(inst).query::<SizeInfo>(&dfg, &[]), expected);
+        assert_eq!(SizeInfo::query(&dfg.inst(inst), &dfg, &[]), expected);
         let text = format!(
             "local function test() -> void\nblock0():\n  checked-size size={size}\n  return\n"
         );
@@ -123,7 +123,7 @@ fn host_queries_preserve_optional_results_through_helpers() {
     ] {
         let value = dfg.append_block_param(Block(0), ty);
         let inst = dfg.writer().unary(Opcode::Rebind, value);
-        let info = dfg.inst(inst).query::<CallableInfo>(&dfg, &[]).unwrap();
+        let info = CallableInfo::query(&dfg.inst(inst), &dfg, &[]).unwrap();
         assert_eq!(info.signature, expected);
     }
 }
@@ -1071,7 +1071,8 @@ fn rust_type_bindings_preserve_paths_in_records_enums_and_host_queries() {
     };
     let mut dfg = DataFlowGraph::new();
     let inst = dfg.writer().stamp_input(17);
-    let info = dfg.inst(inst).query::<StampInfo>(&dfg, &[]).unwrap();
+    let info =
+        StampInfo::query(&dfg.inst(inst), &dfg, &[], &veloc_mir::tokens::Tokens(&0)).unwrap();
     assert_eq!(info.stamp, Stamp(17));
     assert_eq!(info.doubled, 34);
     let record = StampRecord { stamp: info.stamp };

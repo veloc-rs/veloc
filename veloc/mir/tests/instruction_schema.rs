@@ -232,7 +232,9 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
         )
     };
     let dense = make_dense(veloc_mir::Type::I32X4, bytes.clone(), dfg);
-    dense.validate(dfg).unwrap();
+    dense
+        .validate(dfg, &veloc_mir::host::ConstContext::new(dfg))
+        .unwrap();
     assert!(matches!(dense.data(), ConstData::Dense(id) if id.get(dfg) == Some(bytes.as_slice())));
     assert_eq!(
         make_dense(veloc_mir::Type::I32X4, bytes.clone(), dfg),
@@ -240,7 +242,7 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
     );
     assert!(
         make_dense(veloc_mir::Type::I32X4, vec![0; 3], dfg)
-            .validate(dfg)
+            .validate(dfg, &veloc_mir::host::ConstContext::new(dfg))
             .is_err()
     );
     let scalable = Type::I32
@@ -251,13 +253,13 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
         .as_type();
     assert!(
         make_dense(scalable, vec![0; 16], dfg)
-            .validate(dfg)
+            .validate(dfg, &veloc_mir::host::ConstContext::new(dfg))
             .is_err()
     );
     let mask = Type::new_mask(4, false).unwrap();
     assert!(
         make_dense(mask, vec![0, 1, 2, 0], dfg)
-            .validate(dfg)
+            .validate(dfg, &veloc_mir::host::ConstContext::new(dfg))
             .is_err()
     );
     let splat = VectorConst::splat(ScalarConst::from(-7i32), 4, false).unwrap();

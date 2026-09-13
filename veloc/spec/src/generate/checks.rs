@@ -26,7 +26,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
         let constraints = op
             .constraints
             .iter()
-            .filter(|c| c.type_only && !c.condition.is_bool(true))
+            .filter(|c| c.type_only && !c.redundant())
             .collect::<Vec<_>>();
         let count = sem.instances.len();
         if constraints.is_empty() {
@@ -43,12 +43,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
         out.push_str("const fn applies(operands: &[Type], results: &[Type]) -> bool {\n");
         let emitter = type_emitter(op);
         for constraint in constraints {
-            writeln!(
-                out,
-                "if !({}) {{ return false; }}",
-                emitter.term(&constraint.condition)
-            )
-            .unwrap();
+            out.push_str(&constraint.emit(&emitter, "return false"));
         }
         out.push_str("true\n}\n");
         writeln!(
@@ -134,9 +129,7 @@ fn check_signature(out: &mut String, defs: &Definitions, op: &Op) {
     let constraints = op
         .constraints
         .iter()
-        .filter(|c| {
-            c.type_only && !c.condition.is_bool(true) && c.condition.const_type_query(&op.params)
-        })
+        .filter(|c| c.type_only && !c.redundant() && c.condition.const_type_query(&op.params))
         .collect::<Vec<_>>();
     if constraints.is_empty() {
         return;
@@ -153,12 +146,7 @@ fn check_signature(out: &mut String, defs: &Definitions, op: &Op) {
     .unwrap();
     let emitter = type_emitter(op);
     for constraint in constraints {
-        writeln!(
-            out,
-            "if !({}) {{ return false; }}",
-            emitter.term(&constraint.condition)
-        )
-        .unwrap();
+        out.push_str(&constraint.emit(&emitter, "return false"));
     }
     out.push_str("true }\nlet possible = 'search: {\n");
     for case in cases {

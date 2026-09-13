@@ -464,8 +464,8 @@ struct Check { n: u32 }
 op Check(n: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "check", storage: Check { n: n },
-    verify {
-        len(Module::params(Module::signature(n)?)?) == 0;
+    verify(ctx: VerifyContext) {
+        len(ctx.function_signature(n)?.params()) == 0;
     }
 }
 

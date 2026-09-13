@@ -27,7 +27,7 @@ mnemonic: "vector-literal", storage: VectorLiteral { payload: data }, }
 
 interface CallableInfo { signature: optional(SigId) }
 fn InspectCallable(ty: Type) -> CallableInfo {
-    value: CallableInfo { signature: Types::signature(ty) },
+    value: CallableInfo { signature: ty.signature() },
 }
 op Rebind(move value: Callable) -> Callable {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
@@ -278,8 +278,8 @@ type Stamp = rust("crate::tokens::Stamp") {
     fn number(self) -> u32;
     fn twice(self) -> u32 { value: self.number() * 2 }
 }
-extern interface Tokens {
-    fn stamp(number: u32) -> Stamp;
+type Tokens = rust("crate::tokens::Tokens") {
+    fn stamp(&self, number: u32) -> Stamp;
 }
 struct StampRecord { stamp: Stamp }
 enum StampResult { variants: [Present(Stamp), Absent] }
@@ -289,7 +289,7 @@ op ReadStamp(number: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "read-stamp", storage: StampInput { number },
     text: "{number}",
-    implements: [StampInfo { stamp: Tokens::stamp(number), doubled: Tokens::stamp(number).twice() }],
+    implements(ctx: Tokens): [StampInfo { stamp: ctx.stamp(number), doubled: ctx.stamp(number).twice() }],
 }
 
 fn double_bits(from: Type, to: Type) -> bool {

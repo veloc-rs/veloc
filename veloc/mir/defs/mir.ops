@@ -38,12 +38,15 @@ op ClosureNew(func_id: FuncId, move captures: values, cleanup: FuncId) -> Callab
     storage: ClosureNew { func_id, captures, cleanup },
     text: "{func_id}({captures}) : {function(func_id)}, {cleanup}",
 
-    verify {
+    verify(ctx: VerifyContext) {
+        let func = ctx.function_signature(func_id)?;
+        let result = ctx.signature(result_type(0).signature()?)?;
+        let cleanup_sig = ctx.function_signature(cleanup)?;
         require(result_type(0).is_owned(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(Module::params(Module::signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
-        require(suffix(Module::params(Module::signature(func_id)?)?, len(captures)) == Module::params(Types::signature(result_type(0))?)? && Module::returns(Module::signature(func_id)?)? == Module::returns(Types::signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
+        require(matches(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == result.params() && func.returns() == result.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| !v.ty().is_local() && !v.ty().is_ptr()), "capture would escape a borrow or duplicate an owned environment");
-        require(Module::params(Module::signature(cleanup)?)? == prefix(Module::params(Module::signature(func_id)?)?, len(captures)) && len(Module::returns(Module::signature(cleanup)?)?) == 0, "cleanup must consume the captured parameters and return void");
+        require(cleanup_sig.params() == prefix(func.params(), len(captures)) && len(cleanup_sig.returns()) == 0, "cleanup must consume the captured parameters and return void");
     }
 }
 
@@ -53,10 +56,12 @@ op ClosureLocal(func_id: FuncId, captures: values) -> Callable {
     storage: Closure { func_id, captures },
     text: "{func_id}({captures}) : {function(func_id)}",
 
-    verify {
+    verify(ctx: VerifyContext) {
+        let func = ctx.function_signature(func_id)?;
+        let result = ctx.signature(result_type(0).signature()?)?;
         require(result_type(0).is_local(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(Module::params(Module::signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
-        require(suffix(Module::params(Module::signature(func_id)?)?, len(captures)) == Module::params(Types::signature(result_type(0))?)? && Module::returns(Module::signature(func_id)?)? == Module::returns(Types::signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
+        require(matches(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == result.params() && func.returns() == result.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| !v.ty().is_owned()), "capture would escape a borrow or duplicate an owned environment");
     }
 }
@@ -67,10 +72,12 @@ op ClosureShared(func_id: FuncId, captures: values) -> Callable {
     storage: Closure { func_id, captures },
     text: "{func_id}({captures}) : {function(func_id)}",
 
-    verify {
+    verify(ctx: VerifyContext) {
+        let func = ctx.function_signature(func_id)?;
+        let result = ctx.signature(result_type(0).signature()?)?;
         require(result_type(0).is_shared(), "callable ownership kind mismatch");
-        require(matches(captures, prefix(Module::params(Module::signature(func_id)?)?, len(captures))), "capture parameter type mismatch");
-        require(suffix(Module::params(Module::signature(func_id)?)?, len(captures)) == Module::params(Types::signature(result_type(0))?)? && Module::returns(Module::signature(func_id)?)? == Module::returns(Types::signature(result_type(0))?)?, "callable inputs or answer do not match the unbound function signature");
+        require(matches(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == result.params() && func.returns() == result.returns(), "callable inputs or answer do not match the unbound function signature");
         require(all(captures, |v| (v.ty().is_compact() && !v.ty().is_ptr()) || v.ty().is_shared()), "capture would escape a borrow or duplicate an owned environment");
     }
 }
@@ -81,9 +88,10 @@ op TailCall(func_id: FuncId, move args: values) -> () {
     storage: TailCall { func_id, args },
     text: "{func_id}({args}) : {function(func_id)}",
 
-    verify {
-        require(matches(args, Module::params(Module::signature(func_id)?)?), "tail-call parameter type mismatch");
-        require(Module::returns(Module::signature(func_id)?)? == Module::returns(Module::current_signature())?, "tail-call answer type mismatch");
+    verify(ctx: VerifyContext) {
+        let func = ctx.function_signature(func_id)?;
+        require(matches(args, func.params()), "tail-call parameter type mismatch");
+        require(func.returns() == ctx.current_signature()?.returns(), "tail-call answer type mismatch");
     }
 }
 
@@ -93,9 +101,10 @@ op TailCallValue(move callee: Callable, move args: values) -> () {
     storage: CallValue { callee, args },
     text: "{callee}({args})",
 
-    verify {
-        require(matches(args, Module::params(Types::signature(callee.ty())?)?), "tail-call-value parameter type mismatch");
-        require(Module::returns(Types::signature(callee.ty())?)? == Module::returns(Module::current_signature())?, "tail-call-value answer type mismatch");
+    verify(ctx: VerifyContext) {
+        let callee_sig = ctx.signature(callee.ty().signature()?)?;
+        require(matches(args, callee_sig.params()), "tail-call-value parameter type mismatch");
+        require(callee_sig.returns() == ctx.current_signature()?.returns(), "tail-call-value answer type mismatch");
     }
 }
 
@@ -637,8 +646,9 @@ op CallIndirect(sig_id: SigId, ptr: Type::PTR, move args: values) -> signature {
     signature: sig_id,
     text: "{ptr}({args}) : {sig_id}",
 
-    verify {
-        require(all(Module::params(sig_id)?, |t| !t.is_callable()) && all(Module::returns(sig_id)?, |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
+    verify(ctx: VerifyContext) {
+        let sig = ctx.signature(sig_id)?;
+        require(all(sig.types(), |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
     }
 }
 
@@ -649,8 +659,9 @@ op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: values) -> sign
     signature: sig_id,
     text: "{intrinsic}({args}) : {sig_id}",
 
-    verify {
-        require(all(Module::params(sig_id)?, |t| !t.is_callable()) && all(Module::returns(sig_id)?, |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
+    verify(ctx: VerifyContext) {
+        let sig = ctx.signature(sig_id)?;
+        require(all(sig.types(), |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
     }
 }
 
@@ -677,8 +688,8 @@ op Return(move values: values) -> () {
     mnemonic: "return",
     storage: Return { values },
 
-    verify {
-        require(matches(values, Module::returns(Module::current_signature())?), "return value type mismatch");
+    verify(ctx: VerifyContext) {
+        require(matches(values, ctx.current_signature()?.returns()), "return value type mismatch");
     }
 }
 

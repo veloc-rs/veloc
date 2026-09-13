@@ -76,8 +76,6 @@ impl<'a> Parser<'a> {
                 };
                 self.expect(";")?;
                 file.imports.push(Import { offset, path });
-            } else if kind == "extern" {
-                file.records.extend(self.external(offset)?);
             } else {
                 let mut record = self.declaration(offset, kind)?;
                 if is_const {
@@ -199,41 +197,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn external(&mut self, offset: usize) -> Result<Vec<Record>, Error> {
-        if self.name()? != "interface" {
-            return Err(self.error(offset, "expected extern interface"));
-        }
-        let name = self.name()?;
-        self.expect("{")?;
-        let mut records = vec![Record {
-            offset,
-            kind: "extern-interface".into(),
-            name: name.clone(),
-            fields: BTreeMap::new(),
-            signature: None,
-            body: None,
-        }];
-        while !self.at("}") {
-            let offset = self.token.offset;
-            if self.name()? != "fn" {
-                return Err(self.error(offset, "expected extern method"));
-            }
-            let method = self.name()?;
-            let signature = self.signature()?;
-            self.expect(";")?;
-            records.push(Record {
-                offset,
-                kind: "extern-fn".into(),
-                name: format!("{name}::{method}"),
-                fields: BTreeMap::new(),
-                signature: Some(signature),
-                body: None,
-            });
-        }
-        self.expect("}")?;
-        Ok(records)
-    }
-
     fn declaration(&mut self, offset: usize, kind: String) -> Result<Record, Error> {
         let name = self.name()?;
         let signature = if matches!(kind.as_str(), "op" | "fn") {
@@ -282,20 +245,31 @@ impl<'a> Parser<'a> {
         };
         self.expect("(")?;
         let params = self.sequence(")", |p| {
+            let borrowed = owner.is_some() && p.eat("&")?;
             if let Some(owner) = owner
                 && matches!(p.token.kind, TokenKind::Name("self"))
             {
                 let offset = p.bump()?.offset;
+                let mut ty = Node {
+                    offset,
+                    kind: Kind::Name(owner.into()),
+                };
+                if borrowed {
+                    ty = Node {
+                        offset,
+                        kind: Kind::Ref(Box::new(ty)),
+                    };
+                }
                 Ok(Parameter {
                     offset,
                     name: "self".into(),
                     moves: false,
-                    ty: Node {
-                        offset,
-                        kind: Kind::Name(owner.into()),
-                    },
+                    ty,
                 })
             } else {
+                if borrowed {
+                    return Err(p.error(p.token.offset, "expected self after &"));
+                }
                 p.parameter()
             }
         })?;
@@ -367,12 +341,43 @@ impl<'a> Parser<'a> {
             if name == "constraints" {
                 return Err(self.error(offset, "use a verify block instead of constraints"));
             }
+            let context_param =
+                if matches!(name.as_str(), "verify" | "implements") && self.eat("(")? {
+                    let offset = self.token.offset;
+                    let name = self.name()?;
+                    self.expect(":")?;
+                    let ty = self.expression(depth + 1, Context::Expr)?;
+                    self.expect(")")?;
+                    Some(Parameter {
+                        offset,
+                        name,
+                        moves: false,
+                        ty,
+                    })
+                } else {
+                    None
+                };
             let block = name == "verify" && self.at("{");
-            let node = if block {
+            let mut node = if block {
                 self.expect("{")?;
                 let mut statements = Vec::new();
                 while !self.at("}") {
-                    statements.push(self.expression(depth + 1, Context::Expr)?);
+                    let offset = self.token.offset;
+                    let statement = if matches!(self.token.kind, TokenKind::Name("let")) {
+                        self.bump()?;
+                        let name = self.name()?;
+                        self.expect("=")?;
+                        Node {
+                            offset,
+                            kind: Kind::Let(
+                                name,
+                                Box::new(self.expression(depth + 1, Context::Expr)?),
+                            ),
+                        }
+                    } else {
+                        self.expression(depth + 1, Context::Expr)?
+                    };
+                    statements.push(statement);
                     self.expect(";")?;
                 }
                 self.expect("}")?;
@@ -396,6 +401,12 @@ impl<'a> Parser<'a> {
                     },
                 )?
             };
+            if let Some(param) = context_param {
+                node = Node {
+                    offset,
+                    kind: Kind::Scoped(Box::new(param), Box::new(node)),
+                };
+            }
             if fields.insert(name.clone(), node).is_some() {
                 return Err(self.error(offset, format!("duplicate field `{name}`")));
             }
@@ -556,6 +567,7 @@ impl<'a> Parser<'a> {
         self.check_depth(depth, context)?;
         let Token { offset, kind } = self.bump()?;
         let kind = match kind {
+            TokenKind::Symbol("&") => Kind::Ref(Box::new(self.atom(depth + 1, context)?)),
             TokenKind::Symbol("(") => {
                 let node = self.expression(depth + 1, context)?;
                 self.expect(")")?;

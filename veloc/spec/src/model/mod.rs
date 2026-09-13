@@ -222,7 +222,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 format!("duplicate {} `{}`", record.kind, record.name),
             ));
         }
-        if matches!(record.kind.as_str(), "extern-fn" | "fn" | "const") {
+        if matches!(record.kind.as_str(), "fn" | "const") {
             for part in record.name.split("::") {
                 identifier(source, record.offset, part)?;
             }
@@ -253,7 +253,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 let offset = record.offset;
                 let name = record.name.clone();
                 let mut fields = Fields::new(source, record);
-                let nodes = list(source, fields.take("verify")?)?;
+                let nodes = Some(fields.take("verify")?);
                 let constraints = constraints::check_property(
                     source,
                     &name,
@@ -276,7 +276,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                 &mut expressions,
             )?),
             "layout" | "struct" | "enum" | "encoding" | "comparison" | "storage" | "interface"
-            | "fn" | "const" | "extern-interface" | "extern-fn" => {}
+            | "fn" | "const" => {}
             kind if Types::is_definition(kind) => {}
             _ => {
                 return Err(Error::at(

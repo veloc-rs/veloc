@@ -25,10 +25,9 @@ pub(super) fn check(
             let space = match record.kind.as_str() {
                 "type" if rust_binding(record).is_some() => Space::Data,
                 "type" | "typeset" => Space::Type,
-                "fn" | "extern-fn" => Space::Function,
+                "fn" => Space::Function,
                 "const" => Space::Value,
-                "struct" | "enum" | "encoding" | "comparison" | "interface"
-                | "extern-interface" => Space::Data,
+                "struct" | "enum" | "encoding" | "comparison" | "interface" => Space::Data,
                 _ => continue,
             };
             symbols
@@ -192,12 +191,25 @@ impl Checker<'_> {
                     self.node(value, None, locals)?;
                 }
             }
+            Kind::Scoped(param, body) => {
+                self.node(&param.ty, Some(Space::Data), locals)?;
+                let mut locals = locals.clone();
+                locals.insert(param.name.clone());
+                self.node(body, space, &locals)?;
+            }
+            Kind::Let(_, value) => self.node(value, None, locals)?,
             Kind::List(nodes) | Kind::Union(nodes) | Kind::Intersection(nodes) => {
+                let mut locals = locals.clone();
                 for node in nodes {
-                    self.node(node, space, locals)?;
+                    self.node(node, space, &locals)?;
+                    if let Kind::Let(name, _) = &node.kind {
+                        locals.insert(name.clone());
+                    }
                 }
             }
-            Kind::Unary(_, value) | Kind::Try(value) => self.node(value, None, locals)?,
+            Kind::Unary(_, value) | Kind::Try(value) | Kind::Ref(value) => {
+                self.node(value, space, locals)?
+            }
             Kind::Binary(_, a, b) => {
                 self.node(a, None, locals)?;
                 self.node(b, None, locals)?;

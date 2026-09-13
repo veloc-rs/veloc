@@ -328,17 +328,12 @@ fn validation_rules<'a>(
             .map(|(i, p)| (p.name.clone(), format!("operands[{i}]")))
             .collect();
         for constraint in &op.constraints {
-            if !constraint.type_only || constraint.condition.is_bool(true) {
+            if !constraint.type_only || constraint.redundant() {
                 continue;
             }
             let error = format!("super::TypeError::Constraint({:?})", constraint.text);
             emitter.error = Some(error.clone());
-            writeln!(
-                validation,
-                "if !({}) {{ return Err({error}); }}",
-                emitter.term(&constraint.condition)
-            )
-            .unwrap();
+            validation.push_str(&constraint.emit(&emitter, &format!("return Err({error})")));
         }
         validation.push_str("Ok(()) },\n");
     }

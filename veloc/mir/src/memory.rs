@@ -1,7 +1,7 @@
 //! Memory semantics shared by analyses and lowerings. An Access is a query
 //! result, not a second authoritative copy of instruction operands.
-use veloc_types::TypeInfo;
 use crate::{Function, Inst, Value};
+use veloc_types::TypeInfo;
 
 pub use crate::inst::MemoryAccess as Access;
 
@@ -60,8 +60,10 @@ impl Function {
     }
 
     pub fn memory_access(&self, inst: Inst) -> Option<Access> {
-        self.dfg()
-            .inst(inst)
-            .query(self.dfg(), self.dfg().inst_results(inst))
+        Access::query(
+            &self.dfg().inst(inst),
+            self.dfg(),
+            self.dfg().inst_results(inst),
+        )
     }
 }

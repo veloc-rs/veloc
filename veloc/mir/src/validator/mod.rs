@@ -1,4 +1,5 @@
 //! MIR validation: module types, instruction contracts, SSA and ownership.
+use crate::host::{ConstContext, VerifyContext};
 use crate::inst::Inst;
 use crate::{Block, Function, InstView, ModuleData, Opcode, Result, Successor, Type, Value};
 use alloc::string::String;
@@ -50,17 +51,25 @@ impl Function {
 
     fn validate_body(&self, module: &ModuleData) -> Result<()> {
         let structure = control::Structure::check(self, module)?;
+        let constants = ConstContext::new(&self.dfg);
+        let context = VerifyContext::new(module, self.signature);
         for &block in &self.layout.block_order {
             let block_data = &self.layout.blocks[block];
             for &inst in &block_data.insts {
-                self.validate_inst(module, inst)?;
+                self.validate_inst(module, inst, &constants, &context)?;
             }
         }
         structure.check_ssa(self)?;
         ownership::validate(self)
     }
 
-    fn validate_inst(&self, module: &ModuleData, inst: Inst) -> Result<()> {
+    fn validate_inst(
+        &self,
+        module: &ModuleData,
+        inst: Inst,
+        constants: &ConstContext<'_>,
+        context: &VerifyContext<'_>,
+    ) -> Result<()> {
         let data = &self.dfg.inst(inst);
         let opcode = data.opcode();
         let spec = opcode.spec();
@@ -94,7 +103,7 @@ impl Function {
                 )))
             })?;
 
-        self.validate_constraints(module, inst, data, &operands, &results)?;
+        self.validate_constraints(module, inst, data, &operands, &results, constants, context)?;
 
         data.try_visit_successors(|call| self.validate_block_call(call, spec.mnemonic))
     }

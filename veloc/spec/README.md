@@ -139,7 +139,6 @@ Generated Rust artifacts follow their consumers, not the input file boundaries:
 - `builders.rs`: operation-specific `InstBuilder` methods.
 - `type_rules.rs`: type validation dispatch and shared signature checks.
 - `validation.rs`: function-level property constraints.
-- `host_traits.rs`: typed read-only interfaces supplied by the Rust host.
 - `text_parser.rs` and `text_printer.rs`: their respective text codecs.
 
 Construction and validation remain separate. Optimizer evaluation, offline
@@ -232,9 +231,9 @@ syntax: `object.field`, `object.method(args)`, and `Interface::method(args)`.
 Associated constants use `Type::BOOL` or `MemoryEffect::NONE`; `.` never resolves
 an associated member.
 Parentheses and whitespace do not change name resolution.
-Bound functions are trusted pure, deterministic, read-only operations. Context
-capabilities still use host interfaces; these declarations do not inject module
-state or turn arbitrary Rust code into an offline evaluator.
+Bound functions are trusted pure, deterministic, read-only operations. Contexts
+use the same Rust-bound type declarations and generated traits as other data.
+Declaring methods does not execute Rust code inside the definition compiler.
 
 The no_std `veloc-types` crate owns the shared `Type`, checked scalar/vector
 views, physical encoding and size queries. MIR re-exports these types. Its build
@@ -267,57 +266,61 @@ combinations. Per-lane recipes reject any admitted shape-changing combination;
 only pointer instances are expanded for both target widths. Runtime type-set
 tables include only sets referenced by operation signatures.
 
-### Rust host interfaces
+### Rust types and borrowed contexts
 
-`extern interface` declares a read-only, deterministic host capability, not a
-C ABI, dynamic library or arbitrary Rust code fragment:
+Contexts use the ordinary Rust-bound `type` declaration. There is no separate
+`extern interface` syntax, host method table, or host trait output:
 
 ```text
-extern interface Module {
-    fn signature(func: FuncId) -> optional(SigId);
-    fn params(sig: SigId) -> optional(sequence(Type));
+type Signature = rust("veloc_types::Signature") {
+    trait: rust("crate::type_methods::SignatureInfo"),
+    fn params(&self) -> sequence(Type);
+    fn returns(&self) -> sequence(Type);
+    fn types(&self) -> sequence(Type);
 }
-fn parameter_count(func: FuncId) -> i128 {
-    value: len(Module::params(Module::signature(func)?)?)
+type VerifyContext = rust("crate::host::VerifyContext") {
+    trait: rust("crate::type_methods::VerifyContextInfo"),
+    fn function_signature(&self, func: FuncId) -> optional(&Signature);
+    fn signature(&self, sig: SigId) -> optional(&Signature);
+}
+fn parameter_count(ctx: &VerifyContext, func: FuncId) -> i128 {
+    value: len(ctx.function_signature(func)?.params())
 }
 ```
 
-The declaration generates a Rust trait in `host_traits.rs`. MIR implements it
-in `src/host.rs`; generated expressions call that trait statically. Definition
-checking uses the declared signatures, with no method-name-specific checker.
-Qualified calls keep host capabilities distinct from ordinary defs functions.
+`self` passes a value; `&self` borrows the receiver. `&T` is a reference to
+the concrete Rust type, not `&dyn Trait` or `&impl Trait`. Generated traits
+check method signatures, and generated calls use static dispatch. Method syntax
+automatically borrows a value for a declared `&self` receiver; helpers take
+references explicitly. Borrowed results from a method follow Rust's receiver
+lifetime elision, so the result cannot outlive that receiver.
 
-Interfaces do not list their consumers. Ordinary file-level
-`import "file.ops";` loads their declarations along with other definitions;
-there is no separate capability import or `context` declaration. Imports form one output definition unit, but name visibility is file-local;
-parent and sibling imports do not grant ambient access.
+`verify(ctx: VerifyContext)` and `implements(ctx: SomeContext): [...]` bind a
+read-only reference supplied by the caller. Generated validators take concrete
+context parameters; they never construct a context or invoke a conversion.
+The MIR validation entry creates `VerifyContext` and `ConstContext` once and
+passes them through its instruction checks. Standalone constant checks need only
+`ConstContext`, not module state.
 
-Host dependencies follow directly from the checked expressions, including
-expanded helper calls. The emitter creates a Rust host adapter only when the
-expression uses it, and emits statically resolved trait calls. Rust checks that
-the adapter implements every interface actually called. No separate capability
-list duplicates the adapter's implementations.
+Each query struct has a generated `query` method whose parameters include its
+concrete context reference when needed. For example:
+`StampInfo::query(view, dfg, results, &tokens)`. Context-free queries omit that
+parameter. No generic query-dispatch trait is needed. One query's opcode
+implementations must agree on the context type; context-free arms may share that
+entry. No context provider trait, conversion registry, or generic adapter is needed.
 
-For example, a query using `Module::params` requires its Rust adapter to implement
-`Module`. MIR's instruction validator supplies module state; its ordinary
-property and instruction-query adapters do not. Using that interface there
-therefore fails when compiling generated Rust, not while checking the defs.
-Declaring or importing an interface does not provide its implementation.
-The old `in [...]` clause and `context` declarations are not supported.
+MIR-specific context declarations live in `veloc/mir/defs/types.ops`, not the
+shared prelude. All types and helpers still require ordinary file-local imports.
 
 `optional(T)` lowers to `Option<T>`; `sequence(T)` lowers to a borrowed slice.
-Borrowed host results are tied to the context, not temporary arguments. Ordinary
-query-result records remain owned; consume sequences inside helpers instead.
-`?` explicitly propagates absence to the enclosing consumer: the current
-`require` diagnostic in validation, or `None` in an interface query. Helpers are
-expanded expressions, not separately called Rust functions. Keeping an optional
-result without `?` is supported.
+Query-result records must remain owned; consume borrowed views and sequences
+inside the query or a helper. `?` propagates absence using the current validation
+diagnostic, or `None` in an instruction query. Helpers expand as expressions;
+their Rust implementation calls are emitted, never executed by the generator.
 
-Read-only determinism is a trusted host contract: `&self` alone cannot prove the
-absence of interior mutation. Opaque host calls are not evaluated or assumed
-constant by the definition compiler, even with literal arguments.
-Core arithmetic, finite sequence operators and type-language primitives remain
-native operations; static signature/type-set reasoning does not require a host.
+Read-only determinism is a trusted implementation contract: `&self` alone cannot
+prove the absence of interior mutation. Only declared const methods may appear
+in static contracts. Rust evaluates those calls when compiling generated code.
 
 ### Validation and ownership contracts
 
@@ -326,17 +329,22 @@ They do not run in builders and are not interpreted at runtime. The same
 expression language applies to operations and alternate storage layouts:
 
 ```text
-verify {
-    require(matches(args, Module::params(Module::signature(function)?)?), "argument types differ");
-    require(Module::returns(Module::signature(function)?)? == Module::returns(Module::current_signature())?, "answer types differ");
+verify(ctx: VerifyContext) {
+    let sig = ctx.function_signature(function)?;
+    require(matches(args, sig.params()), "argument types differ");
+    require(sig.returns() == ctx.current_signature()?.returns(), "answer types differ");
     require(all(options.evl, |v| v.ty() == I32), "EVL must be i32");
 }
 ```
 
-`Module::signature` maps a `FuncId` to an optional `SigId`; `Types::signature`
-extracts a signature ID from a callable type. `Module::params` and
-`Module::returns` borrow type sequences. Callers handle their optional results
-with `?`; `results()` exposes the instruction's result types. `matches` compares SSA value types with a type sequence without allocating.
+`ctx.function_signature` resolves a `FuncId` directly to a borrowed signature;
+`ty.signature()` extracts a callable's `SigId` without consulting context, and
+`ctx.signature(id)` resolves it. Signature views expose their own parameter,
+return and combined type slices. `let` evaluates once in source order and can
+be reused by subsequent checks; names cannot shadow existing bindings. A failing
+`?` in a binding reports `cannot evaluate binding '<name>'` (with backticks in
+the actual diagnostic). A failing `?` inside `require` uses that check's message.
+`results()` exposes the instruction's result types. `matches` compares SSA value types with a type sequence without allocating.
 `prefix(sequence, count)` and `suffix(sequence, count)` use checked slicing.
 `all` supports both sequences and optional values (absence satisfies the predicate).
 Invalid handles or slices produce the constraint diagnostic, not a panic.
@@ -755,9 +763,9 @@ The READ/WRITE mapping lives in the helper definitions, not in the generator.
 Missing interfaces never imply purity. These declarations are trusted contracts,
 not proofs that the declared effects agree with executable semantics.
 
-Generation emits an interface struct and an `InstructionQuery` implementation
+Generation emits an interface struct and its inherent `query` method
 with direct opcode dispatch. Consumers call
-`view.query::<MemoryAccess>(dfg, results)`; unsupported opcodes or unavailable
+`MemoryAccess::query(view, dfg, results)`; unsupported opcodes or unavailable
 result data return `None`. The queries do not revalidate MIR types and add no
 fields to stored instructions. MIR's `memory::Access` re-exports the generated
 query data, while bounds/provenance analysis remains ordinary Rust.

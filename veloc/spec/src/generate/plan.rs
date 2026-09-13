@@ -32,6 +32,23 @@ impl Plan {
     pub(crate) fn prepare(definitions: Definitions, source: &str) -> Result<Self, Error> {
         let output = match &definitions.storage.strategy {
             Strategy::Packed => {
+                // A query has one concrete input context across all its opcodes.
+                // Context-free arms can still participate in that same query.
+                let mut contexts = BTreeMap::new();
+                for op in &definitions.ops {
+                    for (name, expr) in &op.interfaces {
+                        if let Some(ty) = expr.context_type()
+                            && let Some(previous) = contexts.insert(name, ty)
+                            && previous != ty
+                        {
+                            return Err(Error::at(
+                                source,
+                                op.offset,
+                                format!("query `{name}` requires incompatible context types"),
+                            ));
+                        }
+                    }
+                }
                 let indices = definitions
                     .storage
                     .formats

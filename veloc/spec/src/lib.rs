@@ -48,7 +48,6 @@ impl std::error::Error for Error {}
 #[derive(Default)]
 pub struct Generated {
     pub checks: String,
-    pub host: String,
     pub types: String,
     pub type_rules: String,
     pub validation: String,

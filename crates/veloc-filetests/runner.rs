@@ -142,6 +142,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 include_str!("../../veloc/types/defs/types.ops"),
                 "\n",
                 include_str!("../../veloc/defs/types.ops"),
+                include_str!("../../veloc/mir/defs/types.ops"),
                 "\n",
                 include_str!("../../veloc/defs/comparisons.ops"),
                 "\n",
@@ -179,8 +180,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
             } else {
                 result
                     .map(|generated| {
-                        generated.host
-                            + &generated.instructions
+                        generated.instructions
                             + &generated.validation
                             + &generated.opcodes
                             + &generated.type_rules

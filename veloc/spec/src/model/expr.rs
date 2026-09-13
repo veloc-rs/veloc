@@ -42,6 +42,7 @@ fn possible(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Ty {
     Named(String),
+    Ref(Box<Ty>),
     Value(Option<String>),
     Optional(Box<Ty>),
     Array(Box<Ty>, usize),
@@ -51,7 +52,7 @@ pub(crate) enum Ty {
 impl Ty {
     fn borrows(&self) -> bool {
         match self {
-            Self::Sequence(_) => true,
+            Self::Sequence(_) | Self::Ref(_) => true,
             Self::Optional(t) | Self::Array(t, _) => t.borrows(),
             _ => false,
         }
@@ -59,6 +60,7 @@ impl Ty {
     pub(crate) fn rust(&self, types: &super::records::RustTypes) -> String {
         match self {
             Self::Named(n) => types.qualified(n),
+            Self::Ref(t) => format!("&{}", t.rust(types)),
             Self::Value(_) => types.qualified("Value"),
             Self::Optional(t) => format!("Option<{}>", t.rust(types)),
             Self::Array(t, n) => format!("[{}; {n}]", t.rust(types)),
@@ -124,6 +126,9 @@ pub(crate) enum ExprKind {
     Matches(Box<Expr>, Box<Expr>),
     All(Box<Expr>, usize, Box<Expr>),
     Bound(usize),
+    Local(usize, std::rc::Rc<Expr>),
+    Context(String),
+    Borrow(Box<Expr>),
     Parameter(usize),
     Operand(String),
     ResultType(usize),
@@ -133,7 +138,6 @@ pub(crate) enum ExprKind {
     Variant(String, Vec<Expr>),
     Some(Box<Expr>),
     Try(Box<Expr>),
-    Host(HostMethod, Vec<Expr>),
     Rust(RustCall, Vec<Expr>),
     Array(Vec<Expr>),
 }
@@ -151,6 +155,8 @@ impl Expr {
         use ExprKind as E;
         let safe = |expr: &Self| expr.const_safe(types);
         match &self.kind {
+            E::Local(_, value) => safe(value),
+            E::Borrow(value) => safe(value),
             E::Constant(_) | E::Integer(_) | E::Type(_) | E::Parameter(_) | E::Bound(_) => true,
             E::Results | E::ResultType(_) | E::Query(Query::TypeOf, _) => types,
             E::Rust(binding, args) => binding.is_const && args.iter().all(safe),
@@ -182,33 +188,27 @@ impl Expr {
         emitter.term(self)
     }
 
-    /// Helpers have already been expanded, so nested calls need no separate
-    /// dependency registry. The emitted trait calls enforce the host contract.
-    pub(crate) fn uses_host(&self) -> bool {
+    /// The explicit context binding used by this expression, if any.
+    pub(crate) fn context_type(&self) -> Option<&str> {
         match &self.kind {
-            ExprKind::Host(..) => true,
-            ExprKind::Unary(_, v)
+            ExprKind::Context(path) => Some(path),
+            ExprKind::Local(_, value) => value.context_type(),
+            ExprKind::Borrow(v)
+            | ExprKind::Unary(_, v)
             | ExprKind::Query(_, v)
             | ExprKind::Convert(v)
             | ExprKind::Some(v)
             | ExprKind::Try(v)
-            | ExprKind::Field(v, _) => v.uses_host(),
+            | ExprKind::Field(v, _) => v.context_type(),
             ExprKind::Binary(_, a, b)
             | ExprKind::Matches(a, b)
             | ExprKind::Slice(a, b, _)
-            | ExprKind::All(a, _, b) => a.uses_host() || b.uses_host(),
-            ExprKind::Record(fields) => fields.values().any(Self::uses_host),
-            ExprKind::Rust(_, values) | ExprKind::Array(values) | ExprKind::Variant(_, values) => {
-                values.iter().any(Self::uses_host)
+            | ExprKind::All(a, _, b) => a.context_type().or_else(|| b.context_type()),
+            ExprKind::Record(fields) => fields.values().find_map(Self::context_type),
+            ExprKind::Rust(_, args) | ExprKind::Array(args) | ExprKind::Variant(_, args) => {
+                args.iter().find_map(Self::context_type)
             }
-            ExprKind::Constant(_)
-            | ExprKind::Integer(_)
-            | ExprKind::Results
-            | ExprKind::Type(_)
-            | ExprKind::Bound(_)
-            | ExprKind::Parameter(_)
-            | ExprKind::Operand(_)
-            | ExprKind::ResultType(_) => false,
+            _ => None,
         }
     }
     fn new(ty: Ty, kind: ExprKind) -> Self {
@@ -257,6 +257,7 @@ impl Expr {
             return args[index].clone();
         }
         let kind = match &self.kind {
+            ExprKind::Borrow(e) => ExprKind::Borrow(Box::new(e.expand(args, locals, next))),
             ExprKind::Unary(op, e) => ExprKind::Unary(op, Box::new(e.expand(args, locals, next))),
             ExprKind::Binary(op, a, b) => {
                 return Self::binary(
@@ -309,13 +310,6 @@ impl Expr {
                     .collect::<Vec<_>>();
                 ExprKind::Rust(binding.clone(), args)
             }
-            ExprKind::Host(method, values) => ExprKind::Host(
-                method.clone(),
-                values
-                    .iter()
-                    .map(|e| e.expand(args, locals, next))
-                    .collect(),
-            ),
             ExprKind::Convert(e) => ExprKind::Convert(Box::new(e.expand(args, locals, next))),
             ExprKind::Some(e) => ExprKind::Some(Box::new(e.expand(args, locals, next))),
             ExprKind::Field(e, name) => {
@@ -381,19 +375,10 @@ struct Function {
     body: Expr,
 }
 
-#[derive(Clone)]
-pub(crate) struct HostMethod {
-    interface: String,
-    name: String,
-    params: Vec<(String, Ty)>,
-    result: Ty,
-}
-
 #[derive(Clone, Default)]
 pub(crate) struct Library {
     pub(crate) interfaces: BTreeMap<String, Interface>,
     functions: BTreeMap<String, Function>,
-    hosts: BTreeMap<String, HostMethod>,
     methods: String,
     bindings: String,
 }
@@ -449,6 +434,49 @@ fn operands(
 }
 
 impl Library {
+    fn context(
+        &self,
+        source: &str,
+        node: Node,
+        env: &mut BTreeMap<String, Expr>,
+        rust: &super::records::RustTypes,
+    ) -> Result<Node, Error> {
+        let Kind::Scoped(param, body) = node.kind else {
+            return Ok(node);
+        };
+        let Kind::Name(name) = &param.ty.kind else {
+            return Err(Error::at(
+                source,
+                param.ty.offset,
+                "context requires a Rust-bound type",
+            ));
+        };
+        if !rust.contains(name) {
+            return Err(Error::at(
+                source,
+                param.ty.offset,
+                "context requires a Rust-bound type",
+            ));
+        }
+        super::identifier(source, param.offset, &param.name)?;
+        if env
+            .insert(
+                param.name,
+                Expr::new(
+                    Ty::Ref(Box::new(Ty::named(name))),
+                    ExprKind::Context(rust.rust(name)),
+                ),
+            )
+            .is_some()
+        {
+            return Err(Error::at(
+                source,
+                param.offset,
+                "context shadows an existing name",
+            ));
+        }
+        Ok(*body)
+    }
     pub(crate) fn method_code(&self) -> String {
         format!(
             "pub mod type_methods {{\n{}\n}}\n{}",
@@ -456,38 +484,11 @@ impl Library {
         )
     }
 
-    pub(crate) fn host_code(&self, types: &super::records::RustTypes) -> String {
-        use std::fmt::Write;
-        let mut groups = BTreeMap::<&str, Vec<&HostMethod>>::new();
-        for method in self.hosts.values() {
-            groups.entry(&method.interface).or_default().push(method);
-        }
-        let mut out = String::new();
-        for (name, methods) in groups {
-            writeln!(out,"/// Read-only deterministic queries. Implementations must honor this trusted contract.\npub trait {name} {{").unwrap();
-            for method in methods {
-                let params = method
-                    .params
-                    .iter()
-                    .map(|(name, ty)| format!(", {name}: {}", ty.rust(types)))
-                    .collect::<String>();
-                writeln!(
-                    out,
-                    "fn {}(&self{params}) -> {};",
-                    method.name,
-                    method.result.rust(types)
-                )
-                .unwrap();
-            }
-            out.push_str("}\n");
-        }
-        out
-    }
     #[allow(clippy::too_many_arguments)]
     pub fn verify(
         &mut self,
         source: &str,
-        nodes: Vec<Node>,
+        body: Option<Node>,
         params: &[Param],
         signature: Option<&TypeDef>,
         results: &BTreeMap<String, super::Slot>,
@@ -500,6 +501,11 @@ impl Library {
             comparisons,
         } = vocabulary;
         let mut env = operands(params, signature, types);
+        let Some(body) = body else {
+            return Ok(Vec::new());
+        };
+        let body = self.context(source, body, &mut env, &data.rust)?;
+        let nodes = super::list(source, body)?;
         for (name, slot) in results {
             let mut value = Expr::new(Ty::named("Type"), ExprKind::ResultType(slot.index as usize));
             if !slot.result {
@@ -537,6 +543,32 @@ impl Library {
         };
         let mut result = Vec::new();
         for node in nodes {
+            if let Kind::Let(name, value) = &node.kind {
+                super::identifier(source, node.offset, name)?;
+                if env.contains_key(name) {
+                    return Err(Error::at(
+                        source,
+                        node.offset,
+                        "verification binding shadows an existing name",
+                    ));
+                }
+                let value = checker.expr(value, None, &env, signature)?;
+                let id = checker.next_local;
+                checker.next_local += 1;
+                let local = Expr {
+                    ty: value.ty.clone(),
+                    types: value.types.clone(),
+                    kind: ExprKind::Local(id, std::rc::Rc::new(value.clone())),
+                };
+                env.insert(name.clone(), local);
+                result.push(super::constraints::Constraint {
+                    type_only: value.type_only(params),
+                    condition: value,
+                    text: format!("cannot evaluate binding `{name}`"),
+                    binding: Some(id),
+                });
+                continue;
+            }
             let (condition, text) = if let Kind::Call(name, args) = &node.kind
                 && name == "require"
             {
@@ -571,6 +603,7 @@ impl Library {
                 ));
             }
             result.push(super::constraints::Constraint {
+                binding: None,
                 type_only: condition.type_only(params),
                 condition,
                 text,
@@ -586,6 +619,7 @@ impl Library {
                     names.insert(name);
                 }
                 Ty::Optional(ty) | Ty::Array(ty, _) | Ty::Sequence(ty) => visit(ty, names),
+                Ty::Ref(ty) => visit(ty, names),
                 Ty::Value(_) => {}
             }
         }
@@ -594,12 +628,6 @@ impl Library {
             for ty in function.params.iter().chain([&function.result]) {
                 visit(ty, &mut names);
             }
-        }
-        for method in self.hosts.values() {
-            for (_, ty) in &method.params {
-                visit(ty, &mut names);
-            }
-            visit(&method.result, &mut names);
         }
         for interface in self.interfaces.values() {
             for (_, ty) in &interface.fields {
@@ -637,10 +665,8 @@ impl Library {
             next_local: 0,
         };
         for declaration in declarations.iter().filter(|d| d.kind == "interface") {
-            if matches!(
-                declaration.name.as_str(),
-                "Value" | "InstructionQuery" | "InstView"
-            ) || data.rust.contains(&declaration.name)
+            if matches!(declaration.name.as_str(), "Value" | "InstView")
+                || data.rust.contains(&declaration.name)
                 || data.records.iter().any(|r| r.name == declaration.name)
                 || data.enums.iter().any(|e| e.name == declaration.name)
                 || encodings.contains_key(&declaration.name)
@@ -673,67 +699,6 @@ impl Library {
         for name in checker.library.interfaces.keys() {
             checker.check_cycle(name, &mut BTreeSet::new())?;
         }
-        for owner in declarations.iter().filter(|d| d.kind == "extern-interface") {
-            if !declarations.iter().any(|d| {
-                d.kind == "extern-fn"
-                    && d.name
-                        .split_once("::")
-                        .is_some_and(|(name, _)| name == owner.name)
-            }) {
-                return Err(Error::at(
-                    source,
-                    owner.offset,
-                    "host interface needs at least one method",
-                ));
-            }
-        }
-        for declaration in declarations.iter().filter(|d| d.kind == "extern-fn") {
-            let (interface, name) = declaration
-                .name
-                .split_once("::")
-                .expect("parsed external method");
-            let signature = declaration.signature.as_ref().unwrap();
-            let Results::Fixed(results) = &signature.results else {
-                return Err(Error::at(
-                    source,
-                    declaration.offset,
-                    "host method requires one result type",
-                ));
-            };
-            if !signature.generics.is_empty() || results.len() != 1 {
-                return Err(Error::at(
-                    source,
-                    declaration.offset,
-                    "host method requires one result type and no generics",
-                ));
-            }
-            let mut names = BTreeSet::new();
-            let params = signature
-                .params
-                .iter()
-                .map(|p| {
-                    super::identifier(source, p.offset, &p.name)?;
-                    if p.moves || !names.insert(&p.name) {
-                        return Err(Error::at(
-                            source,
-                            p.offset,
-                            "host parameters must be distinct immutable values",
-                        ));
-                    }
-                    Ok((p.name.clone(), checker.ty(&p.ty)?))
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-            let method = HostMethod {
-                interface: interface.into(),
-                name: name.into(),
-                params,
-                result: checker.ty(&results[0].ty)?,
-            };
-            checker
-                .library
-                .hosts
-                .insert(declaration.name.clone(), method);
-        }
         for declaration in declarations
             .iter()
             .filter(|d| matches!(d.kind.as_str(), "fn" | "const"))
@@ -761,7 +726,8 @@ impl Library {
         let Some(node) = node else {
             return Ok(bindings);
         };
-        let env = operands(params, Some(signature), types);
+        let mut env = operands(params, Some(signature), types);
+        let node = self.context(source, node, &mut env, &data.rust)?;
         let mut checker = Checker {
             source,
             library: self,
@@ -1162,6 +1128,7 @@ impl Checker<'_> {
     fn ty(&self, node: &Node) -> Result<Ty, Error> {
         let fail = || Error::at(self.source, node.offset, "unknown projection type");
         match &node.kind {
+            Kind::Ref(inner) => Ok(Ty::Ref(Box::new(self.ty(inner)?))),
             Kind::Name(name) if name == "Value" && self.data.rust.contains(name) => {
                 Ok(Ty::Value(None))
             }
@@ -1325,6 +1292,7 @@ impl Checker<'_> {
                         *arg = resolve_self(arg, owner);
                     }
                 }
+                Kind::Ref(inner) => **inner = resolve_self(inner, owner),
                 _ => {}
             }
             node
@@ -1450,8 +1418,12 @@ impl Checker<'_> {
         env: &BTreeMap<String, Expr>,
         signature: Option<&TypeDef>,
     ) -> Result<Expr, Error> {
-        let value = self.expr(receiver, None, env, signature)?;
-        let owner = match &value.ty {
+        let mut value = self.expr(receiver, None, env, signature)?;
+        let receiver_ty = match &value.ty {
+            Ty::Ref(inner) => inner.as_ref(),
+            ty => ty,
+        };
+        let owner = match receiver_ty {
             Ty::Named(name) => name.as_str(),
             Ty::Value(_) => "Value",
             _ => {
@@ -1463,6 +1435,11 @@ impl Checker<'_> {
             }
         };
         let function = self.function(&format!("{owner}::{method}"), offset)?;
+        if let Some(Ty::Ref(inner)) = function.params.first()
+            && inner.as_ref() == &value.ty
+        {
+            value = Expr::new(Ty::Ref(inner.clone()), ExprKind::Borrow(Box::new(value)));
+        }
         self.call(function, vec![value], args, offset, env, signature)
     }
 
@@ -1488,6 +1465,15 @@ impl Checker<'_> {
                 offset,
                 "projection function argument count mismatch",
             ));
+        }
+        for (value, expected) in checked.iter().zip(&function.params) {
+            if !expected.accepts(&value.ty) {
+                return Err(Error::at(
+                    self.source,
+                    offset,
+                    "method receiver type mismatch",
+                ));
+            }
         }
         for (arg, ty) in args.iter().zip(&function.params[checked.len()..]) {
             // Parameter arithmetic retains its declared width inside wide verification expressions.
@@ -1535,24 +1521,6 @@ impl Checker<'_> {
                     return Err(fail("? requires an optional value"));
                 };
                 Expr::new(*inner.clone(), ExprKind::Try(Box::new(value)))
-            }
-            Kind::Call(name, args) if self.library.hosts.contains_key(name) => {
-                let method = self.library.hosts[name].clone();
-                if args.len() != method.params.len() {
-                    return Err(fail("host method argument count mismatch"));
-                }
-                let args = args
-                    .iter()
-                    .zip(&method.params)
-                    .map(|(arg, (_, ty))| {
-                        let wide = self.verification;
-                        self.verification = false;
-                        let result = self.expr(arg, Some(ty), env, signature);
-                        self.verification = wide;
-                        result
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Expr::new(method.result.clone(), ExprKind::Host(method, args))
             }
             Kind::Unary("-", value) if matches!(value.kind, Kind::Number(_) | Kind::Integer(_)) => {
                 let n = match value.kind {
@@ -1916,6 +1884,9 @@ impl<'a> Emitter<'a> {
                 self.projections[name].clone()
             }
             ExprKind::Bound(id) => numeric(format!("_v{id}")),
+            ExprKind::Local(id, _) => numeric(format!("_v{id}")),
+            ExprKind::Context(_) => "_context".into(),
+            ExprKind::Borrow(value) => format!("&({})", self.term(value)),
             ExprKind::Field(value, field) => {
                 let value = self.term(value);
                 numeric(format!(
@@ -2053,14 +2024,6 @@ impl<'a> Emitter<'a> {
                     )
                 }
             }
-            ExprKind::Host(method, args) => format!(
-                "crate::host::traits::{}::{}(&_host{})",
-                method.interface,
-                method.name,
-                args.iter()
-                    .map(|e| format!(", {}", self.term(e)))
-                    .collect::<String>()
-            ),
             ExprKind::Some(e) => format!("Some({})", self.term(e)),
             ExprKind::Array(args) => format!(
                 "[{}]",

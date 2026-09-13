@@ -28,6 +28,8 @@ impl Expr {
 
     pub(crate) fn type_only(&self, params: &[Param]) -> bool {
         match &self.kind {
+            ExprKind::Local(_, value) => value.type_only(params),
+            ExprKind::Borrow(value) => value.type_only(params),
             ExprKind::Query(Query::TypeOf, value) => matches!(&value.kind,
                 ExprKind::Operand(name) if params.iter().any(|p| p.name == *name && p.kind == ParamKind::Value)),
             ExprKind::Constant(_)
@@ -50,7 +52,7 @@ impl Expr {
                 values.iter().all(|v| v.type_only(params))
             }
             ExprKind::Matches(..)
-            | ExprKind::Host(..)
+            | ExprKind::Context(_)
             | ExprKind::Parameter(_)
             | ExprKind::Operand(_) => false,
         }
@@ -165,6 +167,7 @@ impl Evaluator<'_> {
             }
         }
         let value = match &expr.kind {
+            E::Local(_, value) => return self.eval(value),
             E::Constant(v) => V::from_literal(v),
             E::Integer(v) => V::Int(*v),
             E::Type(name) => {

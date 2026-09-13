@@ -18,6 +18,7 @@ type I16X8 = vector(I16, 8);
 // Methods without bodies bind same-named Rust methods; defs bodies expand normally.
 type Type = rust("veloc_types::Type") {
     trait: rust("veloc_types::traits::TypeInfo"),
+    const fn signature(self) -> optional(SigId);
     const fn element_bits(self) -> optional(u32);
     const fn bit_size(self) -> optional(TypeBits);
     const fn min_size_bytes(self) -> optional(u32);
@@ -45,6 +46,7 @@ type Type = rust("veloc_types::Type") {
 }
 type TypeBits = rust("veloc_types::TypeBits");
 type Shape = rust("veloc_types::Shape");
+type SigId = rust("veloc_types::SigId");
 
 // Rust owns the representation; declarations are checked by generated traits.
 type OpTraits = rust("veloc_types::OpTraits") {

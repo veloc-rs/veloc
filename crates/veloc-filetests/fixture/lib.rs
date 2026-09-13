@@ -5,6 +5,7 @@ include!("../../../veloc/mir/src/root.rs");
 pub use inst::{FloatOrderCC, OrderCC};
 
 pub mod tokens {
+    pub struct Tokens<'a>(pub &'a u32);
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Stamp(pub u32);
 
@@ -15,8 +16,8 @@ pub mod tokens {
     }
 }
 
-impl<M> host::traits::Tokens for host::Context<'_, M> {
+impl crate::type_methods::Tokens for tokens::Tokens<'_> {
     fn stamp(&self, number: u32) -> tokens::Stamp {
-        tokens::Stamp(number)
+        tokens::Stamp(number + *self.0)
     }
 }

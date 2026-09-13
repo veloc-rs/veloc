@@ -441,6 +441,14 @@ impl From<VectorType> for Type {
 
 const impl TypeInfo for Type {
     #[inline]
+    fn signature(self) -> Option<SigId> {
+        match self.as_callable() {
+            Some((signature, _)) => Some(signature),
+            None => None,
+        }
+    }
+
+    #[inline]
     fn element_bits(self) -> Option<u32> {
         match self.element() {
             Some(element) => element.element_bits(),

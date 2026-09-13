@@ -1,11 +1,11 @@
-import "../../defs/prelude.ops";
+import "types.ops";
 
 // Typed property contracts run during validation, not construction.
 property VectorConst {
-    verify {
-        require(!Constants::is_dense(value) || value.ty().is_fixed(), "dense vector constant requires a fixed type");
-        require(!Constants::is_dense(value) || len(Constants::bytes(value)?) == value.ty().min_size_bytes()?, "dense vector constant byte count must match its type");
-        require(!Constants::is_dense(value) || !value.ty().is_predicate() || all(Constants::bytes(value)?, |byte| byte <= 1), "boolean constant lanes must be zero or one");
+    verify(ctx: ConstContext) {
+        require(!value.is_dense() || value.ty().is_fixed(), "dense vector constant requires a fixed type");
+        require(!value.is_dense() || len(ctx.bytes(value)?) == value.ty().min_size_bytes()?, "dense vector constant byte count must match its type");
+        require(!value.is_dense() || !value.ty().is_predicate() || all(ctx.bytes(value)?, |byte| byte <= 1), "boolean constant lanes must be zero or one");
     }
 }
 

@@ -31,6 +31,10 @@ pub enum Kind {
     Binary(&'static str, Box<Node>, Box<Node>),
     Lambda(String, Box<Node>),
     Try(Box<Node>),
+    Ref(Box<Node>),
+    /// A field body with an explicit, typed host context.
+    Scoped(Box<Parameter>, Box<Node>),
+    Let(String, Box<Node>),
 }
 
 #[derive(Debug, Clone)]
@@ -129,12 +133,19 @@ impl Node {
                 }
             }
             Kind::Member(node, _)
+            | Kind::Let(_, node)
+            | Kind::Ref(node)
             | Kind::Unary(_, node)
             | Kind::Lambda(_, node)
             | Kind::Try(node) => node.relocate(base),
             Kind::Binary(_, lhs, rhs) => {
                 lhs.relocate(base);
                 rhs.relocate(base);
+            }
+            Kind::Scoped(param, body) => {
+                param.offset += base;
+                param.ty.relocate(base);
+                body.relocate(base);
             }
             Kind::Name(_) | Kind::Text(_) | Kind::Number(_) | Kind::Integer(_) => {}
         }

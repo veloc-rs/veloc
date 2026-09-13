@@ -79,35 +79,36 @@ fn imported_hosts_and_helpers_need_no_capability_configuration() {
     files.write(
         "host.ops",
         r#"
-extern interface Numbers { fn next(n: u32) -> u32; }
-fn Next(n: u32) -> u32 { value: Numbers::next(n) }
+type Numbers = rust("crate::host::Numbers") { fn next(&self, n: u32) -> u32; }
+fn Next(ctx: &Numbers, n: u32) -> u32 { value: ctx.next(n) }
 "#,
     );
     files.write(
         "helpers.ops",
         r#"
 import "host.ops";
-fn Twice(n: u32) -> u32 { value: Next(Next(n)) }
+fn Twice(ctx: &Numbers, n: u32) -> u32 { value: Next(ctx, Next(ctx, n)) }
 "#,
     );
     let consumer = r#"
 import "prelude.ops";
 import "helpers.ops";
+import "host.ops";
 interface Summary { count: u32 }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
-    storage: Data { n: n }, implements: [Summary { count: Twice(n) }],
+    storage: Data { n: n }, implements(ctx: Numbers): [Summary { count: Twice(ctx, n) }],
 }
 "#;
     files.write("consumer.ops", consumer);
     let source = files.load("consumer.ops").unwrap();
     let generated = source.compile().unwrap();
-    assert!(generated.host.contains("pub trait Numbers"));
+    assert!(generated.instructions.contains("pub trait Numbers"));
     assert_eq!(
         generated
             .instructions
-            .matches("host::traits::Numbers::next")
+            .matches("crate::type_methods::Numbers>::next")
             .count(),
         2
     );
@@ -116,7 +117,7 @@ op Example(n: u32) -> () {
     // Importing definitions is still required; there is no implicit host registry.
     files.write(
         "helpers.ops",
-        "fn Twice(n: u32) -> u32 { value: Numbers::next(n) }",
+        "fn Twice(ctx: &Numbers, n: u32) -> u32 { value: ctx.next(n) }",
     );
     let error = files.load("consumer.ops").unwrap().compile().err().unwrap();
     assert_eq!(error.path, files.0.join("helpers.ops"));
@@ -270,12 +271,16 @@ fn rust_type_bindings_follow_imports_and_preserve_diagnostics() {
         r#"
 import "prelude.ops";
 import "types.ops";
-extern interface Tokens { fn read(value: Token) -> Token; }
+type Tokens = rust("crate::host::Tokens") { fn read(&self, value: Token) -> Token; }
 struct Entry { value: Token }
 "#,
     );
     let generated = files.load("consumer.ops").unwrap().compile().unwrap();
-    assert!(generated.host.contains("value: crate::tokens::Token"));
+    assert!(
+        generated
+            .instructions
+            .contains("value: crate::tokens::Token")
+    );
     assert!(
         generated
             .instructions

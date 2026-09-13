@@ -182,7 +182,6 @@ fn generate(plan: &Plan) -> Generated {
         text_parser,
         text_printer,
         type_rules,
-        host: defs.expressions.host_code(&defs.data.rust),
         validation: crate::model::constraints::generate(
             defs,
             &packed.formats,
