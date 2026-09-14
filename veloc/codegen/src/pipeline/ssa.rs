@@ -3,7 +3,10 @@ use super::FunctionAnalysisCtx;
 use crate::{Error, Result, target::arch::TargetMachine};
 use alloc::{format, vec::Vec};
 use hashbrown::{HashMap, HashSet};
-use veloc_lir::{ControlFlow, InstExtra, MachineFunction, MachineOperand, Reg};
+#[cfg(test)]
+use veloc_lir::InstBuild;
+use veloc_lir::InstRead;
+use veloc_lir::{ControlFlow, InstExtra, InstField, MachineFunction, Reg};
 use veloc_mir::Block;
 
 pub fn verify<S>(f: &MachineFunction<S>, target: &dyn TargetMachine) -> Result<()> {
@@ -43,6 +46,9 @@ pub fn verify<S>(f: &MachineFunction<S>, target: &dyn TargetMachine) -> Result<(
                 return Err(fail(format!("instruction {id:?} occurs twice in layout")));
             }
             let inst = f.inst(id);
+            if inst.is_generic() {
+                inst.validate()?;
+            }
             for reg in inst.defs() {
                 if transferred && reg.is_vreg() {
                     return Err(fail(format!(
@@ -106,10 +112,10 @@ pub fn verify<S>(f: &MachineFunction<S>, target: &dyn TargetMachine) -> Result<(
                 }
             }
             let targets: Vec<_> = inst
-                .operands()
+                .fields()
                 .iter()
                 .filter_map(|op| {
-                    if let MachineOperand::Block(block) = op {
+                    if let InstField::Block(block) = op {
                         Some(*block)
                     } else {
                         None
@@ -215,7 +221,7 @@ mod tests {
         f.append_inst_id_to_block(2, right);
         let copy = f.writer().copy(Writable(r), p);
         f.append_inst_id_to_block(3, copy);
-        let ret = f.writer().ret(smallvec::smallvec![r]);
+        let ret = f.writer().ret(&[r]);
         f.append_inst_id_to_block(3, ret);
         verify(&f, &target).unwrap();
 

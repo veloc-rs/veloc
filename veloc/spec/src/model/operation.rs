@@ -106,13 +106,7 @@ pub(super) fn parse(
     expressions.metadata(source, &mut meta_node, &queries, vocabulary)?;
     let meta = crate::model::metadata::Pending::new(source, meta_node, data)?;
     let mut traits = BTreeSet::new();
-    if let Projection::Operands(projection) = &projection {
-        traits.extend(projection.flow.traits());
-    }
     let constraints = fields.optional("verify");
-    if traits.contains("ABORT") && !traits.contains("TERMINATOR") {
-        return Err(fields.error("ABORT requires TERMINATOR"));
-    }
     let mut identity = fields
         .optional("identity")
         .map(|n| algebraic_constant(source, n))
@@ -163,6 +157,7 @@ pub(super) fn parse(
         signature: types,
         params,
         projection,
+        inputs: Default::default(),
         signature_source,
         text,
         traits,

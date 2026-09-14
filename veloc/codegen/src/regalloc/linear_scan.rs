@@ -7,7 +7,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use veloc_lir::stages::PostIselOptimized;
-use veloc_lir::{InstExtra, InstId, MachineFunction, MachineOperand, Reg, StackFrame, StackSlot};
+use veloc_lir::{InstExtra, InstId, MachineFunction, Reg, StackFrame, StackSlot};
 
 #[derive(Clone)]
 struct Interval {
@@ -204,17 +204,17 @@ impl<'a> RegisterAllocator<'a> {
                 let mut bindings = BTreeMap::new();
                 let mut loads = Vec::new();
                 let mut stores = Vec::new();
-                for (index, operand) in inst.operands().iter().enumerate() {
-                    let (reg, read, write) = match *operand {
-                        MachineOperand::Use(r) => (r, true, false),
-                        MachineOperand::Def(w) => (w.to_reg(), false, true),
-                        _ => {
-                            plan.locations.push(None);
-                            continue;
-                        }
-                    };
+                let result_count = inst.results().len();
+                let fields = inst
+                    .results()
+                    .iter()
+                    .copied()
+                    .map(|r| (r, true))
+                    .chain(inst.inputs().iter().copied().map(|r| (r, false)));
+                for (index, (reg, write)) in fields.enumerate() {
+                    let read = !write;
                     if reg.is_preg() {
-                        plan.locations.push(reg.as_preg());
+                        plan.locations.push(reg.as_preg().unwrap());
                         continue;
                     }
                     let preg = if let Some(&preg) = self.allocation.get(&reg) {
@@ -229,8 +229,8 @@ impl<'a> RegisterAllocator<'a> {
                         let class = self.target.desc().reg_class_for_vreg(&ty, data.bank);
                         let tied_spill = ties
                             .iter()
-                            .find(|tie| tie.use_operand == index)
-                            .and_then(|tie| inst.operands()[tie.def_operand].as_reg())
+                            .find(|tie| tie.use_operand + result_count == index)
+                            .map(|tie| inst.results()[tie.result])
                             .filter(|dst| self.spilled.contains_key(dst))
                             .and_then(|dst| bindings.get(&dst).copied());
                         let preg = if let Some(preg) = bindings.get(&reg).copied().or(tied_spill) {
@@ -261,11 +261,12 @@ impl<'a> RegisterAllocator<'a> {
                         }
                         preg
                     };
-                    plan.locations.push(Some(
+                    plan.locations.push(
                         preg.as_preg()
                             .expect("allocator must assign physical registers"),
-                    ));
+                    );
                 }
+                plan.results = plan.locations.drain(..result_count).collect();
                 // Resolve tied locations without changing virtual identities.
                 // A dying unrelated input may share the output's assigned register;
                 // use a scratch in that case, so the pre-copy cannot destroy it.
@@ -273,17 +274,14 @@ impl<'a> RegisterAllocator<'a> {
                 let mut copies_after = Vec::new();
                 for tie in ties {
                     let dst = inst
-                        .operands()
-                        .get(tie.def_operand)
-                        .and_then(|op| op.as_reg())
+                        .results()
+                        .get(tie.result)
+                        .copied()
                         .ok_or_else(|| Error::codegen("missing tied definition"))?;
-                    let input = inst
-                        .operands()
-                        .get(tie.use_operand)
-                        .and_then(|op| op.as_reg())
-                        .ok_or_else(|| Error::codegen("missing tied input"))?;
-                    let output_location = plan.locations[tie.def_operand].unwrap();
-                    let input_location = plan.locations[tie.use_operand].unwrap();
+                    let input_index = tie.use_operand;
+                    let input = inst.inputs()[input_index];
+                    let output_location = plan.results[tie.result];
+                    let input_location = plan.locations[input_index];
                     if output_location == input_location {
                         continue;
                     }
@@ -294,10 +292,8 @@ impl<'a> RegisterAllocator<'a> {
                     } else {
                         return Err(Error::codegen("physical tied operands must already agree"));
                     };
-                    let conflicts = inst.operands().iter().enumerate().any(|(index, op)| {
-                        index != tie.use_operand
-                            && op.is_use()
-                            && plan.locations[index] == Some(output_location)
+                    let conflicts = plan.locations.iter().enumerate().any(|(index, &location)| {
+                        index != input_index && location == output_location
                     });
                     let work = if conflicts {
                         let data = f.vreg_data(if dst.is_vreg() { dst } else { input });
@@ -306,7 +302,7 @@ impl<'a> RegisterAllocator<'a> {
                             .spill_scratch(class)
                             .iter()
                             .filter_map(|r| r.as_preg())
-                            .find(|r| !plan.locations.contains(&Some(*r)))
+                            .find(|r| !plan.locations.contains(r) && !plan.results.contains(r))
                             .ok_or_else(|| {
                                 Error::codegen("insufficient temporary for tied output")
                             })?
@@ -317,8 +313,8 @@ impl<'a> RegisterAllocator<'a> {
                     if work != output_location {
                         copies_after.push((output_location.into(), work.into(), ty));
                     }
-                    plan.locations[tie.def_operand] = Some(work);
-                    plan.locations[tie.use_operand] = Some(work);
+                    plan.results[tie.result] = work;
+                    plan.locations[input_index] = work;
                 }
                 // Reloads precede input copies; output copies precede spill stores.
                 for (dst, src, ty) in copies_after {
@@ -405,8 +401,8 @@ mod tests {
             }
             let instructions = allocator.plan(&mut f, &frame).unwrap();
             let plan = &instructions[id];
-            assert_eq!(plan.locations[0], plan.locations[2]);
-            assert_ne!(plan.locations[0], plan.locations[1]);
+            assert_eq!(plan.results[0], plan.locations[1]);
+            assert_ne!(plan.results[0], plan.locations[0]);
             assert!(!plan.before.is_empty());
             if mode == 1 {
                 assert_eq!(plan.after.len(), 1);
@@ -425,8 +421,8 @@ mod tests {
             }
             .materialize();
             assert_eq!(
-                physical.inst(id).operands()[0].as_reg(),
-                physical.inst(id).operands()[2].as_reg()
+                Some(physical.inst(id).results()[0]),
+                physical.inst(id).inputs().get(1).copied()
             );
             physical.check_refs().unwrap();
         }

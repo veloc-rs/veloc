@@ -3,7 +3,7 @@ use super::linear_scan::RegisterAllocator;
 use crate::{Error, Result};
 use alloc::vec::Vec;
 use veloc_lir::stages::PostIselOptimized;
-use veloc_lir::{InstExtra, InstId, MachineFunction, MachineOperand, Reg, StackFrame, StackSlot};
+use veloc_lir::{InstExtra, InstField, InstId, MachineFunction, Reg, StackFrame, StackSlot};
 use veloc_mir::Type;
 
 /// A physical move sequence for one selected branch, detached until materialization.
@@ -70,11 +70,11 @@ impl RegisterAllocator<'_> {
             };
             let targets: Vec<_> = f
                 .inst(id)
-                .operands()
+                .fields()
                 .iter()
                 .enumerate()
                 .filter_map(|(i, op)| {
-                    if let MachineOperand::Block(target) = op {
+                    if let InstField::Block(target) = op {
                         Some((i, *target))
                     } else {
                         None

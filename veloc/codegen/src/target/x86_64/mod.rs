@@ -157,9 +157,11 @@ impl TargetMachine for X86_64TargetMachine {
         writer: veloc_lir::InstWriter<'_>,
         target: veloc_mir::Block,
     ) -> crate::Result<veloc_lir::InstId> {
-        Ok(writer.generic(
+        Ok(writer.write(
             veloc_lir::MachineOpcode::Target(isle::TargetInst::X86Jmp.as_u32()),
-            smallvec::smallvec![veloc_lir::MachineOperand::Block(target)],
+            &[],
+            &[],
+            &[veloc_lir::InstField::Block(target)],
         ))
     }
 

@@ -877,14 +877,55 @@ Object fields support same-name shorthand: `Unary { arg }` means
 `Unary { arg: arg }`. Bare layout names are rejected. Declarations such as
 `struct` still require field types; shorthand is only for object values.
 
-In operand-array storage, definition fields bind named operation results and
-use/property fields bind logical parameters. Layout names, field names and
-physical field order do not have to match the signature. Optional uses require
-`some(input)` or `none`, tied fields use `tied(input, result)`, and the call-shape
-adapter uses `call(callee, args)` with signature-driven results. Every input and
-fixed result must be mapped exactly once. Builders encode the resolved mapping;
-arity is computed from explicit field presence, not inferred from candidate
-lengths. Only a trailing optional suffix can be absent.
+Operand-array storage also requires `opcode`, `view`, `reader` and `writer`
+names. The latter two name generated traits, not concrete host types.
+Their default methods use only their declared access/write contracts.
+Hosts supply an error type, instruction ID type and output-register wrapper
+through associated types. No `InstRef`, `InstWriter` or `MachineOpcode` name
+is assumed by the operand generator.
+
+In operand-array storage, the storage declaration explicitly names the register
+type and the attribute enum. Enum payload types select codecs; there is no
+hardcoded type-name registry. Register fields bind named results or input
+parameters. Layout names, field names and field order need not match signatures.
+`optional(T)` uses `some(input)` or `none`; omitted fields need not be a suffix.
+`sequence(Reg)` binds a register slice, and `results()` binds the result slice.
+Each domain supports one trailing sequence after any fixed prefix; attribute
+sequences are not yet supported. Calls use these same rules, without a call-shape
+adapter. Every input and fixed result must be mapped exactly once.
+Builders, direct views and the optional structural validator share the checked
+projection. Neither construction nor views automatically run validation.
+Both storage backends normalize logical input reads into `model/access.rs`.
+Arrays, optional fields, pools and branch-table projections are resolved once.
+Constraint, query, ownership, text-printing and result-type consumers use these
+logical paths rather than reinterpreting storage bindings. Query generation
+shares one loop with host-specific dispatch/read setup.
+
+Property contracts and operation constraints use the same emitter on both IRs,
+including explicit contexts, local bindings and fallible operations. Properties
+are checked inline; no inherent validator is added to a foreign Rust type.
+Array readers supply value-to-type lookup only when their expressions need it.
+Borrowed view declarations share a storage-independent plan and emitter: fields,
+lifetime propagation and opcode subsets are described once. Layout adapters
+select inline variants or named records and supply physical field types/reads.
+Construction uses a shared prepared argument list, not another expression AST. Layout adapters supply
+argument order, attribute conversions, pooling and fixed/tail slices; builders
+and parsers compile the same plan. Packed hosts create SSA results; array hosts
+accept result registers. These allocation policies are intentionally different.
+
+Text schemas, atom parsing, named-field checks, printing and record assembly use
+one compiler. Array operations with an explicit `text` projection now produce
+`text_parser`/`text_printer` artifacts; the host supplies Cursor/AtomCodec,
+OperandParser::write and InstPrinter::fmt_head. Result registers are supplied
+by the enclosing parser and checked before indexing. The current LIR crate does
+not yet expose a complete textual frontend; these artifacts are exercised by
+the generated-code execution tests, not silently substituted into MIR's parser.
+
+Signature contracts share resolution/check emission. An array reader declares
+only the used signature lookup methods, returning parameter/result type slices;
+its generated validator compares counts and value types. No generator-side
+module lookup or concrete signature container is required. Physical decoding and
+the enclosing function/parser infrastructure remain host responsibilities.
 
 Packed MIR retains its existing SSA operand-order invariant and its `pool`,
 `table` and fixed-array adapters; unifying syntax does not change physical
@@ -902,7 +943,7 @@ emitting Rust. Definitions may refer to later structs.
 A separate `layout Name { ... }` configures storage-specific projections without
 redeclaring fields: MIR predicated alternatives select canonical formats;
 LIR derives view names from structs and does not accept layout overrides.
-Its opcode-dispatched `generic_view()` returns a `InstView`, with borrowed
+Its opcode-dispatched `view()` returns a `InstView`, with borrowed
 register lists for variable operands. Shared formats carry a generated restricted
 opcode enum. LIR operand counts follow explicit storage mappings, rather than a
 second explicit list of lengths. Diagnostics include source

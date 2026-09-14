@@ -1,6 +1,6 @@
 //! Target facts used by scheduling and allocation, not by generic algorithms.
 use super::isle::TargetInst;
-use veloc_lir::{InstId, MachineOpcode, MachineOperand, Reg, Writable};
+use veloc_lir::{InstField, InstId, MachineOpcode, Reg};
 use veloc_mir::{Type, TypeInfo};
 
 pub(super) fn spill_instruction(
@@ -39,17 +39,12 @@ pub(super) fn spill_instruction(
         }
         _ => return Err(crate::Error::codegen("unsupported spill type")),
     };
-    let value = if load {
-        MachineOperand::Def(Writable(reg))
-    } else {
-        MachineOperand::Use(reg)
-    };
-    Ok(writer.generic(
+    let results = if load { &[reg][..] } else { &[][..] };
+    let inputs = if load { &[base][..] } else { &[reg, base][..] };
+    Ok(writer.write(
         MachineOpcode::Target(op.as_u32()),
-        smallvec::smallvec![
-            value,
-            MachineOperand::Use(base),
-            MachineOperand::Imm(offset)
-        ],
+        results,
+        inputs,
+        &[InstField::Imm(offset)],
     ))
 }

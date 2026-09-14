@@ -339,17 +339,10 @@ impl<S> MachineFunction<S> {
         self.store.rewriter(id)
     }
 
-    pub fn set_inst_operands(
-        &mut self,
-        inst_id: InstId,
-        operands: impl AsRef<[crate::MachineOperand]>,
-    ) {
-        self.store.set_operands(inst_id, operands.as_ref());
+    pub fn set_inst_fields(&mut self, id: InstId, fields: &[crate::InstField]) {
+        self.store.set_fields(id, fields);
     }
 
-    /// 以 `BlockRewriteCursor` 的方式重写一个 block 的布局。
-    ///
-    /// 适合做插入前置/后置序列、删除当前指令、用多条指令替换当前指令等布局变换。
     pub fn rewrite_block<E, F>(&mut self, block_idx: usize, mut f: F) -> Result<(), E>
     where
         F: FnMut(&mut BlockRewriteCursor<'_, S>) -> Result<(), E>,
@@ -392,8 +385,23 @@ impl<S> MachineFunction<S> {
         self.store.len()
     }
 
-    pub fn set_inst_operand(&mut self, id: InstId, index: usize, operand: crate::MachineOperand) {
-        self.store.set_operand(id, index, operand);
+    pub fn set_inst_effects(&mut self, id: InstId, effects: crate::RegEffects) {
+        self.store.set_effects(id, effects);
+    }
+    pub fn set_inst_inputs(&mut self, id: InstId, inputs: &[Reg]) {
+        self.store.set_inputs(id, inputs);
+    }
+    pub fn set_inst_input(&mut self, id: InstId, index: usize, reg: Reg) {
+        self.store.set_input(id, index, reg);
+    }
+    pub fn set_inst_results(&mut self, id: InstId, results: &[Reg]) {
+        self.store.set_results(id, results);
+    }
+    pub fn set_inst_result(&mut self, id: InstId, index: usize, reg: Reg) {
+        self.store.set_result(id, index, reg);
+    }
+    pub fn set_inst_field(&mut self, id: InstId, index: usize, field: crate::InstField) {
+        self.store.set_field(id, index, field);
     }
 
     pub fn uses(&self, reg: Reg) -> crate::RegRefs<'_> {
@@ -456,7 +464,7 @@ impl<S> MachineFunction<S> {
     /// 将指令标记为无效。
     pub fn invalidate_inst(&mut self, inst_id: InstId) {
         self.store
-            .write_at(inst_id, crate::MachineOpcode::Invalid, &[], None);
+            .write_at(inst_id, crate::MachineOpcode::Invalid, &[], &[], &[], None);
     }
 
     /// 为指令挂载额外 payload。

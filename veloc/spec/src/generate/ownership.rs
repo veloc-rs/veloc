@@ -28,9 +28,8 @@ pub(crate) fn generate(defs: &Definitions) -> String {
                 .map(|(i, f)| format!("{}: _f{i}", f.name))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let projections: BTreeMap<_, _> = crate::generate::packing::projections(
+            let projections: BTreeMap<_, _> = crate::model::access::projections(
                 op,
-                format,
                 "dfg",
                 |name| {
                     format!(
@@ -46,43 +45,7 @@ pub(crate) fn generate(defs: &Definitions) -> String {
                 "let Self::{} {{ {fields} }} = self else {{ unreachable!(\"validated transfer storage\") }};\n",
                 format.name
             );
-            for p in &op.params {
-                let value = &projections[&p.name];
-                let consume = p.moves;
-                match &p.kind {
-                    ParamKind::Value => writeln!(body, "visit({value}, {consume})?;").unwrap(),
-                    ParamKind::Values => writeln!(
-                        body,
-                        "for &value in ({value}).iter() {{ visit(value, {consume})?; }}"
-                    )
-                    .unwrap(),
-                    ParamKind::Property(name) => {
-                        if let Some(record) = defs.storage.records.iter().find(|r| r.name == *name)
-                        {
-                            for field in &record.fields {
-                                match &field.ty {
-                                    PropertyType::Named(_) if field.policy.references.is_operand() => writeln!(
-                                        body,
-                                        "visit(({}).{}, false)?;",
-                                        value.strip_prefix('*').unwrap_or(value),
-                                        field.name
-                                    )
-                                    .unwrap(),
-                                    PropertyType::Optional(_) if field.policy.references.is_operand() => writeln!(
-                                        body,
-                                        "if let Some(value) = ({}).{} {{ visit(value, false)?; }}",
-                                        value.strip_prefix('*').unwrap_or(value),
-                                        field.name
-                                    )
-                                    .unwrap(),
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                    ParamKind::Successor | ParamKind::Successors => {}
-                }
-            }
+            body.push_str(&body_for(defs, op, &projections));
             body
         };
         groups.entry(body).or_default().push(&op.name);
@@ -115,5 +78,80 @@ pub(crate) fn generate(defs: &Definitions) -> String {
         "impl crate::Opcode {{ pub const fn transfers_ownership(self) -> bool {{ {query} }} }}"
     )
     .unwrap();
+    out
+}
+/// Ownership semantics only depend on logical parameters and their access paths.
+pub(crate) fn body_for(
+    defs: &Definitions,
+    op: &crate::model::Op,
+    projections: &BTreeMap<String, String>,
+) -> String {
+    let mut body = String::new();
+    for p in &op.params {
+        let value = &projections[&p.name];
+        let consume = p.moves;
+        match &p.kind {
+            ParamKind::Value => writeln!(body, "visit({value}, {consume})?;").unwrap(),
+            ParamKind::Values => writeln!(
+                body,
+                "for &value in ({value}).iter() {{ visit(value, {consume})?; }}"
+            )
+            .unwrap(),
+            ParamKind::Property(name) => {
+                if let Some(record) = defs.data.records.iter().find(|r| r.name == *name) {
+                    for field in &record.fields {
+                        match &field.ty {
+                            PropertyType::Named(_) if field.policy.references.is_operand() => {
+                                writeln!(
+                                    body,
+                                    "visit(({}).{}, false)?;",
+                                    value.strip_prefix('*').unwrap_or(value),
+                                    field.name
+                                )
+                                .unwrap()
+                            }
+                            PropertyType::Optional(_) if field.policy.references.is_operand() => {
+                                writeln!(
+                                    body,
+                                    "if let Some(value) = ({}).{} {{ visit(value, false)?; }}",
+                                    value.strip_prefix('*').unwrap_or(value),
+                                    field.name
+                                )
+                                .unwrap()
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            ParamKind::Successor | ParamKind::Successors => {}
+        }
+    }
+
+    body
+}
+
+pub(crate) fn operand_methods(defs: &Definitions) -> String {
+    let crate::storage::Strategy::Operands(storage) = &defs.storage.strategy else {
+        unreachable!("operand host")
+    };
+    let mut out = format!(
+        "fn try_visit_ownership<E>(self, mut visit: impl FnMut({}, bool) -> core::result::Result<(), E>) -> core::result::Result<(), E> {{ match self.opcode() {{\n",
+        storage.register_rust
+    );
+    for op in &defs.ops {
+        let locals = op.operands().projections(op, |v| {
+            format!("({v}).expect(\"validated operand projection\")")
+        });
+        writeln!(
+            out,
+            "Some({}::{}) => {{ {} }},",
+            storage.opcode,
+            op.name,
+            body_for(defs, op, &locals)
+        )
+        .unwrap();
+    }
+    out.push_str("_ => panic!(\"expected instruction from this opcode set\"), } Ok(()) }\n");
     out
 }

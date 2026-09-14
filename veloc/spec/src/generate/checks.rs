@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use crate::model::{Definitions, Op, ParamKind, expr::Emitter};
+use crate::model::{Definitions, Op, expr::Emitter};
 
 pub(crate) fn generate(defs: &Definitions) -> String {
     let mut out = String::from(
@@ -110,18 +110,9 @@ pub(crate) fn generate(defs: &Definitions) -> String {
 }
 
 pub(crate) fn type_emitter(op: &Op) -> Emitter<'_> {
-    let mut emitter = Emitter::query(BTreeMap::new());
+    let mut emitter = Emitter::types(op, BTreeMap::new(), "operands", "results");
     emitter.constant = true;
     emitter.const_failure = "return false";
-    emitter.results = "results";
-    emitter.result_values = false;
-    emitter.operand_types = op
-        .params
-        .iter()
-        .filter(|p| p.kind == ParamKind::Value)
-        .enumerate()
-        .map(|(i, p)| (p.name.clone(), format!("operands[{i}]")))
-        .collect();
     emitter
 }
 

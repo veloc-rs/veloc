@@ -17,13 +17,13 @@ pub mod symbol;
 pub mod use_def;
 mod validation;
 
-pub use error::{DecodeError, Result};
+pub use error::{Result, ValidationError};
 pub use extra::*;
 pub use function::*;
 pub use instr::*;
 pub use memory::*;
 pub use module::*;
-pub use store::{InstStore, InstWriter};
+pub use store::{InstStore, InstWriter, RegEffects};
 pub use symbol::*;
 pub use use_def::{RefLocation, RefRole, RegRef, RegRefs};
 pub use validation::TypeError;

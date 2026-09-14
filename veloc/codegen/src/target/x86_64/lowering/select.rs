@@ -1,4 +1,5 @@
 use super::*;
+use veloc_lir::InstRead;
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64Selector {
@@ -27,16 +28,18 @@ impl TargetInstructionSelector for X86_64Selector {
 
         let opcode = inst.opcode();
         let memory = inst.memory();
-        let view = inst.generic_view()?;
+        let view = inst.view();
         match view {
             veloc_lir::InstView::Return(_) => {
                 // ABI result registers stay live through RET, including across
                 // otherwise dead instructions moved by the scheduler.
-                let operands = inst.operands().iter().cloned().collect();
+                let inputs = inst.inputs().to_vec();
                 ctx.selected.push(build_target_inst(
                     ctx.mfunc.writer(),
                     TargetInst::X86Ret,
-                    operands,
+                    &[],
+                    &inputs,
+                    &[],
                 ));
                 return Ok(SelectResult::InPlace);
             }
@@ -81,11 +84,16 @@ impl TargetInstructionSelector for X86_64Selector {
                 {
                     continue;
                 }
-                let mut operands = ctx.mfunc.inst(selected).operands().to_vec();
+                let mut effects = ctx
+                    .mfunc
+                    .inst(selected)
+                    .effects()
+                    .cloned()
+                    .unwrap_or_default();
                 // Keep ABI register uses/clobbers explicit after G_CALL disappears.
                 for part in plan.args.iter().flat_map(|a| &a.parts) {
                     if let AbiLocation::Reg(reg) = part.loc {
-                        operands.push(MachineOperand::Use(reg));
+                        effects.uses.push(reg);
                     }
                 }
                 for reg in generated::PHYS_REG_INFOS {
@@ -93,10 +101,14 @@ impl TargetInstructionSelector for X86_64Selector {
                         && reg.preg != generated::REG_RSP
                         && reg.preg != generated::REG_RBP
                     {
-                        operands.push(MachineOperand::Def(Writable(reg.preg)));
+                        effects.defs.push(reg.preg);
                     }
                 }
-                ctx.mfunc.set_inst_operands(selected, operands);
+                effects.uses.sort_unstable();
+                effects.uses.dedup();
+                effects.defs.sort_unstable();
+                effects.defs.dedup();
+                ctx.mfunc.set_inst_effects(selected, effects);
             }
         }
         // A selected conditional is a branch followed by a jump. Each keeps

@@ -286,21 +286,30 @@ mod host_calls {{
 fn generated_mapping_executes_in_logical_argument_order() {
     let generated = common::compile(
         r#"
-storage Operands { prefix: "G_" }
-struct Pair { right: Use, high: Def, left: Use, low: Def }
-op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I64) {
+type Cell = rust("crate::Cell");
+struct Tag { bits: u32 }
+struct Summary { bits: u32, ty: Type }
+type Limits = rust("crate::Limits") {
+    trait: rust("crate::LimitsInfo"),
+    fn max(&self) -> u32;
+}
+property Tag { verify { require(value.bits != 0, "zero tag"); } }
+enum Payload { variants: [Tag(Tag), Number(i64)] }
+storage Operands { opcode: Code, view: View, reader: Read, writer: Build, register: Cell, attributes: Payload, prefix: "G_" }
+struct Pair { tag: optional(Tag), right: Cell, high: Cell, left: Cell, low: Cell }
+op G_PAIR(move first: Type::I32, second: Type::I64, tag: Tag) -> (low: Type::I32, high: Type::I64) {
     meta: OpInfo { memory: MemoryEffect::NONE },
-    storage: Pair { right: second, high, left: first, low },
+    storage: Pair { tag: some(tag), right: second, high, left: first, low },
+    text: "{first}, {second}, tag={tag.bits}",
+    query summary -> Summary { bits: tag.bits, ty: first.ty() }
+    verify(ctx: Limits) { require(tag.bits <= ctx.max(), "tag exceeds limit"); }
 }
 "#,
     )
     .unwrap();
     // Compile the actual builder emitted by opgen. The small machine container
     // observes encoded operand order without duplicating the projection logic.
-    let start = generated
-        .instructions
-        .find("impl crate::InstWriter<'_> { pub fn pair")
-        .unwrap();
+    let start = generated.instructions.find("pub trait Build").unwrap();
     let mut depth = 0;
     let mut end = start;
     for (offset, ch) in generated.instructions[start..].char_indices() {
@@ -317,33 +326,230 @@ op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I
         }
     }
     let builder = &generated.instructions[start..end];
+    let views = generated
+        .instructions
+        .find("#[derive(Debug, Clone, Copy)] pub enum View")
+        .unwrap();
+    let reader = &generated.instructions[views..start];
+    assert!(generated.type_rules.contains("impl crate::Code"));
+    assert!(!generated.instructions.contains("GenericOpcode"));
+    let signatures = common::compile(r#"
+type Cell = rust("crate::Cell");
+enum SigField { variants: [Sig(SigId), Number(i64)] }
+storage Operands { opcode: SigCode, view: SigView, reader: SigRead, writer: SigBuild, register: Cell, attributes: SigField }
+struct Call { outputs: sequence(Cell), sig: SigId, args: sequence(Cell) }
+op Invoke(sig: SigId, args: sequence(Value)) -> signature {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    storage: Call { outputs: results(), sig, args },
+    signature: sig,
+}
+"#).unwrap();
+    let begin = signatures
+        .instructions
+        .find("#[derive(Debug, Clone, Copy)] pub enum SigView")
+        .unwrap();
+    let end = signatures.instructions.find("pub trait SigBuild").unwrap();
+    let signature_reader = &signatures.instructions[begin..end];
+    let signature_host = r#"
+    use super::*;
+    #[derive(Debug, Clone, Copy)] pub enum SigCode { Invoke }
+    #[derive(Debug, Clone, Copy)] pub enum SigField { Sig(SigId), Number(i64) }
+    #[derive(Clone, Copy)] struct Call<'a> { inputs: &'a [Cell], results: &'a [Cell], fields: &'a [SigField] }
+    impl<'a> SigRead<'a> for Call<'a> {
+        type Error = String;
+        fn opcode(self) -> Option<SigCode> { Some(SigCode::Invoke) }
+        fn inputs(self) -> &'a [Cell] { self.inputs }
+        fn results(self) -> &'a [Cell] { self.results }
+        fn fields(self) -> &'a [SigField] { self.fields }
+        fn error(self, message: &str) -> String { message.into() }
+        fn value_type(self, value: Cell) -> Type { value }
+        fn signature(self, id: SigId) -> Option<(&'a [Type], &'a [Type])> {
+            (id == 0).then_some((&[1], &[2]))
+        }
+    }
+    pub fn check() {
+        let call = Call { inputs: &[1], results: &[2], fields: &[SigField::Sig(0)] };
+        call.validate().unwrap();
+        assert!(Call { inputs: &[], ..call }.validate().unwrap_err().contains("value count mismatch"));
+        assert!(Call { inputs: &[2], ..call }.validate().unwrap_err().contains("value 0 type mismatch"));
+        assert!(Call { results: &[1], ..call }.validate().unwrap_err().contains("result 0 type mismatch"));
+        assert!(Call { fields: &[SigField::Sig(1)], ..call }.validate().unwrap_err().contains("missing function or signature"));
+    }
+"#;
+    let text_host = r#"
+#[derive(Clone, Copy, PartialEq)]
+struct MemFlags(bool);
+impl MemFlags { fn empty() -> Self { Self(false) } }
+mod atom {
+    use super::*;
+    use crate::text::*;
+    pub trait AtomCodec {
+        type Owned;
+        type View<'a>: ?Sized;
+        fn parse(cx: &mut OperandParser<'_>, input: &mut Cursor<'_>, ty: Option<Type>) -> Result<Self::Owned, ParseError>;
+        fn print(cx: &InstPrinter<'_>, out: &mut dyn core::fmt::Write, value: &Self::View<'_>, ty: Option<Type>) -> core::fmt::Result;
+    }
+    pub struct Decimal<T>(core::marker::PhantomData<T>);
+    impl AtomCodec for u32 {
+        type Owned = u32;
+        type View<'a> = u32;
+        fn parse(_: &mut OperandParser<'_>, input: &mut Cursor<'_>, _: Option<Type>) -> Result<u32, ParseError> {
+            input.word()?.parse().map_err(|_| input.error("invalid number"))
+        }
+        fn print(_: &InstPrinter<'_>, out: &mut dyn core::fmt::Write, value: &u32, _: Option<Type>) -> core::fmt::Result {
+            write!(out, "{value}")
+        }
+    }
+    impl AtomCodec for Decimal<u32> {
+        type Owned = u32;
+        type View<'a> = u32;
+        fn parse(cx: &mut OperandParser<'_>, input: &mut Cursor<'_>, ty: Option<Type>) -> Result<u32, ParseError> {
+            <u32 as AtomCodec>::parse(cx, input, ty)
+        }
+        fn print(cx: &InstPrinter<'_>, out: &mut dyn core::fmt::Write, value: &u32, ty: Option<Type>) -> core::fmt::Result {
+            <u32 as AtomCodec>::print(cx, out, value, ty)
+        }
+    }
+}
+"#;
+    let parser_host = r#"
+    use super::*;
+    #[derive(Debug)] pub struct ParseError(String);
+    impl ParseError {
+        fn context(self, context: &str) -> Self { Self(format!("{context}: {}", self.0)) }
+    }
+    pub struct Location;
+    impl Location {
+        fn error(&self, message: impl ToString) -> ParseError { ParseError(message.to_string()) }
+    }
+    pub struct Cursor<'a>(&'a str);
+    enum Kind { Comma, Equal }
+    impl<'a> Cursor<'a> {
+        fn at_end(&self) -> bool { self.0.trim().is_empty() }
+        fn location(&self) -> Location { Location }
+        pub fn error(&self, message: impl ToString) -> ParseError { Location.error(message) }
+        fn eat(&mut self, kind: Kind) -> bool {
+            let c = match kind { Kind::Comma => ',', Kind::Equal => '=' };
+            if let Some(rest) = self.0.trim_start().strip_prefix(c) { self.0 = rest; true } else { false }
+        }
+        fn expect(&mut self, kind: Kind) -> Result<(), ParseError> {
+            if self.eat(kind) { Ok(()) } else { Err(self.error("missing punctuation")) }
+        }
+        pub fn word(&mut self) -> Result<&'a str, ParseError> {
+            let input = self.0.trim_start();
+            let n = input.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(input.len());
+            if n == 0 { return Err(self.error("expected word")); }
+            self.0 = &input[n..];
+            Ok(&input[..n])
+        }
+    }
+    pub struct OperandParser<'a>(pub &'a mut Vec<(Vec<Cell>, Vec<Cell>, Vec<Payload>)>);
+    impl OperandParser<'_> {
+        fn write(&mut self, op: Code, results: &[Cell], inputs: &[Cell], fields: &[Payload]) -> InstId {
+            Sink { store: self.0 }.write(op, results, inputs, fields)
+        }
+    }
+    pub struct InstPrinter<'a>(core::marker::PhantomData<&'a ()>);
+    impl InstPrinter<'_> {
+        fn fmt_head(&self, out: &mut dyn core::fmt::Write, name: &str, _: MemFlags) -> core::fmt::Result {
+            out.write_str(name)
+        }
+    }
+    pub fn roundtrip() {
+        let mut store = Vec::new();
+        let mut parser = OperandParser(&mut store);
+        let id = parser.parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor("30, 40, tag=99"), None, &[10, 20]).unwrap();
+        assert_eq!(id, 0);
+        assert!(parser.parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor("30, 40, tag=99"), None, &[10]).is_err());
+        assert!(parser.parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor("30, 40, tag=99, tag=1"), None, &[10, 20]).is_err());
+        assert!(parser.parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor("30, 40"), None, &[10, 20]).is_err());
+        assert!(parser.parse(Code::G_PAIR, MemFlags(true), &mut Cursor("30, 40, tag=99"), None, &[10, 20]).is_err());
+        assert_eq!(store.len(), 1);
+        assert_eq!(store[id], (vec![10, 20], vec![40, 30], vec![Payload::Tag(Tag { bits: 99 })]));
+        let mut text = String::new();
+        InstPrinter(core::marker::PhantomData).fmt_instruction_data(&mut text, Handle(&store[id]), None).unwrap();
+        let (_, operands) = text.split_once(' ').unwrap();
+        let id2 = OperandParser(&mut store).parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor(operands), None, &[10, 20]).unwrap();
+        assert_eq!(store[id], store[id2]);
+    }
+"#;
+    let text_parser = &generated.text_parser;
+    let text_printer = &generated.text_printer;
     let code = format!(
         r#"
 #![allow(dead_code, non_camel_case_types)]
-type Reg = u32;
-#[derive(Debug, Clone, PartialEq)]
-struct Writable<T>(T);
-#[derive(Debug, Clone, PartialEq)]
-enum MachineOperand {{ Def(Writable<Reg>), Use(Reg) }}
-enum GenericOpcode {{ G_PAIR }}
-enum MachineOpcode {{ Generic(GenericOpcode) }}
+extern crate alloc;
+extern crate self as veloc_types;
+pub type SigId = u32;
+type Cell = u32;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tag {{ pub bits: u32 }}
+pub type Type = u32;
+pub struct Summary {{ pub bits: u32, pub ty: Type }}
+pub struct Limits(u32);
+pub trait LimitsInfo {{ fn max(&self) -> u32; }}
+impl LimitsInfo for Limits {{ fn max(&self) -> u32 {{ self.0 }} }}
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Payload {{ Tag(Tag), Number(i64) }}
+#[derive(Debug, Clone, Copy)]
+pub enum Code {{ G_PAIR }}
 type InstId = usize;
-struct InstWriter<'a> {{ store: &'a mut Vec<Vec<MachineOperand>> }}
-impl InstWriter<'_> {{
-    fn write(self, _: MachineOpcode, operands: &[MachineOperand]) -> InstId {{
+struct Sink<'a> {{ store: &'a mut Vec<(Vec<Cell>, Vec<Cell>, Vec<Payload>)> }}
+impl Build for Sink<'_> {{
+    type Inst = usize;
+    type Def = Cell;
+    fn reg(value: Cell) -> Cell {{ value }}
+    fn write(self, _: Code, results: &[Cell], inputs: &[Cell], fields: &[Payload]) -> InstId {{
         let id = self.store.len();
-        self.store.push(operands.to_vec());
+        self.store.push((results.to_vec(), inputs.to_vec(), fields.to_vec()));
         id
     }}
 }}
 {builder}
+{reader}
+mod signatures {{
+{signature_host}
+{signature_reader}
+}}
+{text_host}
+mod text {{
+{parser_host}
+{text_parser}
+{text_printer}
+}}
+#[derive(Clone, Copy)]
+struct Handle<'a>(&'a (Vec<Cell>, Vec<Cell>, Vec<Payload>));
+impl<'a> Read<'a> for Handle<'a> {{
+    type Error = String;
+    fn value_type(self, value: Cell) -> Type {{ value + 1000 }}
+    fn opcode(self) -> Option<Code> {{ Some(Code::G_PAIR) }}
+    fn results(self) -> &'a [Cell] {{ &self.0.0 }}
+    fn inputs(self) -> &'a [Cell] {{ &self.0.1 }}
+    fn fields(self) -> &'a [Payload] {{ &self.0.2 }}
+    fn error(self, message: &str) -> String {{ message.to_owned() }}
+}}
 fn main() {{
+    text::roundtrip();
+    signatures::check();
     let mut store = Vec::new();
-    let id = InstWriter {{ store: &mut store }}.pair(Writable(10), Writable(20), 30, 40);
-    assert_eq!(store[id], vec![
-        MachineOperand::Use(40), MachineOperand::Def(Writable(20)),
-        MachineOperand::Use(30), MachineOperand::Def(Writable(10)),
-    ]);
+    let id = Sink {{ store: &mut store }}.pair(10, 20, 30, 40, Tag {{ bits: 99 }});
+    assert_eq!(store[id], (vec![10, 20], vec![40, 30], vec![Payload::Tag(Tag {{ bits: 99 }})]));
+    Handle(&store[id]).validate(&Limits(100)).unwrap();
+    let View::Pair(pair) = Handle(&store[id]).view();
+    assert_eq!((pair.low, pair.high, pair.left, pair.right, pair.tag.map(|tag| tag.bits)), (10, 20, 30, 40, Some(99)));
+    assert_eq!(Handle(&store[id]).summary().unwrap().bits, 99);
+    assert_eq!(Handle(&store[id]).summary().unwrap().ty, 1030);
+    let mut visited = Vec::new();
+    Handle(&store[id]).try_visit_ownership::<core::convert::Infallible>(|reg, moved| {{
+        visited.push((reg, moved)); Ok(())
+    }}).unwrap();
+    assert_eq!(visited, vec![(30, true), (40, false)]);
+    store[id].2[0] = Payload::Tag(Tag {{ bits: 101 }});
+    assert_eq!(Handle(&store[id]).validate(&Limits(100)).unwrap_err(), "tag exceeds limit");
+    store[id].2[0] = Payload::Tag(Tag {{ bits: 0 }});
+    assert_eq!(Handle(&store[id]).validate(&Limits(100)).unwrap_err(), "zero tag");
+    store[id].2.clear();
+    assert!(Handle(&store[id]).validate(&Limits(100)).is_err());
 }}
 "#
     );
@@ -445,7 +651,7 @@ impl type_methods::Token for Token {{ fn runtime(self) -> u32 {{ self.0 }} }}
 #[derive(Clone, Copy)] pub struct Type;
 impl Type {{
     fn element(self) -> Option<u8> {{ None }}
-    fn lane_count(&self) -> u16 {{ 1 }}
+    fn lane_count(&self) -> u32 {{ 1 }}
     fn is_scalable(&self) -> bool {{ false }}
 }}
 mod inst {{

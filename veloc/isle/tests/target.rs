@@ -173,7 +173,7 @@ fn compile_rel32_emit_generates_block_fixup() {
     let output = compile(input, "x86_64").expect("compile should succeed");
 
     assert!(output.contains("emitter.add_block_rel32_fixup"));
-    assert!(output.contains("MachineOperand::Block(target)"));
+    assert!(output.contains("InstField::Block(target)"));
 }
 
 #[test]
@@ -250,8 +250,8 @@ fn compile_def_inst_generates_operand_constraint_metadata() {
     let output = compile(input, "x86_64").expect("compile should succeed");
 
     assert!(output.contains("pub const TARGET_INST_X86SHL32CL_METADATA: TargetInstMetadata"));
-    assert!(output.contains("TiedOperandConstraint { def_operand: 0, use_operand: 2 }"));
-    assert!(output.contains("FixedUseConstraint { use_operand: 1, reg: REG_RCX }"));
+    assert!(output.contains("TiedOperandConstraint { result: 0, use_operand: 1 }"));
+    assert!(output.contains("FixedUseConstraint { use_operand: 0, reg: REG_RCX }"));
     assert!(output.contains("clobbers: &[\"EFLAGS\"]"));
     assert!(output.contains("pub fn target_inst_metadata(opcode: TargetInst)"));
 }
@@ -286,8 +286,8 @@ fn compile_select_rules_generate_generic_operand_constraint_metadata() {
 
     assert!(!output.contains("pub const GENERIC_INST_G_ADD_METADATA: GenericInstMetadata"));
     assert!(output.contains("pub const GENERIC_INST_G_SHL_METADATA: GenericInstMetadata"));
-    assert!(!output.contains("TiedOperandConstraint { def_operand: 0, use_operand: 1 }"));
-    assert!(output.contains("FixedUseConstraint { use_operand: 2, reg: REG_RCX }"));
+    assert!(!output.contains("TiedOperandConstraint { result: 0, use_operand: 2 }"));
+    assert!(output.contains("FixedUseConstraint { use_operand: 1, reg: REG_RCX }"));
     assert!(output.contains("pub fn generic_inst_metadata(opcode: veloc_lir::GenericOpcode)"));
 }
 
@@ -326,7 +326,7 @@ fn compile_stackslot_rules_generate_stackslot_operand_code() {
 
     let output = compile(input, "x86_64").expect("compile should succeed");
 
-    assert!(output.contains("MachineOperand::StackSlot"));
+    assert!(output.contains("InstField::StackSlot"));
     assert!(output.contains("stack_frame.slots[slot]"));
     assert!(output.contains("TargetInst::X86Load64Stack"));
     assert!(output.contains("TargetInst::X86Store64Stack"));

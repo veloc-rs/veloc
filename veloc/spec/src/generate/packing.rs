@@ -13,100 +13,8 @@ pub(crate) fn constructor(
     opcode: &str,
     local: impl Fn(&str) -> String,
 ) -> String {
-    let mut fields = Vec::new();
-    let mut setup = String::new();
-    for field in &format.fields {
-        let value = if matches!(&field.ty, FieldType::Named(ty) if ty == "Opcode") {
-            format!("crate::Opcode::{opcode}")
-        } else {
-            match &op.bindings()[&field.name] {
-                Binding::Name(name) => {
-                    let value = local(name);
-                    if field.policy.references.is_edge() {
-                        format!("({value}).as_view()")
-                    } else {
-                        value
-                    }
-                }
-                Binding::Array(args) => {
-                    let args = args
-                        .iter()
-                        .map(|arg| {
-                            let Binding::Name(name) = arg else {
-                                unreachable!("checked array binding")
-                            };
-                            local(name)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("[{args}]")
-                }
-                Binding::Pool(name) => {
-                    let value = local(name);
-                    let ty = field.rust.clone();
-                    let var = format!("_pooled_{}", field.name);
-                    writeln!(setup, "let {var} = {ty}::insert(writer.dfg, {value});").unwrap();
-                    var
-                }
-                Binding::Table { cases, default } => {
-                    format!(
-                        "({}).iter().map(crate::BlockCall::as_view).chain(core::iter::once(({}).as_view()))",
-                        local(cases),
-                        local(default)
-                    )
-                }
-            }
-        };
-        fields.push(value);
-    }
-    format!(
-        "move |writer: crate::InstWriter<'_>| {{ {setup} writer.{}({}) }}",
-        crate::storage::constructor_name(&format.name),
-        fields.join(", ")
-    )
-}
-
-/// Recover logical locals from physical values. Records, byte buffers and
-/// variadic lists are borrowed; the caller selects its error representation.
-pub(crate) fn projections(
-    op: &Op,
-    format: &Format,
-    dfg: &str,
-    field: impl Fn(&str) -> String,
-    required: impl Fn(String) -> String,
-) -> Vec<(String, String)> {
-    let mut locals = Vec::new();
-    for storage in &format.fields {
-        if matches!(&storage.ty, FieldType::Named(ty) if ty == "Opcode") {
-            continue;
-        }
-        let value = field(&storage.name);
-        match &op.bindings()[&storage.name] {
-            Binding::Name(name) => {
-                locals.push((name.clone(), value));
-            }
-            Binding::Array(args) => {
-                let value = format!("({value})");
-                for (index, arg) in args.iter().enumerate() {
-                    let Binding::Name(name) = arg else {
-                        unreachable!("checked array binding")
-                    };
-                    locals.push((name.clone(), format!("{value}[{index}]")));
-                }
-            }
-            Binding::Pool(name) => {
-                let ty = storage.rust.clone();
-                let value = required(format!("{ty}::get({value}, {dfg})"));
-                locals.push((name.clone(), value));
-            }
-            Binding::Table { cases, default } => {
-                let split = required(format!("({value}).split_last()"));
-                locals.push((cases.clone(), format!("({split}).1")));
-                locals.push((default.clone(), format!("({split}).0")));
-            }
-        }
-    }
-    locals
+    let write = crate::storage::compact::construction(op, format, opcode, local);
+    format!("move |writer: crate::InstWriter<'_>| {}", write.emit())
 }
 
 pub(crate) struct Alternative {
@@ -147,6 +55,7 @@ pub(crate) fn prepare_alternatives(
             continue;
         };
         let (mut op, format) = alternate(base, alt, source)?;
+        op.inputs = crate::storage::compact::inputs(&op, &format);
         op.constraints = expressions.verify(
             source,
             alt.constraints.clone(),
@@ -224,6 +133,7 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
                 results: TypeList::Fixed(Vec::new()),
             },
             params,
+            inputs: Default::default(),
             projection: crate::model::Projection::Packed(packing),
             signature_source: None,
             text: Some(alt.text.clone()),

@@ -3,20 +3,24 @@ use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use veloc_lir::stages::{PostIselOptimized, RegAllocated};
-use veloc_lir::{InstId, MachineFunction, MachineOperand, PReg, StackFrame, Writable};
+use veloc_lir::{InstField, InstId, MachineFunction, PReg, StackFrame};
 
 /// Physical locations and insertions for one instruction. Locations are indexed
-/// by operand occurrence, not by virtual register: split ranges may have different
-/// locations at different instructions. Non-register operands have no location.
+/// separately by result and input occurrence, not by virtual register: split ranges may have different
+/// locations at different instructions. Only register inputs have locations; attributes are not visited.
 #[derive(Debug, Clone, Default)]
 pub struct InstAllocation {
-    pub(crate) locations: SmallVec<[Option<PReg>; 4]>,
+    pub(crate) results: SmallVec<[PReg; 2]>,
+    pub(crate) locations: SmallVec<[PReg; 4]>,
     pub(crate) before: Vec<InstId>,
     pub(crate) after: Vec<InstId>,
 }
 
 impl InstAllocation {
-    pub fn locations(&self) -> &[Option<PReg>] {
+    pub fn results(&self) -> &[PReg] {
+        &self.results
+    }
+    pub fn locations(&self) -> &[PReg] {
         &self.locations
     }
 
@@ -75,22 +79,13 @@ impl Allocation {
                     }
                     // Preserve all non-register fields and payloads. No instruction
                     // replacement or extra-payload cloning is necessary.
-                    let mut operands: SmallVec<[_; 4]> =
-                        cursor.mfunc().inst(id).operands().iter().cloned().collect();
-                    assert_eq!(operands.len(), plan.locations.len());
-                    for (operand, location) in operands.iter_mut().zip(plan.locations) {
-                        match (operand, location) {
-                            (MachineOperand::Def(reg), Some(loc)) => {
-                                *reg = Writable(loc.into());
-                            }
-                            (MachineOperand::Use(reg), Some(loc)) => {
-                                *reg = loc.into();
-                            }
-                            (operand, None) => assert!(operand.as_reg().is_none()),
-                            _ => unreachable!("allocation must match the source operand shape"),
-                        }
-                    }
-                    cursor.mfunc_mut().set_inst_operands(id, operands);
+                    let results: SmallVec<[_; 2]> =
+                        plan.results.iter().copied().map(Into::into).collect();
+                    assert_eq!(results.len(), cursor.mfunc().inst(id).results().len());
+                    cursor.mfunc_mut().set_inst_results(id, &results);
+                    let inputs: SmallVec<[_; 4]> =
+                        plan.locations.iter().copied().map(Into::into).collect();
+                    cursor.mfunc_mut().set_inst_inputs(id, &inputs);
                     cursor.keep_current();
                     // The cursor appends to the output sequence; after keep_current
                     // these insertions follow the instruction.
@@ -109,7 +104,7 @@ impl Allocation {
             for id in edge.instructions {
                 source.append_inst_id_to_block(index, id);
             }
-            source.set_inst_operand(edge.branch, edge.operand, MachineOperand::Block(block));
+            source.set_inst_field(edge.branch, edge.operand, InstField::Block(block));
         }
         let ids: Vec<_> = source
             .blocks
@@ -153,9 +148,11 @@ mod tests {
             let reg = f.alloc_vreg(Type::I64);
             values.push(reg);
             {
-                let id = f.writer().generic(
+                let id = f.writer().write(
                     MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
-                    smallvec::smallvec![MachineOperand::Def(Writable(reg)), MachineOperand::Imm(n)],
+                    &[reg],
+                    &[],
+                    &[InstField::Imm(n)],
                 );
                 f.append_inst_id_to_block(0, id);
                 id
@@ -165,7 +162,7 @@ mod tests {
             {
                 let id = f.writer().unary(
                     MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
-                    Writable(REG_RAX),
+                    veloc_lir::Writable(REG_RAX),
                     reg,
                 );
                 f.append_inst_id_to_block(0, id);
@@ -192,7 +189,7 @@ mod tests {
                 let inst = plan.inst(id);
                 assert_eq!(
                     inst.locations().len(),
-                    plan.source().inst(id).operands().len()
+                    plan.source().inst(id).inputs().len()
                 );
                 (
                     inst.before()

@@ -29,6 +29,115 @@ impl Constraint {
     }
 }
 
+/// Emit a contract against logical parameter bindings supplied by storage.
+/// Contexts, local bindings and error propagation are identical for both IRs.
+pub(crate) fn emit_checks(
+    constraints: &[Constraint],
+    emitter: &mut Emitter<'_>,
+    contexts: &BTreeMap<&str, usize>,
+    types_checked: bool,
+    error: impl Fn(&str) -> String,
+) -> String {
+    let mut out = String::new();
+    for constraint in constraints {
+        if constraint.redundant()
+            || (types_checked && constraint.type_only && constraint.binding.is_none())
+        {
+            continue;
+        }
+        if let Some(ty) = constraint.condition.context_type() {
+            writeln!(out, "let _context = _ctx{};", contexts[ty]).unwrap();
+        }
+        let failure = error(&constraint.text);
+        emitter.error = Some(failure.clone());
+        out.push_str(&constraint.emit(emitter, &format!("return Err({failure})")));
+    }
+    out
+}
+
+/// Signature contracts are independent of the container owning values.
+/// Hosts resolve a signature and compare their own value representation.
+pub(crate) fn emit_signature(
+    op: &Op,
+    projections: &BTreeMap<String, String>,
+    resolve: impl Fn(&super::SignatureSource, &str) -> String,
+    validate: impl Fn(&str, &str, &str) -> String,
+    results: &str,
+) -> String {
+    let Some(source) = &op.signature_source else {
+        return String::new();
+    };
+    let (super::SignatureSource::Function(name)
+    | super::SignatureSource::Signature(name)
+    | super::SignatureSource::Value(name)) = source;
+    let signature = resolve(source, &projections[name]);
+    let args = &projections[&op
+        .params
+        .iter()
+        .find(|p| p.kind == ParamKind::Values)
+        .expect("checked signature arguments")
+        .name];
+    let args = format!("&({args})");
+    format!(
+        "let signature = {signature};\n{}\n{}\n",
+        validate("value", &args, "signature.0"),
+        validate("result", results, "signature.1")
+    )
+}
+
+pub(crate) fn emit_properties(
+    defs: &Definitions,
+    op: &Op,
+    emitter: &mut Emitter<'_>,
+    contexts: &BTreeMap<&str, usize>,
+    error: impl Fn(&str) -> String,
+) -> String {
+    let mut out = String::new();
+    for param in &op.params {
+        let ParamKind::Property(name) = &param.kind else {
+            continue;
+        };
+        let Some(property) = defs.properties.iter().find(|p| p.name == *name) else {
+            continue;
+        };
+        if property.constraints.is_empty() {
+            continue;
+        }
+        let value = emitter.projections[&param.name].clone();
+        let mut scope = emitter.scope(BTreeMap::from([("value".into(), value)]));
+        out.push_str("{\n");
+        out.push_str(&emit_checks(
+            &property.constraints,
+            &mut scope,
+            contexts,
+            false,
+            &error,
+        ));
+        out.push_str("}\n");
+        emitter
+            .storage_used
+            .set(emitter.storage_used.get() || scope.storage_used.get());
+    }
+    out
+}
+
+pub(crate) fn contexts<'a>(
+    defs: &'a Definitions,
+    alternatives: &'a [crate::generate::packing::Alternative],
+) -> BTreeMap<&'a str, usize> {
+    defs.ops
+        .iter()
+        .chain(alternatives.iter().map(|a| &a.op))
+        .flat_map(|op| &op.constraints)
+        .chain(defs.properties.iter().flat_map(|p| &p.constraints))
+        .filter_map(|c| c.condition.context_type())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .enumerate()
+        .map(|(i, ty)| (ty, i))
+        .collect()
+}
+
 pub(crate) fn check_property(
     source: &str,
     name: &str,
@@ -76,18 +185,7 @@ pub(crate) fn generate(
 ) -> String {
     // The caller supplies each concrete context once. Property validators and
     // alternate layouts share those same references; no adapter is constructed.
-    let contexts = defs
-        .ops
-        .iter()
-        .chain(alternatives.iter().map(|a| &a.op))
-        .flat_map(|op| &op.constraints)
-        .chain(defs.properties.iter().flat_map(|p| &p.constraints))
-        .filter_map(|c| c.condition.context_type())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .enumerate()
-        .map(|(i, ty)| (ty, i))
-        .collect::<BTreeMap<_, _>>();
+    let contexts = contexts(defs, alternatives);
     let mut groups = BTreeMap::<String, Vec<&str>>::new();
     for (op, &format) in defs.ops.iter().zip(formats) {
         let format = &defs.storage.formats[format];
@@ -130,47 +228,6 @@ pub(crate) fn generate(
         .unwrap();
     }
     out.push_str("        }\n    }\n}\n");
-    for property in &defs.properties {
-        out.push_str(&property_validator(property, &defs.data.rust));
-    }
-    out
-}
-
-fn property_validator(
-    property: &crate::model::Property,
-    rust: &super::records::RustTypes,
-) -> String {
-    let context = property
-        .constraints
-        .iter()
-        .find_map(|c| c.condition.context_type());
-    let param = context
-        .map(|ty| format!(", _context: &{ty}"))
-        .unwrap_or_default();
-    let mut out = format!(
-        "impl {} {{\n/// Validate the property contract declared in defs. Construction does not run this scan.\npub fn validate(self, dfg: &crate::dfg::DataFlowGraph{param}) -> core::result::Result<(), &'static str> {{\nlet _ = dfg;\n",
-        rust.qualified(&property.name)
-    );
-    for constraint in &property.constraints {
-        let emitter = Emitter {
-            constant: false,
-            const_failure: "panic!(\"invalid constant expression\")",
-            prefix: "crate::inst::",
-            instruction: false,
-            results: "_results",
-            result_values: false,
-            operand_types: BTreeMap::new(),
-            projections: BTreeMap::from([("value".into(), "self".into())]),
-            error: Some(format!("{:?}", constraint.text)),
-            storage_used: std::cell::Cell::new(false),
-            dfg: "dfg",
-        };
-        out.push_str(&constraint.emit(
-            &emitter,
-            &format!("return Err({})", emitter.error.as_ref().unwrap()),
-        ));
-    }
-    out.push_str("Ok(())\n}\n}\n");
     out
 }
 
@@ -183,42 +240,25 @@ fn emit_body(
 ) -> String {
     let mut body = String::new();
     let mut storage_used = false;
-    for param in &op.params {
-        if let ParamKind::Property(ty) = &param.kind
-            && defs.properties.iter().any(|p| p.name == *ty)
-        {
-            let projections = crate::generate::packing::projections(
-                op,
-                format,
-                "&self.dfg",
-                |name| {
-                    format!(
-                        "*_f{}",
-                        format.fields.iter().position(|f| f.name == name).unwrap()
-                    )
-                },
-                |v| format!("{v}.expect(\"checked property storage\")"),
-            );
-            let value = &projections
-                .iter()
-                .find(|(p, _)| *p == param.name)
-                .unwrap()
-                .1;
-            let context = defs
-                .properties
-                .iter()
-                .find(|p| p.name == *ty)
-                .unwrap()
-                .constraints
-                .iter()
-                .find_map(|c| c.condition.context_type());
-            let arg = context
-                .map(|ty| format!(", _ctx{}", contexts[ty]))
-                .unwrap_or_default();
-            writeln!(body, "({value}).validate(&self.dfg{arg}).map_err(|error| self.constraint_error(_inst, error))?;").unwrap();
-            storage_used = true;
-        }
-    }
+    let error = |text: &str| format!("self.constraint_error(_inst, {text:?})");
+    let projections = crate::model::access::projections(
+        op,
+        "&self.dfg",
+        |name| {
+            format!(
+                "*_f{}",
+                format.fields.iter().position(|f| f.name == name).unwrap()
+            )
+        },
+        |v| format!("{v}.ok_or_else(|| {})?", error("missing property storage")),
+    )
+    .into_iter()
+    .collect();
+    let mut emitter = Emitter::types(op, projections, "_operands", "_results");
+    emitter.prefix = "crate::inst::";
+    emitter.dfg = "&self.dfg";
+    body.push_str(&emit_properties(defs, op, &mut emitter, contexts, &error));
+    storage_used |= emitter.storage_used.get();
     for (index, pattern) in op
         .signature
         .results
@@ -228,59 +268,37 @@ fn emit_body(
         .enumerate()
     {
         if let Pattern::Property(name, _) = pattern {
-            let projections = crate::generate::packing::projections(
-                op,
-                format,
-                "&self.dfg",
-                |name| {
-                    format!(
-                        "*_f{}",
-                        format.fields.iter().position(|f| f.name == name).unwrap()
-                    )
-                },
-                |v| format!("{v}.expect(\"checked property storage\")"),
-            );
-            let value = &projections.iter().find(|(p, _)| p == name).unwrap().1;
+            let value = &emitter.projections[name];
             writeln!(body, "if _results[{index}] != ({value}).ty() {{ return Err(self.constraint_error(_inst, {:?})); }}", format!("result {index} must have the type of `{name}`")).unwrap();
             storage_used = true;
         }
     }
-    if let Some(source) = &op.signature_source {
+    if op.signature_source.is_some() {
         use crate::model::SignatureSource;
         let error = "self.constraint_error(_inst, \"missing function or signature\")";
-        let projections: BTreeMap<_, _> = crate::generate::packing::projections(
+        body.push_str(&emit_signature(
             op,
-            format,
-            "&self.dfg",
-            |name| {
+            &emitter.projections,
+            |source, value| {
+                let id = match source {
+                    SignatureSource::Function(_) => {
+                        format!("_module.functions.get({value}).ok_or_else(|| {error})?.signature")
+                    }
+                    SignatureSource::Signature(_) => value.into(),
+                    SignatureSource::Value(_) => format!(
+                        "self.dfg.value_type({value}).as_callable().ok_or_else(|| {error})?.0"
+                    ),
+                };
+                format!("{{ let signature = _module.signatures.get({id}).ok_or_else(|| {error})?; (signature.params(), signature.returns()) }}")
+            },
+            |role, values, types| {
                 format!(
-                    "*_f{}",
-                    format.fields.iter().position(|f| f.name == name).unwrap()
+                    "self.validate_values({:?}, {role:?}, {values}, {types}.iter().copied())?;",
+                    op.mnemonic
                 )
             },
-            |v| format!("{v}.ok_or_else(|| {error})?"),
-        )
-        .into_iter()
-        .collect();
-        let id = match source {
-            SignatureSource::Function(name) => format!(
-                "_module.functions.get({}).ok_or_else(|| {error})?.signature",
-                projections[name]
-            ),
-            SignatureSource::Signature(name) => projections[name].clone(),
-            SignatureSource::Value(name) => format!(
-                "self.dfg.value_type({}).as_callable().ok_or_else(|| {error})?.0",
-                projections[name]
-            ),
-        };
-        let args = &projections[&op
-            .params
-            .iter()
-            .find(|p| p.kind == ParamKind::Values)
-            .expect("checked signature arguments")
-            .name];
-        let args = args.strip_prefix('*').unwrap_or(args);
-        writeln!(body, "let signature = _module.signatures.get({id}).ok_or_else(|| {error})?;\nself.validate_values({:?}, \"value\", {args}, signature.params().iter().copied())?;\nself.validate_values({:?}, \"result\", self.dfg.inst_results(_inst), signature.returns().iter().copied())?;", op.mnemonic, op.mnemonic).unwrap();
+            "self.dfg.inst_results(_inst)",
+        ));
         storage_used = true;
     }
     // table(cases, default) requires a default in its physical sequence.
@@ -291,59 +309,14 @@ fn emit_body(
             storage_used = true;
         }
     }
-    if let Some(ty) = op
-        .constraints
-        .iter()
-        .find_map(|c| c.condition.context_type())
-    {
-        writeln!(body, "let _context = _ctx{};", contexts[ty]).unwrap();
-    }
-    for constraint in &op.constraints {
-        if constraint.redundant()
-            || (type_checks && constraint.type_only && constraint.binding.is_none())
-        {
-            continue;
-        }
-        let error = format!("self.constraint_error(_inst, {:?})", constraint.text);
-        let projections = crate::generate::packing::projections(
-            op,
-            format,
-            "&self.dfg",
-            |name| {
-                format!(
-                    "*_f{}",
-                    format.fields.iter().position(|f| f.name == name).unwrap()
-                )
-            },
-            |value| format!("{value}.ok_or_else(|| {error})?"),
-        )
-        .into_iter()
-        .collect();
-        let emitter = Emitter {
-            constant: false,
-            const_failure: "panic!(\"invalid constant expression\")",
-            prefix: "crate::inst::",
-            instruction: true,
-            results: "_results",
-            result_values: false,
-            operand_types: op
-                .params
-                .iter()
-                .filter(|p| p.kind == ParamKind::Value)
-                .enumerate()
-                .map(|(i, p)| (p.name.clone(), format!("_operands[{i}]")))
-                .collect(),
-            projections,
-            error: Some(error),
-            storage_used: std::cell::Cell::new(false),
-            dfg: "&self.dfg",
-        };
-        body.push_str(&constraint.emit(
-            &emitter,
-            &format!("return Err({})", emitter.error.as_ref().unwrap()),
-        ));
-        storage_used |= emitter.storage_used.get();
-    }
+    body.push_str(&emit_checks(
+        &op.constraints,
+        &mut emitter,
+        contexts,
+        type_checks,
+        error,
+    ));
+    storage_used |= emitter.storage_used.get();
     // Type-only predicates use already checked operand/result slices and
     // therefore work for alternate instruction layouts without reprojection.
     if storage_used {

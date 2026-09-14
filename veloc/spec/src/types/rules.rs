@@ -63,9 +63,8 @@ pub(crate) fn generate(
                     op.name, op.format
                 )
                 .unwrap();
-                let projections = crate::generate::packing::projections(
+                let projections = crate::model::access::projections(
                     op,
-                    format,
                     "dfg",
                     |f| format!("*_{f}"),
                     |v| format!("{v}.ok_or(\"missing property storage\")?"),
@@ -318,15 +317,8 @@ fn validation_rules<'a>(
             op.name
         )
         .unwrap();
-        let mut emitter = crate::model::expr::Emitter::query(BTreeMap::new());
-        emitter.result_values = false;
-        emitter.operand_types = op
-            .params
-            .iter()
-            .filter(|p| p.kind == crate::model::ParamKind::Value)
-            .enumerate()
-            .map(|(i, p)| (p.name.clone(), format!("operands[{i}]")))
-            .collect();
+        let mut emitter =
+            crate::model::expr::Emitter::types(op, BTreeMap::new(), "operands", "results");
         for constraint in &op.constraints {
             if !constraint.type_only || constraint.redundant() {
                 continue;

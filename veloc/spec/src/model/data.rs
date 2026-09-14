@@ -176,6 +176,7 @@ impl Types {
             let name = match ty {
                 PropertyType::Named(name)
                 | PropertyType::Optional(name)
+                | PropertyType::Sequence(name)
                 | PropertyType::Array(name, _) => name.as_str(),
                 PropertyType::Values(_) => "Value",
             };
@@ -195,6 +196,7 @@ impl Types {
             let ty = match ty {
                 PropertyType::Named(ty)
                 | PropertyType::Optional(ty)
+                | PropertyType::Sequence(ty)
                 | PropertyType::Array(ty, _) => ty.as_str(),
                 PropertyType::Values(_) => "Value",
             };
@@ -312,7 +314,7 @@ impl Types {
         }
     }
 
-    pub fn generate(&self, layouts: &[String], metadata: Option<&str>) -> String {
+    fn emitted_records(&self, layouts: &[String], metadata: Option<&str>) -> Vec<RecordDef> {
         // Storage is a use of a record, not its Rust data representation. A record
         // also referenced as a field, enum payload or metadata still needs a struct.
         let referenced = self
@@ -327,25 +329,57 @@ impl Types {
             .filter_map(|ty| match ty {
                 PropertyType::Named(name)
                 | PropertyType::Optional(name)
+                | PropertyType::Sequence(name)
                 | PropertyType::Array(name, _) => Some(name.as_str()),
                 PropertyType::Values(_) => None,
             })
             .chain(metadata)
             .collect::<BTreeSet<_>>();
-        let records = self
-            .records
+        self.records
             .iter()
             .filter(|r| !layouts.contains(&r.name) || referenced.contains(r.name.as_str()))
             .cloned()
-            .collect::<Vec<_>>();
-        let mut out = crate::model::records::generate(&records);
+            .collect()
+    }
+
+    pub(crate) fn validate_sequences(
+        &self,
+        layouts: &[String],
+        metadata: Option<&str>,
+        source: &str,
+    ) -> Result<(), Error> {
+        // Borrowed sequences are currently storage views, not standalone data.
+        // Reject unsupported lifetime propagation before emitting Rust.
+        let fields = self.emitted_records(layouts, metadata);
+        if fields
+            .iter()
+            .flat_map(|r| &r.fields)
+            .any(|f| matches!(f.ty, PropertyType::Sequence(_)))
+            || self
+                .enums
+                .iter()
+                .flat_map(|e| &e.variants)
+                .flat_map(|(_, args)| args)
+                .any(|ty| matches!(ty, PropertyType::Sequence(_)))
+        {
+            return Err(Error::at(
+                source,
+                0,
+                "sequence fields are supported only in standalone operand storage layouts",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn generate(&self, layouts: &[String], metadata: Option<&str>) -> String {
+        let mut out = crate::model::records::generate(&self.emitted_records(layouts, metadata));
         for en in &self.enums {
-            writeln!(
-                out,
-                "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub enum {} {{",
-                en.name
-            )
-            .unwrap();
+            let traits = if layouts.contains(&en.name) {
+                "Debug, Clone, Copy"
+            } else {
+                "Debug, Clone, Copy, PartialEq, Eq, Hash"
+            };
+            writeln!(out, "#[derive({traits})]\npub enum {} {{", en.name).unwrap();
             for (name, args) in &en.variants {
                 if args.is_empty() {
                     writeln!(out, "{name},").unwrap();

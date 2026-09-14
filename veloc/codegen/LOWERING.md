@@ -136,3 +136,4 @@ benchmark or a claim about generated-program performance.
 Regression coverage includes wrapping arithmetic at four widths, shared uses,
 multi-definition registers, excluded types, 4096-input trees, idempotence,
 multi-step legalization, in-place replacement, added blocks and cyclic rules.
+Instruction storage separates result registers, input registers, attributes and implicit physical register effects. Generated builders and encoders address each storage domain directly; no logical operand list or per-instruction order map is stored. Tied constraints identify a result and a dense input index. Allocation plans contain only result/input register locations, and materialization leaves attributes untouched. OpSpec register fields use the declared Reg type and derive their role from signature-to-storage bindings.

@@ -5,14 +5,16 @@ use cranelift_entity::packed_option::PackedOption;
 use veloc_collections::{LinkId, Links};
 
 type Head = PackedOption<LinkId>;
-const DEF: u32 = 1 << 31;
-const EXTRA: u32 = 1 << 30;
-const INDEX: u32 = EXTRA - 1;
+const TAG_SHIFT: u32 = 29;
+const INDEX: u32 = (1 << TAG_SHIFT) - 1;
 
 /// Logical locations are invalidated by reshaping an instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefLocation {
-    Operand(u32),
+    Result(u32),
+    ImplicitUse(u32),
+    ImplicitDef(u32),
+    Input(u32),
     EdgeArg(u32),
 }
 
@@ -29,28 +31,35 @@ pub(crate) struct Site {
 }
 impl Site {
     pub fn new(inst: InstId, location: RefLocation, role: RefRole) -> Self {
-        let (index, tag) = match location {
-            RefLocation::Operand(index) => (index, 0),
-            RefLocation::EdgeArg(index) => (index, EXTRA),
+        let (index, tag, expected) = match location {
+            RefLocation::Input(index) => (index, 0, RefRole::Use),
+            RefLocation::Result(index) => (index, 1, RefRole::Def),
+            RefLocation::EdgeArg(index) => (index, 2, RefRole::Use),
+            RefLocation::ImplicitUse(index) => (index, 3, RefRole::Use),
+            RefLocation::ImplicitDef(index) => (index, 4, RefRole::Def),
         };
+        assert_eq!(role, expected);
         assert!(index <= INDEX, "reference index overflow");
         Self {
             inst,
-            slot: index | tag | if role == RefRole::Def { DEF } else { 0 },
+            slot: index | tag << TAG_SHIFT,
         }
     }
     pub fn role(self) -> RefRole {
-        if self.slot & DEF == 0 {
-            RefRole::Use
-        } else {
-            RefRole::Def
+        match self.slot >> TAG_SHIFT {
+            1 | 4 => RefRole::Def,
+            _ => RefRole::Use,
         }
     }
     pub fn location(self) -> RefLocation {
-        if self.slot & EXTRA == 0 {
-            RefLocation::Operand(self.slot & INDEX)
-        } else {
-            RefLocation::EdgeArg(self.slot & INDEX)
+        let index = self.slot & INDEX;
+        match self.slot >> TAG_SHIFT {
+            0 => RefLocation::Input(index),
+            1 => RefLocation::Result(index),
+            2 => RefLocation::EdgeArg(index),
+            3 => RefLocation::ImplicitUse(index),
+            4 => RefLocation::ImplicitDef(index),
+            _ => unreachable!("invalid reference location"),
         }
     }
 }

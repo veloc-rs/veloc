@@ -72,19 +72,32 @@ pub(super) fn construct(name: &str, fields: impl Iterator<Item = (String, String
 pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String {
     let mut out =
         String::from("// generated: construction data and borrowed views share one schema.\n");
-    out.push_str("#[derive(Debug, Clone, Copy)] pub enum InstView<'a> {\n");
-    for layout in layouts {
-        if layout.fields.is_empty() {
-            writeln!(out, "{},", layout.name).unwrap();
-            continue;
-        }
-        writeln!(out, "{} {{", layout.name).unwrap();
-        for field in &layout.fields {
-            writeln!(out, "{}: {},", field.name, view_type(field)).unwrap();
-        }
-        out.push_str("},\n");
-    }
-    out.push_str("}\n");
+    let view = crate::generate::views::View {
+        name: "InstView".into(),
+        representation: crate::generate::views::Representation::Inline,
+        variants: layouts
+            .iter()
+            .map(|layout| crate::generate::views::Variant {
+                name: layout.name.clone(),
+                borrowed: layout.fields.iter().any(|field| {
+                    matches!(
+                        field.traversal(),
+                        Some("array" | "value_list" | "block_call" | "jump_table")
+                    )
+                }),
+                fields: layout
+                    .fields
+                    .iter()
+                    .map(|field| crate::generate::views::Field {
+                        name: field.name.clone(),
+                        ty: view_type(field),
+                    })
+                    .collect(),
+                opcodes: Vec::new(),
+            })
+            .collect(),
+    };
+    out.push_str(&view.generate());
     for record in records {
         writeln!(
             out,
@@ -201,7 +214,7 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
         .unwrap();
     }
     from_values(&mut out, layouts);
-    out.push_str("}\n#[allow(unused_variables)] impl<'a> InstView<'a> {\npub fn opcode(&self) -> Opcode { match self {\n");
+    writeln!(out, "}}\n#[allow(unused_variables)] impl{} InstView{} {{\npub fn opcode(&self) -> Opcode {{ match self {{", view.lifetime(), view.lifetime()).unwrap();
     for layout in layouts {
         let value = match &layout.opcode {
             OpcodeSource::Fixed(op) => format!("Opcode::{op}"),

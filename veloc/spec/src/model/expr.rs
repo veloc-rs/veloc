@@ -94,6 +94,10 @@ impl Ty {
                 &PropertyType::Named(name.clone()),
                 rust,
             ))),
+            PropertyType::Sequence(name) => Self::Sequence(Box::new(Self::property(
+                &PropertyType::Named(name.clone()),
+                rust,
+            ))),
             PropertyType::Array(name, n) => Self::Array(
                 Box::new(Self::property(&PropertyType::Named(name.clone()), rust)),
                 *n,
@@ -140,6 +144,33 @@ pub(crate) enum ExprKind {
 }
 
 impl Expr {
+    /// Whether evaluation needs the host's value-to-type lookup.
+    pub(crate) fn needs_value_types(&self) -> bool {
+        use ExprKind as E;
+        match &self.kind {
+            E::ResultType(_) | E::Results => true,
+            E::Query(Query::TypeOf, value) if matches!(value.ty, Ty::Value(_)) => true,
+            E::Local(_, v) => v.needs_value_types(),
+            E::Borrow(v)
+            | E::Unary(_, v)
+            | E::Query(_, v)
+            | E::Convert(v)
+            | E::Some(v)
+            | E::Try(v)
+            | E::Field(v, _) => v.needs_value_types(),
+            E::Binary(_, a, b) | E::Slice(a, b, _) => {
+                a.needs_value_types() || b.needs_value_types()
+            }
+            E::All(inputs, body) => {
+                inputs.iter().any(|(v, _)| v.needs_value_types()) || body.needs_value_types()
+            }
+            E::Record(fields) => fields.values().any(Self::needs_value_types),
+            E::Rust(_, args) | E::Array(args) | E::Variant(_, args) => {
+                args.iter().any(Self::needs_value_types)
+            }
+            _ => false,
+        }
+    }
     pub(crate) fn is_const(&self) -> bool {
         self.const_safe(false)
     }
@@ -1721,15 +1752,19 @@ pub(crate) enum Query {
     Len,
 }
 
+#[derive(Clone, Copy)]
+enum ResultAccess<'a> {
+    Values(&'a str),
+    Types(&'a str),
+}
+
 pub(crate) struct Emitter<'a> {
     pub projections: BTreeMap<String, String>,
     pub error: Option<String>,
     pub storage_used: std::cell::Cell<bool>,
     pub dfg: &'a str,
-    pub results: &'a str,
-    pub result_values: bool,
+    results: ResultAccess<'a>,
     pub operand_types: BTreeMap<String, String>,
-    pub instruction: bool,
     pub constant: bool,
     pub const_failure: &'a str,
     pub prefix: &'a str,
@@ -1742,15 +1777,55 @@ impl<'a> Emitter<'a> {
             error: None,
             storage_used: std::cell::Cell::new(false),
             dfg: "dfg",
-            results: "results",
-            result_values: true,
+            results: ResultAccess::Values("results"),
             operand_types: BTreeMap::new(),
-            instruction: false,
             constant: false,
             const_failure: "panic!(\"invalid constant expression\")",
             prefix: "",
         }
     }
+    pub fn values(projections: BTreeMap<String, String>, dfg: &'a str, results: &'a str) -> Self {
+        Self {
+            dfg,
+            results: ResultAccess::Values(results),
+            ..Self::query(projections)
+        }
+    }
+
+    pub fn types(
+        op: &super::Op,
+        projections: BTreeMap<String, String>,
+        operands: &str,
+        results: &'a str,
+    ) -> Self {
+        Self {
+            results: ResultAccess::Types(results),
+            operand_types: op
+                .params
+                .iter()
+                .filter(|p| p.kind == super::ParamKind::Value)
+                .enumerate()
+                .map(|(i, p)| (p.name.clone(), format!("{operands}[{i}]")))
+                .collect(),
+            ..Self::query(projections)
+        }
+    }
+
+    /// Property names belong to a new scope, not the instruction's SSA inputs.
+    pub fn scope(&self, projections: BTreeMap<String, String>) -> Self {
+        Self {
+            projections,
+            operand_types: BTreeMap::new(),
+            error: self.error.clone(),
+            storage_used: std::cell::Cell::new(false),
+            dfg: self.dfg,
+            results: self.results,
+            constant: self.constant,
+            const_failure: self.const_failure,
+            prefix: self.prefix,
+        }
+    }
+
     fn required(&self, value: String) -> String {
         if self.constant {
             return format!(
@@ -1760,8 +1835,7 @@ impl<'a> Emitter<'a> {
         }
         match &self.error {
             None => format!("{value}?"),
-            Some(error) if self.instruction => format!("{value}.ok_or_else(|| {error})?"),
-            Some(error) => format!("{value}.ok_or({error})?"),
+            Some(error) => format!("{value}.ok_or_else(|| {error})?"),
         }
     }
     fn operand(&self, term: &Expr) -> String {
@@ -1793,8 +1867,6 @@ impl<'a> Emitter<'a> {
             ExprKind::Constant(data::Value::Bool(value)) => value.to_string(),
             ExprKind::Constant(value) => value.rust(if !self.prefix.is_empty() {
                 self.prefix
-            } else if self.error.is_some() {
-                "crate::inst::"
             } else {
                 ""
             }),
@@ -1816,23 +1888,23 @@ impl<'a> Emitter<'a> {
                     value.strip_prefix('*').unwrap_or(&value)
                 ))
             }
-            ExprKind::ResultType(index) => {
-                if self.result_values {
+            ExprKind::ResultType(index) => match self.results {
+                ResultAccess::Values(results) => {
                     let get = if *index == 0 {
-                        format!("{}.first()", self.results)
+                        format!("{results}.first()")
                     } else {
-                        format!("{}.get({index})", self.results)
+                        format!("{results}.get({index})")
                     };
                     format!("({}).value_type(*{})", receiver, self.required(get))
-                } else {
-                    format!("{}[{index}]", self.results)
                 }
-            }
-            ExprKind::Results if self.result_values => format!(
-                "&{}.iter().map(|&v| ({}).value_type(v)).collect::<alloc::vec::Vec<_>>()",
-                self.results, receiver
-            ),
-            ExprKind::Results => self.results.into(),
+                ResultAccess::Types(results) => format!("{results}[{index}]"),
+            },
+            ExprKind::Results => match self.results {
+                ResultAccess::Values(results) => format!(
+                    "&{results}.iter().map(|&v| ({receiver}).value_type(v)).collect::<alloc::vec::Vec<_>>()"
+                ),
+                ResultAccess::Types(results) => results.into(),
+            },
             ExprKind::Type(name) => crate::types::rust_type(name),
             ExprKind::Slice(sequence, index, prefix) => {
                 let sequence = self.term(sequence);
@@ -1891,8 +1963,6 @@ impl<'a> Emitter<'a> {
                 "{}{} {{ {} }}",
                 if !self.prefix.is_empty() {
                     self.prefix
-                } else if self.error.is_some() {
-                    "crate::inst::"
                 } else {
                     ""
                 },

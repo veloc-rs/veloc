@@ -1,4 +1,5 @@
 use super::*;
+use veloc_lir::{InstBuild, InstRead};
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64Legalizer {
@@ -171,7 +172,7 @@ impl TargetLegalizer for X86_64Legalizer {
             };
         })?;
         if action == Some(LegalizeAction::Legal) {
-            let offset = match inst.generic_view()? {
+            let offset = match inst.view() {
                 veloc_lir::InstView::LoadOffset(load) => Some(load.offset),
                 veloc_lir::InstView::StoreOffset(store) => Some(store.offset),
                 _ => None,
@@ -194,7 +195,7 @@ impl TargetLegalizer for X86_64Legalizer {
             match opcode {
                 GenericOpcode::G_UITOFP | GenericOpcode::G_FPTOUI => {
                     let inst = mfunc.inst(inst_id);
-                    let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
+                    let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
                         unreachable!()
                     };
                     self.lowering.unsigned_conversion(
@@ -208,7 +209,7 @@ impl TargetLegalizer for X86_64Legalizer {
                 }
                 GenericOpcode::G_FNEG | GenericOpcode::G_FABS => {
                     let inst = mfunc.inst(inst_id);
-                    let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
+                    let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
                         unreachable!()
                     };
                     let float = mfunc.vreg_data(unary.dst).ty;
@@ -254,7 +255,7 @@ impl TargetLegalizer for X86_64Legalizer {
                 }
                 GenericOpcode::G_OFFSET_LOAD | GenericOpcode::G_OFFSET_STORE => {
                     let inst = mfunc.inst(inst_id);
-                    let (base, offset, value) = match inst.generic_view()? {
+                    let (base, offset, value) = match inst.view() {
                         veloc_lir::InstView::LoadOffset(load) => (load.base, load.offset, load.dst),
                         veloc_lir::InstView::StoreOffset(store) => {
                             (store.base, store.offset, store.src)
@@ -281,7 +282,7 @@ impl TargetLegalizer for X86_64Legalizer {
                 }
                 GenericOpcode::G_CTPOP | GenericOpcode::G_CTLZ | GenericOpcode::G_CTTZ => {
                     let inst = mfunc.inst(inst_id);
-                    let veloc_lir::InstView::UnaryReg(unary) = inst.generic_view()? else {
+                    let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
                         unreachable!("unary legalization opcode");
                     };
                     let ty = if unary.dst.is_vreg() {
@@ -335,7 +336,7 @@ impl TargetLegalizer for X86_64Legalizer {
             let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).cloned() else {
                 panic!("missing br_table extra during x86_64 br_table legalization");
             };
-            let veloc_lir::InstView::BranchTable(brjt) = mfunc.inst(inst_id).generic_view()? else {
+            let veloc_lir::InstView::BranchTable(brjt) = mfunc.inst(inst_id).view() else {
                 panic!("invalid br_table instruction during x86_64 legalization");
             };
 
@@ -347,18 +348,19 @@ impl TargetLegalizer for X86_64Legalizer {
             let default_target = info.targets.last().unwrap();
 
             for (case_idx, target) in info.targets[..info.targets.len() - 1].iter().enumerate() {
-                let cmp_inst = mfunc.writer().generic(
+                let cmp_inst = mfunc.writer().write(
                     MachineOpcode::Target(TargetInst::X86Cmp32ri.as_u32()),
-                    smallvec::smallvec![
-                        MachineOperand::Use(index),
-                        MachineOperand::Imm(case_idx as i64),
-                    ],
+                    &[],
+                    &[index],
+                    &[InstField::Imm(case_idx as i64)],
                 );
                 output.push(cmp_inst);
 
-                let je_inst = mfunc.writer().generic(
+                let je_inst = mfunc.writer().write(
                     MachineOpcode::Target(TargetInst::X86Je.as_u32()),
-                    smallvec::smallvec![MachineOperand::Block(target.block)],
+                    &[],
+                    &[],
+                    &[InstField::Block(target.block)],
                 );
                 mfunc.set_inst_extra(
                     je_inst,
@@ -369,9 +371,11 @@ impl TargetLegalizer for X86_64Legalizer {
                 output.push(je_inst);
             }
 
-            let jmp_inst = mfunc.writer().generic(
+            let jmp_inst = mfunc.writer().write(
                 MachineOpcode::Target(TargetInst::X86Jmp.as_u32()),
-                smallvec::smallvec![MachineOperand::Block(default_target.block)],
+                &[],
+                &[],
+                &[InstField::Block(default_target.block)],
             );
             mfunc.set_inst_extra(
                 jmp_inst,

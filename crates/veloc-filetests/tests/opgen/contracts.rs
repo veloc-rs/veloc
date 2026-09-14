@@ -85,8 +85,9 @@ fn the_actual_mir_definitions_compile_deterministically() {
     assert_eq!(first.semantics, second.semantics);
 }
 
-const BINARY: &str =
-    "storage Operands { prefix: \"G_\" }\nstruct Binary { dst: Def, lhs: Use, rhs: Use }";
+const BINARY: &str = "type Reg = rust(\"crate::Reg\");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: \"G_\"  }\nstruct Binary { dst: Reg, lhs: Reg, rhs: Reg }";
 const ADD: &str = "op G_SUM<T: Integer>(lhs: T, rhs: T) -> (dst: T) { meta: OpInfo {}, storage: Binary { dst, lhs, rhs }, semantics: bv.add(lhs, rhs) }";
 
 #[test]
@@ -311,13 +312,10 @@ fn output_plan_diagnostics() {
     }
     "#;
         for (source, message) in [
-            ("storage Operands {} property Int { verify {require(true, \"valid\");
-    } }".into(), "property validators"),
             (base.replace("mnemonic: \"example\"", "mnemonic: \"emit\""), "InstBuilder method"),
             (base.replace("storage: Custom { arg: arg },", "storage: Custom { arg: arg }, text: \"{missing}\","), "missing"),
             (format!("{base}\nstruct Alternate {{ arg: Value, extra: u32 }}\nlayout Alternate {{ format: fixed(Custom), text: \"{{arg}}, extra={{extra}}\", verify {{unknown > 0;
     }} }}"), "unknown expression name or operation"),
-            ("storage Operands {} struct Unary { dst: Def, src: Use } op G_COPY<T: Integer>(src: T) -> (dst: T) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Unary { dst, src }, text: \"{src}\" }".into(), "operand storage does not yet support"),
         ] {
             let source = common::source(&source);
             veloc_opgen::parse(&source).unwrap();
@@ -362,7 +360,7 @@ fn output_plan_diagnostics() {
                     "{BINARY} {}",
                     ADD.replace("-> (dst: T)", "-> (dst: T, extra: T)")
                 ),
-                "has no storage mapping",
+                "every result requires a storage mapping",
             ),
             (
                 format!("{BINARY} {}", ADD.replace("Integer", "Missing")),
@@ -381,24 +379,38 @@ fn output_plan_diagnostics() {
                     "{BINARY} {}",
                     ADD.replace("semantics:", "flow: Call, semantics:")
                 ),
-                "MAY_TRAP",
+                "flow requires a declared control enum",
             ),
             (format!("{BINARY} {ADD} {ADD}"), "duplicate op"),
+            (format!("{} {ADD}", BINARY.replace("writer: InstBuild", "writer: InstRead")), "generated type names must be distinct"),
+            (format!("{} {ADD}", BINARY.replace("opcode: GenericOpcode", "opcode: Type")), "conflicts with a declaration"),
             (
-                "storage Operands {} struct Bad { dst: Def, dst: Use }".into(),
+                "type Reg = rust(\"crate::Reg\");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  } struct Bad { dst: Reg, dst: Reg }"
+                    .into(),
                 "duplicate field",
             ),
             (
-                "storage Operands {} struct Bad { values: Uses, dst: Def }".into(),
-                "entire operand sequence",
+                "type Reg = rust(\"crate::Reg\");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  } struct Bad { values: sequence(Reg), dst: Reg } op Bad(dst: Type::I32, values: sequence(Value)) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Bad { values, dst } }"
+                    .into(),
+                "only one trailing sequence",
             ),
             (
-                "storage Operands {} struct Bad { dst: Def } layout Bad { lengths: [0] }".into(),
-                "layout overrides",
+                "type Reg = rust(\"crate::Reg\");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  } struct Bad { dst: Reg } layout Bad { lengths: [0] }"
+                    .into(),
+                "operand layouts",
             ),
             (
-                "storage Operands {} struct Bad { dst: Def } layout Bad { lengths: [1, 1] }".into(),
-                "layout overrides",
+                "type Reg = rust(\"crate::Reg\");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  } struct Bad { dst: Reg } layout Bad { lengths: [1, 1] }"
+                    .into(),
+                "operand layouts",
             ),
             (
                 format!(
@@ -415,18 +427,14 @@ fn output_plan_diagnostics() {
         }
     }
 
-    // unsupported output contracts are not silently ignored
+    // Text contracts are supported by the shared text compiler.
     {
         let source = common::source(&format!(
             "{BINARY} {}",
             ADD.replace("semantics:", "text: \"{lhs}, {rhs}\", semantics:")
         ));
-        assert!(
-            veloc_opgen::compile(&source)
-                .err()
-                .unwrap()
-                .message
-                .contains("does not yet support")
-        );
+        let generated = veloc_opgen::compile(&source).unwrap();
+        assert!(!generated.text_parser.is_empty());
+        assert!(!generated.text_printer.is_empty());
     }
 }

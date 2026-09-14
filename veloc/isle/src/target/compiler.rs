@@ -282,16 +282,9 @@ pub fn compile(input: &str, arch: &str) -> Result<String, String> {
         }
     }
     let needs_positional_helpers = select::module_has_positional_rules(&module);
-    let needs_source_defs_helper =
-        select::module_needs_source_defs_helper(&module, &final_inst_defs);
 
     let mut output = String::new();
-    generate::generate_header(
-        &mut output,
-        arch,
-        needs_positional_helpers,
-        needs_source_defs_helper,
-    );
+    generate::generate_header(&mut output, arch, needs_positional_helpers);
     generate::generate_register_descriptors(&mut output, &module);
     generate::generate_cpu_info(&mut output, &module);
     generate::generate_abi_descriptors(&mut output, &module)?;

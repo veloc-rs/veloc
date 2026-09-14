@@ -253,12 +253,12 @@
 
 ;; 调用
 (select-rule
-    (match (schema Call G_CALL (shape $target) @n))
+    (match (schema Call G_CALL (callee $target) @n))
     (emit (X86Call $target))
     (covers (@n))
     (cost 1))
 (select-rule
-    (match (schema Call G_CALLIND (shape $target) @n))
+    (match (schema CallIndirect G_CALLIND (callee $target) @n))
     (emit (X86CallReg $target))
     (covers (@n))
     (cost 1))

@@ -293,8 +293,10 @@ op Example<T: Integer>(input: T) -> T {
 // run: opgen
 // check: TypeError::Constraint("double width")
 // check: checked_mul
-storage Operands { prefix: "G_" }
-struct Unary { dst: Def, src: Use }
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: "G_"  }
+struct Unary { dst: Reg, src: Reg }
 fn double_bits(from: Type, to: Type) -> bool {
     value: to.element_bits()? == from.element_bits()? * 2
 }
@@ -376,6 +378,11 @@ property VectorConst {
     verify(ctx: VerifyContext) {
         len(ctx.current_signature()?.params()) == 0;
     }
+}
+struct Data { value: VectorConst }
+op Example(value: VectorConst) -> Vector {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    mnemonic: "example", storage: Data { value },
 }
 
 // ----- property-constraints/unknown-property

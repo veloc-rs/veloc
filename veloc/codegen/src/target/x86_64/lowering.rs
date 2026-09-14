@@ -26,11 +26,11 @@ pub use operand::X86_64OperandLowering;
 pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
 pub use regbank::X86_64RegBankSelect;
 pub use select::X86_64Selector;
-use smallvec::smallvec;
+use veloc_lir::InstBuild;
 use veloc_lir::RegisterBank;
 use veloc_lir::stages::{LegalizedLir, PreIselPrepared, RegAllocated, SelectedLir};
 use veloc_lir::{
-    GenericOpcode, InstExtra, InstId, MachineFunction, MachineOpcode, MachineOperand, Reg, VReg,
+    GenericOpcode, InstExtra, InstField, InstId, MachineFunction, MachineOpcode, Reg, VReg,
     Writable,
 };
 use veloc_mir::{FloatCC, IntCC, Type, TypeInfo};
@@ -88,9 +88,16 @@ fn build_x86_copy_inst<S>(
 fn build_target_inst(
     writer: veloc_lir::InstWriter<'_>,
     opcode: TargetInst,
-    operands: smallvec::SmallVec<[MachineOperand; 4]>,
+    results: &[Reg],
+    inputs: &[Reg],
+    fields: &[InstField],
 ) -> InstId {
-    writer.generic(MachineOpcode::Target(opcode.as_u32()), operands)
+    writer.write(
+        MachineOpcode::Target(opcode.as_u32()),
+        results,
+        inputs,
+        fields,
+    )
 }
 
 fn build_target_imm(
@@ -102,7 +109,9 @@ fn build_target_imm(
     build_target_inst(
         writer,
         opcode,
-        smallvec![MachineOperand::Def(dst), MachineOperand::Imm(imm)],
+        &[(dst).to_reg()],
+        &[],
+        &[InstField::Imm(imm)],
     )
 }
 
@@ -121,11 +130,7 @@ fn build_target_binary_uses(
     lhs: Reg,
     rhs: Reg,
 ) -> InstId {
-    build_target_inst(
-        writer,
-        opcode,
-        smallvec![MachineOperand::Use(lhs), MachineOperand::Use(rhs)],
-    )
+    build_target_inst(writer, opcode, &[], &[lhs, rhs], &[])
 }
 
 /// x86_64 后端共享 lowering helper。
@@ -410,7 +415,9 @@ impl X86_64Lowering {
         ctx.selected.push(build_target_inst(
             ctx.mfunc.writer(),
             TargetInst::X86Setne,
-            smallvec![MachineOperand::Def(Writable(cond_byte))],
+            &[(Writable(cond_byte)).to_reg()],
+            &[],
+            &[],
         ));
         ctx.selected.push(build_target_unary(
             ctx.mfunc.writer(),
@@ -528,7 +535,9 @@ impl X86_64Lowering {
                 ctx.selected.push(build_target_inst(
                     ctx.mfunc.writer(),
                     opcode,
-                    smallvec![MachineOperand::Def(Writable(tmp8))],
+                    &[(Writable(tmp8)).to_reg()],
+                    &[],
+                    &[],
                 ));
                 ctx.selected.push(build_target_unary(
                     ctx.mfunc.writer(),
@@ -684,11 +693,7 @@ impl LoweringContext for X86SelectionContext<'_> {
         self.vregs[vreg].bank
     }
     fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<VReg> {
-        let reg = inst
-            .operands()
-            .iter()
-            .filter_map(MachineOperand::as_reg)
-            .nth(index)?;
+        let reg = inst.inputs().get(index)?;
         reg.is_vreg().then(|| VReg::from_u32(reg.index()))
     }
 }

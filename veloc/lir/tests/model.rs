@@ -1,9 +1,10 @@
 //! Construct, decode, validate, and interpret the standalone LIR model.
 use veloc_lir::stages::{LegalizedLir, RawLir};
 use veloc_lir::{
-    ControlFlow, GenericOpcode, MachineFunction, MachineModule, MachineOperand, Reg, RegisterBank,
+    ControlFlow, GenericOpcode, InstField, MachineFunction, MachineModule, Reg, RegisterBank,
     SymbolTable, Type, TypeError, Writable,
 };
+use veloc_lir::{InstBuild, InstRead};
 use veloc_mir::Linkage;
 
 #[test]
@@ -38,7 +39,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     assert_eq!(edges, [0, 2]);
     f.check_refs().unwrap();
 
-    f.set_inst_operand(add, 1, MachineOperand::Use(b));
+    f.set_inst_input(add, 1, b);
     assert_eq!(f.uses(a).count(), 4);
     f.replace_uses(VReg::from_u32(a.index()), VReg::from_u32(b.index()));
     assert_eq!(f.uses(a).count(), 0);
@@ -79,7 +80,55 @@ fn references_follow_all_store_edits_and_edge_arguments() {
         assert_eq!(f.uses(a).count(), 2);
         f.check_refs().unwrap();
     }
+    // Register references and attribute edits address independent storage domains.
+    let mixed = f.writer().write(
+        veloc_lir::MachineOpcode::Target(0),
+        &[],
+        &[a, a],
+        &[InstField::Imm(7), InstField::Imm(9)],
+    );
+    assert_eq!(f.inst(mixed).inputs(), &[a, a]);
+    assert_eq!(f.inst(mixed).fields().len(), 2);
+    f.set_inst_input(mixed, 1, b);
+    assert_eq!(f.inst(mixed).inputs()[1], b);
+    f.check_refs().unwrap();
+    f.replace_uses(a.as_vreg().unwrap(), b.as_vreg().unwrap());
+    assert_eq!(f.inst(mixed).inputs(), &[b, b]);
+    // Attribute edits do not touch register references or input storage.
+    let inputs = f.inst(mixed).inputs().as_ptr();
+    f.set_inst_field(mixed, 0, InstField::Imm(11));
+    assert_eq!(f.inst(mixed).inputs().as_ptr(), inputs);
+    assert_eq!(f.inst(mixed).inputs(), &[b, b]);
+    f.check_refs().unwrap();
+    f.invalidate_inst(mixed);
+    // Result edits and implicit physical effects have independent locations.
+    f.set_inst_result(add, 0, b);
+    assert_eq!(f.defs(dst).count(), 0);
+    assert_eq!(
+        f.defs(b).single().unwrap().location(),
+        RefLocation::Result(0)
+    );
+    let preg = Reg::new_preg(3);
+    f.set_inst_effects(
+        add,
+        veloc_lir::RegEffects {
+            uses: vec![preg],
+            defs: vec![preg],
+        },
+    );
+    assert_eq!(
+        f.uses(preg).single().unwrap().location(),
+        RefLocation::ImplicitUse(0)
+    );
+    assert_eq!(
+        f.defs(preg).single().unwrap().location(),
+        RefLocation::ImplicitDef(0)
+    );
+    assert_eq!(f.inst(add).results(), &[b]);
+    f.check_refs().unwrap();
     f.invalidate_inst(add);
+    assert_eq!(f.uses(preg).count(), 0);
+    assert_eq!(f.defs(preg).count(), 0);
     f.invalidate_inst(branch);
     assert_eq!(f.uses(a).count(), 0);
     assert_eq!(f.uses(b).count(), 0);
@@ -94,8 +143,7 @@ fn standalone_module_supports_instruction_and_stage_apis() {
     let reg = function.alloc_vreg(Type::I64);
     let inst = function.writer().constant(Writable(reg), 42);
     function.append_inst_id_to_block(function.find_block_index(block).unwrap(), inst);
-    let veloc_lir::InstView::Constant(constant) = function.inst(inst).generic_view().unwrap()
-    else {
+    let veloc_lir::InstView::Constant(constant) = function.inst(inst).view() else {
         panic!("expected constant");
     };
     assert_eq!(constant.imm, 42);
@@ -120,8 +168,8 @@ fn operand_edits_preserve_payload_but_replacement_discards_it() {
     });
     function.set_inst_extra(id, extra.clone());
 
-    let operands = function.inst(id).operands().to_vec();
-    function.set_inst_operands(id, operands);
+    let operands = function.inst(id).fields().to_vec();
+    function.set_inst_fields(id, &operands);
     assert_eq!(function.inst_extra(id), Some(&extra));
 
     function.invalidate_inst(id);
@@ -144,17 +192,17 @@ fn symbol_interning_does_not_require_a_source_module() {
 }
 
 #[test]
-fn decode_errors_are_owned_by_lir() {
+fn validation_errors_are_owned_by_lir() {
     let mut function = MachineFunction::<RawLir>::new("test".into());
     let inst = function
         .writer()
         .constant(Writable(veloc_lir::Reg::new_vreg(0)), 42);
     {
-        let mut operands = function.inst(inst).operands().to_vec();
+        let mut operands = function.inst(inst).fields().to_vec();
         operands.pop();
-        function.set_inst_operands(inst, operands);
+        function.set_inst_fields(inst, &operands);
     }
-    let error: veloc_lir::DecodeError = function.inst(inst).generic_view().unwrap_err();
+    let error: veloc_lir::ValidationError = function.inst(inst).validate().unwrap_err();
     assert!(matches!(
         error.opcode,
         veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_CONSTANT)
@@ -224,20 +272,20 @@ fn logical_type_validation_is_separate_from_construction() {
         Reg::new_vreg(2),
     );
     assert!(matches!(
-        function.inst(inst).generic_view(),
-        Ok(veloc_lir::InstView::BinaryReg(_))
+        function.inst(inst).view(),
+        veloc_lir::InstView::BinaryReg(_)
     ));
 }
 
 #[test]
-fn generated_builders_and_decoders_agree() {
+fn generated_builders_and_views_agree() {
     let mut function = MachineFunction::<RawLir>::new("test".into());
     let dst = Writable(Reg::new_vreg(0));
     let lhs = Reg::new_vreg(1);
     let rhs = Reg::new_vreg(2);
     let veloc_lir::InstView::BinaryReg(decoded) = ({
         let id = function.writer().add(dst, lhs, rhs);
-        function.inst(id).generic_view().unwrap()
+        function.inst(id).view()
     }) else {
         panic!("expected BinaryReg");
     };
@@ -261,14 +309,10 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
     let carry = Reg::new_vreg(4);
     let add = function.writer().uaddo(dst, flag, lhs, rhs);
     let adc = function.writer().uadde(dst, flag, lhs, rhs, carry);
-    let veloc_lir::InstView::BinaryRegWithFlags(add_view) =
-        function.inst(add).generic_view().unwrap()
-    else {
+    let veloc_lir::InstView::BinaryRegWithFlags(add_view) = function.inst(add).view() else {
         panic!("expected flags");
     };
-    let veloc_lir::InstView::BinaryRegWithFlags(adc_view) =
-        function.inst(adc).generic_view().unwrap()
-    else {
+    let veloc_lir::InstView::BinaryRegWithFlags(adc_view) = function.inst(adc).view() else {
         panic!("expected flags");
     };
     assert_eq!(add_view.carry_in, None);
@@ -276,17 +320,24 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
     assert_eq!(add_view.opcode, veloc_lir::BinaryRegWithFlagsOpcode::UADDO);
     assert_eq!(adc_view.opcode, veloc_lir::BinaryRegWithFlagsOpcode::UADDE);
     {
-        let mut operands = function.inst(add).operands().to_vec();
-        operands.push(MachineOperand::Use(carry));
-        function.set_inst_operands(add, operands);
+        let regs = [lhs, rhs, lhs];
+        function.rewriter(add).write(
+            veloc_lir::MachineOpcode::Generic(GenericOpcode::G_UADDO),
+            &[dst.to_reg(), flag.to_reg()],
+            &regs,
+            &[],
+        );
     }
     {
-        let mut operands = function.inst(adc).operands().to_vec();
-        operands.pop();
-        function.set_inst_operands(adc, operands);
+        function.rewriter(adc).write(
+            veloc_lir::MachineOpcode::Generic(GenericOpcode::G_UADDE),
+            &[dst.to_reg(), flag.to_reg()],
+            &[lhs, rhs],
+            &[],
+        );
     }
-    assert!(function.inst(add).generic_view().is_err());
-    assert!(function.inst(adc).generic_view().is_err());
+    assert!(function.inst(add).validate().is_err());
+    assert!(function.inst(adc).validate().is_err());
 }
 
 #[test]
@@ -296,97 +347,118 @@ fn explicit_tied_mapping_preserves_input_and_output_register_identity() {
     let updated = Writable(Reg::new_vreg(1));
     let base = Reg::new_vreg(2);
     let inst = function.writer().indexed_load(dst, updated, base, 16);
-    let veloc_lir::InstView::IndexedLoad(decoded) = function.inst(inst).generic_view().unwrap()
-    else {
+    let veloc_lir::InstView::IndexedLoad(decoded) = function.inst(inst).view() else {
         panic!("expected IndexedLoad");
     };
     assert_eq!(
         (decoded.dst, decoded.wb_dst, decoded.base, decoded.offset),
         (dst.to_reg(), updated.to_reg(), base, 16)
     );
-    assert!(
-        matches!(function.inst(inst).operands()[1], MachineOperand::Def(reg) if reg == updated)
-    );
+    assert_eq!(function.inst(inst).results()[1], updated.to_reg());
 }
 
 #[test]
 fn variable_views_preserve_call_and_return_operands() {
     let mut function = MachineFunction::<RawLir>::new("test".into());
-    use veloc_lir::{CallCallee, InstView, SymbolId};
+    use veloc_lir::{InstView, SymbolId};
     let results: Vec<_> = (0..8).map(Reg::new_vreg).collect();
     let args: Vec<_> = (8..24).map(Reg::new_vreg).collect();
     let symbol = SymbolId::from_u32(3);
-    let direct = function.writer().call(
-        results.iter().copied().map(Writable),
-        symbol,
-        args.iter().copied(),
-    );
-    let indirect = function.writer().call_indirect(
-        results.iter().copied().map(Writable),
-        Reg::new_vreg(25),
-        args.iter().copied(),
-    );
-    for (inst, callee) in [
-        (direct, CallCallee::Direct(symbol)),
-        (indirect, CallCallee::Indirect(Reg::new_vreg(25))),
-    ] {
-        let InstView::Call(call) = function.inst(inst).generic_view().unwrap() else {
-            panic!("expected call");
+    let direct = function.writer().call(&results, symbol, &args);
+    let indirect = function
+        .writer()
+        .callind(&results, Reg::new_vreg(25), &args);
+    for inst in [direct, indirect] {
+        let (actual_results, actual_args) = match function.inst(inst).view() {
+            InstView::Call(call) => {
+                assert_eq!(call.callee, symbol);
+                (call.results, call.args)
+            }
+            InstView::CallIndirect(call) => {
+                assert_eq!(call.callee, Reg::new_vreg(25));
+                (call.results, call.args)
+            }
+            _ => panic!("expected call"),
         };
-        assert_eq!(call.shape.callee, callee);
-        assert_eq!(call.shape.defs.iter().collect::<Vec<_>>(), results);
-        assert_eq!(call.shape.args.iter().collect::<Vec<_>>(), args);
+        assert_eq!(actual_results, results);
+        assert_eq!(actual_args, args);
+        function.inst(inst).validate().unwrap();
     }
-    let ret = function.writer().ret(args.iter().copied().collect());
-    let InstView::Return(view) = function.inst(ret).generic_view().unwrap() else {
+    let ret = function.writer().ret(&args);
+    let InstView::Return(view) = function.inst(ret).view() else {
         panic!("expected return");
     };
     assert_eq!(view.values.len(), args.len());
-    assert_eq!(view.values.iter().collect::<Vec<_>>(), args);
-    let empty = function.writer().ret(Default::default());
-    let InstView::Return(view) = function.inst(empty).generic_view().unwrap() else {
+    assert_eq!(view.values.iter().copied().collect::<Vec<_>>(), args);
+    let empty = function.writer().ret(&[]);
+    let InstView::Return(view) = function.inst(empty).view() else {
         panic!("expected return");
     };
     assert!(view.values.is_empty());
 }
 
 #[test]
-fn views_reject_malformed_storage_without_semantic_validation() {
+fn optional_validation_is_separate_from_direct_views() {
     let mut function = MachineFunction::<RawLir>::new("test".into());
-    use veloc_lir::{CondCode, MachineOpcode, SymbolId};
+    use veloc_lir::{MachineOpcode, SymbolId};
     use veloc_mir::{FloatCC, IntCC};
     let dst = Writable(Reg::new_vreg(0));
     let src = Reg::new_vreg(1);
+    // Property constraints are defs-driven and remain opt-in.
+    let arg = function.writer().arg(dst, -1);
+    assert!(matches!(
+        function.inst(arg).view(),
+        veloc_lir::InstView::Arg(_)
+    ));
+    assert!(function.inst(arg).validate().is_err());
+    function.set_inst_field(arg, 0, InstField::Imm(0));
+    function.inst(arg).validate().unwrap();
+
     let cmp = function.writer().icmp(dst, src, src, IntCC::Eq);
-    function.set_inst_operand(
-        cmp,
-        3,
-        MachineOperand::CondCode(CondCode::Float(FloatCC::Eq)),
-    );
-    assert!(function.inst(cmp).generic_view().is_err());
-    let call = function.writer().call([dst], SymbolId::from_u32(0), [src]);
+    function.set_inst_field(cmp, 0, InstField::FloatCC(FloatCC::Eq));
+    assert!(function.inst(cmp).validate().is_err());
+    let call = function
+        .writer()
+        .call(&[dst.to_reg()], SymbolId::from_u32(0), &[src]);
     {
-        let mut operands = function.inst(call).operands().to_vec();
-        operands.push(MachineOperand::Imm(0));
-        function.set_inst_operands(call, operands);
+        let mut operands = function.inst(call).fields().to_vec();
+        operands.push(InstField::Imm(0));
+        function.set_inst_fields(call, &operands);
     }
-    assert!(function.inst(call).generic_view().is_err());
-    let missing_callee = function.writer().call_indirect([dst], src, []);
+    assert!(function.inst(call).validate().is_err());
+    let missing_callee = function.writer().callind(&[dst.to_reg()], src, &[]);
     {
-        let mut operands = function.inst(missing_callee).operands().to_vec();
-        operands.pop();
-        function.set_inst_operands(missing_callee, operands);
+        function.rewriter(missing_callee).write(
+            veloc_lir::MachineOpcode::Generic(GenericOpcode::G_CALLIND),
+            &[dst.to_reg()],
+            &[],
+            &[],
+        );
     }
-    assert!(function.inst(missing_callee).generic_view().is_err());
-    let ret = function.writer().ret(Default::default());
+    assert!(function.inst(missing_callee).validate().is_err());
+    let ret = function.writer().ret(&[]);
     {
-        let mut operands = function.inst(ret).operands().to_vec();
-        operands.push(MachineOperand::Def(dst));
-        function.set_inst_operands(ret, operands);
+        function.set_inst_results(ret, &[dst.to_reg()]);
     }
-    assert!(function.inst(ret).generic_view().is_err());
+    assert!(function.inst(ret).validate().is_err());
     let target = function.writer().unary(MachineOpcode::Target(0), dst, src);
-    assert!(function.inst(target).generic_view().is_err());
+    assert!(function.inst(target).validate().is_err());
     function.invalidate_inst(target);
-    assert!(function.inst(target).generic_view().is_err());
+    assert!(function.inst(target).validate().is_err());
+
+    // Access does not run the optional full shape check: unrelated extra
+    // attributes are rejected by validation, not by reading an add's registers.
+    let add = function.writer().add(dst, src, src);
+    function.set_inst_fields(add, &[InstField::Imm(7)]);
+    assert!(function.inst(add).validate().is_err());
+    assert!(matches!(
+        function.inst(add).view(),
+        veloc_lir::InstView::BinaryReg(_)
+    ));
+
+    // A wrong field variant is an internal invariant failure, not Result flow.
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| function.inst(cmp).view()))
+            .is_err()
+    );
 }

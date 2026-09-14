@@ -624,6 +624,7 @@ mod tests {
             signature_source: None,
             text: None,
             params,
+            inputs: Default::default(),
             projection: crate::model::Projection::Packed(Default::default()),
             traits: BTreeSet::new(),
             queries: Default::default(),

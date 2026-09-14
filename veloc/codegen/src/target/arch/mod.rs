@@ -250,10 +250,10 @@ pub enum RewriteResult {
     Remove,
 }
 
-/// Two distinct operand slots that must use the same register after legalization.
+/// A result and an input that must occupy the same physical register after allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TiedOperandConstraint {
-    pub def_operand: usize,
+    pub result: usize,
     pub use_operand: usize,
 }
 

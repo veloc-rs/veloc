@@ -1,9 +1,11 @@
 // ----- storage/lir-mappings-can-reorder-inputs-and-results
 // run: opgen
-// check: pub fn pair(self, low: Writable<Reg>, high: Writable<Reg>, first: Reg, second: Reg)
-// check: MachineOperand::Use(second), MachineOperand::Def(high), MachineOperand::Use(first), MachineOperand::Def(low)
-storage Operands { prefix: "G_" }
-struct Pair { right: Use, upper: Def, left: Use, lower: Def }
+// check: fn pair(self, low: Self::Def, high: Self::Def, first: crate::Reg, second: crate::Reg)
+// check: &[Self::reg(low), Self::reg(high)], &[second, first], &[]
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: "G_"  }
+struct Pair { right: Reg, upper: Reg, left: Reg, lower: Reg }
 op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I64) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Pair { right: second, upper: high, left: first, lower: low },
@@ -11,73 +13,93 @@ op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I
 
 // ----- storage/empty-mappings-are-explicit
 // run: opgen
-// check: pub fn stop(self, )
-storage Operands { prefix: "G_" }
+// check: fn stop(self, )
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: "G_"  }
 struct Empty {}
 op G_STOP() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty {} }
 
 // ----- storage/bare-layout-names-are-removed
 // run: opgen-error
 // check: expected storage: Layout
-storage Operands {}
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
 struct Empty {}
 op Example() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty }
 
 // ----- storage/missing-result-binding
 // run: opgen-error
-// check: result 0 has no storage mapping
-storage Operands {}
-struct Input { arg: Use }
+// check: every result requires a storage mapping
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
+struct Input { arg: Reg }
 op Example(arg: Type::I32) -> (value: Type::I32) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Input { arg } }
 
 // ----- storage/repeated-result-binding
 // run: opgen-error
-// check: result 'first' is stored more than once
-storage Operands {}
-struct Pair { a: Def, b: Def }
+// check: invalid or repeated result binding
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
+struct Pair { a: Reg, b: Reg }
 op Example() -> (first: Type::I32, second: Type::I32) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Pair { a: first, b: first } }
 
 // ----- storage/repeated-input-binding
 // run: opgen-error
-// check: input 'arg' is stored more than once
-storage Operands {}
-struct Pair { a: Use, b: Use }
+// check: input is stored more than once
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
+struct Pair { a: Reg, b: Reg }
 op Example(arg: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Pair { a: arg, b: arg } }
 
-// ----- storage/definition-fields-cannot-bind-inputs
-// run: opgen-error
-// check: unknown result 'arg'
-storage Operands {}
-struct Output { dst: Def }
+// ----- storage/register-role-comes-from-mapping-not-field-name
+// run: opgen
+// check: &[], &[arg], &[]
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
+struct Output { dst: Reg }
 op Example(arg: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Output { dst: arg } }
 
 // ----- storage/optional-presence-is-not-inferred
 // run: opgen-error
-// check: expected some(...) storage binding
-storage Operands {}
-struct Maybe { value: OptionalUse }
+// check: optional fields require some(value) or none
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
+struct Maybe { value: optional(Reg) }
 op Example(value: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Maybe { value } }
 
-// ----- storage/omitted-operands-must-be-a-suffix
-// run: opgen-error
-// check: only trailing optional operands may be absent
-storage Operands {}
-struct Pair { optional: OptionalUse, required: Use }
+// ----- storage/omitted-operands-can-precede-required-fields
+// run: opgen
+// check: &[], &[value], &[]
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
+struct Pair { optional: optional(Reg), required: Reg }
 op Example(value: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Pair { optional: none, required: value } }
 
 // ----- storage/tied-input-and-output-are-explicit
 // run: opgen
-// check: pub fn update(self, next: Writable<Reg>, previous: Reg)
-// check: MachineOperand::Def(next)
-storage Operands { prefix: "G_" }
-struct Update { next: Def, previous: Use }
+// check: fn update(self, next: Self::Def, previous: crate::Reg)
+// check: &[Self::reg(next)], &[previous], &[]
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: "G_"  }
+struct Update { next: Reg, previous: Reg }
 op G_UPDATE(previous: Type::PTR) -> (next: Type::PTR) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Update { next, previous } }
 
 // ----- storage/absent-optional-fields-still-require-a-mapping
 // run: opgen-error
-// check: missing storage field 'value'
-storage Operands {}
-struct Maybe { value: OptionalUse }
+// check: storage mapping must bind every field exactly once
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
+struct Maybe { value: optional(Reg) }
 op Example() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Maybe {} }
 
 // ----- storage/declaration-fields-do-not-use-value-shorthand
@@ -186,8 +208,10 @@ layout Alternate { format: fixed(Pair), text: "{args}" }
 
 // ----- records/lir-layout-overrides-are-rejected
 // run: opgen-error
-// check: operand views are derived from structs
-storage Operands {}
+// check: operand layouts are derived from structs
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  }
 layout Missing { accessor: missing }
 
 // ----- packing/writer-method-name-is-reserved
@@ -541,3 +565,25 @@ op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {
     meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
 mnemonic: "pair_add", storage: Pair { args: [lhs, rhs] },  }
+
+// ----- storage/declared-control-and-optional-attributes
+// run: opgen
+// check: Self::G_TRANSFER => Flow::Transfer
+// check: invalid hint field
+// check: Payload::Number(hint)
+type Reg = rust("crate::Reg");
+enum Payload { variants: [Number(i64)] }
+enum Flow { variants: [Continue, Transfer] }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: Payload, control: Flow::Continue, prefix: "G_" }
+struct Transfer { hint: optional(i64), target: Reg }
+op G_TRANSFER(target: Type::PTR, hint: i64) -> () {
+    meta: OpInfo { memory: MemoryEffect::NONE },
+    storage: Transfer { hint: some(hint), target },
+    flow: Transfer,
+    verify { require(hint >= 0, "hint must be nonnegative"); }
+}
+
+// ----- storage/sequence-data-needs-a-storage-view
+// run: opgen-error
+// check: sequence fields are supported only in standalone operand storage layouts
+struct Data { values: sequence(i64) }

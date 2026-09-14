@@ -1,299 +1,419 @@
-//! Operand-array storage strategy. Logical signatures and semantics belong to the shared model.
-use crate::model::{Definitions, Op, ParamKind, TypeList};
+//! Register/attribute storage. A checked layout is shared by all emitters.
+use crate::model::records::PropertyType;
+use crate::model::{Op, ParamKind, TypeList};
 use crate::syntax::{Kind, Node, Record};
 use crate::{Error, model};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write;
 
 #[derive(Debug)]
 pub(crate) struct Operands {
-    formats: BTreeMap<String, Format>,
-    prefix: String,
+    pub(crate) formats: BTreeMap<String, Format>,
+    pub(crate) prefix: String,
+    pub(crate) opcode: String,
+    pub(crate) view: String,
+    pub(crate) reader: String,
+    pub(crate) writer: String,
+    pub(crate) register: String,
+    pub(crate) register_rust: String,
+    pub(crate) attributes: String,
+    pub(crate) control: Option<(String, String, BTreeSet<String>)>,
 }
 #[derive(Debug)]
-struct Format {
-    name: String,
-    fields: Vec<(String, Role)>,
+pub(crate) struct Format {
+    pub(crate) name: String,
+    pub(crate) fields: Vec<Field>,
 }
+#[derive(Debug, Clone)]
+pub(crate) struct Field {
+    pub(crate) name: String,
+    pub(crate) ty: String,
+    pub(crate) rust: String,
+    pub(crate) shape: Shape,
+    pub(crate) codec: Option<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shape {
+    One,
+    Optional,
+    Sequence,
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Domain {
+    Result,
+    Input,
+    Attribute,
+}
+impl Domain {
+    pub(crate) fn accessor(self) -> &'static str {
+        match self {
+            Self::Result => "results",
+            Self::Input => "inputs",
+            Self::Attribute => "fields",
+        }
+    }
+}
+// Resolved physical slot. Results follow the logical signature; the other
+// domains follow declaration order. An absent optional field consumes no slot.
+pub(crate) struct Member {
+    pub(crate) field: Field,
+    pub(crate) domain: Domain,
+    pub(crate) index: usize,
+    pub(crate) binding: Option<String>,
+}
+// One checked plan drives construction, borrowed access and opt-in validation.
 pub(crate) struct Projection {
-    pub arity: usize,
-    pub flow: Flow,
-    // Builder parameters are logical results followed by logical inputs.
-    args: Vec<Argument>,
-    // Expressions in physical field order, resolved from explicit bindings.
-    fields: Vec<String>,
+    pub flow: String,
+    pub(crate) members: Vec<Member>,
+    pub(crate) args: Vec<Argument>,
+    pub(crate) counts: [usize; 3],
+    pub(crate) tails: [bool; 3],
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Flow {
-    Next,
-    Jump,
-    Return,
-    Call,
-    Trap,
+pub(crate) struct Argument {
+    pub(crate) name: String,
+    pub(crate) rust: String,
 }
-
-impl Flow {
-    fn parse(source: &str, node: Option<Node>) -> Result<Self, Error> {
-        let Some(node) = node else {
-            return Ok(Self::Next);
-        };
-        let offset = node.offset;
-        match model::name(source, node)?.as_str() {
-            "Next" => Ok(Self::Next),
-            "Jump" => Ok(Self::Jump),
-            "Return" => Ok(Self::Return),
-            "Call" => Ok(Self::Call),
-            "Trap" => Ok(Self::Trap),
-            _ => Err(Error::at(source, offset, "unknown control flow kind")),
-        }
+pub(crate) fn domain_index(domain: Domain) -> usize {
+    match domain {
+        Domain::Result => 0,
+        Domain::Input => 1,
+        Domain::Attribute => 2,
     }
-
-    pub fn traits(self) -> impl Iterator<Item = String> {
-        let names: &[&str] = match self {
-            Self::Next => &[],
-            Self::Jump | Self::Return => &["TERMINATOR"],
-            Self::Call => &["MAY_TRAP"],
-            Self::Trap => &["TERMINATOR", "ABORT", "MAY_TRAP"],
-        };
-        names.iter().map(|name| (*name).to_owned())
-    }
-}
-
-struct Argument {
-    name: String,
-    role: Role,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
-    Def,
-    Use,
-    Imm,
-    FImm,
-    StackSlot,
-    Block,
-    OptionalUse,
-    IntCC,
-    FloatCC,
-    Index,
-    Uses,
-    CallShape,
-}
-
-impl Role {
-    fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "Def" => Self::Def,
-            "Use" => Self::Use,
-            "Imm" => Self::Imm,
-            "FImm" => Self::FImm,
-            "StackSlot" => Self::StackSlot,
-            "Block" => Self::Block,
-            "OptionalUse" => Self::OptionalUse,
-            "IntCC" => Self::IntCC,
-            "FloatCC" => Self::FloatCC,
-            "Index" => Self::Index,
-            "Uses" => Self::Uses,
-            "CallShape" => Self::CallShape,
-            _ => return None,
-        })
-    }
-
-    fn view_type(self) -> &'static str {
-        match self {
-            Self::Def | Self::Use => "Reg",
-            Self::Imm => "i64",
-            Self::FImm => "f64",
-            Self::StackSlot => "StackSlot",
-            Self::Block => "Block",
-            Self::OptionalUse => "Option<Reg>",
-            Self::IntCC => "IntCC",
-            Self::FloatCC => "FloatCC",
-            Self::Index => "usize",
-            Self::Uses => "RegList<'a>",
-            Self::CallShape => "CallShape<'a>",
-        }
-    }
-
-    fn decoder(self) -> &'static str {
-        match self {
-            Self::Def => "expect_def_reg",
-            Self::Use => "expect_use_reg",
-            Self::Imm => "expect_imm",
-            Self::FImm => "expect_fimm",
-            Self::StackSlot => "expect_stackslot",
-            Self::Block => "expect_block",
-            Self::OptionalUse => "expect_optional_use_reg",
-            Self::IntCC => "expect_intcc",
-            Self::FloatCC => "expect_floatcc",
-            Self::Index => "expect_nonnegative_imm_usize",
-            Self::Uses => "borrow_use_regs_from",
-            Self::CallShape => "decode_call_shape_field",
-        }
-    }
-
-    fn builder_type(self) -> &'static str {
-        match self {
-            Self::Def => "Writable<Reg>",
-            Self::OptionalUse => "Reg",
-            Self::Index => "i64",
-            _ => self.view_type(),
-        }
-    }
-
-    fn encode(self, name: &str) -> String {
-        let variant = match self {
-            Self::Def => "Def",
-            Self::Use | Self::OptionalUse => "Use",
-            Self::Imm | Self::Index => "Imm",
-            Self::FImm => "FImm",
-            Self::StackSlot => "StackSlot",
-            Self::Block => "Block",
-            Self::IntCC => {
-                return format!("MachineOperand::CondCode(CondCode::Int({name}))");
-            }
-            Self::FloatCC => return format!("MachineOperand::CondCode(CondCode::Float({name}))"),
-            Self::Uses | Self::CallShape => unreachable!("variable fields have dedicated builders"),
-        };
-        format!("MachineOperand::{variant}({name})")
-    }
-
-    fn variable(self) -> bool {
-        matches!(self, Self::Uses | Self::CallShape)
-    }
-}
-
-pub(crate) fn is_role(name: &str) -> bool {
-    Role::from_name(name).is_some()
 }
 
 pub(crate) fn compile(
     records: &[Record],
     source: &str,
-    prefix: String,
-    data: &crate::model::data::Types,
+    data: &model::data::Types,
 ) -> Result<Operands, Error> {
-    if let Some(binding) = records.iter().find(|r| r.kind == "layout") {
+    let record = records
+        .iter()
+        .find(|r| r.kind == "storage")
+        .expect("storage declaration");
+    let mut config = model::Fields::new(source, record.clone());
+    let prefix = match config.optional("prefix") {
+        Some(Node {
+            kind: Kind::Text(prefix),
+            ..
+        }) => prefix,
+        Some(node) => {
+            return Err(Error::at(
+                source,
+                node.offset,
+                "expected opcode prefix string",
+            ));
+        }
+        None => String::new(),
+    };
+    let opcode = model::name(source, config.take("opcode")?)?;
+    let view = model::name(source, config.take("view")?)?;
+    let reader = model::name(source, config.take("reader")?)?;
+    let writer = model::name(source, config.take("writer")?)?;
+    let names = [&opcode, &view, &reader, &writer];
+    if names.iter().collect::<BTreeSet<_>>().len() != names.len() {
+        return Err(config.error("generated type names must be distinct"));
+    }
+    for name in names {
+        model::identifier(source, record.offset, name)?;
+        if data.names.contains(name) || data.rust.contains(name) {
+            return Err(config.error(&format!(
+                "generated type '{name}' conflicts with a declaration"
+            )));
+        }
+    }
+    let register = model::name(source, config.take("register")?)?;
+    if !data.rust.contains(&register) {
+        return Err(config.error("register requires a declared Rust type"));
+    }
+    let attributes = model::name(source, config.take("attributes")?)?;
+    let attr_enum = data
+        .enums
+        .iter()
+        .find(|e| e.name == attributes)
+        .ok_or_else(|| config.error("attributes requires an enum declaration"))?;
+    let mut codecs = BTreeMap::new();
+    for (variant, payload) in &attr_enum.variants {
+        let [PropertyType::Named(ty)] = payload.as_slice() else {
+            return Err(config.error("attribute variants require one named payload type"));
+        };
+        if ty == &register {
+            return Err(config.error("registers cannot also be attribute payloads"));
+        }
+        if codecs
+            .insert(ty.clone(), format!("{attributes}::{variant}"))
+            .is_some()
+        {
+            return Err(config.error("attribute payload types must be unique"));
+        }
+    }
+    let control = if let Some(node) = config.optional("control") {
+        let path = model::name(source, node)?;
+        let (owner, default) = path
+            .rsplit_once("::")
+            .ok_or_else(|| config.error("control requires Enum::DefaultVariant"))?;
+        let en = data
+            .enums
+            .iter()
+            .find(|e| e.name == owner)
+            .ok_or_else(|| config.error("unknown control enum"))?;
+        if en.variants.iter().any(|(_, args)| !args.is_empty()) {
+            return Err(config.error("control variants cannot have payloads"));
+        }
+        let names: BTreeSet<_> = en.variants.iter().map(|(n, _)| n.clone()).collect();
+        if !names.contains(default) {
+            return Err(config.error("unknown default control variant"));
+        }
+        Some((owner.to_owned(), default.to_owned(), names))
+    } else {
+        None
+    };
+    config.finish()?;
+    if let Some(r) = records.iter().find(|r| r.kind == "layout") {
         return Err(Error::at(
             source,
-            binding.offset,
-            "operand views are derived from structs; layout overrides are not supported",
+            r.offset,
+            "operand layouts are derived from structs",
         ));
     }
     let mut formats = BTreeMap::new();
     for shape in &data.records {
-        let users = records.iter().filter(|r| r.kind == "op").any(|op| {
-            matches!(
-                op.fields.get("storage"),
-                Some(Node { kind: Kind::Object(name, _), .. }) if name == &shape.name
-            )
-        });
-        let roles = shape.fields.iter().any(
-            |f| matches!(&f.ty, crate::model::records::PropertyType::Named(ty) if is_role(ty)),
-        );
-        if !users && !roles {
+        let used = records.iter().filter(|r| r.kind == "op").any(|op| matches!(op.fields.get("storage"), Some(Node { kind: Kind::Object(name, _), .. }) if name == &shape.name));
+        if !used {
             continue;
         }
-        let offset = records
-            .iter()
-            .find(|r| r.kind == "struct" && r.name == shape.name)
-            .expect("checked struct")
-            .offset;
-        let fields = shape
-            .fields
-            .iter()
-            .map(|f| {
-                let crate::model::records::PropertyType::Named(ty) = &f.ty else {
-                    return Err(Error::at(source, offset, "expected machine operand role"));
-                };
-                Ok((
-                    f.name.clone(),
-                    Role::from_name(ty)
-                        .ok_or_else(|| Error::at(source, offset, "unknown machine operand role"))?,
-                ))
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-        let variable = fields.iter().any(|(_, r)| r.variable());
-        if variable && (fields.len() != 1) {
-            return Err(Error::at(
-                source,
-                offset,
-                "variable codec must describe the entire operand sequence",
-            ));
+        let mut fields = Vec::new();
+        for field in &shape.fields {
+            let (ty, cardinality) = match &field.ty {
+                PropertyType::Named(ty) => (ty, Shape::One),
+                PropertyType::Optional(ty) => (ty, Shape::Optional),
+                PropertyType::Sequence(ty) => (ty, Shape::Sequence),
+                _ => {
+                    return Err(Error::at(
+                        source,
+                        0,
+                        "operand fields require a named, optional or sequence type",
+                    ));
+                }
+            };
+            let codec = if ty == &register {
+                None
+            } else {
+                Some(
+                    codecs
+                        .get(ty)
+                        .ok_or_else(|| {
+                            Error::at(
+                                source,
+                                0,
+                                format!("no attribute variant stores type '{ty}'"),
+                            )
+                        })?
+                        .clone(),
+                )
+            };
+            if cardinality == Shape::Sequence && codec.is_some() {
+                return Err(Error::at(
+                    source,
+                    0,
+                    "attribute sequences require a typed attribute pool; this storage supports register sequences",
+                ));
+            }
+            fields.push(Field {
+                name: field.name.clone(),
+                ty: ty.clone(),
+                rust: data.rust.rust(ty),
+                shape: cardinality,
+                codec,
+            });
         }
-        let name = shape.name.clone();
-        if formats
-            .insert(
-                name,
-                Format {
-                    name: shape.name.clone(),
-                    fields,
-                },
-            )
-            .is_some()
-        {
-            return Err(Error::at(source, offset, "duplicate machine format"));
+        formats.insert(
+            shape.name.clone(),
+            Format {
+                name: shape.name.clone(),
+                fields,
+            },
+        );
+    }
+    Ok(Operands {
+        formats,
+        prefix,
+        opcode,
+        view,
+        reader,
+        writer,
+        register_rust: data.rust.rust(&register),
+        register,
+        attributes,
+        control,
+    })
+}
+impl Field {
+    pub(crate) fn view_type(&self) -> String {
+        match self.shape {
+            Shape::One => self.rust.clone(),
+            Shape::Optional => format!("Option<{}>", self.rust),
+            Shape::Sequence => format!("&'a [{}]", self.rust),
         }
     }
-
-    Ok(Operands { formats, prefix })
+}
+impl Member {
+    pub(crate) fn read_from(&self, receiver: &str) -> String {
+        if self.binding.is_none() {
+            return "None".into();
+        }
+        let access = self.domain.accessor();
+        let value = if let Some(codec) = &self.field.codec {
+            format!(
+                "match {receiver}.fields()[{}] {{ {codec}(value) => value, _ => panic!(\"invalid instruction field\") }}",
+                self.index
+            )
+        } else if self.field.shape == Shape::Sequence {
+            format!("&{receiver}.{access}()[{}..]", self.index)
+        } else {
+            format!("{receiver}.{access}()[{}]", self.index)
+        };
+        if self.field.shape == Shape::Optional {
+            format!("Some({value})")
+        } else {
+            value
+        }
+    }
+}
+impl Projection {
+    pub(crate) fn inputs(&self) -> crate::model::access::Inputs {
+        use crate::model::access::Access;
+        self.members
+            .iter()
+            .filter(|m| m.domain != Domain::Result)
+            .filter_map(|m| {
+                let name = m.binding.as_ref()?;
+                let access = Access::Field(m.field.name.clone());
+                let access = if m.field.shape == Shape::Optional {
+                    Access::Required(Box::new(access))
+                } else {
+                    access
+                };
+                Some((name.clone(), access))
+            })
+            .collect()
+    }
+    pub(crate) fn projections(
+        &self,
+        op: &Op,
+        required: impl Fn(String) -> String,
+    ) -> std::collections::BTreeMap<String, String> {
+        crate::model::access::projections(
+            op,
+            "self",
+            |name| {
+                self.members
+                    .iter()
+                    .find(|m| m.field.name == name)
+                    .expect("checked field")
+                    .read_from("self")
+            },
+            required,
+        )
+        .into_iter()
+        .collect()
+    }
 }
 impl Operands {
+    pub(crate) fn construction(
+        &self,
+        op: &Op,
+        receiver: &str,
+        result: &str,
+        local: impl Fn(&str) -> String,
+    ) -> crate::generate::construction::Write {
+        use crate::generate::construction::{Write, slice};
+        let plan = op.operands();
+        let mut args = vec![format!("{}::{}", self.opcode, op.name)];
+        for domain in [Domain::Result, Domain::Input, Domain::Attribute] {
+            let mut members: Vec<_> = plan
+                .members
+                .iter()
+                .filter(|m| m.domain == domain && m.binding.is_some())
+                .collect();
+            members.sort_by_key(|m| m.index);
+            let tail = if members
+                .last()
+                .is_some_and(|m| m.field.shape == Shape::Sequence)
+            {
+                Some(local(members.pop().unwrap().binding.as_ref().unwrap()))
+            } else {
+                None
+            };
+            let items: Vec<_> = members
+                .iter()
+                .map(|m| {
+                    let value = local(m.binding.as_ref().unwrap());
+                    if let Some(codec) = &m.field.codec {
+                        format!("{codec}({value})")
+                    } else if domain == Domain::Result {
+                        format!("{result}({value})")
+                    } else {
+                        value
+                    }
+                })
+                .collect();
+            args.push(slice(
+                if domain == Domain::Attribute {
+                    &self.attributes
+                } else {
+                    &self.register_rust
+                },
+                &items,
+                tail,
+            ));
+        }
+        Write {
+            callee: format!("{receiver}.write"),
+            args,
+        }
+    }
     pub(crate) fn properties(
         &self,
         source: &str,
         offset: usize,
         format: &str,
         mappings: &BTreeMap<String, Node>,
-        params: &[crate::syntax::Parameter],
+        _params: &[crate::syntax::Parameter],
     ) -> Result<BTreeSet<String>, Error> {
         let shape = self
             .formats
             .get(format)
             .ok_or_else(|| Error::at(source, offset, "unknown operand format"))?;
         let mut properties = BTreeSet::new();
-        for (field, role) in &shape.fields {
-            let Some(node) = mappings.get(field) else {
+        for field in &shape.fields {
+            if field.codec.is_none() {
+                continue;
+            }
+            let Some(mut node) = mappings.get(&field.name) else {
                 continue;
             };
-            if matches!(
-                role,
-                Role::Imm
-                    | Role::Block
-                    | Role::FImm
-                    | Role::StackSlot
-                    | Role::IntCC
-                    | Role::FloatCC
-                    | Role::Index
-            ) {
-                if let Kind::Name(name) = &node.kind {
-                    properties.insert(name.clone());
+            if let Kind::Call(name, args) = &node.kind {
+                if name == "some" && args.len() == 1 {
+                    node = &args[0];
                 }
-            } else if *role == Role::CallShape
-                && let Kind::Call(_, args) = &node.kind
-                && let Some(Node {
-                    kind: Kind::Name(name),
-                    ..
-                }) = args.first()
-            {
-                // Named direct callees use a symbol property; indirect callees use PTR.
-                if params.iter().any(|p| {
-                    p.name == *name && matches!(&p.ty.kind, Kind::Name(ty) if ty == "SymbolId")
-                }) {
+            }
+            if let Kind::Name(name) = &node.kind {
+                if name != "none" {
                     properties.insert(name.clone());
                 }
             }
         }
         Ok(properties)
     }
-
     pub(crate) fn record_names(&self) -> Vec<String> {
-        self.formats.keys().cloned().collect()
+        self.formats
+            .keys()
+            .cloned()
+            .chain(core::iter::once(self.attributes.clone()))
+            .collect()
     }
     pub(crate) fn format_count(&self) -> usize {
         self.formats.len()
     }
-
     pub(crate) fn mnemonic(&self, name: &str) -> String {
         name.strip_prefix(&self.prefix)
             .unwrap_or(name)
@@ -312,371 +432,190 @@ impl Operands {
         slots: &BTreeMap<String, model::Slot>,
         flow: Option<Node>,
     ) -> Result<Projection, Error> {
-        let fail = |message| Error::at(source, offset, message);
+        let fail = |message: &str| Error::at(source, offset, message);
         let shape = self
             .formats
             .get(format)
             .ok_or_else(|| fail("unknown operand format"))?;
-        let flow = Flow::parse(source, flow)?;
-        for (field, node) in mappings {
-            if !shape.fields.iter().any(|(name, _)| name == field) {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    format!("unknown storage field '{field}'"),
-                ));
-            }
+        if mappings.len() != shape.fields.len()
+            || mappings
+                .keys()
+                .any(|n| !shape.fields.iter().any(|f| f.name == *n))
+        {
+            return Err(fail("storage mapping must bind every field exactly once"));
         }
-        for (field, _) in &shape.fields {
-            if !mappings.contains_key(field) {
-                return Err(fail(&format!("missing storage field '{field}'")));
+        let flow = match (&self.control, flow) {
+            (Some((_, default, names)), flow) => {
+                let name = flow
+                    .map(|n| model::name(source, n))
+                    .transpose()?
+                    .unwrap_or_else(|| default.clone());
+                if !names.contains(&name) {
+                    return Err(fail("unknown control flow variant"));
+                }
+                name
             }
-        }
-        let mut binding = Bindings {
-            source,
-            params,
-            slots,
-            used_params: BTreeSet::new(),
-            used_results: BTreeSet::new(),
-            args: BTreeMap::new(),
+            (None, None) => String::new(),
+            (None, Some(_)) => {
+                return Err(fail("flow requires a declared control enum in storage"));
+            }
         };
-        let mut fields = Vec::new();
-        let mut omitted = false;
-        for (field, role) in &shape.fields {
-            let node = &mappings[field];
-            if *role == Role::OptionalUse
-                && matches!(&node.kind, Kind::Name(name) if name == "none")
-            {
-                omitted = true;
+        let mut used_params = BTreeSet::new();
+        let mut used_results = BTreeSet::new();
+        let mut all_results = false;
+        let mut args = BTreeMap::new();
+        let mut members = Vec::new();
+        let mut counts = [0; 3];
+        let mut tails = [false; 3];
+        let result_count = match &signature.results {
+            TypeList::Fixed(results) => Some(results.len()),
+            TypeList::Signature => None,
+            _ => return Err(fail("unsupported result contract for register storage")),
+        };
+        for field in &shape.fields {
+            let mut node = &mappings[&field.name];
+            if field.shape == Shape::Optional {
+                match &node.kind {
+                    Kind::Name(n) if n == "none" => {
+                        members.push(Member {
+                            field: field.clone(),
+                            domain: if field.codec.is_some() {
+                                Domain::Attribute
+                            } else {
+                                Domain::Input
+                            },
+                            index: 0,
+                            binding: None,
+                        });
+                        continue;
+                    }
+                    Kind::Call(n, items) if n == "some" && items.len() == 1 => node = &items[0],
+                    _ => return Err(fail("optional fields require some(value) or none")),
+                }
+            }
+            if matches!(&node.kind, Kind::Call(n, items) if n == "results" && items.is_empty()) {
+                if field.ty != self.register
+                    || field.shape != Shape::Sequence
+                    || all_results
+                    || !used_results.is_empty()
+                {
+                    return Err(fail(
+                        "results() requires one register sequence and cannot mix with individual results",
+                    ));
+                }
+                if params.iter().any(|p| p.name == field.name) {
+                    return Err(fail("result slice name conflicts with an input"));
+                }
+                all_results = true;
+                tails[0] = result_count.is_none();
+                counts[0] = result_count.unwrap_or(0);
+                args.insert(
+                    (false, 0),
+                    Argument {
+                        name: field.name.clone(),
+                        rust: format!("&[{}]", self.register_rust),
+                    },
+                );
+                members.push(Member {
+                    field: field.clone(),
+                    domain: Domain::Result,
+                    index: 0,
+                    binding: Some(field.name.clone()),
+                });
                 continue;
             }
-            if omitted {
-                return Err(Error::at(
-                    source,
-                    node.offset,
-                    "only trailing optional operands may be absent",
-                ));
-            }
-            let value = match role {
-                Role::Def => binding.result(node, *role)?,
-                Role::OptionalUse => {
-                    let [input] = call_args(source, node, "some")? else {
-                        return Err(Error::at(
-                            source,
-                            node.offset,
-                            "optional use requires some(input) or none",
-                        ));
-                    };
-                    binding.input(input, *role, true)?
+            let name = model::name(source, node.clone())?;
+            let result = slots.get(&name).filter(|s| s.result);
+            let (domain, order) = if let Some(result) = result {
+                if field.ty != self.register
+                    || field.shape != Shape::One
+                    || all_results
+                    || !used_results.insert(result.index)
+                {
+                    return Err(fail("invalid or repeated result binding"));
                 }
-                Role::Uses => {
-                    if signature.results != TypeList::Fixed(vec![]) {
-                        return Err(fail(
-                            "use-list storage requires variadic inputs and no results",
-                        ));
-                    }
-                    binding.input(node, *role, false)?
-                }
-                Role::CallShape => {
-                    let [callee, args] = call_args(source, node, "call")? else {
-                        return Err(Error::at(
-                            source,
-                            node.offset,
-                            "call requires a callee and variadic arguments",
-                        ));
-                    };
-                    if signature.results != TypeList::Signature || flow != Flow::Call {
-                        return Err(fail(
-                            "call storage requires signature results and Call flow",
-                        ));
-                    }
-                    binding.input(callee, *role, false)?;
-                    binding.input(args, Role::Uses, false)?;
-                    String::new()
-                }
-                _ => binding.input(node, *role, true)?,
-            };
-            fields.push(value);
-        }
-        for (index, param) in params.iter().enumerate() {
-            if !binding.used_params.contains(&index) {
-                return Err(fail(&format!(
-                    "parameter '{}' has no storage mapping",
-                    param.name
-                )));
-            }
-        }
-        match &signature.results {
-            TypeList::Fixed(results) => {
-                for index in 0..results.len() {
-                    if !binding.used_results.contains(&index) {
-                        return Err(fail(&format!(
-                            "result {index} has no storage mapping; name it in the signature"
-                        )));
-                    }
-                }
-            }
-            TypeList::Signature if shape.fields.iter().any(|(_, r)| *r == Role::CallShape) => {}
-            _ => return Err(fail("fixed operand storage requires fixed results")),
-        }
-        Ok(Projection {
-            arity: fields.len(),
-            flow,
-            args: binding.args.into_values().collect(),
-            fields,
-        })
-    }
-
-    pub(crate) fn generate(&self, defs: &Definitions) -> String {
-        let mut out = String::from("// @generated from LIR definitions by veloc-opgen.\n");
-        out.push_str(&crate::generate::opcode_enum(defs, "GenericOpcode"));
-        out.push_str(
-            "impl GenericOpcode {\npub const fn control(self) -> ControlFlow { match self {\n",
-        );
-        for inst in &defs.ops {
-            writeln!(
-                out,
-                "Self::{} => ControlFlow::{:?},",
-                inst.name,
-                inst.operands().flow
-            )
-            .unwrap();
-        }
-        out.push_str("} }\n}\n");
-        let lifetime = if self
-            .formats
-            .values()
-            .any(|f| f.fields.iter().any(|(_, r)| r.variable()))
-        {
-            "<'a>"
-        } else {
-            ""
-        };
-        writeln!(
-            out,
-            "#[derive(Debug, Clone, Copy)] pub enum InstView{lifetime} {{"
-        )
-        .unwrap();
-        for f in self.formats.values() {
-            let borrowed = if f.fields.iter().any(|(_, r)| r.variable()) {
-                "<'a>"
+                (Domain::Result, usize::from(result.index))
             } else {
-                ""
-            };
-            writeln!(out, "{}({}Inst{borrowed}),", f.name, f.name).unwrap();
-        }
-        out.push_str("}\n");
-        for f in self.formats.values() {
-            let ops: Vec<_> = defs.ops.iter().filter(|op| op.format == f.name).collect();
-            if ops.len() > 1 {
-                writeln!(out, "#[allow(non_camel_case_types)] #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum {}Opcode {{", f.name).unwrap();
-                for op in &ops {
-                    writeln!(
-                        out,
-                        "{},",
-                        op.name.strip_prefix(&self.prefix).unwrap_or(&op.name)
-                    )
-                    .unwrap();
+                let (index, param) = params
+                    .iter()
+                    .enumerate()
+                    .find(|(_, p)| p.name == name)
+                    .ok_or_else(|| fail(&format!("unknown input '{name}'")))?;
+                if !used_params.insert(index) {
+                    return Err(fail("input is stored more than once"));
                 }
-                out.push_str("}\n");
-            }
-            let borrowed = if f.fields.iter().any(|(_, r)| r.variable()) {
-                "<'a>"
-            } else {
-                ""
-            };
-            writeln!(
-                out,
-                "#[derive(Debug, Clone, Copy)] pub struct {}Inst{borrowed} {{",
-                f.name
-            )
-            .unwrap();
-            if ops.len() > 1 {
-                writeln!(out, "pub opcode: {}Opcode,", f.name).unwrap();
-            }
-            for (name, role) in &f.fields {
-                writeln!(out, "pub {name}: {},", role.view_type()).unwrap();
-            }
-            out.push_str("}\n");
-        }
-        let borrowed = if lifetime.is_empty() { "" } else { "<'a>" };
-        writeln!(out, "impl<'a> InstRef<'a> {{ pub fn generic_view(self) -> crate::error::Result<InstView{borrowed}> {{").unwrap();
-        out.push_str("Ok(match self.generic_opcode() {\n");
-        for op in &defs.ops {
-            let f = &self.formats[&op.format];
-            let shared = defs
-                .ops
-                .iter()
-                .filter(|other| other.format == f.name)
-                .count()
-                > 1;
-            writeln!(out, "Some(GenericOpcode::{}) => {{", op.name).unwrap();
-            if !f.fields.iter().any(|(_, r)| r.variable()) {
-                let count = op.operands().arity;
-                let invalid = if count == 0 {
-                    "!self.operands().is_empty()".to_owned()
+                let compatible = if field.ty == self.register {
+                    param.kind
+                        == if field.shape == Shape::Sequence {
+                            ParamKind::Values
+                        } else {
+                            ParamKind::Value
+                        }
                 } else {
-                    format!("self.operands().len() != {count}")
+                    param.kind == ParamKind::Property(field.ty.clone())
                 };
-                writeln!(out, "if {invalid} {{ return Err(self.decode_error(\"invalid {} operand count\")); }}", f.name).unwrap();
-            }
-            writeln!(out, "InstView::{}({}Inst {{", f.name, f.name).unwrap();
-            if shared {
-                writeln!(
-                    out,
-                    "opcode: {}Opcode::{},",
-                    f.name,
-                    op.name.strip_prefix(&self.prefix).unwrap_or(&op.name)
+                if !compatible {
+                    return Err(fail(&format!(
+                        "input '{name}' is incompatible with field '{}'",
+                        field.name
+                    )));
+                }
+                (
+                    if field.codec.is_some() {
+                        Domain::Attribute
+                    } else {
+                        Domain::Input
+                    },
+                    index,
                 )
-                .unwrap();
+            };
+            let d = domain_index(domain);
+            if tails[d] {
+                return Err(fail("a storage domain can have only one trailing sequence"));
             }
-            for (index, (name, role)) in f.fields.iter().enumerate() {
-                writeln!(
-                    out,
-                    "{name}: self.{}({index}, \"invalid {}.{name} operand\")?,",
-                    role.decoder(),
-                    f.name
-                )
-                .unwrap();
+            let index = if domain == Domain::Result {
+                order
+            } else {
+                counts[d]
+            };
+            if field.shape == Shape::Sequence {
+                tails[d] = true;
+            } else {
+                counts[d] += 1;
             }
-            out.push_str("})\n},\n");
-        }
-        out.push_str(
-            "_ => return Err(self.decode_error(\"expected a generic opcode\")),\n})\n} }\n",
-        );
-        for inst in &defs.ops {
-            self.emit_builder(&mut out, inst);
-        }
-        out
-    }
-
-    fn emit_builder(&self, out: &mut String, inst: &Op) {
-        let f = &self.formats[&inst.format];
-        if f.fields.iter().any(|(_, r)| r.variable()) {
-            return;
-        }
-        let projection = inst.operands();
-        let name = self.mnemonic(&inst.name);
-        let args = projection
-            .args
-            .iter()
-            .map(|arg| format!("{}: {}", arg.name, arg.role.builder_type()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let fields = f
-            .fields
-            .iter()
-            .zip(&projection.fields)
-            .map(|((_, role), name)| role.encode(name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(out, "impl crate::InstWriter<'_> {{ pub fn {name}(self, {args}) -> crate::InstId {{ self.write(MachineOpcode::Generic(GenericOpcode::{}), &[{fields}]) }} }}", inst.name).unwrap();
-    }
-}
-
-fn call_args<'a>(source: &str, node: &'a Node, expected: &str) -> Result<&'a [Node], Error> {
-    match &node.kind {
-        Kind::Call(name, args) if name == expected => Ok(args),
-        _ => Err(Error::at(
-            source,
-            node.offset,
-            format!("expected {expected}(...) storage binding"),
-        )),
-    }
-}
-
-/// Resolve logical names once; no opcode/field-name conventions or candidate arities.
-struct Bindings<'a> {
-    source: &'a str,
-    params: &'a [model::Param],
-    slots: &'a BTreeMap<String, model::Slot>,
-    used_params: BTreeSet<usize>,
-    used_results: BTreeSet<usize>,
-    args: BTreeMap<(bool, usize), Argument>,
-}
-
-impl Bindings<'_> {
-    fn input(&mut self, node: &Node, role: Role, argument: bool) -> Result<String, Error> {
-        let name = model::name(self.source, node.clone())?;
-        let (index, param) = self
-            .params
-            .iter()
-            .enumerate()
-            .find(|(_, p)| p.name == name)
-            .ok_or_else(|| {
-                Error::at(
-                    self.source,
-                    node.offset,
-                    format!("unknown input '{name}' in storage mapping"),
-                )
-            })?;
-        let valid = match role {
-            Role::Use | Role::OptionalUse => param.kind == ParamKind::Value,
-            Role::Uses => param.kind == ParamKind::Values,
-            Role::CallShape => {
-                param.kind == ParamKind::Value
-                    || param.kind == ParamKind::Property("SymbolId".into())
-            }
-            _ => matches!(&param.kind, ParamKind::Property(ty) if ty == match role {
-                Role::Imm | Role::Index => "i64", Role::FImm => "f64",
-                Role::StackSlot => "StackSlot", Role::Block => "Block",
-                Role::IntCC => "IntCC", Role::FloatCC => "FloatCC", _ => "",
-            }),
-        };
-        if !valid {
-            return Err(Error::at(
-                self.source,
-                node.offset,
-                format!("input '{name}' is incompatible with its storage role"),
-            ));
-        }
-        if !self.used_params.insert(index) {
-            return Err(Error::at(
-                self.source,
-                node.offset,
-                format!("input '{name}' is stored more than once"),
-            ));
-        }
-        if argument {
-            self.args.insert(
-                (true, index),
+            let rust = if field.shape == Shape::Sequence {
+                format!("&[{}]", field.rust)
+            } else if domain == Domain::Result {
+                "Self::Def".to_owned()
+            } else {
+                field.rust.clone()
+            };
+            args.insert(
+                (domain != Domain::Result, order),
                 Argument {
                     name: name.clone(),
-                    role,
+                    rust,
                 },
             );
+            members.push(Member {
+                field: field.clone(),
+                domain,
+                index,
+                binding: Some(name),
+            });
         }
-        Ok(name)
-    }
-
-    fn result(&mut self, node: &Node, role: Role) -> Result<String, Error> {
-        let name = model::name(self.source, node.clone())?;
-        let slot = self
-            .slots
-            .get(&name)
-            .filter(|slot| slot.result)
-            .ok_or_else(|| {
-                Error::at(
-                    self.source,
-                    node.offset,
-                    format!("unknown result '{name}' in storage mapping"),
-                )
-            })?;
-        let index = usize::from(slot.index);
-        if !self.used_results.insert(index) {
-            return Err(Error::at(
-                self.source,
-                node.offset,
-                format!("result '{name}' is stored more than once"),
-            ));
+        if used_params.len() != params.len() {
+            return Err(fail("every input requires a storage mapping"));
         }
-        self.args.insert(
-            (false, index),
-            Argument {
-                name: name.clone(),
-                role,
-            },
-        );
-        Ok(name)
+        if !all_results && result_count != Some(used_results.len()) {
+            return Err(fail("every result requires a storage mapping"));
+        }
+        Ok(Projection {
+            flow,
+            members,
+            args: args.into_values().collect(),
+            counts,
+            tails,
+        })
     }
 }

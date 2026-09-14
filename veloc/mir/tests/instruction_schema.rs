@@ -232,35 +232,10 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
         )
     };
     let dense = make_dense(veloc_mir::Type::I32X4, bytes.clone(), dfg);
-    dense
-        .validate(dfg, &veloc_mir::host::ConstContext::new(dfg))
-        .unwrap();
     assert!(matches!(dense.data(), ConstData::Dense(id) if id.get(dfg) == Some(bytes.as_slice())));
     assert_eq!(
         make_dense(veloc_mir::Type::I32X4, bytes.clone(), dfg),
         dense
-    );
-    assert!(
-        make_dense(veloc_mir::Type::I32X4, vec![0; 3], dfg)
-            .validate(dfg, &veloc_mir::host::ConstContext::new(dfg))
-            .is_err()
-    );
-    let scalable = Type::I32
-        .as_scalar()
-        .unwrap()
-        .vector(4, true)
-        .unwrap()
-        .as_type();
-    assert!(
-        make_dense(scalable, vec![0; 16], dfg)
-            .validate(dfg, &veloc_mir::host::ConstContext::new(dfg))
-            .is_err()
-    );
-    let mask = Type::new_mask(4, false).unwrap();
-    assert!(
-        make_dense(mask, vec![0, 1, 2, 0], dfg)
-            .validate(dfg, &veloc_mir::host::ConstContext::new(dfg))
-            .is_err()
     );
     let splat = VectorConst::splat(ScalarConst::from(-7i32), 4, false).unwrap();
     let scalable_splat = VectorConst::splat(ScalarConst::from(-7i32), 4, true).unwrap();
@@ -300,22 +275,42 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
 
 #[test]
 fn vector_constant_construction_defers_data_checks_to_validation() {
-    let mut module = ModuleBuilder::new();
-    let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
-    let func = module.declare_function("bad_constant".into(), sig, Linkage::Local);
-    let mut builder = module.builder(func);
-    builder.init_entry_block();
-    let value = builder
-        .func_mut()
-        .edit()
-        .dense_constant(veloc_mir::Type::I32X4.as_vector().unwrap(), vec![0; 3]);
-    let result = builder.ins().vconst(value);
-    assert_eq!(
-        builder.func().dfg().value_type(result),
-        veloc_mir::Type::I32X4
-    );
-    assert_eq!(builder.func().dfg().as_const(result), Some(value.into()));
-    builder.ins().ret(&[]);
-    builder.seal_all_blocks();
-    assert!(module.validate().is_err());
+    let scalable = Type::I32
+        .as_scalar()
+        .unwrap()
+        .vector(4, true)
+        .unwrap()
+        .as_type();
+    for (ty, bytes, expected) in [
+        (Type::I32X4, vec![0; 16], None),
+        (Type::I32X4, vec![0; 3], Some("byte count")),
+        (scalable, vec![0; 16], Some("requires a fixed type")),
+        (
+            Type::new_mask(4, false).unwrap(),
+            vec![0, 1, 2, 0],
+            Some("zero or one"),
+        ),
+    ] {
+        let mut module = ModuleBuilder::new();
+        let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
+        let func = module.declare_function("constant".into(), sig, Linkage::Local);
+        let mut builder = module.builder(func);
+        builder.init_entry_block();
+        let value = builder
+            .func_mut()
+            .edit()
+            .dense_constant(ty.as_vector().unwrap(), bytes);
+        let result = builder.ins().vconst(value);
+        assert_eq!(builder.func().dfg().value_type(result), ty);
+        assert_eq!(builder.func().dfg().as_const(result), Some(value.into()));
+        builder.ins().ret(&[]);
+        builder.seal_all_blocks();
+        match expected {
+            Some(expected) => {
+                let error = module.validate().unwrap_err().to_string();
+                assert!(error.contains(expected), "{error}");
+            }
+            None => module.validate().unwrap(),
+        }
+    }
 }

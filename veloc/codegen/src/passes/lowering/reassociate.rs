@@ -8,9 +8,7 @@ use crate::pipeline::{ChangeSet, FunctionAnalysisCtx};
 use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
-use veloc_lir::{
-    GenericOpcode, InstId, MachineFunction, MachineOpcode, MachineOperand, Reg, Writable,
-};
+use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, Writable};
 use veloc_mir::TypeInfo;
 
 #[cfg(all(test, feature = "std"))]
@@ -36,15 +34,12 @@ fn binary<S>(f: &MachineFunction<S>, id: InstId, opcode: GenericOpcode) -> Optio
     if inst.generic_opcode() != Some(opcode) || f.inst_extra(id).is_some() {
         return None;
     }
-    let [
-        MachineOperand::Def(dst),
-        MachineOperand::Use(lhs),
-        MachineOperand::Use(rhs),
-    ] = inst.operands().as_ref()
-    else {
+    let [lhs, rhs] = inst.inputs() else {
         return None;
     };
-    let dst = dst.to_reg();
+    let &[dst] = inst.results() else {
+        return None;
+    };
     if ![dst, *lhs, *rhs].iter().all(|r| r.is_vreg()) {
         return None;
     }

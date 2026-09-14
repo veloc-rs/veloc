@@ -469,8 +469,8 @@ fn compute_cfg<S>(mfunc: &MachineFunction<S>, target: &dyn TargetMachine) -> Cfg
                 flow,
                 veloc_lir::ControlFlow::Branch | veloc_lir::ControlFlow::Jump
             ) {
-                for operand in inst.operands().iter() {
-                    if let veloc_lir::MachineOperand::Block(target) = operand {
+                for operand in inst.fields().iter() {
+                    if let veloc_lir::InstField::Block(target) = operand {
                         block_succs.push(*target);
                     }
                 }
@@ -685,6 +685,7 @@ mod tests {
     use super::{ChangeSet, FunctionAnalysisCtx};
     use crate::target::arch::TargetConfig;
     use crate::target::x86_64::X86_64TargetMachine;
+    use veloc_lir::InstBuild;
     use veloc_lir::stages::RawLir;
     use veloc_lir::{MachineBlock, MachineFunction};
     use veloc_mir::{Block, Type};
@@ -714,7 +715,7 @@ mod tests {
             id
         };
         {
-            let id = f.writer().ret(smallvec::smallvec![]);
+            let id = f.writer().ret(&[]);
             f.append_inst_id_to_block(2, id);
             id
         };
@@ -736,7 +737,7 @@ mod tests {
     #[test]
     fn selected_control_distinguishes_branch_fallthrough_and_terminal_transfer() {
         use crate::target::x86_64::isle::TargetInst;
-        use veloc_lir::{MachineOpcode, MachineOperand};
+        use veloc_lir::{InstField, MachineOpcode};
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut f = MachineFunction::<RawLir>::new("selected".into());
         for id in 0..8 {
@@ -744,12 +745,14 @@ mod tests {
         }
         let mut emit = |block, op: TargetInst, targets: &[u32]| {
             {
-                let id = f.writer().generic(
+                let id = f.writer().write(
                     MachineOpcode::Target(op.as_u32()),
-                    targets
+                    &[],
+                    &[],
+                    &targets
                         .iter()
-                        .map(|&b| MachineOperand::Block(Block(b)))
-                        .collect(),
+                        .map(|&b| InstField::Block(Block(b)))
+                        .collect::<alloc::vec::Vec<_>>(),
                 );
                 f.append_inst_id_to_block(block, id);
                 id
@@ -791,9 +794,11 @@ mod tests {
         analyses.apply(ChangeSet::BLOCK_LAYOUT);
         assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(2)]);
         {
-            let id = f.writer().generic(
+            let id = f.writer().write(
                 MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
-                smallvec::smallvec![],
+                &[],
+                &[],
+                &[],
             );
             f.append_inst_id_to_block(0, id);
             id
@@ -815,12 +820,12 @@ mod tests {
             id
         };
         {
-            let id = f.writer().ret(smallvec::smallvec![value]);
+            let id = f.writer().ret(&[value]);
             f.append_inst_id_to_block(1, id);
             id
         };
         {
-            let id = f.writer().ret(smallvec::smallvec![]);
+            let id = f.writer().ret(&[]);
             f.append_inst_id_to_block(2, id);
             id
         };

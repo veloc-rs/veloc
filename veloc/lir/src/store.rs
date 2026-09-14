@@ -1,7 +1,8 @@
 //! Function-owned instruction storage. IDs are stable; operand ranges and cold
 //! payload slots are recycled on replacement, never exposed as owning fields.
+use crate::InstField;
 use crate::use_def::{RefRange, References, Site};
-use crate::{InstExtra, InstId, InstRef, MachineOpcode, MachineOperand, MemoryAccess};
+use crate::{InstExtra, InstId, InstRef, MachineOpcode, MemoryAccess};
 use crate::{RefLocation, RefRole, Reg, RegRefs, VReg};
 use alloc::vec::Vec;
 use cranelift_entity::PrimaryMap;
@@ -18,14 +19,23 @@ impl Range {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct Operands {
-    data: Vec<MachineOperand>,
+#[derive(Debug, Clone)]
+struct Operands<T> {
+    data: Vec<T>,
     free: Vec<Vec<u32>>,
 }
 
-impl Operands {
-    fn insert(&mut self, values: &[MachineOperand]) -> Range {
+impl<T> Default for Operands<T> {
+    fn default() -> Self {
+        Self {
+            data: Vec::new(),
+            free: Vec::new(),
+        }
+    }
+}
+
+impl<T: Clone> Operands<T> {
+    fn insert(&mut self, values: &[T]) -> Range {
         if values.is_empty() {
             return Range::default();
         }
@@ -44,7 +54,7 @@ impl Operands {
                 .checked_add(capacity)
                 .expect("operand store overflow");
             assert!(end <= u32::MAX as usize, "operand store overflow");
-            self.data.resize(end, MachineOperand::Imm(0));
+            self.data.resize(end, values[0].clone());
             start
         });
         let range = Range {
@@ -62,6 +72,12 @@ impl Operands {
         let class = range.len.next_power_of_two().trailing_zeros() as usize;
         self.free[class].push(range.start);
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RegEffects {
+    pub uses: Vec<Reg>,
+    pub defs: Vec<Reg>,
 }
 
 const NONE: u32 = u32::MAX;
@@ -126,18 +142,24 @@ impl<T> Pool<T> {
 #[derive(Debug, Clone)]
 struct StoredInst {
     opcode: MachineOpcode,
-    operands: Range,
+    inputs: Range,
+    fields: Range,
+    results: Range,
     memory: u32,
     extra: u32,
     refs: RefRange,
+    effects: u32,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct InstStore {
     instructions: PrimaryMap<InstId, StoredInst>,
-    operands: Operands,
+    inputs: Operands<Reg>,
+    fields: Operands<InstField>,
+    results: Operands<Reg>,
     memory: Pool<MemoryAccess>,
     extras: Pool<InstExtra>,
+    effects: Pool<RegEffects>,
     pub(crate) references: References,
 }
 
@@ -147,22 +169,66 @@ pub struct InstWriter<'a> {
     store: &'a mut InstStore,
     target: Option<InstId>,
     memory: Option<crate::MemoryAccess>,
+    effects: RegEffects,
 }
 
 impl InstWriter<'_> {
+    pub fn with_effects(mut self, uses: &[Reg], defs: &[Reg]) -> Self {
+        assert!(
+            uses.iter().chain(defs).all(Reg::is_preg),
+            "implicit effects require physical registers"
+        );
+        self.effects = RegEffects {
+            uses: uses.to_vec(),
+            defs: defs.to_vec(),
+        };
+        self
+    }
     pub fn with_memory(mut self, access: crate::MemoryAccess) -> Self {
         self.memory = Some(access);
         self
     }
 
-    pub fn write(self, opcode: crate::MachineOpcode, operands: &[crate::MachineOperand]) -> InstId {
-        match self.target {
+    pub fn write(
+        self,
+        opcode: crate::MachineOpcode,
+        results: &[Reg],
+        inputs: &[Reg],
+        fields: &[InstField],
+    ) -> InstId {
+        let id = match self.target {
             Some(id) => {
-                self.store.write_at(id, opcode, operands, self.memory);
+                self.store
+                    .write_at(id, opcode, results, inputs, fields, self.memory);
                 id
             }
-            None => self.store.write(opcode, operands, self.memory),
+            None => self
+                .store
+                .write(opcode, results, inputs, fields, self.memory),
+        };
+        if !self.effects.uses.is_empty() || !self.effects.defs.is_empty() {
+            self.store.set_effects(id, self.effects);
         }
+        id
+    }
+}
+
+// The generated contract owns generic builders; this adapter owns storage and
+// the conversion from generic to machine opcodes.
+impl crate::InstBuild for InstWriter<'_> {
+    type Inst = InstId;
+    type Def = crate::Writable<Reg>;
+    fn reg(value: Self::Def) -> Reg {
+        value.to_reg()
+    }
+    fn write(
+        self,
+        opcode: crate::GenericOpcode,
+        results: &[Reg],
+        inputs: &[Reg],
+        fields: &[InstField],
+    ) -> InstId {
+        self.write(MachineOpcode::Generic(opcode), results, inputs, fields)
     }
 }
 
@@ -172,6 +238,7 @@ impl InstStore {
             store: self,
             target: None,
             memory: None,
+            effects: RegEffects::default(),
         }
     }
 
@@ -180,6 +247,7 @@ impl InstStore {
             store: self,
             target: Some(id),
             memory: None,
+            effects: RegEffects::default(),
         }
     }
 
@@ -194,8 +262,50 @@ impl InstStore {
     pub fn opcode(&self, id: InstId) -> MachineOpcode {
         self.instructions[id].opcode
     }
-    pub fn operands(&self, id: InstId) -> &[MachineOperand] {
-        &self.operands.data[self.instructions[id].operands.indices()]
+    pub fn results(&self, id: InstId) -> &[Reg] {
+        &self.results.data[self.instructions[id].results.indices()]
+    }
+    pub fn set_results(&mut self, id: InstId, results: &[Reg]) {
+        self.clear_refs(id);
+        self.results.release(self.instructions[id].results);
+        self.instructions[id].results = self.results.insert(results);
+        self.index_refs(id);
+    }
+    pub fn set_result(&mut self, id: InstId, index: usize, reg: Reg) {
+        assert!(index < self.results(id).len());
+        self.clear_refs(id);
+        self.results.data[self.instructions[id].results.start as usize + index] = reg;
+        self.index_refs(id);
+    }
+    pub fn inputs(&self, id: InstId) -> &[Reg] {
+        &self.inputs.data[self.instructions[id].inputs.indices()]
+    }
+    pub fn fields(&self, id: InstId) -> &[InstField] {
+        &self.fields.data[self.instructions[id].fields.indices()]
+    }
+    pub fn set_input(&mut self, id: InstId, index: usize, reg: Reg) {
+        let old = self.inputs(id)[index];
+        if old == reg {
+            return;
+        }
+        for link in self.instructions[id].refs.ids() {
+            let site = self.references.links.owner(link);
+            if site.location() == RefLocation::Input(index as u32) {
+                self.references.detach(link, old);
+                self.references.attach(link, reg, site);
+            }
+        }
+        self.inputs.data[self.instructions[id].inputs.start as usize + index] = reg;
+    }
+    pub fn set_inputs(&mut self, id: InstId, inputs: &[Reg]) {
+        assert_eq!(
+            inputs.len(),
+            self.inputs(id).len(),
+            "input shape must not change"
+        );
+        for (i, &reg) in inputs.iter().enumerate() {
+            self.set_input(id, i, reg);
+        }
     }
     pub fn memory(&self, id: InstId) -> Option<MemoryAccess> {
         self.memory.get(self.instructions[id].memory).copied()
@@ -203,17 +313,24 @@ impl InstStore {
     pub fn write(
         &mut self,
         opcode: MachineOpcode,
-        operands: &[MachineOperand],
+        results: &[Reg],
+        inputs: &[Reg],
+        fields: &[InstField],
         memory: Option<MemoryAccess>,
     ) -> InstId {
-        let operands = self.operands.insert(operands);
+        let inputs = self.inputs.insert(inputs);
+        let fields = self.fields.insert(fields);
+        let results = self.results.insert(results);
         let memory = memory.map_or(NONE, |access| self.memory.insert(access));
         let id = self.instructions.push(StoredInst {
             opcode,
-            operands,
+            inputs,
+            fields,
+            results,
             memory,
             extra: NONE,
             refs: RefRange::default(),
+            effects: NONE,
         });
         self.index_refs(id);
         id
@@ -223,13 +340,16 @@ impl InstStore {
         if id == source {
             return;
         }
-        self.write_at(id, MachineOpcode::Invalid, &[], None);
+        self.write_at(id, MachineOpcode::Invalid, &[], &[], &[], None);
         let empty = StoredInst {
             opcode: MachineOpcode::Invalid,
-            operands: Range { start: 0, len: 0 },
+            inputs: Range::default(),
+            fields: Range::default(),
+            results: Range::default(),
             memory: NONE,
             extra: NONE,
             refs: RefRange::default(),
+            effects: NONE,
         };
         self.instructions[id] = core::mem::replace(&mut self.instructions[source], empty);
         for link in self.instructions[id].refs.ids() {
@@ -242,60 +362,51 @@ impl InstStore {
         &mut self,
         id: InstId,
         opcode: MachineOpcode,
-        operands: &[MachineOperand],
+        results: &[Reg],
+        inputs: &[Reg],
+        fields: &[InstField],
         memory: Option<MemoryAccess>,
     ) {
         self.clear_refs(id);
+        self.effects.remove(self.instructions[id].effects);
+        self.instructions[id].effects = NONE;
         self.extras.remove(self.instructions[id].extra);
         self.instructions[id].extra = NONE;
-        self.set_operand_data(id, operands);
+        self.inputs.release(self.instructions[id].inputs);
+        self.fields.release(self.instructions[id].fields);
+        self.instructions[id].inputs = self.inputs.insert(inputs);
+        self.instructions[id].fields = self.fields.insert(fields);
+        self.results.release(self.instructions[id].results);
+        self.instructions[id].results = self.results.insert(results);
         self.set_memory(id, memory);
         self.instructions[id].opcode = opcode;
         self.index_refs(id);
     }
-    pub fn set_operands(&mut self, id: InstId, operands: &[MachineOperand]) {
-        self.clear_refs(id);
-        self.set_operand_data(id, operands);
-        self.index_refs(id);
+    pub fn set_fields(&mut self, id: InstId, fields: &[InstField]) {
+        self.fields.release(self.instructions[id].fields);
+        self.instructions[id].fields = self.fields.insert(fields);
     }
-    fn set_operand_data(&mut self, id: InstId, operands: &[MachineOperand]) {
-        let old = self.instructions[id].operands;
-        if operands.len() == old.len as usize {
-            self.operands.data[old.indices()].clone_from_slice(operands);
-        } else {
-            self.operands.release(old);
-            self.instructions[id].operands = self.operands.insert(operands);
-        }
-    }
-    pub fn set_operand(&mut self, id: InstId, index: usize, operand: MachineOperand) {
-        assert!(
-            index < self.operands(id).len(),
-            "operand index out of bounds"
-        );
-        let start = self.instructions[id].operands.start as usize;
-        let old = &self.operands.data[start + index];
-        if old.is_use() == operand.is_use() && old.is_def() == operand.is_def() {
-            if let (Some(old), Some(new)) = (old.as_reg(), operand.as_reg()) {
-                if old != new {
-                    for link in self.instructions[id].refs.ids() {
-                        let site = self.references.links.owner(link);
-                        if site.location() == RefLocation::Operand(index as u32) {
-                            self.references.detach(link, old);
-                            self.references.attach(link, new, site);
-                        }
-                    }
-                }
-            }
-            self.operands.data[start + index] = operand;
-        } else {
-            self.clear_refs(id);
-            self.operands.data[start + index] = operand;
-            self.index_refs(id);
-        }
+    pub fn set_field(&mut self, id: InstId, index: usize, field: InstField) {
+        assert!(index < self.fields(id).len(), "field index out of bounds");
+        self.fields.data[self.instructions[id].fields.start as usize + index] = field;
     }
     pub fn set_memory(&mut self, id: InstId, access: Option<MemoryAccess>) {
         self.memory.remove(self.instructions[id].memory);
         self.instructions[id].memory = access.map_or(NONE, |a| self.memory.insert(a));
+    }
+    pub fn effects(&self, id: InstId) -> Option<&RegEffects> {
+        self.effects.get(self.instructions[id].effects)
+    }
+    pub fn set_effects(&mut self, id: InstId, effects: RegEffects) {
+        assert!(effects.uses.iter().chain(&effects.defs).all(Reg::is_preg));
+        self.clear_refs(id);
+        self.effects.remove(self.instructions[id].effects);
+        self.instructions[id].effects = if effects.uses.is_empty() && effects.defs.is_empty() {
+            NONE
+        } else {
+            self.effects.insert(effects)
+        };
+        self.index_refs(id);
     }
     pub fn extra(&self, id: InstId) -> Option<&InstExtra> {
         self.extras.get(self.instructions[id].extra)
@@ -326,9 +437,14 @@ impl InstStore {
     }
     pub(crate) fn reg_at(&self, site: Site) -> Reg {
         match site.location() {
-            RefLocation::Operand(index) => self.operands(site.inst)[index as usize]
-                .as_reg()
-                .expect("reference must point to a register"),
+            RefLocation::ImplicitUse(index) => {
+                self.effects(site.inst).unwrap().uses[index as usize]
+            }
+            RefLocation::ImplicitDef(index) => {
+                self.effects(site.inst).unwrap().defs[index as usize]
+            }
+            RefLocation::Result(index) => self.results(site.inst)[index as usize],
+            RefLocation::Input(index) => self.inputs(site.inst)[index as usize],
             RefLocation::EdgeArg(index) => self
                 .extra(site.inst)
                 .expect("edge payload")
@@ -347,25 +463,27 @@ impl InstStore {
         self.instructions[id].refs = RefRange::default();
     }
     fn reference_sites(&self, id: InstId) -> impl Iterator<Item = (Reg, Site)> + '_ {
-        let operands = self
-            .operands(id)
+        let results = self
+            .results(id)
             .iter()
+            .copied()
             .enumerate()
-            .flat_map(move |(index, operand)| {
-                [RefRole::Use, RefRole::Def]
-                    .into_iter()
-                    .filter_map(move |role| {
-                        let present = match role {
-                            RefRole::Use => operand.is_use(),
-                            RefRole::Def => operand.is_def(),
-                        };
-                        present.then(|| {
-                            (
-                                operand.as_reg().unwrap(),
-                                Site::new(id, RefLocation::Operand(index as u32), role),
-                            )
-                        })
-                    })
+            .map(move |(index, reg)| {
+                (
+                    reg,
+                    Site::new(id, RefLocation::Result(index as u32), RefRole::Def),
+                )
+            });
+        let operands = self
+            .inputs(id)
+            .iter()
+            .copied()
+            .enumerate()
+            .map(move |(index, reg)| {
+                (
+                    reg,
+                    Site::new(id, RefLocation::Input(index as u32), RefRole::Use),
+                )
             });
         let edges = self
             .extra(id)
@@ -378,11 +496,30 @@ impl InstStore {
                     Site::new(id, RefLocation::EdgeArg(index as u32), RefRole::Use),
                 )
             });
-        operands.chain(edges)
+        let implicit = self.effects(id).into_iter().flat_map(move |effects| {
+            effects
+                .uses
+                .iter()
+                .copied()
+                .enumerate()
+                .map(move |(i, r)| {
+                    (
+                        r,
+                        Site::new(id, RefLocation::ImplicitUse(i as u32), RefRole::Use),
+                    )
+                })
+                .chain(effects.defs.iter().copied().enumerate().map(move |(i, r)| {
+                    (
+                        r,
+                        Site::new(id, RefLocation::ImplicitDef(i as u32), RefRole::Def),
+                    )
+                }))
+        });
+        results.chain(operands).chain(edges).chain(implicit)
     }
     fn index_refs(&mut self, id: InstId) {
         let sites: smallvec::SmallVec<[_; 8]> = self.reference_sites(id).collect();
-        let owner = Site::new(id, RefLocation::Operand(0), RefRole::Use);
+        let owner = Site::new(id, RefLocation::Input(0), RefRole::Use);
         let range = self.references.alloc(sites.len(), owner);
         for (link, (reg, site)) in range.ids().zip(sites) {
             self.references.attach(link, reg, site);
@@ -402,9 +539,14 @@ impl InstStore {
             let site = self.references.links.owner(link);
             self.references.detach(link, old);
             match site.location() {
-                RefLocation::Operand(index) => {
-                    let start = self.instructions[site.inst].operands.start as usize;
-                    self.operands.data[start + index as usize] = MachineOperand::Use(new);
+                RefLocation::Result(_)
+                | RefLocation::ImplicitUse(_)
+                | RefLocation::ImplicitDef(_) => {
+                    unreachable!("virtual use cannot reference a result or physical effect")
+                }
+                RefLocation::Input(index) => {
+                    let start = self.instructions[site.inst].inputs.start as usize;
+                    self.inputs.data[start + index as usize] = new;
                 }
                 RefLocation::EdgeArg(index) => {
                     let Slot::Live(extra) =
@@ -492,18 +634,19 @@ impl InstStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::InstBuild;
     use crate::{BranchInfo, MachineFunction, MemoryKind, Reg, Writable, stages::RawLir};
 
     #[test]
     fn pooled_storage_recycles_payloads_and_preserves_borrowed_views() {
-        assert!(core::mem::size_of::<StoredInst>() <= 32);
+        assert!(core::mem::size_of::<StoredInst>() <= 56);
         let mut f = MachineFunction::<RawLir>::new("store".into());
         let block = f.create_synthetic_block();
         let reg = f.alloc_vreg(crate::Type::I64);
         let id = f.writer().constant(Writable(reg), 42);
         f.append_inst_id_to_block(0, id);
         let view = f.inst(id);
-        assert_eq!(view.operands().as_ptr(), f.inst(id).operands().as_ptr());
+        assert_eq!(view.inputs().as_ptr(), f.inst(id).inputs().as_ptr());
         for _ in 0..100 {
             let access = MemoryAccess::new(MemoryKind::Read, 8);
             assert_eq!(
@@ -525,9 +668,7 @@ mod tests {
             assert!(f.inst_extra(id).is_none());
         }
         // The generic and target namespaces use the exact same store.
-        let target = f
-            .writer()
-            .write(MachineOpcode::Target(7), &[MachineOperand::Use(reg)]);
+        let target = f.writer().write(MachineOpcode::Target(7), &[], &[reg], &[]);
         f.append_inst_id_to_block(0, target);
         assert!(f.inst(id).is_generic());
         assert!(f.inst(target).is_target());
@@ -540,9 +681,9 @@ mod tests {
             args: Default::default(),
         });
         f.set_inst_extra(replacement, extra.clone());
-        let operands = f.inst(replacement).operands().as_ptr();
+        let operands = f.inst(replacement).inputs().as_ptr();
         f.replace_inst(id, replacement);
-        assert_eq!(f.inst(id).operands().as_ptr(), operands);
+        assert_eq!(f.inst(id).inputs().as_ptr(), operands);
         assert_eq!(f.inst(id).memory(), Some(access));
         assert_eq!(f.inst_extra(id), Some(&extra));
         assert!(f.inst(replacement).is_invalid());
@@ -558,7 +699,7 @@ mod tests {
         assert_eq!(f.block_insts(0), &[id, target]);
         assert_eq!(f.inst(id).memory(), Some(access));
         let mut cloned = f.clone();
-        cloned.set_inst_operands(target, [MachineOperand::Use(Reg::new_preg(1))]);
+        cloned.set_inst_inputs(target, &[Reg::new_preg(1)]);
         assert_eq!(f.inst(target).uses().collect::<Vec<_>>(), [reg]);
         assert_eq!(
             cloned.inst(target).uses().collect::<Vec<_>>(),
@@ -575,10 +716,17 @@ mod tests {
         assert_eq!(f.blocks[0].id, block);
 
         let mut store = InstStore::default();
-        let id = store.write(MachineOpcode::Target(1), &[], None);
+        let id = store.write(MachineOpcode::Target(1), &[], &[], &[], None);
         for n in 0..100 {
-            store.set_operands(id, &[]);
-            store.set_operands(id, &[MachineOperand::Imm(n), MachineOperand::Use(reg)]);
+            store.set_fields(id, &[]);
+            store.write_at(
+                id,
+                MachineOpcode::Target(1),
+                &[],
+                &[reg],
+                &[InstField::Imm(n)],
+                None,
+            );
             store.set_memory(id, Some(MemoryAccess::new(MemoryKind::Read, 8)));
             store.set_extra(
                 id,
@@ -586,9 +734,9 @@ mod tests {
                     args: Default::default(),
                 }),
             );
-            store.write_at(id, MachineOpcode::Invalid, &[], None);
+            store.write_at(id, MachineOpcode::Invalid, &[], &[], &[], None);
         }
-        assert_eq!(store.operands.data.len(), 2);
+        assert_eq!(store.fields.data.len(), 1);
         assert_eq!(store.memory.slots.len(), 1);
         assert_eq!(store.extras.slots.len(), 1);
     }

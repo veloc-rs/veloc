@@ -30,7 +30,7 @@ input. The current algorithm still allocates whole ranges; the result is indexed
 by operand occurrence so future range splitting does not require a new result
 interface. It does not yet model direct stack operands or early-clobber slots.
 
-Two-address instructions now have separate Def and Use operands. ISLE expands
+Two-address instructions have separate result and input lists. ISLE expands
 a tied encoding declaration into an output, an appended input and a static
 location constraint. Selection explicitly supplies both values. Allocation
 resolves the constraint with physical input/output copies, including scratch
@@ -63,7 +63,17 @@ Consumers import `veloc_lir::{MachineFunction, InstId, InstRef, ...}` and
 `veloc_lir::stages::RawLir`, or use the top-level `veloc::lir` facade. There is no
 compatibility module at `veloc_codegen::lir`.
 
-Each function owns an `InstStore`. Instructions have stable IDs; operand ranges
+Each function owns an `InstStore`. `results()` borrows a compact `Reg` slice in logical signature order;
+`inputs()` borrows a compact register slice; `fields()` borrows non-register
+attributes. All three use separate recyclable typed pools.
+Generated builders and encoders address these slices directly: there is no
+mixed operand enum or per-instruction order map. Use-def locations index inputs.
+Register allocation visits only results and inputs, leaving attributes untouched.
+`RegEffects` separately describes
+implicit physical register reads/writes, including call clobbers; dependency
+queries include these effects without treating them as SSA results.
+
+Instructions have stable IDs; operand ranges
 and cold payloads live in recyclable pools. `InstRef` is a borrowed handle, not
 an owning instruction or copy-on-write wrapper. Generic and target opcodes use
 the same storage and no independent instruction drafts exist.
@@ -106,16 +116,22 @@ one logical operation model and one type/semantic checker. Import resolution,
 dependency tracking and physical-file diagnostics are shared build infrastructure.
 
 `storage Operands` selects operand-array projection; MIR uses packed storage.
-Machine `struct` declarations describe register roles and properties. Logical `op`
+Machine `struct` declarations describe register and property types; storage bindings infer each register field's input/result role. Logical `op`
 records declare signatures, effects, control behavior and optional semantics.
 The generated Rust contains opcodes, views, builders, decoding checks and direct
 type validation. Construction does not run validation.
 
 ```text
-storage Operands { prefix: "G_" }
-struct BinaryReg { dst: Def, lhs: Use, rhs: Use }
+type Reg = rust("crate::Reg");
+enum InstField { variants: [Imm(i64)] }
+storage Operands {
+    opcode: GenericOpcode, view: InstView,
+    reader: InstRead, writer: InstBuild,
+    prefix: "G_", register: Reg, attributes: InstField,
+}
+struct BinaryReg { dst: Reg, lhs: Reg, rhs: Reg }
 op G_ADD<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
-    meta: OpInfo {},
+    meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.add(lhs, rhs)
 }
@@ -127,16 +143,25 @@ joins MIR and LIR primitive bindings to generate direct lowering dispatch.
 Offline tools can include generated semantic artifacts; runtime LIR has no
 semantics dependency.
 
-Instruction access uses `inst.generic_view()?` and pattern matching:
+The generated `InstRead<'a>` and `InstBuild` traits define the host boundary.
+`InstRef` implements opcode/slice access and error construction; `InstWriter`
+implements writes and converts generic opcodes to `MachineOpcode`.
+The builder's associated `Def` type is `Writable<Reg>` in LIR; generated code
+does not know that wrapper, the concrete writer, or the instruction ID type.
+The trait default methods are statically dispatched; there is no `dyn` adapter.
+Import `InstRead` for `view()/validate()` and `InstBuild` for builders.
+
+Instruction access uses `inst.view()` and pattern matching:
 
 ```rust,ignore
-match inst.generic_view()? {
+use veloc_lir::InstRead;
+match inst.view() {
     InstView::BinaryReg(binary) => {
         // The restricted opcode distinguishes ADD, SUB, etc. sharing this shape.
         use_binary(binary.opcode, binary.dst, binary.lhs, binary.rhs);
     }
     InstView::Return(ret) => {
-        for reg in ret.values.iter() {
+        for &reg in ret.values {
             use_return(reg);
         }
     }
@@ -145,32 +170,59 @@ match inst.generic_view()? {
 ```
 
 Views are generated from structs; there are no accessor-name overrides or runtime
-schema dispatch. The decoder checks opcode, operand count and operand kinds,
-not semantic type contracts. Fixed fields are copied; variable register lists
-borrow the operands through `RegList`, without allocation. Typed payload structs
-allow passing an already decoded instruction to helpers. Generic views reject
-target/invalid opcodes; target-specific decoding remains the backend's concern.
+schema dispatch. Accessors assume the opcode's structural invariants and read
+directly; wrong field variants or missing required fields panic using safe Rust.
+They do not call a validator, even in debug builds. Fixed fields are copied;
+variable register lists borrow `&[Reg]` without allocation.
+The separately generated `validate()` checks counts, attribute kinds
+and structural index constraints and returns `ValidationError`. The existing
+`CodegenOptions::verify` switch opts into this check at pass boundaries.
+Generated `GenericOpcode::validate_types()` remains an independent type contract;
+SSA/dominance checks use function-level algorithms. A generic view of a target
+or invalid opcode is an internal error, not a fallible decode operation.
 
-Fixed builders are named from the opcode (`G_BRCOND` -> `writer.brcond`). Variadic
-call/return construction and decoding, and architecture-independent binary/tied
-construction helpers, remain ordinary Rust. Explicit mappings bind every layout field to logical inputs or named results.
-Field shorthand expands to `field: field`; there is no name/order-based layout
-inference. Builders take results in signature order, then inputs in signature
-order, and encode them in physical layout order. A `tied(input, result)` field
-uses a single writable register for both, so it contributes only the result
-argument to the physical builder. Optional uses require `some(input)` or `none`;
-only trailing fields may be absent. Carry instructions therefore select their
-exact arity explicitly. Variadic returns map `values` directly; call storage uses
-`shape: call(callee, args)` with signature-driven results. `G_ICMP` always
-requires two inputs and an explicit condition; zero comparison is `G_IEQZ`.
+All builders are generated from the opcode name (`G_BRCOND` -> `writer.brcond`,
+`G_CALLIND` -> `writer.callind`), including calls and returns. Only generic
+unary/binary helpers for target instructions remain ordinary Rust.
+Mappings bind every layout field to a logical input or named result.
+Builders take results first, then inputs in signature order. Results are encoded
+in signature order; input and attribute slots follow the layout's field order.
+
+The storage declaration identifies the register type and attribute enum.
+Enum payload types determine attribute codecs; there is no built-in registry
+of immediate, condition-code or symbol types. `optional(Reg)` fields require
+`some(input)` or `none`; absent fields need not form a suffix.
+`sequence(Reg)` borrows a register slice. Each storage domain permits one
+trailing sequence, which may follow fixed fields. Attributes currently support
+single and optional fields, not sequence pools.
+Calls are ordinary structs: direct calls have a symbol attribute, indirect
+calls have a register callee followed by argument registers.
+`results: results()` binds the result slice. Two-address constraints do not
+merge SSA inputs and outputs.
+`G_ICMP` requires two inputs and an explicit condition; zero comparison is
+`G_IEQZ`.
 
 Logical type contracts now use the same compiler as MIR and can be checked with
 `GenericOpcode::validate_types`; target legality remains a separate decision.
-Structured constraints/text projections are not yet supported by operand-array
-emission and are rejected rather than silently ignored. Shared `Type`,
+Logical parameter accesses, queries, property/operation constraints and ownership
+visitors share the MIR compiler. Checks accept the contexts explicitly declared
+in defs. A reader's `value_type` method is required only when generated
+expressions need a value-to-type lookup; the current LIR definitions do not.
+Property contracts are inlined at their instruction uses, not implemented as
+inherent methods on potentially foreign Rust types. Queries become reader methods.
+View declarations share MIR's field/lifetime emitter, with named records instead
+of inline enum fields. Physical reads remain storage-specific; builders and text
+parsers use the same prepared-call emitter as MIR. Explicit text projections
+generate parser/printer artifacts using the shared atom protocol (the LIR crate
+does not yet include a complete textual frontend). Signature sources generate
+only the required reader lookups and share MIR's contract emission. Shared `Type`,
 `Signature`, linkage, condition codes and some entity identifiers still come
 from `veloc-mir`.
 
+The optional `control: ControlFlow::Next` storage setting names an ordinary
+enum and its default variant. Opcode `flow` values are checked against that
+enum. Effects and traits are declared separately in metadata, not inferred by
+the storage generator from control variant names.
 Control descriptors are shared by generic and selected instructions:
 `Next` and `Call` continue, `Branch` has explicit targets plus fallthrough,
 `Jump` has only explicit targets, and `Return`/`Trap` have no successors.

@@ -5,7 +5,7 @@ use crate::Error;
 use crate::model::records::{Policy, RecordDef};
 use crate::syntax::{Kind, Node, Record};
 
-mod compact;
+pub(crate) mod compact;
 mod generate;
 pub(crate) mod operands;
 
@@ -160,23 +160,7 @@ pub(crate) fn compile(
                 "expected one storage Operands declaration",
             ));
         }
-        let mut fields = crate::model::Fields::new(source, record.clone());
-        let prefix = if let Some(node) = fields.optional("prefix") {
-            match node.kind {
-                Kind::Text(prefix) => prefix,
-                _ => {
-                    return Err(Error::at(
-                        source,
-                        node.offset,
-                        "expected opcode prefix string",
-                    ));
-                }
-            }
-        } else {
-            String::new()
-        };
-        fields.finish()?;
-        let operands = operands::compile(records, source, prefix, data)?;
+        let operands = operands::compile(records, source, data)?;
         return Ok(Storage {
             strategy: Strategy::Operands(operands),
             formats: Vec::new(),
@@ -264,7 +248,7 @@ pub(crate) fn compile(
             use crate::model::records::PropertyType;
             let ty = match &field.ty {
                 PropertyType::Named(ty) | PropertyType::Optional(ty) => ty.as_str(),
-                PropertyType::Values(_) | PropertyType::Array(_, _) => {
+                PropertyType::Values(_) | PropertyType::Array(_, _) | PropertyType::Sequence(_) => {
                     return Err(Error::at(
                         source,
                         0,
@@ -427,6 +411,7 @@ fn parse_layout(
                 crate::model::records::PropertyType::Named(name) => FieldType::Named(name.clone()),
                 crate::model::records::PropertyType::Values(n) => FieldType::Values(*n),
                 crate::model::records::PropertyType::Optional(_)
+                | crate::model::records::PropertyType::Sequence(_)
                 | crate::model::records::PropertyType::Array(_, _) => {
                     return Err(Error::at(
                         source,

@@ -1,12 +1,8 @@
 //! Low-level IR (LIR) 指令和操作数定义
 
-use alloc::string::String;
 use cranelift_entity::entity_impl;
-use smallvec::SmallVec;
-use veloc_mir::{Block, FloatCC, IntCC, Type};
+use veloc_mir::Type;
 pub use veloc_types::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
-
-use crate::symbol::SymbolId;
 
 /// Abstract register bank; target-specific selection belongs to codegen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,7 +51,7 @@ impl From<PReg> for Reg {
 /// 寄存器标识符 (虚拟或物理)
 ///
 /// 最高位为 1 表示虚拟寄存器 (VReg)，为 0 表示物理寄存器 (PReg)
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Reg(pub u32);
 
 impl Reg {
@@ -141,19 +137,6 @@ pub struct VRegData {
     pub bank: Option<RegisterBank>, // 寄存器库，在合法化/指令选择阶段确定
 }
 
-/// Control transfer independent of instruction encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlFlow {
-    Next,
-    /// A conditional transfer with a path continuing at the next instruction.
-    Branch,
-    /// All paths transfer to explicit successors; no fallthrough.
-    Jump,
-    Return,
-    Call,
-    Trap,
-}
-
 include!(concat!(env!("OUT_DIR"), "/instructions.rs"));
 
 /// 机器指令操作码
@@ -167,153 +150,13 @@ pub enum MachineOpcode {
     Target(u32),
 }
 
-/// 条件码
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CondCode {
-    Int(IntCC),
-    Float(FloatCC),
-}
-
-/// 机器指令操作数
-#[derive(Debug, Clone)]
-pub enum MachineOperand {
-    /// 纯粹的定义 (覆盖写)
-    Def(Writable<Reg>),
-    /// 纯粹的使用 (只读)
-    Use(Reg),
-    /// 整数立即数
-    Imm(i64),
-    /// 浮点立即数
-    FImm(f64),
-    /// 基本块引用
-    Block(Block),
-    /// 栈槽
-    StackSlot(StackSlot),
-    /// 条件码（用于比较）
-    CondCode(CondCode),
-    /// 全局符号
-    Global(SymbolId),
-}
-
-impl MachineOperand {
-    pub fn is_def(&self) -> bool {
-        matches!(self, Self::Def(_))
-    }
-
-    pub fn is_use(&self) -> bool {
-        matches!(self, Self::Use(_))
-    }
-
-    pub fn as_reg(&self) -> Option<Reg> {
-        match self {
-            Self::Def(w) => Some(w.0),
-            Self::Use(r) => Some(*r),
-            _ => None,
-        }
-    }
-
-    pub fn as_writable(&self) -> Option<Writable<Reg>> {
-        match self {
-            Self::Def(w) => Some(*w),
-            _ => None,
-        }
-    }
-
-    pub fn as_stack_slot(&self) -> Option<StackSlot> {
-        match self {
-            Self::StackSlot(slot) => Some(*slot),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallCallee {
-    Direct(SymbolId),
-    Indirect(Reg),
-}
-
-/// Borrowed, structurally checked register operands. Construction is private so
-/// iteration never silently skips a malformed operand.
-#[derive(Debug, Clone, Copy)]
-pub struct RegList<'a>(&'a [MachineOperand]);
-
-impl RegList<'_> {
-    pub fn len(self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn iter(self) -> impl ExactSizeIterator<Item = Reg> + DoubleEndedIterator {
-        self.0.iter().map(|operand| match operand {
-            MachineOperand::Def(reg) => reg.to_reg(),
-            MachineOperand::Use(reg) => *reg,
-            _ => unreachable!("checked register list"),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct CallShape<'a> {
-    pub defs: RegList<'a>,
-    pub callee: CallCallee,
-    pub args: RegList<'a>,
-}
-
-// Variable-arity calls/returns and target-independent construction helpers.
+// Target-independent construction helpers.
 impl crate::InstWriter<'_> {
     pub fn unary(self, opcode: MachineOpcode, def: Writable<Reg>, src: Reg) -> InstId {
-        self.write(
-            opcode,
-            &[MachineOperand::Def(def), MachineOperand::Use(src)],
-        )
+        self.write(opcode, &[def.to_reg()], &[src], &[])
     }
     pub fn binary(self, opcode: MachineOpcode, def: Writable<Reg>, lhs: Reg, rhs: Reg) -> InstId {
-        self.write(
-            opcode,
-            &[
-                MachineOperand::Def(def),
-                MachineOperand::Use(lhs),
-                MachineOperand::Use(rhs),
-            ],
-        )
-    }
-    pub fn generic(self, opcode: MachineOpcode, operands: SmallVec<[MachineOperand; 4]>) -> InstId {
-        self.write(opcode, &operands)
-    }
-    pub fn ret(self, results: SmallVec<[Reg; 2]>) -> InstId {
-        let operands: SmallVec<[MachineOperand; 4]> =
-            results.into_iter().map(MachineOperand::Use).collect();
-        self.write(MachineOpcode::Generic(GenericOpcode::G_RET), &operands)
-    }
-    pub fn call<D, A>(self, defs: D, callee: SymbolId, args: A) -> InstId
-    where
-        D: IntoIterator<Item = Writable<Reg>>,
-        A: IntoIterator<Item = Reg>,
-    {
-        let operands: SmallVec<[MachineOperand; 4]> = defs
-            .into_iter()
-            .map(MachineOperand::Def)
-            .chain(core::iter::once(MachineOperand::Global(callee)))
-            .chain(args.into_iter().map(MachineOperand::Use))
-            .collect();
-        self.write(MachineOpcode::Generic(GenericOpcode::G_CALL), &operands)
-    }
-    pub fn call_indirect<D, A>(self, defs: D, callee: Reg, args: A) -> InstId
-    where
-        D: IntoIterator<Item = Writable<Reg>>,
-        A: IntoIterator<Item = Reg>,
-    {
-        let operands: SmallVec<[MachineOperand; 4]> = defs
-            .into_iter()
-            .map(MachineOperand::Def)
-            .chain(core::iter::once(MachineOperand::Use(callee)))
-            .chain(args.into_iter().map(MachineOperand::Use))
-            .collect();
-        self.write(MachineOpcode::Generic(GenericOpcode::G_CALLIND), &operands)
+        self.write(opcode, &[def.to_reg()], &[lhs, rhs], &[])
     }
 }
 
@@ -328,9 +171,34 @@ impl core::fmt::Debug for InstRef<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("InstRef")
             .field("opcode", &self.opcode())
-            .field("operands", &self.operands())
+            .field("results", &self.results())
+            .field("inputs", &self.inputs())
+            .field("fields", &self.fields())
+            .field("effects", &self.effects())
             .field("memory", &self.memory())
             .finish()
+    }
+}
+
+impl<'a> crate::InstRead<'a> for crate::InstRef<'a> {
+    type Error = crate::ValidationError;
+    fn opcode(self) -> Option<crate::GenericOpcode> {
+        self.generic_opcode()
+    }
+    fn results(self) -> &'a [crate::Reg] {
+        self.results()
+    }
+    fn inputs(self) -> &'a [crate::Reg] {
+        self.inputs()
+    }
+    fn fields(self) -> &'a [crate::InstField] {
+        self.fields()
+    }
+    fn error(self, message: &str) -> crate::ValidationError {
+        crate::ValidationError {
+            opcode: self.opcode(),
+            reason: message.into(),
+        }
     }
 }
 
@@ -338,8 +206,17 @@ impl<'a> InstRef<'a> {
     pub fn opcode(self) -> MachineOpcode {
         self.store.opcode(self.id)
     }
-    pub fn operands(self) -> &'a [MachineOperand] {
-        self.store.operands(self.id)
+    pub fn results(self) -> &'a [Reg] {
+        self.store.results(self.id)
+    }
+    pub fn inputs(self) -> &'a [Reg] {
+        self.store.inputs(self.id)
+    }
+    pub fn fields(self) -> &'a [crate::InstField] {
+        self.store.fields(self.id)
+    }
+    pub fn effects(self) -> Option<&'a crate::RegEffects> {
+        self.store.effects(self.id)
     }
     pub fn memory(self) -> Option<crate::MemoryAccess> {
         self.store.memory(self.id)
@@ -350,26 +227,30 @@ impl<'a> InstRef<'a> {
         matches!(self.opcode(), MachineOpcode::Invalid)
     }
 
-    /// 获取所有定义的结果寄存器
+    /// Explicit results and implicit physical register writes.
     pub fn defs(&self) -> impl Iterator<Item = Reg> + 'a {
-        self.operands().iter().filter_map(|op| match op {
-            MachineOperand::Def(w) => Some(w.to_reg()),
-            _ => None,
-        })
+        self.results().iter().copied().chain(
+            self.effects()
+                .into_iter()
+                .flat_map(|e| e.defs.iter().copied()),
+        )
     }
 
-    /// 获取所有使用的寄存器
+    /// Explicit register inputs, edge arguments and implicit physical reads.
     pub fn uses(&self) -> impl Iterator<Item = Reg> + 'a {
-        let operands = self.operands().iter().filter_map(|op| match op {
-            MachineOperand::Use(r) => Some(*r),
-            _ => None,
-        });
-        operands.chain(
-            self.store
-                .extra(self.id)
-                .into_iter()
-                .flat_map(crate::InstExtra::edge_args),
-        )
+        let operands = self.inputs().iter().copied();
+        operands
+            .chain(
+                self.effects()
+                    .into_iter()
+                    .flat_map(|e| e.uses.iter().copied()),
+            )
+            .chain(
+                self.store
+                    .extra(self.id)
+                    .into_iter()
+                    .flat_map(crate::InstExtra::edge_args),
+            )
     }
 
     /// 检查是否是通用操作码（尚未指令选择）
@@ -387,155 +268,6 @@ impl<'a> InstRef<'a> {
         match self.opcode() {
             MachineOpcode::Generic(opcode) => Some(opcode),
             _ => None,
-        }
-    }
-
-    fn expect_def_reg(&self, index: usize, message: &str) -> crate::error::Result<Reg> {
-        match self.operands().get(index) {
-            Some(MachineOperand::Def(w)) => Ok(w.to_reg()),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_use_reg(&self, index: usize, message: &str) -> crate::error::Result<Reg> {
-        match self.operands().get(index) {
-            Some(MachineOperand::Use(r)) => Ok(*r),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_optional_use_reg(
-        &self,
-        index: usize,
-        message: &str,
-    ) -> crate::error::Result<Option<Reg>> {
-        match self.operands().get(index) {
-            None => Ok(None),
-            Some(MachineOperand::Use(reg)) => Ok(Some(*reg)),
-            Some(_) => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_imm(&self, index: usize, message: &str) -> crate::error::Result<i64> {
-        match self.operands().get(index) {
-            Some(MachineOperand::Imm(imm)) => Ok(*imm),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_nonnegative_imm_usize(
-        &self,
-        index: usize,
-        message: &str,
-    ) -> crate::error::Result<usize> {
-        match self.operands().get(index) {
-            Some(MachineOperand::Imm(imm)) if *imm >= 0 => Ok(*imm as usize),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_fimm(&self, index: usize, message: &str) -> crate::error::Result<f64> {
-        match self.operands().get(index) {
-            Some(MachineOperand::FImm(imm)) => Ok(*imm),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_stackslot(&self, index: usize, message: &str) -> crate::error::Result<StackSlot> {
-        match self.operands().get(index) {
-            Some(MachineOperand::StackSlot(slot)) => Ok(*slot),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_block(&self, index: usize, message: &str) -> crate::error::Result<Block> {
-        match self.operands().get(index) {
-            Some(MachineOperand::Block(block)) => Ok(*block),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_intcc(&self, index: usize, message: &str) -> crate::error::Result<IntCC> {
-        match self.operands().get(index) {
-            Some(MachineOperand::CondCode(CondCode::Int(cc))) => Ok(*cc),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn expect_floatcc(&self, index: usize, message: &str) -> crate::error::Result<FloatCC> {
-        match self.operands().get(index) {
-            Some(MachineOperand::CondCode(CondCode::Float(cc))) => Ok(*cc),
-            _ => Err(self.decode_error(message)),
-        }
-    }
-
-    fn borrow_use_regs_from(
-        &self,
-        index: usize,
-        message: &str,
-    ) -> crate::error::Result<RegList<'a>> {
-        let operands = self
-            .operands()
-            .get(index..)
-            .ok_or_else(|| self.decode_error(message))?;
-        if operands
-            .iter()
-            .any(|op| !matches!(op, MachineOperand::Use(_)))
-        {
-            return Err(self.decode_error(message));
-        }
-        Ok(RegList(operands))
-    }
-
-    fn decode_call_shape_field(
-        &self,
-        _index: usize,
-        _message: &str,
-    ) -> crate::error::Result<CallShape<'a>> {
-        let mut index = 0;
-        while let Some(MachineOperand::Def(_)) = self.operands().get(index) {
-            index += 1;
-        }
-
-        let defs = RegList(&self.operands()[..index]);
-        let callee = match self.generic_opcode() {
-            Some(GenericOpcode::G_CALL) => match self.operands().get(index) {
-                Some(MachineOperand::Global(sym)) => {
-                    index += 1;
-                    CallCallee::Direct(*sym)
-                }
-                _ => {
-                    return Err(
-                        self.decode_error("direct call expects a global callee after def operands")
-                    );
-                }
-            },
-            Some(GenericOpcode::G_CALLIND) => match self.operands().get(index) {
-                Some(MachineOperand::Use(reg)) => {
-                    index += 1;
-                    CallCallee::Indirect(*reg)
-                }
-                _ => {
-                    return Err(
-                        self.decode_error("indirect call expects a callee register after defs")
-                    );
-                }
-            },
-            _ => return Err(self.decode_error("call decoder received a non-call opcode")),
-        };
-
-        let args = self.borrow_use_regs_from(index, "call arguments must be use operands")?;
-        Ok(CallShape { defs, callee, args })
-    }
-
-    fn decode_error(&self, message: &str) -> crate::DecodeError {
-        self.decode_error_owned(message.into())
-    }
-
-    fn decode_error_owned(&self, message: String) -> crate::DecodeError {
-        crate::DecodeError {
-            opcode: self.opcode().clone(),
-            reason: message,
         }
     }
 }

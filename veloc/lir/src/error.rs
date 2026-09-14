@@ -3,16 +3,16 @@ use core::fmt;
 
 use crate::MachineOpcode;
 
-pub type Result<T> = core::result::Result<T, DecodeError>;
+pub type Result<T> = core::result::Result<T, ValidationError>;
 
 /// An instruction does not conform to its LIR operand schema.
 #[derive(Debug, Clone)]
-pub struct DecodeError {
+pub struct ValidationError {
     pub opcode: MachineOpcode,
     pub reason: String,
 }
 
-impl fmt::Display for DecodeError {
+impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -22,4 +22,4 @@ impl fmt::Display for DecodeError {
     }
 }
 
-impl core::error::Error for DecodeError {}
+impl core::error::Error for ValidationError {}

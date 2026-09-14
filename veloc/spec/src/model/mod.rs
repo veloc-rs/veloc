@@ -1,5 +1,6 @@
 //! Checked operation contracts, independent of runtime IR containers.
 
+pub(crate) mod access;
 pub(crate) mod constraints;
 pub(crate) mod data;
 pub(crate) mod encoding;
@@ -38,7 +39,6 @@ pub(crate) struct Vocabulary<'a> {
 }
 
 pub(crate) struct Property {
-    pub offset: usize,
     pub name: String,
     pub constraints: Vec<constraints::Constraint>,
 }
@@ -105,6 +105,7 @@ pub(crate) struct Op {
     pub signature: TypeDef,
     pub params: Vec<Param>,
     pub projection: Projection,
+    pub inputs: access::Inputs,
     pub signature_source: Option<SignatureSource>,
     pub text: Option<Node>,
     pub traits: BTreeSet<String>,
@@ -242,10 +243,9 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
     for record in records {
         match record.kind.as_str() {
             "property" => {
-                if !matches!(record.name.as_str(), "VectorConst" | "Int" | "Float") {
+                if !data.names.contains(&record.name) && !data.rust.contains(&record.name) {
                     return Err(Error::at(source, record.offset, "unknown typed property"));
                 }
-                let offset = record.offset;
                 let name = record.name.clone();
                 let mut fields = Fields::new(source, record);
                 let nodes = Some(fields.take("verify")?);
@@ -257,11 +257,7 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
                     &mut expressions,
                 )?;
                 fields.finish()?;
-                properties.push(Property {
-                    offset,
-                    name,
-                    constraints,
-                });
+                properties.push(Property { name, constraints });
             }
             "op" => ops.push(operation::parse(
                 source,
@@ -335,6 +331,7 @@ impl Definitions {
                     .ok_or_else(|| fail(format!("unknown format `{}`", op.format)))?;
                 let ty = &op.signature;
                 operation::validate_packing(source, op, format)?;
+                op.inputs = storage::compact::inputs(op, format);
                 match (format.arity, &ty.operands) {
                     (Some(arity), TypeList::Fixed(patterns)) if arity == patterns.len() => {}
                     (None, TypeList::Variadic(_)) => {}
@@ -344,6 +341,9 @@ impl Definitions {
                         ));
                     }
                 }
+            }
+            if let storage::Strategy::Operands(_) = self.storage.strategy {
+                op.inputs = op.operands().inputs();
             }
             if (op.identity.is_some() || op.absorbing.is_some() || op.traits.contains("IDEMPOTENT"))
                 && !["ASSOCIATIVE", "COMMUTATIVE"]

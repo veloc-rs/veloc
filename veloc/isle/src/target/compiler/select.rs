@@ -61,62 +61,6 @@ pub(crate) fn module_has_positional_rules(module: &crate::target::ast::Module) -
     })
 }
 
-pub(crate) fn module_needs_source_defs_helper(
-    module: &crate::target::ast::Module,
-    final_inst_defs: &HashMap<String, FinalInstDef>,
-) -> bool {
-    module.defs.iter().any(|def| {
-        let Def::SelectRule(rule) = def else {
-            return false;
-        };
-        let Some(pattern) = rule.patterns.first() else {
-            return false;
-        };
-        let schema_source_def_field = pattern_args(pattern).and_then(|args| {
-            pattern_schema_name(pattern).and_then(|_| infer_schema_source_def_field(args))
-        });
-        constructor_needs_source_defs(&rule.emit, final_inst_defs, schema_source_def_field, true)
-    })
-}
-
-fn constructor_needs_source_defs(
-    constructor: &Constructor,
-    final_inst_defs: &HashMap<String, FinalInstDef>,
-    schema_source_def_field: Option<&str>,
-    preserve_operands: bool,
-) -> bool {
-    let Constructor::Inst { opcode, args } = constructor else {
-        return false;
-    };
-    if opcode == "seq" {
-        return args.iter().any(|arg| {
-            constructor_needs_source_defs(arg, final_inst_defs, schema_source_def_field, false)
-        });
-    }
-
-    let Some(inst_def) = final_inst_defs.get(opcode) else {
-        return false;
-    };
-    let use_direct_schema_def = preserve_operands
-        && schema_source_def_field.is_some()
-        && inst_def_def_operand_count(&inst_def.operands) == 1;
-
-    let explicit_args = args.len();
-    for (operand_index, operand) in inst_def.operands.iter().enumerate() {
-        if preserve_operands
-            && matches!(
-                operand,
-                OperandConstraint::Def(_) | OperandConstraint::TiedDef { .. }
-            )
-            && explicit_args == min_explicit_args_from(&inst_def.operands, operand_index)
-        {
-            return !use_direct_schema_def;
-        }
-    }
-
-    false
-}
-
 fn collect_decl_map(module: &crate::target::ast::Module) -> HashMap<String, DeclDef> {
     let mut decls = HashMap::new();
     for def in &module.defs {
@@ -425,7 +369,6 @@ fn emit_schema_value_bindings_for_group(
     output: &mut String,
     rules: &[&SelectRuleDef],
     schema_var: &str,
-    opcode: &str,
 ) {
     let mut needed_vars = BTreeSet::new();
     for rule in rules {
@@ -453,47 +396,12 @@ fn emit_schema_value_bindings_for_group(
 
     for (var, field) in bindings {
         let rust_var = rust_ident(&var);
-        if field == "shape" {
-            match opcode {
-                "G_CALL" => {
-                    writeln!(
-                        output,
-                        r#"                let {} = match &{}.shape.callee {{
-                    veloc_lir::CallCallee::Direct(value) => *value,
-                    _ => unreachable!("expected direct call callee"),
-                }};"#,
-                        rust_var, schema_var
-                    )
-                    .unwrap();
-                }
-                "G_CALLIND" => {
-                    writeln!(
-                        output,
-                        r#"                let {} = match &{}.shape.callee {{
-                    veloc_lir::CallCallee::Indirect(value) => *value,
-                    _ => unreachable!("expected indirect call callee"),
-                }};"#,
-                        rust_var, schema_var
-                    )
-                    .unwrap();
-                }
-                _ => {
-                    writeln!(
-                        output,
-                        "                let {} = {}.{}.clone();",
-                        rust_var, schema_var, field
-                    )
-                    .unwrap();
-                }
-            }
-        } else {
-            writeln!(
-                output,
-                "                let {} = {}.{}.clone();",
-                rust_var, schema_var, field
-            )
-            .unwrap();
-        }
+        writeln!(
+            output,
+            "                let {} = {}.{}.clone();",
+            rust_var, schema_var, field
+        )
+        .unwrap();
     }
 }
 
@@ -672,20 +580,27 @@ fn emit_single_inst(
             };
         writeln!(
             output,
-            "                let {}ops_{} = SmallVec::<[MachineOperand; 4]>::new();",
+            "                #[allow(unused_mut)] let {}ops_{} = SmallVec::<[InstField; 4]>::new();",
             ops_binding, request.index
+        )
+        .unwrap();
+        writeln!(output, "                #[allow(unused_mut)] let mut results_{} = SmallVec::<[Reg; 2]>::new();", request.index).unwrap();
+        writeln!(
+            output,
+            "                #[allow(unused_mut)] let mut inputs_{} = SmallVec::<[Reg; 4]>::new();",
+            request.index
         )
         .unwrap();
         let use_direct_schema_def = request.preserve_operands
             && ctx.schema_source_def_field.is_some()
-            && inst_def_def_operand_count(&inst_def.operands) == 1;
+            && inst_def_result_count(&inst_def.operands) == 1;
         if request.preserve_operands
-            && inst_def_has_def_operands(&inst_def.operands)
+            && inst_def_has_results(&inst_def.operands)
             && !use_direct_schema_def
         {
             writeln!(
                 output,
-                "                let source_defs_{index} = source_defs(inst);",
+                "                let source_defs_{index} = inst.results();",
                 index = request.index
             )
             .unwrap();
@@ -712,7 +627,7 @@ fn emit_single_inst(
                     .schema_source_def_field
                     .filter(|_| use_direct_schema_def)
                 {
-                    emit_schema_source_def_operand(
+                    emit_schema_source_result(
                         output,
                         request.index,
                         operand,
@@ -721,7 +636,7 @@ fn emit_single_inst(
                         field,
                     );
                 } else {
-                    emit_source_def_operand(output, request.index, operand);
+                    emit_source_result(output, request.index, operand);
                 }
                 continue;
             }
@@ -752,48 +667,20 @@ fn emit_single_inst(
             );
         }
 
-        if !implicit_uses.is_empty() || !implicit_defs.is_empty() {
-            writeln!(output, "                // Implicit uses/defs").unwrap();
-            for r in &implicit_uses {
-                let r_val = *r;
-                writeln!(
-                    output,
-                    r#"                {{
-                    let reg = Reg::new_preg({r_val});
-                    if !ops_{index}.iter().any(|op| match op {{
-                        MachineOperand::Use(r) => *r == reg,
-                        _ => false,
-                    }}) {{
-                        ops_{index}.push(MachineOperand::Use(reg));
-                    }}
-                }}"#,
-                    index = request.index
-                )
-                .unwrap();
-            }
-            for r in &implicit_defs {
-                let r_val = *r;
-                writeln!(
-                    output,
-                    r#"                {{
-                    let reg = Reg::new_preg({r_val});
-                    if !ops_{index}.iter().any(|op| match op {{
-                        MachineOperand::Def(w) => w.to_reg() == reg,
-                        _ => false,
-                    }}) {{
-                        ops_{index}.push(MachineOperand::Def(veloc_lir::Writable(reg)));
-                    }}
-                }}"#,
-                    index = request.index
-                )
-                .unwrap();
-            }
-        }
-
         writeln!(
             commits,
-            "                let inst_{} = store.writer().generic(",
-            request.index
+            "                let inst_{} = store.writer().with_effects(&[{}], &[{}]).write(",
+            request.index,
+            implicit_uses
+                .iter()
+                .map(|r| format!("Reg::new_preg({r})"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            implicit_defs
+                .iter()
+                .map(|r| format!("Reg::new_preg({r})"))
+                .collect::<Vec<_>>()
+                .join(", ")
         )
         .unwrap();
         if ctx.final_inst_defs.contains_key(opcode) {
@@ -811,91 +698,21 @@ fn emit_single_inst(
             )
             .unwrap();
         }
-        writeln!(commits, "                    ops_{},", request.index).unwrap();
+        writeln!(commits, "                    &results_{},", request.index).unwrap();
+        writeln!(
+            commits,
+            "                    &inputs_{}, &ops_{},",
+            request.index, request.index
+        )
+        .unwrap();
         writeln!(commits, "                );").unwrap();
         writeln!(commits, "                out.push(inst_{});", request.index).unwrap();
     } else {
-        writeln!(
-            output,
-            "                let mut ops_{} = SmallVec::<[MachineOperand; 4]>::new();",
-            request.index
-        )
-        .unwrap();
-        for arg in args {
-            match arg {
-                Constructor::Variable(name) => match ctx.var_map.get(name) {
-                    Some(BindingSource::OperandIndex(idx)) => {
-                        writeln!(
-                            output,
-                            "                ops_{}.push(operand_by_index(inst, {}).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand mapping failed\")))?);",
-                            request.index, idx
-                        )
-                        .unwrap();
-                    }
-                    Some(BindingSource::SchemaValue) => {
-                        writeln!(
-                            output,
-                            "                return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Schema value requires a target instruction schema\")));"
-                        )
-                        .unwrap();
-                        return;
-                    }
-                    None => {
-                        writeln!(
-                            output,
-                            "                return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Unknown constructor variable\")));"
-                        )
-                        .unwrap();
-                        return;
-                    }
-                },
-                Constructor::Imm(i) => {
-                    writeln!(
-                        output,
-                        "                ops_{}.push(MachineOperand::Imm({}));",
-                        request.index, i
-                    )
-                    .unwrap();
-                }
-                Constructor::Reg(name) => {
-                    let enc = ctx.reg_map.get(name).copied().unwrap_or(0);
-                    writeln!(
-                        output,
-                        "                ops_{}.push(MachineOperand::Use(Reg::new_preg({})));",
-                        request.index, enc
-                    )
-                    .unwrap();
-                }
-                _ => {
-                    writeln!(
-                        output,
-                        "                return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Unsupported constructor arg\")));"
-                    )
-                    .unwrap();
-                    return;
-                }
-            }
-        }
-
-        writeln!(
-            commits,
-            "                let inst_{} = store.writer().generic(",
-            request.index
-        )
-        .unwrap();
-        writeln!(
-            commits,
-            "                    MachineOpcode::Target(TargetInst::{}.as_u32()),",
-            opcode
-        )
-        .unwrap();
-        writeln!(commits, "                    ops_{},", request.index).unwrap();
-        writeln!(commits, "                );").unwrap();
-        writeln!(commits, "                out.push(inst_{});", request.index).unwrap();
+        panic!("constructor {opcode} has no instruction definition");
     }
 }
 
-fn inst_def_has_def_operands(operands: &[OperandConstraint]) -> bool {
+fn inst_def_has_results(operands: &[OperandConstraint]) -> bool {
     operands.iter().any(|op| {
         matches!(
             op,
@@ -916,7 +733,7 @@ fn min_explicit_args_from(operands: &[OperandConstraint], start: usize) -> usize
         .count()
 }
 
-fn inst_def_def_operand_count(operands: &[OperandConstraint]) -> usize {
+fn inst_def_result_count(operands: &[OperandConstraint]) -> usize {
     operands
         .iter()
         .filter(|op| {
@@ -928,8 +745,8 @@ fn inst_def_def_operand_count(operands: &[OperandConstraint]) -> usize {
         .count()
 }
 
-fn emit_source_def_operand(output: &mut String, index: usize, operand: &OperandConstraint) {
-    let op_ctor = match operand {
+fn emit_source_result(output: &mut String, index: usize, operand: &OperandConstraint) {
+    let _op_ctor = match operand {
         OperandConstraint::Def(_) => "Def",
         OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
         _ => panic!("source defs can only satisfy def-like operands"),
@@ -941,27 +758,27 @@ fn emit_source_def_operand(output: &mut String, index: usize, operand: &OperandC
                         .get(source_def_cursor_{index})
                         .ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from("Source def mapping failed")))?;
                     source_def_cursor_{index} += 1;
-                    ops_{index}.push(MachineOperand::{op_ctor}(veloc_lir::Writable(reg)));
+                    results_{index}.push(reg);
                 }}"#
     )
     .unwrap();
 }
 
-fn emit_schema_source_def_operand(
+fn emit_schema_source_result(
     output: &mut String,
     index: usize,
     operand: &OperandConstraint,
     schema_var: &str,
     field: &str,
 ) {
-    let op_ctor = match operand {
+    let _op_ctor = match operand {
         OperandConstraint::Def(_) => "Def",
         OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
         _ => panic!("schema source defs can only satisfy def-like operands"),
     };
     writeln!(
         output,
-        r#"                ops_{index}.push(MachineOperand::{op_ctor}(veloc_lir::Writable(reg_value({schema_var}.{field}.clone()).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from("Schema reg mapping failed")))?)));"#
+        r#"                results_{index}.push(reg_value({schema_var}.{field}.clone()).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from("Schema reg mapping failed")))?);"#
     )
     .unwrap();
 }
@@ -982,15 +799,25 @@ fn emit_constructor_operand(
     var_map: &HashMap<String, BindingSource>,
     reg_map: &HashMap<String, u32>,
 ) {
+    let buffer = if matches!(operand, OperandConstraint::Def(_)) {
+        "results"
+    } else if matches!(
+        operand,
+        OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
+    ) {
+        "inputs"
+    } else {
+        "ops"
+    };
     match arg {
         Constructor::Variable(name) => match var_map.get(name) {
             Some(BindingSource::SchemaValue) => {
                 let push = schema_value_operand_expr(name, operand);
-                writeln!(output, "                ops_{index}.push({push});").unwrap();
+                writeln!(output, "                {buffer}_{index}.push({push});").unwrap();
             }
             Some(BindingSource::OperandIndex(op_index)) => {
                 let push = operand_index_expr(*op_index, operand);
-                writeln!(output, "                ops_{index}.push({push});").unwrap();
+                writeln!(output, "                {buffer}_{index}.push({push});").unwrap();
             }
             None => {
                 panic!("unknown constructor variable {}", name);
@@ -1000,7 +827,7 @@ fn emit_constructor_operand(
             OperandConstraint::Imm(_) => {
                 writeln!(
                     output,
-                    "                ops_{index}.push(MachineOperand::Imm({i}));"
+                    "                ops_{index}.push(InstField::Imm({i}));"
                 )
                 .unwrap();
             }
@@ -1012,10 +839,10 @@ fn emit_constructor_operand(
                 .unwrap_or_else(|| panic!("unknown physical register {}", name));
             let push = match operand {
                 OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => {
-                    format!("MachineOperand::Use(Reg::new_preg({enc}))")
+                    format!("Reg::new_preg({enc})")
                 }
                 OperandConstraint::Def(_) => {
-                    format!("MachineOperand::Def(veloc_lir::Writable(Reg::new_preg({enc})))")
+                    format!("Reg::new_preg({enc})")
                 }
                 OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
                 OperandConstraint::StackSlot(_) => {
@@ -1023,7 +850,7 @@ fn emit_constructor_operand(
                 }
                 _ => panic!("physical register constructor cannot satisfy this operand kind"),
             };
-            writeln!(output, "                ops_{index}.push({push});").unwrap();
+            writeln!(output, "                {buffer}_{index}.push({push});").unwrap();
         }
         Constructor::Inst { .. } => {
             panic!("nested constructor is not a valid target operand");
@@ -1035,16 +862,16 @@ fn schema_value_operand_expr(name: &str, operand: &OperandConstraint) -> String 
     let rust_name = rust_ident(name);
     match operand {
         OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => format!(
-            "MachineOperand::Use(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?)"
+            "reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?"
         ),
         OperandConstraint::Def(_) => format!(
-            "MachineOperand::Def(veloc_lir::Writable(reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?))"
+            "reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?"
         ),
         OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
-        OperandConstraint::Imm(_) => format!("MachineOperand::Imm({rust_name}.into())"),
-        OperandConstraint::Block(_) => format!("MachineOperand::Block({rust_name})"),
-        OperandConstraint::Global(_) => format!("MachineOperand::Global({rust_name})"),
-        OperandConstraint::StackSlot(_) => format!("MachineOperand::StackSlot({rust_name})"),
+        OperandConstraint::Imm(_) => format!("InstField::Imm({rust_name}.into())"),
+        OperandConstraint::Block(_) => format!("InstField::Block({rust_name})"),
+        OperandConstraint::Global(_) => format!("InstField::Global({rust_name})"),
+        OperandConstraint::StackSlot(_) => format!("InstField::StackSlot({rust_name})"),
     }
 }
 
@@ -1063,23 +890,23 @@ fn rust_ident(name: &str) -> String {
 fn operand_index_expr(op_index: usize, operand: &OperandConstraint) -> String {
     match operand {
         OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => format!(
-            "MachineOperand::Use(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?)"
+            "inst.inputs().get({op_index}).copied().ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?"
         ),
         OperandConstraint::Def(_) => format!(
-            "MachineOperand::Def(veloc_lir::Writable(operand_by_index(inst, {op_index}).and_then(|op| op.as_reg()).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?))"
+            "inst.inputs().get({op_index}).copied().ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?"
         ),
         OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
         OperandConstraint::Imm(_) => format!(
-            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Imm(v)) => MachineOperand::Imm(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand immediate mapping failed\"))), }}"
+            "match field_by_index(inst, {op_index}) {{ Some(InstField::Imm(v)) => InstField::Imm(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand immediate mapping failed\"))), }}"
         ),
         OperandConstraint::Block(_) => format!(
-            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Block(v)) => MachineOperand::Block(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand block mapping failed\"))), }}"
+            "match field_by_index(inst, {op_index}) {{ Some(InstField::Block(v)) => InstField::Block(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand block mapping failed\"))), }}"
         ),
         OperandConstraint::Global(_) => format!(
-            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::Global(v)) => MachineOperand::Global(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand global mapping failed\"))), }}"
+            "match field_by_index(inst, {op_index}) {{ Some(InstField::Global(v)) => InstField::Global(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand global mapping failed\"))), }}"
         ),
         OperandConstraint::StackSlot(_) => format!(
-            "match operand_by_index(inst, {op_index}) {{ Some(MachineOperand::StackSlot(v)) => MachineOperand::StackSlot(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand stackslot mapping failed\"))), }}"
+            "match field_by_index(inst, {op_index}) {{ Some(InstField::StackSlot(v)) => InstField::StackSlot(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand stackslot mapping failed\"))), }}"
         ),
     }
 }
@@ -1161,40 +988,9 @@ struct DerivedGenericInstMetadata {
 }
 
 fn schema_field_operand_index(schema: &str, field: &str) -> Option<usize> {
-    match schema {
-        "UnaryReg" => match field {
-            "dst" => Some(0),
-            "src" => Some(1),
-            _ => None,
-        },
-        "BinaryReg" => match field {
-            "dst" => Some(0),
-            "lhs" => Some(1),
-            "rhs" => Some(2),
-            _ => None,
-        },
-        "Load" => match field {
-            "dst" => Some(0),
-            "base" => Some(1),
-            _ => None,
-        },
-        "LoadOffset" => match field {
-            "dst" => Some(0),
-            "base" => Some(1),
-            "offset" => Some(2),
-            _ => None,
-        },
-        "Store" => match field {
-            "src" => Some(0),
-            "base" => Some(1),
-            _ => None,
-        },
-        "StoreOffset" => match field {
-            "src" => Some(0),
-            "base" => Some(1),
-            "offset" => Some(2),
-            _ => None,
-        },
+    match (schema, field) {
+        ("BinaryReg", "lhs") => Some(0),
+        ("BinaryReg", "rhs") => Some(1),
         _ => None,
     }
 }
@@ -1338,7 +1134,7 @@ fn emit_temps(
         let exemplar = match bindings[like] {
             BindingSource::SchemaValue => format!("reg_value({})", rust_ident(like)),
             BindingSource::OperandIndex(index) => {
-                format!("operand_by_index(inst, {index}).and_then(|op| op.as_reg())")
+                format!("inst.inputs().get({index}).copied()")
             }
         };
         writeln!(
@@ -1381,7 +1177,7 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
 ) -> Result<SelectResult, crate::error::Error> {{
     use veloc_lir::{{GenericOpcode, MachineOpcode, VReg}};
     let inst = &store.get(source);
-    let decoded = &inst.generic_view()?;
+    let decoded = &veloc_lir::InstRead::view(*inst);
     use crate::target::arch::SelectResult;
     use crate::target::{arch}::isle::TargetInst;
 
@@ -1476,7 +1272,6 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
                     output,
                     &rules[rule_index..group_end],
                     schema_var,
-                    op.as_str(),
                 );
 
                 while rule_index < group_end {

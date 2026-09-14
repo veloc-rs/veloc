@@ -18,15 +18,11 @@ fn format_select_failure_inst<S>(
 
     let inst = &mfunc.inst(inst_id);
     let operand_types = inst
-        .operands()
+        .results()
         .iter()
-        .filter_map(|operand| {
-            let reg = match operand {
-                veloc_lir::MachineOperand::Def(w) => Some(w.to_reg()),
-                veloc_lir::MachineOperand::Use(reg) => Some(*reg),
-                _ => None,
-            }?;
-
+        .copied()
+        .chain(inst.uses())
+        .filter_map(|reg| {
             if reg.is_vreg() {
                 Some(format!("{:?}:{:?}", reg, mfunc.vreg_data(reg).ty))
             } else {
@@ -78,12 +74,13 @@ impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
 
     fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<veloc_lir::VReg> {
         let mut current = 0;
-        for op in inst.operands().iter() {
-            let reg = match op {
-                veloc_lir::MachineOperand::Def(reg) => Some(reg.to_reg()),
-                veloc_lir::MachineOperand::Use(reg) => Some(*reg),
-                _ => None,
-            };
+        for reg in inst
+            .results()
+            .iter()
+            .copied()
+            .chain(inst.inputs().iter().copied())
+            .map(Some)
+        {
             if let Some(r) = reg {
                 if current == index {
                     if r.is_vreg() {

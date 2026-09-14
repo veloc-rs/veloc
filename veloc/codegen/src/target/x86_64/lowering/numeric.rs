@@ -1,5 +1,6 @@
 //! Unsigned conversions on baseline SSE2, without target-specific runtime calls.
 use super::*;
+use veloc_lir::InstBuild;
 
 fn unary(
     mfunc: &mut MachineFunction<LegalizedLir>,

@@ -20,28 +20,43 @@ fn find_operand_info<'a>(
     var_name: &str,
     operands: &'a [OperandConstraint],
 ) -> Option<(usize, &'a OperandConstraint)> {
-    operands.iter().enumerate().find(|(_, op)| match op {
-        OperandConstraint::Use(name)
-        | OperandConstraint::FixedUse { src: name, .. }
-        | OperandConstraint::Def(name)
-        | OperandConstraint::Imm(name)
-        | OperandConstraint::Block(name)
-        | OperandConstraint::Global(name)
-        | OperandConstraint::StackSlot(name) => name == var_name,
-        OperandConstraint::TiedDef { dst, src } => dst == var_name || src == var_name,
-    })
+    operands
+        .iter()
+        .enumerate()
+        .find(|(_, op)| match op {
+            OperandConstraint::Use(name)
+            | OperandConstraint::FixedUse { src: name, .. }
+            | OperandConstraint::Def(name)
+            | OperandConstraint::Imm(name)
+            | OperandConstraint::Block(name)
+            | OperandConstraint::Global(name)
+            | OperandConstraint::StackSlot(name) => name == var_name,
+            OperandConstraint::TiedDef { dst, src } => dst == var_name || src == var_name,
+        })
+        .map(|(index, op)| {
+            let class = |op: &OperandConstraint| match op {
+                OperandConstraint::Def(_) => 0,
+                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => 1,
+                _ => 2,
+            };
+            let index = operands[..index]
+                .iter()
+                .filter(|item| class(item) == class(op))
+                .count();
+            (index, op)
+        })
 }
 
 fn generate_variable(var_name: &str, operands: &[OperandConstraint]) -> String {
     match find_operand_info(var_name, operands) {
         Some((index, constraint)) => {
             let arm = match constraint {
-                OperandConstraint::Imm(_) => "MachineOperand::Imm(val) => *val as u64",
+                OperandConstraint::Imm(_) => "InstField::Imm(val) => *val as u64",
                 OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => {
-                    "MachineOperand::Use(reg) => reg.index() as u64"
+                    return format!("inst.inputs()[{index}].index() as u64");
                 }
                 OperandConstraint::Def(_) => {
-                    "MachineOperand::Def(reg) => reg.to_reg().index() as u64"
+                    return format!("inst.results()[{index}].index() as u64");
                 }
                 OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
                 OperandConstraint::Block(_)
@@ -51,7 +66,7 @@ fn generate_variable(var_name: &str, operands: &[OperandConstraint]) -> String {
                 }
             };
             format!(
-                "(match &inst.operands()[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})",
+                "(match &inst.fields()[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})",
                 index, arm, index, var_name
             )
         }
@@ -64,13 +79,13 @@ fn generate_hw_enc(var_name: &str, operands: &[OperandConstraint]) -> String {
         Some((index, constraint)) => {
             let arm = match constraint {
                 OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => {
-                    "MachineOperand::Use(reg) => reg.index() as u8"
+                    return format!("inst.inputs()[{index}].index() as u64");
                 }
                 OperandConstraint::Def(_) => {
-                    "MachineOperand::Def(reg) => reg.to_reg().index() as u8"
+                    return format!("inst.results()[{index}].index() as u64");
                 }
                 OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
-                OperandConstraint::Imm(_) => "MachineOperand::Imm(val) => *val as u8",
+                OperandConstraint::Imm(_) => "InstField::Imm(val) => *val as u8",
                 OperandConstraint::Block(_)
                 | OperandConstraint::Global(_)
                 | OperandConstraint::StackSlot(_) => {
@@ -81,7 +96,7 @@ fn generate_hw_enc(var_name: &str, operands: &[OperandConstraint]) -> String {
                 }
             };
             format!(
-                "(match &inst.operands()[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }} as u64)",
+                "(match &inst.fields()[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }} as u64)",
                 index, arm, index, var_name
             )
         }
@@ -103,8 +118,8 @@ fn generate_stack_slot_expr(var_name: &str, operands: &[OperandConstraint], fiel
             };
             format!(
                 r#"{{
-                    let slot = match &inst.operands()[{index}] {{
-                        MachineOperand::StackSlot(slot) => *slot,
+                    let slot = match &inst.fields()[{index}] {{
+                        InstField::StackSlot(slot) => *slot,
                         _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{var_name}"))),
                     }};
                     {access}
@@ -294,8 +309,8 @@ fn generate_emit_expr(
                     let disp_offset = emitter.position();
                     emitter.write_bytes(&[0, 0, 0, 0]);
                     let next_offset = emitter.position();
-                    match &inst.operands()[{index}] {{
-                        MachineOperand::Block(target) => {{
+                    match &inst.fields()[{index}] {{
+                        InstField::Block(target) => {{
                             emitter.add_block_rel32_fixup(disp_offset, next_offset, *target);
                         }}
                         _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
@@ -306,8 +321,8 @@ fn generate_emit_expr(
                 r#"{{
                     let disp_offset = emitter.position();
                     emitter.write_bytes(&[0, 0, 0, 0]);
-                    match &inst.operands()[{index}] {{
-                        MachineOperand::Global(target) => {{
+                    match &inst.fields()[{index}] {{
+                        InstField::Global(target) => {{
                             emitter.add_global_rel32_fixup(disp_offset, *target);
                         }}
                         _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
@@ -346,12 +361,7 @@ fn generate_emit_expr(
     }
 }
 
-pub(crate) fn generate_header(
-    output: &mut String,
-    arch: &str,
-    needs_positional_helpers: bool,
-    needs_source_defs_helper: bool,
-) {
+pub(crate) fn generate_header(output: &mut String, arch: &str, needs_positional_helpers: bool) {
     writeln!(
         output,
         "// Generated by veloc-isle (arch: {}). DO NOT EDIT.",
@@ -361,7 +371,7 @@ pub(crate) fn generate_header(
     writeln!(output).unwrap();
     writeln!(
         output,
-        r#"use veloc_lir::{{MachineOperand, Reg}};
+        r#"use veloc_lir::{{InstField, Reg}};
 use smallvec::SmallVec;
 use crate::target::arch::{{
     AbiDescriptor, AbiPreservedSet, AbiRegisterPool, AbiStackDescriptor, AbiValueClass,
@@ -399,34 +409,16 @@ fn reg_value_to_vreg<R: IntoOptReg>(value: R) -> Option<veloc_lir::VReg> {{
 "#
     )
     .unwrap();
-    if needs_source_defs_helper {
-        writeln!(
-            output,
-            r#"
-fn source_defs(inst: &veloc_lir::InstRef<'_>) -> SmallVec<[Reg; 2]> {{
-    let mut defs = SmallVec::<[Reg; 2]>::new();
-    for op in inst.operands().iter() {{
-        match op {{
-            MachineOperand::Def(w) => defs.push(w.to_reg()),
-            _ => {{}}
-        }}
-    }}
-    defs
-}}
-"#
-        )
-        .unwrap();
-    }
     if needs_positional_helpers {
         writeln!(
             output,
             r#"
-fn operand_by_index(inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<MachineOperand> {{
-    inst.operands().get(index).cloned()
+fn field_by_index(inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<InstField> {{
+    inst.fields().get(index).copied()
 }}
 
 fn vreg_by_index(inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<veloc_lir::VReg> {{
-    let reg = inst.operands().get(index)?.as_reg()?;
+    let reg = inst.inputs().get(index)?;
     reg.is_vreg().then(|| veloc_lir::VReg::from_u32(reg.index()))
 }}
 "#
@@ -504,7 +496,7 @@ fn format_ties(ties: &[(usize, usize)]) -> String {
     format_slice(
         ties.iter()
             .map(|(def, input)| {
-                format!("TiedOperandConstraint {{ def_operand: {def}, use_operand: {input} }}")
+                format!("TiedOperandConstraint {{ result: {def}, use_operand: {input} }}")
             })
             .collect(),
     )
@@ -528,7 +520,13 @@ fn format_fixed_use_slice(
                 }
                 Some(format!(
                     "FixedUseConstraint {{ use_operand: {}, reg: {} }}",
-                    index,
+                    operands[..index]
+                        .iter()
+                        .filter(|op| matches!(
+                            op,
+                            OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
+                        ))
+                        .count(),
                     reg_const_name(reg)
                 ))
             }
@@ -624,7 +622,25 @@ pub(crate) fn generate_target_inst_metadata(
         writeln!(
             output,
             "    tied_operands: {},",
-            format_ties(&inst_def.ties)
+            format_ties(
+                &inst_def
+                    .ties
+                    .iter()
+                    .map(|&(dst, src)| (
+                        inst_def.operands[..dst]
+                            .iter()
+                            .filter(|op| matches!(op, OperandConstraint::Def(_)))
+                            .count(),
+                        inst_def.operands[..src]
+                            .iter()
+                            .filter(|op| matches!(
+                                op,
+                                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
+                            ))
+                            .count()
+                    ))
+                    .collect::<Vec<_>>()
+            )
         )
         .unwrap();
         writeln!(

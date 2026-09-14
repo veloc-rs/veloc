@@ -16,7 +16,7 @@ pub struct Plan {
 
 pub(super) enum Output {
     Packed(Packed),
-    Operands,
+    Operands(crate::text::Plan),
 }
 
 pub(super) struct Packed {
@@ -30,25 +30,35 @@ pub(super) struct Packed {
 
 impl Plan {
     pub(crate) fn prepare(definitions: Definitions, source: &str) -> Result<Self, Error> {
+        let layouts = match &definitions.storage.strategy {
+            Strategy::Operands(storage) => storage.record_names(),
+            Strategy::Packed => Vec::new(),
+        };
+        definitions.data.validate_sequences(
+            &layouts,
+            crate::model::metadata::record_type(&definitions.ops),
+            source,
+        )?;
+        // A query has one concrete input context across all its opcodes.
+        // Context-free arms can still participate in that same query.
+        let mut contexts = BTreeMap::new();
+        for op in &definitions.ops {
+            for (name, expr) in &op.queries {
+                if let Some(ty) = expr.context_type()
+                    && let Some(previous) = contexts.insert(name, ty)
+                    && previous != ty
+                {
+                    return Err(Error::at(
+                        source,
+                        op.offset,
+                        format!("query `{name}` requires incompatible context types"),
+                    ));
+                }
+            }
+        }
+
         let output = match &definitions.storage.strategy {
             Strategy::Packed => {
-                // A query has one concrete input context across all its opcodes.
-                // Context-free arms can still participate in that same query.
-                let mut contexts = BTreeMap::new();
-                for op in &definitions.ops {
-                    for (name, expr) in &op.queries {
-                        if let Some(ty) = expr.context_type()
-                            && let Some(previous) = contexts.insert(name, ty)
-                            && previous != ty
-                        {
-                            return Err(Error::at(
-                                source,
-                                op.offset,
-                                format!("query `{name}` requires incompatible context types"),
-                            ));
-                        }
-                    }
-                }
                 let indices = definitions
                     .storage
                     .formats
@@ -79,32 +89,7 @@ impl Plan {
                 })
             }
             Strategy::Operands(_) => {
-                if let Some(property) = definitions
-                    .properties
-                    .iter()
-                    .find(|p| !p.constraints.is_empty())
-                {
-                    return Err(Error::at(
-                        source,
-                        property.offset,
-                        "operand storage does not yet support property validators",
-                    ));
-                }
-                for op in &definitions.ops {
-                    if op.constraints.iter().any(|c| !c.type_only)
-                        || op.text.is_some()
-                        || !op.queries.is_empty()
-                        || op.params.iter().any(|p| p.moves)
-                        || op.signature_source.is_some()
-                    {
-                        return Err(Error::at(
-                            source,
-                            op.offset,
-                            "operand storage does not yet support structural constraints, text adapters or ownership interfaces",
-                        ));
-                    }
-                }
-                Output::Operands
+                Output::Operands(crate::text::Plan::prepare(&definitions, &[], &[], source)?)
             }
         };
         Ok(Self {

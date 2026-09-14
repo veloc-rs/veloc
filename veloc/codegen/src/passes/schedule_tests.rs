@@ -4,7 +4,7 @@ use crate::target::x86_64::{
     X86_64TargetMachine,
     isle::{REG_RAX, TargetInst},
 };
-use veloc_lir::{MachineBlock, MachineOpcode, MachineOperand, Writable, stages::RawLir};
+use veloc_lir::{InstField, MachineBlock, MachineOpcode, Writable, stages::RawLir};
 use veloc_mir::{Block, Type};
 
 #[test]
@@ -16,12 +16,11 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
     let a = f.alloc_vreg(Type::I64);
     let unused = f.alloc_vreg(Type::I64);
     let imm = {
-        let id = f.writer().generic(
+        let id = f.writer().write(
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
-            smallvec::smallvec![
-                MachineOperand::Def(Writable(unused)),
-                MachineOperand::Imm(42)
-            ],
+            &[(Writable(unused)).to_reg()],
+            &[],
+            &[InstField::Imm(42)],
         );
         f.append_inst_id_to_block(0, id);
         id
@@ -56,9 +55,11 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
         id
     };
     let consume = {
-        let id = f.writer().generic(
+        let id = f.writer().write(
             MachineOpcode::Target(TargetInst::X86Sete.as_u32()),
-            smallvec::smallvec![MachineOperand::Def(Writable(REG_RAX))],
+            &[(Writable(REG_RAX)).to_reg()],
+            &[],
+            &[],
         );
         f.append_inst_id_to_block(0, id);
         id
@@ -97,13 +98,11 @@ fn preserves_register_anti_dependencies_and_memory_barriers() {
         id
     };
     let store = {
-        let id = f.writer().generic(
+        let id = f.writer().write(
             MachineOpcode::Target(TargetInst::X86Store64.as_u32()),
-            smallvec::smallvec![
-                MachineOperand::Use(b),
-                MachineOperand::Use(a),
-                MachineOperand::Imm(0)
-            ],
+            &[],
+            &[b, a],
+            &[InstField::Imm(0)],
         );
         f.append_inst_id_to_block(0, id);
         id

@@ -4,6 +4,43 @@ use super::{Layout, OpcodeSource};
 use crate::model::records::{Placement, PropertyType, RecordDef};
 use std::fmt::Write;
 
+pub(crate) fn construction(
+    op: &crate::model::Op,
+    format: &super::Format,
+    opcode: &str,
+    local: impl Fn(&str) -> String,
+) -> crate::generate::construction::Write {
+    use crate::generate::construction::Write;
+    use crate::model::Binding;
+    let args = format.fields.iter().map(|field| {
+        if field.ty.named("Opcode") {
+            return format!("crate::Opcode::{opcode}");
+        }
+        match &op.bindings()[&field.name] {
+            Binding::Name(name) => {
+                let value = local(name);
+                if field.policy.references.is_edge() { format!("({value}).as_view()") } else { value }
+            }
+            Binding::Array(items) => {
+                let items = items.iter().map(|item| {
+                    let Binding::Name(name) = item else { unreachable!("checked array binding") };
+                    local(name)
+                }).collect::<Vec<_>>();
+                format!("[{}]", items.join(", "))
+            }
+            Binding::Pool(name) => format!("{}::insert(writer.dfg, {})", field.rust, local(name)),
+            Binding::Table { cases, default } => format!(
+                "({}).iter().map(crate::BlockCall::as_view).chain(core::iter::once(({}).as_view()))",
+                local(cases), local(default)
+            ),
+        }
+    }).collect();
+    Write {
+        callee: format!("writer.{}", super::constructor_name(&format.name)),
+        args,
+    }
+}
+
 // Unknown or large properties stay out of line. This is a storage policy, not
 // a restriction on the logical schema. Byte arrays avoid padding for 64-bit data.
 fn size(ty: &str) -> Option<usize> {
@@ -68,7 +105,9 @@ pub(super) fn inline(layout: &Layout, records: &[RecordDef]) -> bool {
                     return false;
                 }
                 let s = match &member.ty {
-                    PropertyType::Values(_) | PropertyType::Array(_, _) => {
+                    PropertyType::Values(_)
+                    | PropertyType::Array(_, _)
+                    | PropertyType::Sequence(_) => {
                         unreachable!("nested fixed SSA arrays rejected by storage checking")
                     }
                     PropertyType::Named(_) if member.policy.references.is_operand() => continue,
@@ -370,4 +409,46 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
     }
     out.push_str("};\ndebug_assert!(reader.0.is_empty(), \"unconsumed operands\");\nview\n} }\n");
     out
+}
+
+/// Normalize packed field adapters into the common logical access plan.
+pub(crate) fn inputs(
+    op: &crate::model::Op,
+    format: &super::Format,
+) -> crate::model::access::Inputs {
+    use crate::model::{Binding, access::Access};
+    let mut inputs = crate::model::access::Inputs::new();
+    for field in &format.fields {
+        if field.ty.named("Opcode") {
+            continue;
+        }
+        let value = Access::Field(field.name.clone());
+        match &op.bindings()[&field.name] {
+            Binding::Name(name) => {
+                inputs.insert(name.clone(), value);
+            }
+            Binding::Array(args) => {
+                for (index, arg) in args.iter().enumerate() {
+                    let Binding::Name(name) = arg else {
+                        unreachable!("checked array binding")
+                    };
+                    inputs.insert(name.clone(), Access::Index(Box::new(value.clone()), index));
+                }
+            }
+            Binding::Pool(name) => {
+                inputs.insert(
+                    name.clone(),
+                    Access::Pool {
+                        ty: field.rust.clone(),
+                        key: Box::new(value),
+                    },
+                );
+            }
+            Binding::Table { cases, default } => {
+                inputs.insert(cases.clone(), Access::SplitLast(Box::new(value.clone()), 1));
+                inputs.insert(default.clone(), Access::SplitLast(Box::new(value), 0));
+            }
+        }
+    }
+    inputs
 }

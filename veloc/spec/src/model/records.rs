@@ -242,6 +242,7 @@ pub(crate) struct RecordField {
 pub(crate) enum PropertyType {
     Named(String),
     Optional(String),
+    Sequence(String),
     Values(usize),
     Array(String, usize),
 }
@@ -251,6 +252,7 @@ impl PropertyType {
         match self {
             Self::Named(ty) => types.rust(ty),
             Self::Optional(ty) => format!("Option<{}>", types.rust(ty)),
+            Self::Sequence(ty) => format!("&'a [{}]", types.rust(ty)),
             Self::Array(ty, n) => format!("[{}; {n}]", types.qualified(ty)),
             Self::Values(n) => format!("[{}; {n}]", types.rust("Value")),
         }
@@ -310,13 +312,18 @@ pub(crate) fn field_type(
         };
         return Ok(PropertyType::Array(element, *n as usize));
     }
+    let sequence = matches!(&node.kind, Kind::Call(name, _) if name == "sequence");
     let optional = matches!(&node.kind, Kind::Call(name, _) if name == "optional");
-    let inner = if optional {
+    let inner = if optional || sequence {
         let Kind::Call(_, ref args) = node.kind else {
             unreachable!()
         };
         if args.len() != 1 {
-            return Err(Error::at(source, node.offset, "optional requires one type"));
+            return Err(Error::at(
+                source,
+                node.offset,
+                "optional/sequence requires one named type",
+            ));
         }
         &args[0]
     } else {
@@ -326,7 +333,6 @@ pub(crate) fn field_type(
         return Err(Error::at(source, node.offset, "expected data type name"));
     };
     if !primitive(ty)
-        && !crate::storage::operands::is_role(ty)
         && !records.iter().any(|r| {
             r.name == *ty
                 && (rust_binding(r).is_some()
@@ -339,7 +345,9 @@ pub(crate) fn field_type(
             format!("unknown data type `{ty}`"),
         ));
     }
-    Ok(if optional {
+    Ok(if sequence {
+        PropertyType::Sequence(ty.clone())
+    } else if optional {
         PropertyType::Optional(ty.clone())
     } else {
         PropertyType::Named(ty.clone())
@@ -376,7 +384,7 @@ pub(crate) fn compile(
                     logical,
                     rust: ty.rust(rust),
                     policy: match &ty {
-                        PropertyType::Named(name) | PropertyType::Optional(name) | PropertyType::Array(name, _) => {
+                        PropertyType::Named(name) | PropertyType::Optional(name) | PropertyType::Sequence(name) | PropertyType::Array(name, _) => {
                             rust.policy(name)
                         }
                         PropertyType::Values(_) => Policy {

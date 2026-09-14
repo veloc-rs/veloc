@@ -9,7 +9,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Clone)]
 pub enum Error {
-    Lir(veloc_lir::DecodeError),
+    Lir(veloc_lir::ValidationError),
     Codegen(CodegenError),
     Translate(TranslateError),
     Select(InstructionError),
@@ -255,8 +255,8 @@ impl From<TranslateError> for Error {
     }
 }
 
-impl From<veloc_lir::DecodeError> for Error {
-    fn from(err: veloc_lir::DecodeError) -> Self {
+impl From<veloc_lir::ValidationError> for Error {
+    fn from(err: veloc_lir::ValidationError) -> Self {
         Self::Lir(err)
     }
 }

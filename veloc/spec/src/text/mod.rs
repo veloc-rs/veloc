@@ -9,12 +9,36 @@ use crate::Error;
 use crate::generate::packing::Alternative;
 use crate::model::Definitions;
 
+/// Only allocation, physical reads and the SSA-reference codec vary by host.
+#[derive(Clone, Copy)]
+pub(super) enum Host<'a> {
+    Packed(&'a crate::storage::Format),
+    Operands(&'a crate::storage::operands::Operands),
+}
+
+impl Host<'_> {
+    fn value(self) -> String {
+        match self {
+            Self::Packed(_) => "crate::Value".into(),
+            Self::Operands(storage) => storage.register_rust.clone(),
+        }
+    }
+
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Packed(_) => "crate::inst::",
+            Self::Operands(_) => "",
+        }
+    }
+}
+
 pub(crate) struct Plan {
     entries: Vec<Entry>,
     alternatives: Vec<schema::Schema>,
 }
 
 struct Entry {
+    op: usize,
     schema: schema::Schema,
     alternative: Option<usize>,
 }
@@ -28,15 +52,20 @@ impl Plan {
     ) -> Result<Self, Error> {
         let schemas = alternatives
             .iter()
-            .map(|alt| schema::compile(&alt.op, &defs.storage.records, source, &defs.types))
+            .map(|alt| schema::compile(&alt.op, &defs.data.records, source, &defs.types))
             .collect::<Result<Vec<_>, _>>()?;
         let mut entries = Vec::new();
-        for (op, format) in defs.ops.iter().zip(formats) {
-            let schema = schema::compile(op, &defs.storage.records, source, &defs.types)?;
+        for (index, op) in defs.ops.iter().enumerate() {
+            let format = formats.get(index);
+            // An array host opts operations into its text frontend explicitly.
+            if format.is_none() && op.text.is_none() {
+                continue;
+            }
+            let schema = schema::compile(op, &defs.data.records, source, &defs.types)?;
             let mut matching = alternatives
                 .iter()
                 .enumerate()
-                .filter(|(_, alt)| alt.targets.contains(format));
+                .filter(|(_, alt)| format.is_some_and(|format| alt.targets.contains(format)));
             let alternative = matching.next();
             if matching.next().is_some() {
                 return Err(Error::at(
@@ -62,6 +91,7 @@ impl Plan {
                 }
             }
             entries.push(Entry {
+                op: index,
                 schema,
                 alternative: alternative.map(|(index, _)| index),
             });
@@ -99,9 +129,9 @@ pub(crate) fn generate(
             parser.push_str("if input.has_named() {\n");
             parser.push_str(&emit::parse(
                 alt_op,
-                alt_format,
+                Host::Packed(alt_format),
                 alt_schema,
-                &defs.storage.records,
+                &defs.data.records,
                 format.arity,
                 &op.name,
                 &defs.data.rust,
@@ -110,7 +140,7 @@ pub(crate) fn generate(
             printer.push_str(&emit::print(
                 op,
                 alt_op,
-                alt_format,
+                Host::Packed(alt_format),
                 alt_schema,
                 format.arity,
                 &defs.data.rust,
@@ -118,9 +148,9 @@ pub(crate) fn generate(
         }
         parser.push_str(&emit::parse(
             op,
-            format,
+            Host::Packed(format),
             schema,
-            &defs.storage.records,
+            &defs.data.records,
             None,
             &op.name,
             &defs.data.rust,
@@ -129,10 +159,78 @@ pub(crate) fn generate(
             parser.push_str("}\n");
         }
         parser.push_str("},\n");
-        printer.push_str(&emit::print(op, op, format, schema, None, &defs.data.rust));
+        printer.push_str(&emit::print(
+            op,
+            op,
+            Host::Packed(format),
+            schema,
+            None,
+            &defs.data.rust,
+        ));
         printer.push_str("_ => Err(core::fmt::Error),\n},\n");
     }
     parser.push_str("}\n}\n}\n");
     printer.push_str("}\n}\n}\n");
+    (parser, printer)
+}
+
+/// Array-storage hosts implement the same token/atom protocol as packed hosts.
+/// Results are supplied by the enclosing instruction parser, not text operands.
+pub(crate) fn generate_operands(
+    defs: &Definitions,
+    storage: &crate::storage::operands::Operands,
+    plan: &Plan,
+) -> (String, String) {
+    if plan.entries.is_empty() {
+        return (String::new(), String::new());
+    }
+    let opcode = &storage.opcode;
+    let register = &storage.register_rust;
+    let reader = &storage.reader;
+    let mut parser = format!(
+        "impl OperandParser<'_> {{
+        fn parse(&mut self, opcode: {opcode}, flags: crate::MemFlags, input: &mut Cursor<'_>, ty: Option<crate::Type>, results: &[{register}]) -> core::result::Result<crate::InstId, ParseError> {{
+        let _ = ty;
+        match opcode {{"
+    );
+    let mut printer = format!(
+        "impl InstPrinter<'_> {{
+        fn fmt_instruction_data<'a>(&self, f: &mut dyn core::fmt::Write, data: impl {reader}<'a>, ty: Option<crate::Type>) -> core::fmt::Result {{
+        let _ = ty;
+        match data.opcode() {{"
+    );
+    for entry in &plan.entries {
+        let op = &defs.ops[entry.op];
+        writeln!(parser, "{opcode}::{} => {{", op.name).unwrap();
+        let layout = op.operands();
+        let count = layout.counts[0];
+        let cmp = if layout.tails[0] { "<" } else { "!=" };
+        writeln!(parser, "if results.len() {cmp} {count} {{ return Err(input.error(\"invalid result count\")); }}").unwrap();
+        parser.push_str(&emit::parse(
+            op,
+            Host::Operands(storage),
+            &entry.schema,
+            &defs.data.records,
+            None,
+            &op.name,
+            &defs.data.rust,
+        ));
+        parser.push_str("},\n");
+        writeln!(printer, "Some({opcode}::{}) => {{", op.name).unwrap();
+        printer.push_str(&emit::print(
+            op,
+            op,
+            Host::Operands(storage),
+            &entry.schema,
+            None,
+            &defs.data.rust,
+        ));
+        printer.push_str("},\n");
+    }
+    if plan.entries.len() != defs.ops.len() {
+        parser.push_str("_ => Err(input.error(\"operation has no text projection\")),\n");
+    }
+    parser.push_str("} } }\n");
+    printer.push_str("_ => Err(core::fmt::Error),\n} } }\n");
     (parser, printer)
 }

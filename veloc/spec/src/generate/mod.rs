@@ -1,10 +1,13 @@
 //! Rust artifact generation and final formatting.
 mod checks;
+pub(crate) mod construction;
 pub(crate) mod evaluate;
-mod ownership;
+mod operands;
+pub(crate) mod ownership;
 pub(crate) mod packing;
 mod plan;
-mod queries;
+pub(crate) mod queries;
+pub(crate) mod views;
 pub use plan::Plan;
 
 use std::fmt::Write;
@@ -19,7 +22,7 @@ fn generate(plan: &Plan) -> Generated {
     let types = crate::types::generate::declarations(&defs.types);
     let methods = defs.expressions.method_code();
     let checks = checks::generate(defs);
-    if let plan::Output::Operands = &plan.output {
+    if let plan::Output::Operands(text) = &plan.output {
         let crate::storage::Strategy::Operands(storage) = &defs.storage.strategy else {
             unreachable!("operand plan matches storage strategy");
         };
@@ -29,10 +32,11 @@ fn generate(plan: &Plan) -> Generated {
         crate::types::rules::generate_validation(
             defs,
             &sets,
-            "crate::GenericOpcode",
+            &format!("crate::{}", storage.opcode),
             &mut type_rules,
         );
         type_rules.push_str("}\n");
+        let (text_parser, text_printer) = crate::text::generate_operands(defs, storage, text);
         return Generated {
             types,
             instructions: methods.clone()
@@ -42,12 +46,14 @@ fn generate(plan: &Plan) -> Generated {
                     crate::model::metadata::record_type(&defs.ops),
                 )
                 + &storage.generate(defs)
-                + &crate::model::metadata::generate(&defs.ops, "GenericOpcode", "")
-                + &crate::model::metadata::value_contract(&defs.ops, "GenericOpcode", "")
+                + &crate::model::metadata::generate(&defs.ops, &storage.opcode, "")
+                + &crate::model::metadata::value_contract(&defs.ops, &storage.opcode, "")
                 + &checks,
             type_rules,
             semantics: crate::semantic::emit::generate(defs),
             checks: methods + &checks,
+            text_parser,
+            text_printer,
             ..Generated::default()
         };
     }
@@ -78,7 +84,10 @@ fn generate(plan: &Plan) -> Generated {
     instructions.push_str(&methods);
     instructions.push_str(&crate::generate::packing::accessors(defs));
     instructions.push_str(&ownership::generate(defs));
-    instructions.push_str(&queries::generate(defs, &packed.formats));
+    instructions.push_str(&queries::generate(
+        defs,
+        queries::Host::Packed(&packed.formats),
+    ));
     crate::types::rules::generate(defs, &sets, &mut type_rules, &mut instructions);
 
     let mut ops = String::from(HEADER);

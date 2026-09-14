@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{FixedUseConstraint, TargetOperandLowering};
 use core::marker::PhantomData;
-use veloc_lir::MachineOperand;
+use veloc_lir::InstBuild;
 use veloc_lir::stages::{PreIselPrepared, SelectedLir};
 use veloc_lir::{InstId, MachineFunction, Reg, Writable};
 
@@ -147,12 +147,9 @@ where
             return Ok(());
         }
 
-        let cursor_id = cursor.current_inst_id();
-        let mut inst = cursor.current_inst().operands().to_vec();
-        let inst_changed = self.apply_constraints(cursor, &mut inst, &constraints)?;
+        let inst_changed = self.apply_constraints(cursor, &constraints)?;
         if inst_changed {
             *changed += 1;
-            cursor.mfunc_mut().set_inst_operands(cursor_id, inst);
             cursor.keep_current();
         } else {
             cursor.keep_current();
@@ -163,12 +160,11 @@ where
     fn apply_constraints(
         &self,
         cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
-        inst: &mut [MachineOperand],
         constraints: &crate::target::arch::OperandConstraintSet,
     ) -> Result<bool> {
         let mut changed = false;
         for fixed in constraints.fixed_uses.iter() {
-            if self.apply_fixed_use_constraint(cursor, inst, fixed)? {
+            if self.apply_fixed_use_constraint(cursor, fixed)? {
                 changed = true;
             }
         }
@@ -179,16 +175,18 @@ where
     fn apply_fixed_use_constraint(
         &self,
         cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
-        inst: &mut [MachineOperand],
         fixed: &FixedUseConstraint,
     ) -> Result<bool> {
-        let current = expect_operand_reg(inst, fixed.use_operand, "fixed use", use_reg);
+        let inst = cursor.current_inst();
+        let index = fixed.use_operand;
+        let current = inst.inputs()[index];
         if current == fixed.reg {
             return Ok(false);
         }
 
         self.emit_constraint_copy(cursor, fixed.reg, current)?;
-        set_use_reg(inst, fixed.use_operand, fixed.reg);
+        let id = cursor.current_inst_id();
+        cursor.mfunc_mut().set_inst_input(id, index, fixed.reg);
         Ok(true)
     }
 
@@ -264,55 +262,13 @@ impl<'a> FunctionPass<SelectedLir> for PostSelectOperandConstraintPass<'a> {
     }
 }
 
-fn use_reg(operand: &MachineOperand) -> Option<Reg> {
-    match operand {
-        MachineOperand::Use(reg) => Some(*reg),
-        _ => None,
-    }
-}
-
-fn missing_operand_error(inst: &[MachineOperand], role: &str, operand_idx: usize) -> ! {
-    panic!(
-        "missing {} operand {} for instruction {:?} while applying operand constraints",
-        role, operand_idx, inst
-    )
-}
-
-fn expect_operand_reg(
-    inst: &[MachineOperand],
-    operand_idx: usize,
-    role: &str,
-    reg_of: fn(&MachineOperand) -> Option<Reg>,
-) -> Reg {
-    inst.get(operand_idx)
-        .and_then(reg_of)
-        .unwrap_or_else(|| missing_operand_error(inst, role, operand_idx))
-}
-
-fn set_use_reg(inst: &mut [MachineOperand], operand_idx: usize, reg: Reg) {
-    let operand = inst.get_mut(operand_idx).unwrap_or_else(|| {
-        panic!(
-            "operand index {} out of bounds while applying operand constraints",
-            operand_idx
-        )
-    });
-    match operand {
-        MachineOperand::Use(slot) => *slot = reg,
-        _ => {
-            panic!(
-                "operand {} is not a use operand while applying operand constraints",
-                operand_idx
-            );
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::PreSelectOperandConstraintPass;
     use crate::target::arch::{FixedUseConstraint, OperandConstraintSet, TargetOperandLowering};
     use alloc::vec;
     use veloc_lir::stages::PreIselPrepared;
+    use veloc_lir::{InstBuild, InstRead};
     use veloc_lir::{InstId, MachineBlock, MachineFunction, Reg, Writable};
 
     struct DummyLowering {
@@ -371,7 +327,7 @@ mod tests {
         let (mut mfunc, inst_id) = make_function_with_inst(inst);
         let lowering = DummyLowering::new(OperandConstraintSet {
             fixed_uses: vec![FixedUseConstraint {
-                use_operand: 1,
+                use_operand: 0,
                 reg: fixed,
             }]
             .into(),
@@ -382,16 +338,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(mfunc.blocks[0].insts.len(), 2);
-        let veloc_lir::InstView::UnaryReg(copy) =
-            mfunc.inst(mfunc.blocks[0].insts[0]).generic_view().unwrap()
+        let veloc_lir::InstView::UnaryReg(copy) = mfunc.inst(mfunc.blocks[0].insts[0]).view()
         else {
             panic!("expected UnaryReg");
         };
         assert_eq!(copy.dst, fixed);
         assert_eq!(copy.src, src);
 
-        let veloc_lir::InstView::UnaryReg(lowered) = mfunc.inst(inst_id).generic_view().unwrap()
-        else {
+        let veloc_lir::InstView::UnaryReg(lowered) = mfunc.inst(inst_id).view() else {
             panic!("expected UnaryReg");
         };
         assert_eq!(lowered.src, fixed);

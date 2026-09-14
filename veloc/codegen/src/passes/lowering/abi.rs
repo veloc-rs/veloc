@@ -4,6 +4,7 @@ use crate::target::arch::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, Ta
 use alloc::vec::Vec;
 use veloc_lir::stages::LegalizedLir;
 use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot, Writable};
+use veloc_lir::{InstBuild, InstRead};
 
 pub struct AbiLoweringPass;
 
@@ -110,10 +111,11 @@ fn lower_formal_arguments(
                 cursor.keep_current();
                 return Ok(());
             }
-            if let veloc_lir::InstView::Arg(decoded) =
-                inst.generic_view().expect("valid LIR argument")
-            {
-                let assignment = match plan.args.get(decoded.index) {
+            if let veloc_lir::InstView::Arg(decoded) = inst.view() {
+                let assignment = match plan
+                    .args
+                    .get(usize::try_from(decoded.index).expect("negative argument index"))
+                {
                     Some(assignment) => assignment,
                     None => panic!(
                         "missing ABI assignment for argument {} in {}",
@@ -142,48 +144,42 @@ fn lower_callsite<S>(
     plan: &CallConvPlan,
 ) {
     let inst = cursor.current_inst();
-    let veloc_lir::InstView::Call(call) = inst.generic_view().expect("valid call") else {
-        unreachable!("callsite lowering");
+    let (results, args) = match inst.view() {
+        veloc_lir::InstView::Call(call) => (call.results, call.args),
+        veloc_lir::InstView::CallIndirect(call) => (call.results, call.args),
+        _ => unreachable!("callsite lowering"),
     };
-    let shape = call.shape;
-    if shape.args.len() != plan.args.len() {
+    if args.len() != plan.args.len() {
         panic!(
             "call argument count mismatch: LIR has {}, ABI plan has {}",
-            shape.args.len(),
+            args.len(),
             plan.args.len()
         );
     }
-    if shape.defs.len() != plan.returns.len() {
+    if results.len() != plan.returns.len() {
         panic!(
             "call result count mismatch: LIR has {}, ABI plan has {}",
-            shape.defs.len(),
+            results.len(),
             plan.returns.len()
         );
     }
 
-    let args: Vec<_> = shape.args.iter().collect();
-    let defs: Vec<_> = shape.defs.iter().collect();
-    let mut operands: Vec<_> = inst
-        .operands()
-        .iter()
-        .filter(|op| !op.is_def())
-        .cloned()
-        .collect();
+    let args: Vec<_> = args.to_vec();
+    let defs: Vec<_> = results.iter().copied().collect();
     let returns: Vec<_> = plan
         .returns
         .iter()
         .flat_map(|a| &a.parts)
         .filter_map(|p| {
             if let AbiLocation::Reg(reg) = p.loc {
-                Some(veloc_lir::MachineOperand::Def(Writable(reg)))
+                Some(reg)
             } else {
                 None
             }
         })
         .collect();
-    operands.splice(0..0, returns);
     let id = cursor.current_inst_id();
-    cursor.mfunc_mut().set_inst_operands(id, operands);
+    cursor.mfunc_mut().set_inst_results(id, &returns);
     for (src, assignment) in args.into_iter().zip(plan.args.iter()) {
         let inst =
             build_store_to_assignment(target, cursor.mfunc_mut(), src, assignment, "call argument");
@@ -277,12 +273,10 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                             lower_callsite(ctx.target, cursor, &call_plan);
                         }
                         MachineOpcode::Generic(GenericOpcode::G_RET) => {
-                            let veloc_lir::InstView::Return(ret) =
-                                inst.generic_view().expect("valid return")
-                            else {
+                            let veloc_lir::InstView::Return(ret) = inst.view() else {
                                 unreachable!()
                             };
-                            let values: Vec<_> = ret.values.iter().collect();
+                            let values: Vec<_> = ret.values.to_vec();
                             let ret_plan = &plan;
                             let pre = lower_return(
                                 ctx.target,
@@ -294,7 +288,7 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                             for inst in pre {
                                 cursor.emit(inst);
                             }
-                            let regs = ret_plan
+                            let regs: Vec<_> = ret_plan
                                 .returns
                                 .iter()
                                 .flat_map(|assignment| {
@@ -304,7 +298,7 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                                     })
                                 })
                                 .collect();
-                            let id = cursor.mfunc_mut().writer().ret(regs);
+                            let id = cursor.mfunc_mut().writer().ret(&regs);
                             cursor.replace_current(id);
                         }
                         _ => cursor.keep_current(),

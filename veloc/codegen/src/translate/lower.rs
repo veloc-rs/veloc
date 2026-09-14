@@ -1,5 +1,6 @@
 //! MIR/LIR storage adapter for generated, storage-independent value rules.
 use super::*;
+use veloc_lir::InstBuild;
 use veloc_lir::Writable;
 
 include!(concat!(env!("OUT_DIR"), "/mir_lowering.rs"));

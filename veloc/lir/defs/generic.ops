@@ -4,86 +4,102 @@ import "../../defs/prelude.ops";
 type StackSlot = rust("crate::StackSlot");
 type Block = rust("veloc_mir::Block");
 
-storage Operands { prefix: "G_" }
+type Reg = rust("crate::Reg");
+enum InstField {
+    variants: [Imm(i64), FImm(f64), Block(Block), StackSlot(StackSlot), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId)],
+}
+enum ControlFlow {
+    variants: [Next, Branch, Jump, Return, Call, Trap],
+}
+storage Operands {
+    opcode: GenericOpcode,
+    view: InstView,
+    reader: InstRead,
+    writer: InstBuild,
+    prefix: "G_",
+    register: Reg,
+    attributes: InstField,
+    control: ControlFlow::Next,
+}
 
 struct UnaryReg {
-    dst: Def,
-    src: Use,
+    dst: Reg,
+    src: Reg,
 }
 
 struct BinaryReg {
-    dst: Def,
-    lhs: Use,
-    rhs: Use,
+    dst: Reg,
+    lhs: Reg,
+    rhs: Reg,
 }
 
 struct BinaryRegWithFlags {
-    dst: Def,
-    flag: Def,
-    lhs: Use,
-    rhs: Use,
-    carry_in: OptionalUse,
+    dst: Reg,
+    flag: Reg,
+    lhs: Reg,
+    rhs: Reg,
+    carry_in: optional(Reg),
 }
 
 struct Load {
-    dst: Def,
-    base: Use,
+    dst: Reg,
+    base: Reg,
 }
 
 struct LoadOffset {
-    dst: Def,
-    base: Use,
-    offset: Imm,
+    dst: Reg,
+    base: Reg,
+    offset: i64,
 }
 
 struct IndexedLoad {
-    dst: Def,
-    wb_dst: Def,
-    base: Use,
-    offset: Imm,
+    dst: Reg,
+    wb_dst: Reg,
+    base: Reg,
+    offset: i64,
 }
 
 struct Store {
-    src: Use,
-    base: Use,
+    src: Reg,
+    base: Reg,
 }
 
 struct StackLoad {
-    dst: Def,
+    dst: Reg,
     slot: StackSlot,
 }
 
 struct StackAddr {
-    dst: Def,
+    dst: Reg,
     slot: StackSlot,
 }
 
 struct StackStore {
-    src: Use,
+    src: Reg,
     slot: StackSlot,
 }
 
 struct StoreOffset {
-    src: Use,
-    base: Use,
-    offset: Imm,
+    src: Reg,
+    base: Reg,
+    offset: i64,
 }
 
 struct IndexedStore {
-    wb_dst: Def,
-    src: Use,
-    base: Use,
-    offset: Imm,
+    wb_dst: Reg,
+    src: Reg,
+    base: Reg,
+    offset: i64,
 }
 
 struct Constant {
-    dst: Def,
-    imm: Imm,
+    dst: Reg,
+    imm: i64,
 }
 
 struct FloatConstant {
-    dst: Def,
-    imm: FImm,
+    dst: Reg,
+    imm: f64,
 }
 
 struct Branch {
@@ -91,43 +107,43 @@ struct Branch {
 }
 
 struct BranchCond {
-    cond: Use,
+    cond: Reg,
     then_blk: Block,
     else_blk: Block,
 }
 
 struct BranchTable {
-    index: Use,
+    index: Reg,
 }
 
 struct Select {
-    dst: Def,
-    cond: Use,
-    v1: Use,
-    v2: Use,
+    dst: Reg,
+    cond: Reg,
+    v1: Reg,
+    v2: Reg,
 }
 
 struct ICmp {
-    dst: Def,
-    lhs: Use,
-    rhs: Use,
+    dst: Reg,
+    lhs: Reg,
+    rhs: Reg,
     cc: IntCC,
 }
 
 struct FCmp {
-    dst: Def,
-    lhs: Use,
-    rhs: Use,
+    dst: Reg,
+    lhs: Reg,
+    rhs: Reg,
     cc: FloatCC,
 }
 
 struct Arg {
-    dst: Def,
-    index: Index,
+    dst: Reg,
+    index: i64,
 }
 
 struct Return {
-    values: Uses,
+    values: sequence(Reg),
 }
 
 struct Unreachable {
@@ -135,7 +151,14 @@ struct Unreachable {
 }
 
 struct Call {
-    shape: CallShape,
+    results: sequence(Reg),
+    callee: SymbolId,
+    args: sequence(Reg),
+}
+struct CallIndirect {
+    results: sequence(Reg),
+    callee: Reg,
+    args: sequence(Reg),
 }
 
 // Logical signatures use the same operation model and type checker as every IR.
@@ -533,44 +556,45 @@ op G_PTRTOINT(src: Type::PTR) -> (dst: ScalarInteger) {
 }
 
 op G_BR(target: Block) -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE },
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     storage: Branch { target },
     flow: Jump,
 }
 
 op G_BRCOND(cond: Type::BOOL, then_blk: Block, else_blk: Block) -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE },
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     storage: BranchCond { cond, then_blk, else_blk },
     flow: Jump,
 }
 
 op G_BRJT(index: ScalarInteger) -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE },
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     storage: BranchTable { index },
     flow: Jump,
 }
 
 op G_RET(values: sequence(Value)) -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE },
+    meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     storage: Return { values },
     flow: Return,
 }
 
 op G_CALL(callee: SymbolId, args: sequence(Value)) -> signature {
-    meta: OpInfo { memory: MemoryEffect::UNKNOWN },
-    storage: Call { shape: call(callee, args) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
+    storage: Call { results: results(), callee, args },
     flow: Call,
 }
 
 op G_CALLIND(callee: Type::PTR, args: sequence(Value)) -> signature {
-    meta: OpInfo { memory: MemoryEffect::UNKNOWN },
-    storage: Call { shape: call(callee, args) },
+    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
+    storage: CallIndirect { results: results(), callee, args },
     flow: Call,
 }
 
 op G_ARG(index: i64) -> (dst: Any) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Arg { dst, index },
+    verify { require(index >= 0, "argument index must be nonnegative"); }
 }
 
 op G_SELECT<T: Any>(cond: Type::BOOL, v1: T, v2: T) -> (dst: T) {
@@ -584,7 +608,7 @@ op G_COPY<T: Any>(src: T) -> (dst: T) {
 }
 
 op G_UNREACHABLE() -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE },
+    meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::ABORT).union(OpTraits::MAY_TRAP), memory: MemoryEffect::NONE },
     storage: Unreachable {},
     flow: Trap,
 }

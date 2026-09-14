@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use veloc_lir::{MachineFunction, MachineOperand, Reg};
+use veloc_lir::{InstField, MachineFunction, Reg};
 use veloc_mir::{Type, TypeInfo};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,41 +231,105 @@ pub enum OperandSeqPattern {
     Rest(OperandPattern),
 }
 
+/// Matching consumes each storage domain independently. A pattern's role selects
+/// the domain; attributes never occupy register positions.
+#[derive(Clone, Copy)]
+struct Operands<'a> {
+    results: &'a [Reg],
+    inputs: &'a [Reg],
+    fields: &'a [InstField],
+}
+impl<'a> Operands<'a> {
+    fn new(inst: &veloc_lir::InstRef<'a>) -> Self {
+        Self {
+            results: inst.results(),
+            inputs: inst.inputs(),
+            fields: inst.fields(),
+        }
+    }
+    fn is_empty(self) -> bool {
+        self.results.is_empty() && self.inputs.is_empty() && self.fields.is_empty()
+    }
+    fn take<S>(&mut self, mfunc: &MachineFunction<S>, pattern: OperandPattern) -> Result<bool> {
+        match pattern {
+            OperandPattern::Def(ty) | OperandPattern::Use(ty) => {
+                let regs = if matches!(pattern, OperandPattern::Def(_)) {
+                    &mut self.results
+                } else {
+                    &mut self.inputs
+                };
+                let Some((&reg, rest)) = regs.split_first() else {
+                    return Ok(false);
+                };
+                *regs = rest;
+                Ok(ty.matches(reg_type(mfunc, reg)?))
+            }
+            _ => {
+                let Some((field, rest)) = self.fields.split_first() else {
+                    return Ok(false);
+                };
+                self.fields = rest;
+                Ok(matches!(
+                    (field, pattern),
+                    (InstField::Imm(_), OperandPattern::Imm)
+                        | (InstField::FImm(_), OperandPattern::FImm)
+                        | (InstField::Block(_), OperandPattern::Block)
+                        | (InstField::StackSlot(_), OperandPattern::StackSlot)
+                        | (
+                            InstField::IntCC(_) | InstField::FloatCC(_),
+                            OperandPattern::CondCode
+                        )
+                        | (InstField::Global(_), OperandPattern::Global)
+                ))
+            }
+        }
+    }
+}
 pub fn format_inst_operands<S>(
     inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
 ) -> Result<String> {
-    let mut operands = Vec::with_capacity(inst.operands().len());
-    for operand in inst.operands().iter() {
-        operands.push(format_operand_debug(mfunc, operand)?);
+    let mut parts = Vec::new();
+    for &reg in inst.results() {
+        parts.push(format!("def({:?})", reg_type(mfunc, reg)?));
     }
-    Ok(format!("[{}]", operands.join(", ")))
+    for &reg in inst.inputs() {
+        parts.push(format!("use({:?})", reg_type(mfunc, reg)?));
+    }
+    for field in inst.fields() {
+        parts.push(
+            match field {
+                InstField::Imm(_) => "imm",
+                InstField::FImm(_) => "fimm",
+                InstField::Block(_) => "block",
+                InstField::StackSlot(_) => "stackslot",
+                InstField::IntCC(_) | InstField::FloatCC(_) => "condcode",
+                InstField::Global(_) => "global",
+            }
+            .to_string(),
+        );
+    }
+    Ok(format!("[{}]", parts.join(", ")))
 }
-
 pub fn inst_matches_operands<S>(
     inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     patterns: &[OperandPattern],
 ) -> Result<bool> {
-    if inst.operands().len() != patterns.len() {
-        return Ok(false);
-    }
-
-    for (operand, pattern) in inst.operands().iter().zip(patterns.iter().copied()) {
-        if !operand_matches(mfunc, operand, pattern)? {
+    let mut operands = Operands::new(inst);
+    for &pattern in patterns {
+        if !operands.take(mfunc, pattern)? {
             return Ok(false);
         }
     }
-
-    Ok(true)
+    Ok(operands.is_empty())
 }
-
 pub fn inst_matches_operand_sequence<S>(
     inst: &veloc_lir::InstRef<'_>,
     mfunc: &MachineFunction<S>,
     patterns: &[OperandSeqPattern],
 ) -> Result<bool> {
-    match_operand_sequence_impl(&inst.operands(), mfunc, patterns)
+    match_operand_sequence_impl(Operands::new(inst), mfunc, patterns)
 }
 
 pub fn operand_type_at<S>(
@@ -273,15 +337,12 @@ pub fn operand_type_at<S>(
     mfunc: &MachineFunction<S>,
     index: usize,
 ) -> Result<Option<Type>> {
-    let Some(operand) = inst.operands().get(index) else {
-        return Ok(None);
-    };
-
-    match operand {
-        MachineOperand::Def(w) => Ok(Some(reg_type(mfunc, w.to_reg())?)),
-        MachineOperand::Use(r) => Ok(Some(reg_type(mfunc, *r)?)),
-        _ => Ok(None),
-    }
+    inst.results()
+        .iter()
+        .chain(inst.inputs())
+        .nth(index)
+        .map(|&reg| reg_type(mfunc, reg))
+        .transpose()
 }
 
 pub fn operand_bit_width_at<S>(
@@ -338,82 +399,29 @@ where
 }
 
 fn match_operand_sequence_impl<S>(
-    operands: &[MachineOperand],
+    mut operands: Operands<'_>,
     mfunc: &MachineFunction<S>,
     patterns: &[OperandSeqPattern],
 ) -> Result<bool> {
-    let Some((first_pattern, rest_patterns)) = patterns.split_first() else {
+    let Some((first, rest)) = patterns.split_first() else {
         return Ok(operands.is_empty());
     };
-
-    match *first_pattern {
+    match *first {
         OperandSeqPattern::Fixed(pattern) => {
-            let Some((first_operand, rest_operands)) = operands.split_first() else {
-                return Ok(false);
-            };
-            if !operand_matches(mfunc, first_operand, pattern)? {
+            if !operands.take(mfunc, pattern)? {
                 return Ok(false);
             }
-            match_operand_sequence_impl(rest_operands, mfunc, rest_patterns)
+            match_operand_sequence_impl(operands, mfunc, rest)
         }
-        OperandSeqPattern::Rest(pattern) => {
-            for split in 0..=operands.len() {
-                if !all_operands_match(&operands[..split], mfunc, pattern)? {
-                    break;
-                }
-                if match_operand_sequence_impl(&operands[split..], mfunc, rest_patterns)? {
-                    return Ok(true);
-                }
+        OperandSeqPattern::Rest(pattern) => loop {
+            if match_operand_sequence_impl(operands, mfunc, rest)? {
+                return Ok(true);
             }
-            Ok(false)
-        }
+            if !operands.take(mfunc, pattern)? {
+                return Ok(false);
+            }
+        },
     }
-}
-
-fn all_operands_match<S>(
-    operands: &[MachineOperand],
-    mfunc: &MachineFunction<S>,
-    pattern: OperandPattern,
-) -> Result<bool> {
-    for operand in operands {
-        if !operand_matches(mfunc, operand, pattern)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn format_operand_debug<S>(mfunc: &MachineFunction<S>, operand: &MachineOperand) -> Result<String> {
-    Ok(match operand {
-        MachineOperand::Def(w) => format!("def({:?})", reg_type(mfunc, w.to_reg())?),
-        MachineOperand::Use(r) => format!("use({:?})", reg_type(mfunc, *r)?),
-        MachineOperand::Imm(_) => "imm".to_string(),
-        MachineOperand::FImm(_) => "fimm".to_string(),
-        MachineOperand::Block(_) => "block".to_string(),
-        MachineOperand::StackSlot(_) => "stackslot".to_string(),
-        MachineOperand::CondCode(_) => "condcode".to_string(),
-        MachineOperand::Global(_) => "global".to_string(),
-    })
-}
-
-fn operand_matches<S>(
-    mfunc: &MachineFunction<S>,
-    operand: &MachineOperand,
-    pattern: OperandPattern,
-) -> Result<bool> {
-    Ok(match (operand, pattern) {
-        (MachineOperand::Def(w), OperandPattern::Def(ty)) => {
-            ty.matches(reg_type(mfunc, w.to_reg())?)
-        }
-        (MachineOperand::Use(r), OperandPattern::Use(ty)) => ty.matches(reg_type(mfunc, *r)?),
-        (MachineOperand::Imm(_), OperandPattern::Imm) => true,
-        (MachineOperand::FImm(_), OperandPattern::FImm) => true,
-        (MachineOperand::Block(_), OperandPattern::Block) => true,
-        (MachineOperand::StackSlot(_), OperandPattern::StackSlot) => true,
-        (MachineOperand::CondCode(_), OperandPattern::CondCode) => true,
-        (MachineOperand::Global(_), OperandPattern::Global) => true,
-        _ => false,
-    })
 }
 
 fn reg_type<S>(mfunc: &MachineFunction<S>, reg: Reg) -> Result<Type> {
@@ -1239,7 +1247,7 @@ mod tests {
         same_operand_widths, type_width_is_one_of,
     };
     use alloc::string::ToString;
-    use smallvec::smallvec;
+    use veloc_lir::InstBuild;
     use veloc_lir::stages::RawLir;
     use veloc_lir::{
         GenericOpcode, MachineBlock, MachineFunction, MachineOpcode, SymbolId, Writable,
@@ -1473,7 +1481,7 @@ mod tests {
     fn matcher_returns_none_when_no_opcode_branch_matches() {
         let _mfunc = make_function();
         let mut mfunc = make_function();
-        let inst = mfunc.writer().ret(smallvec![]);
+        let inst = mfunc.writer().ret(&[]);
         let _inst_ref = &inst;
 
         let action = crate::legalize_matcher!(_inst_ref, &_mfunc, {}).unwrap();
@@ -1486,7 +1494,7 @@ mod tests {
         let mut mfunc = make_function();
         let r0 = mfunc.alloc_vreg(Type::I32);
         let r1 = mfunc.alloc_vreg(Type::F64);
-        let inst = mfunc.writer().ret(smallvec![r0, r1]);
+        let inst = mfunc.writer().ret(&[r0, r1]);
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
@@ -1506,11 +1514,9 @@ mod tests {
         let ret1 = mfunc.alloc_vreg(Type::PTR);
         let arg0 = mfunc.alloc_vreg(Type::I64);
         let arg1 = mfunc.alloc_vreg(Type::F32);
-        let inst = mfunc.writer().call(
-            [Writable(ret0), Writable(ret1)],
-            SymbolId::from_u32(4),
-            [arg0, arg1],
-        );
+        let inst = mfunc
+            .writer()
+            .call(&[ret0, ret1], SymbolId::from_u32(4), &[arg0, arg1]);
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
@@ -1530,9 +1536,7 @@ mod tests {
         let callee = mfunc.alloc_vreg(Type::PTR);
         let arg0 = mfunc.alloc_vreg(Type::I32);
         let arg1 = mfunc.alloc_vreg(Type::I32);
-        let inst = mfunc
-            .writer()
-            .call_indirect([Writable(ret)], callee, [arg0, arg1]);
+        let inst = mfunc.writer().callind(&[ret], callee, &[arg0, arg1]);
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {

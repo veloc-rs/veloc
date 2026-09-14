@@ -1,6 +1,6 @@
 use crate::target::arch::TargetMachine;
 use alloc::vec::Vec;
-use veloc_lir::{MachineFunction, MachineOperand};
+use veloc_lir::MachineFunction;
 use veloc_mir::{Type, TypeInfo};
 
 use veloc_lir::RegisterBank;
@@ -34,6 +34,7 @@ pub trait TargetRegBankSelect: Send + Sync {
         }
     }
 
+    /// Register occurrence index: results followed by inputs, excluding attributes.
     fn suggest_bank(
         &self,
         opcode: veloc_lir::GenericOpcode,
@@ -88,18 +89,17 @@ impl RegisterBankSelector {
             for &inst_id in &block.insts {
                 let inst = &mfunc.inst(inst_id);
                 if let veloc_lir::MachineOpcode::Generic(opcode) = inst.opcode() {
-                    for (op_idx, op) in inst.operands().iter().enumerate() {
-                        let reg = match op {
-                            MachineOperand::Use(r) => Some(*r),
-                            MachineOperand::Def(w) => Some(w.to_reg()),
-                            _ => None,
-                        };
-                        if let Some(r) = reg {
-                            if r.is_vreg() {
-                                let ty = mfunc.vreg_data(r).ty;
-                                if let Some(bank) = rb_select.suggest_bank(opcode, op_idx, ty) {
-                                    updates.push((r, bank));
-                                }
+                    for (op_idx, reg) in inst
+                        .results()
+                        .iter()
+                        .copied()
+                        .chain(inst.inputs().iter().copied())
+                        .enumerate()
+                    {
+                        if reg.is_vreg() {
+                            let ty = mfunc.vreg_data(reg).ty;
+                            if let Some(bank) = rb_select.suggest_bank(opcode, op_idx, ty) {
+                                updates.push((reg, bank));
                             }
                         }
                     }

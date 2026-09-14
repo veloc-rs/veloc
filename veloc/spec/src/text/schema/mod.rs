@@ -334,6 +334,7 @@ mod tests {
                     },
                 })
                 .collect(),
+            inputs: Default::default(),
             projection: crate::model::Projection::Packed(BTreeMap::new()),
             signature_source: None,
             text,

@@ -1,5 +1,6 @@
 use super::*;
 use alloc::vec;
+use veloc_lir::{InstBuild, InstRead};
 use veloc_lir::{InstId, MachineBlock, MachineOpcode};
 use veloc_mir::Block;
 
@@ -52,16 +53,14 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
             assert_eq!(ids.len(), if expanded { 3 } else { 1 });
             assert_eq!(ids.last(), Some(&id));
             assert_eq!(f.inst(id).memory(), Some(memory));
-            let actual_offset = match f.inst(id).generic_view().unwrap() {
+            let actual_offset = match f.inst(id).view() {
                 veloc_lir::InstView::LoadOffset(load) => load.offset,
                 veloc_lir::InstView::StoreOffset(store) => store.offset,
                 _ => panic!("expected offset access"),
             };
             assert_eq!(actual_offset, if expanded { 0 } else { offset });
             if expanded {
-                let veloc_lir::InstView::Constant(constant) =
-                    f.inst(ids[0]).generic_view().unwrap()
-                else {
+                let veloc_lir::InstView::Constant(constant) = f.inst(ids[0]).view() else {
                     panic!("expected constant");
                 };
                 assert_eq!(constant.imm, offset);
@@ -108,20 +107,23 @@ impl TargetLegalizer for Mode {
         }
         if f.inst(id).generic_opcode() == Some(GenericOpcode::G_SUB) {
             f.rewriter(id)
-                .write(MachineOpcode::Generic(GenericOpcode::G_ADD), &[]);
+                .write(MachineOpcode::Generic(GenericOpcode::G_ADD), &[], &[], &[]);
             return Ok(LegalizeResult::Replace(vec![id]));
         }
         let first = f
             .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::G_SUB), &[]);
+            .write(MachineOpcode::Generic(GenericOpcode::G_SUB), &[], &[], &[]);
         if matches!(self, Self::NewBlock) {
             f.create_synthetic_block();
             f.append_inst_id_to_block(f.num_blocks() - 1, first);
             return Ok(LegalizeResult::Replace(vec![]));
         }
-        let second = f
-            .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::G_CONSTANT), &[]);
+        let second = f.writer().write(
+            MachineOpcode::Generic(GenericOpcode::G_CONSTANT),
+            &[],
+            &[],
+            &[],
+        );
         Ok(LegalizeResult::Replace(vec![first, second]))
     }
 }
@@ -132,14 +134,14 @@ fn function() -> MachineFunction<LegalizedLir> {
     {
         let id = f
             .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::G_NEG), &[]);
+            .write(MachineOpcode::Generic(GenericOpcode::G_NEG), &[], &[], &[]);
         f.append_inst_id_to_block(0, id);
         id
     };
     {
         let id = f
             .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::G_RET), &[]);
+            .write(MachineOpcode::Generic(GenericOpcode::G_RET), &[], &[], &[]);
         f.append_inst_id_to_block(0, id);
         id
     };
