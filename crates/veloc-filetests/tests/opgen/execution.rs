@@ -32,6 +32,7 @@ type Type = ();
 type Result<T> = std::result::Result<T, String>;
 mod inst { #[derive(Clone, Copy)] pub struct ConstantPoolId(pub usize); }
 mod dfg {
+    pub type DataFlowGraph = Vec<Vec<u8>>;
     impl crate::inst::ConstantPoolId {
         pub fn get(self, data: &[Vec<u8>]) -> Option<&Vec<u8>> {
             assert_ne!(self.0, 99, "unreachable property was read");
@@ -72,7 +73,7 @@ mod numeric_{index} {{
     #[test] fn execute() {{
         let f = Function;
         for ((bits, yes), expected) in [(3, false), (3, true), (u64::MAX, false), (u64::MAX, true)].into_iter().zip({expected:?}) {{
-            assert_eq!(f.validate_constraints(&(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[]).is_ok(), expected);
+            assert_eq!(f.validate_constraints(&Vec::new(), &(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[]).is_ok(), expected);
         }}
     }}
 }}
@@ -127,17 +128,18 @@ mod sequences_{index} {{
     type InstView<'a> = ViewData;
     enum ViewData {{ Buffers {{ first: inst::ConstantPoolId, second: inst::ConstantPoolId }} }}
     impl ViewData {{ fn opcode(&self) -> Opcode {{ Opcode::Example }} }}
-    struct Function {{ dfg: Vec<Vec<u8>> }}
+    struct Function;
     impl Function {{ fn constraint_error(&self, _: Inst, message: &str) -> String {{ message.into() }} }}
     {validation}
     #[test] fn execute() {{
         let data = ViewData::Buffers {{ first: inst::ConstantPoolId(0), second: inst::ConstantPoolId(99) }};
-        let f = Function {{ dfg: vec![vec![0, 1]] }};
-        assert_eq!(f.validate_constraints(&(), 0, &data, &[], &[]).is_ok(), {valid});
-        let empty = Function {{ dfg: vec![vec![]] }};
-        assert!(empty.validate_constraints(&(), 0, &data, &[], &[]).is_ok());
-        let missing = Function {{ dfg: vec![] }};
-        assert!(missing.validate_constraints(&(), 0, &data, &[], &[]).is_err());
+        let f = Function;
+        let buffers = vec![vec![0, 1]];
+        assert_eq!(f.validate_constraints(&buffers, &(), 0, &data, &[], &[]).is_ok(), {valid});
+        let empty = vec![vec![]];
+        assert!(f.validate_constraints(&empty, &(), 0, &data, &[], &[]).is_ok());
+        let missing = vec![];
+        assert!(f.validate_constraints(&missing, &(), 0, &data, &[], &[]).is_err());
     }}
 }}
 "#));
@@ -207,7 +209,7 @@ mod host_calls {{
         let f = Function {{ dfg: (), signature: () }};
         for (bits, yes, valid) in [(3, false, true), (u64::MAX, false, false), (u64::MAX, true, true)] {{
             let context = host::Context::new();
-            let result = f.validate_constraints(&(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[], &context);
+            let result = f.validate_constraints(&Vec::new(), &(), 0, &ViewData::Custom {{ bits, yes }}, &[], &[], &context);
             assert_eq!(result.is_ok(), valid);
             if !valid {{ assert_eq!(result.unwrap_err(), "host failure"); }}
         }}
@@ -293,16 +295,18 @@ type Limits = rust("crate::Limits") {
     trait: rust("crate::LimitsInfo"),
     fn max(&self) -> u32;
 }
-property Tag { verify { require(value.bits != 0, "zero tag"); } }
 enum Payload { variants: [Tag(Tag), Number(i64)] }
-storage Operands { opcode: Code, view: View, reader: Read, writer: Build, register: Cell, attributes: Payload, prefix: "G_" }
+storage Operands { opcode: Code, view: View, reader: Read, writer: Build, register: Cell, attributes: Payload }
 struct Pair { tag: optional(Tag), right: Cell, high: Cell, left: Cell, low: Cell }
-op G_PAIR(move first: Type::I32, second: Type::I64, tag: Tag) -> (low: Type::I32, high: Type::I64) {
+op Pair(move first: Type::I32, second: Type::I64, tag: Tag) -> (low: Type::I32, high: Type::I64) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Pair { tag: some(tag), right: second, high, left: first, low },
     text: "{first}, {second}, tag={tag.bits}",
     query summary -> Summary { bits: tag.bits, ty: first.ty() }
-    verify(ctx: Limits) { require(tag.bits <= ctx.max(), "tag exceeds limit"); }
+    verify(ctx: Limits) {
+        require(tag.bits != 0, "zero tag");
+        require(tag.bits <= ctx.max(), "tag exceeds limit");
+    }
 }
 "#,
     )
@@ -458,18 +462,18 @@ mod atom {
     pub fn roundtrip() {
         let mut store = Vec::new();
         let mut parser = OperandParser(&mut store);
-        let id = parser.parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor("30, 40, tag=99"), None, &[10, 20]).unwrap();
+        let id = parser.parse(Code::Pair, MemFlags::empty(), &mut Cursor("30, 40, tag=99"), None, &[10, 20]).unwrap();
         assert_eq!(id, 0);
-        assert!(parser.parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor("30, 40, tag=99"), None, &[10]).is_err());
-        assert!(parser.parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor("30, 40, tag=99, tag=1"), None, &[10, 20]).is_err());
-        assert!(parser.parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor("30, 40"), None, &[10, 20]).is_err());
-        assert!(parser.parse(Code::G_PAIR, MemFlags(true), &mut Cursor("30, 40, tag=99"), None, &[10, 20]).is_err());
+        assert!(parser.parse(Code::Pair, MemFlags::empty(), &mut Cursor("30, 40, tag=99"), None, &[10]).is_err());
+        assert!(parser.parse(Code::Pair, MemFlags::empty(), &mut Cursor("30, 40, tag=99, tag=1"), None, &[10, 20]).is_err());
+        assert!(parser.parse(Code::Pair, MemFlags::empty(), &mut Cursor("30, 40"), None, &[10, 20]).is_err());
+        assert!(parser.parse(Code::Pair, MemFlags(true), &mut Cursor("30, 40, tag=99"), None, &[10, 20]).is_err());
         assert_eq!(store.len(), 1);
         assert_eq!(store[id], (vec![10, 20], vec![40, 30], vec![Payload::Tag(Tag { bits: 99 })]));
         let mut text = String::new();
         InstPrinter(core::marker::PhantomData).fmt_instruction_data(&mut text, Handle(&store[id]), None).unwrap();
         let (_, operands) = text.split_once(' ').unwrap();
-        let id2 = OperandParser(&mut store).parse(Code::G_PAIR, MemFlags::empty(), &mut Cursor(operands), None, &[10, 20]).unwrap();
+        let id2 = OperandParser(&mut store).parse(Code::Pair, MemFlags::empty(), &mut Cursor(operands), None, &[10, 20]).unwrap();
         assert_eq!(store[id], store[id2]);
     }
 "#;
@@ -492,7 +496,7 @@ impl LimitsInfo for Limits {{ fn max(&self) -> u32 {{ self.0 }} }}
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Payload {{ Tag(Tag), Number(i64) }}
 #[derive(Debug, Clone, Copy)]
-pub enum Code {{ G_PAIR }}
+pub enum Code {{ Pair }}
 type InstId = usize;
 struct Sink<'a> {{ store: &'a mut Vec<(Vec<Cell>, Vec<Cell>, Vec<Payload>)> }}
 impl Build for Sink<'_> {{
@@ -522,7 +526,7 @@ struct Handle<'a>(&'a (Vec<Cell>, Vec<Cell>, Vec<Payload>));
 impl<'a> Read<'a> for Handle<'a> {{
     type Error = String;
     fn value_type(self, value: Cell) -> Type {{ value + 1000 }}
-    fn opcode(self) -> Option<Code> {{ Some(Code::G_PAIR) }}
+    fn opcode(self) -> Option<Code> {{ Some(Code::Pair) }}
     fn results(self) -> &'a [Cell] {{ &self.0.0 }}
     fn inputs(self) -> &'a [Cell] {{ &self.0.1 }}
     fn fields(self) -> &'a [Payload] {{ &self.0.2 }}
@@ -626,7 +630,7 @@ op Check() -> () {
     mnemonic: "check", storage: Empty {},
 }
 "#;
-    let generated = veloc_opgen::compile(defs).unwrap();
+    let generated = common::raw_plan(defs).unwrap().generate();
     assert!(
         generated
             .opcodes
@@ -769,7 +773,7 @@ fn main() {{ assert_eq!(traits::Token::count(Token), 7); }}
 
 #[test]
 fn a_rust_path_does_not_implicitly_supply_a_type_catalog() {
-    let error = veloc_opgen::parse(
+    let error = common::raw_parse(
         r#"
 type Type = rust("veloc_types::Type");
 typeset Small = Type::I32;

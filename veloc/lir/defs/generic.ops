@@ -16,7 +16,6 @@ storage Operands {
     view: InstView,
     reader: InstRead,
     writer: InstBuild,
-    prefix: "G_",
     register: Reg,
     attributes: InstField,
     control: ControlFlow::Next,
@@ -163,451 +162,451 @@ struct CallIndirect {
 
 // Logical signatures use the same operation model and type checker as every IR.
 
-op G_ADD<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Add<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.add(lhs, rhs)
 }
 
-op G_SUB<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Sub<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.sub(lhs, rhs)
 }
 
-op G_MUL<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Mul<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.mul(lhs, rhs)
 }
 
-op G_SDIV<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Sdiv<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UDIV<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Udiv<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_SREM<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Srem<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UREM<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Urem<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_NEG<T: Integer>(src: T) -> (dst: T) {
+op Neg<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo {},
     storage: UnaryReg { dst, src },
     semantics: bv.neg(src)
 }
 
-op G_FADD<T: Float>(lhs: T, rhs: T) -> (dst: T) {
+op Fadd<T: Float>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_FSUB<T: Float>(lhs: T, rhs: T) -> (dst: T) {
+op Fsub<T: Float>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_FMUL<T: Float>(lhs: T, rhs: T) -> (dst: T) {
+op Fmul<T: Float>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_FDIV<T: Float>(lhs: T, rhs: T) -> (dst: T) {
+op Fdiv<T: Float>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_FNEG<T: Float>(src: T) -> (dst: T) {
+op Fneg<T: Float>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_FABS<T: Float>(src: T) -> (dst: T) {
+op Fabs<T: Float>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_FSQRT<T: Float>(src: T) -> (dst: T) {
+op Fsqrt<T: Float>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_AND<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> (dst: T) {
+op And<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.and(lhs, rhs)
 }
 
-op G_OR<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> (dst: T) {
+op Or<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.or(lhs, rhs)
 }
 
-op G_XOR<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> (dst: T) {
+op Xor<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo {},
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.xor(lhs, rhs)
 }
 
-op G_CTPOP<T: Integer>(src: T) -> (dst: T) {
+op Ctpop<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_CTLZ<T: Integer>(src: T) -> (dst: T) {
+op Ctlz<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_CTTZ<T: Integer>(src: T) -> (dst: T) {
+op Cttz<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_SHL<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Shl<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_LSHR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Lshr<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ASHR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Ashr<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ROTL<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Rotl<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ROTR<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Rotr<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_ICMP<T: ScalarInteger | Type::PTR>(lhs: T, rhs: T, cc: IntCC) -> (dst: Type::BOOL) {
+op Icmp<T: ScalarInteger | Type::PTR>(lhs: T, rhs: T, cc: IntCC) -> (dst: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: ICmp { dst, lhs, rhs, cc },
 }
 
-op G_FCMP<T: ScalarFloat>(lhs: T, rhs: T, cc: FloatCC) -> (dst: Type::BOOL) {
+op Fcmp<T: ScalarFloat>(lhs: T, rhs: T, cc: FloatCC) -> (dst: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: FCmp { dst, lhs, rhs, cc },
 }
 
-op G_IEQZ(src: Integer) -> (dst: Type::BOOL) {
+op Ieqz(src: Integer) -> (dst: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_ANYEXT(src: Integer) -> (dst: Integer) {
+op Anyext(src: Integer) -> (dst: Integer) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_ABS<T: Integer>(src: T) -> (dst: T) {
+op Abs<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_SMIN<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Smin<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_SMAX<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Smax<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UMIN<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Umin<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UMAX<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Umax<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
+op Uaddo<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SADDO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
+op Saddo<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_USUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
+op Usubo<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SSUBO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
+op Ssubo<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_UADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type::BOOL) -> (dst: T, flag: Type::BOOL) {
+op Uadde<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type::BOOL) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_SADDE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type::BOOL) -> (dst: T, flag: Type::BOOL) {
+op Sadde<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type::BOOL) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_USUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type::BOOL) -> (dst: T, flag: Type::BOOL) {
+op Usube<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type::BOOL) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_SSUBE<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type::BOOL) -> (dst: T, flag: Type::BOOL) {
+op Ssube<T: ScalarInteger>(lhs: T, rhs: T, carry_in: Type::BOOL) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) },
 }
 
-op G_UMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
+op Umulo<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_SMULO<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
+op Smulo<T: ScalarInteger>(lhs: T, rhs: T) -> (dst: T, flag: Type::BOOL) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none },
 }
 
-op G_UMULH<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Umulh<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_SMULH<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Smulh<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_CTLZ_ZERO_UNDEF<T: Integer>(src: T) -> (dst: T) {
+op CtlzZeroUndef<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_CTTZ_ZERO_UNDEF<T: Integer>(src: T) -> (dst: T) {
+op CttzZeroUndef<T: Integer>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_SADDSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Saddsat<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_UADDSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Uaddsat<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_SSUBSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Ssubsat<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_USUBSAT<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Usubsat<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_LOAD(base: Type::PTR) -> (dst: Any) {
+op Load(base: Type::PTR) -> (dst: Any) {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     storage: Load { dst, base },
 }
 
-op G_STORE(src: Any, base: Type::PTR) -> () {
+op Store(src: Any, base: Type::PTR) -> () {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     storage: Store { src, base },
 }
 
-op G_PTR_ADD(lhs: Type::PTR, rhs: ScalarInteger) -> (dst: Type::PTR) {
+op PtrAdd(lhs: Type::PTR, rhs: ScalarInteger) -> (dst: Type::PTR) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
 }
 
-op G_STACK_LOAD(slot: StackSlot) -> (dst: Any) {
+op StackLoad(slot: StackSlot) -> (dst: Any) {
     meta: OpInfo { memory: MemoryEffect::known(MemoryEffects::READ) },
     storage: StackLoad { dst, slot },
 }
 
-op G_STACK_STORE(src: Any, slot: StackSlot) -> () {
+op StackStore(src: Any, slot: StackSlot) -> () {
     meta: OpInfo { memory: MemoryEffect::known(MemoryEffects::WRITE) },
     storage: StackStore { src, slot },
 }
 
-op G_STACK_ADDR(slot: StackSlot) -> (dst: Type::PTR) {
+op StackAddr(slot: StackSlot) -> (dst: Type::PTR) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: StackAddr { dst, slot },
 }
 
-op G_OFFSET_LOAD(base: Type::PTR, offset: i64) -> (dst: Any) {
+op OffsetLoad(base: Type::PTR, offset: i64) -> (dst: Any) {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     storage: LoadOffset { dst, base, offset },
 }
 
-op G_OFFSET_STORE(src: Any, base: Type::PTR, offset: i64) -> () {
+op OffsetStore(src: Any, base: Type::PTR, offset: i64) -> () {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     storage: StoreOffset { src, base, offset },
 }
 
-op G_INDEXED_LOAD(base: Type::PTR, offset: i64) -> (dst: Any, wb_dst: Type::PTR) {
+op IndexedLoad(base: Type::PTR, offset: i64) -> (dst: Any, wb_dst: Type::PTR) {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     storage: IndexedLoad { dst, wb_dst, base, offset },
 }
 
-op G_INDEXED_STORE(src: Any, base: Type::PTR, offset: i64) -> (wb_dst: Type::PTR) {
+op IndexedStore(src: Any, base: Type::PTR, offset: i64) -> (wb_dst: Type::PTR) {
     meta: OpInfo { memory: MemoryEffect::UNKNOWN },
     storage: IndexedStore { wb_dst, src, base, offset },
 }
 
-op G_CONSTANT(imm: i64) -> (dst: ScalarInteger | Type::BOOL | Type::PTR) {
+op Constant(imm: i64) -> (dst: ScalarInteger | Type::BOOL | Type::PTR) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Constant { dst, imm },
 }
 
-op G_FCONSTANT(imm: f64) -> (dst: ScalarFloat) {
+op Fconstant(imm: f64) -> (dst: ScalarFloat) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: FloatConstant { dst, imm },
 }
 
-op G_TRUNC(src: Integer) -> (dst: Integer) {
+op Trunc(src: Integer) -> (dst: Integer) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_ZEXT(src: Integer | Type::BOOL | vectors(Type::BOOL)) -> (dst: Integer) {
+op Zext(src: Integer | Type::BOOL | vectors(Type::BOOL)) -> (dst: Integer) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_SEXT(src: Integer) -> (dst: Integer) {
+op Sext(src: Integer) -> (dst: Integer) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_FPTOSI(src: Float) -> (dst: Integer) {
+op Fptosi(src: Float) -> (dst: Integer) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_FPTOUI(src: Float) -> (dst: Integer) {
+op Fptoui(src: Float) -> (dst: Integer) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_SITOFP(src: Integer) -> (dst: Float) {
+op Sitofp(src: Integer) -> (dst: Float) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_UITOFP(src: Integer) -> (dst: Float) {
+op Uitofp(src: Integer) -> (dst: Float) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_FPTRUNC(src: Float) -> (dst: Float) {
+op Fptrunc(src: Float) -> (dst: Float) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_FPEXT(src: Float) -> (dst: Float) {
+op Fpext(src: Float) -> (dst: Float) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_BITCAST(src: Any) -> (dst: Any) {
+op Bitcast(src: Any) -> (dst: Any) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_INTTOPTR(src: ScalarInteger) -> (dst: Type::PTR) {
+op Inttoptr(src: ScalarInteger) -> (dst: Type::PTR) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_PTRTOINT(src: Type::PTR) -> (dst: ScalarInteger) {
+op Ptrtoint(src: Type::PTR) -> (dst: ScalarInteger) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_BR(target: Block) -> () {
+op Br(target: Block) -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     storage: Branch { target },
     flow: Jump,
 }
 
-op G_BRCOND(cond: Type::BOOL, then_blk: Block, else_blk: Block) -> () {
+op Brcond(cond: Type::BOOL, then_blk: Block, else_blk: Block) -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     storage: BranchCond { cond, then_blk, else_blk },
     flow: Jump,
 }
 
-op G_BRJT(index: ScalarInteger) -> () {
+op Brjt(index: ScalarInteger) -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     storage: BranchTable { index },
     flow: Jump,
 }
 
-op G_RET(values: sequence(Value)) -> () {
+op Ret(values: sequence(Value)) -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE },
     storage: Return { values },
     flow: Return,
 }
 
-op G_CALL(callee: SymbolId, args: sequence(Value)) -> signature {
+op Call(callee: SymbolId, args: sequence(Value)) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     storage: Call { results: results(), callee, args },
     flow: Call,
 }
 
-op G_CALLIND(callee: Type::PTR, args: sequence(Value)) -> signature {
+op Callind(callee: Type::PTR, args: sequence(Value)) -> signature {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
     storage: CallIndirect { results: results(), callee, args },
     flow: Call,
 }
 
-op G_ARG(index: i64) -> (dst: Any) {
+op Arg(index: i64) -> (dst: Any) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Arg { dst, index },
     verify { require(index >= 0, "argument index must be nonnegative"); }
 }
 
-op G_SELECT<T: Any>(cond: Type::BOOL, v1: T, v2: T) -> (dst: T) {
+op Select<T: Any>(cond: Type::BOOL, v1: T, v2: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Select { dst, cond, v1, v2 },
 }
 
-op G_COPY<T: Any>(src: T) -> (dst: T) {
+op Copy<T: Any>(src: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: UnaryReg { dst, src },
 }
 
-op G_UNREACHABLE() -> () {
+op Unreachable() -> () {
     meta: OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::ABORT).union(OpTraits::MAY_TRAP), memory: MemoryEffect::NONE },
     storage: Unreachable {},
     flow: Trap,

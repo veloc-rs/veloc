@@ -173,13 +173,6 @@ fn cycles_missing_files_and_late_imports_have_diagnostics() {
             .message
             .contains("precede")
     );
-    assert!(
-        veloc_opgen::parse("import \"prelude.ops\";")
-            .err()
-            .unwrap()
-            .message
-            .contains("Source::load")
-    );
 }
 
 #[test]

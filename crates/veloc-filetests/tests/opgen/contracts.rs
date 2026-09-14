@@ -87,8 +87,8 @@ fn the_actual_mir_definitions_compile_deterministically() {
 
 const BINARY: &str = "type Reg = rust(\"crate::Reg\");
 enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: \"G_\"  }\nstruct Binary { dst: Reg, lhs: Reg, rhs: Reg }";
-const ADD: &str = "op G_SUM<T: Integer>(lhs: T, rhs: T) -> (dst: T) { meta: OpInfo {}, storage: Binary { dst, lhs, rhs }, semantics: bv.add(lhs, rhs) }";
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField }\nstruct Binary { dst: Reg, lhs: Reg, rhs: Reg }";
+const ADD: &str = "op Sum<T: Integer>(lhs: T, rhs: T) -> (dst: T) { meta: OpInfo {}, storage: Binary { dst, lhs, rhs }, semantics: bv.add(lhs, rhs) }";
 
 #[test]
 fn packed_layout_contracts() {
@@ -318,27 +318,10 @@ fn output_plan_diagnostics() {
     }} }}"), "unknown expression name or operation"),
         ] {
             let source = common::source(&source);
-            veloc_opgen::parse(&source).unwrap();
-            let error = veloc_opgen::plan(&source).err().expect("invalid output plan");
+            common::raw_parse(&source).unwrap();
+            let error = common::raw_plan(&source).err().expect("invalid output plan");
             assert!(error.message.contains(message), "{error}");
         }
-    }
-
-    // property constraints are checked without an output plan
-    {
-        let source = common::source(
-            "property Int { verify {unknown > 0;
-    } }",
-        );
-        let error = veloc_opgen::parse(&source)
-            .err()
-            .expect("invalid property contract");
-        assert!(
-            error
-                .message
-                .contains("unknown expression name or operation"),
-            "{error}"
-        );
     }
 
     // invalid definitions fail before emission
@@ -420,7 +403,7 @@ storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writ
                 "arity",
             ),
         ] {
-            let error = veloc_opgen::parse(&common::source(&source))
+            let error = common::raw_parse(&common::source(&source))
                 .err()
                 .expect(&source);
             assert!(error.message.contains(message), "{source}\n{error}");
@@ -433,7 +416,7 @@ storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writ
             "{BINARY} {}",
             ADD.replace("semantics:", "text: \"{lhs}, {rhs}\", semantics:")
         ));
-        let generated = veloc_opgen::compile(&source).unwrap();
+        let generated = common::raw_plan(&source).unwrap().generate();
         assert!(!generated.text_parser.is_empty());
         assert!(!generated.text_printer.is_empty());
     }

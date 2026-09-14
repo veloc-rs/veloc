@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::Error;
 use crate::model::Fields;
-use crate::syntax::{Kind, Node, Record};
+use crate::syntax::{Decl, DeclKind, Kind, Node};
 
 pub(crate) mod cases;
 pub(crate) mod generate;
@@ -107,7 +107,6 @@ pub(crate) struct Types {
     pub scalars: Vec<Scalar>,
     pub exact: BTreeMap<String, TypeSet>,
     pub sets: BTreeMap<String, TypeSet>,
-    pub predicates: BTreeMap<String, TypeSet>,
     pub lanes: TypeSet,
     pub integers: TypeSet,
     pub scalar_floats: TypeSet,
@@ -139,11 +138,10 @@ impl Types {
         }
     }
 
-    pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
-        if let Some(record) = records
-            .iter()
-            .find(|r| matches!(r.kind.as_str(), "type" | "typeset") && r.name == "Callable")
-        {
+    pub fn compile(records: &[Decl], source: &str) -> Result<Self, Error> {
+        if let Some(record) = records.iter().find(|r| {
+            matches!(&r.kind, DeclKind::Type { .. } | DeclKind::TypeSet(_)) && r.name == "Callable"
+        }) {
             return Err(Error::at(
                 source,
                 record.offset,
@@ -155,7 +153,6 @@ impl Types {
             scalars: declarations.scalars,
             exact: declarations.exact,
             sets: BTreeMap::new(),
-            predicates: BTreeMap::new(),
             lanes: TypeSet::default(),
             integers: TypeSet::default(),
             scalar_floats: TypeSet::default(),
@@ -176,8 +173,11 @@ impl Types {
             }
         }
         let mut pending = BTreeMap::new();
-        for record in records.iter().filter(|r| r.kind == "typeset") {
-            let mut fields = Fields::new(source, record.clone());
+        for record in records
+            .iter()
+            .filter(|r| matches!(&r.kind, DeclKind::TypeSet(_)))
+        {
+            let fields = Fields::new(source, record.clone());
             if types.exact.contains_key(&record.name) {
                 return Err(fields.error("typeset name shadows an exact type"));
             }
@@ -187,9 +187,11 @@ impl Types {
             ) {
                 return Err(fields.error("typeset name shadows a signature keyword"));
             }
-            let expr = fields.take("set")?;
+            let crate::syntax::DeclKind::TypeSet(expr) = &record.kind else {
+                unreachable!()
+            };
             fields.finish()?;
-            pending.insert(record.name.clone(), (record.offset, expr));
+            pending.insert(record.name.clone(), (record.offset, expr.clone()));
         }
         while !pending.is_empty() {
             let before = pending.len();
@@ -211,42 +213,6 @@ impl Types {
                     format!("cyclic type set `{name}`"),
                 ));
             }
-        }
-        for record in records.iter().filter(|r| r.kind == "predicate") {
-            let mut fields = Fields::new(source, record.clone());
-            // Predicate methods occupy the is_* namespace. These two methods
-            // describe validity or physical shape, rather than a declared set.
-            if !record.name.starts_with("is_")
-                || record.name.len() == 3
-                || !record
-                    .name
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-            {
-                return Err(fields.error("predicate name must be snake_case and start with is_"));
-            }
-            if matches!(
-                record.name.as_str(),
-                "is_valid"
-                    | "is_scalable"
-                    | "is_compact"
-                    | "is_callable"
-                    | "is_owned"
-                    | "is_scalar"
-                    | "is_vector"
-                    | "is_integer"
-                    | "is_float"
-                    | "is_ptr"
-                    | "is_predicate"
-                    | "is_fixed"
-                    | "is_local"
-                    | "is_shared"
-            ) {
-                return Err(fields.error("predicate name conflicts with a built-in Type method"));
-            }
-            let set = types.set(source, &fields.take("set")?)?;
-            fields.finish()?;
-            types.predicates.insert(record.name.clone(), set);
         }
         Ok(types)
     }
@@ -325,10 +291,6 @@ impl Types {
         }
         Ok(set)
     }
-
-    pub fn is_definition(kind: &str) -> bool {
-        matches!(kind, "type" | "typeset" | "predicate")
-    }
 }
 
 #[cfg(test)]
@@ -337,15 +299,11 @@ mod tests {
 
     #[test]
     fn exact_sets_preserve_width_lane_count_and_scalability() {
-        let defs = crate::fixtures::parse(
-            r#"
-            typeset Wide = Type::I32 | Type::I64;
-            typeset Shapes = Type::I32X4 | SV4;
-            type SV4 = vector(Type::I32, scalable(4));
-            typeset AllWideVectors = vectors(Wide);
-        "#,
-        )
-        .unwrap();
+        let mut wide = TypeSet::singleton(Primitive::Int(32), 0, false);
+        wide.union(&TypeSet::singleton(Primitive::Int(64), 0, false));
+        let mut shapes = TypeSet::singleton(Primitive::Int(32), 2, false);
+        shapes.union(&TypeSet::singleton(Primitive::Int(32), 2, true));
+        let vectors = wide.vectors(15);
         for code in [
             Primitive::Int(8),
             Primitive::Int(16),
@@ -359,15 +317,15 @@ mod tests {
                 for scalable in [false, true] {
                     let ty = TypeSet::singleton(code, exponent, scalable);
                     assert_eq!(
-                        ty.subset_of(&defs.types.sets["Wide"]),
+                        ty.subset_of(&wide),
                         matches!(code, Primitive::Int(32 | 64)) && exponent == 0 && !scalable
                     );
                     assert_eq!(
-                        ty.subset_of(&defs.types.sets["Shapes"]),
+                        ty.subset_of(&shapes),
                         code == Primitive::Int(32) && exponent == 2
                     );
                     assert_eq!(
-                        ty.subset_of(&defs.types.sets["AllWideVectors"]),
+                        ty.subset_of(&vectors),
                         matches!(code, Primitive::Int(32 | 64)) && exponent > 0
                     );
                 }
@@ -377,21 +335,25 @@ mod tests {
 
     #[test]
     fn shape_constraints_retain_the_exact_type_set() {
-        let types = crate::fixtures::types();
-        let mut set = types.sets["Integer"].clone();
-        set.retain_shapes(1 << 2); // Fixed vectors with four lanes.
+        let mut integers = TypeSet::default();
+        for bits in [8, 16, 32, 64] {
+            integers.union(&TypeSet::singleton(Primitive::Int(bits), 0, false));
+        }
+        let mut set = integers.vectors(15);
+        set.union(&integers);
+        let fixed_four = TypeSet::singleton(Primitive::Int(32), 2, false);
+        let fixed_two = TypeSet::singleton(Primitive::Int(64), 1, false);
+        let four_lanes = 1 << 2;
+        set.retain_shapes(four_lanes);
         assert_eq!(
             set.0,
-            BTreeMap::from([
-                (Primitive::Int(8), 4),
-                (Primitive::Int(16), 4),
-                (Primitive::Int(32), 4),
-                (Primitive::Int(64), 4)
-            ])
+            [8, 16, 32, 64]
+                .map(|bits| (Primitive::Int(bits), four_lanes))
+                .into()
         );
-        set.intersect(&types.exact["Type::I32X4"]);
-        assert_eq!(set, types.exact["Type::I32X4"]);
-        set.intersect(&types.exact["Type::I64X2"]);
+        set.intersect(&fixed_four);
+        assert_eq!(set, fixed_four);
+        set.intersect(&fixed_two);
         assert!(set.is_empty());
     }
 }

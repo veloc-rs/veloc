@@ -21,152 +21,152 @@ impl TargetLegalizer for X86_64Legalizer {
         mfunc: &MachineFunction<LegalizedLir>,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
         let action = crate::legalize_matcher!(inst, mfunc, {
-            G_ARG => {
+            Arg => {
                 [def(any), imm] => legal,
             };
-            G_RET => {
+            Ret => {
                 seq[..use(any)] => legal,
             };
-            G_UNREACHABLE => {
+            Unreachable => {
                 [] => legal,
             };
-            G_BR => {
+            Br => {
                 [block] => legal,
             };
-            G_BRCOND => {
+            Brcond => {
                 [use(BOOL), block, block] => legal,
             };
-            G_CALL => {
+            Call => {
                 seq[..def(any), global, ..use(any)] => legal,
             };
-            G_CALLIND => {
+            Callind => {
                 seq[..def(any), use(PTR), ..use(any)] => legal,
             };
-            G_ADD | G_SUB | G_MUL => {
+            Add | Sub | Mul => {
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
                     if same_types(0, 1, 2) => legal,
                 [def(scalar_int(8, 16)), use(scalar_int(8, 16)), use(scalar_int(8, 16))]
                     if same_types(0, 1, 2) => widen_scalar(I32),
             };
-            G_AND | G_OR | G_XOR => {
+            And | Or | Xor => {
                 [def(BOOL), use(BOOL), use(BOOL)] => legal,
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
                     if same_types(0, 1, 2) => legal,
                 [def(scalar_int(8, 16)), use(scalar_int(8, 16)), use(scalar_int(8, 16))]
                     if same_types(0, 1, 2) => widen_scalar(I32),
             };
-            G_SHL | G_LSHR | G_ASHR | G_ROTL | G_ROTR | G_SDIV | G_UDIV | G_SREM | G_UREM => {
+            Shl | Lshr | Ashr | Rotl | Rotr | Sdiv | Udiv | Srem | Urem => {
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
                     if same_types(0, 1, 2) => legal,
             };
-            G_ICMP => {
+            Icmp => {
                 [def(BOOL), use(int_or_ptr_scalar(32, 64)), use(int_or_ptr_scalar(32, 64)), condcode]
                     if same_types(1, 2) => legal,
             };
-            G_FCMP => {
+            Fcmp => {
                 [def(BOOL), use(scalar_float(32, 64)), use(scalar_float(32, 64)), condcode]
                     if same_types(1, 2) => legal,
             };
-            G_SELECT => {
+            Select => {
                 [def(BOOL), use(BOOL), use(BOOL), use(BOOL)]
                     if same_types(0, 2, 3) => legal,
                 [def(scalar_value(32, 64)), use(BOOL), use(scalar_value(32, 64)), use(scalar_value(32, 64))]
                     if same_types(0, 2, 3) => legal,
             };
-            G_LOAD => {
+            Load => {
                 [def(scalar_value(8, 16, 32, 64)), use(PTR)] => legal,
             };
-            G_STACK_LOAD => {
+            StackLoad => {
                 [def(scalar_value(8, 16, 32, 64)), stackslot] => legal,
             };
-            G_STACK_ADDR => {
+            StackAddr => {
                 [def(PTR), stackslot] => legal,
             };
-            G_STACK_STORE => {
+            StackStore => {
                 [use(scalar_value(8, 16, 32, 64)), stackslot] => legal,
             };
-            G_STORE => {
+            Store => {
                 [use(scalar_value(8, 16, 32, 64)), use(PTR)] => legal,
             };
-            G_OFFSET_LOAD => {
+            OffsetLoad => {
                 [def(scalar_value(8, 16, 32, 64)), use(PTR), imm] => legal,
             };
-            G_OFFSET_STORE => {
+            OffsetStore => {
                 [use(scalar_value(8, 16, 32, 64)), use(PTR), imm] => legal,
             };
-            G_INDEXED_LOAD => {
+            IndexedLoad => {
                 [def(scalar_numeric(32, 64)), def(PTR), use(PTR), imm] => legal,
             };
-            G_INDEXED_STORE => {
+            IndexedStore => {
                 [def(PTR), use(scalar_numeric(32, 64)), use(PTR), imm] => legal,
             };
-            G_CONSTANT => {
+            Constant => {
                 [def(BOOL), imm] => legal,
                 [def(int_or_ptr_scalar(8, 16, 32, 64)), imm] => legal,
             };
-            G_IEQZ => {
+            Ieqz => {
                 [def(BOOL), use(scalar_int(32, 64))] => legal,
             };
-            G_FNEG | G_FABS => {
+            Fneg | Fabs => {
                 [def(scalar_float(32, 64)), use(scalar_float(32, 64))]
                     if same_types(0, 1) => lower,
             };
-            G_SITOFP => {
+            Sitofp => {
                 [def(scalar_float(32, 64)), use(scalar_int(32, 64))] => legal,
             };
-            G_FPTOSI => {
+            Fptosi => {
                 [def(scalar_int(32, 64)), use(scalar_float(32, 64))] => legal,
             };
-            G_UITOFP => {
+            Uitofp => {
                 [def(scalar_float(32, 64)), use(scalar_int(32, 64))] => lower,
             };
-            G_FPTOUI => {
+            Fptoui => {
                 [def(scalar_int(32, 64)), use(scalar_float(32, 64))] => lower,
             };
-            G_FSQRT => {
+            Fsqrt => {
                 [def(scalar_float(32, 64)), use(scalar_float(32, 64))]
                     if same_types(0, 1) => legal,
             };
-            G_FPEXT => { [def(F64), use(F32)] => legal, };
-            G_FPTRUNC => { [def(F32), use(F64)] => legal, };
-            G_ZEXT => {
+            Fpext => { [def(F64), use(F32)] => legal, };
+            Fptrunc => { [def(F32), use(F64)] => legal, };
+            Zext => {
                 [def(scalar_int(32, 64)), use(BOOL)] => legal,
                 [def(scalar_int(32, 64)), use(scalar_int(8, 16))] => legal,
                 [def(I64), use(I32)] => legal,
             };
-            G_SEXT => {
+            Sext => {
                 [def(scalar_int(32, 64)), use(scalar_int(8, 16))] => legal,
                 [def(I64), use(I32)] => legal,
             };
-            G_TRUNC => {
+            Trunc => {
                 [def(scalar_int(8, 16, 32)), use(scalar_int(32, 64))] => legal,
             };
-            G_INTTOPTR => { [def(PTR), use(I64)] => legal, };
-            G_PTRTOINT => { [def(I64), use(PTR)] => legal, };
-            G_PTR_ADD => {
+            Inttoptr => { [def(PTR), use(I64)] => legal, };
+            Ptrtoint => { [def(I64), use(PTR)] => legal, };
+            PtrAdd => {
                 [def(PTR), use(PTR), use(I64)] => legal,
             };
-            G_COPY => {
+            Copy => {
                 [def(scalar_value(8, 16, 32, 64)), use(scalar_value(8, 16, 32, 64))]
                     if same_types(0, 1) => legal,
             };
-            G_BITCAST => {
+            Bitcast => {
                 [def(F32), use(I32)] => legal,
                 [def(I32), use(F32)] => legal,
                 [def(F64), use(I64)] => legal,
                 [def(I64), use(F64)] => legal,
             };
-            G_FCONSTANT => {
+            Fconstant => {
                 [def(scalar_float(32, 64)), fimm] => legal,
             };
-            G_FADD | G_FSUB | G_FMUL | G_FDIV => {
+            Fadd | Fsub | Fmul | Fdiv => {
                 [def(scalar_float(32, 64)), use(scalar_float(32, 64)), use(scalar_float(32, 64))]
                     if same_types(0, 1, 2) => legal,
             };
-            G_BRJT => {
+            Brjt => {
                 [use(I32)] => lower,
             };
-            G_CTPOP | G_CTLZ | G_CTTZ => {
+            Ctpop | Ctlz | Cttz => {
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64))]
                     if same_types(0, 1) => lower,
             };
@@ -193,7 +193,7 @@ impl TargetLegalizer for X86_64Legalizer {
         let opcode = mfunc.inst(inst_id).generic_opcode();
         if let Some(opcode) = opcode {
             match opcode {
-                GenericOpcode::G_UITOFP | GenericOpcode::G_FPTOUI => {
+                GenericOpcode::Uitofp | GenericOpcode::Fptoui => {
                     let inst = mfunc.inst(inst_id);
                     let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
                         unreachable!()
@@ -207,7 +207,7 @@ impl TargetLegalizer for X86_64Legalizer {
                     );
                     return Ok(LegalizeResult::Replace(output));
                 }
-                GenericOpcode::G_FNEG | GenericOpcode::G_FABS => {
+                GenericOpcode::Fneg | GenericOpcode::Fabs => {
                     let inst = mfunc.inst(inst_id);
                     let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
                         unreachable!()
@@ -220,7 +220,7 @@ impl TargetLegalizer for X86_64Legalizer {
                     };
                     let bits = mfunc.alloc_vreg(integer);
                     output.push(mfunc.writer().unary(
-                        MachineOpcode::Generic(GenericOpcode::G_BITCAST),
+                        MachineOpcode::Generic(GenericOpcode::Bitcast),
                         Writable(bits),
                         unary.src,
                     ));
@@ -228,7 +228,7 @@ impl TargetLegalizer for X86_64Legalizer {
                         mfunc,
                         &mut output,
                         integer,
-                        if opcode == GenericOpcode::G_FNEG {
+                        if opcode == GenericOpcode::Fneg {
                             sign
                         } else {
                             !sign
@@ -237,23 +237,23 @@ impl TargetLegalizer for X86_64Legalizer {
                     let changed = self.lowering.emit_legalize_binary_reg(
                         mfunc,
                         &mut output,
-                        if opcode == GenericOpcode::G_FNEG {
-                            GenericOpcode::G_XOR
+                        if opcode == GenericOpcode::Fneg {
+                            GenericOpcode::Xor
                         } else {
-                            GenericOpcode::G_AND
+                            GenericOpcode::And
                         },
                         integer,
                         bits,
                         mask,
                     );
                     output.push(mfunc.writer().unary(
-                        MachineOpcode::Generic(GenericOpcode::G_BITCAST),
+                        MachineOpcode::Generic(GenericOpcode::Bitcast),
                         Writable(unary.dst),
                         changed,
                     ));
                     return Ok(LegalizeResult::Replace(output));
                 }
-                GenericOpcode::G_OFFSET_LOAD | GenericOpcode::G_OFFSET_STORE => {
+                GenericOpcode::OffsetLoad | GenericOpcode::OffsetStore => {
                     let inst = mfunc.inst(inst_id);
                     let (base, offset, value) = match inst.view() {
                         veloc_lir::InstView::LoadOffset(load) => (load.base, load.offset, load.dst),
@@ -271,7 +271,7 @@ impl TargetLegalizer for X86_64Legalizer {
                     let add = mfunc
                         .writer()
                         .ptr_add(Writable(address), base, displacement);
-                    let access = if opcode == GenericOpcode::G_OFFSET_LOAD {
+                    let access = if opcode == GenericOpcode::OffsetLoad {
                         mfunc.writer().offset_load(Writable(value), address, 0)
                     } else {
                         mfunc.writer().offset_store(value, address, 0)
@@ -280,7 +280,7 @@ impl TargetLegalizer for X86_64Legalizer {
                     mfunc.replace_inst(inst_id, access);
                     return Ok(LegalizeResult::Replace(alloc::vec![constant, add, inst_id]));
                 }
-                GenericOpcode::G_CTPOP | GenericOpcode::G_CTLZ | GenericOpcode::G_CTTZ => {
+                GenericOpcode::Ctpop | GenericOpcode::Ctlz | GenericOpcode::Cttz => {
                     let inst = mfunc.inst(inst_id);
                     let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
                         unreachable!("unary legalization opcode");
@@ -294,7 +294,7 @@ impl TargetLegalizer for X86_64Legalizer {
                         );
                     };
                     match opcode {
-                        GenericOpcode::G_CTPOP => {
+                        GenericOpcode::Ctpop => {
                             let _ = self.lowering.legalize_ctpop_into(
                                 mfunc,
                                 &mut output,
@@ -303,7 +303,7 @@ impl TargetLegalizer for X86_64Legalizer {
                                 ty,
                             );
                         }
-                        GenericOpcode::G_CTLZ => {
+                        GenericOpcode::Ctlz => {
                             let _ = self.lowering.legalize_ctlz_into(
                                 mfunc,
                                 &mut output,
@@ -312,7 +312,7 @@ impl TargetLegalizer for X86_64Legalizer {
                                 ty,
                             );
                         }
-                        GenericOpcode::G_CTTZ => {
+                        GenericOpcode::Cttz => {
                             let _ = self.lowering.legalize_cttz_into(
                                 mfunc,
                                 &mut output,
@@ -331,7 +331,7 @@ impl TargetLegalizer for X86_64Legalizer {
 
         if matches!(
             mfunc.inst(inst_id).opcode(),
-            MachineOpcode::Generic(veloc_lir::GenericOpcode::G_BRJT)
+            MachineOpcode::Generic(veloc_lir::GenericOpcode::Brjt)
         ) {
             let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).cloned() else {
                 panic!("missing br_table extra during x86_64 br_table legalization");

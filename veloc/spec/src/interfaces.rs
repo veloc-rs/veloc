@@ -1,7 +1,7 @@
 //! Rust interface contracts. Paths and signatures are data, never runtime type identities.
 use crate::{
     Error, Source,
-    syntax::{FunctionBody, Kind, Node, Record, Results},
+    syntax::{Decl, DeclKind, FunctionBody, Kind, Node, Results},
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -16,11 +16,13 @@ pub struct Binding {
 #[derive(Debug, Clone, Default)]
 pub struct Bindings(pub BTreeMap<String, Binding>);
 
-pub fn rust_binding(record: &Record) -> Option<&Node> {
-    (record.kind == "type")
-        .then(|| record.fields.get("expr"))
-        .flatten()
-        .filter(|n| matches!(&n.kind, Kind::Call(name, _) if name == "rust"))
+pub fn rust_binding(record: &Decl) -> Option<&Node> {
+    match &record.kind {
+        DeclKind::Type { binding, .. } if matches!(&binding.kind, Kind::Call(name, _) if name == "rust") => {
+            Some(binding)
+        }
+        _ => None,
+    }
 }
 
 pub fn rust_path(source: &str, offset: usize, path: &str) -> Result<(), Error> {
@@ -64,7 +66,7 @@ fn binding_path(source: &str, node: &Node) -> Result<String, Error> {
 }
 
 impl Bindings {
-    pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
+    pub fn compile(records: &[Decl], source: &str) -> Result<Self, Error> {
         let mut result = Self::default();
         for record in records {
             let Some(node) = rust_binding(record) else {
@@ -83,20 +85,18 @@ impl Bindings {
                 .get("trait")
                 .map(|n| binding_path(source, n))
                 .transpose()?;
-            let prefix = format!("{}::", record.name);
-            let methods = records.iter().filter(|method| {
-                method.name.starts_with(&prefix)
-                    && matches!(method.body, Some(FunctionBody::Rust { .. }))
-            });
             let mut has_const = false;
             let mut has_runtime = false;
-            for method in methods {
-                if method
-                    .signature
-                    .as_ref()
-                    .expect("method signature")
-                    .is_const
-                {
+            for method in record.members() {
+                let is_const = match &method.kind {
+                    DeclKind::Constant(_) => true,
+                    DeclKind::Function {
+                        signature,
+                        body: FunctionBody::Rust { .. },
+                    } => signature.is_const,
+                    _ => continue,
+                };
+                if is_const {
                     has_const = true;
                 } else {
                     has_runtime = true;
@@ -222,23 +222,28 @@ pub struct Method {
 }
 
 /// Build only interface declarations: no foreign functions are executed and no impls are emitted.
-pub fn declarations(records: &[Record], source: &str, namespace: &str) -> Result<String, Error> {
+pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<String, Error> {
     let bindings = Bindings::compile(records, source)?;
     let known = records
         .iter()
-        .filter(|r| matches!(r.kind.as_str(), "type" | "struct" | "enum"))
+        .filter(|r| (matches!(&r.kind, DeclKind::Type { .. }) || matches!(&r.kind, DeclKind::Fields(kind) if matches!(kind.as_str(), "struct" | "enum"))))
         .map(|r| r.name.clone())
         .collect::<BTreeSet<_>>();
     let mut groups = BTreeMap::<String, Vec<Method>>::new();
     let mut names = BTreeSet::new();
-    for record in records
-        .iter()
-        .filter(|r| matches!(r.kind.as_str(), "fn" | "const"))
-    {
-        let Some((owner, method)) = record.name.split_once("::") else {
+    for (owner, record) in crate::syntax::walk(records) {
+        let Some(owner) = owner else {
             continue;
         };
-        if !matches!(record.body, Some(FunctionBody::Rust { .. })) {
+        let method = record.name.as_str();
+        if !matches!(
+            &record.kind,
+            DeclKind::Constant(_)
+                | DeclKind::Function {
+                    body: FunctionBody::Rust { .. },
+                    ..
+                }
+        ) {
             continue;
         }
         let Some(_) = bindings.0.get(owner) else {
@@ -248,59 +253,67 @@ pub fn declarations(records: &[Record], source: &str, namespace: &str) -> Result
                 "method requires a Rust-bound type",
             ));
         };
-        if !names.insert(record.name.clone()) {
+        if !names.insert((owner, method)) {
             return Err(Error::at(
                 source,
                 record.offset,
                 "duplicate method declaration",
             ));
         }
-        if matches!(&record.body, Some(FunctionBody::Rust { path: Some(_), .. })) {
+        if matches!(
+            record.body(),
+            Some(FunctionBody::Rust { path: Some(_), .. })
+        ) {
             return Err(Error::at(
                 source,
                 record.offset,
                 "Rust methods use the type's trait binding; declare a free function for a direct Rust call",
             ));
         }
-        let signature = record.signature.as_ref().expect("function signature");
-        if !signature.generics.is_empty() {
-            return Err(Error::at(
-                source,
-                record.offset,
-                "method requires no generics",
-            ));
-        }
-        let Results::Fixed(results) = &signature.results else {
-            return Err(Error::at(
-                source,
-                record.offset,
-                "method requires one result type",
-            ));
+        let (params, result, is_const, constant) = if let DeclKind::Constant(ty) = &record.kind {
+            (Vec::new(), Type::parse(ty, source, &known)?, true, true)
+        } else {
+            let signature = record.signature().expect("function signature");
+            if !signature.generics.is_empty() {
+                return Err(Error::at(
+                    source,
+                    record.offset,
+                    "method requires no generics",
+                ));
+            }
+            let Results::Fixed(results) = &signature.results else {
+                return Err(Error::at(
+                    source,
+                    record.offset,
+                    "method requires one result type",
+                ));
+            };
+            let [result] = results.as_slice() else {
+                return Err(Error::at(
+                    source,
+                    record.offset,
+                    "method requires one result type",
+                ));
+            };
+            let mut seen = BTreeSet::new();
+            let params = signature
+                .params
+                .iter()
+                .map(|p| {
+                    if p.moves || !seen.insert(&p.name) {
+                        return Err(Error::at(
+                            source,
+                            p.offset,
+                            "method parameters must be distinct immutable values",
+                        ));
+                    }
+                    Ok((p.name.clone(), Type::parse(&p.ty, source, &known)?))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            let result = Type::parse(&result.ty, source, &known)?;
+            (params, result, signature.is_const, false)
         };
-        let [result] = results.as_slice() else {
-            return Err(Error::at(
-                source,
-                record.offset,
-                "method requires one result type",
-            ));
-        };
-        let mut seen = BTreeSet::new();
-        let params = signature
-            .params
-            .iter()
-            .map(|p| {
-                if p.moves || !seen.insert(&p.name) {
-                    return Err(Error::at(
-                        source,
-                        p.offset,
-                        "method parameters must be distinct immutable values",
-                    ));
-                }
-                Ok((p.name.clone(), Type::parse(&p.ty, source, &known)?))
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-        let result = Type::parse(&result.ty, source, &known)?;
-        let path = bindings.method_trait(owner, namespace, signature.is_const);
+        let path = bindings.method_trait(owner, namespace, is_const);
         if let Some(name) = path.strip_prefix(&format!("{namespace}::")) {
             if name.contains("::") {
                 return Err(Error::at(
@@ -312,7 +325,7 @@ pub fn declarations(records: &[Record], source: &str, namespace: &str) -> Result
             let group = groups.entry(name.into()).or_default();
             if group
                 .iter()
-                .any(|m| m.is_const != signature.is_const || m.name == method)
+                .any(|m| m.is_const != is_const || m.name == method)
             {
                 return Err(Error::at(
                     source,
@@ -324,8 +337,8 @@ pub fn declarations(records: &[Record], source: &str, namespace: &str) -> Result
                 name: method.into(),
                 params,
                 result,
-                is_const: signature.is_const,
-                constant: record.kind == "const",
+                is_const,
+                constant,
             });
         }
     }
@@ -381,9 +394,9 @@ pub fn generate(source: &Source, namespace: &str) -> Result<String, Error> {
         .iter()
         .enumerate()
         .flat_map(|(i, file)| {
-            source.records()[file.records.clone()]
+            source.declarations()[file.declarations.clone()]
                 .iter()
-                .filter(|r| matches!(r.kind.as_str(), "type" | "struct" | "enum"))
+                .filter(|r| (matches!(&r.kind, DeclKind::Type { .. }) || matches!(&r.kind, DeclKind::Fields(kind) if matches!(kind.as_str(), "struct" | "enum"))))
                 .map(move |r| (r.name.as_str(), i))
         })
         .collect::<BTreeMap<_, _>>();
@@ -416,11 +429,11 @@ pub fn generate(source: &Source, namespace: &str) -> Result<String, Error> {
         }
     }
     for file in source.files() {
-        for record in &source.records()[file.records.clone()] {
-            if record.kind != "fn" {
-                continue;
+        for (_, record) in crate::syntax::walk(&source.declarations()[file.declarations.clone()]) {
+            if let DeclKind::Constant(ty) = &record.kind {
+                check(ty, source, &file.visible, &owners)?;
             }
-            if let Some(sig) = &record.signature {
+            if let Some(sig) = record.signature() {
                 for p in &sig.params {
                     check(&p.ty, source, &file.visible, &owners)?;
                 }
@@ -432,5 +445,5 @@ pub fn generate(source: &Source, namespace: &str) -> Result<String, Error> {
             }
         }
     }
-    declarations(source.records(), source.text(), namespace)
+    declarations(source.declarations(), source.text(), namespace)
 }

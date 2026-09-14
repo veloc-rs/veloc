@@ -259,8 +259,8 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                     let inst_id = cursor.current_inst_id();
 
                     match inst.opcode() {
-                        MachineOpcode::Generic(GenericOpcode::G_CALL)
-                        | MachineOpcode::Generic(GenericOpcode::G_CALLIND) => {
+                        MachineOpcode::Generic(GenericOpcode::Call)
+                        | MachineOpcode::Generic(GenericOpcode::Callind) => {
                             let call_plan = {
                                 let call = cursor.mfunc().call_info(inst_id);
                                 plan_callsite(ctx.target, &call.sig).unwrap_or_else(|err| {
@@ -272,7 +272,7 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                             };
                             lower_callsite(ctx.target, cursor, &call_plan);
                         }
-                        MachineOpcode::Generic(GenericOpcode::G_RET) => {
+                        MachineOpcode::Generic(GenericOpcode::Ret) => {
                             let veloc_lir::InstView::Return(ret) = inst.view() else {
                                 unreachable!()
                             };

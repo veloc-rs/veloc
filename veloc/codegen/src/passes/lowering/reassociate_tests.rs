@@ -25,11 +25,11 @@ fn eval(f: &MachineFunction<RawLir>, inputs: &[(Reg, u64)], output: Reg, mask: u
         let node = binary(f, id, op).unwrap();
         let (a, b) = (values[&node.lhs], values[&node.rhs]);
         let value = match op {
-            GenericOpcode::G_ADD => a.wrapping_add(b),
-            GenericOpcode::G_MUL => a.wrapping_mul(b),
-            GenericOpcode::G_AND => a & b,
-            GenericOpcode::G_OR => a | b,
-            GenericOpcode::G_XOR => a ^ b,
+            GenericOpcode::Add => a.wrapping_add(b),
+            GenericOpcode::Mul => a.wrapping_mul(b),
+            GenericOpcode::And => a & b,
+            GenericOpcode::Or => a | b,
+            GenericOpcode::Xor => a ^ b,
             _ => unreachable!(),
         };
         values.insert(node.dst, value & mask);
@@ -42,11 +42,11 @@ fn preserves_wrapping_semantics_and_reuses_ids() {
     for ty in [Type::I8, Type::I16, Type::I32, Type::I64] {
         let mask = u64::MAX >> (64 - ty.element_bits().unwrap());
         for op in [
-            GenericOpcode::G_ADD,
-            GenericOpcode::G_MUL,
-            GenericOpcode::G_AND,
-            GenericOpcode::G_OR,
-            GenericOpcode::G_XOR,
+            GenericOpcode::Add,
+            GenericOpcode::Mul,
+            GenericOpcode::And,
+            GenericOpcode::Or,
+            GenericOpcode::Xor,
         ] {
             let mut f = function();
             let leaves: Vec<_> = (0..12).map(|_| f.alloc_vreg(ty)).collect();
@@ -92,12 +92,12 @@ fn shared_subexpressions_are_not_duplicated() {
     let b = f.alloc_vreg(Type::I32);
     let t = f.alloc_vreg(Type::I32);
     let out = f.alloc_vreg(Type::I32);
-    let shared = add(&mut f, GenericOpcode::G_ADD, t, b, a);
-    let root = add(&mut f, GenericOpcode::G_ADD, out, t, t);
+    let shared = add(&mut f, GenericOpcode::Add, t, b, a);
+    let root = add(&mut f, GenericOpcode::Add, out, t, t);
     reassociate(&mut f, &mut FunctionAnalysisCtx::default());
     assert_eq!(f.block_insts(0), &[shared, root]);
-    assert_eq!(binary(&f, root, GenericOpcode::G_ADD).unwrap().lhs, t);
-    assert_eq!(binary(&f, root, GenericOpcode::G_ADD).unwrap().rhs, t);
+    assert_eq!(binary(&f, root, GenericOpcode::Add).unwrap().lhs, t);
+    assert_eq!(binary(&f, root, GenericOpcode::Add).unwrap().rhs, t);
     assert_eq!(eval(&f, &[(a, 3), (b, 5)], out, u32::MAX as u64), 16);
 }
 
@@ -109,10 +109,10 @@ fn leaves_with_multiple_definitions_and_non_integer_types_are_untouched() {
         let b = f.alloc_vreg(ty);
         let t = f.alloc_vreg(ty);
         let out = f.alloc_vreg(ty);
-        add(&mut f, GenericOpcode::G_ADD, t, b, a);
-        add(&mut f, GenericOpcode::G_ADD, out, t, a);
+        add(&mut f, GenericOpcode::Add, t, b, a);
+        add(&mut f, GenericOpcode::Add, out, t, a);
         if ty == Type::I32 {
-            add(&mut f, GenericOpcode::G_ADD, t, a, b);
+            add(&mut f, GenericOpcode::Add, t, a, b);
         }
         let before = f.format_for_dump();
         assert_eq!(reassociate(&mut f, &mut FunctionAnalysisCtx::default()), 0);
@@ -130,9 +130,9 @@ fn rebuilt_tree_stays_after_interleaved_leaf_definitions() {
     let t = f.alloc_vreg(Type::I32);
     let u = f.alloc_vreg(Type::I32);
     let out = f.alloc_vreg(Type::I32);
-    let first = add(&mut f, GenericOpcode::G_ADD, t, b, a);
-    let leaf = add(&mut f, GenericOpcode::G_MUL, u, c, d);
-    let root = add(&mut f, GenericOpcode::G_ADD, out, u, t);
+    let first = add(&mut f, GenericOpcode::Add, t, b, a);
+    let leaf = add(&mut f, GenericOpcode::Mul, u, c, d);
+    let root = add(&mut f, GenericOpcode::Add, out, u, t);
     let original = f.clone();
     reassociate(&mut f, &mut FunctionAnalysisCtx::default());
     assert_eq!(f.block_insts(0), &[leaf, first, root]);
@@ -153,10 +153,10 @@ fn trees_are_not_fused_across_blocks() {
     let c = f.alloc_vreg(Type::I32);
     let t = f.alloc_vreg(Type::I32);
     let out = f.alloc_vreg(Type::I32);
-    let first = add(&mut f, GenericOpcode::G_ADD, t, b, a);
+    let first = add(&mut f, GenericOpcode::Add, t, b, a);
     let root = {
         let id = f.writer().binary(
-            MachineOpcode::Generic(GenericOpcode::G_ADD),
+            MachineOpcode::Generic(GenericOpcode::Add),
             Writable(out),
             t,
             c,
@@ -167,7 +167,7 @@ fn trees_are_not_fused_across_blocks() {
     reassociate(&mut f, &mut FunctionAnalysisCtx::default());
     assert_eq!(f.block_insts(0), &[first]);
     assert_eq!(f.block_insts(1), &[root]);
-    let node = binary(&f, root, GenericOpcode::G_ADD).unwrap();
+    let node = binary(&f, root, GenericOpcode::Add).unwrap();
     assert!([node.lhs, node.rhs].contains(&t));
 }
 
@@ -178,7 +178,7 @@ fn long_trees_do_not_recurse_or_grow_storage() {
     let mut acc = leaves[4095];
     for &r in leaves[..4095].iter().rev() {
         let dst = f.alloc_vreg(Type::I64);
-        add(&mut f, GenericOpcode::G_XOR, dst, acc, r);
+        add(&mut f, GenericOpcode::Xor, dst, acc, r);
         acc = dst;
     }
     let mut analyses = FunctionAnalysisCtx::default();

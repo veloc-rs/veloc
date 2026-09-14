@@ -1,17 +1,17 @@
 // Nested construction creates typed temporaries; no storage schemas appear here.
 rule add {
-    match: before.G_ADD(x, y),
-    emit: after.G_ADD(after.G_SUB(x, y), after.G_ADD(y, y)),
+    match: before.Add(x, y),
+    emit: after.Add(after.Sub(x, y), after.Add(y, y)),
 }
 
 // A rule can forward a value without constructing a replacement instruction.
 rule copy {
-    match: before.G_COPY(x),
+    match: before.Copy(x),
     emit: x,
 }
 
 // One constructor can bind multiple source results.
 rule checked_add {
-    match: before.G_SADDO(x, y),
-    emit: after.G_SADDO(x, y),
+    match: before.Saddo(x, y),
+    emit: after.Saddo(x, y),
 }

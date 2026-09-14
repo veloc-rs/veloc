@@ -3,7 +3,7 @@ use crate::Error;
 use crate::model::data::Types;
 use crate::model::expr::{Expr, Library};
 use crate::model::records::{PropertyType, RecordField};
-use crate::syntax::{Kind, Node, Record};
+use crate::syntax::{Decl, Kind, Node};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
@@ -333,7 +333,7 @@ pub(crate) struct Analysis {
 }
 
 impl Analysis {
-    pub fn compile(records: &[Record], source: &str) -> Result<Option<Self>, Error> {
+    pub fn compile(records: &[Decl], source: &str) -> Result<Option<Self>, Error> {
         let mut traits = None;
         let mut memory = None;
         for record in records

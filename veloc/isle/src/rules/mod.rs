@@ -101,7 +101,7 @@ fn parse(source: &str) -> Result<Vec<Rule>, Error> {
     let mut rules = Vec::new();
     let mut names = BTreeSet::new();
     for mut record in veloc_opgen::syntax::parse(source)? {
-        if record.kind != "rule" || record.signature.is_some() || record.body.is_some() {
+        if !matches!(&record.kind, veloc_opgen::syntax::DeclKind::Fields(kind) if kind == "rule") {
             return Err(Error::at(
                 source,
                 record.offset,

@@ -44,11 +44,6 @@ pub(crate) fn declarations(types: &Types) -> String {
         };
         writeln!(out, "pub const {name}: crate::Type = {value};").unwrap();
     }
-    for (name, set) in &types.predicates {
-        writeln!(out, "/// Membership in the `{name}` type set declared in defs.\n/// Invalid encodings are never members.\npub const fn {name}(ty: crate::Type) -> bool {{").unwrap();
-        out.push_str(&membership(set));
-        out.push_str("}\n");
-    }
     out
 }
 
@@ -166,15 +161,7 @@ fn describe(set: &TypeSet, types: &Types) -> String {
     parts.join(" | ")
 }
 
-fn membership(set: &TypeSet) -> String {
-    format!(
-        "let Some(element) = ty.element() else {{ return false; }};\nlet shapes: u32 = {};\nlet shape = ty.lane_count().trailing_zeros() + if ty.is_scalable() {{ 16 }} else {{ 0 }};\nshapes & (1 << shape) != 0\n",
-        shape_match(set, "element")
-    )
-}
-
-/// Both signature constraints and public predicates use the same membership
-/// projection; neither depends on another runtime predicate to classify a type.
+/// Emit type-set membership directly from element and shape masks.
 fn shape_match(set: &TypeSet, code: &str) -> String {
     let mut out = format!("match {code} {{\n");
     let mut masks = BTreeMap::<u32, Vec<crate::types::Primitive>>::new();

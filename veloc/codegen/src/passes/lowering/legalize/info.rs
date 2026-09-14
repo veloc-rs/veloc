@@ -1267,7 +1267,7 @@ mod tests {
         let lhs = mfunc.alloc_vreg(Type::I64);
         let rhs = mfunc.alloc_vreg(Type::I64);
         let inst = mfunc.writer().binary(
-            MachineOpcode::Generic(GenericOpcode::G_ADD),
+            MachineOpcode::Generic(GenericOpcode::Add),
             Writable(dst),
             lhs,
             rhs,
@@ -1275,7 +1275,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_ADD => {
+            Add => {
                 [def(one_of(I32, I64)), use(one_of(I32, I64)), use(one_of(I32, I64))]
                     if same_operand_types(inst_ref, &mfunc, &[0, 1, 2])? => legal,
             };
@@ -1292,7 +1292,7 @@ mod tests {
         let lhs = mfunc.alloc_vreg(Type::I32);
         let rhs = mfunc.alloc_vreg(Type::I32);
         let inst = mfunc.writer().binary(
-            MachineOpcode::Generic(GenericOpcode::G_ADD),
+            MachineOpcode::Generic(GenericOpcode::Add),
             Writable(dst),
             lhs,
             rhs,
@@ -1300,7 +1300,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_ADD => {
+            Add => {
                 [def(scalar_int(32, 64)), use(scalar_int(32, 64)), use(scalar_int(32, 64))]
                     if same_types(0, 1, 2) => legal,
             };
@@ -1316,14 +1316,14 @@ mod tests {
         let dst = mfunc.alloc_vreg(Type::F32);
         let src = mfunc.alloc_vreg(Type::I32);
         let inst = mfunc.writer().unary(
-            MachineOpcode::Generic(GenericOpcode::G_BITCAST),
+            MachineOpcode::Generic(GenericOpcode::Bitcast),
             Writable(dst),
             src,
         );
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_BITCAST => {
+            Bitcast => {
                 [def(scalar_value(32, 64)), use(scalar_value(32, 64))]
                     if same_widths(0, 1) => legal,
             };
@@ -1341,7 +1341,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_ARG => {
+            Arg => {
                 [def(any), imm] => legal,
             };
         })
@@ -1358,7 +1358,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_CONSTANT => {
+            Constant => {
                 [def(ptr_sized), imm] => legal,
             };
         })
@@ -1380,7 +1380,7 @@ mod tests {
         let lhs = mfunc.alloc_vreg(vector_ty);
         let rhs = mfunc.alloc_vreg(vector_ty);
         let inst = mfunc.writer().binary(
-            MachineOpcode::Generic(GenericOpcode::G_ADD),
+            MachineOpcode::Generic(GenericOpcode::Add),
             Writable(dst),
             lhs,
             rhs,
@@ -1388,7 +1388,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_ADD => {
+            Add => {
                 [
                     def(fixed_vector_of(I32 ; 4)),
                     use(fixed_vector_of(I32 ; 4)),
@@ -1414,7 +1414,7 @@ mod tests {
         let lhs = mfunc.alloc_vreg(vector_ty);
         let rhs = mfunc.alloc_vreg(vector_ty);
         let inst = mfunc.writer().binary(
-            MachineOpcode::Generic(GenericOpcode::G_FADD),
+            MachineOpcode::Generic(GenericOpcode::Fadd),
             Writable(dst),
             lhs,
             rhs,
@@ -1422,7 +1422,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_FADD => {
+            Fadd => {
                 [
                     def(scalable_vector_of(F32 ; 4)),
                     use(scalable_vector_of(F32 ; 4)),
@@ -1444,7 +1444,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_COPY => {
+            Copy => {
                 [def(scalar_value(32, 64)), use(scalar_value(32, 64))]
                     if same_types(0, 1) => legal,
             };
@@ -1498,7 +1498,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_RET => {
+            Ret => {
                 seq[..use(any)] => legal,
             };
         })
@@ -1520,7 +1520,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_CALL => {
+            Call => {
                 seq[..def(any), global, ..use(any)] => legal,
             };
         })
@@ -1540,7 +1540,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_CALLIND => {
+            Callind => {
                 seq[..def(any), use(any), ..use(any)] => legal,
             };
         })
@@ -1556,7 +1556,7 @@ mod tests {
         let lhs = mfunc.alloc_vreg(Type::F32);
         let rhs = mfunc.alloc_vreg(Type::F32);
         let inst = mfunc.writer().binary(
-            MachineOpcode::Generic(GenericOpcode::G_FADD),
+            MachineOpcode::Generic(GenericOpcode::Fadd),
             Writable(dst),
             lhs,
             rhs,
@@ -1564,7 +1564,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_FADD => {
+            Fadd => {
                 [def(scalar_float), use(scalar_float), use(scalar_float)]
                     if same_operand_types(inst_ref, &mfunc, &[0, 1, 2])? => legal,
             };
@@ -1587,7 +1587,7 @@ mod tests {
         let inst_ref = &mfunc.inst(inst);
 
         let action = crate::legalize_matcher!(inst_ref, &mfunc, {
-            G_COPY => {
+            Copy => {
                 [def(matches(is_legal_copy_ty)), use(matches(is_legal_copy_ty))]
                     if same_operand_types(inst_ref, &mfunc, &[0, 1])? => legal,
             };

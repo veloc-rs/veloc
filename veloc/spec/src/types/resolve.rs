@@ -4,7 +4,7 @@ use crate::types::{Scalar, TypeSet};
 use crate::{
     Error,
     model::Fields,
-    syntax::{Kind, Node, Record},
+    syntax::{Decl, DeclKind, Kind, Node},
 };
 use std::collections::BTreeMap;
 
@@ -20,14 +20,15 @@ pub(crate) fn name(node: &Node) -> Option<String> {
     }
 }
 
-pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, Error> {
+pub(crate) fn compile(records: &[Decl], source: &str) -> Result<Declarations, Error> {
     let mut resolved = BTreeMap::new();
     let mut scalars = Vec::new();
-    for record in records
-        .iter()
-        .filter(|r| r.kind == "type" && crate::model::records::rust_binding(r).is_none())
-    {
-        let node = &record.fields["expr"];
+    for record in records.iter().filter(|r| {
+        matches!(&r.kind, DeclKind::Type { .. }) && crate::model::records::rust_binding(r).is_none()
+    }) {
+        let DeclKind::Type { binding: node, .. } = &record.kind else {
+            unreachable!()
+        };
         let scalar = match &node.kind {
             Kind::Name(name) if name == "bool" => Some(Element::Bool),
             Kind::Name(name) if name == "ptr" => Some(Element::Ptr),
@@ -77,18 +78,19 @@ pub(crate) fn compile(records: &[Record], source: &str) -> Result<Declarations, 
         }
     }
     let mut pending = BTreeMap::new();
-    for record in records
-        .iter()
-        .filter(|r| r.kind == "type" && crate::model::records::rust_binding(r).is_none())
-    {
-        let mut fields = Fields::new(source, record.clone());
+    for record in records.iter().filter(|r| {
+        matches!(&r.kind, DeclKind::Type { .. }) && crate::model::records::rust_binding(r).is_none()
+    }) {
+        let fields = Fields::new(source, record.clone());
         if record.name != record.name.to_ascii_uppercase() || record.name == "INVALID" {
             return Err(fields.error("type name must be uppercase and not INVALID"));
         }
-        let expr = fields.take("expr")?;
+        let DeclKind::Type { binding: expr, .. } = &record.kind else {
+            unreachable!()
+        };
         fields.finish()?;
         if !resolved.contains_key(&record.name) {
-            pending.insert(record.name.clone(), expr);
+            pending.insert(record.name.clone(), expr.clone());
         }
     }
     while !pending.is_empty() {

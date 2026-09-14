@@ -25,13 +25,13 @@ impl std::error::Error for SourceError {}
 pub(crate) struct File {
     pub(crate) path: PathBuf,
     first_line: usize,
-    pub(crate) records: std::ops::Range<usize>,
+    pub(crate) declarations: std::ops::Range<usize>,
     pub(crate) visible: BTreeSet<usize>,
 }
 
 pub struct Source {
     text: String,
-    records: Vec<syntax::Record>,
+    declarations: Vec<syntax::Decl>,
     files: Vec<File>,
     dependencies: BTreeSet<PathBuf>,
 }
@@ -42,7 +42,7 @@ impl Source {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, SourceError> {
         let mut source = Self {
             text: String::new(),
-            records: Vec::new(),
+            declarations: Vec::new(),
             files: Vec::new(),
             dependencies: BTreeSet::new(),
         };
@@ -65,8 +65,8 @@ impl Source {
     pub(crate) fn text(&self) -> &str {
         &self.text
     }
-    pub(crate) fn records(&self) -> &[syntax::Record] {
-        &self.records
+    pub(crate) fn declarations(&self) -> &[syntax::Decl] {
+        &self.declarations
     }
     pub(crate) fn files(&self) -> &[File] {
         &self.files
@@ -76,9 +76,10 @@ impl Source {
     }
 
     pub fn parse(&self) -> Result<Definitions, SourceError> {
-        let defs =
-            model::from_records(&self.text, self.records.clone()).map_err(|e| self.locate(e))?;
-        scopes::check(&self.text, &self.records, &self.files, &defs).map_err(|e| self.locate(e))?;
+        let defs = model::from_declarations(&self.text, self.declarations.clone())
+            .map_err(|e| self.locate(e))?;
+        scopes::check(&self.text, &self.declarations, &self.files, &defs)
+            .map_err(|e| self.locate(e))?;
         Ok(defs)
     }
 
@@ -148,7 +149,7 @@ impl Loader<'_> {
         };
         let syntax::File {
             imports,
-            mut records,
+            mut declarations,
         } = syntax::parse_file(&text).map_err(located)?;
         for import in &imports {
             if import.path.is_empty() || Path::new(&import.path).is_absolute() {
@@ -180,19 +181,19 @@ impl Loader<'_> {
         }
         self.active.pop();
         let base = self.source.text.len();
-        for record in &mut records {
+        for record in &mut declarations {
             record.relocate(base);
         }
         let file = self.source.files.len();
         visible.insert(file);
-        let start = self.source.records.len();
+        let start = self.source.declarations.len();
         self.source.files.push(File {
             path: canonical.clone(),
             first_line: self.next_line,
-            records: start..start + records.len(),
+            declarations: start..start + declarations.len(),
             visible,
         });
-        self.source.records.extend(records);
+        self.source.declarations.extend(declarations);
         self.source.text.push_str(&text);
         self.next_line += text.bytes().filter(|&b| b == b'\n').count();
         if !text.ends_with('\n') {

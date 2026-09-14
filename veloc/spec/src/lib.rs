@@ -60,24 +60,6 @@ pub struct Generated {
     pub text_printer: String,
 }
 
-/// Parse and check a definition unit, including cross-record references.
-pub fn parse(source: &str) -> Result<Definitions, Error> {
-    model::parse(source)
-}
-
-/// Prepare all selected-output contracts without emitting Rust.
-pub fn plan(source: &str) -> Result<Plan, Error> {
-    Plan::prepare(parse(source)?, source)
-}
-
-/// Compile checked operations using the declared storage strategy.
-pub fn compile(source: &str) -> Result<Generated, Error> {
-    Ok(plan(source)?.generate())
-}
-
-#[cfg(test)]
-mod fixtures;
-
 pub mod interfaces;
 /// Format generated Rust files with the workspace's rustfmt configuration.
 ///

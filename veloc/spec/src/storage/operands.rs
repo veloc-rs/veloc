@@ -1,14 +1,13 @@
 //! Register/attribute storage. A checked layout is shared by all emitters.
 use crate::model::records::PropertyType;
 use crate::model::{Op, ParamKind, TypeList};
-use crate::syntax::{Kind, Node, Record};
+use crate::syntax::{Decl, DeclKind, Kind, Node};
 use crate::{Error, model};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub(crate) struct Operands {
     pub(crate) formats: BTreeMap<String, Format>,
-    pub(crate) prefix: String,
     pub(crate) opcode: String,
     pub(crate) view: String,
     pub(crate) reader: String,
@@ -81,29 +80,15 @@ pub(crate) fn domain_index(domain: Domain) -> usize {
 }
 
 pub(crate) fn compile(
-    records: &[Record],
+    records: &[Decl],
     source: &str,
     data: &model::data::Types,
 ) -> Result<Operands, Error> {
     let record = records
         .iter()
-        .find(|r| r.kind == "storage")
+        .find(|r| matches!(&r.kind, DeclKind::Fields(kind) if kind == "storage"))
         .expect("storage declaration");
     let mut config = model::Fields::new(source, record.clone());
-    let prefix = match config.optional("prefix") {
-        Some(Node {
-            kind: Kind::Text(prefix),
-            ..
-        }) => prefix,
-        Some(node) => {
-            return Err(Error::at(
-                source,
-                node.offset,
-                "expected opcode prefix string",
-            ));
-        }
-        None => String::new(),
-    };
     let opcode = model::name(source, config.take("opcode")?)?;
     let view = model::name(source, config.take("view")?)?;
     let reader = model::name(source, config.take("reader")?)?;
@@ -167,7 +152,10 @@ pub(crate) fn compile(
         None
     };
     config.finish()?;
-    if let Some(r) = records.iter().find(|r| r.kind == "layout") {
+    if let Some(r) = records
+        .iter()
+        .find(|r| matches!(&r.kind, DeclKind::Fields(kind) if kind == "layout"))
+    {
         return Err(Error::at(
             source,
             r.offset,
@@ -176,7 +164,7 @@ pub(crate) fn compile(
     }
     let mut formats = BTreeMap::new();
     for shape in &data.records {
-        let used = records.iter().filter(|r| r.kind == "op").any(|op| matches!(op.fields.get("storage"), Some(Node { kind: Kind::Object(name, _), .. }) if name == &shape.name));
+        let used = records.iter().filter(|r| matches!(&r.kind, DeclKind::Op(_))).any(|op| matches!(op.fields.get("storage"), Some(Node { kind: Kind::Object(name, _), .. }) if name == &shape.name));
         if !used {
             continue;
         }
@@ -235,7 +223,6 @@ pub(crate) fn compile(
     }
     Ok(Operands {
         formats,
-        prefix,
         opcode,
         view,
         reader,
@@ -414,12 +401,6 @@ impl Operands {
     pub(crate) fn format_count(&self) -> usize {
         self.formats.len()
     }
-    pub(crate) fn mnemonic(&self, name: &str) -> String {
-        name.strip_prefix(&self.prefix)
-            .unwrap_or(name)
-            .to_ascii_lowercase()
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn project(
         &self,

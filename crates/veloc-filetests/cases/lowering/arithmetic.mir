@@ -1,8 +1,8 @@
 // ----- iadd-i8
 // run: lower
 // check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
-// check: G_ADD), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Add), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
@@ -12,8 +12,8 @@ block0(v0: i8, v1: i8):
 // ----- isub-i8
 // run: lower
 // check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
-// check: G_SUB), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Sub), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
@@ -23,8 +23,8 @@ block0(v0: i8, v1: i8):
 // ----- imul-i8
 // run: lower
 // check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
-// check: G_MUL), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Mul), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
@@ -34,8 +34,8 @@ block0(v0: i8, v1: i8):
 // ----- ineg-i8
 // run: lower
 // check: params: $(lhs=v\d+):i8
-// check: G_NEG), results: [$(result=v\d+)], inputs: [$lhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Neg), results: [$(result=v\d+)], inputs: [$lhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i8
 local function op(i8) -> i8
 block0(v0: i8):
@@ -45,8 +45,8 @@ block0(v0: i8):
 // ----- iand-i8
 // run: lower
 // check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
-// check: G_AND), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: And), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
@@ -56,8 +56,8 @@ block0(v0: i8, v1: i8):
 // ----- ior-i8
 // run: lower
 // check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
-// check: G_OR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Or), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
@@ -67,8 +67,8 @@ block0(v0: i8, v1: i8):
 // ----- ixor-i8
 // run: lower
 // check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8
-// check: G_XOR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Xor), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i8
 local function op(i8, i8) -> i8
 block0(v0: i8, v1: i8):
@@ -78,8 +78,8 @@ block0(v0: i8, v1: i8):
 // ----- iadd-i16
 // run: lower
 // check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
-// check: G_ADD), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Add), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
@@ -89,8 +89,8 @@ block0(v0: i16, v1: i16):
 // ----- isub-i16
 // run: lower
 // check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
-// check: G_SUB), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Sub), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
@@ -100,8 +100,8 @@ block0(v0: i16, v1: i16):
 // ----- imul-i16
 // run: lower
 // check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
-// check: G_MUL), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Mul), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
@@ -111,8 +111,8 @@ block0(v0: i16, v1: i16):
 // ----- ineg-i16
 // run: lower
 // check: params: $(lhs=v\d+):i16
-// check: G_NEG), results: [$(result=v\d+)], inputs: [$lhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Neg), results: [$(result=v\d+)], inputs: [$lhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i16
 local function op(i16) -> i16
 block0(v0: i16):
@@ -122,8 +122,8 @@ block0(v0: i16):
 // ----- iand-i16
 // run: lower
 // check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
-// check: G_AND), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: And), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
@@ -133,8 +133,8 @@ block0(v0: i16, v1: i16):
 // ----- ior-i16
 // run: lower
 // check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
-// check: G_OR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Or), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
@@ -144,8 +144,8 @@ block0(v0: i16, v1: i16):
 // ----- ixor-i16
 // run: lower
 // check: params: $(lhs=v\d+):i16, $(rhs=v\d+):i16
-// check: G_XOR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Xor), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i16
 local function op(i16, i16) -> i16
 block0(v0: i16, v1: i16):
@@ -155,8 +155,8 @@ block0(v0: i16, v1: i16):
 // ----- iadd-i32
 // run: lower
 // check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
-// check: G_ADD), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Add), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
@@ -166,8 +166,8 @@ block0(v0: i32, v1: i32):
 // ----- isub-i32
 // run: lower
 // check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
-// check: G_SUB), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Sub), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
@@ -177,8 +177,8 @@ block0(v0: i32, v1: i32):
 // ----- imul-i32
 // run: lower
 // check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
-// check: G_MUL), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Mul), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
@@ -188,8 +188,8 @@ block0(v0: i32, v1: i32):
 // ----- ineg-i32
 // run: lower
 // check: params: $(lhs=v\d+):i32
-// check: G_NEG), results: [$(result=v\d+)], inputs: [$lhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Neg), results: [$(result=v\d+)], inputs: [$lhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32
 local function op(i32) -> i32
 block0(v0: i32):
@@ -199,8 +199,8 @@ block0(v0: i32):
 // ----- iand-i32
 // run: lower
 // check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
-// check: G_AND), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: And), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
@@ -210,8 +210,8 @@ block0(v0: i32, v1: i32):
 // ----- ior-i32
 // run: lower
 // check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
-// check: G_OR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Or), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
@@ -221,8 +221,8 @@ block0(v0: i32, v1: i32):
 // ----- ixor-i32
 // run: lower
 // check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
-// check: G_XOR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Xor), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
@@ -232,8 +232,8 @@ block0(v0: i32, v1: i32):
 // ----- idiv-s-i32
 // run: lower
 // check: params: $(lhs=v\d+):i32, $(rhs=v\d+):i32
-// check: G_SDIV), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Sdiv), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32
 local function op(i32, i32) -> i32
 block0(v0: i32, v1: i32):
@@ -243,8 +243,8 @@ block0(v0: i32, v1: i32):
 // ----- iadd-i64
 // run: lower
 // check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
-// check: G_ADD), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Add), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
@@ -254,8 +254,8 @@ block0(v0: i64, v1: i64):
 // ----- isub-i64
 // run: lower
 // check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
-// check: G_SUB), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Sub), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
@@ -265,8 +265,8 @@ block0(v0: i64, v1: i64):
 // ----- imul-i64
 // run: lower
 // check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
-// check: G_MUL), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Mul), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
@@ -276,8 +276,8 @@ block0(v0: i64, v1: i64):
 // ----- ineg-i64
 // run: lower
 // check: params: $(lhs=v\d+):i64
-// check: G_NEG), results: [$(result=v\d+)], inputs: [$lhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Neg), results: [$(result=v\d+)], inputs: [$lhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i64
 local function op(i64) -> i64
 block0(v0: i64):
@@ -287,8 +287,8 @@ block0(v0: i64):
 // ----- iand-i64
 // run: lower
 // check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
-// check: G_AND), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: And), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
@@ -298,8 +298,8 @@ block0(v0: i64, v1: i64):
 // ----- ior-i64
 // run: lower
 // check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
-// check: G_OR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Or), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
@@ -309,8 +309,8 @@ block0(v0: i64, v1: i64):
 // ----- ixor-i64
 // run: lower
 // check: params: $(lhs=v\d+):i64, $(rhs=v\d+):i64
-// check: G_XOR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Xor), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i64
 local function op(i64, i64) -> i64
 block0(v0: i64, v1: i64):
@@ -320,8 +320,8 @@ block0(v0: i64, v1: i64):
 // ----- iand-bool
 // run: lower
 // check: params: $(lhs=v\d+):bool, $(rhs=v\d+):bool
-// check: G_AND), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: And), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: bool
 local function op(bool, bool) -> bool
 block0(v0: bool, v1: bool):
@@ -331,8 +331,8 @@ block0(v0: bool, v1: bool):
 // ----- ior-bool
 // run: lower
 // check: params: $(lhs=v\d+):bool, $(rhs=v\d+):bool
-// check: G_OR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Or), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: bool
 local function op(bool, bool) -> bool
 block0(v0: bool, v1: bool):
@@ -342,8 +342,8 @@ block0(v0: bool, v1: bool):
 // ----- ixor-bool
 // run: lower
 // check: params: $(lhs=v\d+):bool, $(rhs=v\d+):bool
-// check: G_XOR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Xor), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: bool
 local function op(bool, bool) -> bool
 block0(v0: bool, v1: bool):
@@ -353,8 +353,8 @@ block0(v0: bool, v1: bool):
 // ----- iadd-i32<4>
 // run: lower
 // check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
-// check: G_ADD), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Add), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
@@ -364,8 +364,8 @@ block0(v0: i32<4>, v1: i32<4>):
 // ----- isub-i32<4>
 // run: lower
 // check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
-// check: G_SUB), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Sub), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
@@ -375,8 +375,8 @@ block0(v0: i32<4>, v1: i32<4>):
 // ----- imul-i32<4>
 // run: lower
 // check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
-// check: G_MUL), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Mul), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
@@ -386,8 +386,8 @@ block0(v0: i32<4>, v1: i32<4>):
 // ----- ineg-i32<4>
 // run: lower
 // check: params: $(lhs=v\d+):i32<4>
-// check: G_NEG), results: [$(result=v\d+)], inputs: [$lhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Neg), results: [$(result=v\d+)], inputs: [$lhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32<4>
 local function op(i32<4>) -> i32<4>
 block0(v0: i32<4>):
@@ -397,8 +397,8 @@ block0(v0: i32<4>):
 // ----- iand-i32<4>
 // run: lower
 // check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
-// check: G_AND), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: And), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
@@ -408,8 +408,8 @@ block0(v0: i32<4>, v1: i32<4>):
 // ----- ior-i32<4>
 // run: lower
 // check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
-// check: G_OR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Or), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
@@ -419,8 +419,8 @@ block0(v0: i32<4>, v1: i32<4>):
 // ----- ixor-i32<4>
 // run: lower
 // check: params: $(lhs=v\d+):i32<4>, $(rhs=v\d+):i32<4>
-// check: G_XOR), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Xor), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: i32<4>
 local function op(i32<4>, i32<4>) -> i32<4>
 block0(v0: i32<4>, v1: i32<4>):
@@ -430,8 +430,8 @@ block0(v0: i32<4>, v1: i32<4>):
 // ----- fadd-f64
 // run: lower
 // check: params: $(lhs=v\d+):f64, $(rhs=v\d+):f64
-// check: G_FADD), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
-// check: G_RET), results: [], inputs: [$result]
+// check: Fadd), results: [$(result=v\d+)], inputs: [$lhs, $rhs]
+// check: Ret), results: [], inputs: [$result]
 // check: type $result: f64
 local function op(f64, f64) -> f64
 block0(v0: f64, v1: f64):

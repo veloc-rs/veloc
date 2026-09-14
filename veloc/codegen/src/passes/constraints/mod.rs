@@ -319,7 +319,7 @@ mod tests {
         let fixed = Reg::new_preg(7);
         let inst = |writer: veloc_lir::InstWriter<'_>| {
             writer.unary(
-                veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_NEG),
+                veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::Neg),
                 Writable(dst),
                 src,
             )

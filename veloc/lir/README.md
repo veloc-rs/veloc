@@ -127,10 +127,10 @@ enum InstField { variants: [Imm(i64)] }
 storage Operands {
     opcode: GenericOpcode, view: InstView,
     reader: InstRead, writer: InstBuild,
-    prefix: "G_", register: Reg, attributes: InstField,
+    register: Reg, attributes: InstField,
 }
 struct BinaryReg { dst: Reg, lhs: Reg, rhs: Reg }
-op G_ADD<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
+op Add<T: Integer>(lhs: T, rhs: T) -> (dst: T) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: BinaryReg { dst, lhs, rhs },
     semantics: bv.add(lhs, rhs)
@@ -181,8 +181,8 @@ Generated `GenericOpcode::validate_types()` remains an independent type contract
 SSA/dominance checks use function-level algorithms. A generic view of a target
 or invalid opcode is an internal error, not a fallible decode operation.
 
-All builders are generated from the opcode name (`G_BRCOND` -> `writer.brcond`,
-`G_CALLIND` -> `writer.callind`), including calls and returns. Only generic
+All builders are generated from the opcode name (`Brcond` -> `writer.brcond`,
+`Callind` -> `writer.callind`), including calls and returns. Only generic
 unary/binary helpers for target instructions remain ordinary Rust.
 Mappings bind every layout field to a logical input or named result.
 Builders take results first, then inputs in signature order. Results are encoded
@@ -199,8 +199,8 @@ Calls are ordinary structs: direct calls have a symbol attribute, indirect
 calls have a register callee followed by argument registers.
 `results: results()` binds the result slice. Two-address constraints do not
 merge SSA inputs and outputs.
-`G_ICMP` requires two inputs and an explicit condition; zero comparison is
-`G_IEQZ`.
+`Icmp` requires two inputs and an explicit condition; zero comparison is
+`Ieqz`.
 
 Logical type contracts now use the same compiler as MIR and can be checked with
 `GenericOpcode::validate_types`; target legality remains a separate decision.

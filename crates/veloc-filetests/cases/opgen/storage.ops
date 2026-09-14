@@ -4,9 +4,9 @@
 // check: &[Self::reg(low), Self::reg(high)], &[second, first], &[]
 type Reg = rust("crate::Reg");
 enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: "G_"  }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField }
 struct Pair { right: Reg, upper: Reg, left: Reg, lower: Reg }
-op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I64) {
+op Pair(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I64) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Pair { right: second, upper: high, left: first, lower: low },
 }
@@ -16,9 +16,9 @@ op G_PAIR(first: Type::I32, second: Type::I64) -> (low: Type::I32, high: Type::I
 // check: fn stop(self, )
 type Reg = rust("crate::Reg");
 enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: "G_"  }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField }
 struct Empty {}
-op G_STOP() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty {} }
+op Stop() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty {} }
 
 // ----- storage/bare-layout-names-are-removed
 // run: opgen-error
@@ -89,9 +89,9 @@ op Example(value: Type::I32) -> () { meta: OpInfo { memory: MemoryEffect::NONE }
 // check: &[Self::reg(next)], &[previous], &[]
 type Reg = rust("crate::Reg");
 enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: "G_"  }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField }
 struct Update { next: Reg, previous: Reg }
-op G_UPDATE(previous: Type::PTR) -> (next: Type::PTR) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Update { next, previous } }
+op Update(previous: Type::PTR) -> (next: Type::PTR) { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Update { next, previous } }
 
 // ----- storage/absent-optional-fields-still-require-a-mapping
 // run: opgen-error
@@ -568,15 +568,15 @@ mnemonic: "pair_add", storage: Pair { args: [lhs, rhs] },  }
 
 // ----- storage/declared-control-and-optional-attributes
 // run: opgen
-// check: Self::G_TRANSFER => Flow::Transfer
+// check: Self::Transfer => Flow::Transfer
 // check: invalid hint field
 // check: Payload::Number(hint)
 type Reg = rust("crate::Reg");
 enum Payload { variants: [Number(i64)] }
 enum Flow { variants: [Continue, Transfer] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: Payload, control: Flow::Continue, prefix: "G_" }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: Payload, control: Flow::Continue }
 struct Transfer { hint: optional(i64), target: Reg }
-op G_TRANSFER(target: Type::PTR, hint: i64) -> () {
+op Transfer(target: Type::PTR, hint: i64) -> () {
     meta: OpInfo { memory: MemoryEffect::NONE },
     storage: Transfer { hint: some(hint), target },
     flow: Transfer,

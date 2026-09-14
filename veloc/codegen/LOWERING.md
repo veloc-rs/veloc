@@ -16,7 +16,7 @@ The native pipeline keeps three responsibilities separate:
 Virtual values have one definition through legalization, selection and scheduling.
 Non-entry block parameters remain SSA definitions; branches carry their edge
 arguments even when a generic conditional or jump table expands to several
-target branches. Function entry arguments use G_ARG/ABI definitions, or a fresh
+target branches. Function entry arguments use Arg/ABI definitions, or a fresh
 ABI predecessor when the original entry has backedges.
 
 Multi-instruction selection rules declare intermediates explicitly:
@@ -59,7 +59,7 @@ offsets retain the compact addressing form. Generic i8/i16 and pointer accesses
 use their existing target load/store rules; narrow copies remain available for
 ABI materialization. Narrow arithmetic legalization is still separate work.
 
-`ptr-offset` emits a pointer-valued `G_PTR_ADD` directly, without constructing
+`ptr-offset` emits a pointer-valued `PtrAdd` directly, without constructing
 an integer-typed address and copying it back to a pointer.
 
 ISA templates declare `(memory Read 8)` or `(memory Write 4)`. The generated

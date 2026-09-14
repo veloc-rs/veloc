@@ -4,11 +4,127 @@ use crate::Error;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Kind<'a> {
+    Fn,
+    Const,
+    Import,
+    Type,
+    TypeSet,
+    Op,
+    SelfValue,
+    Let,
     Name(&'a str),
     Number(&'a str),
     Text(String),
-    Symbol(&'static str),
+    ColonColon,
+    Arrow,
+    PipePipe,
+    AmpAmp,
+    EqEq,
+    NotEq,
+    Le,
+    Ge,
+    LBrace,
+    RBrace,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    Lt,
+    Gt,
+    Colon,
+    Comma,
+    Semi,
+    Eq,
+    At,
+    Pipe,
+    Amp,
+    Bang,
+    Minus,
+    Plus,
+    Star,
+    Question,
+    Dot,
     Eof,
+}
+
+impl<'a> Kind<'a> {
+    fn word(text: &'a str) -> Self {
+        match text {
+            "fn" => Self::Fn,
+            "const" => Self::Const,
+            "import" => Self::Import,
+            "type" => Self::Type,
+            "typeset" => Self::TypeSet,
+            "op" => Self::Op,
+            "self" => Self::SelfValue,
+            "let" => Self::Let,
+            _ => Self::Name(text),
+        }
+    }
+
+    /// Fixed token spelling for diagnostics and AST operator names.
+    pub fn spelling(&self) -> &'static str {
+        match self {
+            Self::ColonColon => "::",
+            Self::Arrow => "->",
+            Self::PipePipe => "||",
+            Self::AmpAmp => "&&",
+            Self::EqEq => "==",
+            Self::NotEq => "!=",
+            Self::Le => "<=",
+            Self::Ge => ">=",
+            Self::LBrace => "{",
+            Self::RBrace => "}",
+            Self::LParen => "(",
+            Self::RParen => ")",
+            Self::LBracket => "[",
+            Self::RBracket => "]",
+            Self::Lt => "<",
+            Self::Gt => ">",
+            Self::Colon => ":",
+            Self::Comma => ",",
+            Self::Semi => ";",
+            Self::Eq => "=",
+            Self::At => "@",
+            Self::Pipe => "|",
+            Self::Amp => "&",
+            Self::Bang => "!",
+            Self::Minus => "-",
+            Self::Plus => "+",
+            Self::Star => "*",
+            Self::Question => "?",
+            Self::Dot => ".",
+            Self::Fn => "fn",
+            Self::Const => "const",
+            Self::Import => "import",
+            Self::Type => "type",
+            Self::TypeSet => "typeset",
+            Self::Op => "op",
+            Self::SelfValue => "self",
+            Self::Let => "let",
+            Self::Name(_) => "name",
+            Self::Number(_) => "number",
+            Self::Text(_) => "string",
+            Self::Eof => "end of file",
+        }
+    }
+
+    /// Keywords remain usable as names outside their grammatical positions.
+    /// Property names are ordinary names, not lexer keywords.
+    pub fn name(&self) -> Option<&'a str> {
+        Some(match self {
+            Self::Fn
+            | Self::Const
+            | Self::Import
+            | Self::Type
+            | Self::TypeSet
+            | Self::Op
+            | Self::SelfValue
+            | Self::Let => self.spelling(),
+            Self::Name(name) => name,
+            _ => return None,
+        })
+    }
 }
 
 pub(super) struct Token<'a> {
@@ -55,7 +171,7 @@ impl<'a> Lexer<'a> {
                 {
                     self.offset += 1;
                 }
-                Kind::Name(&self.source[offset..self.offset])
+                Kind::word(&self.source[offset..self.offset])
             }
             b'0'..=b'9' => {
                 self.offset += 1;
@@ -66,17 +182,41 @@ impl<'a> Lexer<'a> {
             }
             b'"' => Kind::Text(self.string()?),
             _ => {
-                // Maximal munch makes ->, ||, && and comparisons indivisible.
-                let tail = &self.source[offset..];
-                let symbol = [
-                    "::", "->", "||", "&&", "==", "!=", "<=", ">=", "{", "}", "(", ")", "[", "]",
-                    "<", ">", ":", ",", ";", "=", "@", "|", "&", "!", "-", "+", "*", "?", ".",
-                ]
-                .into_iter()
-                .find(|s| tail.starts_with(s))
-                .ok_or_else(|| Error::at(self.source, offset, "unexpected character"))?;
-                self.offset += symbol.len();
-                Kind::Symbol(symbol)
+                // Recognize two-byte tokens before their one-byte prefixes.
+                let kind = match (byte, bytes.get(offset + 1).copied()) {
+                    (b':', Some(b':')) => Kind::ColonColon,
+                    (b'-', Some(b'>')) => Kind::Arrow,
+                    (b'|', Some(b'|')) => Kind::PipePipe,
+                    (b'&', Some(b'&')) => Kind::AmpAmp,
+                    (b'=', Some(b'=')) => Kind::EqEq,
+                    (b'!', Some(b'=')) => Kind::NotEq,
+                    (b'<', Some(b'=')) => Kind::Le,
+                    (b'>', Some(b'=')) => Kind::Ge,
+                    (b'{', _) => Kind::LBrace,
+                    (b'}', _) => Kind::RBrace,
+                    (b'(', _) => Kind::LParen,
+                    (b')', _) => Kind::RParen,
+                    (b'[', _) => Kind::LBracket,
+                    (b']', _) => Kind::RBracket,
+                    (b'<', _) => Kind::Lt,
+                    (b'>', _) => Kind::Gt,
+                    (b':', _) => Kind::Colon,
+                    (b',', _) => Kind::Comma,
+                    (b';', _) => Kind::Semi,
+                    (b'=', _) => Kind::Eq,
+                    (b'@', _) => Kind::At,
+                    (b'|', _) => Kind::Pipe,
+                    (b'&', _) => Kind::Amp,
+                    (b'!', _) => Kind::Bang,
+                    (b'-', _) => Kind::Minus,
+                    (b'+', _) => Kind::Plus,
+                    (b'*', _) => Kind::Star,
+                    (b'?', _) => Kind::Question,
+                    (b'.', _) => Kind::Dot,
+                    _ => return Err(Error::at(self.source, offset, "unexpected character")),
+                };
+                self.offset += kind.spelling().len();
+                kind
             }
         };
         Ok(Token { offset, kind })

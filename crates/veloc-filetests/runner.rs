@@ -150,7 +150,8 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 .filter(|line| !line.trim_start().starts_with("import "))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let result = veloc_opgen::compile(&format!("{builtins}\n{source}"));
+            let result = compiler::source(&format!("{builtins}\n{source}"))
+                .and_then(|source| source.compile().map_err(|error| error.diagnostic));
             if matches!(
                 mode,
                 "opgen-const" | "opgen-const-error" | "opgen-rust-error"

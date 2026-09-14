@@ -29,10 +29,10 @@ impl X86_64Lowering {
     ) {
         let dst_ty = mfunc.vreg_data(dst).ty;
         let src_ty = mfunc.vreg_data(src).ty;
-        let result = if opcode == GenericOpcode::G_UITOFP {
+        let result = if opcode == GenericOpcode::Uitofp {
             if src_ty == Type::I32 {
-                let extended = unary(mfunc, out, GenericOpcode::G_ZEXT, Type::I64, src);
-                unary(mfunc, out, GenericOpcode::G_SITOFP, dst_ty, extended)
+                let extended = unary(mfunc, out, GenericOpcode::Zext, Type::I64, src);
+                unary(mfunc, out, GenericOpcode::Sitofp, dst_ty, extended)
             } else {
                 // Preserve the low bit as a sticky bit before rounding, avoiding
                 // double rounding when an unsigned value exceeds i64::MAX.
@@ -41,7 +41,7 @@ impl X86_64Lowering {
                 let half = self.emit_legalize_binary_reg(
                     mfunc,
                     out,
-                    GenericOpcode::G_LSHR,
+                    GenericOpcode::Lshr,
                     Type::I64,
                     src,
                     one,
@@ -49,7 +49,7 @@ impl X86_64Lowering {
                 let low = self.emit_legalize_binary_reg(
                     mfunc,
                     out,
-                    GenericOpcode::G_AND,
+                    GenericOpcode::And,
                     Type::I64,
                     src,
                     one,
@@ -57,21 +57,21 @@ impl X86_64Lowering {
                 let rounded = self.emit_legalize_binary_reg(
                     mfunc,
                     out,
-                    GenericOpcode::G_OR,
+                    GenericOpcode::Or,
                     Type::I64,
                     half,
                     low,
                 );
-                let half_float = unary(mfunc, out, GenericOpcode::G_SITOFP, dst_ty, rounded);
+                let half_float = unary(mfunc, out, GenericOpcode::Sitofp, dst_ty, rounded);
                 let doubled = self.emit_legalize_binary_reg(
                     mfunc,
                     out,
-                    GenericOpcode::G_FADD,
+                    GenericOpcode::Fadd,
                     dst_ty,
                     half_float,
                     half_float,
                 );
-                let direct = unary(mfunc, out, GenericOpcode::G_SITOFP, dst_ty, src);
+                let direct = unary(mfunc, out, GenericOpcode::Sitofp, dst_ty, src);
                 let high = mfunc.alloc_vreg(Type::BOOL);
                 out.push(mfunc.writer().icmp(Writable(high), src, zero, IntCC::LtS));
                 let result = mfunc.alloc_vreg(dst_ty);
@@ -83,10 +83,10 @@ impl X86_64Lowering {
                 result
             }
         } else {
-            assert_eq!(opcode, GenericOpcode::G_FPTOUI);
+            assert_eq!(opcode, GenericOpcode::Fptoui);
             if dst_ty == Type::I32 {
-                let wide = unary(mfunc, out, GenericOpcode::G_FPTOSI, Type::I64, src);
-                unary(mfunc, out, GenericOpcode::G_TRUNC, Type::I32, wide)
+                let wide = unary(mfunc, out, GenericOpcode::Fptosi, Type::I64, src);
+                unary(mfunc, out, GenericOpcode::Trunc, Type::I32, wide)
             } else {
                 // For the upper half of u64, subtract the exact power of two,
                 // convert the remainder as signed, then restore the high bit.
@@ -96,7 +96,7 @@ impl X86_64Lowering {
                     (Type::I64, (9223372036854775808.0f64).to_bits() as i64)
                 };
                 let bits = self.emit_legalize_constant_reg(mfunc, out, bits_ty, bits);
-                let threshold = unary(mfunc, out, GenericOpcode::G_BITCAST, src_ty, bits);
+                let threshold = unary(mfunc, out, GenericOpcode::Bitcast, src_ty, bits);
                 let high = mfunc.alloc_vreg(Type::BOOL);
                 out.push(
                     mfunc
@@ -106,22 +106,22 @@ impl X86_64Lowering {
                 let reduced = self.emit_legalize_binary_reg(
                     mfunc,
                     out,
-                    GenericOpcode::G_FSUB,
+                    GenericOpcode::Fsub,
                     src_ty,
                     src,
                     threshold,
                 );
-                let converted = unary(mfunc, out, GenericOpcode::G_FPTOSI, Type::I64, reduced);
+                let converted = unary(mfunc, out, GenericOpcode::Fptosi, Type::I64, reduced);
                 let sign = self.emit_legalize_constant_reg(mfunc, out, Type::I64, i64::MIN);
                 let restored = self.emit_legalize_binary_reg(
                     mfunc,
                     out,
-                    GenericOpcode::G_XOR,
+                    GenericOpcode::Xor,
                     Type::I64,
                     converted,
                     sign,
                 );
-                let direct = unary(mfunc, out, GenericOpcode::G_FPTOSI, Type::I64, src);
+                let direct = unary(mfunc, out, GenericOpcode::Fptosi, Type::I64, src);
                 let result = mfunc.alloc_vreg(dst_ty);
                 out.push(
                     mfunc

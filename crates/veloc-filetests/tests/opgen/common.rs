@@ -32,11 +32,23 @@ pub fn source(ops: &str) -> String {
 }
 
 pub fn parse(ops: &str) -> Result<veloc_opgen::Definitions, veloc_opgen::Error> {
-    veloc_opgen::parse(&source(ops))
+    raw_parse(&source(ops))
+}
+
+pub fn raw_parse(source: &str) -> Result<veloc_opgen::Definitions, veloc_opgen::Error> {
+    compiler::source(source)?
+        .parse()
+        .map_err(|error| error.diagnostic)
+}
+
+pub fn raw_plan(source: &str) -> Result<veloc_opgen::Plan, veloc_opgen::Error> {
+    compiler::source(source)?
+        .plan()
+        .map_err(|error| error.diagnostic)
 }
 
 pub fn compile(ops: &str) -> Result<veloc_opgen::Generated, veloc_opgen::Error> {
-    veloc_opgen::compile(&source(ops))
+    raw_plan(&source(ops)).map(|plan| plan.generate())
 }
 
 pub fn load(
@@ -64,7 +76,7 @@ pub fn rejected(source: &str, expected: &str) {
 
 #[track_caller]
 pub fn raw_rejected(source: &str, expected: &str) {
-    let error = match veloc_opgen::compile(source) {
+    let error = match raw_plan(source) {
         Ok(_) => panic!("invalid definition was accepted:\n{source}"),
         Err(error) => error,
     };

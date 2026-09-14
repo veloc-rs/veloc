@@ -12,12 +12,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use veloc_semantics::{BvConst, BvOp};
 
 use crate::model::encoding::Encodings;
-use crate::syntax::{Kind, Node, Record};
+use crate::syntax::{Decl, DeclKind, Kind, Node};
 use crate::types::TypeSet;
 use crate::types::Types;
 use crate::{Error, storage};
 
 mod operation;
+pub(crate) use operation::mnemonic;
 
 /// Checked operation definitions, independent of the runtime MIR.
 pub struct Definitions {
@@ -26,7 +27,6 @@ pub struct Definitions {
     pub(crate) types: Types,
     pub(crate) storage: storage::Storage,
     pub(crate) ops: Vec<Op>,
-    pub(crate) properties: Vec<Property>,
     pub(crate) expressions: expr::Library,
 }
 
@@ -36,11 +36,6 @@ pub(crate) struct Vocabulary<'a> {
     pub types: &'a Types,
     pub encodings: &'a Encodings,
     pub data: &'a data::Types,
-}
-
-pub(crate) struct Property {
-    pub name: String,
-    pub constraints: Vec<constraints::Constraint>,
 }
 
 impl Definitions {
@@ -205,28 +200,21 @@ struct Variable {
     bound: bool,
 }
 
-pub(crate) fn parse(source: &str) -> Result<Definitions, Error> {
-    let records = crate::syntax::parse(source)?;
-    from_records(source, records)
-}
-
-pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definitions, Error> {
+pub(crate) fn from_declarations(source: &str, records: Vec<Decl>) -> Result<Definitions, Error> {
     let mut names = BTreeSet::new();
-    for record in &records {
-        if !names.insert((record.kind.clone(), record.name.clone())) {
+    for (owner, record) in crate::syntax::walk(&records) {
+        let name = owner.map_or_else(
+            || record.name.clone(),
+            |owner| format!("{owner}::{}", record.name),
+        );
+        if !names.insert((record.tag().to_owned(), name.clone())) {
             return Err(Error::at(
                 source,
                 record.offset,
-                format!("duplicate {} `{}`", record.kind, record.name),
+                format!("duplicate {} `{}`", record.tag(), name),
             ));
         }
-        if matches!(record.kind.as_str(), "fn" | "const") {
-            for part in record.name.split("::") {
-                identifier(source, record.offset, part)?;
-            }
-        } else {
-            identifier(source, record.offset, &record.name)?;
-        }
+        identifier(source, record.offset, &record.name)?;
     }
     let types = Types::compile(&records, source)?;
     let encodings = encoding::compile(&records, source)?;
@@ -239,40 +227,29 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
     };
     let mut expressions = expr::Library::compile(&records, source, vocabulary)?;
     let mut ops = Vec::new();
-    let mut properties = Vec::new();
     for record in records {
-        match record.kind.as_str() {
-            "property" => {
-                if !data.names.contains(&record.name) && !data.rust.contains(&record.name) {
-                    return Err(Error::at(source, record.offset, "unknown typed property"));
-                }
-                let name = record.name.clone();
-                let mut fields = Fields::new(source, record);
-                let nodes = Some(fields.take("verify")?);
-                let constraints = constraints::check_property(
-                    source,
-                    &name,
-                    nodes,
-                    vocabulary,
-                    &mut expressions,
-                )?;
-                fields.finish()?;
-                properties.push(Property { name, constraints });
-            }
-            "op" => ops.push(operation::parse(
+        match &record.kind {
+            DeclKind::Op(_) => ops.push(operation::parse(
                 source,
                 record,
                 &storage,
                 vocabulary,
                 &mut expressions,
             )?),
-            "layout" | "struct" | "enum" | "encoding" | "storage" | "fn" | "const" => {}
-            kind if Types::is_definition(kind) => {}
+            DeclKind::Type { .. }
+            | DeclKind::TypeSet(_)
+            | DeclKind::Function { .. }
+            | DeclKind::Constant(_) => {}
+            DeclKind::Fields(kind)
+                if matches!(
+                    kind.as_str(),
+                    "layout" | "struct" | "enum" | "encoding" | "storage"
+                ) => {}
             _ => {
                 return Err(Error::at(
                     source,
                     record.offset,
-                    format!("unknown definition kind `{}`", record.kind),
+                    format!("unknown definition kind `{}`", record.tag()),
                 ));
             }
         }
@@ -283,7 +260,6 @@ pub(crate) fn from_records(source: &str, records: Vec<Record>) -> Result<Definit
         types,
         storage,
         ops,
-        properties,
         expressions,
     };
     definitions.validate(source)?;
@@ -460,7 +436,7 @@ pub(crate) struct Fields<'a> {
 }
 
 impl<'a> Fields<'a> {
-    pub(crate) fn new(source: &'a str, record: Record) -> Self {
+    pub(crate) fn new(source: &'a str, record: Decl) -> Self {
         Self {
             source,
             offset: record.offset,
@@ -543,58 +519,5 @@ pub(crate) fn identifier(source: &str, offset: usize, name: &str) -> Result<(), 
         ))
     } else {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::fixtures::parse;
-
-    const SOURCE: &str = r#"
-        struct Binary {
-            args: values(2),
-        }
-        op Add<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
-            mnemonic: "i-add", storage: Binary { args: [lhs, rhs] },
-             }
-    "#;
-
-    #[test]
-    fn method_names_come_from_mnemonics() {
-        let defs = parse(SOURCE).unwrap();
-        assert_eq!(defs.ops[0].method_name(), "i_add");
-        assert_eq!(defs.ops[0].mnemonic, "i-add");
-    }
-
-    #[test]
-    fn rejects_normalized_method_name_collisions() {
-        let source = format!(
-            "{SOURCE}\n\
-             op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {{ meta: OpInfo {{ traits: OpTraits::empty(), memory: MemoryEffect::NONE }}, mnemonic: \"i_add\", storage: Binary {{ args: [lhs, rhs] }},  }}"
-        );
-        let error = match parse(&source) {
-            Ok(_) => panic!("colliding generated method names were accepted"),
-            Err(error) => error,
-        };
-        assert!(error.message.contains("same method name `i_add`"));
-    }
-
-    #[test]
-    fn removed_builder_fields_are_unknown_fields() {
-        for builder in ["iadd", "iadd(args)"] {
-            let source = SOURCE.replace("mnemonic:", &format!("builder: {builder}, mnemonic:"));
-            let error = match parse(&source) {
-                Ok(_) => panic!("removed builder field was accepted"),
-                Err(error) => error,
-            };
-            assert!(error.message.contains("unknown field `builder`"));
-        }
-    }
-
-    #[test]
-    fn method_identifier_checks_are_left_to_the_emitter() {
-        let defs = parse(&SOURCE.replace("i-add", "return")).unwrap();
-        assert_eq!(defs.ops[0].method_name(), "ret");
     }
 }

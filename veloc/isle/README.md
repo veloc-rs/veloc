@@ -13,7 +13,7 @@ The rule syntax uses the same declarations and expressions as .ops files:
 ```text
 rule negate {
     match: mir.INeg(x),
-    emit: lir.G_NEG(x),
+    emit: lir.Neg(x),
 }
 ```
 

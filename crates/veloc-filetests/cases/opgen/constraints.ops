@@ -295,12 +295,12 @@ op Example<T: Integer>(input: T) -> T {
 // check: checked_mul
 type Reg = rust("crate::Reg");
 enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  prefix: "G_"  }
+storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField }
 struct Unary { dst: Reg, src: Reg }
 fn double_bits(from: Type, to: Type) -> bool {
     value: to.element_bits()? == from.element_bits()? * 2
 }
-op G_WIDEN<T: Integer, U: Integer>(src: T) -> (dst: U) {
+op Widen<T: Integer, U: Integer>(src: T) -> (dst: U) {
     meta: OpInfo {},
     storage: Unary { dst, src },
     verify {
@@ -352,112 +352,6 @@ op Guarded<T: Integer>(arg: T) -> T {
     verify { require(arg.ty().is_scalar() || arg.ty().shape()? == arg.ty().shape()?, "short circuit"); }
     semantics: bv.neg(arg)
 }
-
-// ----- property-constraints/property-type-checking
-// run: opgen-error
-// check: projection type mismatch: expected Named("bool"), found Named("u8")
-property VectorConst {
-    verify(ctx: ConstContext) {
-        all(ctx.bytes(value)?, |byte| byte);
-    }
-}
-
-// ----- property-constraints/property-result-context
-// run: opgen-error
-// check: expected value of type veloc_types::Type
-property VectorConst {
-    verify {
-        value.ty() == result;
-    }
-}
-
-// ----- property-constraints/property-emits-declared-host-calls
-// run: opgen
-// check: <crate::host::VerifyContext as crate::type_methods::VerifyContextInfo>::current_signature(_context)
-property VectorConst {
-    verify(ctx: VerifyContext) {
-        len(ctx.current_signature()?.params()) == 0;
-    }
-}
-struct Data { value: VectorConst }
-op Example(value: VectorConst) -> Vector {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "example", storage: Data { value },
-}
-
-// ----- property-constraints/unknown-property
-// run: opgen-error
-// check: unknown typed property
-property Unknown {
-    verify {
-        true;
-    }
-}
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-1
-// run: opgen-error
-// check: type constraint must not be empty
-predicate is_empty = Integer & Float;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-2
-// run: opgen-error
-// check: unknown type or typeset `Missing`
-predicate is_missing = Missing;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-3
-// run: opgen-error
-// check: vectors() requires a set of non-pointer scalar types
-predicate is_bad = vectors(Type::PTR);
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-4
-// run: opgen-error
-// check: predicate name conflicts with a built-in Type method
-predicate is_scalar = Scalar;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-5
-// run: opgen-error
-// check: predicate name conflicts with a built-in Type method
-predicate is_valid = Any;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-6
-// run: opgen-error
-// check: predicate name conflicts with a built-in Type method
-predicate is_scalable = Vector;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-7
-// run: opgen-error
-// check: predicate name must be snake_case and start with is_
-predicate scalar_type = Any;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-8
-// run: opgen-error
-// check: predicate name must be snake_case and start with is_
-predicate I32 = Any;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-9
-// run: opgen-error
-// check: predicate name must be snake_case and start with is_
-predicate is_Float = Float;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-10
-// run: opgen-error
-// check: predicate name must be snake_case and start with is_
-predicate is_ = Float;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-11
-// run: opgen-error
-// check: unknown type or typeset `is_integer`
-predicate is_other = is_integer;
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-12
-// run: opgen-error
-// check: expected `;`
-predicate is_other = Any
-
-// ----- predicates/invalid-sets-names-and-method-collisions-are-diagnosed-13
-// run: opgen-error
-// check: expected `=`
-predicate is_other { set: Any }
 
 // ----- constraints/all-checks-predicate-arity
 // run: opgen-error

@@ -20,11 +20,14 @@ op CheckedSize(size: u32) -> () {
 struct VectorLiteral {
     payload: VectorConst,
 }
-// A different opcode/field name must still inherit the property's codec,
-// result type and validation, without repeating Vconst's rules.
+// Codec and result type follow the parameter type; validation is explicit.
 op VectorLiteral(data: VectorConst) -> type(data) {
     meta: OpInfo { memory: MemoryEffect::NONE },
-mnemonic: "vector-literal", storage: VectorLiteral { payload: data }, }
+    mnemonic: "vector-literal", storage: VectorLiteral { payload: data },
+    verify(ctx: ConstContext) {
+        require(!data.is_dense() || len(ctx.bytes(data)?) == data.ty().min_size_bytes()?, "dense vector constant byte count must match its type");
+    }
+}
 
 struct CallableInfo { signature: optional(SigId) }
 fn InspectCallable(ty: Type) -> CallableInfo {
@@ -179,10 +182,6 @@ layout Extended {
     text: "{inputs}, tag={tag}",
 }
 
-predicate is_wide = Scalar & (Type::I32 | Type::I64);
-predicate is_chosen = Chosen;
-typeset Chosen = Type::I32X4 | SV4;
-type SV4 = vector(Type::I32, scalable(4));
 typeset Wide = Type::I32 | Type::I64;
 op Named<T: Wide>(lhs: T, rhs: T) -> T {
     meta: OpInfo { memory: MemoryEffect::NONE },
@@ -313,14 +312,6 @@ fn scalable(ty: Type) -> bool = rust("crate::Type::is_scalable");
 op RuntimeScalable<T: Integer>(arg: T) -> T {
     meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "runtime-scalable", storage: Unary { arg },
     verify { require(scalable(T), "scalable only"); }
-}
-
-predicate is_fixture_width = Type::I16 | Type::I32;
-const fn fixture_width(ty: Type) -> bool = rust("crate::types::is_fixture_width");
-op CheckedWidth<T: ScalarInteger>(arg: T) -> T {
-    meta: OpInfo {}, mnemonic: "checked-width", storage: Unary { arg },
-    verify { require(fixture_width(T), "fixture width"); }
-    semantics: bv.neg(arg)
 }
 
 struct RoutedTable {

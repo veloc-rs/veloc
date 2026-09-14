@@ -58,14 +58,7 @@ impl Operands {
                         .filter(|op| op.format == format.name)
                         .collect();
                     let opcodes = if ops.len() > 1 {
-                        ops.iter()
-                            .map(|op| {
-                                op.name
-                                    .strip_prefix(&self.prefix)
-                                    .unwrap_or(&op.name)
-                                    .to_owned()
-                            })
-                            .collect()
+                        ops.iter().map(|op| op.name.clone()).collect()
                     } else {
                         Vec::new()
                     };
@@ -109,11 +102,6 @@ impl Operands {
                         .map(|c| &c.condition)
                         .chain(op.queries.values())
                 })
-                .chain(
-                    defs.properties
-                        .iter()
-                        .flat_map(|p| p.constraints.iter().map(|c| &c.condition)),
-                )
                 .any(crate::model::expr::Expr::needs_value_types);
         let type_method = if value_types {
             format!("fn value_type(self, value: {reg}) -> crate::Type;")
@@ -164,13 +152,7 @@ impl Operands {
             )
             .unwrap();
             if defs.ops.iter().filter(|op| op.format == f.name).count() > 1 {
-                writeln!(
-                    out,
-                    "opcode: {}Opcode::{},",
-                    f.name,
-                    op.name.strip_prefix(&self.prefix).unwrap_or(&op.name)
-                )
-                .unwrap();
+                writeln!(out, "opcode: {}Opcode::{},", f.name, op.name).unwrap();
             }
             for m in &op.operands().members {
                 writeln!(out, "{}: {},", m.field.name, m.read_from("self")).unwrap();
@@ -244,13 +226,6 @@ impl Operands {
                 |role, values, types| format!("self.validate_values({:?}, {role:?}, {values}, {types})?;", op.mnemonic),
                 "self.results()",
             ));
-            out.push_str(&crate::model::constraints::emit_properties(
-                defs,
-                op,
-                &mut emitter,
-                &contexts,
-                &error,
-            ));
             out.push_str(&crate::model::constraints::emit_checks(
                 &op.constraints,
                 &mut emitter,
@@ -273,7 +248,7 @@ impl Operands {
         writeln!(
             out,
             "fn {}(self, {args}) -> Self::Inst {{",
-            self.mnemonic(&op.name)
+            crate::model::mnemonic(&op.name)
         )
         .unwrap();
         writeln!(

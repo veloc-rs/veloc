@@ -405,7 +405,7 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 为 pre-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
     ///
     /// 当拷贝两端任一操作数已经绑定到物理寄存器时，调用方应优先使用这条
-    /// hook，而不是继续发射通用 `G_COPY`。这样可以保证位宽/寄存器别名等
+    /// hook，而不是继续发射通用 `Copy`。这样可以保证位宽/寄存器别名等
     /// 目标相关语义在进入后续阶段前已经明确。
     fn build_preselect_reg_copy(
         &self,

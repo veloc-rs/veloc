@@ -1,4 +1,4 @@
-//! Definition syntax: a streaming lexer, recursive-descent parser and untyped AST.
+//! Definition syntax: tokenization, recursive-descent parsing and declaration AST.
 //! Meaning and cross-declaration checks belong to the checked model.
 mod lexer;
 mod parser;
@@ -73,38 +73,113 @@ pub enum FunctionBody {
     Rust { offset: usize, path: Option<String> },
 }
 
+/// Source declarations; members retain their owner instead of becoming flat records.
 #[derive(Debug, Clone)]
-pub struct Record {
+pub struct Decl {
     pub offset: usize,
-    pub kind: String,
     pub name: String,
     pub fields: BTreeMap<String, Node>,
-    pub signature: Option<Signature>,
-    pub body: Option<FunctionBody>,
+    pub kind: DeclKind,
 }
 
-impl Record {
-    /// Relocate an independently parsed file into the compilation's source map.
+#[derive(Debug, Clone)]
+pub enum DeclKind {
+    Type {
+        binding: Node,
+        members: Vec<Decl>,
+    },
+    TypeSet(Node),
+    Function {
+        signature: Signature,
+        body: FunctionBody,
+    },
+    Constant(Node),
+    Op(Signature),
+    /// Declarations whose body is entirely described by a field schema.
+    Fields(String),
+}
+
+impl Decl {
+    pub fn tag(&self) -> &str {
+        match &self.kind {
+            DeclKind::Type { .. } => "type",
+            DeclKind::TypeSet(_) => "typeset",
+            DeclKind::Function { .. } => "fn",
+            DeclKind::Constant(_) => "const",
+            DeclKind::Op(_) => "op",
+            DeclKind::Fields(name) => name,
+        }
+    }
+
+    pub fn signature(&self) -> Option<&Signature> {
+        match &self.kind {
+            DeclKind::Function { signature, .. } | DeclKind::Op(signature) => Some(signature),
+            _ => None,
+        }
+    }
+
+    pub fn body(&self) -> Option<&FunctionBody> {
+        match &self.kind {
+            DeclKind::Function { body, .. } => Some(body),
+            _ => None,
+        }
+    }
+
+    pub fn members(&self) -> &[Decl] {
+        match &self.kind {
+            DeclKind::Type { members, .. } => members,
+            _ => &[],
+        }
+    }
+
+    /// Relocate an independently parsed file, including nested members.
     pub(crate) fn relocate(&mut self, base: usize) {
         self.offset += base;
         for node in self.fields.values_mut() {
             node.relocate(base);
         }
-        match &mut self.body {
-            Some(FunctionBody::Value(node)) => node.relocate(base),
-            Some(FunctionBody::Rust { offset, .. }) => *offset += base,
-            None => {}
-        }
-        if let Some(signature) = &mut self.signature {
-            for param in signature.generics.iter_mut().chain(&mut signature.params) {
-                param.offset += base;
-                param.ty.relocate(base);
-            }
-            if let Results::Fixed(results) = &mut signature.results {
-                for result in results {
-                    result.offset += base;
-                    result.ty.relocate(base);
+        match &mut self.kind {
+            DeclKind::Type { binding, members } => {
+                binding.relocate(base);
+                for member in members {
+                    member.relocate(base);
                 }
+            }
+            DeclKind::TypeSet(node) | DeclKind::Constant(node) => node.relocate(base),
+            DeclKind::Function { signature, body } => {
+                signature.relocate(base);
+                match body {
+                    FunctionBody::Value(node) => node.relocate(base),
+                    FunctionBody::Rust { offset, .. } => *offset += base,
+                }
+            }
+            DeclKind::Op(signature) => signature.relocate(base),
+            DeclKind::Fields(_) => {}
+        }
+    }
+}
+
+/// Visit declarations and their members without creating a flattened AST.
+pub fn walk(declarations: &[Decl]) -> impl Iterator<Item = (Option<&str>, &Decl)> {
+    declarations.iter().flat_map(|decl| {
+        std::iter::once((None, decl)).chain(
+            decl.members()
+                .iter()
+                .map(move |member| (Some(decl.name.as_str()), member)),
+        )
+    })
+}
+
+impl Signature {
+    fn relocate(&mut self, base: usize) {
+        for param in self.generics.iter_mut().chain(&mut self.params) {
+            param.offset += base;
+            param.ty.relocate(base);
+        }
+        if let Results::Fixed(results) = &mut self.results {
+            for result in results {
+                result.offset += base;
+                result.ty.relocate(base);
             }
         }
     }
@@ -157,7 +232,7 @@ impl Node {
 /// A file is parsed once, before the loader resolves its dependencies.
 pub struct File {
     pub imports: Vec<Import>,
-    pub records: Vec<Record>,
+    pub declarations: Vec<Decl>,
 }
 
 pub struct Import {

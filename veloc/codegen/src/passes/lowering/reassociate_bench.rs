@@ -16,7 +16,7 @@ fn reassociate_benchmark() {
         let result = source.alloc_vreg(Type::I64);
         {
             let id = source.writer().binary(
-                MachineOpcode::Generic(GenericOpcode::G_ADD),
+                MachineOpcode::Generic(GenericOpcode::Add),
                 Writable(result),
                 acc,
                 leaf,

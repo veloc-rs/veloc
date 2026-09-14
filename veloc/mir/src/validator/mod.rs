@@ -103,7 +103,9 @@ impl Function {
                 )))
             })?;
 
-        self.validate_constraints(module, inst, data, &operands, &results, constants, context)?;
+        self.validate_constraints(
+            &self.dfg, module, inst, data, &operands, &results, constants, context,
+        )?;
 
         data.try_visit_successors(|call| self.validate_block_call(call, spec.mnemonic))
     }

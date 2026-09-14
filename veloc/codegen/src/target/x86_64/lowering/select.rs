@@ -44,7 +44,7 @@ impl TargetInstructionSelector for X86_64Selector {
                 return Ok(SelectResult::InPlace);
             }
             veloc_lir::InstView::UnaryReg(copy)
-                if copy.opcode == veloc_lir::UnaryRegOpcode::COPY =>
+                if copy.opcode == veloc_lir::UnaryRegOpcode::Copy =>
             {
                 ctx.selected
                     .push(build_x86_copy_inst(ctx.mfunc, copy.dst, copy.src)?);
@@ -72,7 +72,7 @@ impl TargetInstructionSelector for X86_64Selector {
 
         if matches!(
             opcode,
-            MachineOpcode::Generic(GenericOpcode::G_CALL | GenericOpcode::G_CALLIND)
+            MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind)
         ) {
             use crate::target::arch::{AbiLocation, CallConv, TargetArch};
             let sig = &ctx.mfunc.call_info(ctx.inst_id).sig;
@@ -90,7 +90,7 @@ impl TargetInstructionSelector for X86_64Selector {
                     .effects()
                     .cloned()
                     .unwrap_or_default();
-                // Keep ABI register uses/clobbers explicit after G_CALL disappears.
+                // Keep ABI register uses/clobbers explicit after Call disappears.
                 for part in plan.args.iter().flat_map(|a| &a.parts) {
                     if let AbiLocation::Reg(reg) = part.loc {
                         effects.uses.push(reg);

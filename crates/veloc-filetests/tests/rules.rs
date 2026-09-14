@@ -75,47 +75,47 @@ fn invalid_rules_fail_before_rust_generation() {
     let dialects = dialects();
     for (source, message) in [
         (
-            "rule r { match: before.G_ADD(x, y), emit: after.G_ADD(x, missing), }",
+            "rule r { match: before.Add(x, y), emit: after.Add(x, missing), }",
             "unbound value",
         ),
         (
-            "rule r { match: before.G_ADD(x), emit: after.G_ADD(x, x), }",
+            "rule r { match: before.Add(x), emit: after.Add(x, x), }",
             "source operand count",
         ),
         (
-            "rule r { match: before.G_ADD(x, x), emit: after.G_ADD(x, x), }",
+            "rule r { match: before.Add(x, x), emit: after.Add(x, x), }",
             "equality guard",
         ),
         (
-            "rule r { match: before.G_ADD(x, y), emit: after.G_SADDO(x, y), }",
+            "rule r { match: before.Add(x, y), emit: after.Saddo(x, y), }",
             "result count",
         ),
         (
-            "rule r { match: before.G_ADD(x, y), emit: after.G_FADD(x, y), }",
+            "rule r { match: before.Add(x, y), emit: after.Fadd(x, y), }",
             "type domain",
         ),
         (
-            "rule r { match: before.G_ANYEXT(x), emit: after.G_COPY(x), }",
+            "rule r { match: before.Anyext(x), emit: after.Copy(x), }",
             "independent source types",
         ),
         (
-            "rule r { match: before.G_ADD(x, y), emit: after.DoesNotExist(x, y), }",
+            "rule r { match: before.Add(x, y), emit: after.DoesNotExist(x, y), }",
             "unknown operation",
         ),
         (
-            "rule r { match: before.G_ADD(x, y), emit: after.G_CONSTANT(x), }",
+            "rule r { match: before.Add(x, y), emit: after.Constant(x), }",
             "properties",
         ),
         (
-            "rule r { match: before.G_ADD(x, y), emit: mir.ExtendS(x), }",
+            "rule r { match: before.Add(x, y), emit: mir.ExtendS(x), }",
             "preconditions",
         ),
         (
-            "rule r { match: before.G_ADD(x, y), emti: after.G_ADD(x, y), }",
+            "rule r { match: before.Add(x, y), emti: after.Add(x, y), }",
             "unknown rule field",
         ),
         (
-            "rule r { match: before.G_ADD(x, y), emit: after.G_ADD(x, y), } rule s { match: before.G_ADD(x, y), emit: after.G_ADD(y, x), }",
+            "rule r { match: before.Add(x, y), emit: after.Add(x, y), } rule s { match: before.Add(x, y), emit: after.Add(y, x), }",
             "overlapping",
         ),
     ] {

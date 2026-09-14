@@ -1,8 +1,8 @@
 #![allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
-enum Before { G_ADD, G_COPY, G_SADDO, Missing }
+enum Before { Add, Copy, Saddo, Missing }
 #[derive(Clone, Copy)]
-enum After { G_ADD, G_SUB, G_SADDO }
+enum After { Add, Sub, Saddo }
 
 // This independent host declares the contract expected by compiled value rules.
 impl Before { const fn is_value_only(self) -> bool { !matches!(self, Self::Missing) } }
@@ -30,9 +30,9 @@ impl Context for Machine {
         let b = self.values[inputs[1]];
         assert_eq!(self.types[results[0]], 32);
         match opcode {
-            After::G_ADD => self.values[results[0]] = a.wrapping_add(b),
-            After::G_SUB => self.values[results[0]] = a.wrapping_sub(b),
-            After::G_SADDO => {
+            After::Add => self.values[results[0]] = a.wrapping_add(b),
+            After::Sub => self.values[results[0]] = a.wrapping_sub(b),
+            After::Saddo => {
                 let (value, overflow) = a.overflowing_add(b);
                 assert_eq!(self.types[results[1]], 1);
                 self.values[results[0]] = value;
@@ -50,11 +50,11 @@ fn main() {
     for a in [i32::MIN, -123, -1, 0, 1, 42, i32::MAX] {
         for b in [i32::MIN, -17, -1, 0, 1, 91, i32::MAX] {
             let mut machine = Machine { values: vec![a, b, 0, 0], types: vec![32, 32, 32, 1] };
-            assert!(lower(Before::G_ADD, &mut machine));
+            assert!(lower(Before::Add, &mut machine));
             assert_eq!(machine.values[2], a.wrapping_add(b));
-            assert!(lower(Before::G_COPY, &mut machine));
+            assert!(lower(Before::Copy, &mut machine));
             assert_eq!(machine.values[2], a);
-            assert!(lower(Before::G_SADDO, &mut machine));
+            assert!(lower(Before::Saddo, &mut machine));
             let (value, overflow) = a.overflowing_add(b);
             assert_eq!(machine.values[2], value);
             assert_eq!(machine.values[3], i32::from(overflow));

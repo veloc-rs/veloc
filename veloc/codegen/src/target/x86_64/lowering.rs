@@ -235,37 +235,28 @@ impl X86_64Lowering {
         let final_mask =
             self.emit_legalize_constant_reg(mfunc, output, ty, if is_i32 { 0x3f } else { 0x7f });
 
-        let x1 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, src, shift1);
-        let x2 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_AND, ty, x1, mask1);
-        let x3 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_SUB, ty, src, x2);
-        let x4 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_AND, ty, x3, mask2);
-        let x5 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, x3, shift2);
-        let x6 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_AND, ty, x5, mask2);
-        let x7 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_ADD, ty, x4, x6);
-        let x8 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, x7, shift4);
-        let x9 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_ADD, ty, x7, x8);
-        let x10 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_AND, ty, x9, mask3);
+        let x1 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, src, shift1);
+        let x2 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x1, mask1);
+        let x3 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, src, x2);
+        let x4 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x3, mask2);
+        let x5 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x3, shift2);
+        let x6 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x5, mask2);
+        let x7 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x4, x6);
+        let x8 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x7, shift4);
+        let x9 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x7, x8);
+        let x10 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x9, mask3);
         let x11 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, x10, shift8);
-        let x12 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_ADD, ty, x10, x11);
+            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x10, shift8);
+        let x12 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x10, x11);
         let x13 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, x12, shift16);
-        let x14 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_ADD, ty, x12, x13);
+            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x12, shift16);
+        let x14 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x12, x13);
 
         let reduced = if is_i64 {
             let shift32 = self.emit_legalize_constant_reg(mfunc, output, ty, 32);
-            let x15 = self.emit_legalize_binary_reg(
-                mfunc,
-                output,
-                GenericOpcode::G_LSHR,
-                ty,
-                x14,
-                shift32,
-            );
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_ADD, ty, x14, x15)
+            let x15 =
+                self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x14, shift32);
+            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x14, x15)
         } else {
             x14
         };
@@ -273,7 +264,7 @@ impl X86_64Lowering {
         let pop = self.emit_legalize_binary_reg(
             mfunc,
             output,
-            GenericOpcode::G_AND,
+            GenericOpcode::And,
             ty,
             reduced,
             final_mask,
@@ -306,11 +297,10 @@ impl X86_64Lowering {
         let is_zero = mfunc.alloc_vreg(Type::BOOL);
         output.push(mfunc.writer().icmp(Writable(is_zero), src, zero, IntCC::Eq));
 
-        let neg = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_SUB, ty, zero, src);
-        let lowbit =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_AND, ty, src, neg);
+        let neg = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, zero, src);
+        let lowbit = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, src, neg);
         let lowbit_minus_one =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_SUB, ty, lowbit, one);
+            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, lowbit, one);
         let pop = mfunc.alloc_vreg(ty);
         self.legalize_ctpop_into(mfunc, output, lowbit_minus_one, pop, ty)?;
 
@@ -349,41 +339,36 @@ impl X86_64Lowering {
         let shift8 = self.emit_legalize_constant_reg(mfunc, output, ty, 8);
         let shift16 = self.emit_legalize_constant_reg(mfunc, output, ty, 16);
 
-        let x1 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, src, shift1);
-        let x2 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_OR, ty, src, x1);
-        let x3 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, x2, shift2);
-        let x4 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_OR, ty, x2, x3);
-        let x5 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, x4, shift4);
-        let x6 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_OR, ty, x4, x5);
-        let x7 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, x6, shift8);
-        let x8 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_OR, ty, x6, x7);
-        let x9 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_LSHR, ty, x8, shift16);
+        let x1 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, src, shift1);
+        let x2 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, src, x1);
+        let x3 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x2, shift2);
+        let x4 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x2, x3);
+        let x5 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x4, shift4);
+        let x6 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x4, x5);
+        let x7 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x6, shift8);
+        let x8 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x6, x7);
+        let x9 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x8, shift16);
         let mut filled =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_OR, ty, x8, x9);
+            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x8, x9);
 
         if ty == Type::I64 {
             let shift32 = self.emit_legalize_constant_reg(mfunc, output, ty, 32);
             let x10 = self.emit_legalize_binary_reg(
                 mfunc,
                 output,
-                GenericOpcode::G_LSHR,
+                GenericOpcode::Lshr,
                 ty,
                 filled,
                 shift32,
             );
             filled =
-                self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_OR, ty, filled, x10);
+                self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, filled, x10);
         }
 
         let pop = mfunc.alloc_vreg(ty);
         self.legalize_ctpop_into(mfunc, output, filled, pop, ty)?;
         let clz =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::G_SUB, ty, bit_width, pop);
+            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, bit_width, pop);
         output.push(
             mfunc
                 .writer()

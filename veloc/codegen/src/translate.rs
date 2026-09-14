@@ -69,7 +69,7 @@ impl<'a> IRTranslator<'a> {
         Ok(access)
     }
 
-    /// 为函数参数生成 G_ARG 指令
+    /// 为函数参数生成 Arg 指令
     fn lower_arguments(
         &self,
         ctx: &mut TranslationContext,
@@ -189,7 +189,7 @@ impl<'a> IRTranslator<'a> {
             // 如果是入口块，先处理函数参数
             if idx == 0 {
                 if func.layout().blocks()[block_id].preds.is_empty() {
-                    // No backedge: G_ARG/ABI copies are the sole definitions.
+                    // No backedge: Arg/ABI copies are the sole definitions.
                     mblock.params.clear();
                     self.lower_arguments(&mut ctx, &mut mblock, false);
                 } else {
@@ -317,7 +317,7 @@ impl<'a> IRTranslator<'a> {
                 mblock.append_inst_id(bits_inst);
 
                 Ok(ctx.mfunc.writer().unary(
-                    MachineOpcode::Generic(GenericOpcode::G_BITCAST),
+                    MachineOpcode::Generic(GenericOpcode::Bitcast),
                     dst,
                     bits_reg,
                 ))
@@ -504,7 +504,7 @@ impl<'a> IRTranslator<'a> {
 
                     let res_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
                     let mul_inst = ctx.mfunc.writer().binary(
-                        MachineOpcode::Generic(GenericOpcode::G_MUL),
+                        MachineOpcode::Generic(GenericOpcode::Mul),
                         Writable(res_reg),
                         idx,
                         scale_reg,
@@ -526,7 +526,7 @@ impl<'a> IRTranslator<'a> {
 
                     let res_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
                     let add_inst = ctx.mfunc.writer().binary(
-                        MachineOpcode::Generic(GenericOpcode::G_ADD),
+                        MachineOpcode::Generic(GenericOpcode::Add),
                         Writable(res_reg),
                         scaled_idx,
                         off_reg,
@@ -539,7 +539,7 @@ impl<'a> IRTranslator<'a> {
 
                 // 3. ptr_add: ptr + base_idx
                 Ok(ctx.mfunc.writer().binary(
-                    MachineOpcode::Generic(GenericOpcode::G_PTR_ADD),
+                    MachineOpcode::Generic(GenericOpcode::PtrAdd),
                     defs[0],
                     base_ptr,
                     base_idx,

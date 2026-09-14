@@ -64,10 +64,7 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
                     panic!("expected constant");
                 };
                 assert_eq!(constant.imm, offset);
-                assert_eq!(
-                    f.inst(ids[1]).generic_opcode(),
-                    Some(GenericOpcode::G_PTR_ADD)
-                );
+                assert_eq!(f.inst(ids[1]).generic_opcode(), Some(GenericOpcode::PtrAdd));
                 assert!(f.inst(ids[0]).memory().is_none() && f.inst(ids[1]).memory().is_none());
             }
         }
@@ -89,8 +86,8 @@ impl TargetLegalizer for Mode {
         _: &MachineFunction<LegalizedLir>,
     ) -> Result<Option<LegalizeAction>> {
         match (self, i.generic_opcode().unwrap()) {
-            (Self::Missing, GenericOpcode::G_SUB) => Ok(None),
-            (Self::Loop, _) | (_, GenericOpcode::G_NEG | GenericOpcode::G_SUB) => {
+            (Self::Missing, GenericOpcode::Sub) => Ok(None),
+            (Self::Loop, _) | (_, GenericOpcode::Neg | GenericOpcode::Sub) => {
                 Ok(Some(LegalizeAction::Lower))
             }
             _ => Ok(Some(LegalizeAction::Legal)),
@@ -105,21 +102,21 @@ impl TargetLegalizer for Mode {
         if matches!(self, Self::Loop) {
             return Ok(LegalizeResult::Replace(vec![id]));
         }
-        if f.inst(id).generic_opcode() == Some(GenericOpcode::G_SUB) {
+        if f.inst(id).generic_opcode() == Some(GenericOpcode::Sub) {
             f.rewriter(id)
-                .write(MachineOpcode::Generic(GenericOpcode::G_ADD), &[], &[], &[]);
+                .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], &[]);
             return Ok(LegalizeResult::Replace(vec![id]));
         }
         let first = f
             .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::G_SUB), &[], &[], &[]);
+            .write(MachineOpcode::Generic(GenericOpcode::Sub), &[], &[], &[]);
         if matches!(self, Self::NewBlock) {
             f.create_synthetic_block();
             f.append_inst_id_to_block(f.num_blocks() - 1, first);
             return Ok(LegalizeResult::Replace(vec![]));
         }
         let second = f.writer().write(
-            MachineOpcode::Generic(GenericOpcode::G_CONSTANT),
+            MachineOpcode::Generic(GenericOpcode::Constant),
             &[],
             &[],
             &[],
@@ -134,14 +131,14 @@ fn function() -> MachineFunction<LegalizedLir> {
     {
         let id = f
             .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::G_NEG), &[], &[], &[]);
+            .write(MachineOpcode::Generic(GenericOpcode::Neg), &[], &[], &[]);
         f.append_inst_id_to_block(0, id);
         id
     };
     {
         let id = f
             .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::G_RET), &[], &[], &[]);
+            .write(MachineOpcode::Generic(GenericOpcode::Ret), &[], &[], &[]);
         f.append_inst_id_to_block(0, id);
         id
     };
@@ -161,9 +158,9 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
     assert_eq!(
         ops,
         [
-            GenericOpcode::G_ADD,
-            GenericOpcode::G_CONSTANT,
-            GenericOpcode::G_RET
+            GenericOpcode::Add,
+            GenericOpcode::Constant,
+            GenericOpcode::Ret
         ]
     );
     assert!(f.inst(old).is_invalid());
@@ -174,7 +171,7 @@ fn missing_rules_and_nonconvergent_expansions_are_errors() {
     let error = Legalizer::new(&Mode::Missing)
         .legalize(&mut function())
         .unwrap_err();
-    assert!(alloc::format!("{error}").contains("missing legalization rule for G_SUB"));
+    assert!(alloc::format!("{error}").contains("missing legalization rule for Sub"));
     let error = Legalizer::new(&Mode::Loop)
         .legalize(&mut function())
         .unwrap_err();
@@ -188,6 +185,6 @@ fn blocks_created_by_expansion_are_legalized() {
     assert_eq!(f.num_blocks(), 2);
     assert_eq!(
         f.inst(f.block_insts(1)[0]).generic_opcode(),
-        Some(GenericOpcode::G_ADD)
+        Some(GenericOpcode::Add)
     );
 }

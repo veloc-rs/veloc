@@ -44,6 +44,13 @@ The loader resolves imports from that AST and retains the original source for
 diagnostics; it does not mask imports or parse the file again. Syntax cannot
 cross import boundaries.
 
+The lexer produces tokens on demand with one-token lookahead. Declaration syntax
+keeps type bindings, sets, functions, and constants distinct; type members remain
+nested under their owner. Name resolution and model checking consume these
+declarations directly; there is no flattened record representation between the
+parser and the checked model. Associated constants retain their declared type
+rather than being represented as zero-argument functions.
+
 Each file sees its own declarations and its transitive imports, not unrelated
 files loaded by an entry module. For example, `mir.ops` imports `formats.ops`,
 which imports the shared prelude. Shared Rust bindings live together in `types.ops`.
@@ -53,8 +60,8 @@ IR type sets and Rust data types occupy distinct namespaces: importing the
 such as `u32` and `bool` remain built in. Imports are file-wide (no selective
 imports or aliases yet), and duplicate declarations in the combined unit are
 still rejected.
-String-based `parse/compile` remain available for self-contained definitions;
-they do not resolve imports or inject an implicit vocabulary.
+`Source::load` is the definition entry point; its `parse`, `plan` and `compile`
+methods preserve import visibility and original-file diagnostics.
 
 There is one checked `Definitions` model. `storage Operands` selects machine
 operand-array emission; packed storage emits MIR views and pools. Storage
@@ -138,11 +145,15 @@ Generated Rust artifacts follow their consumers, not the input file boundaries:
 - `instructions.rs`: storage, writers, views, accessors and result type inference.
 - `builders.rs`: operation-specific `InstBuilder` methods.
 - `type_rules.rs`: type validation dispatch and shared signature checks.
-- `validation.rs`: function-level property constraints.
+- `validation.rs`: operation constraints checked in function context.
 - `text_parser.rs` and `text_printer.rs`: their respective text codecs.
 
 Construction and validation remain separate. Optimizer evaluation, offline
 semantics and backend lowering retain separate artifacts and consumers.
+
+Value validity requirements belong to the operation's explicit `verify` block.
+For example, `Vconst` checks its dense byte storage there using `ConstContext`;
+parameter types do not implicitly attach additional validation contracts.
 
 ### Rust type bindings
 
@@ -419,9 +430,8 @@ Invalid or reserved raw encodings are rejected.
 Defs declare logical scalar domains, aliases and exact type sets. Scalar and
 common vector constants are associated constants (`Type::I32`, `Type::I32X4`);
 defs refer to them as `Type::I32` and `Type::I32X4` after importing `Type`.
-Custom aliases generate module constants, and custom predicates generate free
-functions (`types::is_chosen(ty)`). Standard classification and representation
-remain in Rust. Ordinary `encoding` declarations describe defs-owned packed
+Custom aliases generate module constants. Standard classification and
+representation remain in Rust. Ordinary `encoding` declarations describe defs-owned packed
 data, not `Type` or the shared memory contracts.
 
 Callable operations use ordinary signatures, `move` parameters, `verify`
@@ -541,24 +551,6 @@ Generation evaluates and interns equal sets, including anonymous expressions.
 Named aliases and inline constraints share the same compact runtime membership
 checks; runtime code neither evaluates expressions nor constructs sets. Builder
 inference, semantic checks and text codecs inspect resolved sets, not set names.
-
-## Type predicates
-
-```text
-predicate is_wide = (I32 | I64) & Scalar;
-```
-
-Predicates generate public `const fn` functions accepting `Type`. They use the same exact
-set-expression compiler and membership projection as operation constraints, but
-emit direct checks instead of calling another predicate or a runtime set object.
-All invalid encodings return false, including reserved bits and illegal shapes.
-In particular, `Type::is_scalar()` includes pointers; the `Scalar` set does not.
-
-Predicate names must be snake_case starting with `is_`. Standard Rust Type
-methods are reserved; custom predicates do not redefine their semantics.
-Predicates may forward-reference sets and exact types, but are not themselves
-type-set names. Empty sets, unknown references and duplicate names are definition
-errors. Defining a predicate does not change type construction or layout legality.
 
 ## Traits and effects
 
@@ -905,6 +897,8 @@ Property contracts and operation constraints use the same emitter on both IRs,
 including explicit contexts, local bindings and fallible operations. Properties
 are checked inline; no inherent validator is added to a foreign Rust type.
 Array readers supply value-to-type lookup only when their expressions need it.
+Packed constraint validation receives its read-only DFG explicitly from the
+Rust validation entry point; generated reads do not access Function fields.
 Borrowed view declarations share a storage-independent plan and emitter: fields,
 lifetime propagation and opcode subsets are described once. Layout adapters
 select inline variants or named records and supply physical field types/reads.
@@ -1293,7 +1287,7 @@ primitives: integer negation is `bv.sub(bv.zero(), arg)`, rather than a second
 handwritten implementation of negation. Constants optionally specify their type,
 e.g. `bv.zero(type(arg))`; without it they use the first input type, or the first
 result type for an input-free operation. MIR-to-LIR arithmetic translation maps recognized
-primitive applications; composed negation retains the existing `G_NEG` lowering.
+primitive applications; composed negation retains the existing `Neg` lowering.
 The definition compiler binds concrete input/result sorts and emits specialized
 scalar evaluators. The optional offline `Program` API binds signatures to the
 graph used for reference execution and SMT export. Each recipe describes a scalar
@@ -1447,7 +1441,7 @@ requirements. Runtime and memory improvements require measurement.
 
 Codegen joins checked direct MIR primitive applications with the reviewed LIR
 semantics in `lir/defs/generic.ops` at build time. Both definition modules use
-the shared `parse/compile` API and checked operation model; operand-array storage
+the shared `Source` API and checked operation model; operand-array storage
 emission is separate from MIR's packed SSA projection. The same definitions supply opcode/schema mappings,
 builders, decoders, control behavior and build-only primitive bindings. The result is a direct
 `Opcode -> Option<GenericOpcode>` match, not an `OpSpec` semantic lookup. Composed,

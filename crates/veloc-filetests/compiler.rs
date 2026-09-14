@@ -8,6 +8,14 @@ use std::{
 
 pub struct Temp(PathBuf);
 
+/// Exercise the production loader even for inline definition fixtures.
+pub fn source(text: &str) -> Result<veloc_opgen::Source, veloc_opgen::Error> {
+    let dir = Temp::new("opgen-source").expect("create definition fixture directory");
+    let path = dir.join("module.ops");
+    fs::write(&path, text).expect("write definition fixture");
+    veloc_opgen::Source::load(path).map_err(|error| error.diagnostic)
+}
+
 impl Temp {
     pub fn new(prefix: &str) -> std::io::Result<Self> {
         static NEXT: AtomicUsize = AtomicUsize::new(0);

@@ -205,7 +205,7 @@ fn validation_errors_are_owned_by_lir() {
     let error: veloc_lir::ValidationError = function.inst(inst).validate().unwrap_err();
     assert!(matches!(
         error.opcode,
-        veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_CONSTANT)
+        veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::Constant)
     ));
     assert!(!error.reason.is_empty());
     assert!(error.to_string().contains("invalid LIR instruction"));
@@ -234,26 +234,26 @@ fn offline_semantics_use_the_same_emitter_for_operand_storage() {
 fn logical_type_validation_is_separate_from_construction() {
     let mut function = MachineFunction::<RawLir>::new("test".into());
     assert!(
-        GenericOpcode::G_ADD
+        GenericOpcode::Add
             .validate_types(&[Type::I32, Type::I32], &[Type::I32])
             .is_ok()
     );
     assert!(matches!(
-        GenericOpcode::G_ADD.validate_types(&[Type::I32, Type::I64], &[Type::I32]),
+        GenericOpcode::Add.validate_types(&[Type::I32, Type::I64], &[Type::I32]),
         Err(TypeError::Pattern { .. })
     ));
     assert!(
-        GenericOpcode::G_ADD
+        GenericOpcode::Add
             .validate_types(&[Type::F32, Type::F32], &[Type::F32])
             .is_err()
     );
     assert!(
-        GenericOpcode::G_FADD
+        GenericOpcode::Fadd
             .validate_types(&[Type::F32, Type::F32], &[Type::F32])
             .is_ok()
     );
     assert!(
-        GenericOpcode::G_UADDE
+        GenericOpcode::Uadde
             .validate_types(
                 &[Type::I32, Type::I32, Type::BOOL],
                 &[Type::I32, Type::BOOL]
@@ -261,7 +261,7 @@ fn logical_type_validation_is_separate_from_construction() {
             .is_ok()
     );
     assert!(
-        GenericOpcode::G_UADDE
+        GenericOpcode::Uadde
             .validate_types(&[Type::I32, Type::I32], &[Type::I32, Type::BOOL])
             .is_err()
     );
@@ -293,10 +293,10 @@ fn generated_builders_and_views_agree() {
         (decoded.dst, decoded.lhs, decoded.rhs),
         (dst.to_reg(), lhs, rhs)
     );
-    assert_eq!(decoded.opcode, veloc_lir::BinaryRegOpcode::ADD);
-    assert_eq!(GenericOpcode::G_ADD.control(), ControlFlow::Next);
-    assert_eq!(GenericOpcode::G_BRCOND.control(), ControlFlow::Jump);
-    assert_eq!(GenericOpcode::G_UNREACHABLE.control(), ControlFlow::Trap);
+    assert_eq!(decoded.opcode, veloc_lir::BinaryRegOpcode::Add);
+    assert_eq!(GenericOpcode::Add.control(), ControlFlow::Next);
+    assert_eq!(GenericOpcode::Brcond.control(), ControlFlow::Jump);
+    assert_eq!(GenericOpcode::Unreachable.control(), ControlFlow::Trap);
 }
 
 #[test]
@@ -317,12 +317,12 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
     };
     assert_eq!(add_view.carry_in, None);
     assert_eq!(adc_view.carry_in, Some(carry));
-    assert_eq!(add_view.opcode, veloc_lir::BinaryRegWithFlagsOpcode::UADDO);
-    assert_eq!(adc_view.opcode, veloc_lir::BinaryRegWithFlagsOpcode::UADDE);
+    assert_eq!(add_view.opcode, veloc_lir::BinaryRegWithFlagsOpcode::Uaddo);
+    assert_eq!(adc_view.opcode, veloc_lir::BinaryRegWithFlagsOpcode::Uadde);
     {
         let regs = [lhs, rhs, lhs];
         function.rewriter(add).write(
-            veloc_lir::MachineOpcode::Generic(GenericOpcode::G_UADDO),
+            veloc_lir::MachineOpcode::Generic(GenericOpcode::Uaddo),
             &[dst.to_reg(), flag.to_reg()],
             &regs,
             &[],
@@ -330,7 +330,7 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
     }
     {
         function.rewriter(adc).write(
-            veloc_lir::MachineOpcode::Generic(GenericOpcode::G_UADDE),
+            veloc_lir::MachineOpcode::Generic(GenericOpcode::Uadde),
             &[dst.to_reg(), flag.to_reg()],
             &[lhs, rhs],
             &[],
@@ -429,7 +429,7 @@ fn optional_validation_is_separate_from_direct_views() {
     let missing_callee = function.writer().callind(&[dst.to_reg()], src, &[]);
     {
         function.rewriter(missing_callee).write(
-            veloc_lir::MachineOpcode::Generic(GenericOpcode::G_CALLIND),
+            veloc_lir::MachineOpcode::Generic(GenericOpcode::Callind),
             &[dst.to_reg()],
             &[],
             &[],

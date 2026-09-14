@@ -67,11 +67,11 @@ fn tree<S>(
     let opcode = f.inst(root).generic_opcode()?;
     if !matches!(
         opcode,
-        GenericOpcode::G_ADD
-            | GenericOpcode::G_MUL
-            | GenericOpcode::G_AND
-            | GenericOpcode::G_OR
-            | GenericOpcode::G_XOR
+        GenericOpcode::Add
+            | GenericOpcode::Mul
+            | GenericOpcode::And
+            | GenericOpcode::Or
+            | GenericOpcode::Xor
     ) {
         return None;
     }

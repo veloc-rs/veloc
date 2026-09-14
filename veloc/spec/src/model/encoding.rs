@@ -5,13 +5,16 @@ use std::fmt::Write;
 
 use crate::Error;
 use crate::model::{Fields, identifier, list, name};
-use crate::syntax::{Kind, Node, Record};
+use crate::syntax::{Decl, DeclKind, Kind, Node};
 
 pub(crate) type Encodings = BTreeMap<String, BitLayout>;
 
-pub(crate) fn compile(records: &[Record], source: &str) -> Result<Encodings, Error> {
+pub(crate) fn compile(records: &[Decl], source: &str) -> Result<Encodings, Error> {
     let mut defs = Encodings::new();
-    for record in records.iter().filter(|r| r.kind == "encoding") {
+    for record in records
+        .iter()
+        .filter(|r| matches!(&r.kind, DeclKind::Fields(kind) if kind == "encoding"))
+    {
         let mut fields = Fields::new(source, record.clone());
         if matches!(
             record.name.as_str(),

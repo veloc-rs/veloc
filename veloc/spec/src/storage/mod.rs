@@ -3,7 +3,7 @@ use std::fmt::Write;
 
 use crate::Error;
 use crate::model::records::{Policy, RecordDef};
-use crate::syntax::{Kind, Node, Record};
+use crate::syntax::{Decl, DeclKind, Kind, Node};
 
 pub(crate) mod compact;
 mod generate;
@@ -147,12 +147,20 @@ impl Layout {
 /// Compile physical layouts and their logical format/text projections from one
 /// field schema. Opcode/type declarations are checked by the enclosing model.
 pub(crate) fn compile(
-    records: &[Record],
+    records: &[Decl],
     source: &str,
     data: &crate::model::data::Types,
 ) -> Result<Storage, Error> {
-    if let Some(record) = records.iter().find(|r| r.kind == "storage") {
-        if records.iter().filter(|r| r.kind == "storage").count() != 1 || record.name != "Operands"
+    if let Some(record) = records
+        .iter()
+        .find(|r| matches!(&r.kind, DeclKind::Fields(kind) if kind == "storage"))
+    {
+        if records
+            .iter()
+            .filter(|r| matches!(&r.kind, DeclKind::Fields(kind) if kind == "storage"))
+            .count()
+            != 1
+            || record.name != "Operands"
         {
             return Err(Error::at(
                 source,
@@ -177,7 +185,10 @@ pub(crate) fn compile(
         .map(str::to_owned)
         .collect();
     let mut used = BTreeSet::new();
-    for op in records.iter().filter(|r| r.kind == "op") {
+    for op in records
+        .iter()
+        .filter(|r| matches!(&r.kind, DeclKind::Op(_)))
+    {
         if let Some(Node {
             kind: Kind::Object(name, _),
             ..
@@ -186,7 +197,10 @@ pub(crate) fn compile(
             used.insert(name.clone());
         }
     }
-    for layout in records.iter().filter(|r| r.kind == "layout") {
+    for layout in records
+        .iter()
+        .filter(|r| matches!(&r.kind, DeclKind::Fields(kind) if kind == "layout"))
+    {
         used.extend(layout_targets(layout, source)?);
         if !data.records.iter().any(|r| r.name == layout.name) {
             return Err(Error::at(
@@ -196,10 +210,13 @@ pub(crate) fn compile(
             ));
         }
     }
-    for record in records.iter().filter(|r| r.kind == "struct") {
-        let binding = records
-            .iter()
-            .find(|r| r.kind == "layout" && r.name == record.name);
+    for record in records
+        .iter()
+        .filter(|r| matches!(&r.kind, DeclKind::Fields(kind) if kind == "struct"))
+    {
+        let binding = records.iter().find(|r| {
+            matches!(&r.kind, DeclKind::Fields(kind) if kind == "layout") && r.name == record.name
+        });
         if !used.contains(&record.name) && binding.is_none() {
             continue;
         }
@@ -263,7 +280,10 @@ pub(crate) fn compile(
                     source,
                     records
                         .iter()
-                        .find(|r| r.kind == "struct" && r.name == record.name)
+                        .find(|r| {
+                            matches!(&r.kind, DeclKind::Fields(kind) if kind == "struct")
+                                && r.name == record.name
+                        })
                         .unwrap()
                         .offset,
                     "operand storage supports direct Value/optional(Value) fields, not nested SSA or optional non-SSA fields",
@@ -359,7 +379,7 @@ impl Storage {
     }
 }
 
-fn layout_targets(layout: &Record, source: &str) -> Result<Vec<String>, Error> {
+fn layout_targets(layout: &Decl, source: &str) -> Result<Vec<String>, Error> {
     let node = required(layout, "format", source)?;
     let (kind, args) = call(node, source)?;
     match (kind, args) {
@@ -377,9 +397,9 @@ fn layout_targets(layout: &Record, source: &str) -> Result<Vec<String>, Error> {
 }
 
 fn parse_layout(
-    record: &Record,
-    binding: Option<&Record>,
-    declarations: &[Record],
+    record: &Decl,
+    binding: Option<&Decl>,
+    declarations: &[Decl],
     source: &str,
     records: &[RecordDef],
     rust: &crate::model::records::RustTypes,
@@ -391,7 +411,7 @@ fn parse_layout(
     };
     let users = declarations
         .iter()
-        .filter(|r| r.kind == "op")
+        .filter(|r| matches!(&r.kind, DeclKind::Op(_)))
         .filter(|op| {
             matches!(
                 op.fields.get("storage"),
@@ -794,7 +814,7 @@ fn generate_formats(formats: &[Format]) -> String {
     out
 }
 
-fn required<'a>(record: &'a Record, field: &str, source: &str) -> Result<&'a Node, Error> {
+fn required<'a>(record: &'a Decl, field: &str, source: &str) -> Result<&'a Node, Error> {
     record
         .fields
         .get(field)

@@ -797,27 +797,16 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
 }
 
 #[test]
-fn generated_predicates_and_inline_sets_observe_actual_types() {
-    const { assert!(veloc_mir::types::is_wide(Type::I32)) };
+fn named_and_inline_sets_observe_actual_types() {
     for raw in 0..=u16::MAX {
         let Some(ty) = Type::from_raw(raw) else {
             continue;
         };
-        assert_eq!(
-            veloc_mir::types::is_wide(ty),
-            ty == Type::I32 || ty == Type::I64
-        );
-        assert_eq!(
-            veloc_mir::types::is_chosen(ty),
-            ty == veloc_mir::Type::I32X4 || ty == veloc_mir::types::SV4
-        );
         let named = Opcode::Named.validate_types(&[ty, ty], &[ty]);
         let inline = Opcode::Inline.validate_types(&[ty, ty], &[ty]);
         assert_eq!(named.is_ok(), ty == Type::I32 || ty == Type::I64);
         assert_eq!(named, inline);
     }
-    assert!(!veloc_mir::types::is_wide(Type::INVALID));
-    assert!(!veloc_mir::types::is_chosen(Type::INVALID));
     assert!(
         Opcode::Named
             .validate_types(&[Type::I32, Type::I64], &[Type::I32])
@@ -1212,22 +1201,6 @@ fn type_constraints_drive_validation_and_generated_evaluation() {
     ] {
         assert_eq!(
             Opcode::DoubleWidth.validate_types(&[from], &[to]).is_ok(),
-            valid
-        );
-    }
-    for (value, valid) in [
-        (ScalarConst::from(1i8), false),
-        (ScalarConst::from(1i16), true),
-        (ScalarConst::from(1i32), true),
-        (ScalarConst::from(1i64), false),
-    ] {
-        let ty = value.ty();
-        assert_eq!(
-            Opcode::CheckedWidth.validate_types(&[ty], &[ty]).is_ok(),
-            valid
-        );
-        assert_eq!(
-            evaluator::evaluate(Opcode::CheckedWidth, &[value], &[ty], &[]).is_some(),
             valid
         );
     }

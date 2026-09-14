@@ -8,7 +8,7 @@ mod evaluate;
 
 use crate::{
     Error,
-    syntax::{Kind, Node, Record, Results},
+    syntax::{Decl, DeclKind, FunctionBody, Kind, Node, Results},
 };
 
 fn possible(
@@ -422,7 +422,7 @@ struct Checker<'a> {
     data: &'a data::Types,
     encodings: &'a Encodings,
     types: &'a crate::types::Types,
-    declarations: &'a [Record],
+    declarations: &'a [Decl],
     active: BTreeSet<String>,
     // Verification arithmetic widens integers; typed helper arguments do not.
     verification: bool,
@@ -674,7 +674,7 @@ impl Library {
     }
 
     pub fn compile(
-        declarations: &[Record],
+        declarations: &[Decl],
         source: &str,
         vocabulary: super::Vocabulary<'_>,
     ) -> Result<Self, Error> {
@@ -705,11 +705,17 @@ impl Library {
                 }
             }
         }
-        for declaration in declarations
-            .iter()
-            .filter(|d| matches!(d.kind.as_str(), "fn" | "const"))
-        {
-            checker.function(&declaration.name, declaration.offset)?;
+        for (owner, declaration) in crate::syntax::walk(declarations) {
+            if matches!(
+                &declaration.kind,
+                DeclKind::Function { .. } | DeclKind::Constant(_)
+            ) {
+                let name = owner.map_or_else(
+                    || declaration.name.clone(),
+                    |owner| format!("{owner}::{}", declaration.name),
+                );
+                checker.function(&name, declaration.offset)?;
+            }
         }
         Ok(library)
     }
@@ -1192,22 +1198,32 @@ impl Checker<'_> {
         })
     }
 
+    fn callable(&self, name: &str) -> Option<&Decl> {
+        if let Some((owner, member)) = name.split_once("::") {
+            self.declarations
+                .iter()
+                .find(|d| d.name == owner && matches!(&d.kind, DeclKind::Type { .. }))
+                .and_then(|d| d.members().iter().find(|m| m.name == member))
+        } else {
+            self.declarations
+                .iter()
+                .find(|d| d.name == name && matches!(&d.kind, DeclKind::Function { .. }))
+        }
+        .filter(|d| matches!(&d.kind, DeclKind::Function { .. } | DeclKind::Constant(_)))
+    }
+
     fn function(&mut self, name: &str, offset: usize) -> Result<Function, Error> {
         if let Some(function) = self.library.functions.get(name) {
             return Ok(function.clone());
         }
-        let declaration = self
-            .declarations
-            .iter()
-            .find(|d| matches!(d.kind.as_str(), "fn" | "const") && d.name == name)
-            .cloned()
-            .ok_or_else(|| {
-                Error::at(
-                    self.source,
-                    offset,
-                    format!("unknown projection function `{name}`"),
-                )
-            })?;
+        let owner = name.split_once("::").map(|(owner, _)| owner);
+        let declaration = self.callable(name).cloned().ok_or_else(|| {
+            Error::at(
+                self.source,
+                offset,
+                format!("unknown projection function `{name}`"),
+            )
+        })?;
         if !self.active.insert(name.into()) || self.active.len() > 64 {
             return Err(Error::at(
                 self.source,
@@ -1238,22 +1254,32 @@ impl Checker<'_> {
                 "function conflicts with a projection primitive",
             ));
         }
-        let signature = declaration.signature.clone().unwrap();
-        let Results::Fixed(results) = signature.results else {
-            return Err(Error::at(
-                self.source,
-                offset,
-                "function requires one result type",
-            ));
+        let (param_decls, result_type, is_const, constant) = match &declaration.kind {
+            DeclKind::Constant(ty) => (&[][..], ty, true, true),
+            DeclKind::Function { signature, .. } => {
+                let Results::Fixed(results) = &signature.results else {
+                    return Err(Error::at(
+                        self.source,
+                        offset,
+                        "function requires one result type",
+                    ));
+                };
+                if !signature.generics.is_empty() || results.len() != 1 {
+                    return Err(Error::at(
+                        self.source,
+                        offset,
+                        "function requires one result type and no generics",
+                    ));
+                }
+                (
+                    signature.params.as_slice(),
+                    &results[0].ty,
+                    signature.is_const,
+                    false,
+                )
+            }
+            _ => unreachable!("resolved callable declaration"),
         };
-        if !signature.generics.is_empty() || results.len() != 1 {
-            return Err(Error::at(
-                self.source,
-                offset,
-                "function requires one result type and no generics",
-            ));
-        }
-        let owner = name.split_once("::").map(|(owner, _)| owner);
         fn resolve_self(node: &Node, owner: Option<&str>) -> Node {
             let mut node = node.clone();
             match &mut node.kind {
@@ -1272,10 +1298,10 @@ impl Checker<'_> {
             }
             node
         }
-        let result = self.ty(&resolve_self(&results[0].ty, owner))?;
+        let result = self.ty(&resolve_self(result_type, owner))?;
         let mut params = Vec::new();
         let mut env = BTreeMap::new();
-        for param in signature.params {
+        for param in param_decls {
             if param.name != "self" || owner.is_none() {
                 super::identifier(self.source, param.offset, &param.name)?;
             }
@@ -1293,7 +1319,7 @@ impl Checker<'_> {
                 kind: ExprKind::Parameter(params.len()),
             };
             params.push(ty);
-            if env.insert(param.name, expr).is_some() {
+            if env.insert(param.name.clone(), expr).is_some() {
                 return Err(Error::at(
                     self.source,
                     param.offset,
@@ -1301,8 +1327,16 @@ impl Checker<'_> {
                 ));
             }
         }
-        let body = match declaration.body.expect("function has a body") {
-            crate::syntax::FunctionBody::Rust { offset, path } => {
+        let body = match &declaration.kind {
+            DeclKind::Constant(_)
+            | DeclKind::Function {
+                body: FunctionBody::Rust { .. },
+                ..
+            } => {
+                let (offset, path) = match declaration.body() {
+                    Some(FunctionBody::Rust { offset, path }) => (*offset, path.clone()),
+                    _ => (declaration.offset, None),
+                };
                 let path = if let Some(path) = path {
                     path
                 } else {
@@ -1344,15 +1378,15 @@ impl Checker<'_> {
                     result.clone(),
                     ExprKind::Rust(
                         RustCall {
-                            constant: declaration.kind == "const",
-                            is_const: signature.is_const,
+                            constant,
+                            is_const,
                             path,
                             method: owner.map(|owner| {
                                 (
                                     format!(
                                         "<{} as {}>",
                                         self.data.rust.rust(owner),
-                                        self.data.rust.method_trait(owner, signature.is_const)
+                                        self.data.rust.method_trait(owner, is_const)
                                     ),
                                     name.rsplit("::").next().unwrap().into(),
                                 )
@@ -1362,11 +1396,13 @@ impl Checker<'_> {
                     ),
                 )
             }
-            crate::syntax::FunctionBody::Value(value) => {
-                self.expr(&value, Some(&result), &env, None)?
-            }
+            DeclKind::Function {
+                body: FunctionBody::Value(value),
+                ..
+            } => self.expr(value, Some(&result), &env, None)?,
+            _ => unreachable!("resolved callable declaration"),
         };
-        if signature.is_const && !body.is_const() {
+        if is_const && !body.is_const() {
             return Err(Error::at(
                 self.source,
                 declaration.offset,
@@ -1374,7 +1410,7 @@ impl Checker<'_> {
             ));
         }
         let function = Function {
-            constant: declaration.kind == "const",
+            constant,
             params,
             result,
             body,
@@ -1628,11 +1664,7 @@ impl Checker<'_> {
                 }
             }
             Kind::Call(name, args)
-                if self.library.functions.contains_key(name)
-                    || self
-                        .declarations
-                        .iter()
-                        .any(|d| matches!(d.kind.as_str(), "fn" | "const") && d.name == *name) =>
+                if self.library.functions.contains_key(name) || self.callable(name).is_some() =>
             {
                 let function = self.function(name, node.offset)?;
                 self.call(function, Vec::new(), args, node.offset, env, signature)?
@@ -1808,21 +1840,6 @@ impl<'a> Emitter<'a> {
                 .map(|(i, p)| (p.name.clone(), format!("{operands}[{i}]")))
                 .collect(),
             ..Self::query(projections)
-        }
-    }
-
-    /// Property names belong to a new scope, not the instruction's SSA inputs.
-    pub fn scope(&self, projections: BTreeMap<String, String>) -> Self {
-        Self {
-            projections,
-            operand_types: BTreeMap::new(),
-            error: self.error.clone(),
-            storage_used: std::cell::Cell::new(false),
-            dfg: self.dfg,
-            results: self.results,
-            constant: self.constant,
-            const_failure: self.const_failure,
-            prefix: self.prefix,
         }
     }
 

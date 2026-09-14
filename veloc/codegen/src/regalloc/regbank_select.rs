@@ -118,7 +118,7 @@ impl RegisterBankSelector {
             for block in &mfunc.blocks {
                 for &inst_id in &block.insts {
                     let inst = &mfunc.inst(inst_id);
-                    if let veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::G_COPY) =
+                    if let veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::Copy) =
                         inst.opcode()
                     {
                         let dst = inst.defs().next();

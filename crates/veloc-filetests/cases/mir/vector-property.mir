@@ -6,7 +6,7 @@ block0():
   v0: i32<4> = vector-literal splat(-7)
   return v0
 
-// ----- inherited-property-validation
+// ----- explicit-property-validation
 // run: fixture-validate-error
 // check: dense vector constant byte count must match its type
 local function constant() -> void

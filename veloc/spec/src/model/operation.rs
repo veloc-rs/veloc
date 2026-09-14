@@ -4,18 +4,37 @@ use super::*;
 use crate::storage::{FieldType, Format};
 use crate::syntax::{Results, Signature};
 
+/// Default text names follow Rust-style word boundaries: StackLoad -> stack_load.
+pub(crate) fn mnemonic(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let mut text = String::with_capacity(name.len());
+    for (i, &byte) in bytes.iter().enumerate() {
+        if byte.is_ascii_uppercase() && i > 0 {
+            let previous = bytes[i - 1];
+            let starts_word = previous.is_ascii_lowercase()
+                || previous.is_ascii_digit()
+                || (previous.is_ascii_uppercase()
+                    && bytes.get(i + 1).is_some_and(u8::is_ascii_lowercase));
+            if starts_word {
+                text.push('_');
+            }
+        }
+        text.push(byte.to_ascii_lowercase() as char);
+    }
+    text
+}
+
 pub(super) fn parse(
     source: &str,
-    mut record: Record,
+    record: Decl,
     storage_defs: &storage::Storage,
     vocabulary: Vocabulary<'_>,
     expressions: &mut super::expr::Library,
 ) -> Result<Op, Error> {
     let Vocabulary { data, .. } = vocabulary;
-    let sig = record
-        .signature
-        .take()
-        .expect("op parser requires a signature");
+    let crate::syntax::DeclKind::Op(sig) = &record.kind else {
+        unreachable!("op parser requires an operation declaration");
+    };
     let node = record
         .fields
         .get("storage")
@@ -33,7 +52,7 @@ pub(super) fn parse(
         types,
         slots,
         type_bindings,
-    } = signature(source, record.offset, sig, vocabulary, &properties)?;
+    } = signature(source, record.offset, sig.clone(), vocabulary, &properties)?;
     let mut fields = Fields::new(source, record);
     let mnemonic = match fields.optional("mnemonic") {
         Some(Node {
@@ -42,7 +61,7 @@ pub(super) fn parse(
         }) => name,
         Some(_) => return Err(fields.error("mnemonic must be a quoted string")),
         None => match &storage_defs.strategy {
-            storage::Strategy::Operands(operands) => operands.mnemonic(&fields.name),
+            storage::Strategy::Operands(_) => mnemonic(&fields.name),
             storage::Strategy::Packed => return Err(fields.error("missing field `mnemonic`")),
         },
     };

@@ -9,7 +9,7 @@ fn compile_select_rule_v2_generates_target_inst_and_match_arm() {
           (encode (byte 0xC3)))
 
         (select-rule
-          (match (G_RET @n))
+          (match (Ret @n))
           (emit (X86Ret))
           (covers (@n))
           (cost 1))
@@ -19,7 +19,7 @@ fn compile_select_rule_v2_generates_target_inst_and_match_arm() {
 
     assert!(output.contains("pub enum TargetInst"));
     assert!(output.contains("X86Ret"));
-    assert!(output.contains("GenericOpcode::G_RET"));
+    assert!(output.contains("GenericOpcode::Ret"));
     assert!(output.contains("TargetInst::X86Ret.as_u32()"));
 }
 
@@ -164,7 +164,7 @@ fn compile_rel32_emit_generates_block_fixup() {
             (rel32 $target)))
 
         (select-rule
-          (match (G_BR $target @n))
+          (match (Br $target @n))
           (emit (X86Jmp $target))
           (covers (@n))
           (cost 1))
@@ -270,13 +270,13 @@ fn compile_select_rules_generate_generic_operand_constraint_metadata() {
           (encode (byte 0x90)))
 
         (select-rule
-          (match (schema BinaryReg G_ADD (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+          (match (schema BinaryReg Add (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
           (emit (X86Add32 $y $x))
           (covers (@n))
           (cost 1))
 
         (select-rule
-          (match (schema BinaryReg G_SHL (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
+          (match (schema BinaryReg Shl (dst (GPR32 $dst)) (lhs (GPR32 $x)) (rhs (GPR32 $y)) @n))
           (emit (X86Shl32Cl $y $x))
           (covers (@n))
           (cost 1))
@@ -284,8 +284,8 @@ fn compile_select_rules_generate_generic_operand_constraint_metadata() {
 
     let output = compile(input, "x86_64").expect("compile should succeed");
 
-    assert!(!output.contains("pub const GENERIC_INST_G_ADD_METADATA: GenericInstMetadata"));
-    assert!(output.contains("pub const GENERIC_INST_G_SHL_METADATA: GenericInstMetadata"));
+    assert!(!output.contains("pub const GENERIC_INST_ADD_METADATA: GenericInstMetadata"));
+    assert!(output.contains("pub const GENERIC_INST_SHL_METADATA: GenericInstMetadata"));
     assert!(!output.contains("TiedOperandConstraint { result: 0, use_operand: 2 }"));
     assert!(output.contains("FixedUseConstraint { use_operand: 1, reg: REG_RCX }"));
     assert!(output.contains("pub fn generic_inst_metadata(opcode: veloc_lir::GenericOpcode)"));
@@ -312,13 +312,13 @@ fn compile_stackslot_rules_generate_stackslot_operand_code() {
             (imm32 (slot-offset $slot))))
 
         (select-rule
-          (match (schema StackLoad G_STACK_LOAD (dst (GPR64 $dst)) (slot $slot) @n))
+          (match (schema StackLoad StackLoad (dst (GPR64 $dst)) (slot $slot) @n))
           (emit (X86Load64Stack $dst $slot))
           (covers (@n))
           (cost 1))
 
         (select-rule
-          (match (schema StackStore G_STACK_STORE (src (GPR64 $src)) (slot $slot) @n))
+          (match (schema StackStore StackStore (src (GPR64 $src)) (slot $slot) @n))
           (emit (X86Store64Stack $src $slot))
           (covers (@n))
           (cost 1))
@@ -336,7 +336,7 @@ fn compile_stackslot_rules_generate_stackslot_operand_code() {
 fn parse_select_rule_with_node_bind_and_covers() {
     let input = r#"
         (select-rule
-          (match (G_ADD (GPR64 $x) (GPR64 $y) @n))
+          (match (Add (GPR64 $x) (GPR64 $y) @n))
           (emit (X86Add64 $x $y))
           (covers (@n))
           (cost 1))
@@ -359,10 +359,10 @@ fn parse_select_rule_with_node_bind_and_covers() {
 fn parse_combine_rule_with_match_pair() {
     let input = r#"
         (combine-rule
-          (match-pair ((G_SDIV $lhs $rhs @q)
-                       (G_SREM $lhs $rhs @r)))
+          (match-pair ((Sdiv $lhs $rhs @q)
+                       (Srem $lhs $rhs @r)))
           (when ((same_block @q @r)))
-          (replace (G_SDIVREM $lhs $rhs))
+          (replace (Sdivrem $lhs $rhs))
           (covers (@q @r))
           (cost 1))
     "#;
@@ -381,8 +381,8 @@ fn parse_combine_rule_with_match_pair() {
 fn parse_rewrite_rule_definition() {
     let input = r#"
         (rewrite-rule
-          (match (G_ADD (GPR64 $x) (GPR64 $y) @n))
-          (replace (G_ADD (GPR64 $y) (GPR64 $x)))
+          (match (Add (GPR64 $x) (GPR64 $y) @n))
+          (replace (Add (GPR64 $y) (GPR64 $x)))
           (cost 1)
           (priority 10))
     "#;
@@ -643,7 +643,7 @@ fn invalid_or_incomplete_scheduling_contracts_are_rejected() {
 
 #[test]
 fn test_error_reporting() {
-    let input = "(select-rule (match (G_ADD $x $y @n)) (covers (@n)))";
+    let input = "(select-rule (match (Add $x $y @n)) (covers (@n)))";
     let res = veloc_isle::target::compile(input, "x86_64");
     if let Err(e) = res {
         println!("Expected error message:\n{}", e);

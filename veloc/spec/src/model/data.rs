@@ -6,7 +6,7 @@ use crate::Error;
 use crate::model::encoding::Encodings;
 use crate::model::records::{PropertyType, RecordDef};
 use crate::model::{Fields, identifier, list};
-use crate::syntax::{Kind, Node, Record};
+use crate::syntax::{Decl, DeclKind, Kind, Node};
 
 pub(crate) fn fits_number(ty: &str, n: i128) -> bool {
     match ty {
@@ -80,14 +80,14 @@ pub(crate) struct Types {
 }
 
 impl Types {
-    pub fn compile(declarations: &[Record], source: &str) -> Result<Self, Error> {
+    pub fn compile(declarations: &[Decl], source: &str) -> Result<Self, Error> {
         let rust = super::records::RustTypes::compile(declarations, source)?;
         let records = crate::model::records::compile(declarations, source, &rust)?;
         let mut enums = Vec::new();
         let mut names = BTreeSet::new();
         for decl in declarations.iter().filter(|d| {
-            matches!(d.kind.as_str(), "struct" | "enum" | "encoding")
-                && !(d.kind == "encoding" && d.name == "Type")
+            matches!(&d.kind, DeclKind::Fields(kind) if matches!(kind.as_str(), "struct" | "enum" | "encoding"))
+                && !(matches!(&d.kind, DeclKind::Fields(kind) if kind == "encoding") && d.name == "Type")
                 || super::records::rust_binding(d).is_some()
         }) {
             if !names.insert(decl.name.clone()) {
@@ -98,7 +98,10 @@ impl Types {
                 ));
             }
         }
-        for decl in declarations.iter().filter(|d| d.kind == "enum") {
+        for decl in declarations
+            .iter()
+            .filter(|d| matches!(&d.kind, DeclKind::Fields(kind) if kind == "enum"))
+        {
             let mut fields = Fields::new(source, decl.clone());
             let mut variants = Vec::new();
             let mut seen = BTreeSet::new();

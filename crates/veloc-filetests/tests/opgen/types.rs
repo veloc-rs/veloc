@@ -30,7 +30,7 @@ fn effect_sets_use_the_declared_vocabulary() {
 #[test]
 fn analysis_contracts_are_not_hardcoded_rust_paths() {
     let source = common::source(ADD).replace("veloc_types::OpTraits", "crate::Unrelated");
-    let code = veloc_opgen::compile(&source).unwrap();
+    let code = common::raw_plan(&source).unwrap().generate();
     assert!(
         code.opcodes
             .contains("<crate::Unrelated as veloc_types::traits::OpTraits>")

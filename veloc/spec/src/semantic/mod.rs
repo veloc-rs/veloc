@@ -458,7 +458,6 @@ pub(crate) fn derive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Pattern, TypeDef, TypeList};
 
     fn params() -> Vec<Param> {
         vec![
@@ -597,94 +596,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    fn unary(operand: Pattern, result: Pattern) -> Op {
-        let params = vec![Param {
-            moves: false,
-            name: "arg".into(),
-            kind: ParamKind::Value,
-        }];
-        let sem = parsed("bv.neg(arg)", &params).unwrap();
-        Op {
-            offset: 0,
-            name: "Test".into(),
-            mnemonic: "test".into(),
-            meta: crate::model::metadata::Metadata {
-                name: "OpInfo".into(),
-                checks: Vec::new(),
-                value_only: None,
-                fields: Default::default(),
-            },
-            format: "Unary".into(),
-            signature: TypeDef {
-                operands: TypeList::Fixed(vec![operand]),
-                results: TypeList::Fixed(vec![result]),
-            },
-            signature_source: None,
-            text: None,
-            params,
-            inputs: Default::default(),
-            projection: crate::model::Projection::Packed(Default::default()),
-            traits: BTreeSet::new(),
-            queries: Default::default(),
-            constraints: vec![],
-            identity: None,
-            absorbing: None,
-            semantics: Some(sem),
-        }
-    }
-
-    #[test]
-    fn same_width_integer_schemes_include_vectors_and_exact_types() {
-        for set in ["Integer", "ScalarInteger", "Integer & Vector"] {
-            let op = unary(
-                Pattern::Bind(0, crate::fixtures::set(set)),
-                Pattern::Same(0),
-            );
-            validate("", &op, &crate::fixtures::types()).unwrap();
-        }
-        for name in ["Type::I8", "Type::I16", "Type::I32", "Type::I64"] {
-            let op = unary(Pattern::Exact(name.into()), Pattern::Exact(name.into()));
-            validate("", &op, &crate::fixtures::types()).unwrap();
-        }
-        for (operand, result) in [
-            (
-                Pattern::Exact("Type::BOOL".into()),
-                Pattern::Exact("Type::BOOL".into()),
-            ),
-            (
-                Pattern::Exact("Type::I32".into()),
-                Pattern::Exact("Type::I64".into()),
-            ),
-            (
-                Pattern::Bind(0, crate::fixtures::set("Float")),
-                Pattern::Same(0),
-            ),
-            (
-                Pattern::Set(crate::fixtures::set("ScalarInteger")),
-                Pattern::Set(crate::fixtures::set("ScalarInteger")),
-            ),
-        ] {
-            let op = unary(operand, result);
-            assert!(validate("", &op, &crate::fixtures::types()).is_err());
-        }
-    }
-
-    #[test]
-    fn executable_bitvector_semantics_do_not_claim_control_or_traps() {
-        let mut op = unary(
-            Pattern::Exact("Type::I32".into()),
-            Pattern::Exact("Type::I32".into()),
-        );
-        for flag in ["MAY_TRAP", "TERMINATOR"] {
-            op.traits = BTreeSet::from([flag.into()]);
-            assert!(validate("", &op, &crate::fixtures::types()).is_err());
-        }
-        op.traits = BTreeSet::new();
-        op.signature.results = TypeList::Signature;
-        assert!(validate("", &op, &crate::fixtures::types()).is_err());
-        op.semantics = None;
-        validate("", &op, &crate::fixtures::types()).unwrap();
     }
 }

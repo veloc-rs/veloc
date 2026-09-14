@@ -2,7 +2,7 @@
 //! Resolution within a namespace remains the checked model's responsibility.
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::syntax::{FunctionBody, Kind, Node, Record, Results};
+use crate::syntax::{Decl, DeclKind, FunctionBody, Kind, Node, Results};
 use crate::{Error, model::records::rust_binding};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -15,26 +15,36 @@ enum Space {
 
 pub(super) fn check(
     source: &str,
-    records: &[Record],
+    declarations: &[Decl],
     files: &[super::File],
     defs: &crate::Definitions,
 ) -> Result<(), Error> {
     let mut symbols = BTreeMap::<(Space, String), BTreeSet<usize>>::new();
     for (file, entry) in files.iter().enumerate() {
-        for record in &records[entry.records.clone()] {
-            let space = match record.kind.as_str() {
-                "type" if rust_binding(record).is_some() => Space::Data,
-                "type" | "typeset" => Space::Type,
-                "fn" => Space::Function,
-                "const" => Space::Value,
-                "struct" | "enum" | "encoding" => Space::Data,
+        for (owner, record) in crate::syntax::walk(&declarations[entry.declarations.clone()]) {
+            let space = match &record.kind {
+                DeclKind::Type { .. } if rust_binding(record).is_some() => Space::Data,
+                DeclKind::Type { .. } | DeclKind::TypeSet(_) => Space::Type,
+                DeclKind::Function { .. } => Space::Function,
+                DeclKind::Constant(_) => Space::Value,
+                DeclKind::Fields(kind)
+                    if matches!(kind.as_str(), "struct" | "enum" | "encoding") =>
+                {
+                    Space::Data
+                }
                 _ => continue,
             };
             symbols
-                .entry((space, record.name.clone()))
+                .entry((
+                    space,
+                    owner.map_or_else(
+                        || record.name.clone(),
+                        |owner| format!("{owner}::{}", record.name),
+                    ),
+                ))
                 .or_default()
                 .insert(file);
-            if space == Space::Type && record.kind == "type" {
+            if space == Space::Type && matches!(&record.kind, DeclKind::Type { .. }) {
                 symbols
                     .entry((Space::Type, format!("Type::{}", record.name)))
                     .or_default()
@@ -57,7 +67,7 @@ pub(super) fn check(
             symbols: &symbols,
             visible: &file.visible,
         };
-        for record in &records[file.records.clone()] {
+        for (_, record) in crate::syntax::walk(&declarations[file.declarations.clone()]) {
             checker.record(record)?;
         }
     }
@@ -206,9 +216,9 @@ impl Checker<'_> {
         Ok(())
     }
 
-    fn record(&self, record: &Record) -> Result<(), Error> {
+    fn record(&self, record: &Decl) -> Result<(), Error> {
         let mut locals = BTreeSet::new();
-        if let Some(signature) = &record.signature {
+        if let Some(signature) = record.signature() {
             for generic in &signature.generics {
                 locals.insert(generic.name.clone());
             }
@@ -227,7 +237,7 @@ impl Checker<'_> {
                 self.node(&generic.ty, Some(Space::Type), &type_locals)?;
             }
             for param in &signature.params {
-                let space = if record.kind == "op"
+                let space = if matches!(&record.kind, DeclKind::Op(_))
                     && self
                         .defs
                         .ops
@@ -246,7 +256,7 @@ impl Checker<'_> {
                 self.node(&param.ty, Some(space), &type_locals)?;
             }
             if let Results::Fixed(results) = &signature.results {
-                let space = if record.kind == "op" {
+                let space = if matches!(&record.kind, DeclKind::Op(_)) {
                     Space::Type
                 } else {
                     Space::Data
@@ -256,20 +266,23 @@ impl Checker<'_> {
                 }
             }
         }
-        if record.kind == "property" {
-            self.name(&record.name, Space::Data, record.offset, &locals)?;
-            locals.insert("value".into());
-        }
-        if let Some(FunctionBody::Value(body)) = &record.body {
+        if let Some(FunctionBody::Value(body)) = record.body() {
             self.node(body, None, &locals)?;
         }
-        match record.kind.as_str() {
-            "struct" => {
+        match &record.kind {
+            DeclKind::Type { binding, .. } | DeclKind::TypeSet(binding) => {
+                self.node(binding, Some(Space::Type), &locals)?;
+            }
+            DeclKind::Constant(ty) => self.node(ty, Some(Space::Data), &locals)?,
+            _ => {}
+        }
+        match &record.kind {
+            DeclKind::Fields(kind) if kind == "struct" => {
                 for ty in record.fields.values() {
                     self.node(ty, Some(Space::Data), &locals)?;
                 }
             }
-            "type" | "typeset" | "predicate" => {
+            DeclKind::Type { .. } | DeclKind::TypeSet(_) => {
                 for (name, value) in &record.fields {
                     let space = if name == "field" {
                         Space::Data
@@ -279,7 +292,7 @@ impl Checker<'_> {
                     self.node(value, Some(space), &locals)?;
                 }
             }
-            "enum" => {
+            DeclKind::Fields(kind) if kind == "enum" => {
                 if let Some(Node {
                     kind: Kind::List(variants),
                     ..
@@ -294,7 +307,7 @@ impl Checker<'_> {
                     }
                 }
             }
-            "encoding" => {}
+            DeclKind::Fields(kind) if kind == "encoding" => {}
             _ => {
                 for value in record.fields.values() {
                     self.node(value, None, &locals)?;

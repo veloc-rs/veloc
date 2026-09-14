@@ -1,3 +1,10 @@
+// ----- type-members/cannot-overwrite-binding
+// run: opgen-error
+// check: unknown field `expr`
+type Example = rust("crate::Example") {
+    expr: Type::I32,
+}
+
 // ----- interfaces/arbitrary-interface-and-helper-names
 // run: opgen
 // check: pub struct Summary
@@ -6,8 +13,9 @@
 // check: count: *_f0
 // check: MemoryEffects>::READ
 struct Summary { count: u32, effects: MemoryEffect }
-fn Describe(n: u32) -> Summary {
-    value: Summary { count: n, effects: MemoryEffect::known(MemoryEffects::READ) },
+// A declaration keyword remains a name in parameter and expression positions.
+fn Describe(op: u32) -> Summary {
+    value: Summary { count: op, effects: MemoryEffect::known(MemoryEffects::READ) },
 }
 struct Data { n: u32 }
 op Example(size: u32) -> Type::I32 {
@@ -433,18 +441,6 @@ op Check<T: ScalarInteger | Type::PTR>(arg: T) -> T {
 // check: unknown function field `rust`
 fn wrong() -> bool { rust: default }
 
-// ----- type-methods/user-predicate-bindings-use-the-declared-set-offline
-// run: opgen
-// check: crate::types::is_wide
-predicate is_wide = Type::I32 | Type::I64;
-const fn wide(ty: Type) -> bool = rust("crate::types::is_wide");
-struct Unary { arg: Value }
-op Check<T: Integer>(arg: T) -> T {
-    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "check", storage: Unary { arg },
-    verify { require(wide(T), "wide"); }
-    semantics: bv.neg(arg)
-}
-
 // ----- type-methods/postfix-fields-and-methods-use-the-same-grammar
 // run: opgen
 // check: crate::type_methods::Token>::number
@@ -612,7 +608,8 @@ fn len(n: u32) -> u32 { value: n }
 // ----- expressions/legacy-constraints-have-no-compatibility-layer
 // run: opgen-error
 // check: use a verify block instead of constraints
-property Int { constraints: [true] }
+struct Data {}
+op Example() -> Type::I32 { constraints: [true] }
 
 // ----- borrowed-types/query-results-cannot-retain-borrowed-views
 // run: opgen-error

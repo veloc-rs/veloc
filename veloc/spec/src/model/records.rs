@@ -2,7 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use crate::syntax::{Kind, Node, Record};
+use crate::syntax::{Decl, DeclKind, Kind, Node};
 use crate::{Error, model};
 
 /// Logical reference structure, independent of payload placement.
@@ -64,7 +64,7 @@ impl References {
     fn parse(
         source: &str,
         node: &Node,
-        records: &[Record],
+        records: &[Decl],
         active: &mut BTreeSet<String>,
     ) -> Result<Self, Error> {
         match &node.kind {
@@ -135,9 +135,8 @@ pub(crate) struct Policy {
 }
 
 impl Policy {
-    pub fn parse(source: &str, record: &Record, records: &[Record]) -> Result<Self, Error> {
+    pub fn parse(source: &str, record: &Decl, records: &[Decl]) -> Result<Self, Error> {
         let mut fields = model::Fields::new(source, record.clone());
-        fields.take("expr")?;
         fields.optional("trait");
         fields.optional("analysis");
         let references = match fields.optional("field") {
@@ -181,7 +180,7 @@ pub(crate) struct RustTypes {
 pub(crate) use crate::interfaces::{primitive, rust_binding, rust_path};
 
 impl RustTypes {
-    pub fn compile(records: &[Record], source: &str) -> Result<Self, Error> {
+    pub fn compile(records: &[Decl], source: &str) -> Result<Self, Error> {
         let external = crate::interfaces::Bindings::compile(records, source)?;
         let mut policies = BTreeMap::new();
         for record in records.iter().filter(|r| rust_binding(r).is_some()) {
@@ -260,7 +259,7 @@ impl PropertyType {
 }
 
 pub(crate) fn field_type(
-    records: &[Record],
+    records: &[Decl],
     source: &str,
     node: Node,
 ) -> Result<PropertyType, Error> {
@@ -335,8 +334,7 @@ pub(crate) fn field_type(
     if !primitive(ty)
         && !records.iter().any(|r| {
             r.name == *ty
-                && (rust_binding(r).is_some()
-                    || matches!(r.kind.as_str(), "struct" | "enum" | "encoding"))
+                && (rust_binding(r).is_some() || matches!(&r.kind, DeclKind::Fields(kind) if matches!(kind.as_str(), "struct" | "enum" | "encoding")))
         })
     {
         return Err(Error::at(
@@ -355,13 +353,16 @@ pub(crate) fn field_type(
 }
 
 pub(crate) fn compile(
-    records: &[Record],
+    records: &[Decl],
     source: &str,
     rust: &RustTypes,
 ) -> Result<Vec<RecordDef>, Error> {
     let mut result = Vec::new();
     let mut names = BTreeSet::new();
-    for record in records.iter().filter(|r| r.kind == "struct") {
+    for record in records
+        .iter()
+        .filter(|r| matches!(&r.kind, DeclKind::Fields(kind) if kind == "struct"))
+    {
         let fail = |msg: &str| Error::at(source, record.offset, msg);
         model::identifier(source, record.offset, &record.name)?;
         if !names.insert(&record.name) {
