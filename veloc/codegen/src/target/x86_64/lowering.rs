@@ -47,9 +47,18 @@ pub(super) fn x86_mov_opcode_for_type(ty: Type) -> Result<TargetInst, crate::err
         Ok(TargetInst::X86Movss)
     } else if ty == Type::F64 {
         Ok(TargetInst::X86Movsd)
-    } else if ty.min_size_bytes().is_some_and(|bytes| bytes <= 4) {
+    } else if ty
+        .bit_size()
+        .and_then(|size| size.fixed_bits())
+        .is_some_and(|bits| bits <= 32)
+    {
         Ok(TargetInst::X86Mov32)
-    } else if ty.min_size_bytes().is_some_and(|bytes| bytes <= 8) || ty.is_ptr() {
+    } else if ty
+        .bit_size()
+        .and_then(|size| size.fixed_bits())
+        .is_some_and(|bits| bits <= 64)
+        || ty.is_ptr()
+    {
         Ok(TargetInst::X86Mov64)
     } else {
         panic!("unsupported type for x86_64 move: {:?}", ty);
@@ -383,7 +392,11 @@ impl X86_64Lowering {
         cond: Reg,
         cond_ty: Type,
     ) -> Reg {
-        let test_opcode = if cond_ty.min_size_bytes().is_some_and(|bytes| bytes <= 4) {
+        let test_opcode = if cond_ty
+            .bit_size()
+            .and_then(|size| size.fixed_bits())
+            .is_some_and(|bits| bits <= 32)
+        {
             TargetInst::X86Test32
         } else {
             TargetInst::X86Test64
@@ -646,10 +659,19 @@ impl X86_64Lowering {
                     dst_bits,
                 ));
             }
-            ty if ty.is_ptr() || ty.min_size_bytes().is_some_and(|bytes| bytes > 4) => {
+            ty if ty.is_ptr()
+                || ty
+                    .bit_size()
+                    .and_then(|size| size.fixed_bits())
+                    .is_some_and(|bits| bits > 32) =>
+            {
                 self.emit_select_i64_like(ctx, select.dst, cond_i32, select.v1, select.v2, ty);
             }
-            ty if ty.min_size_bytes().is_some_and(|bytes| bytes <= 4) => {
+            ty if ty
+                .bit_size()
+                .and_then(|size| size.fixed_bits())
+                .is_some_and(|bits| bits <= 32) =>
+            {
                 self.emit_select_i32(ctx, select.dst, cond_i32, select.v1, select.v2);
             }
             _ => {

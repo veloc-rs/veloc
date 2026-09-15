@@ -1379,9 +1379,8 @@ impl<'a> Compiler<'a> {
                     .memory_access(self.func.dfg())
                     .expect("load access contract");
                 if !access.flags.is_volatile()
-                    && let Some((object, offset)) = self
-                        .func
-                        .stack_access(access, Some(core::mem::size_of::<usize>() as u32))
+                    && let Some((object, offset)) =
+                        self.func.stack_access(access, &crate::DATA_LAYOUT)
                 {
                     let dst = self.mapper.reg(self.func.dfg().first_result(inst).unwrap());
                     emit::StackLoad(
@@ -1401,9 +1400,8 @@ impl<'a> Compiler<'a> {
                     .memory_access(self.func.dfg())
                     .expect("store access contract");
                 if !access.flags.is_volatile()
-                    && let Some((object, offset)) = self
-                        .func
-                        .stack_access(access, Some(core::mem::size_of::<usize>() as u32))
+                    && let Some((object, offset)) =
+                        self.func.stack_access(access, &crate::DATA_LAYOUT)
                 {
                     let src = self.mapper.reg(*value);
                     emit::StackStore(

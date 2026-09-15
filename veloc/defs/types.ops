@@ -40,6 +40,7 @@ type VectorConst = rust("crate::VectorConst") {
     trait: rust("crate::type_methods::VectorConstInfo"),
     fn ty(self) -> Type { value: type(self) }
     const fn is_dense(self) -> bool;
+    const fn encoded_size(self) -> optional(u32);
 }
 type FuncId = rust("crate::FuncId");
 type Intrinsic = rust("crate::Intrinsic");

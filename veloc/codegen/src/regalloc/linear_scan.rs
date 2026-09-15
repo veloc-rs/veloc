@@ -4,6 +4,7 @@ use crate::pipeline::FunctionAnalysisCtx;
 use crate::target::arch::{CallConv, RegClass, TargetMachine};
 use crate::{Error, Result};
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use veloc_lir::stages::PostIselOptimized;
@@ -166,7 +167,14 @@ impl<'a> RegisterAllocator<'a> {
             .special_regs
             .frame_pointer
             .ok_or_else(|| Error::codegen("spilling requires a frame pointer"))?;
-        let slot = frame.alloc_slot(layout.type_size(&ty), layout.type_align(&ty));
+        let layout = layout
+            .layout_of(ty)
+            .ok_or_else(|| Error::codegen(format!("unknown storage layout: {ty:?}")))?;
+        let size = layout.alloc_size().ok_or_else(|| {
+            Error::codegen(format!("stack allocation requires fixed size: {ty:?}"))
+        })?;
+        let align = layout.align;
+        let slot = frame.alloc_slot(size, align);
         self.spilled.insert(reg, slot);
         Ok(())
     }

@@ -235,7 +235,7 @@ op Example(data: Bytes) -> (result: Vector) {
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: "{data:bytes}",
     verify {
-        len(data) == result.min_size_bytes()?; all(data, |i| i);
+        len(data) == result.lanes()?; all(data, |i| i);
     }
 }
 
@@ -248,7 +248,7 @@ op Example(data: Bytes) -> () {
     mnemonic: "example", storage: Custom { pool_id: pool(data) },
     text: "{data:bytes}",
     verify {
-        len(data) == result.min_size_bytes()?; all(data, |i| i < 2 * result.lanes()?);
+        len(data) == result.lanes()?; all(data, |i| i < 2 * result.lanes()?);
     }
 }
 

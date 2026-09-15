@@ -7,7 +7,7 @@ use super::parser::{self, OperandParser, ParseError};
 use super::printer::InstPrinter;
 use crate::type_methods::VectorConstInfo;
 use crate::{
-    BlockCall, Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, ScalarType, SigId, Type,
+    BlockCall, Float, FloatCC, FuncId, Int, IntCC, Intrinsic, ScalarConst, SigId, Type,
     Value, VectorConst,
 };
 use alloc::vec::Vec;
@@ -190,13 +190,13 @@ impl AtomCodec for VectorConst {
         input.expect(Kind::LParen)?;
         let element = vector.element_type();
         let ty = Some(element.as_type());
-        let lane: ScalarConst = match element {
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
+        let lane: ScalarConst = match element.element() {
+            veloc_types::Scalar::Int(_) => {
                 Int::parse(cx, input, ty)?.into()
             }
-            ScalarType::F32 | ScalarType::F64 => Float::parse(cx, input, ty)?.into(),
-            ScalarType::BOOL => bool::parse(cx, input, ty)?.into(),
-            ScalarType::PTR => unreachable!("pointer vector types are not representable"),
+            veloc_types::Scalar::Float(_) => Float::parse(cx, input, ty)?.into(),
+            veloc_types::Scalar::Bool => bool::parse(cx, input, ty)?.into(),
+            veloc_types::Scalar::Ptr => unreachable!("pointer vector types are not representable"),
         };
         input.expect(Kind::RParen)?;
         Ok(Self::splat(lane, vector.lane_count(), vector.is_scalable())

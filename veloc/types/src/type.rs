@@ -1,6 +1,6 @@
 //! Compact shared types, checked scalar/vector views and physical encoding.
 
-use crate::{CallableKind, Scalar, Shape, SigId, TypeBits, TypeInfo, TypeSize};
+use crate::{CallableKind, Scalar, Shape, SigId, TypeBits, TypeInfo};
 use core::fmt;
 
 // Physical layout is a Rust implementation detail, not an OpSpec contract.
@@ -16,75 +16,94 @@ const LANES_LOG2_MAX: u16 = crate::MAX_VECTOR_LANES.trailing_zeros() as u16;
 #[repr(transparent)]
 pub struct Type(u64);
 
-// One Rust table owns scalar facts and the catalog of named types.
-macro_rules! define_types {
-    (scalars { $($name:ident = $code:literal => $fact:ident $(($bits:literal))?, $debug:literal, $text:literal;)* }
-     vectors { $($vector:ident = $element:ident($lanes:literal);)* }) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        #[repr(u8)]
-        pub enum ScalarType { $($name = $code,)* }
+/// A scalar-only view, obtained through checked conversion from Type.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct ScalarType(Type);
+
+impl ScalarType {
+    #[inline]
+    pub const fn as_type(self) -> Type {
+        self.0
+    }
+
+    /// Compact storage code, not a second type representation.
+    #[inline]
+    pub const fn code(self) -> u8 {
+        self.0.element_code()
+    }
+
+    #[inline]
+    const fn can_vectorize(self) -> bool {
+        self.0.0 != Type::PTR.0
+    }
+}
+
+// Only repetitive catalog entries live in the macro. Codes are explicit so
+// reordering declarations cannot silently change serialized instructions.
+macro_rules! scalar_types {
+    ($($name:ident = $code:literal => $fact:ident $(($bits:literal))?, $text:literal;)*) => {
+        impl Type {
+            $(pub const $name: Self = Self($code);)*
+        }
         impl ScalarType {
-            /// Canonical scalar catalog, generated from the representation table.
+            $(pub const $name: Self = Self(Type::$name);)*
             pub const ALL: &'static [Self] = &[$(Self::$name,)*];
-            #[inline]
-            pub const fn from_element(element: Scalar) -> Option<Self> {
-                match element { $($fact $(($bits))? => Some(Self::$name),)* _ => None }
-            }
-            #[inline]
-            pub const fn code(self) -> u8 { self as u8 }
-            #[inline]
+
             pub const fn from_code(code: u8) -> Option<Self> {
                 match code { $($code => Some(Self::$name),)* _ => None }
             }
-            #[inline]
-            pub const fn as_type(self) -> Type { Type(self.code() as u64) }
-            #[inline]
+            pub const fn from_element(element: Scalar) -> Option<Self> {
+                match element { $($fact $(($bits))? => Some(Self::$name),)* _ => None }
+            }
             pub const fn element(self) -> Scalar {
-                match self { $(Self::$name => $fact $(($bits))?,)* }
+                match self.code() { $($code => $fact $(($bits))?,)* _ => panic!("invalid scalar type") }
             }
-            #[inline]
-            const fn can_vectorize(self) -> bool { !matches!(self, Self::PTR) }
-            fn name(self, debug: bool) -> &'static str {
-                match self { $(Self::$name => if debug { $debug } else { $text },)* }
-            }
-        }
-        impl Type {
-            $(pub const $name: Self = ScalarType::$name.as_type();)*
-            $(pub const $vector: Self = match ScalarType::$element.vector($lanes, false) {
-                Some(vector) => vector.as_type(),
-                None => panic!("invalid named vector type"),
-            };)*
-            /// Named conveniences, not an exhaustive enumeration of legal types.
-            pub const NAMED: &'static [(&'static str, Self)] = &[
-                $((stringify!($name), Self::$name),)*
-                $((stringify!($vector), Self::$vector),)*
-            ];
             pub fn from_name(name: &str) -> Option<Self> {
                 match name { $($text => Some(Self::$name),)* _ => None }
+            }
+            pub const fn name(self) -> &'static str {
+                match self.code() { $($code => $text,)* _ => panic!("invalid scalar type") }
             }
         }
     }
 }
 use crate::Scalar::{Bool, Float, Int, Ptr};
-define_types! {
-  scalars {
-    I8 = 1 => Int(8), "I8", "i8";
-    I16 = 2 => Int(16), "I16", "i16";
-    I32 = 3 => Int(32), "I32", "i32";
-    I64 = 4 => Int(64), "I64", "i64";
-    F32 = 5 => Float(32), "F32", "f32";
-    F64 = 6 => Float(64), "F64", "f64";
-    BOOL = 7 => Bool, "Bool", "bool";
-    PTR = 8 => Ptr, "Ptr", "ptr";
-  }
-  vectors {
-    I32X4 = I32(4);
-    I64X2 = I64(2);
-    F32X4 = F32(4);
-    F64X2 = F64(2);
-    I8X16 = I8(16);
-    I16X8 = I16(8);
-  }
+scalar_types! {
+    I8 = 1 => Int(8), "i8";
+    I16 = 2 => Int(16), "i16";
+    I32 = 3 => Int(32), "i32";
+    I64 = 4 => Int(64), "i64";
+    F32 = 5 => Float(32), "f32";
+    F64 = 6 => Float(64), "f64";
+    BOOL = 7 => Bool, "bool";
+    PTR = 8 => Ptr, "ptr";
+}
+
+impl Type {
+    // Convenience names for compositions, not additional scalar encodings.
+    pub const I32X4: Self = ScalarType::I32.vector(4, false).unwrap().as_type();
+    pub const I64X2: Self = ScalarType::I64.vector(2, false).unwrap().as_type();
+    pub const F32X4: Self = ScalarType::F32.vector(4, false).unwrap().as_type();
+    pub const F64X2: Self = ScalarType::F64.vector(2, false).unwrap().as_type();
+    pub const I8X16: Self = ScalarType::I8.vector(16, false).unwrap().as_type();
+    pub const I16X8: Self = ScalarType::I16.vector(8, false).unwrap().as_type();
+
+    /// Parse a canonical scalar name. Vector syntax belongs to the text parser.
+    pub fn from_scalar_name(name: &str) -> Option<Self> {
+        ScalarType::from_name(name).map(ScalarType::as_type)
+    }
+}
+
+impl fmt::Debug for ScalarType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.element() {
+            Int(bits) => write!(f, "I{bits}"),
+            Float(bits) => write!(f, "F{bits}"),
+            Bool => f.write_str("Bool"),
+            Ptr => f.write_str("Ptr"),
+        }
+    }
 }
 impl Type {
     #[inline]
@@ -124,10 +143,8 @@ impl Type {
             None
         }
     }
-    fn element_name(self, debug: bool) -> &'static str {
-        ScalarType::from_code(self.element_code())
-            .expect("validated scalar kind")
-            .name(debug)
+    fn scalar_element(self) -> ScalarType {
+        ScalarType::from_code(self.element_code()).expect("validated scalar kind")
     }
     #[inline]
     pub const fn is_integer(self) -> bool {
@@ -223,25 +240,6 @@ impl Default for Type {
 }
 
 impl Type {
-    /// Byte-addressed representation, not a target ABI or packed predicate layout.
-    #[inline]
-    pub const fn storage_size(self) -> TypeSize {
-        let (Some(bits), Some(lanes)) = (self.element_bits(), self.lanes()) else {
-            return TypeSize::TargetDependent;
-        };
-        let Some(bytes) = bits.div_ceil(8).checked_mul(lanes) else {
-            return TypeSize::TargetDependent;
-        };
-        if self.is_scalable() {
-            TypeSize::Scalable { min_bytes: bytes }
-        } else {
-            TypeSize::Fixed(bytes)
-        }
-    }
-    #[inline]
-    pub const fn fixed_size_bytes(self) -> Option<u32> {
-        self.storage_size().fixed_bytes()
-    }
     #[inline]
     pub fn min_bit_width(self) -> Option<u32> {
         self.bit_size().map(TypeBits::min_bits)
@@ -264,15 +262,15 @@ impl fmt::Debug for Type {
                 write!(f, "<{} x mask>", lanes)
             }
         } else if self.is_vector() {
-            let elem = self.element_name(true);
+            let elem = self.scalar_element();
             let lanes = self.lane_count();
             if self.is_scalable() {
-                write!(f, "<vscale x {} x {}>", lanes, elem)
+                write!(f, "<vscale x {} x {:?}>", lanes, elem)
             } else {
-                write!(f, "<{} x {}>", lanes, elem)
+                write!(f, "<{} x {:?}>", lanes, elem)
             }
         } else {
-            f.write_str(self.element_name(true))
+            fmt::Debug::fmt(&self.scalar_element(), f)
         }
     }
 }
@@ -302,7 +300,7 @@ impl fmt::Display for Type {
                 write!(f, "mask<{}>", lanes)
             }
         } else if self.is_vector() {
-            let elem = self.element_name(false);
+            let elem = self.scalar_element().name();
             let lanes = self.lane_count();
             if self.is_scalable() {
                 write!(f, "{}<scalable {}>", elem, lanes)
@@ -310,7 +308,7 @@ impl fmt::Display for Type {
                 write!(f, "{}<{}>", elem, lanes)
             }
         } else {
-            f.write_str(self.element_name(false))
+            f.write_str(self.scalar_element().name())
         }
     }
 }
@@ -469,11 +467,6 @@ const impl TypeInfo for Type {
         } else {
             TypeBits::Fixed(bits)
         })
-    }
-
-    #[inline]
-    fn min_size_bytes(self) -> Option<u32> {
-        self.storage_size().min_bytes()
     }
 
     #[inline]

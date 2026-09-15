@@ -165,13 +165,13 @@ impl From<bool> for ScalarConst {
 
 impl InstWriter<'_> {
     pub fn scalar_const(self, value: ScalarConst) -> crate::Inst {
-        match value.ty {
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64 => {
+        match value.ty.element() {
+            veloc_types::Scalar::Int(_) => {
                 self.iconst(Int(value))
             }
-            ScalarType::F32 | ScalarType::F64 => self.fconst(Float(value)),
-            ScalarType::BOOL => self.bconst(value.bits != 0),
-            ScalarType::PTR => unreachable!("pointer constants are not represented by ScalarConst"),
+            veloc_types::Scalar::Float(_) => self.fconst(Float(value)),
+            veloc_types::Scalar::Bool => self.bconst(value.bits != 0),
+            veloc_types::Scalar::Ptr => unreachable!("pointer constants are not represented by ScalarConst"),
         }
     }
 }
@@ -268,6 +268,13 @@ impl VectorConst {
 }
 
 const impl crate::type_methods::VectorConstInfo for VectorConst {
+    // Dense constants encode one byte-rounded scalar per lane, independently
+    // of the target's memory representation (including predicate packing).
+    fn encoded_size(self) -> Option<u32> {
+        if self.ty().is_scalable() { return None; }
+        let (Some(bits), Some(lanes)) = (self.ty().element_bits(), self.ty().lanes()) else { return None; };
+        bits.div_ceil(8).checked_mul(lanes)
+    }
     fn is_dense(self) -> bool {
         matches!(self.data(), ConstData::Dense(_))
     }
@@ -310,27 +317,28 @@ impl From<Float> for Constant {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ScalarBits {
     bits: [u8; 8],
-    ty: crate::ScalarType,
+    // Storage keeps the compact code, not the eight-byte checked Type view.
+    ty: core::num::NonZeroU8,
 }
 
 impl ScalarBits {
     pub fn new(value: crate::ScalarConst) -> Self {
         Self {
             bits: value.to_bits().to_le_bytes(),
-            ty: value.ty,
+            ty: core::num::NonZeroU8::new(value.ty.code()).expect("scalar codes are nonzero"),
         }
     }
 
     pub fn int(self) -> crate::Int {
         Int(ScalarConst {
-            ty: self.ty,
+            ty: ScalarType::from_code(self.ty.get()).expect("stored scalar type"),
             bits: u64::from_le_bytes(self.bits),
         })
     }
 
     pub fn float(self) -> crate::Float {
         Float(ScalarConst {
-            ty: self.ty,
+            ty: ScalarType::from_code(self.ty.get()).expect("stored scalar type"),
             bits: u64::from_le_bytes(self.bits),
         })
     }

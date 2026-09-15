@@ -23,7 +23,10 @@ pub(super) fn spill_instruction(
                 if ty.is_ptr() {
                     8
                 } else {
-                    ty.fixed_size_bytes().unwrap()
+                    super::DATA_LAYOUT
+                        .layout_of(ty)
+                        .and_then(|layout| layout.store_size.fixed_bytes())
+                        .ok_or_else(|| crate::Error::codegen("unknown spill layout"))?
                 },
             ) {
                 (true, 1) => X86Load8U32,

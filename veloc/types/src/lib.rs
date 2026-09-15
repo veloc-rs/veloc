@@ -22,6 +22,9 @@ pub use effects::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
 mod signature;
 pub use signature::{CallConv, SigId, Signature, SignatureError, Signatures};
 
+mod layout;
+pub use layout::{DataLayout, TypeLayout};
+
 /// Callable environment contracts, not a CPS calling convention.
 /// Lifetime and call multiplicity are distinct; these are the combinations
 /// supported by the IR, not a claim that every owned closure must be one-shot.
@@ -68,7 +71,6 @@ pub use r#type::{ScalarType, Type, VectorType};
 pub enum TypeSize {
     Fixed(u32),
     Scalable { min_bytes: u32 },
-    TargetDependent,
 }
 
 impl TypeSize {
@@ -77,13 +79,6 @@ impl TypeSize {
         match self {
             Self::Fixed(bytes) => Some(bytes),
             _ => None,
-        }
-    }
-    #[inline]
-    pub const fn min_bytes(self) -> Option<u32> {
-        match self {
-            Self::Fixed(bytes) | Self::Scalable { min_bytes: bytes } => Some(bytes),
-            Self::TargetDependent => None,
         }
     }
 }

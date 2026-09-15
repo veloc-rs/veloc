@@ -5,6 +5,7 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
+veloc-types = { workspace = true }
 veloc-mir = { path = "../mir" }
 veloc-lir = { workspace = true }
 cranelift-entity = { workspace = true }

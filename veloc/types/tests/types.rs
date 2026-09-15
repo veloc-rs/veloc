@@ -7,6 +7,14 @@ use veloc_types::{
 #[test]
 fn shared_encoding_and_checked_views_roundtrip() {
     assert_eq!(core::mem::size_of::<Type>(), 8);
+    assert_eq!(
+        core::mem::size_of::<ScalarType>(),
+        core::mem::size_of::<Type>()
+    );
+    assert_eq!(
+        core::mem::align_of::<ScalarType>(),
+        core::mem::align_of::<Type>()
+    );
     let mut valid = 0;
     for raw in 0..=u16::MAX {
         let Some(ty) = Type::from_raw(raw) else {
@@ -23,11 +31,18 @@ fn shared_encoding_and_checked_views_roundtrip() {
             assert_eq!(ty.element(), Some(vector.element_type().element()));
         } else {
             let scalar = ty.as_scalar().unwrap();
+            assert_eq!(scalar.as_type(), ty);
+            assert_eq!(ScalarType::from_name(scalar.name()), Some(scalar));
+            assert_eq!(Type::from_scalar_name(scalar.name()), Some(ty));
             assert_eq!(Type::from_scalar_code(scalar.code()), Some(ty));
             assert_eq!(ScalarType::from_element(scalar.element()), Some(scalar));
         }
     }
     assert_eq!(valid, 8 + 7 * 15 * 2);
+    assert_eq!(Type::from_scalar_name("i32<4>"), None);
+    for raw in 0..=u8::MAX {
+        assert_eq!(ScalarType::from_code(raw).is_some(), (1..=8).contains(&raw));
+    }
     for kind in [
         CallableKind::Local,
         CallableKind::Owned,

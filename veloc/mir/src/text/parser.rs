@@ -638,7 +638,7 @@ fn parse_type(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Ty
     let location = input.location();
     let name = input.word()?;
     if !input.eat(Kind::Less) {
-        return Type::from_name(name)
+        return Type::from_scalar_name(name)
             .ok_or_else(|| location.error(format!("unknown type `{name}`")));
     }
     if matches!(name, "owned" | "local" | "shared") {
@@ -655,7 +655,7 @@ fn parse_type(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Ty
     let base = if name == "mask" {
         Some(Type::BOOL)
     } else {
-        Type::from_name(name)
+        Type::from_scalar_name(name)
     };
     let scalable = input.is("scalable");
     if scalable {

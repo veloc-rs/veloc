@@ -79,6 +79,8 @@ impl Pass {
 /// 优化配置。
 #[derive(Debug, Clone, Default)]
 pub struct OptConfig {
+    /// None disables optimizations that depend on target memory representation.
+    pub data_layout: Option<veloc_types::DataLayout>,
     pub monitor_performance: bool,
     /// 调试标签系统，用于控制细粒度的输出，如 "dce", "liveness" 等
     debug_tags: HashSet<String>,
@@ -89,6 +91,7 @@ impl OptConfig {
     pub fn new(monitor_performance: bool) -> Self {
         Self {
             monitor_performance,
+            data_layout: None,
             debug_tags: HashSet::new(),
         }
     }

@@ -3,70 +3,10 @@ use std::fs;
 use std::path::PathBuf;
 use veloc_isle::target::compile;
 
-fn generate_lowering() -> PathBuf {
-    let source = veloc_opgen::Source::load("../mir/defs/module.ops").expect("load MIR definitions");
-    let lir_source =
-        veloc_opgen::Source::load("../lir/defs/module.ops").expect("load LIR definitions");
-    for path in source.dependencies().chain(lir_source.dependencies()) {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
-    let defs = source.parse().expect("check MIR definitions");
-    let lir = lir_source.parse().expect("check LIR definitions");
-    let mut dialects = veloc_isle::rules::Dialects::default();
-    dialects
-        .insert("mir", &defs)
-        .expect("register MIR contracts");
-    dialects
-        .insert("lir", &lir)
-        .expect("register LIR contracts");
-    let rules = "rules/mir.rules";
-    println!("cargo:rerun-if-changed={rules}");
-    let input = fs::read_to_string(rules).expect("read MIR lowering rules");
-    let mut program =
-        veloc_isle::rules::Program::compile(&input, &dialects).expect("check MIR lowering rules");
-    program
-        .infer_primitives(&dialects, "mir", "lir")
-        .expect("unambiguous semantic mappings");
-    let mut code = program
-        .rust(veloc_isle::rules::Rust {
-            function: "lower",
-            context: "Context",
-            source: ("mir", "veloc_mir::Opcode"),
-            target: ("lir", "veloc_lir::GenericOpcode"),
-        })
-        .expect("generate MIR lowering");
-    // Invoke OpSpec's generated constructors: physical field order and omitted
-    // optional operands must never be reconstructed by the rule compiler.
-    use std::fmt::Write;
-    let operations: std::collections::BTreeMap<_, _> =
-        lir.operations().map(|op| (op.name.clone(), op)).collect();
-    code.push_str("fn build(writer: veloc_lir::InstWriter<'_>, opcode: GenericOpcode, results: &[Reg], inputs: &[Reg]) -> veloc_lir::InstId { match opcode {\n");
-    for target in program.targets() {
-        let name = target.strip_prefix("lir.").expect("LIR constructor");
-        let op = &operations[name];
-        let signature = op.signature.as_ref().expect("checked value signature");
-        let builder = op
-            .constructor
-            .as_ref()
-            .expect("operand storage constructor");
-        let args = (0..signature.results.len())
-            .map(|i| format!("Writable(results[{i}])"))
-            .chain((0..signature.inputs.len()).map(|i| format!("inputs[{i}]")))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(code, "GenericOpcode::{name} => writer.{builder}({args}),").unwrap();
-    }
-    code.push_str("_ => unreachable!(\"unbound rule constructor\"),\n} }\n");
-    let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
-    let path = dir.join("mir_lowering.rs");
-    fs::write(&path, code).expect("write direct lowering");
-    path
-}
-
 fn main() {
     println!("cargo:rerun-if-changed=../../rustfmt.toml");
     println!("cargo:rerun-if-env-changed=RUSTFMT");
-    let mut rust_files = vec![generate_lowering()];
+    let mut rust_files = Vec::new();
     let arch = "x86_64";
     let isle_dir = PathBuf::from(format!("isle/{}", arch));
 

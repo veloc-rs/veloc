@@ -15,11 +15,12 @@ pub use lowering::{
 
 use crate::regalloc::regbank_select::TargetRegBankSelect;
 use crate::target::arch::{
-    CpuDescription, DataLayout, RegClass, RegClassInfo, RegisterFile, SpecialRegs, TargetConfig,
+    CpuDescription, RegClass, RegClassInfo, RegisterFile, SpecialRegs, TargetConfig,
     TargetDescription, TargetEmitter, TargetFrameLowering, TargetInstructionSelector,
     TargetLegalizer, TargetMachine, TargetOperandLowering, TargetPassConfig, TargetPostIsel,
 };
 use veloc_lir::RegisterBank;
+use veloc_types::{DataLayout, Type, TypeLayout};
 
 const X86_64_GPR_ALLOCATABLE: &[veloc_lir::Reg] = &[
     isle::REG_RAX,
@@ -74,7 +75,23 @@ static X86_64_REGISTER_FILE: RegisterFile = RegisterFile {
         frame_pointer: Some(isle::SPECIAL_REG_FRAME_POINTER),
     },
 };
-static X86_64_DATA_LAYOUT: DataLayout = DataLayout {
+pub const DATA_LAYOUT: DataLayout = DataLayout {
+    types: &[
+        (Type::BOOL, TypeLayout::fixed(1, 1)),
+        (Type::I8, TypeLayout::fixed(1, 1)),
+        (Type::I16, TypeLayout::fixed(2, 2)),
+        (Type::I32, TypeLayout::fixed(4, 4)),
+        (Type::I64, TypeLayout::fixed(8, 8)),
+        (Type::F32, TypeLayout::fixed(4, 4)),
+        (Type::F64, TypeLayout::fixed(8, 8)),
+        (Type::PTR, TypeLayout::fixed(8, 8)),
+        (Type::I8X16, TypeLayout::fixed(16, 16)),
+        (Type::I16X8, TypeLayout::fixed(16, 16)),
+        (Type::I32X4, TypeLayout::fixed(16, 16)),
+        (Type::I64X2, TypeLayout::fixed(16, 16)),
+        (Type::F32X4, TypeLayout::fixed(16, 16)),
+        (Type::F64X2, TypeLayout::fixed(16, 16)),
+    ],
     pointer_size: 8,
     little_endian: true,
 };
@@ -100,7 +117,7 @@ impl X86_64TargetMachine {
         let desc = TargetDescription {
             arch: crate::target::arch::TargetArch::X86_64,
             registers: X86_64_REGISTER_FILE,
-            data_layout: X86_64_DATA_LAYOUT,
+            data_layout: DATA_LAYOUT,
             cpu,
         };
 

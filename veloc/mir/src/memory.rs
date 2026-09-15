@@ -1,19 +1,15 @@
 //! Memory semantics shared by analyses and lowerings. An Access is a query
 //! result, not a second authoritative copy of instruction operands.
 use crate::{Function, Inst, Value};
-use veloc_types::TypeInfo;
+use veloc_types::DataLayout;
 
 pub use crate::inst::MemoryAccess as Access;
 
 impl Access {
-    /// Pointer width is deliberately supplied by the target, not assumed to
-    /// equal the host pointer width. Scalable/opaque representations are unknown.
-    pub fn bytes(self, pointer_bytes: Option<u32>) -> Option<u32> {
-        if self.ty.is_ptr() {
-            pointer_bytes
-        } else {
-            self.ty.fixed_size_bytes()
-        }
+    /// Access width follows the supplied representation, never the host layout.
+    /// Scalable or unlisted representations have no known fixed access width.
+    pub fn bytes(self, layout: &DataLayout) -> Option<u32> {
+        layout.layout_of(self.ty)?.store_size.fixed_bytes()
     }
 }
 
@@ -45,13 +41,13 @@ impl Function {
 
     /// A complete, aligned access inside a known live entry object.
     /// This is a bounds proof, not a claim that the bytes are initialized.
-    pub fn stack_access(&self, access: Access, pointer_bytes: Option<u32>) -> Option<(Inst, u32)> {
+    pub fn stack_access(&self, access: Access, layout: &DataLayout) -> Option<(Inst, u32)> {
         let (object, offset) = self.stack_address(access.ptr)?;
         let offset = u32::try_from(offset.checked_add(access.offset)?).ok()?;
         let crate::InstView::Alloca { size, align } = self.dfg().inst(object) else {
             unreachable!("stack address ends at an allocation")
         };
-        let bytes = access.bytes(pointer_bytes)?;
+        let bytes = access.bytes(layout)?;
         (bytes != 0
             && offset.checked_add(bytes)? <= size
             && align >= access.flags.alignment()

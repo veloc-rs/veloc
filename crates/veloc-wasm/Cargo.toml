@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+veloc-types = { workspace = true }
 veloc = { workspace = true }
 veloc-mir = { workspace = true }
 veloc-optimizer = { workspace = true }

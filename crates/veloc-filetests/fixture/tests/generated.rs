@@ -421,23 +421,13 @@ fn generated_encodings_preserve_neighboring_fields_and_check_ranges() {
 }
 
 #[test]
-fn scalar_enum_is_exhaustive_and_preserves_type_encoding() {
+fn scalar_view_preserves_type_encoding() {
     use veloc_mir::{CallableKind, ScalarType, SigId};
 
-    // No wildcard: adding a scalar kind must prompt consumers to consider it.
     fn width(ty: ScalarType) -> Option<u32> {
-        match ty {
-            ScalarType::I8 => Some(8),
-            ScalarType::I16 => Some(16),
-            ScalarType::I32 | ScalarType::F32 => Some(32),
-            ScalarType::I64 | ScalarType::F64 => Some(64),
-            ScalarType::BOOL => Some(1),
-            ScalarType::PTR => None,
-        }
+        ty.element().element_bits()
     }
-
-    assert_eq!(size_of::<ScalarType>(), 1);
-    assert_eq!(size_of::<Option<ScalarType>>(), 1);
+    assert_eq!(size_of::<ScalarType>(), size_of::<Type>());
     assert_eq!(size_of::<Type>(), 8);
     const SCALAR: ScalarType = Type::I32.as_scalar().unwrap();
     const VECTOR: Type = SCALAR.vector(4, false).unwrap().as_type();
@@ -451,7 +441,6 @@ fn scalar_enum_is_exhaustive_and_preserves_type_encoding() {
         );
         if let Some(scalar) = scalar {
             assert_eq!(scalar.code(), code);
-            assert_eq!(scalar as u8, code);
             assert_eq!(scalar.as_type().as_scalar(), Some(scalar));
             assert_eq!(scalar.as_type().element_bits(), width(scalar));
             for scalable in [false, true] {

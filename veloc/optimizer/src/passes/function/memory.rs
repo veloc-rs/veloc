@@ -15,10 +15,13 @@ impl FunctionPass for MemoryPass {
     fn run(
         &self,
         am: &mut AnalysisManager<'_>,
-        _: &OptConfig,
+        config: &OptConfig,
         metrics: &mut Metrics,
     ) -> PreservedAnalyses {
-        if run_memory(am.function_mut(), metrics) {
+        let Some(layout) = config.data_layout.as_ref() else {
+            return PreservedAnalyses::all();
+        };
+        if run_memory(am.function_mut(), layout, metrics) {
             PreservedAnalyses::none()
         } else {
             PreservedAnalyses::all()
@@ -41,7 +44,11 @@ impl Cell {
     }
 }
 
-pub fn run_memory(func: &mut Function, metrics: &mut Metrics) -> bool {
+pub fn run_memory(
+    func: &mut Function,
+    layout: &veloc_types::DataLayout,
+    metrics: &mut Metrics,
+) -> bool {
     // A stack pointer passed anywhere except through a derived address or a
     // memory address may escape. Storing a pointer also escapes its object.
     let mut escaped = HashSet::new();
@@ -103,8 +110,8 @@ pub fn run_memory(func: &mut Function, metrics: &mut Metrics) -> bool {
                 if view.has_volatile_access() {
                     return None;
                 }
-                let (object, offset) = func.stack_access(access, None)?;
-                Some((access, object, offset, access.bytes(None)?))
+                let (object, offset) = func.stack_access(access, layout)?;
+                Some((access, object, offset, access.bytes(layout)?))
             });
             let Some((access, object, offset, bytes)) = known else {
                 if !effect.is_none()

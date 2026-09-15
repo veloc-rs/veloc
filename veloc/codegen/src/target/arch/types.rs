@@ -4,6 +4,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 use veloc_lir::RegisterBank;
 use veloc_mir::{Type, TypeInfo};
+use veloc_types::DataLayout;
 
 /// 目标架构标识
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -131,28 +132,6 @@ impl RegisterFile {
         self.reg_class(class)
             .map(|info| info.allocatable)
             .unwrap_or(&[])
-    }
-}
-
-/// 目标数据布局。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DataLayout {
-    pub pointer_size: u8,
-    pub little_endian: bool,
-}
-
-impl DataLayout {
-    pub fn type_size(&self, ty: &Type) -> u32 {
-        if ty.is_ptr() {
-            u32::from(self.pointer_size)
-        } else {
-            ty.min_size_bytes()
-                .expect("valid non-pointer types have a known minimum size")
-        }
-    }
-
-    pub fn type_align(&self, ty: &Type) -> u32 {
-        self.type_size(ty)
     }
 }
 
@@ -336,6 +315,7 @@ mod tests {
     const TEST_DATA_LAYOUT: DataLayout = DataLayout {
         pointer_size: 8,
         little_endian: true,
+        types: &[],
     };
 
     const TEST_CPU: CpuDescription = CpuDescription {

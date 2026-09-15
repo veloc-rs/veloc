@@ -33,8 +33,9 @@ rejected rather than assumed.
 The Rust backend generates direct opcode dispatch, static operand arrays,
 temporary allocation and final-result binding through an explicit host
 interface. It does not interpret rules at runtime. The host supplies enum
-paths, values, types and construction; MIR-to-LIR construction invokes
-OpSpec-generated builders so physical storage ordering is not duplicated.
+paths, values, types and construction. Consumers can invoke OpSpec-generated
+builders so physical storage ordering is not duplicated. Native MIR-to-LIR
+translation currently uses handwritten Rust, not this generic rule compiler.
 
 Exact, pure primitive matches can be inferred from OpSpec semantics. These
 matches go through the same checker and Rust emitter as explicit rules.

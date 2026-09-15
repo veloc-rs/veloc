@@ -25,7 +25,7 @@ op VectorLiteral(data: VectorConst) -> type(data) {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "vector-literal", storage: VectorLiteral { payload: data },
     verify(ctx: ConstContext) {
-        require(!data.is_dense() || len(ctx.bytes(data)?) == data.ty().min_size_bytes()?, "dense vector constant byte count must match its type");
+        require(!data.is_dense() || len(ctx.bytes(data)?) == data.encoded_size()?, "dense vector constant byte count must match its type");
     }
 }
 

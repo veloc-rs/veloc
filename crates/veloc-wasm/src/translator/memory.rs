@@ -3,6 +3,23 @@ use crate::vm::{TrapCode, VMMemory};
 use veloc::mir::{IntCC, MemFlags, Type as VelocType, Value};
 use wasmparser::{BinaryReaderError, MemArg, Operator};
 
+// Wasm scalar linear-memory representation, not the native pointer/ABI layout.
+const LINEAR_MEMORY_LAYOUT: veloc_types::DataLayout = {
+    use veloc_types::{Type, TypeLayout};
+    veloc_types::DataLayout {
+        pointer_size: 4,
+        little_endian: true,
+        types: &[
+            (Type::I8, TypeLayout::fixed(1, 1)),
+            (Type::I16, TypeLayout::fixed(2, 1)),
+            (Type::I32, TypeLayout::fixed(4, 1)),
+            (Type::I64, TypeLayout::fixed(8, 1)),
+            (Type::F32, TypeLayout::fixed(4, 1)),
+            (Type::F64, TypeLayout::fixed(8, 1)),
+        ],
+    }
+};
+
 impl<'a> WasmTranslator<'a> {
     pub(super) fn translate_memory(&mut self, op: Operator) -> Result<(), BinaryReaderError> {
         match op {
@@ -232,7 +249,9 @@ impl<'a> WasmTranslator<'a> {
             mem_idx,
             addr,
             memarg.offset,
-            ty.fixed_size_bytes()
+            LINEAR_MEMORY_LAYOUT
+                .layout_of(ty)
+                .and_then(|layout| layout.store_size.fixed_bytes())
                 .expect("Wasm loads have fixed-size types"),
         );
         let mem_base = self.get_memory_base(mem_idx);
@@ -261,7 +280,9 @@ impl<'a> WasmTranslator<'a> {
             mem_idx,
             addr,
             memarg.offset,
-            ty.fixed_size_bytes()
+            LINEAR_MEMORY_LAYOUT
+                .layout_of(ty)
+                .and_then(|layout| layout.store_size.fixed_bytes())
                 .expect("Wasm stores have fixed-size types"),
         );
         let mem_base = self.get_memory_base(mem_idx);

@@ -136,7 +136,7 @@ op Vconst(value: VectorConst) -> type(value) {
     storage: Vconst { value },
     verify(ctx: ConstContext) {
         require(!value.is_dense() || value.ty().is_fixed(), "dense vector constant requires a fixed type");
-        require(!value.is_dense() || len(ctx.bytes(value)?) == value.ty().min_size_bytes()?, "dense vector constant byte count must match its type");
+        require(!value.is_dense() || len(ctx.bytes(value)?) == value.encoded_size()?, "dense vector constant byte count must match its type");
         require(!value.is_dense() || !value.ty().is_predicate() || all(ctx.bytes(value)?, |byte| byte <= 1), "boolean constant lanes must be zero or one");
     }
 }

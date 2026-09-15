@@ -21,7 +21,6 @@ type Type = rust("veloc_types::Type") {
     const fn signature(self) -> optional(SigId);
     const fn element_bits(self) -> optional(u32);
     const fn bit_size(self) -> optional(TypeBits);
-    const fn min_size_bytes(self) -> optional(u32);
     const fn lanes(self) -> optional(u32);
     const fn shape(self) -> optional(Shape);
     const fn is_fixed(self) -> bool;

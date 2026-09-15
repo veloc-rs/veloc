@@ -1,13 +1,12 @@
 //! Generated type contracts across scalar, vector, and malformed IR.
 use veloc_mir::inst::TypeError;
 use veloc_mir::types::TypeBits;
-use veloc_mir::{Opcode, Type, TypeInfo, TypeSize};
+use veloc_mir::{Opcode, Type, TypeInfo};
 
 #[test]
 fn logical_bits_are_independent_of_byte_storage() {
     assert_eq!(Type::BOOL.element_bits(), Some(1));
     assert_eq!(Type::BOOL.bit_size(), Some(TypeBits::Fixed(1)));
-    assert_eq!(Type::BOOL.storage_size(), TypeSize::Fixed(1));
 
     for scalable in [false, true] {
         let mask = Type::new_mask(4, scalable).unwrap();
@@ -21,13 +20,11 @@ fn logical_bits_are_independent_of_byte_storage() {
         assert_eq!(vector.element_bits(), Some(8));
         assert_eq!(mask.min_bit_width(), Some(4));
         assert_eq!(vector.min_bit_width(), Some(32));
-        assert_eq!(mask.storage_size(), vector.storage_size());
         assert_ne!(mask.bit_size(), vector.bit_size());
     }
 
     assert_eq!(Type::PTR.element_bits(), None);
     assert_eq!(Type::PTR.bit_size(), None);
-    assert_eq!(Type::PTR.storage_size(), TypeSize::TargetDependent);
 }
 
 #[test]

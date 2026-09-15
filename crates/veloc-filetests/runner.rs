@@ -232,10 +232,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                     return rejected(
                         veloc_codegen::translate::IRTranslator::new(
                             &module,
-                            veloc_codegen::target::arch::DataLayout {
-                                pointer_size: 8,
-                                little_endian: true,
-                            },
+                            veloc_codegen::target::x86_64::DATA_LAYOUT,
                         )
                         .translate_module(),
                     );
@@ -255,10 +252,7 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                 "lower" => {
                     let lir = veloc_codegen::translate::IRTranslator::new(
                         &module,
-                        veloc_codegen::target::arch::DataLayout {
-                            pointer_size: 8,
-                            little_endian: true,
-                        },
+                        veloc_codegen::target::x86_64::DATA_LAYOUT,
                     )
                     .translate_module()
                     .map_err(|error| error.to_string())?;
@@ -287,7 +281,9 @@ fn execute(mode: &str, source: &str) -> Result<String> {
 
 fn optimize(module: &Module) -> Module {
     let mut data = (**module).clone();
-    PassManager::new_o1().run_on_module(&mut data);
+    PassManager::new_o1()
+        .with_layout(veloc_codegen::target::x86_64::DATA_LAYOUT)
+        .run_on_module(&mut data);
     Module::new(data)
 }
 

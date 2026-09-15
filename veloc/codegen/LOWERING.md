@@ -11,6 +11,23 @@ The native pipeline keeps three responsibilities separate:
 - Instruction selection chooses target instructions using the existing ISLE rules;
   ABI and register constraints remain separate concerns.
 
+MIR-to-LIR lowering is handwritten Rust in `src/translate`. Arithmetic maps
+directly to OpSpec-generated LIR builders; comparisons, memory and control flow
+use the same typed instruction interfaces. There is no build-time MIR lowering
+rule inference or generated host adapter. OpSpec owns instruction representation
+and validation, while the translator owns the semantic mapping.
+
+Translation requires valid MIR; validation is a separate, optional stage, not a
+partial per-opcode check inside lowering. Each instruction lowering appends its
+complete LIR sequence in order. Static entry-block allocations reserve stack
+slots when encountered; value/register identities are still allocated up front
+to support forward references and loop edges.
+
+Address calculations use the target pointer width (32 or 64 bits). `PtrIndex`
+zero-extends narrower unsigned index bit patterns or truncates wider ones before
+wrapping scale/offset arithmetic. Signed narrow indices must be explicitly
+sign-extended in MIR; the immediate offset is signed.
+
 ## Machine SSA and allocation
 
 Virtual values have one definition through legalization, selection and scheduling.
@@ -45,6 +62,19 @@ registers and clobbers deliberately remain outside the SSA invariant.
 Translation receives an explicit target `DataLayout`. Pointer loads/stores use
 its pointer size; other accesses require a fixed-size representation rather than
 treating a scalable type's minimum size as an exact access width.
+
+`DataLayout` lives in `veloc-types`; backends supply complete per-type layouts.
+`layout_of` returns a `TypeLayout` containing the storage size and ABI alignment,
+or `None` for an unknown layout. `alloc_size` includes tail padding and rejects
+scalable or overflowing allocations. Spill slots and parallel-copy temporaries
+use allocation size; memory accesses use storage size. Neither infers alignment
+from size or treats a scalable minimum as a fixed size.
+
+There are no target or language presets in `veloc-types`. The x86-64 backend,
+interpreter and Wasm frontend own their respective memory representation tables.
+Target-independent constant encoding is separate from these layouts. The memory
+optimization pass requires an explicit `OptConfig::data_layout`; without one it
+leaves memory operations unchanged. `PassManager::with_layout` supplies it.
 
 MIR load/store alignment and volatility survive as `InstRef::memory()`.
 Stack accesses also receive a descriptor, with conservative alignment and MIR's

@@ -1,6 +1,7 @@
 //! SSA edge arguments become physical parallel copies only after allocation.
 use super::linear_scan::RegisterAllocator;
 use crate::{Error, Result};
+use alloc::format;
 use alloc::vec::Vec;
 use veloc_lir::stages::PostIselOptimized;
 use veloc_lir::{InstExtra, InstField, InstId, MachineFunction, Reg, StackFrame, StackSlot};
@@ -115,8 +116,13 @@ impl RegisterAllocator<'_> {
                 } else {
                     let (_, src, ty) = pending[0];
                     let layout = &self.target.desc().data_layout;
-                    let size = layout.type_size(&ty);
-                    let align = layout.type_align(&ty);
+                    let layout = layout
+                        .layout_of(ty)
+                        .ok_or_else(|| Error::codegen(format!("unknown storage layout: {ty:?}")))?;
+                    let size = layout.alloc_size().ok_or_else(|| {
+                        Error::codegen(format!("stack allocation requires fixed size: {ty:?}"))
+                    })?;
+                    let align = layout.align;
                     let slot = *cycle_slots
                         .entry((size, align))
                         .or_insert_with(|| frame.alloc_slot(size, align));

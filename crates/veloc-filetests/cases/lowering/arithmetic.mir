@@ -1,3 +1,24 @@
+// ----- pointer-index-i32
+// run: lower
+// check: Zext), results: [$(index=v\d+)], inputs: [v1]
+// check: Mul), results: [$(scaled=v\d+)], inputs: [$index,
+// check: Add), results: [$(offset=v\d+)], inputs: [$scaled,
+// check: PtrAdd), results: [v2], inputs: [v0, $offset]
+// check: type $index: i64
+local function address(ptr, i32) -> ptr
+block0(v0: ptr, v1: i32):
+  v2: ptr = ptr-index v0, v1, scale=4, offset=-8
+  return v2
+
+// ----- pointer-index-i64
+// run: lower
+// check: PtrAdd), results: [v2], inputs: [v0, v1]
+// check: Ret), results: [], inputs: [v2]
+local function address(ptr, i64) -> ptr
+block0(v0: ptr, v1: i64):
+  v2: ptr = ptr-index v0, v1, scale=1, offset=0
+  return v2
+
 // ----- iadd-i8
 // run: lower
 // check: params: $(lhs=v\d+):i8, $(rhs=v\d+):i8

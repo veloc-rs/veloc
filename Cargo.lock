@@ -1702,6 +1702,7 @@ dependencies = [
  "veloc-lir",
  "veloc-mir",
  "veloc-opgen",
+ "veloc-types",
 ]
 
 [[package]]
@@ -1796,6 +1797,7 @@ dependencies = [
  "veloc-mir",
  "veloc-opgen",
  "veloc-semantics",
+ "veloc-types",
 ]
 
 [[package]]
@@ -1852,6 +1854,7 @@ dependencies = [
  "veloc",
  "veloc-mir",
  "veloc-optimizer",
+ "veloc-types",
  "wasi-cap-std-sync",
  "wasi-common",
  "wasmparser 0.244.0",

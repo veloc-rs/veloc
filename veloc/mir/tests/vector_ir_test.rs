@@ -310,7 +310,10 @@ fn test_vector_types_properties() {
         v4i32.as_vector().unwrap().element_type().as_type(),
         Type::I32
     );
-    assert_eq!(v4i32.fixed_size_bytes(), Some(16));
+    assert_eq!(
+        v4i32.bit_size().and_then(|size| size.fixed_bits()),
+        Some(128)
+    );
 
     let scalable_v4f32 = Type::F32
         .as_scalar()

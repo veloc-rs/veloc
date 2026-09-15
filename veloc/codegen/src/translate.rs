@@ -9,20 +9,15 @@ use cranelift_entity::PrimaryMap;
 use veloc_lir::InstBuild;
 use veloc_lir::stages::RawLir;
 use veloc_lir::{
-    BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, GenericOpcode, InstExtra,
-    InstId, MachineBlock, MachineFunction, MachineModule, MachineOpcode, Reg,
+    BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, InstExtra, MachineBlock,
+    MachineFunction, MachineModule, Reg,
 };
-use veloc_mir::{Function, InstView, Module, TypeInfo, Value};
-
-mod lower;
-
-#[cfg(test)]
-mod tests;
+use veloc_mir::{Function, InstView, Module, Opcode, TypeInfo, Value};
 
 /// IR 到 LIR 的翻译器
 pub struct IRTranslator<'a> {
     module: &'a Module,
-    layout: crate::target::arch::DataLayout,
+    layout: veloc_types::DataLayout,
 }
 
 /// 翻译上下文，用于在翻译过程中共享状态
@@ -31,11 +26,10 @@ struct TranslationContext<'a> {
     mmodule: &'a mut MachineModule,
     mfunc: MachineFunction<RawLir>,
     value_map: PrimaryMap<Value, Reg>,
-    slots: hashbrown::HashMap<veloc_mir::Inst, veloc_lir::StackSlot>,
 }
 
 impl<'a> IRTranslator<'a> {
-    pub fn new(module: &'a Module, layout: crate::target::arch::DataLayout) -> Self {
+    pub fn new(module: &'a Module, layout: veloc_types::DataLayout) -> Self {
         Self { module, layout }
     }
 
@@ -47,14 +41,12 @@ impl<'a> IRTranslator<'a> {
         let source = inst
             .memory_access(func.dfg())
             .expect("memory lowering requires an access contract");
-        let bytes = source
-            .bytes(Some(u32::from(self.layout.pointer_size)))
-            .ok_or_else(|| {
-                Error::translate(format!(
-                    "memory access requires a fixed machine representation: {:?}",
-                    source.ty
-                ))
-            })?;
+        let bytes = source.bytes(&self.layout).ok_or_else(|| {
+            Error::translate(format!(
+                "memory access requires a fixed machine representation: {:?}",
+                source.ty
+            ))
+        })?;
         let kind = if source.stored.is_some() {
             veloc_lir::MemoryKind::Write
         } else {
@@ -63,9 +55,7 @@ impl<'a> IRTranslator<'a> {
         let mut access = veloc_lir::MemoryAccess::new(kind, bytes);
         access.alignment = source.flags.alignment();
         access.volatile = source.flags.is_volatile();
-        access.may_trap = func
-            .stack_access(source, Some(u32::from(self.layout.pointer_size)))
-            .is_none();
+        access.may_trap = func.stack_access(source, &self.layout).is_none();
         Ok(access)
     }
 
@@ -93,6 +83,8 @@ impl<'a> IRTranslator<'a> {
         args
     }
 
+    /// Translate valid MIR. Callers may run the MIR validator before this stage.
+    /// Unsupported backend features are still diagnosed during lowering.
     /// 将 IR 模块翻译为 MachineModule
     pub fn translate_module(&self) -> Result<MachineModule> {
         for (_, func) in &self.module.functions {
@@ -115,6 +107,14 @@ impl<'a> IRTranslator<'a> {
             }
         }
         // IR Module 目前没有直接的 name 字段，可以根据需要从其他地方获取或使用默认值
+        match self.layout.pointer_size {
+            4 | 8 => {}
+            size => {
+                return Err(Error::translate(format!(
+                    "unsupported pointer size: {size}"
+                )));
+            }
+        }
         let mut mmodule = MachineModule::new(alloc::string::String::from("default"));
 
         for (_, func) in self.module.functions.iter() {
@@ -136,39 +136,7 @@ impl<'a> IRTranslator<'a> {
             mmodule,
             mfunc: MachineFunction::<RawLir>::new(func.name.clone()),
             value_map: PrimaryMap::with_capacity(func.dfg().values().len()),
-            slots: hashbrown::HashMap::new(),
         };
-
-        for &block in func.layout().block_order() {
-            for &inst in &func.layout().blocks()[block].insts {
-                if let InstView::Alloca { size, align } = func.dfg().inst(inst) {
-                    if Some(block) != func.entry_block {
-                        return Err(Error::translate(
-                            "non-entry alloca requires dynamic stack lowering",
-                        ));
-                    }
-                    if size == 0 || !align.is_power_of_two() || align > 16 {
-                        return Err(Error::translate(
-                            "native alloca requires positive size and power-of-two alignment at most 16",
-                        ));
-                    }
-                    if ctx
-                        .mfunc
-                        .stack_frame
-                        .local_size
-                        .checked_add(size)
-                        .and_then(|n| n.checked_add(align - 1))
-                        .is_none_or(|n| n > i32::MAX as u32)
-                    {
-                        return Err(Error::translate(
-                            "native alloca frame exceeds target displacement range",
-                        ));
-                    }
-                    let slot = ctx.mfunc.alloc_stack_slot(size, align);
-                    ctx.slots.insert(inst, slot);
-                }
-            }
-        }
 
         // 1. 预分配所有 Value 对应的 VReg
         for (val, data) in func.dfg().values() {
@@ -211,11 +179,7 @@ impl<'a> IRTranslator<'a> {
             }
 
             for &inst_id in &func.layout().blocks()[block_id].insts {
-                if lower::instruction(inst_id, &mut ctx, &mut mblock)? {
-                    continue;
-                }
-                let id = self.translate_instruction(inst_id, &mut ctx, &mut mblock)?;
-                mblock.append_inst_id(id);
+                self.translate_instruction(inst_id, &mut ctx, &mut mblock)?;
             }
 
             ctx.mfunc.blocks.push(mblock);
@@ -230,47 +194,116 @@ impl<'a> IRTranslator<'a> {
         inst_id: veloc_mir::Inst,
         ctx: &mut TranslationContext,
         mblock: &mut MachineBlock,
-    ) -> Result<InstId> {
+    ) -> Result<()> {
         use smallvec::SmallVec;
         use veloc_lir::Writable;
 
         let inst_data = &ctx.func.dfg().inst(inst_id);
 
-        // 获取结果寄存器 (Defs)
         let results = ctx.func.dfg().inst_results(inst_id);
-        let mut defs = SmallVec::<[Writable<Reg>; 4]>::new();
-        for &res in results {
-            let vreg = ctx.value_map[res];
-            defs.push(Writable(vreg));
-        }
+        let result = || Writable(ctx.value_map[results[0]]);
 
-        match inst_data {
+        let lowered = match inst_data {
+            InstView::Unary { .. } | InstView::Binary { .. } | InstView::Ternary { .. } => {
+                let args = ctx.func.dfg().operands(inst_id);
+                let input = |i: usize| ctx.value_map[args[i]];
+                let dst = result();
+                let writer = ctx.mfunc.writer();
+                match inst_data.opcode() {
+                    Opcode::INeg => Ok(writer.neg(dst, input(0))),
+                    Opcode::IClz => Ok(writer.ctlz(dst, input(0))),
+                    Opcode::ICtz => Ok(writer.cttz(dst, input(0))),
+                    Opcode::IPopcnt => Ok(writer.ctpop(dst, input(0))),
+                    Opcode::FAbs => Ok(writer.fabs(dst, input(0))),
+                    Opcode::FSqrt => Ok(writer.fsqrt(dst, input(0))),
+                    Opcode::FNeg => Ok(writer.fneg(dst, input(0))),
+                    Opcode::IEqz => Ok(writer.ieqz(dst, input(0))),
+                    Opcode::Wrap => Ok(writer.trunc(dst, input(0))),
+                    Opcode::ExtendU => Ok(writer.zext(dst, input(0))),
+                    Opcode::ExtendS => Ok(writer.sext(dst, input(0))),
+                    Opcode::FloatDemote => Ok(writer.fptrunc(dst, input(0))),
+                    Opcode::FloatPromote => Ok(writer.fpext(dst, input(0))),
+                    Opcode::FloatToIntU => Ok(writer.fptoui(dst, input(0))),
+                    Opcode::FloatToIntS => Ok(writer.fptosi(dst, input(0))),
+                    Opcode::IntToFloatU => Ok(writer.uitofp(dst, input(0))),
+                    Opcode::IntToFloatS => Ok(writer.sitofp(dst, input(0))),
+                    Opcode::Reinterpret => Ok(writer.bitcast(dst, input(0))),
+                    Opcode::IntToPtr => Ok(writer.inttoptr(dst, input(0))),
+                    Opcode::PtrToInt => Ok(writer.ptrtoint(dst, input(0))),
+                    Opcode::IAdd => Ok(writer.add(dst, input(0), input(1))),
+                    Opcode::ISub => Ok(writer.sub(dst, input(0), input(1))),
+                    Opcode::IMul => Ok(writer.mul(dst, input(0), input(1))),
+                    Opcode::IAnd => Ok(writer.and(dst, input(0), input(1))),
+                    Opcode::IOr => Ok(writer.or(dst, input(0), input(1))),
+                    Opcode::IXor => Ok(writer.xor(dst, input(0), input(1))),
+                    Opcode::IDivS => Ok(writer.sdiv(dst, input(0), input(1))),
+                    Opcode::IDivU => Ok(writer.udiv(dst, input(0), input(1))),
+                    Opcode::IRemS => Ok(writer.srem(dst, input(0), input(1))),
+                    Opcode::IRemU => Ok(writer.urem(dst, input(0), input(1))),
+                    Opcode::IRotl => Ok(writer.rotl(dst, input(0), input(1))),
+                    Opcode::IRotr => Ok(writer.rotr(dst, input(0), input(1))),
+                    Opcode::IShl => Ok(writer.shl(dst, input(0), input(1))),
+                    Opcode::IShrS => Ok(writer.ashr(dst, input(0), input(1))),
+                    Opcode::IShrU => Ok(writer.lshr(dst, input(0), input(1))),
+                    Opcode::FAdd => Ok(writer.fadd(dst, input(0), input(1))),
+                    Opcode::FSub => Ok(writer.fsub(dst, input(0), input(1))),
+                    Opcode::FMul => Ok(writer.fmul(dst, input(0), input(1))),
+                    Opcode::FDiv => Ok(writer.fdiv(dst, input(0), input(1))),
+                    Opcode::Select => Ok(writer.select(dst, input(0), input(1), input(2))),
+                    _ => Err(Error::translate(format!(
+                        "unsupported arithmetic opcode: {:?}",
+                        inst_data.opcode()
+                    ))),
+                }
+            }
             InstView::TailCall { .. } => Err(Error::translate(
                 "tail calls require tail-call lowering before native code generation",
             )),
-            InstView::Alloca { .. } => {
-                let slot = ctx.slots[&inst_id];
-                Ok(ctx.mfunc.writer().stack_addr(defs[0], slot))
+            InstView::Alloca { size, align } => {
+                if Some(mblock.id) != ctx.func.entry_block {
+                    return Err(Error::translate(
+                        "non-entry alloca requires dynamic stack lowering",
+                    ));
+                }
+                if *size == 0 || !align.is_power_of_two() || *align > 16 {
+                    return Err(Error::translate(
+                        "native alloca requires positive size and power-of-two alignment at most 16",
+                    ));
+                }
+                if ctx
+                    .mfunc
+                    .stack_frame
+                    .local_size
+                    .checked_add(*size)
+                    .and_then(|n| n.checked_add(*align - 1))
+                    .is_none_or(|n| n > i32::MAX as u32)
+                {
+                    return Err(Error::translate(
+                        "native alloca frame exceeds target displacement range",
+                    ));
+                }
+                let slot = ctx.mfunc.alloc_stack_slot(*size, *align);
+                Ok(ctx.mfunc.writer().stack_addr(result(), slot))
             }
             InstView::IntCompare { kind, args } => {
                 let src0 = ctx.value_map[args[0]];
                 let src1 = ctx.value_map[args[1]];
 
-                Ok(ctx.mfunc.writer().icmp(defs[0], src0, src1, *kind))
+                Ok(ctx.mfunc.writer().icmp(result(), src0, src1, *kind))
             }
 
             InstView::FloatCompare { kind, args } => {
                 let src0 = ctx.value_map[args[0]];
                 let src1 = ctx.value_map[args[1]];
 
-                Ok(ctx.mfunc.writer().fcmp(defs[0], src0, src1, *kind))
+                Ok(ctx.mfunc.writer().fcmp(result(), src0, src1, *kind))
             }
 
             InstView::Load { ptr, offset, .. } => {
                 let base = ctx.value_map[*ptr];
                 let access = self.memory_access(ctx.func, inst_id)?;
                 Ok(ctx.mfunc.writer().with_memory(access).offset_load(
-                    defs[0],
+                    result(),
                     base,
                     *offset as i64,
                 ))
@@ -290,15 +323,15 @@ impl<'a> IRTranslator<'a> {
             }
 
             InstView::Iconst { value: imm } => {
-                Ok(ctx.mfunc.writer().constant(defs[0], imm.signed()))
+                Ok(ctx.mfunc.writer().constant(result(), imm.signed()))
             }
 
             InstView::Bconst { value } => {
-                Ok(ctx.mfunc.writer().constant(defs[0], i64::from(*value)))
+                Ok(ctx.mfunc.writer().constant(result(), i64::from(*value)))
             }
 
             InstView::Fconst { value } => {
-                let dst = defs[0];
+                let dst = result();
                 let dst_ty = ctx.mfunc.vreg_data(dst.to_reg()).ty;
 
                 let (bits_ty, bits_imm) = if dst_ty == veloc_mir::Type::F32 {
@@ -316,11 +349,7 @@ impl<'a> IRTranslator<'a> {
                 let bits_inst = ctx.mfunc.writer().constant(Writable(bits_reg), bits_imm);
                 mblock.append_inst_id(bits_inst);
 
-                Ok(ctx.mfunc.writer().unary(
-                    MachineOpcode::Generic(GenericOpcode::Bitcast),
-                    dst,
-                    bits_reg,
-                ))
+                Ok(ctx.mfunc.writer().bitcast(dst, bits_reg))
             }
 
             InstView::Jump { dest } => {
@@ -381,11 +410,8 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            InstView::BrTable { index, .. } => {
+            InstView::BrTable { index, table } => {
                 let idx_vreg = ctx.value_map[*index];
-                let InstView::BrTable { table, .. } = inst_data else {
-                    unreachable!();
-                };
                 let targets = table
                     .iter()
                     .map(|call| BrTableTarget {
@@ -424,9 +450,9 @@ impl<'a> IRTranslator<'a> {
                     callee.linkage,
                 );
                 let call_inst = ctx.mfunc.writer().call(
-                    &defs
+                    &results
                         .iter()
-                        .map(|reg| reg.to_reg())
+                        .map(|value| ctx.value_map[*value])
                         .collect::<SmallVec<[Reg; 2]>>(),
                     sym_id,
                     &call_args
@@ -449,9 +475,9 @@ impl<'a> IRTranslator<'a> {
             InstView::CallIndirect { ptr, args, sig_id } => {
                 let call_args = *args;
                 let call_inst = ctx.mfunc.writer().callind(
-                    &defs
+                    &results
                         .iter()
-                        .map(|reg| reg.to_reg())
+                        .map(|value| ctx.value_map[*value])
                         .collect::<SmallVec<[Reg; 2]>>(),
                     ctx.value_map[*ptr],
                     &call_args
@@ -474,41 +500,63 @@ impl<'a> IRTranslator<'a> {
                 use veloc_lir::Writable;
 
                 let addr = ctx.value_map[*ptr];
-                if *offset == 0 {
-                    Ok(ctx.mfunc.writer().copy(defs[0], addr))
+                let addr_ty = if self.layout.pointer_size == 4 {
+                    veloc_mir::Type::I32
                 } else {
-                    let off_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
+                    veloc_mir::Type::I64
+                };
+                if *offset == 0 {
+                    Ok(ctx.mfunc.writer().copy(result(), addr))
+                } else {
+                    let off_reg = ctx.mfunc.alloc_vreg(addr_ty);
                     let id = ctx
                         .mfunc
                         .writer()
                         .constant(Writable(off_reg), *offset as i64);
                     mblock.append_inst_id(id);
 
-                    Ok(ctx.mfunc.writer().ptr_add(defs[0], addr, off_reg))
+                    Ok(ctx.mfunc.writer().ptr_add(result(), addr, off_reg))
                 }
             }
 
             InstView::PtrIndex { ptr, index, imm_id } => {
                 let base_ptr = ctx.value_map[*ptr];
                 let idx = ctx.value_map[*index];
+                let addr_ty = if self.layout.pointer_size == 4 {
+                    veloc_mir::Type::I32
+                } else {
+                    veloc_mir::Type::I64
+                };
+                let index_ty = ctx.func.dfg().value_type(*index);
+                // Indices are unsigned bit patterns; signed displacements use
+                // the offset field (or an explicit MIR sign extension).
+                let idx = if index_ty == addr_ty {
+                    idx
+                } else {
+                    let normalized = ctx.mfunc.alloc_vreg(addr_ty);
+                    let from = index_ty.element_bits().expect("integer index width");
+                    let to = u32::from(self.layout.pointer_size) * 8;
+                    let id = if from < to {
+                        ctx.mfunc.writer().zext(Writable(normalized), idx)
+                    } else {
+                        ctx.mfunc.writer().trunc(Writable(normalized), idx)
+                    };
+                    mblock.append_inst_id(id);
+                    normalized
+                };
                 let imm = *imm_id;
 
                 // 1. scale index: idx * scale
                 let scaled_idx = if imm.scale != 1 {
-                    let scale_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
+                    let scale_reg = ctx.mfunc.alloc_vreg(addr_ty);
                     let scale_inst = ctx
                         .mfunc
                         .writer()
                         .constant(Writable(scale_reg), imm.scale as i64);
                     mblock.append_inst_id(scale_inst);
 
-                    let res_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
-                    let mul_inst = ctx.mfunc.writer().binary(
-                        MachineOpcode::Generic(GenericOpcode::Mul),
-                        Writable(res_reg),
-                        idx,
-                        scale_reg,
-                    );
+                    let res_reg = ctx.mfunc.alloc_vreg(addr_ty);
+                    let mul_inst = ctx.mfunc.writer().mul(Writable(res_reg), idx, scale_reg);
                     mblock.append_inst_id(mul_inst);
                     res_reg
                 } else {
@@ -517,20 +565,18 @@ impl<'a> IRTranslator<'a> {
 
                 // 2. add offset if any: base_idx = (idx * scale) + offset
                 let base_idx = if imm.offset != 0 {
-                    let off_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
+                    let off_reg = ctx.mfunc.alloc_vreg(addr_ty);
                     let off_inst = ctx
                         .mfunc
                         .writer()
                         .constant(Writable(off_reg), imm.offset as i64);
                     mblock.append_inst_id(off_inst);
 
-                    let res_reg = ctx.mfunc.alloc_vreg(veloc_mir::Type::I64);
-                    let add_inst = ctx.mfunc.writer().binary(
-                        MachineOpcode::Generic(GenericOpcode::Add),
-                        Writable(res_reg),
-                        scaled_idx,
-                        off_reg,
-                    );
+                    let res_reg = ctx.mfunc.alloc_vreg(addr_ty);
+                    let add_inst = ctx
+                        .mfunc
+                        .writer()
+                        .add(Writable(res_reg), scaled_idx, off_reg);
                     mblock.append_inst_id(add_inst);
                     res_reg
                 } else {
@@ -538,12 +584,7 @@ impl<'a> IRTranslator<'a> {
                 };
 
                 // 3. ptr_add: ptr + base_idx
-                Ok(ctx.mfunc.writer().binary(
-                    MachineOpcode::Generic(GenericOpcode::PtrAdd),
-                    defs[0],
-                    base_ptr,
-                    base_idx,
-                ))
+                Ok(ctx.mfunc.writer().ptr_add(result(), base_ptr, base_idx))
             }
             InstView::Unreachable => Ok(ctx.mfunc.writer().unreachable()),
 
@@ -551,6 +592,8 @@ impl<'a> IRTranslator<'a> {
                 "InstView variant not implemented for translation: {:?}",
                 inst_data
             ))),
-        }
+        }?;
+        mblock.append_inst_id(lowered);
+        Ok(())
     }
 }

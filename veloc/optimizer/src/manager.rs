@@ -32,6 +32,11 @@ impl PassManager {
         pm
     }
 
+    pub fn with_layout(mut self, layout: veloc_types::DataLayout) -> Self {
+        self.config.data_layout = Some(layout);
+        self
+    }
+
     pub fn stats(&self) -> &PipelineStats {
         &self.stats
     }
