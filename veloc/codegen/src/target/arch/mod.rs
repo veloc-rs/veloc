@@ -26,8 +26,8 @@ pub use abi::{
 };
 pub use callconv::CallConv;
 pub use types::{
-    CpuDescription, RegClass, RegClassInfo, RegInfo, RegisterFile, SpecialRegs, TargetArch,
-    TargetConfig, TargetDescription,
+    CpuDescription, RegClass, RegClassInfo, RegInfo, RegisterFile, RegisterView, RegisterWrite,
+    SpecialRegs, TargetArch, TargetConfig, TargetDescription,
 };
 
 /// 基础 Lowering Context 接口 (所有后端共用)
@@ -128,7 +128,28 @@ pub trait LoweringContext {
 
 /// Target Machine: 封装特定目标架构的所有组件和策略。
 /// 模仿 LLVM TargetMachine，作为从通用流程获取架构特定逻辑的统一入口。
+/// Operand rendering and symbol naming belong to the assembly host. Instruction
+/// mnemonics, widths and operand order come from the target definition schema.
+pub trait AssemblyWriter: core::fmt::Write {
+    fn register(&mut self, reg: Reg, bits: u32) -> core::fmt::Result;
+    fn immediate(&mut self, value: i64) -> core::fmt::Result;
+    fn block(&mut self, block: veloc_mir::Block) -> core::fmt::Result;
+    fn symbol(&mut self, symbol: veloc_lir::SymbolId) -> core::fmt::Result;
+    fn memory(&mut self, base: Reg, offset: i64, bits: u32) -> core::fmt::Result;
+    fn stack_slot(&mut self, slot: veloc_lir::StackSlot, bits: u32) -> core::fmt::Result;
+}
+
 pub trait TargetMachine {
+    fn validate_instruction(
+        &self,
+        inst: &veloc_lir::InstRef<'_>,
+        allocated: bool,
+    ) -> crate::Result<()>;
+    fn write_assembly(
+        &self,
+        inst: &veloc_lir::InstRef<'_>,
+        out: &mut dyn AssemblyWriter,
+    ) -> core::fmt::Result;
     /// Static instruction facts shared by control-flow and scheduling queries.
     fn target_inst_metadata(&self, opcode: u32) -> &'static TargetInstMetadata;
 
@@ -337,8 +358,17 @@ impl GenericInstMetadata {
     }
 }
 
+/// Target-defined allowed physical registers for one explicit register operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegisterConstraint {
+    pub result: bool,
+    pub operand: usize,
+    pub registers: &'static [Reg],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetInstMetadata {
+    pub register_constraints: &'static [RegisterConstraint],
     /// Fixed access encoded by this instruction; absence is not an effect proof.
     pub memory: Option<(veloc_lir::MemoryKind, u32)>,
     pub flow: veloc_lir::ControlFlow,
@@ -352,6 +382,7 @@ pub struct TargetInstMetadata {
 
 impl TargetInstMetadata {
     pub const EMPTY: Self = Self {
+        register_constraints: &[],
         memory: None,
         flow: veloc_lir::ControlFlow::Next,
         schedule: None,

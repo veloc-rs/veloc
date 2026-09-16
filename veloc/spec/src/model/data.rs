@@ -248,12 +248,11 @@ impl Types {
             return Err(fail());
         };
         if let Some(record) = self.records.iter().find(|r| r.name == *ty) {
-            let Kind::Object(ref name, ref fields) = node.kind else {
-                return Err(fail());
+            let fields = match &node.kind {
+                Kind::Object(name, fields) if name == ty => fields,
+                Kind::Record(fields) => fields,
+                _ => return Err(fail()),
             };
-            if name != ty {
-                return Err(fail());
-            }
             for key in fields.keys() {
                 if !record.fields.iter().any(|f| f.name == *key) {
                     return Err(Error::at(
@@ -283,6 +282,10 @@ impl Types {
                 Kind::Call(variant, args) => (variant.clone(), args.clone()),
                 _ => return Err(fail()),
             };
+            let variant = variant
+                .strip_prefix(&format!("{ty}::"))
+                .unwrap_or(&variant)
+                .to_owned();
             let Some((_, params)) = en.variants.iter().find(|(name, _)| *name == variant) else {
                 return Err(Error::at(
                     source,

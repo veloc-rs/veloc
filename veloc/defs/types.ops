@@ -1,20 +1,20 @@
 import "../types/defs/types.ops";
 
 type Value = rust("crate::Value") {
-    field: operand,
+    field = operand;
     // Fundamental SSA type query; callers use the declared method.
-    fn ty(self) -> Type { value: type(self) }
+    fn ty(self) -> Type { value = type(self); }
 }
 
 // Operand groups retain only lengths and control-flow metadata in instruction fields.
 type ValueList = rust("crate::inst::Arguments") {
-    field: list(Value),
+    field = list(Value);
 }
 type BlockCall = rust("crate::inst::Successor") {
-    field: edge(Value),
+    field = edge(Value);
 }
 type JumpTable = rust("crate::inst::Successors") {
-    field: list(BlockCall),
+    field = list(BlockCall);
 }
 
 // Scalar and named vector constants come from the shared logical type declarations.
@@ -31,14 +31,14 @@ typeset Vector = vectors(Scalar);
 
 // Rust-owned data types used by operation properties and host interfaces.
 type Int = rust("crate::Int") {
-    fn ty(self) -> Type { value: type(self) }
+    fn ty(self) -> Type { value = type(self); }
 }
 type Float = rust("crate::Float") {
-    fn ty(self) -> Type { value: type(self) }
+    fn ty(self) -> Type { value = type(self); }
 }
 type VectorConst = rust("crate::VectorConst") {
-    trait: rust("crate::type_methods::VectorConstInfo"),
-    fn ty(self) -> Type { value: type(self) }
+    trait = rust("crate::type_methods::VectorConstInfo");
+    fn ty(self) -> Type { value = type(self); }
     const fn is_dense(self) -> bool;
     const fn encoded_size(self) -> optional(u32);
 }
@@ -56,11 +56,11 @@ struct OpInfo {
 
 // Reusable checked arithmetic, not a special verifier query.
 fn is_power_of_two(value: u32) -> bool {
-    value: value != 0 && (value & (value - 1)) == 0,
+    value = value != 0 && (value & (value - 1)) == 0;
 }
 
 // Pairwise type checking is an IR policy, not a language primitive.
 // all rejects unequal lengths before evaluating the predicate.
 fn matches_types(values: sequence(Value), types: sequence(Type)) -> bool {
-    value: all(values, types, |value, ty| value.ty() == ty),
+    value = all(values, types, |value, ty| value.ty() == ty);
 }

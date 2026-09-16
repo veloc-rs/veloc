@@ -384,7 +384,7 @@ impl<'a> CodegenPipeline<'a> {
         let stage_name = pass.name();
         let (mfunc, effect) = pass.run(mfunc, ctx)?;
         ctx.function_analyses.apply(effect.change_set);
-        if self.options.verify && !mfunc.is_regallocated {
+        if self.options.verify {
             crate::pipeline::ssa::verify(&mfunc, self.target)
                 .map_err(|e| Error::codegen(alloc::format!("{stage_name}: {e}")))?;
         }
@@ -400,7 +400,7 @@ impl<'a> CodegenPipeline<'a> {
         ctx: &mut FunctionPassContext<'_, S>,
     ) -> Result<()> {
         let _ = pipeline.run(mfunc, ctx)?;
-        if self.options.verify && !mfunc.is_regallocated {
+        if self.options.verify {
             crate::pipeline::ssa::verify(mfunc, self.target)?;
         }
         self.maybe_dump_mfunc(stage_name, mfunc);
@@ -432,7 +432,7 @@ impl<'a> CodegenPipeline<'a> {
 
         emitter.finish_function(&mut output, mfunc)?;
         stats.stack_frame_size = mfunc.stack_frame.total_size;
-        Ok(output.finish())
+        output.finish()
     }
 
     /// 获取编译选项的可变引用。

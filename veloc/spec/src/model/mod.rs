@@ -17,7 +17,7 @@ use crate::types::TypeSet;
 use crate::types::Types;
 use crate::{Error, storage};
 
-mod operation;
+pub(crate) mod operation;
 pub(crate) use operation::mnemonic;
 
 /// Checked operation definitions, independent of the runtime MIR.
@@ -51,13 +51,13 @@ impl Definitions {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TypeDef {
+pub struct TypeDef {
     pub operands: TypeList,
     pub results: TypeList,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum TypeList {
+pub enum TypeList {
     Fixed(Vec<Pattern>),
     Variadic(Vec<Pattern>),
     Signature,
@@ -73,7 +73,7 @@ impl TypeList {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Pattern {
+pub enum Pattern {
     /// A typed property's type; the set permits type-only validation as well.
     Property(String, TypeSet),
     Callable,
@@ -239,7 +239,7 @@ pub(crate) fn from_declarations(source: &str, records: Vec<Decl>) -> Result<Defi
             DeclKind::Type { .. }
             | DeclKind::TypeSet(_)
             | DeclKind::Function { .. }
-            | DeclKind::Constant(_) => {}
+            | DeclKind::Constant { .. } => {}
             DeclKind::Fields(kind)
                 if matches!(
                     kind.as_str(),

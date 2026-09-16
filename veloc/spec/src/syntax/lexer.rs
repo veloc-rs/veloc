@@ -175,7 +175,10 @@ impl<'a> Lexer<'a> {
             }
             b'0'..=b'9' => {
                 self.offset += 1;
-                while bytes.get(self.offset).is_some_and(u8::is_ascii_digit) {
+                while bytes
+                    .get(self.offset)
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                {
                     self.offset += 1;
                 }
                 Kind::Number(&self.source[offset..self.offset])

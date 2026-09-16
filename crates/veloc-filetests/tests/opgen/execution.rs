@@ -5,11 +5,11 @@ use std::{fs, path::Path, process::Command};
 fn checked(predicate: &str) -> Result<veloc_opgen::Generated, veloc_opgen::Error> {
     common::compile(&format!(
         r#"
-fn Double(n: u64) -> u64 {{ value: n * 2 }}
+fn Double(n: u64) -> u64 {{ value = n * 2; }}
 struct Custom {{ bits: u64, yes: bool }}
-op Example(number: u64, flag: bool) -> ScalarInteger {{
-    meta: OpInfo {{ memory: MemoryEffect::NONE }},
-    mnemonic: "example", storage: Custom {{ bits: number, yes: flag }},
+op Example(number: u64, flag: bool) -> Value<ScalarInteger> {{
+    meta = OpInfo {{ memory: MemoryEffect::NONE }};
+    mnemonic = "example"; storage = Custom {{ bits: number, yes: flag }};
     verify {{
         {predicate};
     }}
@@ -106,13 +106,13 @@ mod numeric_{index} {{
         let validation = common::compile(&format!(
             r#"
 fn Above(items: array(u32, 2), limit: i128) -> bool {{
-    value: all(items, |item| i128(item) > limit)
-}}
+    value = all(items, |item| i128(item) > limit)
+; }}
 struct Buffers {{ first: ConstantPoolId, second: ConstantPoolId }}
-op Example(data: Bytes, other: Bytes) -> Vector {{
-    meta: OpInfo {{ memory: MemoryEffect::NONE }},
-    mnemonic: "example", storage: Buffers {{ first: pool(data), second: pool(other) }},
-    text: "{{data:bytes}}, {{other:bytes}}",
+op Example(data: Bytes, other: Bytes) -> Value<Vector> {{
+    meta = OpInfo {{ memory: MemoryEffect::NONE }};
+    mnemonic = "example"; storage = Buffers {{ first: pool(data), second: pool(other) }};
+    text = "{{data:bytes}}, {{other:bytes}}";
     verify {{
         {predicate};
     }}
@@ -152,12 +152,12 @@ type Snapshot = rust("crate::host::Snapshot") {
     fn next(&self, n: u64) -> optional(u64);
     fn limit(&self) -> u64;
 }
-fn Next(ctx: &Snapshot, n: u64) -> u64 { value: ctx.next(n)? }
-fn Successor(ctx: &Snapshot, n: u64) -> u64 { value: Next(ctx, n) }
+fn Next(ctx: &Snapshot, n: u64) -> u64 { value = ctx.next(n)?; }
+fn Successor(ctx: &Snapshot, n: u64) -> u64 { value = Next(ctx, n); }
 struct Custom { bits: u64, yes: bool }
-op Example(number: u64, flag: bool) -> Type::I32 {
-    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
-    storage: Custom { bits: number, yes: flag },
+op Example(number: u64, flag: bool) -> Value<Type::I32> {
+    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    storage = Custom { bits: number, yes: flag };
     verify(ctx: Arithmetic) {
         let snapshot = ctx.snapshot();
         require(flag || Successor(snapshot, number) > number, "host failure");
@@ -292,16 +292,16 @@ type Cell = rust("crate::Cell");
 struct Tag { bits: u32 }
 struct Summary { bits: u32, ty: Type }
 type Limits = rust("crate::Limits") {
-    trait: rust("crate::LimitsInfo"),
+    trait = rust("crate::LimitsInfo");
     fn max(&self) -> u32;
 }
-enum Payload { variants: [Tag(Tag), Number(i64)] }
-storage Operands { opcode: Code, view: View, reader: Read, writer: Build, register: Cell, attributes: Payload }
+enum Payload { variants = [Tag(Tag), Number(i64)]; }
+storage Operands { opcode = Code; view = View; reader = Read; writer = Build; register = Cell; attributes = Payload; }
 struct Pair { tag: optional(Tag), right: Cell, high: Cell, left: Cell, low: Cell }
-op Pair(move first: Type::I32, second: Type::I64, tag: Tag) -> (low: Type::I32, high: Type::I64) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    storage: Pair { tag: some(tag), right: second, high, left: first, low },
-    text: "{first}, {second}, tag={tag.bits}",
+op Pair(move first: Value<Type::I32>, second: Value<Type::I64>, tag: Tag) -> (low: Value<Type::I32>, high: Value<Type::I64>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = Pair { tag: some(tag), right: second, high, left: first, low };
+    text = "{first}, {second}, tag={tag.bits}";
     query summary -> Summary { bits: tag.bits, ty: first.ty() }
     verify(ctx: Limits) {
         require(tag.bits != 0, "zero tag");
@@ -339,13 +339,13 @@ op Pair(move first: Type::I32, second: Type::I64, tag: Tag) -> (low: Type::I32, 
     assert!(!generated.instructions.contains("GenericOpcode"));
     let signatures = common::compile(r#"
 type Cell = rust("crate::Cell");
-enum SigField { variants: [Sig(SigId), Number(i64)] }
-storage Operands { opcode: SigCode, view: SigView, reader: SigRead, writer: SigBuild, register: Cell, attributes: SigField }
+enum SigField { variants = [Sig(SigId), Number(i64)]; }
+storage Operands { opcode = SigCode; view = SigView; reader = SigRead; writer = SigBuild; register = Cell; attributes = SigField; }
 struct Call { outputs: sequence(Cell), sig: SigId, args: sequence(Cell) }
 op Invoke(sig: SigId, args: sequence(Value)) -> signature {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    storage: Call { outputs: results(), sig, args },
-    signature: sig,
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = Call { outputs: results(), sig, args };
+    signature = sig;
 }
 "#).unwrap();
     let begin = signatures
@@ -613,12 +613,12 @@ type Token = rust("crate::Token") {
     fn runtime(self) -> u32;
 }
 const fn token(n: u32) -> Token = rust("crate::token");
-const fn doubled(n: u32) -> u32 { value: n * 2 }
-const fn positive(items: array(u32, 2)) -> bool { value: all(items, |n| n > 0) }
+const fn doubled(n: u32) -> u32 { value = n * 2; }
+const fn positive(items: array(u32, 2)) -> bool { value = all(items, |n| n > 0); }
 struct Info { count: u32, wide: i128, ok: bool, next: optional(u32) }
 struct Empty {}
 op Check() -> () {
-    meta: Info {
+    meta = Info {
         count: doubled(Token::from_number(Token::BASE.number()?).number()?) + 1,
         wide: i128(token(7).number()?) + 10,
         ok: positive([token(7).number()?, 8])
@@ -626,8 +626,8 @@ op Check() -> () {
             && all(token(7).number(), token(7).number(), |a, b| a == b)
             && (token(7).number()? > 0 || token(0).number()? > 0),
         next: token(7).number(),
-    },
-    mnemonic: "check", storage: Empty {},
+    };
+    mnemonic = "check"; storage = Empty {};
 }
 "#;
     let generated = common::raw_plan(defs).unwrap().generate();
@@ -727,7 +727,7 @@ fn generated_traits_require_an_explicit_rust_implementation() {
         &defs,
         r#"
 type Token = rust("fixture::Token") {
-    trait: rust("fixture::traits::Token"),
+    trait = rust("fixture::traits::Token");
     fn count(self) -> u32;
 }
 "#,

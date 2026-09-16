@@ -52,9 +52,9 @@ struct RefTag {
     tag: u32,
 }
 op RefTag(target: FuncId, tag: u32) -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "ref-tag", storage: RefTag { target: target, tag: tag },
-    text: "{target} {tag}", }
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "ref-tag"; storage = RefTag { target: target, tag: tag };
+    text = "{target} {tag}"; }
 // ----- out-of-line-reference
 // run: fixture
 // check: wide-ref later : () -> i32, 1, 2

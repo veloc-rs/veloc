@@ -89,7 +89,7 @@ impl Bindings {
             let mut has_runtime = false;
             for method in record.members() {
                 let is_const = match &method.kind {
-                    DeclKind::Constant(_) => true,
+                    DeclKind::Constant { .. } => true,
                     DeclKind::Function {
                         signature,
                         body: FunctionBody::Rust { .. },
@@ -238,7 +238,7 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
         let method = record.name.as_str();
         if !matches!(
             &record.kind,
-            DeclKind::Constant(_)
+            DeclKind::Constant { .. }
                 | DeclKind::Function {
                     body: FunctionBody::Rust { .. },
                     ..
@@ -270,49 +270,50 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
                 "Rust methods use the type's trait binding; declare a free function for a direct Rust call",
             ));
         }
-        let (params, result, is_const, constant) = if let DeclKind::Constant(ty) = &record.kind {
-            (Vec::new(), Type::parse(ty, source, &known)?, true, true)
-        } else {
-            let signature = record.signature().expect("function signature");
-            if !signature.generics.is_empty() {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "method requires no generics",
-                ));
-            }
-            let Results::Fixed(results) = &signature.results else {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "method requires one result type",
-                ));
+        let (params, result, is_const, constant) =
+            if let DeclKind::Constant { ty, .. } = &record.kind {
+                (Vec::new(), Type::parse(ty, source, &known)?, true, true)
+            } else {
+                let signature = record.signature().expect("function signature");
+                if !signature.generics.is_empty() {
+                    return Err(Error::at(
+                        source,
+                        record.offset,
+                        "method requires no generics",
+                    ));
+                }
+                let Results::Fixed(results) = &signature.results else {
+                    return Err(Error::at(
+                        source,
+                        record.offset,
+                        "method requires one result type",
+                    ));
+                };
+                let [result] = results.as_slice() else {
+                    return Err(Error::at(
+                        source,
+                        record.offset,
+                        "method requires one result type",
+                    ));
+                };
+                let mut seen = BTreeSet::new();
+                let params = signature
+                    .params
+                    .iter()
+                    .map(|p| {
+                        if p.moves || !seen.insert(&p.name) {
+                            return Err(Error::at(
+                                source,
+                                p.offset,
+                                "method parameters must be distinct immutable values",
+                            ));
+                        }
+                        Ok((p.name.clone(), Type::parse(&p.ty, source, &known)?))
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+                let result = Type::parse(&result.ty, source, &known)?;
+                (params, result, signature.is_const, false)
             };
-            let [result] = results.as_slice() else {
-                return Err(Error::at(
-                    source,
-                    record.offset,
-                    "method requires one result type",
-                ));
-            };
-            let mut seen = BTreeSet::new();
-            let params = signature
-                .params
-                .iter()
-                .map(|p| {
-                    if p.moves || !seen.insert(&p.name) {
-                        return Err(Error::at(
-                            source,
-                            p.offset,
-                            "method parameters must be distinct immutable values",
-                        ));
-                    }
-                    Ok((p.name.clone(), Type::parse(&p.ty, source, &known)?))
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-            let result = Type::parse(&result.ty, source, &known)?;
-            (params, result, signature.is_const, false)
-        };
         let path = bindings.method_trait(owner, namespace, is_const);
         if let Some(name) = path.strip_prefix(&format!("{namespace}::")) {
             if name.contains("::") {
@@ -430,7 +431,7 @@ pub fn generate(source: &Source, namespace: &str) -> Result<String, Error> {
     }
     for file in source.files() {
         for (_, record) in crate::syntax::walk(&source.declarations()[file.declarations.clone()]) {
-            if let DeclKind::Constant(ty) = &record.kind {
+            if let DeclKind::Constant { ty, .. } = &record.kind {
                 check(ty, source, &file.visible, &owners)?;
             }
             if let Some(sig) = record.signature() {

@@ -81,6 +81,17 @@ pub(crate) enum FieldType {
     Values(usize),
 }
 
+/// Access contracts supported by compact operand storage. These are physical
+/// representations, not logical type names: aliases use the same contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Access {
+    Value,
+    Array,
+    Values,
+    Edge,
+    Edges,
+}
+
 #[derive(Debug)]
 enum OpcodeSource {
     Fixed(String),
@@ -107,11 +118,24 @@ impl FieldType {
 }
 
 impl Field {
-    pub(crate) fn traversal(&self) -> Option<&'static str> {
+    pub(crate) fn access(&self) -> Option<Access> {
         if matches!(self.ty, FieldType::Values(_)) {
-            return Some("array");
+            return Some(Access::Array);
         }
-        self.policy.references.traversal()
+        let refs = &self.policy.references;
+        if refs.is_data() {
+            None
+        } else if refs.is_operand() {
+            Some(Access::Value)
+        } else if refs.is_operands() {
+            Some(Access::Values)
+        } else if refs.is_edge() {
+            Some(Access::Edge)
+        } else if refs.is_edges() {
+            Some(Access::Edges)
+        } else {
+            unreachable!("unsupported compact field contract passed checking")
+        }
     }
 
     fn arity(&self) -> Option<usize> {
@@ -318,58 +342,6 @@ pub(crate) fn compile(
 }
 
 impl Storage {
-    pub(crate) fn properties(
-        &self,
-        source: &str,
-        offset: usize,
-        format: &str,
-        mappings: &BTreeMap<String, Node>,
-        params: &[crate::syntax::Parameter],
-    ) -> Result<BTreeSet<String>, Error> {
-        if let Strategy::Operands(operands) = &self.strategy {
-            return operands.properties(source, offset, format, mappings, params);
-        }
-        let layout = self
-            .layouts
-            .iter()
-            .find(|l| l.name == format)
-            .or_else(|| {
-                self.layouts.iter().find(|l| match &l.format {
-                    FormatSource::Fixed(name) => name == format,
-                    FormatSource::Arity { formats, .. } => formats.iter().any(|n| n == format),
-                })
-            })
-            .ok_or_else(|| {
-                Error::at(source, offset, format!("unknown storage layout `{format}`"))
-            })?;
-        let mut properties = BTreeSet::new();
-        for field in &layout.fields {
-            if field.policy.references.is_data()
-                && !matches!(field.ty, FieldType::Values(_))
-                && let Some(node) = mappings.get(&field.name)
-            {
-                match &node.kind {
-                    Kind::Name(name) => {
-                        properties.insert(name.clone());
-                    }
-                    Kind::Call(name, args) if name == "pool" => {
-                        if let [
-                            Node {
-                                kind: Kind::Name(name),
-                                ..
-                            },
-                        ] = args.as_slice()
-                        {
-                            properties.insert(name.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(properties)
-    }
-
     pub(crate) fn instructions(&self) -> String {
         generate::instructions(&self.layouts, &self.records)
     }

@@ -7,7 +7,7 @@ pub mod backend;
 pub mod driver;
 mod emitter;
 pub mod error;
-pub use emitter::{EmittedCode, Emitter, ExternalRelocation};
+pub use emitter::{EmittedCode, Emitter, ExternalRelocation, Target as FixupTarget};
 pub mod isle {
     pub use crate::target::x86_64::isle::*;
 }

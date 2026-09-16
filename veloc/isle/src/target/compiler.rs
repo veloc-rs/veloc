@@ -1,14 +1,18 @@
+mod assembly;
+mod contracts;
+mod encoding;
 mod generate;
 mod preprocess;
 mod select;
 
 use crate::target::ast::Def;
-use crate::target::{EmitExpr, Expr, ExtractorDef, MacroDef, OperandConstraint, parser};
+use crate::target::{ExtractorDef, OperandConstraint, parser};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FinalInstDef {
     operands: Vec<OperandConstraint>,
+    reg_classes: Vec<(String, Vec<String>)>,
     ties: Vec<(usize, usize)>,
     implicit_uses: Vec<String>,
     implicit_defs: Vec<String>,
@@ -16,8 +20,10 @@ pub(crate) struct FinalInstDef {
     schedule_latency: Option<u32>,
     flow: String,
     memory: Option<(String, u32)>,
-    emit: Vec<EmitExpr>,
+    encoding: Option<String>,
     is_pseudo: bool,
+    assembly: Option<assembly::Assembly>,
+    copy_bits: Option<u32>,
 }
 
 fn parse_input(input: &str) -> Result<crate::target::ast::Module, String> {
@@ -35,230 +41,43 @@ fn parse_input(input: &str) -> Result<crate::target::ast::Module, String> {
     }
 }
 
-fn collect_definitions(
+fn collect_extractors(
     module: &crate::target::ast::Module,
-) -> (
-    HashMap<String, ExtractorDef>,
-    HashMap<String, crate::target::ast::TemplateDef>,
-    HashMap<String, MacroDef>,
-) {
+) -> Result<HashMap<String, ExtractorDef>, String> {
     let mut extractors = HashMap::new();
-    let mut templates = HashMap::new();
-    let mut macros = HashMap::new();
-
     for def in &module.defs {
-        match def {
-            Def::Extractor(exc) => {
-                extractors.insert(exc.name.clone(), exc.clone());
+        if let Def::Extractor(extractor) = def {
+            if extractors
+                .insert(extractor.name.clone(), extractor.clone())
+                .is_some()
+            {
+                return Err(format!("duplicate extractor {}", extractor.name));
             }
-            Def::Template(t) => {
-                templates.insert(t.name.clone(), t.clone());
-            }
-            Def::Macro(m) => {
-                macros.insert(m.name.clone(), m.clone());
-            }
-            _ => {}
         }
     }
-
-    (extractors, templates, macros)
+    Ok(extractors)
 }
 
-fn subst_expr(expr: &Expr, args_map: &HashMap<String, Expr>) -> Expr {
-    match expr {
-        Expr::Variable(v) => args_map.get(v).cloned().unwrap_or_else(|| expr.clone()),
-        Expr::HwEnc(_)
-        | Expr::SlotBaseHwEnc(_)
-        | Expr::SlotOffset(_)
-        | Expr::SlotSize(_)
-        | Expr::SlotAlign(_)
-        | Expr::Int(_) => expr.clone(),
-        Expr::BitOr(a, b) => Expr::BitOr(
-            Box::new(subst_expr(a, args_map)),
-            Box::new(subst_expr(b, args_map)),
-        ),
-        Expr::BitAnd(a, b) => Expr::BitAnd(
-            Box::new(subst_expr(a, args_map)),
-            Box::new(subst_expr(b, args_map)),
-        ),
-        Expr::Shl(a, b) => Expr::Shl(
-            Box::new(subst_expr(a, args_map)),
-            Box::new(subst_expr(b, args_map)),
-        ),
-        Expr::Shr(a, b) => Expr::Shr(
-            Box::new(subst_expr(a, args_map)),
-            Box::new(subst_expr(b, args_map)),
-        ),
-        Expr::Call(name, args) => {
-            let new_args = args.iter().map(|a| subst_expr(a, args_map)).collect();
-            Expr::Call(name.clone(), new_args)
-        }
-    }
-}
-
-fn subst_emit(emit: &EmitExpr, args_map: &HashMap<String, Expr>) -> EmitExpr {
-    match emit {
-        EmitExpr::ByteExpr(e) => EmitExpr::ByteExpr(Box::new(subst_expr(e, args_map))),
-        EmitExpr::Imm16(e) => EmitExpr::Imm16(Box::new(subst_expr(e, args_map))),
-        EmitExpr::Imm32(e) => EmitExpr::Imm32(Box::new(subst_expr(e, args_map))),
-        EmitExpr::Imm64(e) => EmitExpr::Imm64(Box::new(subst_expr(e, args_map))),
-        EmitExpr::Rel32(name) => EmitExpr::Rel32(match args_map.get(name) {
-            Some(Expr::Variable(nv)) => nv.clone(),
-            _ => name.clone(),
-        }),
-        EmitExpr::If(cond, then_p, else_p) => EmitExpr::If(
-            Box::new(subst_expr(cond, args_map)),
-            then_p.iter().map(|e| subst_emit(e, args_map)).collect(),
-            else_p.iter().map(|e| subst_emit(e, args_map)).collect(),
-        ),
-        _ => emit.clone(),
-    }
-}
-
-fn subst_operand(op: &OperandConstraint, args_map: &HashMap<String, Expr>) -> OperandConstraint {
-    let subst_name = |name: &str| -> String {
-        match args_map.get(name) {
-            Some(Expr::Variable(nv)) => nv.clone(),
-            _ => name.to_string(),
-        }
-    };
-
-    match op {
-        OperandConstraint::Use(v) => OperandConstraint::Use(subst_name(v)),
-        OperandConstraint::FixedUse { reg, src } => OperandConstraint::FixedUse {
-            reg: reg.clone(),
-            src: subst_name(src),
-        },
-        OperandConstraint::Def(v) => OperandConstraint::Def(subst_name(v)),
-        OperandConstraint::Imm(v) => OperandConstraint::Imm(subst_name(v)),
-        OperandConstraint::Block(v) => OperandConstraint::Block(subst_name(v)),
-        OperandConstraint::Global(v) => OperandConstraint::Global(subst_name(v)),
-        OperandConstraint::StackSlot(v) => OperandConstraint::StackSlot(subst_name(v)),
-        OperandConstraint::TiedDef { dst, src } => OperandConstraint::TiedDef {
-            dst: subst_name(dst),
-            src: subst_name(src),
-        },
-    }
-}
-
-fn instantiate_templates(
-    module: &crate::target::ast::Module,
-    templates: &HashMap<String, crate::target::ast::TemplateDef>,
-) -> HashMap<String, FinalInstDef> {
-    let mut final_inst_defs = HashMap::new();
-
-    for def in &module.defs {
-        match def {
-            Def::Inst(inst) => {
-                let mut inst = inst.clone();
-
-                if let Some(t_inst) = &inst.template {
-                    if let Some(t_def) = templates.get(&t_inst.name) {
-                        let args_map: HashMap<_, _> = t_def
-                            .args
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, name)| {
-                                t_inst.args.get(i).map(|val| (name.clone(), val.clone()))
-                            })
-                            .collect();
-
-                        if inst.operands.is_empty() {
-                            inst.operands = t_def
-                                .operands
-                                .iter()
-                                .map(|op| subst_operand(op, &args_map))
-                                .collect();
-                        }
-
-                        if inst.emit.is_empty() {
-                            inst.emit = t_def
-                                .emit
-                                .iter()
-                                .map(|e| subst_emit(e, &args_map))
-                                .collect();
-                        }
-
-                        inst.schedule_latency = inst.schedule_latency.or(t_def.schedule_latency);
-                        inst.flow = inst.flow.or_else(|| t_def.flow.clone());
-                        inst.memory = inst.memory.or_else(|| t_def.memory.clone());
-                        if inst.clobbers.is_empty() {
-                            inst.clobbers = t_def.clobbers.clone();
-                        }
-                        if inst.implicit_uses.is_empty() {
-                            inst.implicit_uses = t_def.implicit_uses.clone();
-                        }
-                        if inst.implicit_defs.is_empty() {
-                            inst.implicit_defs = t_def.implicit_defs.clone();
-                        }
-                    }
-                }
-
-                final_inst_defs.insert(
-                    inst.name.clone(),
-                    FinalInstDef {
-                        ties: Vec::new(),
-                        operands: inst.operands,
-                        implicit_uses: inst.implicit_uses,
-                        implicit_defs: inst.implicit_defs,
-                        clobbers: inst.clobbers,
-                        schedule_latency: inst.schedule_latency,
-                        flow: inst.flow.clone().unwrap_or_else(|| "Next".into()),
-                        memory: inst.memory.clone(),
-                        emit: inst.emit,
-                        is_pseudo: false,
-                    },
-                );
-            }
-            Def::PseudoInst(inst) => {
-                final_inst_defs.insert(
-                    inst.name.clone(),
-                    FinalInstDef {
-                        ties: Vec::new(),
-                        operands: inst.operands.clone(),
-                        implicit_uses: inst.implicit_uses.clone(),
-                        implicit_defs: inst.implicit_defs.clone(),
-                        clobbers: inst.clobbers.clone(),
-                        schedule_latency: inst.schedule_latency,
-                        flow: inst.flow.clone().unwrap_or_else(|| "Next".into()),
-                        memory: inst.memory.clone(),
-                        emit: Vec::new(),
-                        is_pseudo: true,
-                    },
-                );
-            }
-            _ => {}
-        }
-    }
-
-    // A destructive encoding is a location constraint, not a shared SSA value.
-    // Keep encoded operand positions stable and append each tied input.
-    for inst in final_inst_defs.values_mut() {
-        let mut inputs = Vec::new();
-        for (def, operand) in inst.operands.iter_mut().enumerate() {
-            if let OperandConstraint::TiedDef { dst, src } = operand {
-                inputs.push((def, src.clone()));
-                *operand = OperandConstraint::Def(dst.clone());
-            }
-        }
-        for (def, src) in inputs {
-            inst.ties.push((def, inst.operands.len()));
-            inst.operands.push(OperandConstraint::Use(src));
-        }
-    }
-    final_inst_defs
-}
-
-pub fn compile(input: &str, arch: &str) -> Result<String, String> {
+pub fn compile(
+    input: &str,
+    arch: &str,
+    definitions: &veloc_opgen::Source,
+) -> Result<String, String> {
+    let contracts = definitions.contracts().map_err(|error| error.to_string())?;
     let input = preprocess::preprocess_isle(input)?;
-    let module = parse_input(&input)?;
+    let mut module = parse_input(&input)?;
+    module
+        .defs
+        .extend(contracts::registers(definitions.declarations())?);
     for def in &module.defs {
         if let Def::SelectRule(rule) = def {
             select::check_temps(rule)?;
         }
     }
-    let (extractors, templates, macros) = collect_definitions(&module);
-    let final_inst_defs = instantiate_templates(&module, &templates);
+    let extractors = collect_extractors(&module)?;
+    let mut final_inst_defs = contracts::compile(contracts, &module)?;
+    encoding::compile(definitions, &mut final_inst_defs)?;
+    assembly::compile(definitions.declarations(), &mut final_inst_defs)?;
     for (name, inst) in &final_inst_defs {
         if inst.schedule_latency.is_some()
             && (inst.memory.is_some()
@@ -291,8 +110,10 @@ pub fn compile(input: &str, arch: &str) -> Result<String, String> {
     generate::generate_enum(&mut output, &final_inst_defs);
     generate::generate_enum_conversions(&mut output, &final_inst_defs);
     generate::generate_target_inst_metadata(&mut output, &module, &final_inst_defs);
+    generate::generate_validation(&mut output, &final_inst_defs);
     select::generate_generic_inst_metadata(&mut output, &module, &final_inst_defs);
-    generate::generate_emit_method(&mut output, &final_inst_defs, &macros);
+    encoding::generate(&mut output, &final_inst_defs);
+    assembly::generate(&mut output, &final_inst_defs);
     select::generate_select_instruction(&mut output, &module, &extractors, &final_inst_defs, arch);
 
     Ok(output)

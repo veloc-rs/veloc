@@ -480,7 +480,7 @@ mod tests {
     }
 
     fn parsed(expression: &str, params: &[Param]) -> Result<Semantic, Error> {
-        let source = format!("fixture Test {{ semantics: {expression} }}");
+        let source = format!("fixture Test {{ semantics = {expression}; }}");
         let mut record = crate::syntax::parse(&source)?.pop().unwrap();
         parse(&source, record.fields.remove("semantics").unwrap(), params)
     }

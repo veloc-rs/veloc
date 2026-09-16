@@ -231,7 +231,7 @@ impl TargetLegalizer for X86_64Legalizer {
                         if opcode == GenericOpcode::Fneg {
                             sign
                         } else {
-                            !sign
+                            sign.wrapping_sub(1)
                         },
                     );
                     let changed = self.lowering.emit_legalize_binary_reg(

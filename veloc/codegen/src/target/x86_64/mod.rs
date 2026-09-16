@@ -2,6 +2,7 @@
 //!
 //! x86_64 架构的具体实现
 
+pub mod assembly;
 pub mod emitter;
 pub mod isle;
 pub mod lowering;
@@ -154,6 +155,26 @@ impl X86_64TargetMachine {
 }
 
 impl TargetMachine for X86_64TargetMachine {
+    fn validate_instruction(
+        &self,
+        inst: &veloc_lir::InstRef<'_>,
+        allocated: bool,
+    ) -> crate::Result<()> {
+        let veloc_lir::MachineOpcode::Target(op) = inst.opcode() else {
+            return Err(crate::Error::codegen("expected a target instruction"));
+        };
+        isle::TargetInst::from_u32(op).validate(inst, allocated)
+    }
+    fn write_assembly(
+        &self,
+        inst: &veloc_lir::InstRef<'_>,
+        out: &mut dyn crate::target::arch::AssemblyWriter,
+    ) -> core::fmt::Result {
+        let veloc_lir::MachineOpcode::Target(op) = inst.opcode() else {
+            return Err(core::fmt::Error);
+        };
+        isle::TargetInst::from_u32(op).write_assembly(inst, out)
+    }
     fn target_inst_metadata(
         &self,
         opcode: u32,

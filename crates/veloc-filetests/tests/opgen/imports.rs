@@ -37,9 +37,9 @@ fn diamond_imports_generate_each_definition_once() {
 import "left.ops";
 import "right.ops";
 struct Unary { arg: Value }
-op Example<T: Small>(arg: T) -> T {
-    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
-    storage: Unary { arg },
+op Example<T: Small>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    storage = Unary { arg };
 }
 "#,
     );
@@ -80,14 +80,14 @@ fn imported_hosts_and_helpers_need_no_capability_configuration() {
         "host.ops",
         r#"
 type Numbers = rust("crate::host::Numbers") { fn next(&self, n: u32) -> u32; }
-fn Next(ctx: &Numbers, n: u32) -> u32 { value: ctx.next(n) }
+fn Next(ctx: &Numbers, n: u32) -> u32 { value = ctx.next(n); }
 "#,
     );
     files.write(
         "helpers.ops",
         r#"
 import "host.ops";
-fn Twice(ctx: &Numbers, n: u32) -> u32 { value: Next(ctx, Next(ctx, n)) }
+fn Twice(ctx: &Numbers, n: u32) -> u32 { value = Next(ctx, Next(ctx, n)); }
 "#,
     );
     let consumer = r#"
@@ -97,8 +97,8 @@ import "host.ops";
 struct Summary { count: u32 }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example",
-    storage: Data { n: n }, query summary(ctx: Numbers) -> Summary { count: Twice(ctx, n) }
+    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
+    storage = Data { n: n }; query summary(ctx: Numbers) -> Summary { count: Twice(ctx, n) }
 }
 "#;
     files.write("consumer.ops", consumer);
@@ -117,7 +117,7 @@ op Example(n: u32) -> () {
     // Importing definitions is still required; there is no implicit host registry.
     files.write(
         "helpers.ops",
-        "fn Twice(ctx: &Numbers, n: u32) -> u32 { value: ctx.next(n) }",
+        "fn Twice(ctx: &Numbers, n: u32) -> u32 { value = ctx.next(n); }",
     );
     let error = files.load("consumer.ops").unwrap().compile().err().unwrap();
     assert_eq!(error.path, files.0.join("helpers.ops"));
@@ -139,7 +139,7 @@ fn model_errors_retain_imported_file_line_and_column() {
 #[test]
 fn imported_files_are_syntactically_independent() {
     let files = Files::new();
-    files.write("bad.ops", "typeset Broken =\n");
+    files.write("bad.ops", "typeset Broken = \n");
     files.write("root.ops", "import \"bad.ops\";\n}");
     let error = files.load("root.ops").err().unwrap();
     // The root is also malformed. Neither file may complete the other's braces.
@@ -245,7 +245,7 @@ fn original_offsets_survive_unicode_imports_and_comments() {
 #[test]
 fn output_plan_errors_keep_the_imported_source_location() {
     let files = Files::new();
-    files.write("bad.ops", "import \"prelude.ops\"; struct Work {}\nop Work() -> () { meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: \"emit\", storage: Work {} }");
+    files.write("bad.ops", "import \"prelude.ops\"; struct Work {}\nop Work() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = \"emit\"; storage = Work {}; }");
     files.write("root.ops", "import \"prelude.ops\";\nimport \"bad.ops\";");
     let source = files.load("root.ops").unwrap();
     source.parse().unwrap();
@@ -298,17 +298,17 @@ fn imports_are_file_local_even_when_siblings_are_loaded_first() {
         ("struct Holder { value: MemoryEffects }", "MemoryEffects"),
         ("struct Holder { value: MemoryEffect }", "MemoryEffect"),
         (
-            "fn use_float(Float: Float) -> Float { value: Float }",
+            "fn use_float(Float: Float) -> Float { value = Float; }",
             "Float",
         ),
         (
-            "fn query(value: Type) -> bool { value: value.is_scalar() }",
+            "fn query(value: Type) -> bool { value = value.is_scalar(); }",
             "Type",
         ),
         ("typeset Small = Type::I8;", "Type"),
         ("type SIMD = Type::I32X4;", "Type"),
         (
-            "type Inputs = rust(\"crate::inst::Arguments\") { field: list(Value), }",
+            "type Inputs = rust(\"crate::inst::Arguments\") { field = list(Value); }",
             "Value",
         ),
     ] {
@@ -339,37 +339,44 @@ fn imports_are_file_local_even_when_siblings_are_loaded_first() {
 
     files.write(
         "references.ops",
-        r#"type Ref = rust("crate::Value") { field: operand, }"#,
+        r#"type Ref = rust("crate::Value") { field = operand; }"#,
     );
     let consumer = r#"
 import "prelude.ops";
 struct Inputs { args: ValueList }
 op Consume(args: sequence(Ref)) -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "consume", storage: Inputs { args },
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "consume"; storage = Inputs { args };
 }
 "#;
-    files.write("consumer.ops", consumer);
-    files.write(
-        "root.ops",
-        r#"import "references.ops"; import "consumer.ops";"#,
-    );
-    let error = files
-        .load("root.ops")
-        .unwrap()
-        .parse()
-        .err()
-        .expect("sequence element import leaked");
-    assert_eq!(error.path, files.0.join("consumer.ops"));
-    assert!(
-        error.diagnostic.message.contains("`Ref` is not imported"),
-        "{error}"
-    );
-    files.write(
-        "consumer.ops",
-        &format!("import \"references.ops\";\n{consumer}"),
-    );
-    files.load("root.ops").unwrap().compile().unwrap();
+    for consumer in [
+        consumer.to_owned(),
+        consumer
+            .replace("args: ValueList", "args: Value")
+            .replace("sequence(Ref)", "Ref<Type::I32>"),
+    ] {
+        files.write("consumer.ops", &consumer);
+        files.write(
+            "root.ops",
+            r#"import "references.ops"; import "consumer.ops";"#,
+        );
+        let error = files
+            .load("root.ops")
+            .unwrap()
+            .parse()
+            .err()
+            .expect("SSA reference import leaked");
+        assert_eq!(error.path, files.0.join("consumer.ops"));
+        assert!(
+            error.diagnostic.message.contains("`Ref` is not imported"),
+            "{error}"
+        );
+        files.write(
+            "consumer.ops",
+            &format!("import \"references.ops\";\n{consumer}"),
+        );
+        files.load("root.ops").unwrap().compile().unwrap();
+    }
 }
 
 #[test]

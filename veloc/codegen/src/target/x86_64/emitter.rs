@@ -1,7 +1,7 @@
 //! x86_64 Machine Code Emitter
 //!
-//! x86_64 后端只保留发射时机和 fixup 收尾逻辑。
-//! 具体编码字节序列由 ISLE DSL 生成的 `TargetInst::emit()` 负责。
+//! Adapts allocated LIR to the standalone encoder. Frame and symbol knowledge
+//! stays here; architecture encoding algorithms live in veloc-encoder.
 
 use crate::target::arch::TargetEmitter;
 use veloc_lir::stages::PrologueEpilogueInserted;
@@ -55,21 +55,99 @@ impl TargetEmitter for X86_64CodeEmitter {
                         ));
                     }
                 }
-                target
-                    .emit::<Self>(emitter, inst, mfunc)
-                    .unwrap_or_else(|err| {
-                        panic!("{err} | inst={:?}", inst);
-                    });
-                Ok(())
+                target.emit(emitter, inst, mfunc).map_err(|error| {
+                    crate::Error::codegen(alloc::format!("{target:?}: {error}; {inst:?}"))
+                })
             }
         }
     }
+}
 
-    fn finish_function(
-        &self,
-        emitter: &mut crate::Emitter,
-        _mfunc: &MachineFunction<PrologueEpilogueInserted>,
-    ) -> Result<(), crate::error::Error> {
-        emitter.apply_fixups()
+pub(crate) fn register(reg: veloc_lir::Reg) -> crate::Result<veloc_encoder::x86_64::Reg> {
+    super::isle::register_encoding(reg)
+        .and_then(veloc_encoder::x86_64::Reg::new)
+        .ok_or_else(|| crate::Error::codegen("invalid physical register for x86 encoding"))
+}
+
+pub(crate) fn stack_address(
+    frame: &veloc_lir::StackFrame,
+    slot: veloc_lir::StackSlot,
+) -> crate::Result<veloc_encoder::x86_64::Address> {
+    use veloc_encoder::x86_64::{Address, Memory};
+    let slot = &frame.slots[slot];
+    Ok(Address::BaseIndex(Memory {
+        base: Some(register(
+            slot.base.resolve(super::isle::SPECIAL_REG_FRAME_POINTER),
+        )?),
+        index: None,
+        displacement: i64::from(slot.offset),
+    }))
+}
+
+// Generated traits check every declared host signature, including methods that
+// no current instruction happens to call.
+pub(crate) mod host {
+    use veloc_encoder::x86_64::{Branch, Form, Immediate, Legacy};
+    include!(concat!(env!("OUT_DIR"), "/encoding_host.rs"));
+}
+
+/// Codegen owns symbolic targets; the standalone encoder never sees them.
+pub(crate) enum Emission {
+    Legacy(
+        veloc_encoder::x86_64::Legacy,
+        veloc_encoder::x86_64::Form,
+        veloc_encoder::x86_64::Immediate,
+    ),
+    Branch(veloc_mir::Block, veloc_encoder::x86_64::Branch),
+    Relative(
+        veloc_lir::SymbolId,
+        veloc_encoder::x86_64::Legacy,
+        veloc_encoder::x86_64::Form,
+        i64,
+    ),
+}
+
+impl host::Emission for Emission {
+    fn legacy(
+        descriptor: veloc_encoder::x86_64::Legacy,
+        form: veloc_encoder::x86_64::Form,
+        immediate: veloc_encoder::x86_64::Immediate,
+    ) -> Self {
+        Self::Legacy(descriptor, form, immediate)
+    }
+    fn branch(target: veloc_mir::Block, form: veloc_encoder::x86_64::Branch) -> Self {
+        Self::Branch(target, form)
+    }
+    fn relative(
+        target: veloc_lir::SymbolId,
+        descriptor: veloc_encoder::x86_64::Legacy,
+        form: veloc_encoder::x86_64::Form,
+        addend: i64,
+    ) -> Self {
+        Self::Relative(target, descriptor, form, addend)
+    }
+}
+
+pub(crate) fn encode_instruction(
+    emitter: &mut crate::Emitter,
+    emission: Emission,
+) -> crate::Result<()> {
+    use veloc_encoder::x86_64 as x86;
+    let error = |e| crate::Error::codegen(alloc::format!("x86 encoding: {e}"));
+    match emission {
+        Emission::Legacy(descriptor, form, immediate) => {
+            let encoded = x86::encode(descriptor, form, immediate).map_err(error)?;
+            emitter.instruction(&encoded, None)
+        }
+        Emission::Relative(target, descriptor, form, addend) => {
+            let encoded =
+                x86::encode(descriptor, form, x86::Immediate::Relative(addend)).map_err(error)?;
+            emitter.instruction(&encoded, Some(crate::emitter::Target::Symbol(target)))
+        }
+        Emission::Branch(target, branch) => {
+            let short = x86::encode_branch(branch, true).map_err(error)?;
+            let long = x86::encode_branch(branch, false).map_err(error)?;
+            emitter.branch(target, &short, &long)
+        }
     }
 }

@@ -45,22 +45,6 @@ impl References {
             None
         }
     }
-    pub fn traversal(&self) -> Option<&'static str> {
-        if self.is_data() {
-            None
-        } else if self.is_operand() {
-            Some("value")
-        } else if self.is_operands() {
-            Some("value_list")
-        } else if self.is_edge() {
-            Some("block_call")
-        } else if self.is_edges() {
-            Some("jump_table")
-        } else {
-            unreachable!("unsupported Rust field interface passed checking")
-        }
-    }
-
     fn parse(
         source: &str,
         node: &Node,
@@ -450,7 +434,7 @@ mod tests {
     fn checked(source: &str) -> Result<Vec<RecordDef>, Error> {
         {
             let source = format!(
-                "type Value = rust(\"crate::Value\");\nencoding MemFlags {{ fields: [volatile(1)], storage: u16 }}\n{source}"
+                "type Value = rust(\"crate::Value\");\nencoding MemFlags {{ fields = [volatile(1)]; storage = u16; }}\n{source}"
             );
             crate::model::data::Types::compile(&crate::syntax::parse(&source)?, &source)
                 .map(|types| types.records)

@@ -22,18 +22,10 @@ pub enum Def {
     CombineRule(CombineRuleDef),
     /// 目标后期 peephole 规则: (peephole-rule ...)
     PeepholeRule(PeepholeRuleDef),
-    /// 寄存器定义: (def-reg Name (size Bits) [(alias Reg Range)] (hw-enc Enc) [(reserved)] [(role Name)]*)
+    /// Resolved register constant from the OpSpec target schema.
     Reg(RegDef),
-    /// 寄存器类定义: (def-regclass Name (Reg1 Reg2 ...))
+    /// Resolved RegisterClass constant from the OpSpec target schema.
     RegClass(RegClassDef),
-    /// 机器指令定义（具备编码）
-    Inst(InstDef),
-    /// 目标伪指令定义（无编码，仅参与选择/后续展开）
-    PseudoInst(PseudoInstDef),
-    /// 宏/编码函数定义: (def-macro Name (args ...) (expr))
-    Macro(MacroDef),
-    /// 模板定义: (def-template Name (args ...) body)
-    Template(TemplateDef),
     /// 提取器定义: (def-extractor (Name args...) body)
     Extractor(ExtractorDef),
     /// CPU 特性定义: (def-feature Name "doc")
@@ -167,75 +159,30 @@ pub struct PeepholeRuleDef {
 pub struct RegDef {
     pub name: String,
     pub size: u32,
-    pub alias: Option<(String, String)>, // (parent_reg, bit_range)
+    pub alias: Option<RegisterAlias>,
+    pub id: u32,
     pub hw_enc: u32,
     pub reserved: bool,
     pub roles: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RegisterAlias {
+    pub base: String,
+    pub offset: u32,
+    pub write: RegisterWrite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterWrite {
+    Preserve,
+    ZeroExtend,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RegClassDef {
     pub name: String,
     pub regs: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct InstDef {
-    pub name: String,
-    pub template: Option<TemplateInst>,
-    pub operands: Vec<OperandConstraint>,
-    pub implicit_uses: Vec<String>,
-    pub implicit_defs: Vec<String>,
-    pub clobbers: Vec<String>,
-    /// Explicit promise of safe, nontrapping scheduling; absent means barrier.
-    pub schedule_latency: Option<u32>,
-    /// Control transfer; omitted instructions fall through.
-    pub flow: Option<String>,
-    pub memory: Option<(String, u32)>,
-    pub emit: Vec<EmitExpr>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PseudoInstDef {
-    pub name: String,
-    pub operands: Vec<OperandConstraint>,
-    pub implicit_uses: Vec<String>,
-    pub implicit_defs: Vec<String>,
-    pub clobbers: Vec<String>,
-    /// Explicit promise of safe, nontrapping scheduling; absent means barrier.
-    pub schedule_latency: Option<u32>,
-    /// Control transfer; omitted instructions fall through.
-    pub flow: Option<String>,
-    pub memory: Option<(String, u32)>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TemplateDef {
-    pub name: String,
-    pub args: Vec<String>,
-    pub operands: Vec<OperandConstraint>,
-    pub implicit_uses: Vec<String>,
-    pub implicit_defs: Vec<String>,
-    pub clobbers: Vec<String>,
-    /// Explicit promise of safe, nontrapping scheduling; absent means barrier.
-    pub schedule_latency: Option<u32>,
-    /// Control transfer; omitted instructions fall through.
-    pub flow: Option<String>,
-    pub memory: Option<(String, u32)>,
-    pub emit: Vec<EmitExpr>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TemplateInst {
-    pub name: String,
-    pub args: Vec<Expr>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MacroDef {
-    pub name: String,
-    pub args: Vec<String>,
-    pub body: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -254,54 +201,6 @@ pub enum OperandConstraint {
     Global(String),
     /// 栈槽目标: (stackslot $name)
     StackSlot(String),
-    /// 破坏性定义 (Tied): (def (tied $dst $src))
-    TiedDef { dst: String, src: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum EmitExpr {
-    /// 发射一个字节: (byte 0x01)
-    Byte(u8),
-    /// 发射一个动态计算的字节: (byte expr)
-    ByteExpr(Box<Expr>),
-    /// 发射 16 位立即数: (imm16 $imm)
-    Imm16(Box<Expr>),
-    /// 发射 32 位立即数: (imm32 $imm)
-    Imm32(Box<Expr>),
-    /// 发射 64 位立即数: (imm64 $imm)
-    Imm64(Box<Expr>),
-    /// 发射一个待回填的相对 32 位位移: (rel32 $target)
-    Rel32(String),
-    /// 条件发射: (if (cond) (emit1) (emit2))
-    If(Box<Expr>, Vec<EmitExpr>, Vec<EmitExpr>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    /// 变量引用
-    Variable(String),
-    /// 寄存器硬件编码: (hw-enc $reg)
-    HwEnc(String),
-    /// 栈槽基址寄存器的硬件编码: (slot-base-hw-enc $slot)
-    SlotBaseHwEnc(String),
-    /// 栈槽偏移: (slot-offset $slot)
-    SlotOffset(String),
-    /// 栈槽大小: (slot-size $slot)
-    SlotSize(String),
-    /// 栈槽对齐: (slot-align $slot)
-    SlotAlign(String),
-    /// 位运算: (bit-or a b)
-    BitOr(Box<Expr>, Box<Expr>),
-    /// 位运算: (bit-and a b)
-    BitAnd(Box<Expr>, Box<Expr>),
-    /// 位移: (shl a 3)
-    Shl(Box<Expr>, Box<Expr>),
-    /// 逻辑右移: (shr a 3)
-    Shr(Box<Expr>, Box<Expr>),
-    /// 宏调用 / 函数调用
-    Call(String, Vec<Expr>),
-    /// 立即数
-    Int(i64),
 }
 
 /// 规则谓词中的参数

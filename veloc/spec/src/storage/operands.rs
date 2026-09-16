@@ -358,39 +358,6 @@ impl Operands {
             args,
         }
     }
-    pub(crate) fn properties(
-        &self,
-        source: &str,
-        offset: usize,
-        format: &str,
-        mappings: &BTreeMap<String, Node>,
-        _params: &[crate::syntax::Parameter],
-    ) -> Result<BTreeSet<String>, Error> {
-        let shape = self
-            .formats
-            .get(format)
-            .ok_or_else(|| Error::at(source, offset, "unknown operand format"))?;
-        let mut properties = BTreeSet::new();
-        for field in &shape.fields {
-            if field.codec.is_none() {
-                continue;
-            }
-            let Some(mut node) = mappings.get(&field.name) else {
-                continue;
-            };
-            if let Kind::Call(name, args) = &node.kind {
-                if name == "some" && args.len() == 1 {
-                    node = &args[0];
-                }
-            }
-            if let Kind::Name(name) = &node.kind {
-                if name != "none" {
-                    properties.insert(name.clone());
-                }
-            }
-        }
-        Ok(properties)
-    }
     pub(crate) fn record_names(&self) -> Vec<String> {
         self.formats
             .keys()

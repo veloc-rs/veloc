@@ -1,5 +1,6 @@
 //! Definition syntax: tokenization, recursive-descent parsing and declaration AST.
 //! Meaning and cross-declaration checks belong to the checked model.
+pub(crate) mod expand;
 mod lexer;
 mod parser;
 
@@ -24,6 +25,8 @@ pub enum Kind {
     Member(Box<Node>, String),
     Method(Box<Node>, String, Vec<Node>),
     Object(String, BTreeMap<String, Node>),
+    /// Object literal whose schema is supplied by the consuming property.
+    Record(BTreeMap<String, Node>),
     Union(Vec<Node>),
     Intersection(Vec<Node>),
     Integer(i128),
@@ -84,6 +87,12 @@ pub struct Decl {
 
 #[derive(Debug, Clone)]
 pub enum DeclKind {
+    /// Definition-time parameters; expansion produces ordinary declarations.
+    Template {
+        params: Vec<Parameter>,
+        body: Vec<Decl>,
+    },
+    Expand(Vec<Node>),
     Type {
         binding: Node,
         members: Vec<Decl>,
@@ -93,7 +102,10 @@ pub enum DeclKind {
         signature: Signature,
         body: FunctionBody,
     },
-    Constant(Node),
+    Constant {
+        ty: Node,
+        value: Option<Node>,
+    },
     Op(Signature),
     /// Declarations whose body is entirely described by a field schema.
     Fields(String),
@@ -102,10 +114,12 @@ pub enum DeclKind {
 impl Decl {
     pub fn tag(&self) -> &str {
         match &self.kind {
+            DeclKind::Template { .. } => "template",
+            DeclKind::Expand(_) => "expand",
             DeclKind::Type { .. } => "type",
             DeclKind::TypeSet(_) => "typeset",
             DeclKind::Function { .. } => "fn",
-            DeclKind::Constant(_) => "const",
+            DeclKind::Constant { .. } => "const",
             DeclKind::Op(_) => "op",
             DeclKind::Fields(name) => name,
         }
@@ -139,13 +153,33 @@ impl Decl {
             node.relocate(base);
         }
         match &mut self.kind {
+            DeclKind::Template { params, body } => {
+                for param in params {
+                    param.offset += base;
+                    param.ty.relocate(base);
+                }
+                for declaration in body {
+                    declaration.relocate(base);
+                }
+            }
+            DeclKind::Expand(args) => {
+                for arg in args {
+                    arg.relocate(base);
+                }
+            }
             DeclKind::Type { binding, members } => {
                 binding.relocate(base);
                 for member in members {
                     member.relocate(base);
                 }
             }
-            DeclKind::TypeSet(node) | DeclKind::Constant(node) => node.relocate(base),
+            DeclKind::TypeSet(node) => node.relocate(base),
+            DeclKind::Constant { ty, value } => {
+                ty.relocate(base);
+                if let Some(value) = value {
+                    value.relocate(base);
+                }
+            }
             DeclKind::Function { signature, body } => {
                 signature.relocate(base);
                 match body {
@@ -203,7 +237,7 @@ impl Node {
                     arg.relocate(base);
                 }
             }
-            Kind::Object(_, fields) => {
+            Kind::Object(_, fields) | Kind::Record(fields) => {
                 for node in fields.values_mut() {
                     node.relocate(base);
                 }

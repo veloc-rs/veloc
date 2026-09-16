@@ -34,13 +34,15 @@ impl TargetInstructionSelector for X86_64Selector {
                 // ABI result registers stay live through RET, including across
                 // otherwise dead instructions moved by the scheduler.
                 let inputs = inst.inputs().to_vec();
-                ctx.selected.push(build_target_inst(
-                    ctx.mfunc.writer(),
-                    TargetInst::X86Ret,
-                    &[],
-                    &inputs,
-                    &[],
-                ));
+                let ret = build_target_inst(ctx.mfunc.writer(), TargetInst::X86Ret, &[], &[], &[]);
+                ctx.mfunc.set_inst_effects(
+                    ret,
+                    veloc_lir::RegEffects {
+                        uses: inputs,
+                        ..Default::default()
+                    },
+                );
+                ctx.selected.push(ret);
                 return Ok(SelectResult::InPlace);
             }
             veloc_lir::InstView::UnaryReg(copy)

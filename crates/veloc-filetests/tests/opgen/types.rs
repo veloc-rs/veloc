@@ -3,10 +3,10 @@ use super::common::{self, compile};
 
 const ADD: &str = r#"
 struct Pair { args: values(2) }
-op Add<T: Bits>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo {},
-    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
-}
+op Add<T: Bits>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo {};
+    mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
+; }
 typeset Bits = ScalarInteger;
 "#;
 
@@ -39,10 +39,10 @@ fn analysis_contracts_are_not_hardcoded_rust_paths() {
 
 const PAIR: &str = r#"
 struct Pair { args: values(2) }
-op Add<T: DOMAIN>(lhs: T, rhs: T) -> T {
-    meta: OpInfo {},
-    mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
-}
+op Add<T: DOMAIN>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
+; }
 "#;
 
 fn pair(domain: &str) -> String {
@@ -55,7 +55,7 @@ fn declaration_diagnostics() {
     {
         common::raw_rejected(ADD, "unknown type or typeset `ScalarInteger`");
         common::raw_rejected(
-            "struct Test {} op Test() -> (result: Type::I32) { mnemonic: \"test\", storage: Test {} }",
+            "type Value = rust(\"crate::Value\") { field = operand; } struct Test {} op Test() -> (result: Value<Type::I32>) { mnemonic = \"test\"; storage = Test {}; }",
             "unknown type constant or undeclared Type",
         );
     }
@@ -106,11 +106,11 @@ fn declaration_diagnostics() {
             ("type A = Type::I32; type A = Type::I64;", "duplicate type"),
             ("type A = Type::I32", "expected `;`"),
             (
-                "scalar A { code: 9, kind: integer, bits: 32 }",
+                "scalar A { code = 9; kind = integer; bits = 32; }",
                 "unknown definition kind",
             ),
             (
-                "vector A { element: Type::I32, lanes: 4 }",
+                "vector A { element = Type::I32; lanes = 4; }",
                 "unknown definition kind",
             ),
         ] {
@@ -185,10 +185,10 @@ fn type_domains_and_semantics() {
         let source = r#"
             typeset Wide = Type::I32 | Type::I64;
             struct Pair { args: values(2) }
-            op Add<T: Wide>(lhs: T, rhs: T) -> T {
-        meta: OpInfo {},
-                mnemonic: "add", storage: Pair { args: [lhs, rhs] }, semantics: bv.add(lhs, rhs)
-            }
+            op Add<T: Wide>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+        meta = OpInfo {};
+                mnemonic = "add"; storage = Pair { args: [lhs, rhs] }; semantics = bv.add(lhs, rhs)
+; }
         "#;
         compile(source).unwrap();
 
@@ -235,9 +235,9 @@ fn type_domains_and_semantics() {
         let source = r#"
             typeset Floating = ScalarFloat;
             struct Literal { value: Float }
-            op Literal(value: Float) -> (result: Floating) {
-        meta: OpInfo { memory: MemoryEffect::NONE },
-                mnemonic: "literal", storage: Literal { value: value },
+            op Literal(value: Float) -> (result: Value<Floating>) {
+        meta = OpInfo { memory: MemoryEffect::NONE };
+                mnemonic = "literal"; storage = Literal { value: value };
                 }
         "#;
         assert!(compile(source).is_ok());
@@ -255,9 +255,9 @@ fn shape_constraints() {
         let source = r#"
             struct Unary { arg: Value }
             typeset Lanes = ScalarInteger;
-            op Element<T: Lanes>(arg: T) -> (result: element(T)) {
-        meta: OpInfo { memory: MemoryEffect::NONE },
-                mnemonic: "element", storage: Unary { arg: arg }, }
+            op Element<T: Lanes>(arg: Value<T>) -> (result: Value<element(T)>) {
+        meta = OpInfo { memory: MemoryEffect::NONE };
+                mnemonic = "element"; storage = Unary { arg: arg }; }
         "#;
         common::raw_rejected(&common::source(source), "impossible element constraint");
         assert!(compile(&source.replace("= ScalarInteger;", "= vectors(ScalarInteger);")).is_ok());
@@ -269,10 +269,10 @@ fn shape_constraints() {
             typeset V4 = Type::I32X4;
             typeset V2 = Type::I64X2;
             struct Unary { arg: Value }
-            op Convert<T: V4, U: V2>(arg: T) -> U {
+            op Convert<T: V4, U: V2>(arg: Value<T>) -> Value<U> {
         verify { require(U.same_shape(T), "input and result must have the same shape"); }
-        meta: OpInfo { memory: MemoryEffect::NONE },
-                mnemonic: "convert", storage: Unary { arg: arg }, }
+        meta = OpInfo { memory: MemoryEffect::NONE };
+                mnemonic = "convert"; storage = Unary { arg: arg }; }
         "#;
         common::const_rejected(source, "no admissible type signature");
         assert!(compile(&source.replace("Type::I64X2", "Type::F32X4")).is_ok());

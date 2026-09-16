@@ -1,6 +1,6 @@
 //! Compact persistent fields; public views expose logical types.
 use super::generate::{construct, read_field, record, stored_type};
-use super::{Layout, OpcodeSource};
+use super::{Access, Layout, OpcodeSource};
 use crate::model::records::{Placement, PropertyType, RecordDef};
 use std::fmt::Write;
 
@@ -57,7 +57,7 @@ fn size(ty: &str) -> Option<usize> {
 
 fn last_group(layout: &Layout, records: &[RecordDef]) -> Option<usize> {
     layout.fields.iter().rposition(|f| {
-        f.traversal().is_some()
+        f.access().is_some()
             || record(f, records).is_some_and(|r| {
                 r.fields.iter().any(|f| {
                     matches!(&f.ty, PropertyType::Named(_) if f.policy.references.is_operand())
@@ -70,8 +70,8 @@ fn last_group(layout: &Layout, records: &[RecordDef]) -> Option<usize> {
 fn omitted(layout: &Layout, records: &[RecordDef], i: usize) -> bool {
     last_group(layout, records) == Some(i)
         && matches!(
-            layout.fields[i].traversal(),
-            Some("value_list" | "block_call")
+            layout.fields[i].access(),
+            Some(Access::Values | Access::Edge)
         )
 }
 
@@ -122,23 +122,23 @@ pub(super) fn inline(layout: &Layout, records: &[RecordDef]) -> bool {
             }
             bytes += n.next_multiple_of(align);
         } else {
-            bytes += match f.traversal() {
-                Some("value" | "array") => 0,
-                Some("value_list") => {
+            bytes += match f.access() {
+                Some(Access::Value | Access::Array) => 0,
+                Some(Access::Values) => {
                     if omitted(layout, records, i) {
                         0
                     } else {
                         4
                     }
                 }
-                Some("block_call") => {
+                Some(Access::Edge) => {
                     if omitted(layout, records, i) {
                         4
                     } else {
                         8
                     }
                 }
-                Some("jump_table") => return false,
+                Some(Access::Edges) => return false,
                 _ => match size(&f.ty.schema_type()) {
                     Some(s) => s,
                     None => return false,
@@ -381,11 +381,11 @@ pub(super) fn generate(layouts: &[Layout], records: &[RecordDef]) -> String {
             } else if f.ty.named("u64") {
                 format!("u64::from_le_bytes(*_f{i})")
             } else {
-                match f.traversal() {
-                    Some("value_list") if omitted(layout, records, i) => {
+                match f.access() {
+                    Some(Access::Values) if omitted(layout, records, i) => {
                         "reader.take(reader.0.len())".into()
                     }
-                    Some("block_call") if omitted(layout, records, i) => {
+                    Some(Access::Edge) if omitted(layout, records, i) => {
                         format!("Successor {{ block: *_f{i}, args: reader.take(reader.0.len()) }}")
                     }
                     _ => read_field(f, records, &format!("_f{i}")),

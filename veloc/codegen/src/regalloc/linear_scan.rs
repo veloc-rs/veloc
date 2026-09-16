@@ -16,6 +16,7 @@ struct Interval {
     start: u32,
     end: u32,
     class: RegClass,
+    allowed: Option<Vec<Reg>>,
 }
 
 pub struct RegisterAllocator<'a> {
@@ -45,6 +46,7 @@ impl<'a> RegisterAllocator<'a> {
         let mut ranges: BTreeMap<Reg, (u32, u32)> = BTreeMap::new();
         let mut fixed: BTreeMap<Reg, Vec<(u32, u32)>> = BTreeMap::new();
         let mut calls = Vec::new();
+        let mut constraints: BTreeMap<Reg, Vec<Reg>> = BTreeMap::new();
         let mut pos = 0u32;
         for block in &f.blocks {
             let start = pos * 2;
@@ -55,6 +57,33 @@ impl<'a> RegisterAllocator<'a> {
             }
             for &id in &block.insts {
                 let inst = &f.inst(id);
+                if let veloc_lir::MachineOpcode::Target(op) = inst.opcode() {
+                    for constraint in self.target.target_inst_metadata(op).register_constraints {
+                        let operands = if constraint.result {
+                            inst.results()
+                        } else {
+                            inst.inputs()
+                        };
+                        let reg = *operands.get(constraint.operand).ok_or_else(|| {
+                            Error::codegen("missing constrained register operand")
+                        })?;
+                        if reg.is_vreg() {
+                            let allowed = constraints
+                                .entry(reg)
+                                .or_insert_with(|| constraint.registers.to_vec());
+                            allowed.retain(|reg| constraint.registers.contains(reg));
+                            if allowed.is_empty() {
+                                return Err(Error::codegen(format!(
+                                    "{reg:?} needs a register-class transfer between uses"
+                                )));
+                            }
+                        } else if !constraint.registers.contains(&reg) {
+                            return Err(Error::codegen(
+                                "physical operand violates its register constraint",
+                            ));
+                        }
+                    }
+                }
                 // All current machine schemas read inputs before writing defs.
                 // Separate positions let a dying input share an output register.
                 for reg in inst.uses() {
@@ -93,6 +122,7 @@ impl<'a> RegisterAllocator<'a> {
                     start,
                     end,
                     class: self.target.desc().reg_class_for_vreg(&data.ty, data.bank),
+                    allowed: constraints.remove(&reg),
                 }
             })
             .collect();
@@ -105,7 +135,11 @@ impl<'a> RegisterAllocator<'a> {
                 .iter()
                 .any(|&p| interval.start < p && p < interval.end);
             let available = |&reg: &Reg| {
-                (!crosses_call || preserved.contains(&reg))
+                interval
+                    .allowed
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(&reg))
+                    && (!crosses_call || preserved.contains(&reg))
                     && !self.target.spill_scratch(interval.class).contains(&reg)
                     && !fixed.get(&reg).is_some_and(|rs| {
                         rs.iter()
@@ -199,6 +233,20 @@ impl<'a> RegisterAllocator<'a> {
                     }
                     _ => &[],
                 };
+                let register_constraints = match inst.opcode() {
+                    veloc_lir::MachineOpcode::Target(op) => {
+                        self.target.target_inst_metadata(op).register_constraints
+                    }
+                    _ => &[],
+                };
+                let accepts = |result: bool, operand: usize, reg: Reg| {
+                    register_constraints
+                        .iter()
+                        .filter(|constraint| {
+                            constraint.result == result && constraint.operand == operand
+                        })
+                        .all(|constraint| constraint.registers.contains(&reg))
+                };
                 if ties.len() > 1 {
                     return Err(Error::codegen(
                         "multiple output reuse constraints require parallel allocation edits",
@@ -251,7 +299,12 @@ impl<'a> RegisterAllocator<'a> {
                                 .iter()
                                 .copied()
                                 .find(|r| {
-                                    !occupied.contains(r) && !bindings.values().any(|s| s == r)
+                                    accepts(
+                                        write,
+                                        if write { index } else { index - result_count },
+                                        *r,
+                                    ) && !occupied.contains(r)
+                                        && !bindings.values().any(|s| s == r)
                                 })
                                 .ok_or_else(|| {
                                     Error::codegen(
@@ -310,7 +363,12 @@ impl<'a> RegisterAllocator<'a> {
                             .spill_scratch(class)
                             .iter()
                             .filter_map(|r| r.as_preg())
-                            .find(|r| !plan.locations.contains(r) && !plan.results.contains(r))
+                            .find(|r| {
+                                accepts(true, tie.result, (*r).into())
+                                    && accepts(false, input_index, (*r).into())
+                                    && !plan.locations.contains(r)
+                                    && !plan.results.contains(r)
+                            })
                             .ok_or_else(|| {
                                 Error::codegen("insufficient temporary for tied output")
                             })?

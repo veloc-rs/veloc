@@ -53,15 +53,15 @@ impl TargetFrameLowering for X86_64FrameLowering {
             let push_inst = mfunc.writer().write(
                 MachineOpcode::Target(TargetInst::X86PushRbp.as_u32()),
                 &[],
-                &[],
+                &[REG_RBP],
                 &[],
             );
             pending_prologue.push(push_inst);
 
             let mov_inst = mfunc.writer().write(
                 MachineOpcode::Target(TargetInst::X86MovRbpRsp.as_u32()),
-                &[],
-                &[],
+                &[REG_RBP],
+                &[REG_RSP],
                 &[],
             );
             pending_prologue.push(mov_inst);
@@ -132,7 +132,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
 
                         let pop_inst = cursor.mfunc_mut().writer().write(
                             MachineOpcode::Target(TargetInst::X86PopRbp.as_u32()),
-                            &[],
+                            &[REG_RBP],
                             &[],
                             &[],
                         );

@@ -4,10 +4,10 @@
 struct Pair {
     inputs: values(2),
 }
-op Difference<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "difference",
-    storage: Pair { inputs: [left, right] },
+op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "difference";
+    storage = Pair { inputs: [left, right] };
 }
 
 struct Extended {
@@ -15,8 +15,8 @@ struct Extended {
     tag: u32,
 }
 layout Extended {
-    format: arity(inputs, [Pair]),
-    text: "{inputs}",
+    format = arity(inputs, [Pair]);
+    text = "{inputs}";
 }
 
 // ----- text-generation/incomplete-or-ambiguous-alternates-return-definition-errors-2
@@ -25,10 +25,10 @@ layout Extended {
 struct Pair {
     inputs: values(2),
 }
-op Difference<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "difference",
-    storage: Pair { inputs: [left, right] },
+op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "difference";
+    storage = Pair { inputs: [left, right] };
 }
 
 struct Extended {
@@ -36,8 +36,8 @@ struct Extended {
     tag: u32,
 }
 layout Extended {
-    format: arity(inputs, [Pair]),
-    text: "{inputs}[, tag={tag}]",
+    format = arity(inputs, [Pair]);
+    text = "{inputs}[, tag={tag}]";
 }
 
 // ----- text-generation/incomplete-or-ambiguous-alternates-return-definition-errors-3
@@ -46,10 +46,10 @@ layout Extended {
 struct Pair {
     inputs: values(2),
 }
-op Difference<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "difference",
-    storage: Pair { inputs: [left, right] },
+op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "difference";
+    storage = Pair { inputs: [left, right] };
 }
 
 struct Extended {
@@ -57,8 +57,8 @@ struct Extended {
     tag: u32,
 }
 layout Extended {
-    format: arity(inputs, [Pair]),
-    text: "{inputs}[, tag={tag}]",
+    format = arity(inputs, [Pair]);
+    text = "{inputs}[, tag={tag}]";
 }
 
 // ----- text-generation/incomplete-or-ambiguous-alternates-return-definition-errors-4
@@ -67,10 +67,10 @@ layout Extended {
 struct Pair {
     inputs: values(2),
 }
-op Difference<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "difference",
-    storage: Pair { inputs: [left, right] },
+op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "difference";
+    storage = Pair { inputs: [left, right] };
 }
 
 struct Extended {
@@ -78,16 +78,16 @@ struct Extended {
     tag: u32,
 }
 layout Extended {
-    format: arity(inputs, [Pair]),
-    text: "{inputs}, tag={tag}",
+    format = arity(inputs, [Pair]);
+    text = "{inputs}, tag={tag}";
 }
 struct Another {
     inputs: ValueList,
     tag: u32,
 }
 layout Another {
-    format: arity(inputs, [Pair]),
-    text: "{inputs}, tag={tag}",
+    format = arity(inputs, [Pair]);
+    text = "{inputs}, tag={tag}";
 }
 
 // ----- text-generation/unsupported-alternate-storage-groups-fail-before-rust-emission-1
@@ -96,10 +96,10 @@ layout Another {
 struct Pair {
     inputs: values(2),
 }
-op Difference<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "difference",
-    storage: Pair { inputs: [left, right] },
+op Difference<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "difference";
+    storage = Pair { inputs: [left, right] };
 }
 
 struct Extended {
@@ -107,20 +107,20 @@ struct Extended {
     tag: u32,
 }
 layout Extended {
-    format: fixed(Pair),
-    text: "{inputs}, tag={tag}",
+    format = fixed(Pair);
+    text = "{inputs}, tag={tag}";
 }
 
 // ----- syntax/comments-and-adjacent-delimiters
 // run: opgen
 // check: pub fn example
 struct Example{value:u32,}
-op Example(value:u32,)->Type::I32{
-    meta:OpInfo{memory:MemoryEffect::NONE,}, // 中文注释
-    mnemonic:"example",storage:Example{value:value,},
+op Example(value:u32,)->Value<Type::I32>{
+    meta = OpInfo{memory:MemoryEffect::NONE,}; // 中文注释
+    mnemonic = "example";storage = Example{value:value,};
     verify {
         require(value>=0&&value<=4294967295,"valid // not a comment");
-    },
+    }
 }
 
 // ----- syntax/an-arrow-is-one-token
@@ -130,10 +130,10 @@ op Example() - > () {}
 
 // ----- syntax/constraint-number-range
 // run: opgen-error
-// check: expression integer is out of range
+// check: invalid or out-of-range integer literal
 struct Empty {}
 op Example() -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Empty {},
+    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Empty {};
     verify {
         170141183460469231731687303715884105728 > 0;
     }
@@ -142,17 +142,17 @@ op Example() -> () {
 // ----- syntax/definition-number-range
 // run: opgen-error
 // check: integer is out of range
-encoding TooWide { storage: u64, fields: [bits(4294967296)] }
+encoding TooWide { storage = u64; fields = [bits(4294967296)]; }
 
 // ----- syntax/escaped-string-is-not-structural-syntax
 // run: opgen
 // check: pub fn empty
 struct Empty {}
 op Example() -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE }, mnemonic: "example", storage: Empty {},
+    meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example"; storage = Empty {};
     verify {
         require(true, "quotes: \" / slash: \\ / newline: \n / UTF-8: 字符 } ]");
-    },
+    }
 }
 
 // ----- syntax/invalid-string-escape
@@ -160,11 +160,11 @@ op Example() -> () {
 // check: invalid string escape
 struct Empty {}
 op Example() -> () {
-    meta: OpInfo { memory: MemoryEffect::NONE }, storage: Empty {},
-    mnemonic: "bad\q"
-}
+    meta = OpInfo { memory: MemoryEffect::NONE }; storage = Empty {};
+    mnemonic = "bad\q"
+; }
 
 // ----- syntax/removed-flags-declaration
 // run: opgen-error
 // check: unknown definition kind `flags`
-flags Features { storage: u8, members: [FAST(0)], separator: ", " }
+flags Features { storage = u8; members = [FAST(0)]; separator = ", "; }

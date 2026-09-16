@@ -35,24 +35,12 @@ pub(super) fn parse(
     let crate::syntax::DeclKind::Op(sig) = &record.kind else {
         unreachable!("op parser requires an operation declaration");
     };
-    let node = record
-        .fields
-        .get("storage")
-        .ok_or_else(|| Error::at(source, record.offset, "missing field `storage`"))?;
-    let Kind::Object(format, mappings) = &node.kind else {
-        return Err(Error::at(
-            source,
-            node.offset,
-            "expected storage: Layout { field mappings }",
-        ));
-    };
-    let properties = storage_defs.properties(source, node.offset, format, mappings, &sig.params)?;
     let CheckedSignature {
         params,
         types,
         slots,
         type_bindings,
-    } = signature(source, record.offset, sig.clone(), vocabulary, &properties)?;
+    } = signature(source, record.offset, sig.clone(), vocabulary)?;
     let mut fields = Fields::new(source, record);
     let mnemonic = match fields.optional("mnemonic") {
         Some(Node {
@@ -197,19 +185,18 @@ pub(super) fn parse(
     Ok(op)
 }
 
-struct CheckedSignature {
-    params: Vec<Param>,
-    types: TypeDef,
-    slots: BTreeMap<String, Slot>,
-    type_bindings: BTreeMap<String, Slot>,
+pub(crate) struct CheckedSignature {
+    pub(crate) params: Vec<Param>,
+    pub(crate) types: TypeDef,
+    pub(crate) slots: BTreeMap<String, Slot>,
+    pub(crate) type_bindings: BTreeMap<String, Slot>,
 }
 
-fn signature(
+pub(crate) fn signature(
     source: &str,
     offset: usize,
     sig: Signature,
     vocabulary: Vocabulary<'_>,
-    properties: &BTreeSet<String>,
 ) -> Result<CheckedSignature, Error> {
     let Vocabulary { types, data, .. } = vocabulary;
     let mut variables = BTreeMap::new();
@@ -261,7 +248,10 @@ fn signature(
                 format!("duplicate parameter `{}`", param.name),
             ));
         }
-        let kind = if properties.contains(&param.name) {
+        let is_value = matches!(&param.ty.kind, Kind::Call(name, _) if data.rust.policy(name).references.is_operand());
+        let is_sequence = matches!(&param.ty.kind, Kind::Call(name, _) if name == "sequence");
+        let is_successor = matches!(&param.ty.kind, Kind::Name(name) if matches!(name.as_str(), "successor" | "successors"));
+        let kind = if !is_value && !is_sequence && !is_successor {
             let offset = param.ty.offset;
             if let Some(ty) = types.exact_name(&param.ty) {
                 return Err(Error::at(
@@ -334,7 +324,12 @@ fn signature(
                     index,
                 },
             );
-            patterns.push(pattern(source, param.ty, &mut variables, types)?);
+            patterns.push(pattern(
+                source,
+                value_type(source, param.ty, data)?,
+                &mut variables,
+                types,
+            )?);
             ParamKind::Value
         };
         if param.moves && !matches!(kind, ParamKind::Value | ParamKind::Values) {
@@ -360,6 +355,7 @@ fn signature(
         Results::Fixed(results) => {
             let mut patterns = Vec::new();
             for result in results {
+                let ty = value_type(source, result.ty, data)?;
                 let index = u8::try_from(patterns.len())
                     .map_err(|_| Error::at(source, result.offset, "more than 256 results"))?;
                 if let Some(name) = result.name {
@@ -379,7 +375,7 @@ fn signature(
                         },
                     );
                 }
-                let pat = if let Kind::Call(kind, args) = &result.ty.kind
+                let pat = if let Kind::Call(kind, args) = &ty.kind
                     && kind == "type"
                 {
                     let [
@@ -410,7 +406,7 @@ fn signature(
                         })?;
                     Pattern::Property(name.clone(), set)
                 } else {
-                    pattern(source, result.ty, &mut variables, types)?
+                    pattern(source, ty, &mut variables, types)?
                 };
                 patterns.push(pat);
             }
@@ -450,6 +446,21 @@ fn signature(
         slots,
         type_bindings,
     })
+}
+
+/// Value roles belong to the logical signature, never to its storage projection.
+fn value_type(source: &str, node: Node, data: &super::data::Types) -> Result<Node, Error> {
+    if let Kind::Call(name, mut args) = node.kind
+        && data.rust.policy(&name).references.is_operand()
+        && args.len() == 1
+    {
+        return Ok(args.remove(0));
+    }
+    Err(Error::at(
+        source,
+        node.offset,
+        "expected Value<T> for an SSA value",
+    ))
 }
 
 fn binding(source: &str, node: Node) -> Result<Binding, Error> {

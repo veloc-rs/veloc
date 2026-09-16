@@ -525,12 +525,12 @@ Type-set expressions also work directly in operation signatures; a named set
 is just a reusable alias, not a required declaration for every combination:
 
 ```text
-op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: T, rhs: T) -> T { meta: OpInfo {}, ... }
-op Gather<T: Integer & Vector, U: Vector>(ptr: PTR, index: T) -> U {
+op IAnd<T: Integer | BOOL | vectors(BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> { meta: OpInfo {}, ... }
+op Gather<T: Integer & Vector, U: Vector>(ptr: Value<PTR>, index: Value<T>) -> Value<U> {
     verify { require(U.same_shape(T), "index and result must have the same shape"); }
     meta: OpInfo {}, ...
 }
-op Convert<T: I32 | I64, U: F32 | F64>(arg: T) -> U { meta: OpInfo {}, ... }
+op Convert<T: I32 | I64, U: F32 | F64>(arg: Value<T>) -> Value<U> { meta: OpInfo {}, ... }
 ```
 
 `|` means union and `&` means intersection; `&` binds more tightly. Parentheses
@@ -641,14 +641,14 @@ struct Binary {
     args: values(2),
 }
 
-op IAdd<T: Integer>(lhs: T, rhs: T) -> T {
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
     meta: OpInfo {},
     mnemonic: "iadd",
     storage: Binary { args: [lhs, rhs] },
     semantics: bv.add(lhs, rhs)
 }
 
-op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: T) -> U {
+op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: Value<T>) -> Value<U> {
     meta: OpInfo { memory: MemoryEffect::NONE },
     mnemonic: "extendu",
     storage: Unary { arg: arg },
@@ -658,7 +658,7 @@ op ExtendU<T: Integer | BOOL | vectors(BOOL), U: Integer>(arg: T) -> U {
     }
     }
 
-op Load(ptr: PTR, offset: u32, flags: MemFlags) -> (result: Any) {
+op Load(ptr: Value<PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) },
     mnemonic: "load",
     storage: Load { ptr: ptr, offset: offset, flags: flags },
@@ -706,7 +706,7 @@ struct MemoryAccess {
     effects: MemoryEffect,
 }
 
-op Load(ptr: Type::PTR, offset: u32, flags: MemFlags) -> (result: Any) {
+op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) },
     mnemonic: "load",
     storage: Load { ptr, offset, flags },
@@ -775,11 +775,11 @@ op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
 values remain duplicable. Properties cannot move. Successor arguments transfer
 on the selected edge, without a separate annotation. There is no `moves` list.
 
-SSA operands have names and types in the operation signature. Result names are
-optional: a single result is `-> T`, multiple results are `-> (T, BOOL)`, and
+SSA operands explicitly use `Value<T>` in the operation signature. Result names are
+optional: a single result is `-> Value<T>`, multiple results are `-> (Value<T>, Value<Type::BOOL>)`, and
 zero results are `-> ()`. Parenthesized results may be named when a constraint
-needs to reference them, as in `-> (result: U)`. Otherwise the
-MIR definitions omit result names, including overflow operations (`-> (T, BOOL)`).
+needs to reference them, as in `-> (result: Value<U>)`. Otherwise the
+MIR definitions omit result names, including overflow operations.
 Names do not affect the
 generated representation; anonymous results have no implicit names or aliases.
 Generic variables such as `T` are scoped to that operation; their first direct
@@ -790,11 +790,14 @@ and result types, not solved by those predicates. Construction does not validate
 these relationships. Relations refer to generic or operand/result names, not numeric slots.
 There are no separate `types` structs or references to named type schemes.
 
-Parameter roles are derived from the storage mapping, not an `@` marker.
-A mapping to an SSA field makes `ptr: PTR` an SSA input constrained to pointer
-type; mappings to ordinary data fields make `offset: u32` and `flags: MemFlags`
-properties. The signature is checked against this classification; it cannot
-override the field's role. Variable-length SSA groups use `args: sequence(Value)`; one successor uses
+Parameter roles are declared independently of storage: `ptr: Value<Type::PTR>`
+is an SSA input, whereas `offset: u32` and `flags: MemFlags` are data properties.
+Storage mappings are checked against these roles; they cannot change them.
+`Value<T>` describes a logical SSA reference, not a runtime wrapper allocation.
+Both packed MIR storage and operand-array LIR storage use the same signature checker.
+The constructor must be imported and declared with `field: operand`; another
+such declaration, for example `Ref`, can be used as `Ref<T>` with the same rules.
+Variable-length SSA groups use `args: sequence(Value)`; one successor uses
 `dest: successor`, and a successor group uses `cases: successors`. Empty input
 and result lists are `()`; signature-selected results use `-> signature`.
 The sequence element must be an imported Rust-bound type declared with
@@ -803,7 +806,7 @@ transfers each element. Sequence storage remains the existing compact operand
 list, not a newly allocated Rust collection. The old bare `values` parameter
 keyword is not accepted. Storage declarations such as `values(2)` describe
 fixed-size physical fields and are separate from operation parameter types.
-For example, an indirect call declares a statically checked `ptr: PTR`, a
+For example, an indirect call declares a statically checked `ptr: Value<Type::PTR>`, a
 variable-length `args: sequence(Value)` group and `signature: sig_id`. Direct calls use
 `signature: function(func_id)` to identify the callee's signature. The source of
 dynamic result types is explicit, not inferred from the opcode's name.
@@ -1063,7 +1066,7 @@ built-in verifier keyword:
 fn is_power_of_two(value: u32) -> bool {
     value: value != 0 && (value & (value - 1)) == 0,
 }
-op Alloca(size: u32, align: u32) -> PTR {
+op Alloca(size: u32, align: u32) -> Value<PTR> {
     // ... storage, metadata and text ...
     verify {
         require(size > 0, "alloca size must be positive");
@@ -1154,7 +1157,7 @@ An explicit projection changes notation without changing the builder API or
 storage layout:
 
 ```text
-op Store(ptr: PTR, value: Any, offset: u32, flags: MemFlags) -> () {
+op Store(ptr: Value<PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
     meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) },
     mnemonic: "store",
     storage: Store { ptr: ptr, value: value, offset: offset, flags: flags },

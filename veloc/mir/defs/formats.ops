@@ -164,8 +164,8 @@ struct VectorOpWithExt {
     ext: VectorExtData,
 }
 layout VectorOpWithExt {
-    format: arity(args, [Unary, Binary, Ternary]),
-    text: "{args}, mask={ext.mask}[, evl={ext.evl}]",
+    format = arity(args, [Unary, Binary, Ternary]);
+    text = "{args}, mask={ext.mask}[, evl={ext.evl}]";
     verify {
         require(len(results()) == 1 && all(results(), |t| t.is_vector()), "predicated operation must produce a vector");
         require(all(results(), |t| ext.mask.ty().is_predicate() && ext.mask.ty().shape()? == t.shape()?), "mask must match vector shape");

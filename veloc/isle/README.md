@@ -12,8 +12,8 @@ The rule syntax uses the same declarations and expressions as .ops files:
 
 ```text
 rule negate {
-    match: mir.INeg(x),
-    emit: lir.Neg(x),
+    match = mir.INeg(x);
+    emit = lir.Neg(x);
 }
 ```
 
@@ -46,9 +46,12 @@ there is no SMT invocation or new proof claim here.
 
 ## Target descriptions
 
-`target` contains the existing machine-description language and its compiler:
-registers, ABI, encodings, scheduling metadata and target selection. Its
-entry point is `target::compile`, not the generic rule compiler.
+`target::compile` consumes OpSpec instruction contracts and the target-selection
+rules. Register definitions, scheduling metadata, assembly and encoding
+expressions live in `.ops`; ABI and selection rules currently remain in `.isle`.
+Encoding expressions use the shared typed expression compiler and explicitly
+declared Rust host interfaces. Byte encoding lives in `veloc-encoder`, not in
+an ISLE macro language.
 
 The current generic core deliberately handles fixed-arity value rules.
 Properties, successors, variadic signatures, structural/shape-dependent
@@ -65,7 +68,7 @@ tests and the existing target-description tests.
 The CLI exposes the two consumers explicitly:
 
 ```text
-cargo run -p veloc --bin veloc-isle -- target INPUT OUTPUT ARCH
+cargo run -p veloc --bin veloc-isle -- target INPUT DEFINITIONS OUTPUT ARCH
 cargo run -p veloc --bin veloc-isle -- rules INPUT OUTPUT SOURCE_NAME SOURCE_OPS TARGET_NAME TARGET_OPS
 ```
 

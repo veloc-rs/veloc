@@ -82,6 +82,21 @@ pub struct RegInfo {
     pub hw_encoding: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterWrite {
+    Preserve,
+    ZeroExtend,
+}
+
+/// A view of one physical storage root. Overlap and write effects are distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegisterView {
+    pub root: Reg,
+    pub offset: u32,
+    pub bits: u32,
+    pub write: RegisterWrite,
+}
+
 /// 通用寄存器类到物理寄存器集合的映射。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegClassInfo {

@@ -1,22 +1,21 @@
 use crate::target::ast::{Def, OperandConstraint};
-use crate::target::{EmitExpr, Expr, MacroDef};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
-use super::{FinalInstDef, subst_expr};
+use super::FinalInstDef;
 
 /// 收集寄存器硬件编码
-pub(crate) fn collect_reg_encs(module: &crate::target::ast::Module) -> HashMap<String, u32> {
+pub(crate) fn collect_reg_ids(module: &crate::target::ast::Module) -> HashMap<String, u32> {
     let mut map = HashMap::new();
     for def in &module.defs {
         if let Def::Reg(reg) = def {
-            map.insert(reg.name.clone(), reg.hw_enc);
+            map.insert(reg.name.clone(), reg.id);
         }
     }
     map
 }
 
-fn find_operand_info<'a>(
+pub(super) fn find_operand_info<'a>(
     var_name: &str,
     operands: &'a [OperandConstraint],
 ) -> Option<(usize, &'a OperandConstraint)> {
@@ -31,7 +30,6 @@ fn find_operand_info<'a>(
             | OperandConstraint::Block(name)
             | OperandConstraint::Global(name)
             | OperandConstraint::StackSlot(name) => name == var_name,
-            OperandConstraint::TiedDef { dst, src } => dst == var_name || src == var_name,
         })
         .map(|(index, op)| {
             let class = |op: &OperandConstraint| match op {
@@ -45,320 +43,6 @@ fn find_operand_info<'a>(
                 .count();
             (index, op)
         })
-}
-
-fn generate_variable(var_name: &str, operands: &[OperandConstraint]) -> String {
-    match find_operand_info(var_name, operands) {
-        Some((index, constraint)) => {
-            let arm = match constraint {
-                OperandConstraint::Imm(_) => "InstField::Imm(val) => *val as u64",
-                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => {
-                    return format!("inst.inputs()[{index}].index() as u64");
-                }
-                OperandConstraint::Def(_) => {
-                    return format!("inst.results()[{index}].index() as u64");
-                }
-                OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
-                OperandConstraint::Block(_)
-                | OperandConstraint::Global(_)
-                | OperandConstraint::StackSlot(_) => {
-                    return format!("/* non-numeric operand {} */ 0", var_name);
-                }
-            };
-            format!(
-                "(match &inst.fields()[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }})",
-                index, arm, index, var_name
-            )
-        }
-        None => "0".to_string(),
-    }
-}
-
-fn generate_hw_enc(var_name: &str, operands: &[OperandConstraint]) -> String {
-    match find_operand_info(var_name, operands) {
-        Some((index, constraint)) => {
-            let arm = match constraint {
-                OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => {
-                    return format!("inst.inputs()[{index}].index() as u64");
-                }
-                OperandConstraint::Def(_) => {
-                    return format!("inst.results()[{index}].index() as u64");
-                }
-                OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
-                OperandConstraint::Imm(_) => "InstField::Imm(val) => *val as u8",
-                OperandConstraint::Block(_)
-                | OperandConstraint::Global(_)
-                | OperandConstraint::StackSlot(_) => {
-                    return format!(
-                        "/* hw-enc {} not available for non-reg operand */ 0",
-                        var_name
-                    );
-                }
-            };
-            format!(
-                "(match &inst.fields()[{}] {{ {}, _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Operand type mismatch at index {} for {{}}\", \"{}\"))) }} as u64)",
-                index, arm, index, var_name
-            )
-        }
-        None => format!("/* hw-enc {} not found */ 0", var_name),
-    }
-}
-
-fn generate_stack_slot_expr(var_name: &str, operands: &[OperandConstraint], field: &str) -> String {
-    match find_operand_info(var_name, operands) {
-        Some((index, OperandConstraint::StackSlot(_))) => {
-            let access = match field {
-                "base_hw_enc" => {
-                    "mfunc.stack_frame.slots[slot].base.resolve(SPECIAL_REG_FRAME_POINTER).index() as u64"
-                }
-                "offset" => "mfunc.stack_frame.slots[slot].offset as i64",
-                "size" => "mfunc.stack_frame.slots[slot].size as i64",
-                "align" => "mfunc.stack_frame.slots[slot].align as i64",
-                other => panic!("unknown stack slot field {}", other),
-            };
-            format!(
-                r#"{{
-                    let slot = match &inst.fields()[{index}] {{
-                        InstField::StackSlot(slot) => *slot,
-                        _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{var_name}"))),
-                    }};
-                    {access}
-                }}"#
-            )
-        }
-        Some((index, _)) => format!(
-            "/* operand {} at index {} is not a stackslot */ 0",
-            var_name, index
-        ),
-        None => format!("/* stackslot {} not found */ 0", var_name),
-    }
-}
-
-/// Keep literal information while expanding encoding macros, so constant
-/// bit operations are folded before emitting Rust instead of reparsing strings.
-enum EncodingExpr {
-    Constant(i64),
-    Code(String),
-}
-
-#[cfg(test)]
-mod encoding_tests {
-    use super::*;
-
-    #[test]
-    fn folds_literal_bit_operations_after_macro_expansion() {
-        let mut macros = HashMap::new();
-        macros.insert(
-            "mask".into(),
-            MacroDef {
-                name: "mask".into(),
-                args: vec!["x".into()],
-                body: Expr::BitAnd(Box::new(Expr::Variable("x".into())), Box::new(Expr::Int(7))),
-            },
-        );
-        let expr = Expr::Shl(
-            Box::new(Expr::Call("mask".into(), vec![Expr::Int(7)])),
-            Box::new(Expr::Int(3)),
-        );
-        assert!(matches!(
-            generate_expr(&expr, &[], &macros),
-            EncodingExpr::Constant(56)
-        ));
-        let expr = Expr::Call("bit-and".into(), vec![Expr::Int(0), Expr::Int(7)]);
-        assert!(matches!(
-            generate_expr(&expr, &[], &macros),
-            EncodingExpr::Constant(0)
-        ));
-    }
-
-    #[test]
-    fn folding_does_not_discard_dynamic_evaluation_or_guess_shift_semantics() {
-        let macros = HashMap::new();
-        let dynamic = Expr::BitAnd(
-            Box::new(Expr::Int(0)),
-            Box::new(Expr::Call("read-next".into(), vec![])),
-        );
-        assert_eq!(
-            generate_expr(&dynamic, &[], &macros).to_string(),
-            "(0 & ctx.read_next())"
-        );
-        for (lhs, rhs) in [(-1, 3), (1, 31), (1, 64)] {
-            let expr = Expr::Shl(Box::new(Expr::Int(lhs)), Box::new(Expr::Int(rhs)));
-            assert!(matches!(
-                generate_expr(&expr, &[], &macros),
-                EncodingExpr::Code(_)
-            ));
-        }
-    }
-}
-
-impl std::fmt::Display for EncodingExpr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Constant(value) => write!(f, "{value}"),
-            Self::Code(code) => f.write_str(code),
-        }
-    }
-}
-
-fn binary_expr(op: &str, lhs: EncodingExpr, rhs: EncodingExpr) -> EncodingExpr {
-    if let (EncodingExpr::Constant(a), EncodingExpr::Constant(b)) = (&lhs, &rhs) {
-        // Unsuffixed Rust literals inherit their context. Stay within the
-        // nonnegative i32 range and leave negative/overflowing shifts to Rust.
-        if (0..=i64::from(i32::MAX)).contains(a) && (0..=i64::from(i32::MAX)).contains(b) {
-            let value = match op {
-                "|" => Some(a | b),
-                "&" => Some(a & b),
-                "<<" if *b < 32 => a.checked_shl(*b as u32),
-                ">>" if *b < 32 => a.checked_shr(*b as u32),
-                "<<" | ">>" => None,
-                _ => unreachable!("known encoding bit operator"),
-            };
-            if let Some(value) = value.filter(|value| *value <= i64::from(i32::MAX)) {
-                return EncodingExpr::Constant(value);
-            }
-        }
-    }
-    EncodingExpr::Code(format!("({lhs} {op} {rhs})"))
-}
-
-fn generate_expr(
-    expr: &Expr,
-    operands: &[OperandConstraint],
-    macros: &HashMap<String, MacroDef>,
-) -> EncodingExpr {
-    let binary = |op, a, b| {
-        binary_expr(
-            op,
-            generate_expr(a, operands, macros),
-            generate_expr(b, operands, macros),
-        )
-    };
-    match expr {
-        Expr::Int(i) => EncodingExpr::Constant(*i),
-        Expr::Variable(v) => EncodingExpr::Code(generate_variable(v, operands)),
-        Expr::HwEnc(v) => EncodingExpr::Code(generate_hw_enc(v, operands)),
-        Expr::SlotBaseHwEnc(v) => {
-            EncodingExpr::Code(generate_stack_slot_expr(v, operands, "base_hw_enc"))
-        }
-        Expr::SlotOffset(v) => EncodingExpr::Code(generate_stack_slot_expr(v, operands, "offset")),
-        Expr::SlotSize(v) => EncodingExpr::Code(generate_stack_slot_expr(v, operands, "size")),
-        Expr::SlotAlign(v) => EncodingExpr::Code(generate_stack_slot_expr(v, operands, "align")),
-        Expr::BitOr(a, b) => binary("|", a, b),
-        Expr::BitAnd(a, b) => binary("&", a, b),
-        Expr::Shl(a, b) => binary("<<", a, b),
-        Expr::Shr(a, b) => binary(">>", a, b),
-        Expr::Call(name, args) => {
-            if let Some(m) = macros.get(name) {
-                let args_map: HashMap<_, _> = m
-                    .args
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, name)| args.get(i).map(|val| (name.clone(), val.clone())))
-                    .collect();
-                return generate_expr(&subst_expr(&m.body, &args_map), operands, macros);
-            }
-            if let [a, b] = args.as_slice() {
-                let op = match name.as_str() {
-                    "bit-or" => Some("|"),
-                    "bit-and" => Some("&"),
-                    "shl" => Some("<<"),
-                    "shr" => Some(">>"),
-                    _ => None,
-                };
-                if let Some(op) = op {
-                    return binary(op, a, b);
-                }
-            }
-            let args = args
-                .iter()
-                .map(|a| generate_expr(a, operands, macros).to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            EncodingExpr::Code(format!("ctx.{}({args})", name.replace("-", "_")))
-        }
-    }
-}
-
-fn generate_emit_expr(
-    expr: &EmitExpr,
-    operands: &[OperandConstraint],
-    macros: &HashMap<String, MacroDef>,
-) -> String {
-    match expr {
-        EmitExpr::Byte(b) => format!("emitter.write_bytes(&[{:#04x}]);", b),
-        EmitExpr::ByteExpr(e) => {
-            let val = generate_expr(e, operands, macros);
-            format!("emitter.write_bytes(&[({}) as u8]);", val)
-        }
-        EmitExpr::Imm16(e) => {
-            let val = generate_expr(e, operands, macros);
-            format!("emitter.write_bytes(&(({} as u16).to_le_bytes()));", val)
-        }
-        EmitExpr::Imm32(e) => {
-            let val = generate_expr(e, operands, macros);
-            format!("emitter.write_bytes(&(({} as u32).to_le_bytes()));", val)
-        }
-        EmitExpr::Imm64(e) => {
-            let val = generate_expr(e, operands, macros);
-            format!("emitter.write_bytes(&(({} as u64).to_le_bytes()));", val)
-        }
-        EmitExpr::Rel32(name) => match find_operand_info(name, operands) {
-            Some((index, OperandConstraint::Block(_))) => format!(
-                r#"{{
-                    let disp_offset = emitter.position();
-                    emitter.write_bytes(&[0, 0, 0, 0]);
-                    let next_offset = emitter.position();
-                    match &inst.fields()[{index}] {{
-                        InstField::Block(target) => {{
-                            emitter.add_block_rel32_fixup(disp_offset, next_offset, *target);
-                        }}
-                        _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
-                    }}
-                }}"#
-            ),
-            Some((index, OperandConstraint::Global(_))) => format!(
-                r#"{{
-                    let disp_offset = emitter.position();
-                    emitter.write_bytes(&[0, 0, 0, 0]);
-                    match &inst.fields()[{index}] {{
-                        InstField::Global(target) => {{
-                            emitter.add_global_rel32_fixup(disp_offset, *target);
-                        }}
-                        _ => return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("Operand type mismatch at index {index} for {{}}", "{name}"))),
-                    }}
-                }}"#
-            ),
-            Some((index, _)) => format!(
-                r#"return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("rel32 operand at index {} for {{}} must be a block or global target", "{}")));"#,
-                index, name
-            ),
-            None => format!(
-                r#"return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!("rel32 operand {{}} not found", "{}")));"#,
-                name
-            ),
-        },
-        EmitExpr::If(cond, then_p, else_p) => {
-            let mut s = format!("if ({}) != 0 {{\n", generate_expr(cond, operands, macros));
-            for e in then_p {
-                s.push_str(&format!(
-                    "                {}\n",
-                    generate_emit_expr(e, operands, macros)
-                ));
-            }
-            if !else_p.is_empty() {
-                s.push_str("            } else {\n");
-                for e in else_p {
-                    s.push_str(&format!(
-                        "                {}\n",
-                        generate_emit_expr(e, operands, macros)
-                    ));
-                }
-            }
-            s.push_str("            }");
-            s
-        }
-    }
 }
 
 pub(crate) fn generate_header(output: &mut String, arch: &str, needs_positional_helpers: bool) {
@@ -584,7 +268,7 @@ pub(crate) fn generate_target_inst_metadata(
 
     writeln!(
         output,
-        "\n/// Target instruction metadata generated from `def-inst` / `def-pseudo-inst`."
+        "\n/// Target instruction metadata generated from checked OpSpec instruction contracts."
     )
     .unwrap();
     for name in &sorted_insts {
@@ -608,6 +292,41 @@ pub(crate) fn generate_target_inst_metadata(
         )
         .unwrap();
         writeln!(output, "    schedule: {schedule},").unwrap();
+        let constraints = inst_def.operands.iter().filter_map(|op| match op {
+            OperandConstraint::Def(n) => Some((n, true)),
+            OperandConstraint::Use(n) | OperandConstraint::FixedUse { src: n, .. } => {
+                Some((n, false))
+            }
+            _ => None,
+        });
+        let mut defs = 0;
+        let mut uses = 0;
+        let mut entries = Vec::new();
+        for (operand, result) in constraints {
+            let index = if result {
+                let n = defs;
+                defs += 1;
+                n
+            } else {
+                let n = uses;
+                uses += 1;
+                n
+            };
+            let registers = &inst_def
+                .reg_classes
+                .iter()
+                .find(|(name, _)| name == operand)
+                .expect("checked register constraint")
+                .1;
+            let registers = format_slice(registers.iter().map(|r| reg_const_name(r)).collect());
+            entries.push(format!("crate::target::arch::RegisterConstraint {{ result: {result}, operand: {index}, registers: {registers} }}"));
+        }
+        writeln!(
+            output,
+            "    register_constraints: {},",
+            format_slice(entries)
+        )
+        .unwrap();
         let memory = match &inst_def.memory {
             Some((kind, bytes)) => format!("Some((veloc_lir::MemoryKind::{kind}, {bytes}))"),
             None => "None".into(),
@@ -693,49 +412,66 @@ pub(crate) fn generate_target_inst_metadata(
     writeln!(output, "}}").unwrap();
 }
 
-pub(crate) fn generate_emit_method(
-    output: &mut String,
-    final_inst_defs: &HashMap<String, FinalInstDef>,
-    macros: &HashMap<String, MacroDef>,
-) {
-    let mut sorted_insts: Vec<_> = final_inst_defs.keys().cloned().collect();
-    sorted_insts.sort();
-
-    writeln!(
-        output,
-        r#"
-impl TargetInst {{
-    pub fn emit<E: crate::target::arch::TargetEmitter>(
-        &self,
-        emitter: &mut crate::Emitter,
-        inst: &veloc_lir::InstRef<'_>,
-        mfunc: &veloc_lir::MachineFunction<veloc_lir::stages::PrologueEpilogueInserted>,
-    ) -> Result<(), crate::error::Error> {{
-        match self {{"#
-    )
-    .unwrap();
-
-    for name in &sorted_insts {
-        writeln!(output, "            TargetInst::{} => {{", name).unwrap();
-        if let Some(inst_def) = final_inst_defs.get(name) {
-            if inst_def.is_pseudo {
-                writeln!(
-                    output,
-                    "                return Err(crate::error::Error::emit(inst.opcode().clone(), alloc::format!(\"Pseudo instruction {} must be lowered before emission\")));",
-                    name
+pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<String, FinalInstDef>) {
+    out.push_str("impl TargetInst { pub fn validate(&self, inst: &veloc_lir::InstRef<'_>, allocated: bool) -> crate::Result<()> {\nlet invalid = || crate::Error::codegen(alloc::format!(\"invalid operands for {:?}\", self));\nmatch self {\n");
+    let mut instructions: Vec<_> = instructions.iter().collect();
+    instructions.sort_by_key(|(name, _)| *name);
+    for (name, instruction) in instructions {
+        let results = instruction
+            .operands
+            .iter()
+            .filter(|op| matches!(op, OperandConstraint::Def(_)))
+            .count();
+        let inputs = instruction
+            .operands
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. }
                 )
-                .unwrap();
-            } else {
-                for emit_expr in &inst_def.emit {
-                    let code = generate_emit_expr(emit_expr, &inst_def.operands, macros);
-                    writeln!(output, "                {}", code).unwrap();
-                }
-            }
+            })
+            .count();
+        let fields = instruction.operands.len() - inputs - results;
+        writeln!(out, "Self::{name} => {{\nif inst.results().len() != {results} || inst.inputs().len() != {inputs} || inst.fields().len() != {fields} {{ return Err(invalid()); }}").unwrap();
+        for op in &instruction.operands {
+            let (field_name, variant) = match op {
+                OperandConstraint::Imm(name) => (name, "Imm"),
+                OperandConstraint::Block(name) => (name, "Block"),
+                OperandConstraint::Global(name) => (name, "Global"),
+                OperandConstraint::StackSlot(name) => (name, "StackSlot"),
+                _ => continue,
+            };
+            let (index, _) = find_operand_info(field_name, &instruction.operands).unwrap();
+            writeln!(out, "if !matches!(inst.fields()[{index}], InstField::{variant}(_)) {{ return Err(invalid()); }}").unwrap();
         }
-        writeln!(output, "                Ok(())\n            }}").unwrap();
+        for (name, registers) in &instruction.reg_classes {
+            let (index, op) = find_operand_info(name, &instruction.operands).unwrap();
+            let storage = if matches!(op, OperandConstraint::Def(_)) {
+                "results"
+            } else {
+                "inputs"
+            };
+            let allowed = format_slice(registers.iter().map(|name| reg_const_name(name)).collect());
+            writeln!(out, "let reg = inst.{storage}()[{index}];\nif reg.is_preg() {{ if !({allowed}).contains(&reg) {{ return Err(invalid()); }} }} else if allocated {{ return Err(invalid()); }}").unwrap();
+        }
+        for &(result, input) in &instruction.ties {
+            let OperandConstraint::Def(ref result) = instruction.operands[result] else {
+                unreachable!()
+            };
+            let input = match &instruction.operands[input] {
+                OperandConstraint::Use(name) | OperandConstraint::FixedUse { src: name, .. } => {
+                    name
+                }
+                _ => unreachable!(),
+            };
+            let (result, _) = find_operand_info(result, &instruction.operands).unwrap();
+            let (input, _) = find_operand_info(input, &instruction.operands).unwrap();
+            writeln!(out, "if allocated && inst.results()[{result}] != inst.inputs()[{input}] {{ return Err(invalid()); }}").unwrap();
+        }
+        out.push_str("Ok(())\n},\n");
     }
-
-    writeln!(output, "        }}\n    }}\n}}").unwrap();
+    out.push_str("} } }\n");
 }
 
 pub(crate) fn generate_cpu_info(output: &mut String, module: &crate::target::ast::Module) {
@@ -807,7 +543,7 @@ fn collect_canonical_regs<'a>(
     let mut regs = BTreeMap::new();
     for def in &module.defs {
         if let Def::Reg(reg) = def {
-            regs.entry(reg.hw_enc).or_insert(reg);
+            regs.entry(reg.id).or_insert(reg);
         }
     }
     regs
@@ -818,7 +554,7 @@ fn collect_reserved_reg_encs(module: &crate::target::ast::Module) -> BTreeSet<u3
     for def in &module.defs {
         if let Def::Reg(reg) = def {
             if reg.reserved {
-                regs.insert(reg.hw_enc);
+                regs.insert(reg.id);
             }
         }
     }
@@ -863,24 +599,67 @@ pub(crate) fn generate_register_descriptors(
         return;
     }
 
-    writeln!(output, "\n/// Register constants generated from `def-reg`.").unwrap();
-    for reg in regs {
+    writeln!(
+        output,
+        "\n/// Register constants generated from OpSpec register constants."
+    )
+    .unwrap();
+    for reg in &regs {
         let const_name = sanitize_ident(&format!("REG_{}", reg.name));
+        writeln!(output, "pub const {}: Reg = Reg({});", const_name, reg.id).unwrap();
+    }
+
+    writeln!(output, "pub fn register_name(reg: Reg, bits: u32) -> Option<&'static str> {{ if !reg.is_preg() {{ return None; }} match (reg.index(), bits) {{").unwrap();
+    for reg in &regs {
+        // High-byte aliases need their own encoding selection and must not be
+        // selected merely because the caller asks for an eight-bit view.
+        if reg.alias.as_ref().is_some_and(|alias| alias.offset != 0) {
+            continue;
+        }
         writeln!(
             output,
-            "pub const {}: Reg = Reg({});",
-            const_name, reg.hw_enc
+            "({}, {}) => Some({:?}),",
+            reg.id,
+            reg.size,
+            reg.name.to_ascii_lowercase()
         )
         .unwrap();
     }
+    writeln!(output, "_ => None, }} }}").unwrap();
 
+    writeln!(output, "pub fn register_encoding(reg: Reg) -> Option<u8> {{ if !reg.is_preg() {{ return None; }} match reg.index() {{").unwrap();
+    let encodable_ids: BTreeSet<_> = reg_classes
+        .iter()
+        .flat_map(|class| &class.regs)
+        .filter_map(|name| regs.iter().find(|reg| &reg.name == name).map(|reg| reg.id))
+        .collect();
+    for reg in regs
+        .iter()
+        .filter(|r| r.alias.is_none() && encodable_ids.contains(&r.id))
+    {
+        let encoding = u8::try_from(reg.hw_enc).expect("register hardware encoding fits a byte");
+        writeln!(output, "{} => Some({encoding}),", reg.id).unwrap();
+    }
+    writeln!(output, "_ => None, }} }}").unwrap();
     let canonical_regs = collect_canonical_regs(module);
-    let reg_encs = collect_reg_encs(module);
+    let reg_encs = collect_reg_ids(module);
+    writeln!(
+        output,
+        "pub const REGISTER_VIEWS: &[crate::target::arch::RegisterView] = &["
+    )
+    .unwrap();
+    for reg in &regs {
+        if let Some(alias) = &reg.alias {
+            let root = reg_const_name(&alias.base);
+            writeln!(output, "crate::target::arch::RegisterView {{ root: {root}, offset: {}, bits: {}, write: crate::target::arch::RegisterWrite::{:?} }},", alias.offset, reg.size, alias.write).unwrap();
+        }
+    }
+    writeln!(output, "];").unwrap();
     let reserved_encs = collect_reserved_reg_encs(module);
     let special_role_regs = collect_special_role_regs(module);
     writeln!(
         output,
-        "\n/// Canonical physical register descriptors generated from `def-reg`."
+        "\n/// Canonical physical register descriptors generated from OpSpec register constants."
     )
     .unwrap();
     writeln!(output, "pub const PHYS_REG_INFOS: &[RegInfo] = &[").unwrap();
@@ -900,12 +679,12 @@ pub(crate) fn generate_register_descriptors(
 
     writeln!(
         output,
-        "\n/// Reserved physical registers generated from `def-reg`."
+        "\n/// Reserved physical registers generated from OpSpec register constants."
     )
     .unwrap();
     let reserved_regs = canonical_regs
         .values()
-        .filter(|reg| reserved_encs.contains(&reg.hw_enc))
+        .filter(|reg| reserved_encs.contains(&reg.id))
         .map(|reg| sanitize_ident(&format!("REG_{}", reg.name)))
         .collect::<Vec<_>>()
         .join(", ");
@@ -919,7 +698,7 @@ pub(crate) fn generate_register_descriptors(
     if !special_role_regs.is_empty() {
         writeln!(
             output,
-            "\n/// Special-register roles generated from `def-reg`."
+            "\n/// Special-register roles generated from OpSpec register constants."
         )
         .unwrap();
         for (role, reg) in special_role_regs {
@@ -935,7 +714,7 @@ pub(crate) fn generate_register_descriptors(
 
     writeln!(
         output,
-        "\n/// Register-class member slices generated from `def-regclass`."
+        "\n/// Register-class member slices generated from OpSpec RegisterClass constants."
     )
     .unwrap();
     for class in reg_classes {
@@ -972,7 +751,7 @@ pub(crate) fn generate_abi_descriptors(
     output: &mut String,
     module: &crate::target::ast::Module,
 ) -> Result<(), String> {
-    let reg_map = collect_reg_encs(module);
+    let reg_map = collect_reg_ids(module);
     let abis: Vec<_> = module
         .defs
         .iter()

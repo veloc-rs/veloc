@@ -37,7 +37,15 @@ fn main() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
 
-        let output = match compile(&combined_input, arch) {
+        let contracts = veloc_opgen::Source::load(isle_dir.join("instructions.ops"))
+            .expect("load target instruction definitions");
+        let host_code = contracts
+            .interfaces("crate::target::x86_64::emitter::host")
+            .expect("check encoding host contracts");
+        for path in contracts.dependencies() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+        let output = match compile(&combined_input, arch, &contracts) {
             Ok(out) => out,
             Err(e) => {
                 // e 已经是经过 miette 格式化的 Debug 输出（字符串）
@@ -47,6 +55,9 @@ fn main() {
         };
 
         let out_dir = env::var_os("OUT_DIR").map(PathBuf::from).unwrap();
+        let host_path = out_dir.join("encoding_host.rs");
+        fs::write(&host_path, host_code).expect("write encoding host contracts");
+        rust_files.push(host_path);
         let dest_path = out_dir.join(format!("isle_{}.rs", arch));
 
         fs::write(&dest_path, output).expect("Failed to write generated file");

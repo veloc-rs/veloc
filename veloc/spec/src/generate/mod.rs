@@ -82,7 +82,6 @@ fn generate(plan: &Plan) -> Generated {
         crate::model::metadata::record_type(&defs.ops),
     ) + &defs.storage.instructions();
     instructions.push_str(&methods);
-    instructions.push_str(&crate::generate::packing::accessors(defs));
     instructions.push_str(&ownership::generate(defs));
     instructions.push_str(&queries::generate(
         defs,

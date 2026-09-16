@@ -498,6 +498,51 @@ fn bind_types(
 }
 
 impl Library {
+    /// Compile a host projection using the same expression checker as queries.
+    /// Bindings are typed by the caller; Rust code is emitted, never executed.
+    pub(crate) fn expression(
+        &mut self,
+        source: &str,
+        declarations: &[Decl],
+        vocabulary: super::Vocabulary<'_>,
+        node: &Node,
+        result: &str,
+        bindings: &BTreeMap<String, (Node, String)>,
+        prefix: &str,
+    ) -> Result<String, Error> {
+        let mut checker = Checker {
+            source,
+            library: self,
+            data: vocabulary.data,
+            encodings: vocabulary.encodings,
+            types: vocabulary.types,
+            declarations,
+            active: BTreeSet::new(),
+            verification: false,
+            next_local: 0,
+        };
+        let mut env = BTreeMap::new();
+        for (name, (ty, _)) in bindings {
+            env.insert(
+                name.clone(),
+                Expr::new(checker.ty(ty)?, ExprKind::Operand(name.clone())),
+            );
+        }
+        let expected = checker.ty(&Node {
+            offset: node.offset,
+            kind: Kind::Name(result.into()),
+        })?;
+        let expr = checker.expr(node, Some(&expected), &env, None)?;
+        let mut emitter = Emitter::query(
+            bindings
+                .iter()
+                .map(|(n, (_, rust))| (n.clone(), rust.clone()))
+                .collect(),
+        );
+        emitter.prefix = prefix;
+        Ok(emitter.term(&expr))
+    }
+
     fn context(
         &self,
         source: &str,
@@ -708,7 +753,7 @@ impl Library {
         for (owner, declaration) in crate::syntax::walk(declarations) {
             if matches!(
                 &declaration.kind,
-                DeclKind::Function { .. } | DeclKind::Constant(_)
+                DeclKind::Function { .. } | DeclKind::Constant { .. }
             ) {
                 let name = owner.map_or_else(
                     || declaration.name.clone(),
@@ -1205,11 +1250,20 @@ impl Checker<'_> {
                 .find(|d| d.name == owner && matches!(&d.kind, DeclKind::Type { .. }))
                 .and_then(|d| d.members().iter().find(|m| m.name == member))
         } else {
-            self.declarations
-                .iter()
-                .find(|d| d.name == name && matches!(&d.kind, DeclKind::Function { .. }))
+            self.declarations.iter().find(|d| {
+                d.name == name
+                    && matches!(
+                        &d.kind,
+                        DeclKind::Function { .. } | DeclKind::Constant { value: Some(_), .. }
+                    )
+            })
         }
-        .filter(|d| matches!(&d.kind, DeclKind::Function { .. } | DeclKind::Constant(_)))
+        .filter(|d| {
+            matches!(
+                &d.kind,
+                DeclKind::Function { .. } | DeclKind::Constant { .. }
+            )
+        })
     }
 
     fn function(&mut self, name: &str, offset: usize) -> Result<Function, Error> {
@@ -1255,7 +1309,7 @@ impl Checker<'_> {
             ));
         }
         let (param_decls, result_type, is_const, constant) = match &declaration.kind {
-            DeclKind::Constant(ty) => (&[][..], ty, true, true),
+            DeclKind::Constant { ty, .. } => (&[][..], ty, true, true),
             DeclKind::Function { signature, .. } => {
                 let Results::Fixed(results) = &signature.results else {
                     return Err(Error::at(
@@ -1328,7 +1382,7 @@ impl Checker<'_> {
             }
         }
         let body = match &declaration.kind {
-            DeclKind::Constant(_)
+            DeclKind::Constant { value: None, .. }
             | DeclKind::Function {
                 body: FunctionBody::Rust { .. },
                 ..
@@ -1399,6 +1453,9 @@ impl Checker<'_> {
             DeclKind::Function {
                 body: FunctionBody::Value(value),
                 ..
+            }
+            | DeclKind::Constant {
+                value: Some(value), ..
             } => self.expr(value, Some(&result), &env, None)?,
             _ => unreachable!("resolved callable declaration"),
         };
@@ -1516,9 +1573,29 @@ impl Checker<'_> {
                 expr.types = self.types.exact.get(&name).cloned();
                 expr
             }
-            Kind::Name(name) if name.contains("::") => {
+            Kind::Name(name)
+                if name.contains("::")
+                    && !self
+                        .data
+                        .enums
+                        .iter()
+                        .any(|en| name.starts_with(&format!("{}::", en.name))) =>
+            {
                 let (owner, field) = name.rsplit_once("::").unwrap();
                 self.associated(node.offset, owner, field)?
+            }
+            Kind::Name(name)
+                if !env.contains_key(name)
+                    && (self
+                        .library
+                        .functions
+                        .get(name)
+                        .is_some_and(|function| function.constant)
+                        || self.callable(name).is_some_and(|declaration| {
+                            matches!(declaration.kind, DeclKind::Constant { value: Some(_), .. })
+                        })) =>
+            {
+                self.function(name, node.offset)?.body
             }
             Kind::Method(receiver, method, args) => {
                 self.method(node.offset, receiver, method, args, env, signature)?
@@ -1583,7 +1660,12 @@ impl Checker<'_> {
             }
             Kind::Name(name) if env.contains_key(name) => env[name].clone(),
 
-            Kind::Object(name, values) => {
+            Kind::Object(_, values) | Kind::Record(values) => {
+                let name = match (&node.kind, expected) {
+                    (Kind::Object(name, _), _) => name,
+                    (_, Some(Ty::Named(name))) => name,
+                    _ => return Err(fail("anonymous object requires an expected record type")),
+                };
                 let fields = self
                     .fields(name)
                     .ok_or_else(|| fail("unknown projection struct"))?;
@@ -1699,6 +1781,14 @@ impl Checker<'_> {
                 let ty = expected
                     .cloned()
                     .or_else(|| match &node.kind {
+                        Kind::Name(name) | Kind::Call(name, _) if name.contains("::") => {
+                            let (owner, _) = name.rsplit_once("::")?;
+                            self.data
+                                .enums
+                                .iter()
+                                .any(|en| en.name == owner)
+                                .then(|| Ty::named(owner))
+                        }
                         Kind::Number(_) => Some(Ty::named("u32")),
                         Kind::Name(n) if matches!(n.as_str(), "true" | "false") => {
                             Some(Ty::named("bool"))
@@ -1719,10 +1809,11 @@ impl Checker<'_> {
                         Kind::Name(name) => (name, &[][..]),
                         _ => return Err(fail("expected enum constructor")),
                     };
+                    let variant = name.strip_prefix(&format!("{}::", en.name)).unwrap_or(name);
                     let (_, params) = en
                         .variants
                         .iter()
-                        .find(|(n, _)| n == name)
+                        .find(|(n, _)| n == variant)
                         .ok_or_else(|| fail("unknown projection enum variant"))?;
                     let params = params
                         .iter()
@@ -1739,7 +1830,7 @@ impl Checker<'_> {
                     Expr {
                         types: None,
                         ty,
-                        kind: ExprKind::Variant(name.clone(), args),
+                        kind: ExprKind::Variant(variant.into(), args),
                     }
                 } else if matches!(&node.kind,Kind::Name(n) if n=="none")
                     && matches!(ty, Ty::Optional(_))
@@ -1991,7 +2082,7 @@ impl<'a> Emitter<'a> {
                     .join(", ")
             ),
             ExprKind::Variant(name, args) => {
-                let prefix = if self.constant {
+                let prefix = if self.constant || !self.prefix.is_empty() {
                     self.prefix
                 } else {
                     "crate::inst::"

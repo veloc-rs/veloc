@@ -4,8 +4,9 @@ use veloc_opgen::Source;
 
 fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let (output, code) = match args {
-        [mode, input, output, arch] if mode == "target" => {
-            (output, veloc_isle::target::compile(&fs::read_to_string(input)?, arch)?)
+        [mode, input, definitions, output, arch] if mode == "target" => {
+            let contracts = Source::load(definitions)?;
+            (output, veloc_isle::target::compile(&fs::read_to_string(input)?, arch, &contracts)?)
         }
         [mode, input, output, source_name, source_path, target_name, target_path] if mode == "rules" => {
             let source = Source::load(source_path)?.parse()?;
@@ -22,7 +23,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 target: (target_name, "TargetOpcode"),
             })?)
         }
-        _ => return Err("usage:\n  veloc-isle target INPUT OUTPUT ARCH\n  veloc-isle rules INPUT OUTPUT SOURCE_NAME SOURCE_OPS TARGET_NAME TARGET_OPS".into()),
+        _ => return Err("usage:\n  veloc-isle target INPUT DEFINITIONS OUTPUT ARCH\n  veloc-isle rules INPUT OUTPUT SOURCE_NAME SOURCE_OPS TARGET_NAME TARGET_OPS".into()),
     };
     fs::write(output, code)?;
     Ok(())

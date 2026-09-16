@@ -1,7 +1,7 @@
 //! Definition-file imports, dependency tracking and original-file diagnostics.
 //! Files are parsed independently; imports cannot complete another file's syntax.
 
-mod scopes;
+pub(crate) mod scopes;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -23,6 +23,7 @@ impl std::fmt::Display for SourceError {
 impl std::error::Error for SourceError {}
 
 pub(crate) struct File {
+    pub(crate) offset: usize,
     pub(crate) path: PathBuf,
     first_line: usize,
     pub(crate) declarations: std::ops::Range<usize>,
@@ -53,7 +54,32 @@ impl Source {
             next_line: 1,
         }
         .visit(path.as_ref())?;
+        source.expand()?;
         Ok(source)
+    }
+
+    fn expand(&mut self) -> Result<(), SourceError> {
+        let owner = |offset| {
+            self.files
+                .partition_point(|file| file.offset <= offset)
+                .saturating_sub(1)
+        };
+        let groups = syntax::expand::expand(&self.text, &self.declarations, |site, definition| {
+            self.files[owner(site)].visible.contains(&owner(definition))
+        })
+        .map_err(|error| self.locate(error))?;
+        let mut declarations = Vec::new();
+        let mut groups = groups.into_iter();
+        for file in &mut self.files {
+            let count = file.declarations.len();
+            let start = declarations.len();
+            for group in groups.by_ref().take(count) {
+                declarations.extend(group);
+            }
+            file.declarations = start..declarations.len();
+        }
+        self.declarations = declarations;
+        Ok(())
     }
 
     /// Includes requested paths and canonical targets so changing an import
@@ -65,7 +91,9 @@ impl Source {
     pub(crate) fn text(&self) -> &str {
         &self.text
     }
-    pub(crate) fn declarations(&self) -> &[syntax::Decl] {
+    /// Expanded declarations for domain-specific schema consumers. Consumers
+    /// must validate their own extension fields; this is not a checked model.
+    pub fn declarations(&self) -> &[syntax::Decl] {
         &self.declarations
     }
     pub(crate) fn files(&self) -> &[File] {
@@ -78,7 +106,7 @@ impl Source {
     pub fn parse(&self) -> Result<Definitions, SourceError> {
         let defs = model::from_declarations(&self.text, self.declarations.clone())
             .map_err(|e| self.locate(e))?;
-        scopes::check(&self.text, &self.declarations, &self.files, &defs)
+        scopes::check(&self.text, &self.declarations, &self.files, &defs.data)
             .map_err(|e| self.locate(e))?;
         Ok(defs)
     }
@@ -92,7 +120,7 @@ impl Source {
         Ok(self.plan()?.generate())
     }
 
-    fn locate(&self, mut diagnostic: Error) -> SourceError {
+    pub(crate) fn locate(&self, mut diagnostic: Error) -> SourceError {
         let index = self
             .files
             .partition_point(|file| file.first_line <= diagnostic.line)
@@ -188,6 +216,7 @@ impl Loader<'_> {
         visible.insert(file);
         let start = self.source.declarations.len();
         self.source.files.push(File {
+            offset: base,
             path: canonical.clone(),
             first_line: self.next_line,
             declarations: start..start + declarations.len(),

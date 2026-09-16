@@ -947,9 +947,9 @@ end
     (cost 1))
 (select-rule
     (match (schema BranchCond Brcond (cond $cond) (then_blk $then) (else_blk $else) @n))
-    (emit (seq (X86Jcc $cond $then) (X86Jmp $else)))
+    (emit (seq (X86Test32 $cond $cond) (X86Jne $then) (X86Jmp $else)))
     (covers (@n))
-    (cost 2))
+    (cost 3))
 (select-rule
     (match (schema Return Ret @n))
     (emit (X86Ret))

@@ -40,8 +40,8 @@ fn changed_record(kind: &str, name: &str, from: &str, to: &str) -> String {
 fn float_literals_require_a_float_result_domain() {
     common::rejected(
         &definitions().replacen(
-            "op Fconst(value: Float) -> type(value)",
-            "op Fconst(value: Float) -> ScalarInteger",
+            "op Fconst(value: Float) -> Value<type(value)>",
+            "op Fconst(value: Float) -> Value<ScalarInteger>",
             1,
         ),
         "scalar float first result",
@@ -53,12 +53,12 @@ const CALL_VALUE: &str = r#"
         callee: Value,
         args: ValueList,
     }
-    op Apply(move callee: Callable, move args: sequence(Value)) -> signature {
-    meta: OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN },
-        mnemonic: "apply-value",
-        storage: ApplyValue { callee: callee, args: args },
-        signature: callable(callee),
-        text: "{callee}({args})",
+    op Apply(move callee: Value<Callable>, move args: sequence(Value)) -> signature {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+        mnemonic = "apply-value";
+        storage = ApplyValue { callee: callee, args: args };
+        signature = callable(callee);
+        text = "{callee}({args})";
         }
 "#;
 
@@ -86,9 +86,9 @@ fn the_actual_mir_definitions_compile_deterministically() {
 }
 
 const BINARY: &str = "type Reg = rust(\"crate::Reg\");
-enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField }\nstruct Binary { dst: Reg, lhs: Reg, rhs: Reg }";
-const ADD: &str = "op Sum<T: Integer>(lhs: T, rhs: T) -> (dst: T) { meta: OpInfo {}, storage: Binary { dst, lhs, rhs }, semantics: bv.add(lhs, rhs) }";
+enum InstField { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField; }\nstruct Binary { dst: Reg, lhs: Reg, rhs: Reg }";
+const ADD: &str = "op Sum<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) { meta = OpInfo {}; storage = Binary { dst, lhs, rhs }; semantics = bv.add(lhs, rhs); }";
 
 #[test]
 fn packed_layout_contracts() {
@@ -151,9 +151,9 @@ fn packed_layout_contracts() {
             left: Value,
             right: Value,
         }
-        op Add<T: Integer>(left: T, right: T) -> (result: T) {
-    meta: OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE },
-            mnemonic: "add", storage: Pair { left: left, right: right },
+        op Add<T: Integer>(left: Value<T>, right: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { traits: OpTraits::empty(), memory: MemoryEffect::NONE };
+            mnemonic = "add"; storage = Pair { left: left, right: right };
              }
     "#;
     assert!(compile(source).is_ok());
@@ -168,8 +168,8 @@ fn text_projection_contracts() {
                 &changed_record(
                     "op",
                     "IAdd",
-                    "storage: Binary { args: [lhs, rhs] },",
-                    &format!("storage: Binary {{ args: [lhs, rhs] }}, text: \"{args}\","),
+                    "storage = Binary { args: [lhs, rhs] };",
+                    &format!("storage = Binary {{ args: [lhs, rhs] }}, text: \"{args}\";"),
                 ),
                 "",
             );
@@ -228,20 +228,24 @@ fn signature_sources() {
     // signature results require a typed signature source
     {
         for (op, from, to) in [
-            ("Call", "signature: function(func_id),", ""),
-            ("CallIndirect", "signature: sig_id,", ""),
-            ("CallIndirect", "signature: sig_id", "signature: ptr"),
-            ("Call", "signature: function(func_id)", "signature: func_id"),
-            ("CallValue", "signature: callable(callee),", ""),
+            ("Call", "signature = function(func_id);", ""),
+            ("CallIndirect", "signature = sig_id;", ""),
+            ("CallIndirect", "signature = sig_id", "signature = ptr"),
+            (
+                "Call",
+                "signature = function(func_id)",
+                "signature = func_id",
+            ),
+            ("CallValue", "signature = callable(callee);", ""),
             (
                 "CallValue",
-                "signature: callable(callee)",
-                "signature: callable(args)",
+                "signature = callable(callee)",
+                "signature = callable(args)",
             ),
             (
                 "CallValue",
-                "signature: callable(callee)",
-                "signature: callee",
+                "signature = callable(callee)",
+                "signature = callee",
             ),
         ] {
             common::rejected(&changed_record("op", op, from, to), "signature");
@@ -253,13 +257,13 @@ fn signature_sources() {
         compile(CALL_VALUE).unwrap();
         for (from, to, expected) in [
             (
-                "signature: callable(callee),",
+                "signature = callable(callee);",
                 "",
                 "explicit signature source",
             ),
             (
-                "callee: Callable",
-                "callee: Type::PTR",
+                "callee: Value<Callable>",
+                "callee: Value<Type::PTR>",
                 "must be a Callable value operand",
             ),
             (
@@ -306,15 +310,15 @@ fn output_plan_diagnostics() {
     {
         let base = r#"
     struct Custom { arg: Value }
-    op Example<T: Integer>(arg: T) -> T {
-        meta: OpInfo { memory: MemoryEffect::NONE },
-        mnemonic: "example", storage: Custom { arg: arg },
+    op Example<T: Integer>(arg: Value<T>) -> Value<T> {
+        meta = OpInfo { memory: MemoryEffect::NONE };
+        mnemonic = "example"; storage = Custom { arg: arg };
     }
     "#;
         for (source, message) in [
-            (base.replace("mnemonic: \"example\"", "mnemonic: \"emit\""), "InstBuilder method"),
-            (base.replace("storage: Custom { arg: arg },", "storage: Custom { arg: arg }, text: \"{missing}\","), "missing"),
-            (format!("{base}\nstruct Alternate {{ arg: Value, extra: u32 }}\nlayout Alternate {{ format: fixed(Custom), text: \"{{arg}}, extra={{extra}}\", verify {{unknown > 0;
+            (base.replace("mnemonic = \"example\"", "mnemonic = \"emit\""), "InstBuilder method"),
+            (base.replace("storage = Custom { arg: arg };", "storage = Custom { arg: arg }; text = \"{missing}\";"), "missing"),
+            (format!("{base}\nstruct Alternate {{ arg: Value, extra: u32 }}\nlayout Alternate {{ format = fixed(Custom); text = \"{{arg}}, extra={{extra}}\"; verify {{unknown > 0;
     }} }}"), "unknown expression name or operation"),
         ] {
             let source = common::source(&source);
@@ -330,18 +334,18 @@ fn output_plan_diagnostics() {
             (
                 format!(
                     "{BINARY} {}",
-                    ADD.replace("storage: Binary", "storage: Missing")
+                    ADD.replace("storage = Binary", "storage = Missing")
                 ),
                 "unknown operand format",
             ),
             (
-                format!("{BINARY} {}", ADD.replace("rhs: T", "other: T")),
+                format!("{BINARY} {}", ADD.replace("rhs: Value<T>", "other: Value<T>")),
                 "unknown input",
             ),
             (
                 format!(
                     "{BINARY} {}",
-                    ADD.replace("-> (dst: T)", "-> (dst: T, extra: T)")
+                    ADD.replace("-> (dst: Value<T>)", "-> (dst: Value<T>, extra: Value<T>)")
                 ),
                 "every result requires a storage mapping",
             ),
@@ -360,45 +364,45 @@ fn output_plan_diagnostics() {
             (
                 format!(
                     "{BINARY} {}",
-                    ADD.replace("semantics:", "flow: Call, semantics:")
+                    ADD.replace("semantics =", "flow = Call; semantics =")
                 ),
                 "flow requires a declared control enum",
             ),
             (format!("{BINARY} {ADD} {ADD}"), "duplicate op"),
-            (format!("{} {ADD}", BINARY.replace("writer: InstBuild", "writer: InstRead")), "generated type names must be distinct"),
-            (format!("{} {ADD}", BINARY.replace("opcode: GenericOpcode", "opcode: Type")), "conflicts with a declaration"),
+            (format!("{} {ADD}", BINARY.replace("writer = InstBuild", "writer = InstRead")), "generated type names must be distinct"),
+            (format!("{} {ADD}", BINARY.replace("opcode = GenericOpcode", "opcode = Type")), "conflicts with a declaration"),
             (
                 "type Reg = rust(\"crate::Reg\");
-enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  } struct Bad { dst: Reg, dst: Reg }"
+enum InstField { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField;  } struct Bad { dst: Reg, dst: Reg }"
                     .into(),
                 "duplicate field",
             ),
             (
                 "type Reg = rust(\"crate::Reg\");
-enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  } struct Bad { values: sequence(Reg), dst: Reg } op Bad(dst: Type::I32, values: sequence(Value)) -> () { meta: OpInfo { memory: MemoryEffect::NONE }, storage: Bad { values, dst } }"
+enum InstField { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField;  } struct Bad { values: sequence(Reg), dst: Reg } op Bad(dst: Value<Type::I32>, values: sequence(Value)) -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Bad { values, dst }; }"
                     .into(),
                 "only one trailing sequence",
             ),
             (
                 "type Reg = rust(\"crate::Reg\");
-enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  } struct Bad { dst: Reg } layout Bad { lengths: [0] }"
+enum InstField { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField;  } struct Bad { dst: Reg } layout Bad { lengths = [0]; }"
                     .into(),
                 "operand layouts",
             ),
             (
                 "type Reg = rust(\"crate::Reg\");
-enum InstField { variants: [Imm(i64)] }
-storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writer: InstBuild, register: Reg, attributes: InstField,  } struct Bad { dst: Reg } layout Bad { lengths: [1, 1] }"
+enum InstField { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField;  } struct Bad { dst: Reg } layout Bad { lengths = [1, 1]; }"
                     .into(),
                 "operand layouts",
             ),
             (
                 format!(
                     "{BINARY} {}",
-                    ADD.replace("semantics:", "arity: 3, semantics:")
+                    ADD.replace("semantics =", "arity = 3; semantics =")
                 ),
                 "arity",
             ),
@@ -414,7 +418,7 @@ storage Operands { opcode: GenericOpcode, view: InstView, reader: InstRead, writ
     {
         let source = common::source(&format!(
             "{BINARY} {}",
-            ADD.replace("semantics:", "text: \"{lhs}, {rhs}\", semantics:")
+            ADD.replace("semantics =", "text = \"{lhs}, {rhs}\"; semantics =")
         ));
         let generated = common::raw_plan(&source).unwrap().generate();
         assert!(!generated.text_parser.is_empty());

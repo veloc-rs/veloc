@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
 use super::FinalInstDef;
-use super::generate::{collect_reg_encs, format_slice, reg_const_name, sanitize_ident};
+use super::generate::{collect_reg_ids, format_slice, reg_const_name, sanitize_ident};
 
 fn strip_node_binds(pattern: &Pattern) -> &Pattern {
     pattern.strip_node_binds()
@@ -615,10 +615,7 @@ fn emit_single_inst(
         let mut explicit_arg_cursor = 0usize;
         for (operand_index, operand) in inst_def.operands.iter().enumerate() {
             let use_source_def = request.preserve_operands
-                && matches!(
-                    operand,
-                    OperandConstraint::Def(_) | OperandConstraint::TiedDef { .. }
-                )
+                && matches!(operand, OperandConstraint::Def(_))
                 && args.len() - explicit_arg_cursor
                     == min_explicit_args_from(&inst_def.operands, operand_index);
 
@@ -713,42 +710,28 @@ fn emit_single_inst(
 }
 
 fn inst_def_has_results(operands: &[OperandConstraint]) -> bool {
-    operands.iter().any(|op| {
-        matches!(
-            op,
-            OperandConstraint::Def(_) | OperandConstraint::TiedDef { .. }
-        )
-    })
+    operands
+        .iter()
+        .any(|op| matches!(op, OperandConstraint::Def(_)))
 }
 
 fn min_explicit_args_from(operands: &[OperandConstraint], start: usize) -> usize {
     operands[start..]
         .iter()
-        .filter(|op| {
-            !matches!(
-                op,
-                OperandConstraint::Def(_) | OperandConstraint::TiedDef { .. }
-            )
-        })
+        .filter(|op| !matches!(op, OperandConstraint::Def(_)))
         .count()
 }
 
 fn inst_def_result_count(operands: &[OperandConstraint]) -> usize {
     operands
         .iter()
-        .filter(|op| {
-            matches!(
-                op,
-                OperandConstraint::Def(_) | OperandConstraint::TiedDef { .. }
-            )
-        })
+        .filter(|op| matches!(op, OperandConstraint::Def(_)))
         .count()
 }
 
 fn emit_source_result(output: &mut String, index: usize, operand: &OperandConstraint) {
     let _op_ctor = match operand {
         OperandConstraint::Def(_) => "Def",
-        OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
         _ => panic!("source defs can only satisfy def-like operands"),
     };
     writeln!(
@@ -773,7 +756,6 @@ fn emit_schema_source_result(
 ) {
     let _op_ctor = match operand {
         OperandConstraint::Def(_) => "Def",
-        OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
         _ => panic!("schema source defs can only satisfy def-like operands"),
     };
     writeln!(
@@ -844,7 +826,6 @@ fn emit_constructor_operand(
                 OperandConstraint::Def(_) => {
                     format!("Reg::new_preg({enc})")
                 }
-                OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
                 OperandConstraint::StackSlot(_) => {
                     panic!("physical register constructor cannot satisfy a stackslot operand")
                 }
@@ -867,7 +848,6 @@ fn schema_value_operand_expr(name: &str, operand: &OperandConstraint) -> String 
         OperandConstraint::Def(_) => format!(
             "reg_value({rust_name}).ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Schema reg mapping failed\")))?"
         ),
-        OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
         OperandConstraint::Imm(_) => format!("InstField::Imm({rust_name}.into())"),
         OperandConstraint::Block(_) => format!("InstField::Block({rust_name})"),
         OperandConstraint::Global(_) => format!("InstField::Global({rust_name})"),
@@ -895,7 +875,6 @@ fn operand_index_expr(op_index: usize, operand: &OperandConstraint) -> String {
         OperandConstraint::Def(_) => format!(
             "inst.inputs().get({op_index}).copied().ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?"
         ),
-        OperandConstraint::TiedDef { .. } => unreachable!("ties were expanded"),
         OperandConstraint::Imm(_) => format!(
             "match field_by_index(inst, {op_index}) {{ Some(InstField::Imm(v)) => InstField::Imm(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand immediate mapping failed\"))), }}"
         ),
@@ -1016,10 +995,8 @@ fn constructor_arg_bindings_by_target_operand<'a>(
     let mut bindings = Vec::with_capacity(target_operands.len());
 
     for (operand_index, operand) in target_operands.iter().enumerate() {
-        let use_source_def = matches!(
-            operand,
-            OperandConstraint::Def(_) | OperandConstraint::TiedDef { .. }
-        ) && schema_source_def_field.is_some()
+        let use_source_def = matches!(operand, OperandConstraint::Def(_))
+            && schema_source_def_field.is_some()
             && constructor_args.len() - explicit_arg_cursor
                 == min_explicit_args_from(target_operands, operand_index);
 
@@ -1154,7 +1131,7 @@ pub(crate) fn generate_select_instruction(
     final_inst_defs: &HashMap<String, FinalInstDef>,
     arch: &str,
 ) {
-    let reg_map = collect_reg_encs(module);
+    let reg_map = collect_reg_ids(module);
     let needs_positional_helpers = module_has_positional_rules(module);
     let decls = collect_decl_map(module);
     let opcode_rules = collect_select_rules_by_opcode(module);

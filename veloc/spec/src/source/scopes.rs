@@ -13,11 +13,11 @@ enum Space {
     Value,
 }
 
-pub(super) fn check(
+pub(crate) fn check(
     source: &str,
     declarations: &[Decl],
     files: &[super::File],
-    defs: &crate::Definitions,
+    data: &crate::model::data::Types,
 ) -> Result<(), Error> {
     let mut symbols = BTreeMap::<(Space, String), BTreeSet<usize>>::new();
     for (file, entry) in files.iter().enumerate() {
@@ -26,7 +26,7 @@ pub(super) fn check(
                 DeclKind::Type { .. } if rust_binding(record).is_some() => Space::Data,
                 DeclKind::Type { .. } | DeclKind::TypeSet(_) => Space::Type,
                 DeclKind::Function { .. } => Space::Function,
-                DeclKind::Constant(_) => Space::Value,
+                DeclKind::Constant { .. } => Space::Value,
                 DeclKind::Fields(kind)
                     if matches!(kind.as_str(), "struct" | "enum" | "encoding") =>
                 {
@@ -50,7 +50,7 @@ pub(super) fn check(
                     .or_default()
                     .insert(file);
             }
-            if let Some(en) = defs.data.enums.iter().find(|en| en.name == record.name) {
+            if let Some(en) = data.enums.iter().find(|en| en.name == record.name) {
                 for (name, _) in &en.variants {
                     symbols
                         .entry((Space::Value, name.clone()))
@@ -63,9 +63,9 @@ pub(super) fn check(
     for file in files {
         let checker = Checker {
             source,
-            defs,
+            data,
             symbols: &symbols,
-            visible: &file.visible,
+            files,
         };
         for (_, record) in crate::syntax::walk(&declarations[file.declarations.clone()]) {
             checker.record(record)?;
@@ -75,10 +75,10 @@ pub(super) fn check(
 }
 
 struct Checker<'a> {
-    defs: &'a crate::Definitions,
+    data: &'a crate::model::data::Types,
     source: &'a str,
     symbols: &'a BTreeMap<(Space, String), BTreeSet<usize>>,
-    visible: &'a BTreeSet<usize>,
+    files: &'a [super::File],
 }
 
 impl Checker<'_> {
@@ -89,9 +89,16 @@ impl Checker<'_> {
         offset: usize,
         locals: &BTreeSet<String>,
     ) -> Result<(), Error> {
+        // Template nodes keep definition locations; substituted arguments keep
+        // invocation locations. Resolve each reference in its lexical file.
+        let owner = self
+            .files
+            .partition_point(|file| file.offset <= offset)
+            .saturating_sub(1);
+        let visible = &self.files[owner].visible;
         if !locals.contains(name)
             && let Some(owners) = self.symbols.get(&(space, name.to_owned()))
-            && owners.is_disjoint(self.visible)
+            && owners.is_disjoint(visible)
         {
             return Err(Error::at(
                 self.source,
@@ -130,6 +137,15 @@ impl Checker<'_> {
                 }
             }
             Kind::Call(name, args) => {
+                // SSA reference constructors are declared data types whose
+                // argument is a logical IR type, independently of storage.
+                if self.data.rust.policy(name).references.is_operand() {
+                    self.name(name, Space::Data, node.offset, locals)?;
+                    for arg in args {
+                        self.node(arg, Some(Space::Type), locals)?;
+                    }
+                    return Ok(());
+                }
                 if let Some((owner, _)) = name.split_once("::") {
                     self.name(owner, Space::Data, node.offset, locals)?;
                 }
@@ -138,13 +154,7 @@ impl Checker<'_> {
                     self.name(name, Space::Value, node.offset, locals)?;
                 }
                 for arg in args {
-                    // Value(I32) embeds an IR type in a data-type declaration.
-                    let inner = if name == "Value" {
-                        Some(Space::Type)
-                    } else {
-                        space
-                    };
-                    self.node(arg, inner, locals)?;
+                    self.node(arg, space, locals)?;
                 }
             }
             Kind::Method(receiver, name, args) => {
@@ -179,6 +189,11 @@ impl Checker<'_> {
             }
             Kind::Object(name, fields) => {
                 self.name(name, Space::Data, node.offset, locals)?;
+                for value in fields.values() {
+                    self.node(value, None, locals)?;
+                }
+            }
+            Kind::Record(fields) => {
                 for value in fields.values() {
                     self.node(value, None, locals)?;
                 }
@@ -237,23 +252,7 @@ impl Checker<'_> {
                 self.node(&generic.ty, Some(Space::Type), &type_locals)?;
             }
             for param in &signature.params {
-                let space = if matches!(&record.kind, DeclKind::Op(_))
-                    && self
-                        .defs
-                        .ops
-                        .iter()
-                        .find(|op| op.name == record.name)
-                        .expect("checked operation")
-                        .params
-                        .iter()
-                        .find(|p| p.name == param.name)
-                        .is_some_and(|p| p.kind == crate::model::ParamKind::Value)
-                {
-                    Space::Type
-                } else {
-                    Space::Data
-                };
-                self.node(&param.ty, Some(space), &type_locals)?;
+                self.node(&param.ty, Some(Space::Data), &type_locals)?;
             }
             if let Results::Fixed(results) = &signature.results {
                 let space = if matches!(&record.kind, DeclKind::Op(_)) {
@@ -273,7 +272,12 @@ impl Checker<'_> {
             DeclKind::Type { binding, .. } | DeclKind::TypeSet(binding) => {
                 self.node(binding, Some(Space::Type), &locals)?;
             }
-            DeclKind::Constant(ty) => self.node(ty, Some(Space::Data), &locals)?,
+            DeclKind::Constant { ty, value } => {
+                self.node(ty, Some(Space::Data), &locals)?;
+                if let Some(value) = value {
+                    self.node(value, None, &locals)?;
+                }
+            }
             _ => {}
         }
         match &record.kind {

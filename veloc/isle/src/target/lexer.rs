@@ -12,12 +12,6 @@ pub enum Token {
     Dollar,
     #[token("@")]
     At,
-    #[token("def-macro")]
-    DefMacro,
-    #[token("def-template")]
-    DefTemplate,
-    #[token("def-pseudo-inst")]
-    DefPseudoInst,
     #[token("def-feature")]
     DefFeature,
     #[token("def-cpu")]
@@ -30,8 +24,6 @@ pub enum Token {
     Features,
     #[token("limitations")]
     Limitations,
-    #[token("def-inst")]
-    DefInst,
     #[token("operands")]
     Operands,
     #[token("implicit-uses")]
@@ -40,22 +32,6 @@ pub enum Token {
     ImplicitDefs,
     #[token("clobbers")]
     Clobbers,
-    #[token("encode")]
-    Encode,
-    #[token("byte")]
-    Byte,
-    #[token("imm16")]
-    Imm16,
-    #[token("imm32")]
-    Imm32,
-    #[token("imm64")]
-    Imm64,
-    #[token("rel32")]
-    Rel32,
-    #[token("if")]
-    If,
-    #[token("else")]
-    Else,
     #[token("use")]
     Use,
     #[token("def")]
@@ -76,22 +52,8 @@ pub enum Token {
     Primitive,
     #[token("register-class")]
     RegisterClass,
-    #[token("def-reg")]
-    DefReg,
-    #[token("def-regclass")]
-    DefRegClass,
-    #[token("size")]
-    Size,
-    #[token("alias")]
-    Alias,
     #[token("class")]
     Class,
-    #[token("reserved")]
-    Reserved,
-    #[token("role")]
-    Role,
-    #[token("hw-enc")]
-    HwEnc,
     #[token("select-rule")]
     SelectRule,
     #[token("rewrite-rule")]
@@ -102,8 +64,6 @@ pub enum Token {
     PeepholeRule,
     #[token("def-extractor")]
     DefExtractor,
-    #[token("template")]
-    Template,
     #[token("and")]
     And,
     #[token("root")]
@@ -126,9 +86,6 @@ pub enum Token {
     PriorityKw,
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_-]*", |lex| lex.slice().to_string())]
     Ident(String),
-
-    #[regex(r"[0-9]+-[0-9]+", |lex| lex.slice().to_string())]
-    Range(String),
 
     #[regex(r"0x[0-9a-fA-F]+", |lex| i64::from_str_radix(&lex.slice()[2..], 16).ok())]
     #[regex(r"0b[01]+", |lex| i64::from_str_radix(&lex.slice()[2..], 2).ok())]

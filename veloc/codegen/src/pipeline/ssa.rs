@@ -12,6 +12,14 @@ use veloc_mir::Block;
 pub fn verify<S>(f: &MachineFunction<S>, target: &dyn TargetMachine) -> Result<()> {
     let fail = |message| Error::codegen(format!("machine SSA in {}: {message}", f.name));
     f.check_refs().map_err(|e| fail(e.into()))?;
+    if f.is_regallocated {
+        for block in &f.blocks {
+            for &id in &block.insts {
+                target.validate_instruction(&f.inst(id), true)?;
+            }
+        }
+        return Ok(());
+    }
     let mut defs = HashMap::new();
     let mut blocks = HashSet::new();
     let mut instructions = HashSet::new();
@@ -48,6 +56,8 @@ pub fn verify<S>(f: &MachineFunction<S>, target: &dyn TargetMachine) -> Result<(
             let inst = f.inst(id);
             if inst.is_generic() {
                 inst.validate()?;
+            } else {
+                target.validate_instruction(&inst, false)?;
             }
             for reg in inst.defs() {
                 if transferred && reg.is_vreg() {

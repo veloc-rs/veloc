@@ -12,6 +12,118 @@ use veloc_mir::ModuleParser;
 struct Workspace(PathBuf);
 
 #[test]
+fn branch_layout_preserves_boundaries_and_symbolic_fixups() {
+    use veloc_codegen::FixupTarget as Target;
+    use veloc_encoder::x86_64::*;
+    use veloc_lir::SymbolId;
+    use veloc_mir::Block;
+
+    let descriptor = Branch {
+        map: OpcodeMap::Primary,
+        near: 0xe9,
+        short: 0xeb,
+    };
+    let short = encode_branch(descriptor, true).unwrap();
+    let long = encode_branch(descriptor, false).unwrap();
+    let nop = encode(
+        Legacy {
+            prefix: Prefix::None,
+            map: OpcodeMap::Primary,
+            opcode: 0x90,
+            wide: false,
+        },
+        Form::None,
+        Immediate::None,
+    )
+    .unwrap();
+    let call = encode(
+        Legacy {
+            prefix: Prefix::None,
+            map: OpcodeMap::Primary,
+            opcode: 0xe8,
+            wide: false,
+        },
+        Form::None,
+        Immediate::Relative(7),
+    )
+    .unwrap();
+    let label = Block::from_u32(0);
+    for padding in [0, 125, 126, 127, 128, 256] {
+        for backwards in [false, true] {
+            let mut emitter = veloc_codegen::Emitter::new();
+            if backwards {
+                emitter.mark_block(label);
+            }
+            if !backwards {
+                emitter.branch(label, &short, &long).unwrap();
+            }
+            for _ in 0..padding {
+                emitter.instruction(&nop, None).unwrap();
+            }
+            if backwards {
+                emitter.branch(label, &short, &long).unwrap();
+            }
+            if !backwards {
+                emitter.mark_block(label);
+            }
+            emitter
+                .instruction(&call, Some(Target::Symbol(SymbolId::from_u32(0))))
+                .unwrap();
+            let code = emitter.finish().unwrap();
+            let compact = if backwards {
+                padding <= 126
+            } else {
+                padding <= 127
+            };
+            let branch_len = if compact { 2 } else { 5 };
+            let start = if backwards { padding } else { 0 };
+            assert_eq!(code.data[start], if compact { 0xeb } else { 0xe9 });
+            let displacement = if compact {
+                code.data[start + 1] as i8 as i64
+            } else {
+                i32::from_le_bytes(code.data[start + 1..start + 5].try_into().unwrap()) as i64
+            };
+            assert_eq!(
+                displacement,
+                if backwards {
+                    -(padding as i64 + branch_len as i64)
+                } else {
+                    padding as i64
+                }
+            );
+            assert_eq!(code.data.len(), padding + branch_len + 5);
+            assert_eq!(code.relocations.len(), 1);
+            assert_eq!(
+                code.relocations[0].offset,
+                (padding + branch_len + 1) as u64
+            );
+            assert_eq!(code.relocations[0].addend, 3);
+        }
+    }
+    // Widening the inner jump must force a second layout iteration for the outer one.
+    let mut emitter = veloc_codegen::Emitter::new();
+    let far = Block::from_u32(1);
+    emitter.branch(label, &short, &long).unwrap();
+    emitter.branch(far, &short, &long).unwrap();
+    for _ in 0..125 {
+        emitter.instruction(&nop, None).unwrap();
+    }
+    emitter.mark_block(label);
+    for _ in 0..128 {
+        emitter.instruction(&nop, None).unwrap();
+    }
+    emitter.mark_block(far);
+    let code = emitter.finish().unwrap();
+    assert_eq!(code.data[0], 0xe9);
+    assert_eq!(code.data[5], 0xe9);
+    assert_eq!(i32::from_le_bytes(code.data[1..5].try_into().unwrap()), 130);
+    assert_eq!(
+        i32::from_le_bytes(code.data[6..10].try_into().unwrap()),
+        253
+    );
+}
+
+#[test]
 fn full_unsigned_memory_offsets_do_not_sign_extend_disp32() {
     let mut source = String::new();
     let mut harness = String::from("#include <stdint.h>\n#include <assert.h>\n");
@@ -93,7 +205,7 @@ int main(void) {
 
 #[test]
 fn extension_encodings_match_system_assembler_for_every_register_pair() {
-    use veloc_codegen::target::x86_64::{X86_64CodeEmitter, isle::*};
+    use veloc_codegen::target::x86_64::isle::*;
     use veloc_lir::{MachineFunction, MachineOpcode, Writable, stages::PrologueEpilogueInserted};
     let regs = [
         REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI, REG_R8, REG_R9,
@@ -137,9 +249,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
                     Writable(regs[dst]),
                     regs[src],
                 );
-                opcode
-                    .emit::<X86_64CodeEmitter>(&mut emitter, &f.inst(inst), &f)
-                    .unwrap();
+                opcode.emit(&mut emitter, &f.inst(inst), &f).unwrap();
             }
         }
     }
@@ -170,13 +280,13 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
         );
     }
     let reference = fs::read(dir.0.join("reference.bin")).unwrap();
-    if emitter.data != reference {
-        let offset = emitter
-            .data
+    let encoded = emitter.finish().unwrap().data;
+    if encoded != reference {
+        let offset = encoded
             .iter()
             .zip(&reference)
             .position(|(a, b)| a != b)
-            .unwrap_or(emitter.data.len().min(reference.len()));
+            .unwrap_or(encoded.len().min(reference.len()));
         let case = cases
             .iter()
             .rev()
@@ -185,7 +295,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
         panic!(
             "encoding differs at byte {offset}, instruction {}: got {:?}, expected {:?}",
             case.1.trim(),
-            emitter.data.get(offset),
+            encoded.get(offset),
             reference.get(offset)
         );
     }

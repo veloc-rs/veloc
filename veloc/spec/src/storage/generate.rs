@@ -1,5 +1,5 @@
 //! Generate construction data, zero-allocation views and SSA-free storage.
-use super::{Field, FieldType, FormatSource, Layout, OpcodeSource, value_only};
+use super::{Access, Field, FieldType, FormatSource, Layout, OpcodeSource, value_only};
 use crate::model::records::{PropertyType, RecordDef};
 use std::fmt::Write;
 
@@ -11,11 +11,11 @@ pub(super) fn stored_type(field: &Field, records: &[RecordDef]) -> Option<String
     if let Some(record) = record(field, records) {
         return Some(format!("{}Fields", record.name));
     }
-    match field.traversal() {
-        Some("value" | "array") => None,
-        Some("value_list") => Some("u32".into()),
-        Some("block_call") => Some("storage::Edge".into()),
-        Some("jump_table") => Some("storage::Edges".into()),
+    match field.access() {
+        Some(Access::Value | Access::Array) => None,
+        Some(Access::Values) => Some("u32".into()),
+        Some(Access::Edge) => Some("storage::Edge".into()),
+        Some(Access::Edges) => Some("storage::Edges".into()),
         _ => Some(field.rust.clone()),
     }
 }
@@ -24,10 +24,10 @@ fn view_type(field: &Field) -> String {
     if let FieldType::Values(n) = field.ty {
         return format!("&'a [Value; {n}]");
     }
-    match field.traversal() {
-        Some("value_list") => "&'a [Value]".into(),
-        Some("block_call") => "Successor<'a>".into(),
-        Some("jump_table") => "Successors<'a>".into(),
+    match field.access() {
+        Some(Access::Values) => "&'a [Value]".into(),
+        Some(Access::Edge) => "Successor<'a>".into(),
+        Some(Access::Edges) => "Successors<'a>".into(),
         _ => field.rust.clone(),
     }
 }
@@ -37,17 +37,17 @@ pub(super) fn read_field(field: &Field, records: &[RecordDef], value: &str) -> S
     if record(field, records).is_some() {
         return format!("{value}.view(&mut reader)");
     }
-    match field.traversal() {
-        Some("value") => "reader.value()".into(),
-        Some("array") => {
+    match field.access() {
+        Some(Access::Value) => "reader.value()".into(),
+        Some(Access::Array) => {
             let FieldType::Values(n) = field.ty else {
                 unreachable!()
             };
             format!("reader.take({n}).try_into().unwrap()")
         }
-        Some("value_list") => format!("reader.take(*{value} as usize)"),
-        Some("block_call") => format!("reader.edge(*{value})"),
-        Some("jump_table") => format!("reader.edges({value})"),
+        Some(Access::Values) => format!("reader.take(*{value} as usize)"),
+        Some(Access::Edge) => format!("reader.edge(*{value})"),
+        Some(Access::Edges) => format!("reader.edges({value})"),
         _ => format!("*{value}"),
     }
 }
@@ -81,8 +81,8 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                 name: layout.name.clone(),
                 borrowed: layout.fields.iter().any(|field| {
                     matches!(
-                        field.traversal(),
-                        Some("array" | "value_list" | "block_call" | "jump_table")
+                        field.access(),
+                        Some(Access::Array | Access::Values | Access::Edge | Access::Edges)
                     )
                 }),
                 fields: layout
@@ -165,10 +165,10 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             .fields
             .iter()
             .map(|f| {
-                let ty = match f.traversal() {
-                    Some("value_list") => "&[Value]".into(),
-                    Some("block_call") => "Successor<'_>".into(),
-                    Some("jump_table") => "impl IntoIterator<Item = Successor<'a>>".into(),
+                let ty = match f.access() {
+                    Some(Access::Values) => "&[Value]".into(),
+                    Some(Access::Edge) => "Successor<'_>".into(),
+                    Some(Access::Edges) => "impl IntoIterator<Item = Successor<'a>>".into(),
                     _ => f.rust.clone(),
                 };
                 format!("{}: {ty}", f.name)
@@ -186,21 +186,21 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
             let expr = if record(f, records).is_some() {
                 format!("{name}.store(&mut {values})")
             } else {
-                match f.traversal() {
-                    Some("value") => {
+                match f.access() {
+                    Some(Access::Value) => {
                         writeln!(out, "{values}.push({name});").unwrap();
                         continue;
                     }
-                    Some("array") => {
+                    Some(Access::Array) => {
                         writeln!(out, "{values}.extend_from_slice(&{name});").unwrap();
                         continue;
                     }
-                    Some("value_list") => {
+                    Some(Access::Values) => {
                         writeln!(out, "{values}.extend_from_slice({name});").unwrap();
                         format!("u32::try_from({name}.len()).expect(\"too many operands\")")
                     }
-                    Some("block_call") => format!("storage::store_edge({name}, &mut {values})"),
-                    Some("jump_table") => format!("storage::Edges::store({name}, &mut {values})"),
+                    Some(Access::Edge) => format!("storage::store_edge({name}, &mut {values})"),
+                    Some(Access::Edges) => format!("storage::Edges::store({name}, &mut {values})"),
                     _ => name.clone(),
                 }
             };
@@ -272,11 +272,11 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
                         }
                     }
                 } else {
-                    match field.traversal() {
-                        Some("value") => writeln!(out, "f(*_field{i}){propagate};").unwrap(),
-                        Some("array" | "value_list") => writeln!(out, "for &value in _field{i}.iter() {{ f(value){propagate}; }}").unwrap(),
-                        Some("block_call") => writeln!(out, "for &value in _field{i}.args {{ f(value){propagate}; }}").unwrap(),
-                        Some("jump_table") => writeln!(out, "for call in _field{i}.iter() {{ for &value in call.args {{ f(value){propagate}; }} }}").unwrap(),
+                    match field.access() {
+                        Some(Access::Value) => writeln!(out, "f(*_field{i}){propagate};").unwrap(),
+                        Some(Access::Array | Access::Values) => writeln!(out, "for &value in _field{i}.iter() {{ f(value){propagate}; }}").unwrap(),
+                        Some(Access::Edge) => writeln!(out, "for &value in _field{i}.args {{ f(value){propagate}; }}").unwrap(),
+                        Some(Access::Edges) => writeln!(out, "for call in _field{i}.iter() {{ for &value in call.args {{ f(value){propagate}; }} }}").unwrap(),
                         _ => {}
                     }
                 }
@@ -310,7 +310,50 @@ pub(super) fn instructions(layouts: &[Layout], records: &[RecordDef]) -> String 
     out.push_str("} }\n}\n");
     out.push_str(&super::compact::generate(layouts, records));
     edit_successors(&mut out, layouts);
+    out.push_str(&successors(layouts));
     out
+}
+
+fn successors(layouts: &[Layout]) -> String {
+    let mut output = String::from(
+        "impl<'a> crate::InstView<'a> {\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, mut f: impl FnMut(crate::Successor<'a>)) {\nself.try_visit_successors::<core::convert::Infallible>(|edge| { f(edge); Ok(()) }).unwrap_or_else(|never| match never {});\n}\n/// Visit successors in storage order, stopping at the first error.\npub fn try_visit_successors<E>(&self, mut f: impl FnMut(crate::Successor<'a>) -> core::result::Result<(), E>) -> core::result::Result<(), E> {\n        match self {\n",
+    );
+    for format in layouts {
+        let edges: Vec<_> = format
+            .fields
+            .iter()
+            .filter(|field| field.policy.references.is_edge() || field.policy.references.is_edges())
+            .collect();
+        if edges.is_empty() {
+            continue;
+        }
+        let bindings = edges
+            .iter()
+            .enumerate()
+            .map(|(index, field)| format!("{}: edge{index}", field.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            output,
+            "            crate::InstView::{} {{ {bindings}, .. }} => {{",
+            format.name
+        )
+        .unwrap();
+        for (index, field) in edges.iter().enumerate() {
+            if field.policy.references.is_edges() {
+                writeln!(
+                    output,
+                    "                for call in edge{index}.iter() {{ f(call)?; }}"
+                )
+                .unwrap();
+            } else {
+                writeln!(output, "                f(*edge{index})?;").unwrap();
+            }
+        }
+        output.push_str("            },\n");
+    }
+    output.push_str("            _ => {},\n        }\nOk(())\n    }\n}\n");
+    output
 }
 
 fn from_values(out: &mut String, layouts: &[Layout]) {
@@ -363,25 +406,25 @@ fn edit_successors(out: &mut String, layouts: &[Layout]) {
         if !layout
             .fields
             .iter()
-            .any(|f| matches!(f.traversal(), Some("block_call" | "jump_table")))
+            .any(|f| matches!(f.access(), Some(Access::Edge | Access::Edges)))
         {
             continue;
         }
         let pat = layout.pattern().replace("Self::", "InstView::");
         writeln!(out, "{pat} => {{").unwrap();
         for (i, f) in layout.fields.iter().enumerate() {
-            let value = match f.traversal() {
-                Some("array") => format!("*_field{i}"),
-                Some("value_list") => format!("_field{i}.to_vec()"),
-                Some("block_call") => {
+            let value = match f.access() {
+                Some(Access::Array) => format!("*_field{i}"),
+                Some(Access::Values) => format!("_field{i}.to_vec()"),
+                Some(Access::Edge) => {
                     format!("crate::BlockCall::new(_field{i}.block, _field{i}.args)")
                 }
-                Some("jump_table") => format!(
+                Some(Access::Edges) => format!(
                     "_field{i}.iter().map(|s| crate::BlockCall::new(s.block, s.args)).collect::<alloc::vec::Vec<_>>()"
                 ),
                 _ => format!("_field{i}"),
             };
-            let mutable = if matches!(f.traversal(), Some("block_call" | "jump_table")) {
+            let mutable = if matches!(f.access(), Some(Access::Edge | Access::Edges)) {
                 "mut "
             } else {
                 ""
@@ -389,11 +432,11 @@ fn edit_successors(out: &mut String, layouts: &[Layout]) {
             writeln!(out, "let {mutable}_arg{i} = {value};").unwrap();
         }
         for (i, f) in layout.fields.iter().enumerate() {
-            match f.traversal() {
-                Some("block_call") => {
+            match f.access() {
+                Some(Access::Edge) => {
                     writeln!(out, "SuccessorMut::edit_call(&mut _arg{i}, &mut edit);").unwrap()
                 }
-                Some("jump_table") => writeln!(
+                Some(Access::Edges) => writeln!(
                     out,
                     "for call in &mut _arg{i} {{ SuccessorMut::edit_call(call, &mut edit); }}"
                 )
@@ -405,10 +448,10 @@ fn edit_successors(out: &mut String, layouts: &[Layout]) {
             .fields
             .iter()
             .enumerate()
-            .map(|(i, f)| match f.traversal() {
-                Some("value_list") => format!("&_arg{i}"),
-                Some("block_call") => format!("_arg{i}.as_view()"),
-                Some("jump_table") => format!("_arg{i}.iter().map(crate::BlockCall::as_view)"),
+            .map(|(i, f)| match f.access() {
+                Some(Access::Values) => format!("&_arg{i}"),
+                Some(Access::Edge) => format!("_arg{i}.as_view()"),
+                Some(Access::Edges) => format!("_arg{i}.iter().map(crate::BlockCall::as_view)"),
                 _ => format!("_arg{i}"),
             })
             .collect::<Vec<_>>()

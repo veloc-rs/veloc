@@ -4,11 +4,11 @@
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     memroy: NONE, semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     memroy = NONE; semantics = bv.add(lhs, rhs)
+; }
 
 // ----- duplicate-field
 // run: opgen-error
@@ -16,11 +16,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE, memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-      semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE, memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+      semantics = bv.add(lhs, rhs)
+; }
 
 // ----- unknown-format
 // run: opgen-error
@@ -28,11 +28,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Missing { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Missing { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs)
+; }
 
 // ----- invalid-identifier
 // run: opgen-error
@@ -40,11 +40,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "type", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "type"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs)
+; }
 
 // ----- unbound-variable
 // run: opgen-error
@@ -52,11 +52,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: U) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<U>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs)
+; }
 
 // ----- unbound-storage
 // run: opgen-error
@@ -64,11 +64,11 @@ op IAdd<T: Integer>(lhs: T, rhs: U) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, missing] },
-     semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, missing] };
+     semantics = bv.add(lhs, rhs)
+; }
 
 // ----- unbound-semantics
 // run: opgen-error
@@ -76,11 +76,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, missing)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, missing)
+; }
 
 // ----- storage-arity
 // run: opgen-error
@@ -88,11 +88,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs] },
-     semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs] };
+     semantics = bv.add(lhs, rhs)
+; }
 
 // ----- unknown-primitive
 // run: opgen-error
@@ -100,11 +100,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.unknown(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.unknown(lhs, rhs)
+; }
 
 // ----- wrong-primitive-type
 // run: opgen-error
@@ -112,11 +112,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Float>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Float>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs)
+; }
 
 // ----- primitive-arity
 // run: opgen-error
@@ -124,11 +124,11 @@ op IAdd<T: Float>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.neg(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.neg(lhs, rhs)
+; }
 
 // ----- unknown-memory
 // run: opgen-const-error
@@ -136,11 +136,11 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::UNKNOWN },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs)
+; }
 
 // ----- relation-operand
 // run: opgen-error
@@ -148,13 +148,13 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", verify {
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; verify {
         require(result.element_bits()? > missing.ty().element_bits()?, "result must have more bits per lane than missing");
-    } storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
-}
+    } storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs)
+; }
 
 // ----- unknown-relation
 // run: opgen-error
@@ -162,23 +162,23 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", verify { require(unknown(lhs.ty()), "unknown constraint"); } storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; verify { require(unknown(lhs.ty()), "unknown constraint"); } storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs)
+; }
 
-// ----- missing-colon
+// ----- missing-equals
 // run: opgen-error
-// check: expected `:`
+// check: expected `=`
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo {},
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-    memory NONE, semantics: bv.add(lhs, rhs)
-}
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo {};
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+    memory NONE, semantics = bv.add(lhs, rhs)
+; }
 
 // ----- string-newline
 // run: opgen-error
@@ -186,10 +186,10 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd, storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd, storage: Binary { args: [lhs, rhs] },
+     semantics = bv.add(lhs, rhs);
 }
 
 // ----- out-of-range
@@ -198,10 +198,10 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(99999999999999),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs);
 }
 
 // ----- duplicate-mnemonic
@@ -210,13 +210,13 @@ op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
 struct Binary {
     args: values(2),
 }
-op IAdd<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs);
 }
-op Other<T: Integer>(lhs: T, rhs: T) -> (result: T) {
-    meta: OpInfo { memory: MemoryEffect::NONE },
-    mnemonic: "iadd", storage: Binary { args: [lhs, rhs] },
-     semantics: bv.add(lhs, rhs)
-}
+op Other<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (result: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iadd"; storage = Binary { args: [lhs, rhs] };
+     semantics = bv.add(lhs, rhs)
+; }

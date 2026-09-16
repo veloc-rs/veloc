@@ -3,7 +3,170 @@ use std::collections::BTreeMap;
 
 use crate::Definitions;
 use crate::model::{ParamKind, Pattern};
+pub use crate::model::{Pattern as ValueType, TypeDef as ValueSignature, TypeList as ValueTypes};
 pub use crate::types::TypeSet;
+
+/// A checked logical operand. Its role never depends on an IR's physical storage.
+#[derive(Debug)]
+pub enum Operand {
+    Value(String),
+    Attribute { name: String, ty: String },
+    Values(String),
+    Successor(String),
+    Successors(String),
+}
+
+/// Storage-independent instruction contract, consumed by target descriptions.
+/// Consumer-specific fields must be checked and consumed by that consumer.
+#[derive(Debug)]
+pub struct Contract {
+    pub name: String,
+    pub offset: usize,
+    pub inputs: Vec<Operand>,
+    pub results: Vec<String>,
+    pub signature: ValueSignature,
+    pub fields: BTreeMap<String, crate::syntax::Node>,
+}
+
+impl crate::Source {
+    /// Generate definition-owned data types without requiring an IR storage ABI.
+    pub fn data_types(&self) -> Result<String, crate::SourceError> {
+        let compile = || {
+            let data = crate::model::data::Types::compile(self.declarations(), self.text())?;
+            crate::source::scopes::check(self.text(), self.declarations(), self.files(), &data)?;
+            Ok(data.generate(&[], None))
+        };
+        compile().map_err(|e| self.locate(e))
+    }
+
+    /// Shared, typed expressions for a consumer's generated Rust projections.
+    pub fn expressions(&self) -> Result<Expressions<'_>, crate::SourceError> {
+        let compile = || {
+            Ok(Expressions {
+                source: self,
+                types: crate::types::Types::compile(self.declarations(), self.text())?,
+                encodings: crate::model::encoding::compile(self.declarations(), self.text())?,
+                data: crate::model::data::Types::compile(self.declarations(), self.text())?,
+                library: crate::model::expr::Library::default(),
+            })
+        };
+        compile().map_err(|e| self.locate(e))
+    }
+
+    /// Check instruction signatures without requiring a runtime storage strategy.
+    pub fn contracts(&self) -> Result<Vec<Contract>, crate::SourceError> {
+        let compile = || {
+            use crate::model::{self, ParamKind};
+            use crate::syntax::{DeclKind, Results};
+            let records = self.declarations();
+            let source = self.text();
+            let types = crate::types::Types::compile(records, source)?;
+            let encodings = model::encoding::compile(records, source)?;
+            let data = model::data::Types::compile(records, source)?;
+            let vocabulary = model::Vocabulary {
+                types: &types,
+                encodings: &encodings,
+                data: &data,
+            };
+            let mut names = std::collections::BTreeSet::new();
+            let mut contracts = Vec::new();
+            for record in records {
+                let DeclKind::Op(signature) = &record.kind else {
+                    continue;
+                };
+                model::identifier(source, record.offset, &record.name)?;
+                if !names.insert(&record.name) {
+                    return Err(crate::Error::at(
+                        source,
+                        record.offset,
+                        format!("duplicate op `{}`", record.name),
+                    ));
+                }
+                let checked = model::operation::signature(
+                    source,
+                    record.offset,
+                    signature.clone(),
+                    vocabulary,
+                )?;
+                let results = match &signature.results {
+                    Results::Fixed(results) => results
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| {
+                            r.name.clone().unwrap_or_else(|| {
+                                if results.len() == 1 {
+                                    "result".into()
+                                } else {
+                                    format!("result{i}")
+                                }
+                            })
+                        })
+                        .collect(),
+                    Results::Signature => Vec::new(),
+                };
+                let inputs = checked
+                    .params
+                    .into_iter()
+                    .map(|param| match param.kind {
+                        ParamKind::Value => Operand::Value(param.name),
+                        ParamKind::Property(ty) => Operand::Attribute {
+                            name: param.name,
+                            ty,
+                        },
+                        ParamKind::Values => Operand::Values(param.name),
+                        ParamKind::Successor => Operand::Successor(param.name),
+                        ParamKind::Successors => Operand::Successors(param.name),
+                    })
+                    .collect();
+                contracts.push(Contract {
+                    name: record.name.clone(),
+                    offset: record.offset,
+                    inputs,
+                    results,
+                    signature: checked.types,
+                    fields: record.fields.clone(),
+                });
+            }
+            crate::source::scopes::check(source, records, self.files(), &data)?;
+            Ok(contracts)
+        };
+        compile().map_err(|e| self.locate(e))
+    }
+}
+
+/// Target consumers supply typed operand projections, not an expression parser.
+pub struct Expressions<'a> {
+    source: &'a crate::Source,
+    types: crate::types::Types,
+    encodings: crate::model::encoding::Encodings,
+    data: crate::model::data::Types,
+    library: crate::model::expr::Library,
+}
+impl Expressions<'_> {
+    pub fn rust(
+        &mut self,
+        node: &crate::syntax::Node,
+        result: &str,
+        bindings: &BTreeMap<String, (crate::syntax::Node, String)>,
+        prefix: &str,
+    ) -> Result<String, crate::SourceError> {
+        self.library
+            .expression(
+                self.source.text(),
+                self.source.declarations(),
+                crate::model::Vocabulary {
+                    types: &self.types,
+                    encodings: &self.encodings,
+                    data: &self.data,
+                },
+                node,
+                result,
+                bindings,
+                prefix,
+            )
+            .map_err(|e| self.source.locate(e))
+    }
+}
 
 /// A universal type variable or an independent member of a domain.
 #[derive(Debug, Clone)]

@@ -14,6 +14,7 @@ members = [
 	"veloc/lir",
 	"veloc/interpreter",
 	"veloc/codegen",
+	"veloc/encoder",
 	"veloc/analyzer",
 	"veloc/optimizer",
 	"veloc/isle",
@@ -35,6 +36,7 @@ veloc-lir = { path = "veloc/lir" }
 veloc-optimizer = { path = "veloc/optimizer" }
 veloc-interpreter = { path = "veloc/interpreter" }
 veloc-codegen = { path = "veloc/codegen" }
+veloc-encoder = { path = "veloc/encoder" }
 veloc-analyzer = { path = "veloc/analyzer" }
 veloc-wasm = { path = "crates/veloc-wasm" }
 

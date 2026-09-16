@@ -204,7 +204,11 @@ impl<'a> IRTranslator<'a> {
         let result = || Writable(ctx.value_map[results[0]]);
 
         let lowered = match inst_data {
-            InstView::Unary { .. } | InstView::Binary { .. } | InstView::Ternary { .. } => {
+            InstView::Unary { .. }
+            | InstView::Binary { .. }
+            | InstView::Ternary { .. }
+            | InstView::IntToPtr { .. }
+            | InstView::PtrToInt { .. } => {
                 let args = ctx.func.dfg().operands(inst_id);
                 let input = |i: usize| ctx.value_map[args[i]];
                 let dst = result();

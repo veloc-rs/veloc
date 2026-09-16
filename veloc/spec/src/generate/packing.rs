@@ -152,46 +152,6 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
     ))
 }
 
-pub(crate) fn accessors(defs: &Definitions) -> String {
-    let mut output = String::from(
-        "impl<'a> crate::InstView<'a> {\n    /// Visit outgoing block calls in storage order, preserving edge arguments and duplicates.\n    pub fn visit_successors(&self, mut f: impl FnMut(crate::Successor<'a>)) {\nself.try_visit_successors::<core::convert::Infallible>(|edge| { f(edge); Ok(()) }).unwrap_or_else(|never| match never {});\n}\n/// Visit successors in storage order, stopping at the first error.\npub fn try_visit_successors<E>(&self, mut f: impl FnMut(crate::Successor<'a>) -> core::result::Result<(), E>) -> core::result::Result<(), E> {\n        match self {\n",
-    );
-    for format in &defs.storage.formats {
-        let edges: Vec<_> = format.fields.iter().filter(|field| {
-            matches!(&field.ty, FieldType::Named(ty) if matches!(ty.as_str(), "BlockCall" | "JumpTable"))
-        }).collect();
-        if edges.is_empty() {
-            continue;
-        }
-        let bindings = edges
-            .iter()
-            .enumerate()
-            .map(|(index, field)| format!("{}: edge{index}", field.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(
-            output,
-            "            crate::InstView::{} {{ {bindings}, .. }} => {{",
-            format.name
-        )
-        .unwrap();
-        for (index, field) in edges.iter().enumerate() {
-            if matches!(&field.ty, FieldType::Named(ty) if ty == "JumpTable") {
-                writeln!(
-                    output,
-                    "                for call in edge{index}.iter() {{ f(call)?; }}"
-                )
-                .unwrap();
-            } else {
-                writeln!(output, "                f(*edge{index})?;").unwrap();
-            }
-        }
-        output.push_str("            },\n");
-    }
-    output.push_str("            _ => {},\n        }\nOk(())\n    }\n}\n");
-    output
-}
-
 pub(crate) struct Builder {
     inferred: Option<Vec<crate::types::rules::ResultExpr>>,
 }
