@@ -4,7 +4,6 @@
 //! stays here; architecture encoding algorithms live in veloc-encoder.
 
 use crate::target::arch::TargetEmitter;
-use veloc_lir::stages::PrologueEpilogueInserted;
 use veloc_lir::{MachineBlock, MachineFunction, MachineOpcode};
 
 /// x86_64 机器码发射器实现
@@ -21,7 +20,7 @@ impl TargetEmitter for X86_64CodeEmitter {
         &self,
         emitter: &mut crate::Emitter,
         block: &MachineBlock,
-        _mfunc: &MachineFunction<PrologueEpilogueInserted>,
+        _mfunc: &MachineFunction,
     ) -> Result<(), crate::error::Error> {
         emitter.mark_block(block.id);
         Ok(())
@@ -31,7 +30,7 @@ impl TargetEmitter for X86_64CodeEmitter {
         &self,
         emitter: &mut crate::Emitter,
         inst: &veloc_lir::InstRef<'_>,
-        mfunc: &MachineFunction<PrologueEpilogueInserted>,
+        mfunc: &MachineFunction,
     ) -> Result<(), crate::error::Error> {
         match &inst.opcode() {
             MachineOpcode::Invalid => {

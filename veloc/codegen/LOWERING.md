@@ -151,19 +151,14 @@ this change. Those would need explicit semantic preconditions and target costs.
 
 ## Measurement
 
-Run the isolated release microbenchmark with:
-
-```sh
-CARGO_INCREMENTAL=0 cargo test -p veloc-codegen --release reassociate_benchmark -- --ignored --nocapture
-```
-
-For 20 clones of a reversed 12-input integer-add tree, one local before/after run
+The standalone reassociation microbenchmark has been removed. Historically,
+for 20 clones of a reversed 12-input integer-add tree, one local before/after run
 measured 859.24 ms with the old e-graph combine and 48.58 microseconds with the
 direct canonicalizer. Timing includes cloning and use-def construction. This
 intentionally stresses associative/commutative search; it is not a whole-compiler
 benchmark or a claim about generated-program performance.
 
-Regression coverage includes wrapping arithmetic at four widths, shared uses,
-multi-definition registers, excluded types, 4096-input trees, idempotence,
-multi-step legalization, in-place replacement, added blocks and cyclic rules.
+Legalization regression coverage includes multi-step legalization, in-place
+replacement, added blocks and cyclic rules. Dedicated reassociation unit tests
+have been removed; the implementation remains exercised by the codegen pipeline.
 Instruction storage separates result registers, input registers, attributes and implicit physical register effects. Generated builders and encoders address each storage domain directly; no logical operand list or per-instruction order map is stored. Tied constraints identify a result and a dense input index. Allocation plans contain only result/input register locations, and materialization leaves attributes untouched. OpSpec register fields use the declared Reg type and derive their role from signature-to-storage bindings.

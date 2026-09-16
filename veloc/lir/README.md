@@ -2,14 +2,15 @@
 
 `veloc-lir` owns the machine-facing representation: instructions and operand
 schemas, registers and register banks, functions and blocks, stack-frame data,
-symbols, use-def chains and stage markers. It supports `no_std` with `alloc` and
+symbols and use-def chains. It supports `no_std` with `alloc` and
 has no dependency on codegen or any target backend.
 
 Codegen owns MIR-to-LIR translation, legalization, register-bank selection,
 instruction selection, register allocation, ABI handling and machine-code
-emission. Pipeline scheduling and transitions stay there; stage markers live
-here because they parameterize `MachineFunction` and its allocation APIs.
-Markers do not independently prove that a pass established its postconditions.
+emission. A single mutable `MachineFunction` is shared by these passes; it does
+not carry phase type parameters or mutable selected/allocated flags. Codegen
+orders passes explicitly and optionally verifies the required invariants at
+boundaries. Analysis validity is tracked separately through pass change sets.
 
 ## Machine SSA migration
 
@@ -19,7 +20,7 @@ value identities during allocation. Register roles, fixed locations, reuse
 constraints and access timing belong to instruction contracts, not value types.
 
 The first implemented boundary is allocation versus materialization. Codegen's
-`RegisterAllocator::allocate` consumes a `PostIselOptimized` function into an
+`RegisterAllocator::allocate` consumes a selected SSA function into an
 `Allocation` without changing its input instructions, layout or frame. Spill
 instructions are created as detached IDs in the same store. The result owns that
 exact input, exposes read-only per-instruction operand locations (`PReg`) and
@@ -52,15 +53,17 @@ are intentionally not SSA.
 
 `CodegenOptions::verify` runs independent checks at pipeline boundaries:
 unique virtual definitions, dominance/use order, reference-index consistency,
-and edge argument count/types. It defaults on in debug builds and can be
+and edge argument count/types. Selected-code checks additionally reject generic
+instructions; allocated-code checks reject virtual registers and block parameters
+and validate physical operand constraints. It defaults on in debug builds and can be
 disabled without changing construction APIs. Register allocation still uses
 whole ranges and does not yet support general multiple-output reuse or
 early-clobber constraints; these are allocator limitations, not SSA exceptions.
 
 ## Current representation
 
-Consumers import `veloc_lir::{MachineFunction, InstId, InstRef, ...}` and
-`veloc_lir::stages::RawLir`, or use the top-level `veloc::lir` facade. There is no
+Consumers import `veloc_lir::{MachineFunction, InstId, InstRef, ...}`,
+or use the top-level `veloc::lir` facade. There is no
 compatibility module at `veloc_codegen::lir`.
 
 Each function owns an `InstStore`. `results()` borrows a compact `Reg` slice in logical signature order;

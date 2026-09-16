@@ -3,49 +3,44 @@ use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{FixedUseConstraint, TargetOperandLowering};
 use core::marker::PhantomData;
 use veloc_lir::InstBuild;
-use veloc_lir::stages::{PreIselPrepared, SelectedLir};
 use veloc_lir::{InstId, MachineFunction, Reg, Writable};
 
-/// 在给定阶段应用 target/指令元数据定义的操作数约束。
-struct OperandConstraintPassImpl<'a, Stage> {
+/// Shared rewriting with separate generic and target instruction copy policies.
+struct OperandConstraintPassImpl<'a, Policy> {
     lowering: &'a dyn TargetOperandLowering,
-    _stage: PhantomData<Stage>,
+    _policy: PhantomData<Policy>,
 }
 
-trait ConstraintStageSpec {
-    type Stage;
-
+trait ConstraintPolicy {
     fn operand_constraints(
         lowering: &dyn TargetOperandLowering,
         inst: &veloc_lir::InstRef<'_>,
-        mfunc: &MachineFunction<Self::Stage>,
+        mfunc: &MachineFunction,
     ) -> crate::target::arch::OperandConstraintSet;
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &mut MachineFunction<Self::Stage>,
+        mfunc: &mut MachineFunction,
         dst: Reg,
         src: Reg,
     ) -> InstId;
 }
 
-struct PreSelectConstraintStage;
-struct PostSelectConstraintStage;
+struct PreSelectConstraints;
+struct PostSelectConstraints;
 
-impl ConstraintStageSpec for PreSelectConstraintStage {
-    type Stage = PreIselPrepared;
-
+impl ConstraintPolicy for PreSelectConstraints {
     fn operand_constraints(
         lowering: &dyn TargetOperandLowering,
         inst: &veloc_lir::InstRef<'_>,
-        mfunc: &MachineFunction<PreIselPrepared>,
+        mfunc: &MachineFunction,
     ) -> crate::target::arch::OperandConstraintSet {
         lowering.preselect_operand_constraints(inst, mfunc)
     }
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &mut MachineFunction<PreIselPrepared>,
+        mfunc: &mut MachineFunction,
         dst: Reg,
         src: Reg,
     ) -> InstId {
@@ -64,20 +59,18 @@ impl ConstraintStageSpec for PreSelectConstraintStage {
     }
 }
 
-impl ConstraintStageSpec for PostSelectConstraintStage {
-    type Stage = SelectedLir;
-
+impl ConstraintPolicy for PostSelectConstraints {
     fn operand_constraints(
         lowering: &dyn TargetOperandLowering,
         inst: &veloc_lir::InstRef<'_>,
-        mfunc: &MachineFunction<SelectedLir>,
+        mfunc: &MachineFunction,
     ) -> crate::target::arch::OperandConstraintSet {
         lowering.postselect_operand_constraints(inst, mfunc)
     }
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &mut MachineFunction<SelectedLir>,
+        mfunc: &mut MachineFunction,
         dst: Reg,
         src: Reg,
     ) -> InstId {
@@ -92,23 +85,23 @@ impl ConstraintStageSpec for PostSelectConstraintStage {
     }
 }
 
-impl<'a, Stage> OperandConstraintPassImpl<'a, Stage>
+impl<'a, Policy> OperandConstraintPassImpl<'a, Policy>
 where
-    Stage: ConstraintStageSpec,
+    Policy: ConstraintPolicy,
 {
     pub fn new(lowering: &'a dyn TargetOperandLowering) -> Self {
         Self {
             lowering,
-            _stage: PhantomData,
+            _policy: PhantomData,
         }
     }
 
-    pub fn run(&self, mfunc: &mut MachineFunction<Stage::Stage>) -> Result<()> {
+    pub fn run(&self, mfunc: &mut MachineFunction) -> Result<()> {
         let _ = self.apply(mfunc)?;
         Ok(())
     }
 
-    fn run_with_effect(&self, mfunc: &mut MachineFunction<Stage::Stage>) -> Result<PassEffect> {
+    fn run_with_effect(&self, mfunc: &mut MachineFunction) -> Result<PassEffect> {
         let changed = self.apply(mfunc)?;
         if changed == 0 {
             Ok(PassEffect::NONE)
@@ -119,7 +112,7 @@ where
         }
     }
 
-    fn apply(&self, mfunc: &mut MachineFunction<Stage::Stage>) -> Result<usize> {
+    fn apply(&self, mfunc: &mut MachineFunction) -> Result<usize> {
         let num_blocks = mfunc.num_blocks();
         let mut changed = 0usize;
         for block_idx in 0..num_blocks {
@@ -131,7 +124,7 @@ where
 
     fn rewrite_block(
         &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
         changed: &mut usize,
     ) -> Result<()> {
         if cursor.current_inst().is_invalid() {
@@ -141,7 +134,7 @@ where
         }
 
         let constraints =
-            Stage::operand_constraints(self.lowering, &cursor.current_inst(), cursor.mfunc());
+            Policy::operand_constraints(self.lowering, &cursor.current_inst(), cursor.mfunc());
         if constraints.is_empty() {
             cursor.keep_current();
             return Ok(());
@@ -159,7 +152,7 @@ where
 
     fn apply_constraints(
         &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
         constraints: &crate::target::arch::OperandConstraintSet,
     ) -> Result<bool> {
         let mut changed = false;
@@ -174,7 +167,7 @@ where
 
     fn apply_fixed_use_constraint(
         &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
         fixed: &FixedUseConstraint,
     ) -> Result<bool> {
         let inst = cursor.current_inst();
@@ -192,18 +185,18 @@ where
 
     fn emit_constraint_copy(
         &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_, Stage::Stage>,
+        cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
         dst: Reg,
         src: Reg,
     ) -> Result<()> {
-        let copy_inst = Stage::build_copy(self.lowering, cursor.mfunc_mut(), dst, src);
+        let copy_inst = Policy::build_copy(self.lowering, cursor.mfunc_mut(), dst, src);
         cursor.emit(copy_inst);
         Ok(())
     }
 }
 
 pub struct PreSelectOperandConstraintPass<'a> {
-    inner: OperandConstraintPassImpl<'a, PreSelectConstraintStage>,
+    inner: OperandConstraintPassImpl<'a, PreSelectConstraints>,
 }
 
 impl<'a> PreSelectOperandConstraintPass<'a> {
@@ -213,27 +206,27 @@ impl<'a> PreSelectOperandConstraintPass<'a> {
         }
     }
 
-    pub fn run(&self, mfunc: &mut MachineFunction<PreIselPrepared>) -> Result<()> {
+    pub fn run(&self, mfunc: &mut MachineFunction) -> Result<()> {
         self.inner.run(mfunc)
     }
 }
 
-impl<'a> FunctionPass<PreIselPrepared> for PreSelectOperandConstraintPass<'a> {
+impl<'a> FunctionPass for PreSelectOperandConstraintPass<'a> {
     fn name(&self) -> &'static str {
         "operand-constraints"
     }
 
     fn run(
         &self,
-        mfunc: &mut MachineFunction<PreIselPrepared>,
-        _ctx: &mut FunctionPassContext<'_, PreIselPrepared>,
+        mfunc: &mut MachineFunction,
+        _ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         self.inner.run_with_effect(mfunc)
     }
 }
 
 pub struct PostSelectOperandConstraintPass<'a> {
-    inner: OperandConstraintPassImpl<'a, PostSelectConstraintStage>,
+    inner: OperandConstraintPassImpl<'a, PostSelectConstraints>,
 }
 
 impl<'a> PostSelectOperandConstraintPass<'a> {
@@ -243,20 +236,20 @@ impl<'a> PostSelectOperandConstraintPass<'a> {
         }
     }
 
-    pub fn run(&self, mfunc: &mut MachineFunction<SelectedLir>) -> Result<()> {
+    pub fn run(&self, mfunc: &mut MachineFunction) -> Result<()> {
         self.inner.run(mfunc)
     }
 }
 
-impl<'a> FunctionPass<SelectedLir> for PostSelectOperandConstraintPass<'a> {
+impl<'a> FunctionPass for PostSelectOperandConstraintPass<'a> {
     fn name(&self) -> &'static str {
         "operand-constraints"
     }
 
     fn run(
         &self,
-        mfunc: &mut MachineFunction<SelectedLir>,
-        _ctx: &mut FunctionPassContext<'_, SelectedLir>,
+        mfunc: &mut MachineFunction,
+        _ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         self.inner.run_with_effect(mfunc)
     }
@@ -267,7 +260,6 @@ mod tests {
     use super::PreSelectOperandConstraintPass;
     use crate::target::arch::{FixedUseConstraint, OperandConstraintSet, TargetOperandLowering};
     use alloc::vec;
-    use veloc_lir::stages::PreIselPrepared;
     use veloc_lir::{InstBuild, InstRead};
     use veloc_lir::{InstId, MachineBlock, MachineFunction, Reg, Writable};
 
@@ -285,14 +277,14 @@ mod tests {
         fn preselect_operand_constraints(
             &self,
             _inst: &veloc_lir::InstRef<'_>,
-            _mfunc: &MachineFunction<PreIselPrepared>,
+            _mfunc: &MachineFunction,
         ) -> OperandConstraintSet {
             self.constraints.clone()
         }
 
         fn build_preselect_reg_copy(
             &self,
-            mfunc: &mut MachineFunction<PreIselPrepared>,
+            mfunc: &mut MachineFunction,
             dst: Reg,
             src: Reg,
         ) -> Result<InstId, crate::error::Error> {
@@ -302,8 +294,8 @@ mod tests {
 
     fn make_function_with_inst(
         build: impl FnOnce(veloc_lir::InstWriter<'_>) -> InstId,
-    ) -> (MachineFunction<PreIselPrepared>, veloc_lir::InstId) {
-        let mut mfunc = MachineFunction::<PreIselPrepared>::new("test".into());
+    ) -> (MachineFunction, veloc_lir::InstId) {
+        let mut mfunc = MachineFunction::new("test".into());
         mfunc
             .blocks
             .push(MachineBlock::new(veloc_mir::Block::from_u32(0)));

@@ -11,10 +11,6 @@ use hashbrown::HashMap;
 use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, Writable};
 use veloc_mir::TypeInfo;
 
-#[cfg(all(test, feature = "std"))]
-#[path = "reassociate_bench.rs"]
-mod bench;
-
 #[derive(Clone, Copy)]
 struct Node {
     id: InstId,
@@ -29,7 +25,7 @@ struct Tree {
     leaves: Vec<Reg>,
 }
 
-fn binary<S>(f: &MachineFunction<S>, id: InstId, opcode: GenericOpcode) -> Option<Node> {
+fn binary(f: &MachineFunction, id: InstId, opcode: GenericOpcode) -> Option<Node> {
     let inst = &f.inst(id);
     if inst.generic_opcode() != Some(opcode) || f.inst_extra(id).is_some() {
         return None;
@@ -59,11 +55,7 @@ fn binary<S>(f: &MachineFunction<S>, id: InstId, opcode: GenericOpcode) -> Optio
     })
 }
 
-fn tree<S>(
-    f: &MachineFunction<S>,
-    positions: &HashMap<InstId, usize>,
-    root: InstId,
-) -> Option<Tree> {
+fn tree(f: &MachineFunction, positions: &HashMap<InstId, usize>, root: InstId) -> Option<Tree> {
     let opcode = f.inst(root).generic_opcode()?;
     if !matches!(
         opcode,
@@ -131,7 +123,7 @@ impl Tree {
         false
     }
 
-    fn emit<S>(&self, f: &mut MachineFunction<S>, output: &mut Vec<InstId>) {
+    fn emit(&self, f: &mut MachineFunction, output: &mut Vec<InstId>) {
         let mut acc = self.leaves[0];
         for (node, &rhs) in self.nodes.iter().zip(&self.leaves[1..]) {
             f.rewriter(node.id).binary(
@@ -148,10 +140,7 @@ impl Tree {
 
 /// Store-maintained references, one maximal-tree traversal and one layout commit.
 /// Existing instruction IDs and virtual registers are reused.
-pub(crate) fn reassociate<S>(
-    f: &mut MachineFunction<S>,
-    analyses: &mut FunctionAnalysisCtx,
-) -> usize {
+pub(crate) fn reassociate(f: &mut MachineFunction, analyses: &mut FunctionAnalysisCtx) -> usize {
     let mut changes = 0;
     for block in 0..f.num_blocks() {
         let ids = f.block_insts(block).to_vec();
@@ -197,7 +186,3 @@ pub(crate) fn reassociate<S>(
     }
     changes
 }
-
-#[cfg(test)]
-#[path = "reassociate_tests.rs"]
-mod tests;

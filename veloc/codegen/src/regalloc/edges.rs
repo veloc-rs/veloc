@@ -3,7 +3,6 @@ use super::linear_scan::RegisterAllocator;
 use crate::{Error, Result};
 use alloc::format;
 use alloc::vec::Vec;
-use veloc_lir::stages::PostIselOptimized;
 use veloc_lir::{InstExtra, InstField, InstId, MachineFunction, Reg, StackFrame, StackSlot};
 use veloc_mir::Type;
 
@@ -49,7 +48,7 @@ impl RegisterAllocator<'_> {
 
     pub(super) fn plan_edges(
         &self,
-        f: &mut MachineFunction<PostIselOptimized>,
+        f: &mut MachineFunction,
         frame: &mut StackFrame,
     ) -> Result<Vec<EdgeAllocation>> {
         let mut edges = Vec::new();
@@ -149,7 +148,7 @@ impl RegisterAllocator<'_> {
 
     fn move_location(
         &self,
-        f: &mut MachineFunction<PostIselOptimized>,
+        f: &mut MachineFunction,
         frame: &StackFrame,
         out: &mut Vec<InstId>,
         dst: Location,

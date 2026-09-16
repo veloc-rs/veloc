@@ -18,7 +18,7 @@ impl TargetLegalizer for X86_64Legalizer {
     fn legalize_action(
         &self,
         inst: &veloc_lir::InstRef<'_>,
-        mfunc: &MachineFunction<LegalizedLir>,
+        mfunc: &MachineFunction,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
         let action = crate::legalize_matcher!(inst, mfunc, {
             Arg => {
@@ -187,7 +187,7 @@ impl TargetLegalizer for X86_64Legalizer {
     fn legalize_instruction(
         &self,
         inst_id: veloc_lir::InstId,
-        mfunc: &mut veloc_lir::MachineFunction<LegalizedLir>,
+        mfunc: &mut veloc_lir::MachineFunction,
     ) -> Result<LegalizeResult, crate::error::Error> {
         let mut output = Vec::new();
         let opcode = mfunc.inst(inst_id).generic_opcode();

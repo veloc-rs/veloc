@@ -3,7 +3,7 @@ use super::*;
 use veloc_lir::InstBuild;
 
 fn unary(
-    mfunc: &mut MachineFunction<LegalizedLir>,
+    mfunc: &mut MachineFunction,
     out: &mut Vec<InstId>,
     opcode: GenericOpcode,
     ty: Type,
@@ -21,7 +21,7 @@ fn unary(
 impl X86_64Lowering {
     pub(super) fn unsigned_conversion(
         &self,
-        mfunc: &mut MachineFunction<LegalizedLir>,
+        mfunc: &mut MachineFunction,
         out: &mut Vec<InstId>,
         opcode: GenericOpcode,
         dst: Reg,

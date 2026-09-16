@@ -6,20 +6,15 @@ use crate::error::{Error, Result};
 use crate::object::ObjectFileBuilder;
 use crate::passes::{
     FrameFinalizePass, InstructionSelectionPass, LegalizePass, PostIselOptimizePass, PreIselPass,
-    RegisterAllocationPass,
 };
 use crate::pipeline::{
-    CompiledFunction, CompiledModule, FunctionAnalysisCtx, FunctionPassContext, ModuleAnalysisCtx,
-    ModulePassContext, ModulePassPipeline, StagePassPipeline, StageTransformPass,
+    CompiledFunction, CompiledModule, FunctionAnalysisCtx, FunctionPass, FunctionPassContext,
+    FunctionPassPipeline, ModuleAnalysisCtx, ModulePassContext, ModulePassPipeline,
 };
 use crate::target::arch::TargetMachine;
 use crate::translate::IRTranslator;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use veloc_lir::stages::{
-    LegalizedLir, PostIselOptimized, PreIselPrepared, PrologueEpilogueInserted, RawLir,
-    RegAllocated, SelectedLir,
-};
 use veloc_lir::{MachineFunction, MachineModule};
 use veloc_mir::{FuncId, Function, Module};
 
@@ -51,7 +46,8 @@ pub struct CodegenStats {
 /// 代码生成选项
 #[derive(Debug, Clone)]
 pub struct CodegenOptions {
-    /// Validate machine SSA between stages (enabled by default in debug builds).
+    /// Validate SSA, selected and allocated invariants at pipeline boundaries.
+    /// Enabled by default in debug builds; construction itself remains unchecked.
     pub verify: bool,
     /// 是否启用优化
     pub optimize: bool,
@@ -94,7 +90,7 @@ pub struct CodegenPipeline<'a> {
 
 impl<'a> CodegenPipeline<'a> {
     #[cfg(feature = "std")]
-    fn maybe_dump_mfunc<S>(&self, stage: &str, mfunc: &MachineFunction<S>) {
+    fn maybe_dump_mfunc(&self, stage: &str, mfunc: &MachineFunction) {
         use std::env;
 
         let filter = if self.options.dump_lir {
@@ -115,7 +111,7 @@ impl<'a> CodegenPipeline<'a> {
     }
 
     #[cfg(not(feature = "std"))]
-    fn maybe_dump_mfunc<S>(&self, _stage: &str, _mfunc: &MachineFunction<S>) {}
+    fn maybe_dump_mfunc(&self, _stage: &str, _mfunc: &MachineFunction) {}
 
     /// 创建新的代码生成驱动。
     pub fn new(target: &'a dyn TargetMachine) -> Self {
@@ -250,23 +246,16 @@ impl<'a> CodegenPipeline<'a> {
 
     fn run_function_pipeline(
         &self,
-        mfunc: MachineFunction<RawLir>,
+        mut mfunc: MachineFunction,
         func_sig: &veloc_mir::Signature,
         stats: &mut CodegenStats,
         function_analyses: &mut FunctionAnalysisCtx,
         module_analyses: &mut ModuleAnalysisCtx,
-    ) -> Result<MachineFunction<PrologueEpilogueInserted>> {
-        if self.options.verify {
-            crate::pipeline::ssa::verify(&mfunc, self.target)?;
-        }
-        let legalizer = self.target.target_legalizer();
-        let selector = self.target.target_selector();
-        let operand_lowering = self.target.target_operand_lowering();
-        let target_post_isel = self.target.target_post_isel();
-        let frame_lowering = self.target.target_frame_lowering();
+    ) -> Result<MachineFunction> {
+        use crate::pipeline::ssa::{verify, verify_allocated, verify_selected};
+        self.verify_function("translated", &mfunc, verify)?;
         let pass_config = self.target.target_pass_config();
-
-        let ctx = FunctionPassContext::<RawLir>::new(
+        let mut ctx = FunctionPassContext::new(
             self.target,
             func_sig,
             &self.options,
@@ -274,58 +263,77 @@ impl<'a> CodegenPipeline<'a> {
             function_analyses,
             module_analyses,
         );
-        let mfunc = mfunc.into_stage::<LegalizedLir>();
 
-        let mut ctx = ctx.into_stage::<LegalizedLir>();
-        let mfunc = self.apply_stage_transform(
-            &LegalizePass::new(legalizer, pass_config),
-            mfunc,
-            &mut ctx,
-        )?;
-        let mut ctx = ctx.into_stage::<PreIselPrepared>();
-        let mfunc = self.apply_stage_transform(
-            &PreIselPass::new(operand_lowering, pass_config),
-            mfunc,
-            &mut ctx,
-        )?;
-
-        let mfunc =
-            self.apply_stage_transform(&InstructionSelectionPass::new(selector), mfunc, &mut ctx)?;
-        let mut post_isel_pipeline = StagePassPipeline::<SelectedLir>::new();
-        for pass in pass_config.post_isel_passes() {
-            post_isel_pipeline.add_boxed_pass(pass);
-        }
-        let mut ctx = ctx.into_stage::<SelectedLir>();
-        let mut mfunc = mfunc;
-        self.run_stage_pipeline(
-            "post-isel-target",
-            &post_isel_pipeline,
+        self.run_pass(
+            &LegalizePass::new(self.target.target_legalizer(), pass_config),
             &mut mfunc,
             &mut ctx,
         )?;
-
-        let mfunc = self.apply_stage_transform(
-            &PostIselOptimizePass::new(target_post_isel, operand_lowering),
-            mfunc,
+        self.verify_function("legalized", &mfunc, verify)?;
+        self.run_pass(
+            &PreIselPass::new(self.target.target_operand_lowering(), pass_config),
+            &mut mfunc,
             &mut ctx,
         )?;
-        let mut ctx = ctx.into_stage::<PostIselOptimized>();
-        let mut mfunc = mfunc;
-        let mut scheduling = StagePassPipeline::<PostIselOptimized>::new();
-        scheduling.add_pass(crate::passes::schedule::SchedulePass);
-        self.run_stage_pipeline("scheduled", &scheduling, &mut mfunc, &mut ctx)?;
-        let mfunc =
-            self.apply_stage_transform(&RegisterAllocationPass::new(self.target), mfunc, &mut ctx)?;
+        self.verify_function("pre-isel", &mfunc, verify)?;
+        self.run_pass(
+            &InstructionSelectionPass::new(self.target.target_selector()),
+            &mut mfunc,
+            &mut ctx,
+        )?;
+        self.verify_function("selected", &mfunc, verify_selected)?;
 
-        let mut post_regalloc = StagePassPipeline::<RegAllocated>::new();
+        let mut post_isel = FunctionPassPipeline::new();
+        for pass in pass_config.post_isel_passes() {
+            post_isel.add_boxed_pass(pass);
+        }
+        post_isel.run(&mut mfunc, &mut ctx)?;
+        self.verify_function("post-isel-target", &mfunc, verify_selected)?;
+        self.run_pass(
+            &PostIselOptimizePass::new(
+                self.target.target_post_isel(),
+                self.target.target_operand_lowering(),
+            ),
+            &mut mfunc,
+            &mut ctx,
+        )?;
+        self.verify_function("post-isel-optimized", &mfunc, verify_selected)?;
+        self.run_pass(&crate::passes::schedule::SchedulePass, &mut mfunc, &mut ctx)?;
+        self.verify_function("scheduled", &mfunc, verify_selected)?;
+
+        // Allocation owns its exact input until its plan is materialized.
+        let allocation = crate::regalloc::RegisterAllocator::new(self.target).allocate(
+            mfunc,
+            func_sig.call_conv,
+            ctx.function_analyses,
+        )?;
+        let mut mfunc = allocation.materialize();
+        ctx.stats.final_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
+        ctx.stats.stack_slot_count = mfunc.stack_frame.slots.len();
+        use crate::pipeline::ChangeSet;
+        ctx.function_analyses.apply(
+            ChangeSet::REGALLOC
+                | ChangeSet::PHYSICAL_REGS
+                | ChangeSet::INST_OPERANDS
+                | ChangeSet::INST_SEMANTICS
+                | ChangeSet::CFG
+                | ChangeSet::STACK_FRAME,
+        );
+        self.verify_function("regalloc", &mfunc, verify_allocated)?;
+
+        let mut post_regalloc = FunctionPassPipeline::new();
         for pass in pass_config.post_regalloc_passes() {
             post_regalloc.add_boxed_pass(pass);
         }
-        let mut ctx = ctx.into_stage::<RegAllocated>();
-        let mut mfunc = mfunc;
-        self.run_stage_pipeline("post-regalloc", &post_regalloc, &mut mfunc, &mut ctx)?;
-
-        self.apply_stage_transform(&FrameFinalizePass::new(frame_lowering), mfunc, &mut ctx)
+        post_regalloc.run(&mut mfunc, &mut ctx)?;
+        self.verify_function("post-regalloc", &mfunc, verify_allocated)?;
+        self.run_pass(
+            &FrameFinalizePass::new(self.target.target_frame_lowering()),
+            &mut mfunc,
+            &mut ctx,
+        )?;
+        self.verify_function("frame-finalized", &mfunc, verify_allocated)?;
+        Ok(mfunc)
     }
 
     fn run_module_pre_emit_passes(
@@ -372,44 +380,36 @@ impl<'a> CodegenPipeline<'a> {
         Ok(())
     }
 
-    fn apply_stage_transform<In, Out, P>(
+    fn run_pass(
         &self,
-        pass: &P,
-        mfunc: MachineFunction<In>,
-        ctx: &mut FunctionPassContext<'_, In>,
-    ) -> Result<MachineFunction<Out>>
-    where
-        P: StageTransformPass<In, Out>,
-    {
-        let stage_name = pass.name();
-        let (mfunc, effect) = pass.run(mfunc, ctx)?;
+        pass: &dyn FunctionPass,
+        mfunc: &mut MachineFunction,
+        ctx: &mut FunctionPassContext<'_>,
+    ) -> Result<()> {
+        let effect = pass
+            .run(mfunc, ctx)
+            .map_err(|e| Error::codegen(alloc::format!("{}: {e}", pass.name())))?;
         ctx.function_analyses.apply(effect.change_set);
-        if self.options.verify {
-            crate::pipeline::ssa::verify(&mfunc, self.target)
-                .map_err(|e| Error::codegen(alloc::format!("{stage_name}: {e}")))?;
-        }
-        self.maybe_dump_mfunc(stage_name, &mfunc);
-        Ok(mfunc)
+        Ok(())
     }
 
-    fn run_stage_pipeline<S>(
+    fn verify_function(
         &self,
-        stage_name: &str,
-        pipeline: &StagePassPipeline<S>,
-        mfunc: &mut MachineFunction<S>,
-        ctx: &mut FunctionPassContext<'_, S>,
+        name: &str,
+        mfunc: &MachineFunction,
+        verify: fn(&MachineFunction, &dyn TargetMachine) -> Result<()>,
     ) -> Result<()> {
-        let _ = pipeline.run(mfunc, ctx)?;
         if self.options.verify {
-            crate::pipeline::ssa::verify(mfunc, self.target)?;
+            verify(mfunc, self.target)
+                .map_err(|e| Error::codegen(alloc::format!("{name}: {e}")))?;
         }
-        self.maybe_dump_mfunc(stage_name, mfunc);
+        self.maybe_dump_mfunc(name, mfunc);
         Ok(())
     }
 
     fn emit_function_with_relocations(
         &self,
-        mfunc: &MachineFunction<PrologueEpilogueInserted>,
+        mfunc: &MachineFunction,
         stats: &mut CodegenStats,
     ) -> Result<crate::EmittedCode> {
         let emitter = self.target.target_emitter();

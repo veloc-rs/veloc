@@ -1,5 +1,4 @@
 //! Construct, decode, validate, and interpret the standalone LIR model.
-use veloc_lir::stages::{LegalizedLir, RawLir};
 use veloc_lir::{
     ControlFlow, GenericOpcode, InstField, MachineFunction, MachineModule, Reg, RegisterBank,
     SymbolTable, Type, TypeError, Writable,
@@ -10,7 +9,7 @@ use veloc_mir::Linkage;
 #[test]
 fn references_follow_all_store_edits_and_edge_arguments() {
     use veloc_lir::{BranchCondInfo, InstExtra, RefLocation, RefRole, VReg};
-    let mut f = MachineFunction::<RawLir>::new("references".into());
+    let mut f = MachineFunction::new("references".into());
     let a = f.alloc_vreg(Type::I64);
     let b = f.alloc_vreg(Type::I64);
     let dst = f.alloc_vreg(Type::I64);
@@ -138,7 +137,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
 
 #[test]
 fn standalone_module_supports_instruction_and_stage_apis() {
-    let mut function = MachineFunction::<RawLir>::new("example".into());
+    let mut function = MachineFunction::new("example".into());
     let block = function.create_synthetic_block();
     let reg = function.alloc_vreg(Type::I64);
     let inst = function.writer().constant(Writable(reg), 42);
@@ -152,7 +151,7 @@ fn standalone_module_supports_instruction_and_stage_apis() {
     let id = module.add_function(function);
     assert_eq!(module.find_function_by_name("example"), Some(id));
     assert_eq!(module.functions[id].block_insts(0), &[inst]);
-    let mut function = module.functions[id].clone().into_stage::<LegalizedLir>();
+    let mut function = module.functions[id].clone();
     let banked = function.alloc_vreg_in_bank(Type::I64, RegisterBank::GPR);
     assert!(banked.is_vreg());
 }
@@ -160,7 +159,7 @@ fn standalone_module_supports_instruction_and_stage_apis() {
 #[test]
 fn operand_edits_preserve_payload_but_replacement_discards_it() {
     use veloc_lir::{BranchInfo, InstExtra};
-    let mut function = MachineFunction::<RawLir>::new("edit".into());
+    let mut function = MachineFunction::new("edit".into());
     let block = function.create_synthetic_block();
     let id = function.writer().br(block);
     let extra = InstExtra::Branch(BranchInfo {
@@ -193,7 +192,7 @@ fn symbol_interning_does_not_require_a_source_module() {
 
 #[test]
 fn validation_errors_are_owned_by_lir() {
-    let mut function = MachineFunction::<RawLir>::new("test".into());
+    let mut function = MachineFunction::new("test".into());
     let inst = function
         .writer()
         .constant(Writable(veloc_lir::Reg::new_vreg(0)), 42);
@@ -232,7 +231,7 @@ fn offline_semantics_use_the_same_emitter_for_operand_storage() {
 
 #[test]
 fn logical_type_validation_is_separate_from_construction() {
-    let mut function = MachineFunction::<RawLir>::new("test".into());
+    let mut function = MachineFunction::new("test".into());
     assert!(
         GenericOpcode::Add
             .validate_types(&[Type::I32, Type::I32], &[Type::I32])
@@ -279,7 +278,7 @@ fn logical_type_validation_is_separate_from_construction() {
 
 #[test]
 fn generated_builders_and_views_agree() {
-    let mut function = MachineFunction::<RawLir>::new("test".into());
+    let mut function = MachineFunction::new("test".into());
     let dst = Writable(Reg::new_vreg(0));
     let lhs = Reg::new_vreg(1);
     let rhs = Reg::new_vreg(2);
@@ -301,7 +300,7 @@ fn generated_builders_and_views_agree() {
 
 #[test]
 fn carry_input_is_required_exactly_for_carry_instructions() {
-    let mut function = MachineFunction::<RawLir>::new("test".into());
+    let mut function = MachineFunction::new("test".into());
     let dst = Writable(Reg::new_vreg(0));
     let flag = Writable(Reg::new_vreg(1));
     let lhs = Reg::new_vreg(2);
@@ -342,7 +341,7 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
 
 #[test]
 fn explicit_tied_mapping_preserves_input_and_output_register_identity() {
-    let mut function = MachineFunction::<RawLir>::new("test".into());
+    let mut function = MachineFunction::new("test".into());
     let dst = Writable(Reg::new_vreg(0));
     let updated = Writable(Reg::new_vreg(1));
     let base = Reg::new_vreg(2);
@@ -359,7 +358,7 @@ fn explicit_tied_mapping_preserves_input_and_output_register_identity() {
 
 #[test]
 fn variable_views_preserve_call_and_return_operands() {
-    let mut function = MachineFunction::<RawLir>::new("test".into());
+    let mut function = MachineFunction::new("test".into());
     use veloc_lir::{InstView, SymbolId};
     let results: Vec<_> = (0..8).map(Reg::new_vreg).collect();
     let args: Vec<_> = (8..24).map(Reg::new_vreg).collect();
@@ -399,7 +398,7 @@ fn variable_views_preserve_call_and_return_operands() {
 
 #[test]
 fn optional_validation_is_separate_from_direct_views() {
-    let mut function = MachineFunction::<RawLir>::new("test".into());
+    let mut function = MachineFunction::new("test".into());
     use veloc_lir::{MachineOpcode, SymbolId};
     use veloc_mir::{FloatCC, IntCC};
     let dst = Writable(Reg::new_vreg(0));

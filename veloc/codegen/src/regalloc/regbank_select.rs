@@ -53,7 +53,7 @@ impl RegisterBankSelector {
         Self
     }
 
-    pub fn select<S>(&self, mfunc: &mut MachineFunction<S>, tm: &dyn TargetMachine) -> bool {
+    pub fn select(&self, mfunc: &mut MachineFunction, tm: &dyn TargetMachine) -> bool {
         let rb_select = tm.target_regbank_select();
         match rb_select.regbank_select_mode() {
             RegisterBankSelectMode::Disabled => false,
@@ -62,9 +62,9 @@ impl RegisterBankSelector {
         }
     }
 
-    fn assign_derived_banks<S>(
+    fn assign_derived_banks(
         &self,
-        mfunc: &mut MachineFunction<S>,
+        mfunc: &mut MachineFunction,
         rb_select: &dyn TargetRegBankSelect,
     ) -> bool {
         let mut changed = false;
@@ -79,9 +79,9 @@ impl RegisterBankSelector {
         changed
     }
 
-    fn assign_hint_banks<S>(
+    fn assign_hint_banks(
         &self,
-        mfunc: &mut MachineFunction<S>,
+        mfunc: &mut MachineFunction,
         rb_select: &dyn TargetRegBankSelect,
     ) -> bool {
         let mut updates = Vec::new();
@@ -158,7 +158,7 @@ impl RegisterBankSelector {
     }
 }
 
-fn assign_bank<S>(mfunc: &mut MachineFunction<S>, reg: veloc_lir::Reg, bank: RegisterBank) -> bool {
+fn assign_bank(mfunc: &mut MachineFunction, reg: veloc_lir::Reg, bank: RegisterBank) -> bool {
     let data = mfunc.vreg_data_mut(reg);
     if data.bank == Some(bank) {
         return false;

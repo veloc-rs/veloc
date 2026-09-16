@@ -7,13 +7,9 @@
 
 use crate::target::arch::TargetInstructionSelector;
 use alloc::vec::Vec;
-use veloc_lir::stages::PreIselPrepared;
 use veloc_lir::{BlockRewriteCursor, InstId, MachineFunction};
 
-fn format_select_failure_inst<S>(
-    mfunc: &MachineFunction<S>,
-    inst_id: InstId,
-) -> alloc::string::String {
+fn format_select_failure_inst(mfunc: &MachineFunction, inst_id: InstId) -> alloc::string::String {
     use alloc::format;
 
     let inst = &mfunc.inst(inst_id);
@@ -53,13 +49,13 @@ pub enum SelectResult {
 }
 
 /// 指令选择上下文
-pub struct SelectionContext<'a, S> {
-    pub mfunc: &'a mut MachineFunction<S>,
+pub struct SelectionContext<'a> {
+    pub mfunc: &'a mut MachineFunction,
     pub inst_id: InstId,
     pub selected: &'a mut Vec<InstId>,
 }
 
-impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
+impl crate::target::arch::LoweringContext for SelectionContext<'_> {
     fn alloc_tmp(&mut self, like: veloc_lir::Reg) -> veloc_lir::Reg {
         let data = self.mfunc.vreg_data(like).clone();
         veloc_lir::Reg::new_vreg(self.mfunc.vregs.push(data).as_u32())
@@ -97,8 +93,8 @@ impl<S> crate::target::arch::LoweringContext for SelectionContext<'_, S> {
     }
 }
 
-fn apply_select_result<'a, S>(
-    cursor: &mut BlockRewriteCursor<'a, S>,
+fn apply_select_result<'a>(
+    cursor: &mut BlockRewriteCursor<'a>,
     selected: &mut Vec<InstId>,
     result: SelectResult,
 ) -> Result<(), crate::error::Error> {
@@ -148,10 +144,7 @@ impl<'a> InstructionSelector<'a> {
     /// 对所有基本块执行指令选择
     ///
     /// 与 `select` 相同，提供更清晰的命名。
-    pub fn select(
-        &self,
-        mfunc: &mut MachineFunction<PreIselPrepared>,
-    ) -> Result<(), crate::error::Error> {
+    pub fn select(&self, mfunc: &mut MachineFunction) -> Result<(), crate::error::Error> {
         let num_blocks = mfunc.blocks.len();
         // 复用的临时缓冲区，避免每条指令分配
         let mut selected: Vec<InstId> = Vec::with_capacity(4);
@@ -193,7 +186,6 @@ impl<'a> InstructionSelector<'a> {
             })?;
         }
 
-        mfunc.is_selected = true;
         Ok(())
     }
 }

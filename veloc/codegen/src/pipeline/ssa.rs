@@ -9,17 +9,51 @@ use veloc_lir::InstRead;
 use veloc_lir::{ControlFlow, InstExtra, InstField, MachineFunction, Reg};
 use veloc_mir::Block;
 
-pub fn verify<S>(f: &MachineFunction<S>, target: &dyn TargetMachine) -> Result<()> {
-    let fail = |message| Error::codegen(format!("machine SSA in {}: {message}", f.name));
-    f.check_refs().map_err(|e| fail(e.into()))?;
-    if f.is_regallocated {
-        for block in &f.blocks {
-            for &id in &block.insts {
-                target.validate_instruction(&f.inst(id), true)?;
+/// Selected code must still be SSA and contain no generic instructions.
+pub fn verify_selected(f: &MachineFunction, target: &dyn TargetMachine) -> Result<()> {
+    verify(f, target)?;
+    for block in &f.blocks {
+        for &id in &block.insts {
+            if !matches!(f.inst(id).opcode(), veloc_lir::MachineOpcode::Target(_)) {
+                return Err(Error::codegen(format!("unselected instruction {id:?}")));
             }
         }
-        return Ok(());
     }
+    Ok(())
+}
+
+/// Allocation removes SSA block parameters and all executable virtual registers.
+/// This check is explicit: no mutable phase flag can cause it to be skipped.
+pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetMachine) -> Result<()> {
+    f.check_refs().map_err(|e| Error::codegen(e))?;
+    if !f.params.is_empty() {
+        return Err(Error::codegen(
+            "function parameters remain after allocation",
+        ));
+    }
+    for block in &f.blocks {
+        if !block.params.is_empty() {
+            return Err(Error::codegen("block parameters remain after allocation"));
+        }
+        for &id in &block.insts {
+            let inst = f.inst(id);
+            if !matches!(inst.opcode(), veloc_lir::MachineOpcode::Target(_)) {
+                return Err(Error::codegen(format!("unselected instruction {id:?}")));
+            }
+            if inst.defs().chain(inst.uses()).any(|reg| reg.is_vreg()) {
+                return Err(Error::codegen(format!(
+                    "virtual register remains in {id:?}"
+                )));
+            }
+            target.validate_instruction(&inst, true)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn verify(f: &MachineFunction, target: &dyn TargetMachine) -> Result<()> {
+    let fail = |message| Error::codegen(format!("machine SSA in {}: {message}", f.name));
+    f.check_refs().map_err(|e| fail(e.into()))?;
     let mut defs = HashMap::new();
     let mut blocks = HashSet::new();
     let mut instructions = HashSet::new();
@@ -184,13 +218,58 @@ pub fn verify<S>(f: &MachineFunction<S>, target: &dyn TargetMachine) -> Result<(
 mod tests {
     use super::*;
     use alloc::string::ToString;
-    use veloc_lir::{BranchCondInfo, BranchInfo, Type, Writable, stages::RawLir};
+    use veloc_lir::{BranchCondInfo, BranchInfo, Type, Writable};
+
+    #[test]
+    fn checks_representation_invariants_without_phase_tags() {
+        use crate::target::x86_64::isle::{REG_RAX, TargetInst};
+        use veloc_lir::{InstField, MachineOpcode};
+        let target =
+            crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default());
+        let mut f = MachineFunction::new("boundaries".into());
+        f.create_synthetic_block();
+        let value = f.alloc_vreg(Type::I64);
+        let constant = f.writer().constant(Writable(value), 42);
+        f.append_inst_id_to_block(0, constant);
+        let ret = f.writer().ret(&[value]);
+        f.append_inst_id_to_block(0, ret);
+        verify(&f, &target).unwrap();
+        assert!(verify_selected(&f, &target).is_err());
+
+        f.rewriter(constant).write(
+            MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
+            &[value],
+            &[],
+            &[InstField::Imm(42)],
+        );
+        f.rewriter(ret).write(
+            MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
+            &[],
+            &[],
+            &[],
+        );
+        verify_selected(&f, &target).unwrap();
+        assert!(verify_allocated(&f, &target).is_err());
+
+        f.rewriter(constant).write(
+            MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
+            &[REG_RAX],
+            &[],
+            &[InstField::Imm(42)],
+        );
+        verify_allocated(&f, &target).unwrap();
+        f.params.push(value);
+        assert!(verify_allocated(&f, &target).is_err());
+        f.params.clear();
+        f.blocks[0].params.push(value);
+        assert!(verify_allocated(&f, &target).is_err());
+    }
 
     #[test]
     fn verifies_definitions_dominance_and_edge_contracts() {
         let target =
             crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default());
-        let mut f = MachineFunction::<RawLir>::new("diamond".into());
+        let mut f = MachineFunction::new("diamond".into());
         let blocks: Vec<_> = (0..4).map(|_| f.create_synthetic_block()).collect();
         let x = f.alloc_vreg(Type::I64);
         let y = f.alloc_vreg(Type::I64);

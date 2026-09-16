@@ -1,7 +1,6 @@
 use crate::error::Result;
-use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
+use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{CallConv, TargetFrameLowering};
-use veloc_lir::stages::{PrologueEpilogueInserted, RegAllocated};
 
 pub struct FrameFinalizePass<'a> {
     frame_lowering: &'a dyn TargetFrameLowering,
@@ -13,25 +12,21 @@ impl<'a> FrameFinalizePass<'a> {
     }
 }
 
-impl<'a> StageTransformPass<RegAllocated, PrologueEpilogueInserted> for FrameFinalizePass<'a> {
+impl<'a> FunctionPass for FrameFinalizePass<'a> {
     fn name(&self) -> &'static str {
         "frame-finalized"
     }
 
     fn run(
         &self,
-        mut mfunc: veloc_lir::MachineFunction<RegAllocated>,
-        ctx: &mut FunctionPassContext<'_, RegAllocated>,
-    ) -> Result<(
-        veloc_lir::MachineFunction<PrologueEpilogueInserted>,
-        PassEffect,
-    )> {
+        mfunc: &mut veloc_lir::MachineFunction,
+        ctx: &mut FunctionPassContext<'_>,
+    ) -> Result<PassEffect> {
         self.frame_lowering
-            .finalize_stack_frame(&mut mfunc, CallConv::from(ctx.func_sig.call_conv));
-        self.frame_lowering.insert_prologue_epilogue(&mut mfunc);
-        Ok((
-            mfunc.into_stage(),
-            PassEffect::new(ChangeSet::BLOCK_LAYOUT | ChangeSet::STACK_FRAME),
+            .finalize_stack_frame(mfunc, CallConv::from(ctx.func_sig.call_conv));
+        self.frame_lowering.insert_prologue_epilogue(mfunc);
+        Ok(PassEffect::new(
+            ChangeSet::BLOCK_LAYOUT | ChangeSet::STACK_FRAME,
         ))
     }
 }

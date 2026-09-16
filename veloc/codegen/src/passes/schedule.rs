@@ -9,7 +9,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashSet;
-use veloc_lir::{InstId, MachineFunction, Reg, stages::PostIselOptimized};
+use veloc_lir::{InstId, MachineFunction, Reg};
 
 #[cfg(test)]
 #[path = "schedule_tests.rs"]
@@ -17,15 +17,15 @@ mod tests;
 
 pub struct SchedulePass;
 
-impl FunctionPass<PostIselOptimized> for SchedulePass {
+impl FunctionPass for SchedulePass {
     fn name(&self) -> &'static str {
         "schedule"
     }
 
     fn run(
         &self,
-        f: &mut MachineFunction<PostIselOptimized>,
-        ctx: &mut FunctionPassContext<'_, PostIselOptimized>,
+        f: &mut MachineFunction,
+        ctx: &mut FunctionPassContext<'_>,
     ) -> crate::Result<PassEffect> {
         if !ctx.options.optimize {
             return Ok(PassEffect::NONE);
@@ -40,8 +40,8 @@ impl FunctionPass<PostIselOptimized> for SchedulePass {
     }
 }
 
-pub(crate) fn schedule<S>(
-    f: &mut MachineFunction<S>,
+pub(crate) fn schedule(
+    f: &mut MachineFunction,
     target: &dyn TargetMachine,
     analyses: &mut FunctionAnalysisCtx,
 ) -> usize {
@@ -97,7 +97,7 @@ pub(crate) fn schedule<S>(
     changed
 }
 
-fn before<S>(f: &MachineFunction<S>, id: InstId, live: &mut HashSet<Reg>) {
+fn before(f: &MachineFunction, id: InstId, live: &mut HashSet<Reg>) {
     for reg in f.inst(id).defs() {
         live.remove(&reg);
     }
@@ -114,8 +114,8 @@ fn bank(class: RegClass) -> usize {
     }
 }
 
-fn region<S>(
-    f: &MachineFunction<S>,
+fn region(
+    f: &MachineFunction,
     ids: &[InstId],
     info: &[ScheduleInfo],
     target: &dyn TargetMachine,

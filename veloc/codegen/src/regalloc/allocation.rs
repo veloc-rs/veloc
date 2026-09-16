@@ -2,7 +2,6 @@
 use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
-use veloc_lir::stages::{PostIselOptimized, RegAllocated};
 use veloc_lir::{InstField, InstId, MachineFunction, PReg, StackFrame};
 
 /// Physical locations and insertions for one instruction. Locations are indexed
@@ -36,14 +35,14 @@ impl InstAllocation {
 /// Owns the exact input of the allocation plan. It cannot be edited or replaced
 /// behind the plan's back. Materialization consumes both without cloning the IR.
 pub struct Allocation {
-    pub(crate) source: MachineFunction<PostIselOptimized>,
+    pub(crate) source: MachineFunction,
     pub(crate) instructions: SecondaryMap<InstId, InstAllocation>,
     pub(crate) frame: StackFrame,
     pub(crate) edges: Vec<super::edges::EdgeAllocation>,
 }
 
 impl Allocation {
-    pub fn source(&self) -> &MachineFunction<PostIselOptimized> {
+    pub fn source(&self) -> &MachineFunction {
         &self.source
     }
 
@@ -61,7 +60,7 @@ impl Allocation {
 
     /// Physical IR is produced only after all location and spill decisions have
     /// succeeded. This step neither consults a target nor runs allocation again.
-    pub fn materialize(self) -> MachineFunction<RegAllocated> {
+    pub fn materialize(self) -> MachineFunction {
         let Self {
             mut source,
             mut instructions,
@@ -120,8 +119,7 @@ impl Allocation {
             block.params.clear();
         }
         source.params.clear();
-        source.is_regallocated = true;
-        source.into_stage()
+        source
     }
 }
 
@@ -135,12 +133,12 @@ mod tests {
         X86_64TargetMachine,
         isle::{REG_RAX, TargetInst},
     };
-    use veloc_lir::{MachineOpcode, Type, stages::RawLir};
+    use veloc_lir::{MachineOpcode, Type};
 
     #[test]
     fn allocation_preserves_input_and_materializes_spills_in_order() {
         let target = X86_64TargetMachine::new(TargetConfig::default());
-        let mut f = MachineFunction::<RawLir>::new("pressure".into());
+        let mut f = MachineFunction::new("pressure".into());
         f.create_synthetic_block();
         let mut values = Vec::new();
         // All values are live together, forcing both assigned and spilled ranges.
@@ -172,7 +170,7 @@ mod tests {
         let ids = f.block_insts(0).to_vec();
         let plan = RegisterAllocator::new(&target)
             .allocate(
-                f.into_stage(),
+                f,
                 veloc_mir::CallConv::SystemV,
                 &mut FunctionAnalysisCtx::default(),
             )
@@ -221,7 +219,6 @@ mod tests {
             }
         }
         assert_eq!(physical.block_insts(0).len(), offset);
-        assert!(physical.is_regallocated);
         for &id in physical.block_insts(0) {
             assert!(
                 physical

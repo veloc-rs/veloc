@@ -3,13 +3,10 @@
 use super::{CallInfo, InstExtra, InstId, InstRef, Reg, StackSlot, VReg, VRegData};
 use crate::InstWriter;
 use crate::RegisterBank;
-use crate::stages::AllowsUnbankedVRegAlloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
-use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
 use cranelift_entity::PrimaryMap;
 use veloc_mir::{Block, Type};
 
@@ -99,7 +96,7 @@ impl StackFrame {
 
 /// 机器函数主体数据。
 #[derive(Debug, Clone)]
-pub struct MachineFunctionData {
+pub struct MachineFunction {
     pub name: String,
     pub blocks: Vec<MachineBlock>,
     store: crate::store::InstStore,
@@ -107,36 +104,19 @@ pub struct MachineFunctionData {
     pub stack_frame: StackFrame,
     /// 函数参数对应的虚拟寄存器
     pub params: Vec<Reg>,
-    /// 是否已指令选择
-    pub is_selected: bool,
-    /// 是否已寄存器分配
-    pub is_regallocated: bool,
-}
-
-/// 机器函数。
-///
-/// `S` 是阶段标记类型，用来表达当前函数处于哪一个 codegen 阶段。
-#[derive(Debug, Clone)]
-pub struct MachineFunction<S> {
-    data: MachineFunctionData,
-    _stage: PhantomData<S>,
 }
 
 /// 基本块重写游标。
 /// 向输出布局写入新顺序，并提供更语义化的 keep/remove/replace/insert 操作。
-pub struct BlockRewriteCursor<'a, S> {
-    mfunc: &'a mut MachineFunction<S>,
+pub struct BlockRewriteCursor<'a> {
+    mfunc: &'a mut MachineFunction,
     current: InstId,
     output: &'a mut Vec<InstId>,
     resolved_current: bool,
 }
 
-impl<'a, S> BlockRewriteCursor<'a, S> {
-    fn new(
-        mfunc: &'a mut MachineFunction<S>,
-        current: InstId,
-        output: &'a mut Vec<InstId>,
-    ) -> Self {
+impl<'a> BlockRewriteCursor<'a> {
+    fn new(mfunc: &'a mut MachineFunction, current: InstId, output: &'a mut Vec<InstId>) -> Self {
         Self {
             mfunc,
             current,
@@ -165,11 +145,11 @@ impl<'a, S> BlockRewriteCursor<'a, S> {
         self.mfunc.set_inst_extra(self.current, extra);
     }
 
-    pub fn mfunc(&self) -> &MachineFunction<S> {
+    pub fn mfunc(&self) -> &MachineFunction {
         self.mfunc
     }
 
-    pub fn mfunc_mut(&mut self) -> &mut MachineFunction<S> {
+    pub fn mfunc_mut(&mut self) -> &mut MachineFunction {
         self.mfunc
     }
 
@@ -232,48 +212,22 @@ impl<'a, S> BlockRewriteCursor<'a, S> {
     }
 }
 
-impl<S> Deref for MachineFunction<S> {
-    type Target = MachineFunctionData;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl<S> DerefMut for MachineFunction<S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.data
-    }
-}
-
-impl<S> MachineFunction<S> {
+impl MachineFunction {
     pub fn new(name: String) -> Self {
         Self {
-            data: MachineFunctionData {
-                name,
-                blocks: Vec::new(),
-                store: crate::InstStore::default(),
-                vregs: PrimaryMap::new(),
-                stack_frame: StackFrame {
-                    local_size: 0,
-                    arg_size: 0,
-                    callee_saved_size: 0,
-                    used_callee_saved: Vec::new(),
-                    total_size: 0,
-                    slots: PrimaryMap::new(),
-                },
-                params: Vec::new(),
-                is_selected: false,
-                is_regallocated: false,
+            name,
+            blocks: Vec::new(),
+            store: crate::InstStore::default(),
+            vregs: PrimaryMap::new(),
+            stack_frame: StackFrame {
+                local_size: 0,
+                arg_size: 0,
+                callee_saved_size: 0,
+                used_callee_saved: Vec::new(),
+                total_size: 0,
+                slots: PrimaryMap::new(),
             },
-            _stage: PhantomData,
-        }
-    }
-
-    pub fn into_stage<T>(self) -> MachineFunction<T> {
-        MachineFunction {
-            data: self.data,
-            _stage: PhantomData,
+            params: Vec::new(),
         }
     }
 
@@ -345,7 +299,7 @@ impl<S> MachineFunction<S> {
 
     pub fn rewrite_block<E, F>(&mut self, block_idx: usize, mut f: F) -> Result<(), E>
     where
-        F: FnMut(&mut BlockRewriteCursor<'_, S>) -> Result<(), E>,
+        F: FnMut(&mut BlockRewriteCursor<'_>) -> Result<(), E>,
     {
         let old_insts = self.blocks[block_idx].insts.clone();
         let mut new_insts = Vec::with_capacity(old_insts.len());
@@ -370,11 +324,16 @@ impl<S> MachineFunction<S> {
         self.alloc_vreg_with_bank_opt(ty, Some(bank))
     }
 
+    /// 创建未绑定 bank 的虚拟寄存器；调用方负责满足目标的 bank 要求。
+    pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
+        self.alloc_vreg_with_bank_opt(ty, None)
+    }
+
     /// Split immutable register facts from mutable instruction storage.
     pub fn instruction_parts(
         &mut self,
     ) -> (&mut PrimaryMap<VReg, VRegData>, &mut crate::InstStore) {
-        (&mut self.data.vregs, &mut self.data.store)
+        (&mut self.vregs, &mut self.store)
     }
 
     pub fn inst(&self, id: InstId) -> InstRef<'_> {
@@ -500,11 +459,7 @@ impl<S> MachineFunction<S> {
     /// 生成便于调试的文本格式 LIR。
     pub fn format_for_dump(&self) -> String {
         let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "function {} [selected={}, regalloc={}]",
-            self.name, self.is_selected, self.is_regallocated
-        );
+        let _ = writeln!(out, "function {}", self.name);
 
         if !self.params.is_empty() {
             let params = self
@@ -538,15 +493,5 @@ impl<S> MachineFunction<S> {
         }
 
         out
-    }
-}
-
-impl<S: AllowsUnbankedVRegAlloc> MachineFunction<S> {
-    /// 分配新的虚拟寄存器。
-    ///
-    /// 只允许在 `regbankselect` 之前的阶段调用；进入后续阶段后，必须使用
-    /// `alloc_vreg_in_bank()` 显式携带 bank。
-    pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
-        self.alloc_vreg_with_bank_opt(ty, None)
     }
 }

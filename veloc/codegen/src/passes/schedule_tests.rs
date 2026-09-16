@@ -4,13 +4,13 @@ use crate::target::x86_64::{
     X86_64TargetMachine,
     isle::{REG_RAX, TargetInst},
 };
-use veloc_lir::{InstField, MachineBlock, MachineOpcode, Writable, stages::RawLir};
+use veloc_lir::{InstField, MachineBlock, MachineOpcode, Writable};
 use veloc_mir::{Block, Type};
 
 #[test]
 fn fills_a_dependency_gap_without_reordering_flag_consumers() {
     let target = X86_64TargetMachine::new(TargetConfig::default());
-    let mut f = MachineFunction::<RawLir>::new("schedule".into());
+    let mut f = MachineFunction::new("schedule".into());
     f.blocks.push(MachineBlock::new(Block(0)));
     let x = f.alloc_vreg(Type::I64);
     let a = f.alloc_vreg(Type::I64);
@@ -74,7 +74,7 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
 #[test]
 fn preserves_register_anti_dependencies_and_memory_barriers() {
     let target = X86_64TargetMachine::new(TargetConfig::default());
-    let mut f = MachineFunction::<RawLir>::new("dependencies".into());
+    let mut f = MachineFunction::new("dependencies".into());
     f.blocks.push(MachineBlock::new(Block(0)));
     let a = f.alloc_vreg(Type::I64);
     let b = f.alloc_vreg(Type::I64);

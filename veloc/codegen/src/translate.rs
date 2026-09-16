@@ -7,7 +7,6 @@ use crate::error::{Error, Result};
 use alloc::{format, vec::Vec};
 use cranelift_entity::PrimaryMap;
 use veloc_lir::InstBuild;
-use veloc_lir::stages::RawLir;
 use veloc_lir::{
     BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, InstExtra, MachineBlock,
     MachineFunction, MachineModule, Reg,
@@ -24,7 +23,7 @@ pub struct IRTranslator<'a> {
 struct TranslationContext<'a> {
     func: &'a Function,
     mmodule: &'a mut MachineModule,
-    mfunc: MachineFunction<RawLir>,
+    mfunc: MachineFunction,
     value_map: PrimaryMap<Value, Reg>,
 }
 
@@ -130,11 +129,11 @@ impl<'a> IRTranslator<'a> {
         &self,
         func: &Function,
         mmodule: &mut MachineModule,
-    ) -> Result<MachineFunction<RawLir>> {
+    ) -> Result<MachineFunction> {
         let mut ctx = TranslationContext {
             func,
             mmodule,
-            mfunc: MachineFunction::<RawLir>::new(func.name.clone()),
+            mfunc: MachineFunction::new(func.name.clone()),
             value_map: PrimaryMap::with_capacity(func.dfg().values().len()),
         };
 

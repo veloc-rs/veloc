@@ -635,12 +635,12 @@ impl InstStore {
 mod tests {
     use super::*;
     use crate::InstBuild;
-    use crate::{BranchInfo, MachineFunction, MemoryKind, Reg, Writable, stages::RawLir};
+    use crate::{BranchInfo, MachineFunction, MemoryKind, Reg, Writable};
 
     #[test]
     fn pooled_storage_recycles_payloads_and_preserves_borrowed_views() {
         assert!(core::mem::size_of::<StoredInst>() <= 56);
-        let mut f = MachineFunction::<RawLir>::new("store".into());
+        let mut f = MachineFunction::new("store".into());
         let block = f.create_synthetic_block();
         let reg = f.alloc_vreg(crate::Type::I64);
         let id = f.writer().constant(Writable(reg), 42);

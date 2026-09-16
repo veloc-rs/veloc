@@ -1,8 +1,7 @@
 use crate::error::Result;
-use crate::pipeline::{ChangeSet, FunctionPassContext, PassEffect, StageTransformPass};
+use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
 use alloc::vec::Vec;
-use veloc_lir::stages::LegalizedLir;
 use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot, Writable};
 use veloc_lir::{InstBuild, InstRead};
 
@@ -32,9 +31,9 @@ fn single_part_assignment<'a>(
     }
 }
 
-fn stack_slot_for_assignment<S>(
+fn stack_slot_for_assignment(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction<S>,
+    mfunc: &mut MachineFunction,
     part: &crate::target::arch::AbiPart,
 ) -> StackSlot {
     let stack_pointer = target.desc().registers.special_regs.stack_pointer;
@@ -59,9 +58,9 @@ fn stack_slot_for_assignment<S>(
     }
 }
 
-fn build_load_from_assignment<S>(
+fn build_load_from_assignment(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction<S>,
+    mfunc: &mut MachineFunction,
     assignment: &AbiAssignment,
     dst: Reg,
     kind: &'static str,
@@ -76,9 +75,9 @@ fn build_load_from_assignment<S>(
     }
 }
 
-fn build_store_to_assignment<S>(
+fn build_store_to_assignment(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction<S>,
+    mfunc: &mut MachineFunction,
     src: Reg,
     assignment: &AbiAssignment,
     kind: &'static str,
@@ -95,7 +94,7 @@ fn build_store_to_assignment<S>(
 
 fn lower_formal_arguments(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction<LegalizedLir>,
+    mfunc: &mut MachineFunction,
     plan: &CallConvPlan,
 ) {
     if mfunc.blocks.is_empty() {
@@ -138,9 +137,9 @@ fn lower_formal_arguments(
         .unwrap_or_else(|_: ()| panic!("ABI argument lowering failed for `{}`", func_name));
 }
 
-fn lower_callsite<S>(
+fn lower_callsite(
     target: &dyn TargetMachine,
-    cursor: &mut veloc_lir::BlockRewriteCursor<'_, S>,
+    cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
     plan: &CallConvPlan,
 ) {
     let inst = cursor.current_inst();
@@ -200,9 +199,9 @@ fn lower_callsite<S>(
     }
 }
 
-fn lower_return<S>(
+fn lower_return(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction<S>,
+    mfunc: &mut MachineFunction,
     sig: &veloc_mir::Signature,
     plan: &CallConvPlan,
     values: &[Reg],
@@ -236,19 +235,19 @@ fn lower_return<S>(
     pre
 }
 
-impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
+impl FunctionPass for AbiLoweringPass {
     fn name(&self) -> &'static str {
         "abi-lowered"
     }
 
     fn run(
         &self,
-        mut mfunc: MachineFunction<LegalizedLir>,
-        ctx: &mut FunctionPassContext<'_, LegalizedLir>,
-    ) -> Result<(MachineFunction<LegalizedLir>, PassEffect)> {
+        mfunc: &mut MachineFunction,
+        ctx: &mut FunctionPassContext<'_>,
+    ) -> Result<PassEffect> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
         mfunc.stack_frame.arg_size = 0;
-        lower_formal_arguments(ctx.target, &mut mfunc, &plan);
+        lower_formal_arguments(ctx.target, mfunc, &plan);
 
         let func_name = mfunc.name.clone();
         let num_blocks = mfunc.num_blocks();
@@ -313,9 +312,8 @@ impl StageTransformPass<LegalizedLir, LegalizedLir> for AbiLoweringPass {
                 });
         }
 
-        Ok((
-            mfunc.into_stage(),
-            PassEffect::new(ChangeSet::INST_SEMANTICS | ChangeSet::PHYSICAL_REGS),
+        Ok(PassEffect::new(
+            ChangeSet::INST_SEMANTICS | ChangeSet::PHYSICAL_REGS,
         ))
     }
 }

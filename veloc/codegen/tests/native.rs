@@ -206,7 +206,7 @@ int main(void) {
 #[test]
 fn extension_encodings_match_system_assembler_for_every_register_pair() {
     use veloc_codegen::target::x86_64::isle::*;
-    use veloc_lir::{MachineFunction, MachineOpcode, Writable, stages::PrologueEpilogueInserted};
+    use veloc_lir::{MachineFunction, MachineOpcode, Writable};
     let regs = [
         REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI, REG_R8, REG_R9,
         REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15,
@@ -227,7 +227,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
         "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
         "r13", "r14", "r15",
     ];
-    let mut f = MachineFunction::<PrologueEpilogueInserted>::new("encoding".into());
+    let mut f = MachineFunction::new("encoding".into());
     let mut emitter = veloc_codegen::Emitter::new();
     let mut assembly = String::from(".text\n");
     let mut cases = Vec::new();

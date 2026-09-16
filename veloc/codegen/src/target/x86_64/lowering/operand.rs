@@ -7,7 +7,7 @@ impl TargetOperandLowering for X86_64OperandLowering {
     fn preselect_operand_constraints(
         &self,
         inst: &veloc_lir::InstRef<'_>,
-        _mfunc: &MachineFunction<PreIselPrepared>,
+        _mfunc: &MachineFunction,
     ) -> OperandConstraintSet {
         let Some(opcode) = inst.generic_opcode() else {
             return OperandConstraintSet::default();
@@ -18,7 +18,7 @@ impl TargetOperandLowering for X86_64OperandLowering {
     fn postselect_operand_constraints(
         &self,
         inst: &veloc_lir::InstRef<'_>,
-        _mfunc: &MachineFunction<SelectedLir>,
+        _mfunc: &MachineFunction,
     ) -> OperandConstraintSet {
         let MachineOpcode::Target(opcode) = inst.opcode() else {
             return OperandConstraintSet::default();
@@ -28,7 +28,7 @@ impl TargetOperandLowering for X86_64OperandLowering {
 
     fn build_preselect_reg_copy(
         &self,
-        mfunc: &mut MachineFunction<PreIselPrepared>,
+        mfunc: &mut MachineFunction,
         dst: Reg,
         src: Reg,
     ) -> Result<InstId, crate::error::Error> {
@@ -42,7 +42,7 @@ impl TargetOperandLowering for X86_64OperandLowering {
 
     fn build_postselect_reg_copy(
         &self,
-        mfunc: &mut MachineFunction<SelectedLir>,
+        mfunc: &mut MachineFunction,
         dst: Reg,
         src: Reg,
     ) -> Result<InstId, crate::error::Error> {

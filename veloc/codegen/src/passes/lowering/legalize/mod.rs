@@ -7,7 +7,6 @@ mod tests;
 
 use crate::error::{Error, Result};
 use crate::target::arch::TargetLegalizer;
-use veloc_lir::stages::LegalizedLir;
 use veloc_lir::{GenericOpcode, MachineFunction};
 
 pub struct Legalizer<'a> {
@@ -19,7 +18,7 @@ impl<'a> Legalizer<'a> {
         Self { target }
     }
 
-    pub fn legalize(&self, mfunc: &mut MachineFunction<LegalizedLir>) -> Result<()> {
+    pub fn legalize(&self, mfunc: &mut MachineFunction) -> Result<()> {
         // Process expansions in program order, including generic instructions
         // produced by other rules. A single forward scan is not a legalizer.
         const MAX_REWRITES: usize = 1024;
@@ -83,7 +82,7 @@ impl<'a> Legalizer<'a> {
     fn inst_signature_context(
         &self,
         inst: &veloc_lir::InstRef<'_>,
-        mfunc: &MachineFunction<LegalizedLir>,
+        mfunc: &MachineFunction,
     ) -> Result<(GenericOpcode, alloc::string::String)> {
         let opcode = inst
             .generic_opcode()

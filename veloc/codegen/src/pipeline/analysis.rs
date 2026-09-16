@@ -267,7 +267,7 @@ impl FunctionAnalysisCtx {
             .any(|kind| self.last_changed_revision[kind as usize] > built_revision)
     }
 
-    pub fn cfg<S>(&mut self, mfunc: &MachineFunction<S>, target: &dyn TargetMachine) -> &CfgInfo {
+    pub fn cfg(&mut self, mfunc: &MachineFunction, target: &dyn TargetMachine) -> &CfgInfo {
         let deps = ChangeSet::CFG
             | ChangeSet::BLOCK_LAYOUT
             | ChangeSet::INST_OPERANDS
@@ -286,9 +286,9 @@ impl FunctionAnalysisCtx {
         &self.cfg.as_ref().unwrap().value
     }
 
-    pub fn dominators<S>(
+    pub fn dominators(
         &mut self,
-        mfunc: &MachineFunction<S>,
+        mfunc: &MachineFunction,
         target: &dyn TargetMachine,
     ) -> &DominatorTree {
         let deps = ChangeSet::CFG
@@ -310,9 +310,9 @@ impl FunctionAnalysisCtx {
         &self.dominators.as_ref().unwrap().value
     }
 
-    pub fn post_dominators<S>(
+    pub fn post_dominators(
         &mut self,
-        mfunc: &MachineFunction<S>,
+        mfunc: &MachineFunction,
         target: &dyn TargetMachine,
     ) -> &PostDominatorTree {
         let deps = ChangeSet::CFG
@@ -334,9 +334,9 @@ impl FunctionAnalysisCtx {
         &self.post_dominators.as_ref().unwrap().value
     }
 
-    pub fn liveness<S>(
+    pub fn liveness(
         &mut self,
-        mfunc: &MachineFunction<S>,
+        mfunc: &MachineFunction,
         target: &dyn TargetMachine,
     ) -> &LivenessInfo {
         let deps = ChangeSet::CFG
@@ -359,11 +359,7 @@ impl FunctionAnalysisCtx {
         &self.liveness.as_ref().unwrap().value
     }
 
-    pub fn loop_info<S>(
-        &mut self,
-        mfunc: &MachineFunction<S>,
-        target: &dyn TargetMachine,
-    ) -> &LoopInfo {
+    pub fn loop_info(&mut self, mfunc: &MachineFunction, target: &dyn TargetMachine) -> &LoopInfo {
         let deps = ChangeSet::CFG
             | ChangeSet::BLOCK_LAYOUT
             | ChangeSet::INST_OPERANDS
@@ -384,9 +380,9 @@ impl FunctionAnalysisCtx {
         &self.loop_info.as_ref().unwrap().value
     }
 
-    pub fn register_pressure<S>(
+    pub fn register_pressure(
         &mut self,
-        mfunc: &MachineFunction<S>,
+        mfunc: &MachineFunction,
         target: &dyn TargetMachine,
     ) -> &RegisterPressure {
         let deps = ChangeSet::CFG
@@ -409,7 +405,7 @@ impl FunctionAnalysisCtx {
         &self.register_pressure.as_ref().unwrap().value
     }
 
-    pub fn stack_frame_summary<S>(&mut self, mfunc: &MachineFunction<S>) -> &StackFrameSummary {
+    pub fn stack_frame_summary(&mut self, mfunc: &MachineFunction) -> &StackFrameSummary {
         let deps = ChangeSet::STACK_FRAME | ChangeSet::REGALLOC;
         let stale = self
             .stack_frame_summary
@@ -448,7 +444,7 @@ impl ModuleAnalysisCtx {
     }
 }
 
-fn compute_cfg<S>(mfunc: &MachineFunction<S>, target: &dyn TargetMachine) -> CfgInfo {
+fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetMachine) -> CfgInfo {
     let mut preds: HashMap<Block, Vec<Block>> = HashMap::new();
     let mut succs: HashMap<Block, Vec<Block>> = HashMap::new();
 
@@ -504,7 +500,7 @@ fn compute_cfg<S>(mfunc: &MachineFunction<S>, target: &dyn TargetMachine) -> Cfg
     CfgInfo { preds, succs }
 }
 
-fn compute_dominators<S>(mfunc: &MachineFunction<S>, cfg: &CfgInfo) -> DominatorTree {
+fn compute_dominators(mfunc: &MachineFunction, cfg: &CfgInfo) -> DominatorTree {
     let blocks: Vec<Block> = mfunc.blocks.iter().map(|b| b.id).collect();
     let Some(entry) = blocks.first().copied() else {
         return DominatorTree::default();
@@ -549,7 +545,7 @@ fn compute_dominators<S>(mfunc: &MachineFunction<S>, cfg: &CfgInfo) -> Dominator
     DominatorTree { doms }
 }
 
-fn compute_post_dominators<S>(mfunc: &MachineFunction<S>, cfg: &CfgInfo) -> PostDominatorTree {
+fn compute_post_dominators(mfunc: &MachineFunction, cfg: &CfgInfo) -> PostDominatorTree {
     let blocks: Vec<Block> = mfunc.blocks.iter().map(|b| b.id).collect();
     let exits: Vec<Block> = blocks
         .iter()
@@ -599,7 +595,7 @@ fn compute_post_dominators<S>(mfunc: &MachineFunction<S>, cfg: &CfgInfo) -> Post
     PostDominatorTree { post_doms }
 }
 
-fn compute_liveness<S>(mfunc: &MachineFunction<S>, cfg: &CfgInfo) -> LivenessInfo {
+fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
     let mut block_uses: HashMap<Block, HashSet<Reg>> = HashMap::new();
     let mut block_defs: HashMap<Block, HashSet<Reg>> = HashMap::new();
     let mut live_in: HashMap<Block, HashSet<Reg>> = HashMap::new();
@@ -668,10 +664,7 @@ fn compute_loop_info(cfg: &CfgInfo, dom: &DominatorTree) -> LoopInfo {
     LoopInfo { backedges }
 }
 
-fn compute_register_pressure<S>(
-    mfunc: &MachineFunction<S>,
-    liveness: &LivenessInfo,
-) -> RegisterPressure {
+fn compute_register_pressure(mfunc: &MachineFunction, liveness: &LivenessInfo) -> RegisterPressure {
     let mut per_block_max_live = HashMap::new();
     for block in &mfunc.blocks {
         let live = liveness.live_out(block.id).cloned().unwrap_or_default();
@@ -686,13 +679,12 @@ mod tests {
     use crate::target::arch::TargetConfig;
     use crate::target::x86_64::X86_64TargetMachine;
     use veloc_lir::InstBuild;
-    use veloc_lir::stages::RawLir;
     use veloc_lir::{MachineBlock, MachineFunction};
     use veloc_mir::{Block, Type};
 
     #[test]
     fn generic_control_comes_from_definitions_not_layout_or_last_instruction() {
-        let mut f = MachineFunction::<RawLir>::new("control".into());
+        let mut f = MachineFunction::new("control".into());
         for id in 0..4 {
             f.blocks.push(MachineBlock::new(Block(id)));
         }
@@ -739,7 +731,7 @@ mod tests {
         use crate::target::x86_64::isle::TargetInst;
         use veloc_lir::{InstField, MachineOpcode};
         let target = X86_64TargetMachine::new(TargetConfig::default());
-        let mut f = MachineFunction::<RawLir>::new("selected".into());
+        let mut f = MachineFunction::new("selected".into());
         for id in 0..8 {
             f.blocks.push(MachineBlock::new(Block(id)));
         }
@@ -784,7 +776,7 @@ mod tests {
         use crate::target::x86_64::isle::TargetInst;
         use veloc_lir::MachineOpcode;
         let target = X86_64TargetMachine::new(TargetConfig::default());
-        let mut f = MachineFunction::<RawLir>::new("layout".into());
+        let mut f = MachineFunction::new("layout".into());
         for id in 0..3 {
             f.blocks.push(MachineBlock::new(Block(id)));
         }
@@ -809,7 +801,7 @@ mod tests {
 
     #[test]
     fn branch_operand_change_invalidates_cfg_and_liveness() {
-        let mut f = MachineFunction::<RawLir>::new("control".into());
+        let mut f = MachineFunction::new("control".into());
         for id in 0..3 {
             f.blocks.push(MachineBlock::new(Block(id)));
         }
@@ -854,7 +846,7 @@ mod tests {
     #[test]
     fn cfg_change_invalidates_cfg_and_dependents() {
         let target = X86_64TargetMachine::new(TargetConfig::default());
-        let mut mfunc = MachineFunction::<RawLir>::new("test".into());
+        let mut mfunc = MachineFunction::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(1)));
         let mut analyses = FunctionAnalysisCtx::default();
@@ -877,7 +869,7 @@ mod tests {
     #[test]
     fn stack_frame_change_does_not_invalidate_cfg() {
         let target = X86_64TargetMachine::new(TargetConfig::default());
-        let mut mfunc = MachineFunction::<RawLir>::new("test".into());
+        let mut mfunc = MachineFunction::new("test".into());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg_before = analyses.cfg(&mfunc, &target) as *const _;

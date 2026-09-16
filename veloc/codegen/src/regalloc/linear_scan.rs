@@ -7,7 +7,6 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
-use veloc_lir::stages::PostIselOptimized;
 use veloc_lir::{InstExtra, InstId, MachineFunction, Reg, StackFrame, StackSlot};
 
 #[derive(Clone)]
@@ -36,7 +35,7 @@ impl<'a> RegisterAllocator<'a> {
 
     pub fn allocate(
         mut self,
-        mut source: MachineFunction<PostIselOptimized>,
+        mut source: MachineFunction,
         cc: veloc_mir::CallConv,
         analyses: &mut FunctionAnalysisCtx,
     ) -> Result<Allocation> {
@@ -187,12 +186,7 @@ impl<'a> RegisterAllocator<'a> {
         })
     }
 
-    fn spill(
-        &mut self,
-        reg: Reg,
-        f: &MachineFunction<PostIselOptimized>,
-        frame: &mut StackFrame,
-    ) -> Result<()> {
+    fn spill(&mut self, reg: Reg, f: &MachineFunction, frame: &mut StackFrame) -> Result<()> {
         let ty = f.vreg_data(reg).ty;
         let layout = &self.target.desc().data_layout;
         self.target
@@ -215,7 +209,7 @@ impl<'a> RegisterAllocator<'a> {
 
     fn plan(
         &self,
-        f: &mut MachineFunction<PostIselOptimized>,
+        f: &mut MachineFunction,
         frame: &StackFrame,
     ) -> Result<SecondaryMap<InstId, InstAllocation>> {
         let mut instructions = SecondaryMap::new();
@@ -433,13 +427,13 @@ mod tests {
         X86_64TargetMachine,
         isle::{REG_RAX, REG_RCX, REG_RDX, TargetInst},
     };
-    use veloc_lir::{MachineOpcode, Type, Writable, stages::RawLir};
+    use veloc_lir::{MachineOpcode, Type, Writable};
 
     #[test]
     fn tied_allocation_preserves_inputs_with_collisions_and_spills() {
         let target = X86_64TargetMachine::new(crate::TargetConfig::default());
         for mode in 0..3 {
-            let mut f = MachineFunction::<RawLir>::new("reuse".into());
+            let mut f = MachineFunction::new("reuse".into());
             f.create_synthetic_block();
             let lhs = f.alloc_vreg(Type::I64);
             let rhs = f.alloc_vreg(Type::I64);
@@ -451,7 +445,6 @@ mod tests {
                 lhs,
             );
             f.append_inst_id_to_block(0, id);
-            let mut f = f.into_stage::<PostIselOptimized>();
             let mut allocator = RegisterAllocator::new(&target);
             let mut frame = f.stack_frame.clone();
             if mode == 2 {

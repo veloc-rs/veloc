@@ -89,7 +89,7 @@ pub(super) fn compile(
 }
 
 pub(super) fn generate(out: &mut String, instructions: &HashMap<String, FinalInstDef>) {
-    writeln!(out, "impl TargetInst {{ pub fn emit(&self, emitter: &mut crate::Emitter, inst: &veloc_lir::InstRef<'_>, mfunc: &veloc_lir::MachineFunction<veloc_lir::stages::PrologueEpilogueInserted>) -> crate::Result<()> {{").unwrap();
+    writeln!(out, "impl TargetInst {{ pub fn emit(&self, emitter: &mut crate::Emitter, inst: &veloc_lir::InstRef<'_>, mfunc: &veloc_lir::MachineFunction) -> crate::Result<()> {{").unwrap();
     writeln!(out, "use crate::target::x86_64::emitter::{{register, stack_address, encode_instruction}}; match self {{").unwrap();
     for (name, inst) in instructions.iter().collect::<BTreeMap<_, _>>() {
         writeln!(out, "Self::{name} => {{").unwrap();

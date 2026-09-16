@@ -11,7 +11,6 @@ pub mod function;
 pub mod instr;
 pub mod memory;
 pub mod module;
-pub mod stages;
 mod store;
 pub mod symbol;
 pub mod use_def;

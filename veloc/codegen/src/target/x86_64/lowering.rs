@@ -28,7 +28,6 @@ pub use regbank::X86_64RegBankSelect;
 pub use select::X86_64Selector;
 use veloc_lir::InstBuild;
 use veloc_lir::RegisterBank;
-use veloc_lir::stages::{LegalizedLir, PreIselPrepared, RegAllocated, SelectedLir};
 use veloc_lir::{
     GenericOpcode, InstExtra, InstField, InstId, MachineFunction, MachineOpcode, Reg, VReg,
     Writable,
@@ -65,8 +64,8 @@ pub(super) fn x86_mov_opcode_for_type(ty: Type) -> Result<TargetInst, crate::err
     }
 }
 
-fn x86_copy_type_for_regs<S>(
-    mfunc: &MachineFunction<S>,
+fn x86_copy_type_for_regs(
+    mfunc: &MachineFunction,
     dst: Reg,
     src: Reg,
 ) -> Result<Type, crate::error::Error> {
@@ -82,8 +81,8 @@ fn x86_copy_type_for_regs<S>(
     )
 }
 
-fn build_x86_copy_inst<S>(
-    mfunc: &mut MachineFunction<S>,
+fn build_x86_copy_inst(
+    mfunc: &mut MachineFunction,
     dst: Reg,
     src: Reg,
 ) -> Result<InstId, crate::error::Error> {
@@ -154,13 +153,13 @@ impl X86_64Lowering {
         Self { cpu }
     }
 
-    fn alloc_gpr_temp<S>(&self, mfunc: &mut MachineFunction<S>, ty: Type) -> Reg {
+    fn alloc_gpr_temp(&self, mfunc: &mut MachineFunction, ty: Type) -> Reg {
         mfunc.alloc_vreg_in_bank(ty, RegisterBank::GPR)
     }
 
     fn emit_legalize_constant_reg(
         &self,
-        mfunc: &mut MachineFunction<LegalizedLir>,
+        mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         ty: Type,
         imm: i64,
@@ -172,7 +171,7 @@ impl X86_64Lowering {
 
     fn emit_legalize_binary_reg(
         &self,
-        mfunc: &mut MachineFunction<LegalizedLir>,
+        mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         opcode: GenericOpcode,
         ty: Type,
@@ -190,7 +189,7 @@ impl X86_64Lowering {
 
     fn legalize_ctpop_into(
         &self,
-        mfunc: &mut MachineFunction<LegalizedLir>,
+        mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,
@@ -286,7 +285,7 @@ impl X86_64Lowering {
 
     fn legalize_cttz_into(
         &self,
-        mfunc: &mut MachineFunction<LegalizedLir>,
+        mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,
@@ -323,7 +322,7 @@ impl X86_64Lowering {
 
     fn legalize_ctlz_into(
         &self,
-        mfunc: &mut MachineFunction<LegalizedLir>,
+        mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         src: Reg,
         dst: Reg,
@@ -388,7 +387,7 @@ impl X86_64Lowering {
 
     fn normalize_cond_to_i32(
         &self,
-        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        ctx: &mut SelectionContext<'_>,
         cond: Reg,
         cond_ty: Type,
     ) -> Reg {
@@ -429,7 +428,7 @@ impl X86_64Lowering {
 
     fn emit_select_i32(
         &self,
-        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        ctx: &mut SelectionContext<'_>,
         dst: Reg,
         cond: Reg,
         true_val: Reg,
@@ -440,7 +439,7 @@ impl X86_64Lowering {
 
     fn emit_select_i64_like(
         &self,
-        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        ctx: &mut SelectionContext<'_>,
         dst: Reg,
         cond: Reg,
         true_val: Reg,
@@ -458,7 +457,7 @@ impl X86_64Lowering {
 
     fn emit_select_bits(
         &self,
-        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        ctx: &mut SelectionContext<'_>,
         dst: Reg,
         cond: Reg,
         true_val: Reg,
@@ -504,7 +503,7 @@ impl X86_64Lowering {
 
     fn select_fcmp(
         &self,
-        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        ctx: &mut SelectionContext<'_>,
         fcmp: veloc_lir::FCmpInst,
     ) -> Result<SelectResult, crate::error::Error> {
         let compare_opcode = match if fcmp.lhs.is_vreg() {
@@ -526,25 +525,24 @@ impl X86_64Lowering {
             fcmp.rhs,
         ));
 
-        let emit_setcc_i32 =
-            |ctx: &mut SelectionContext<'_, PreIselPrepared>, opcode: TargetInst| -> Reg {
-                let tmp8 = self.alloc_gpr_temp(ctx.mfunc, Type::I8);
-                let tmp32 = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
-                ctx.selected.push(build_target_inst(
-                    ctx.mfunc.writer(),
-                    opcode,
-                    &[(Writable(tmp8)).to_reg()],
-                    &[],
-                    &[],
-                ));
-                ctx.selected.push(build_target_unary(
-                    ctx.mfunc.writer(),
-                    TargetInst::X86Movzx8to32,
-                    Writable(tmp32),
-                    tmp8,
-                ));
-                tmp32
-            };
+        let emit_setcc_i32 = |ctx: &mut SelectionContext<'_>, opcode: TargetInst| -> Reg {
+            let tmp8 = self.alloc_gpr_temp(ctx.mfunc, Type::I8);
+            let tmp32 = self.alloc_gpr_temp(ctx.mfunc, Type::I32);
+            ctx.selected.push(build_target_inst(
+                ctx.mfunc.writer(),
+                opcode,
+                &[(Writable(tmp8)).to_reg()],
+                &[],
+                &[],
+            ));
+            ctx.selected.push(build_target_unary(
+                ctx.mfunc.writer(),
+                TargetInst::X86Movzx8to32,
+                Writable(tmp32),
+                tmp8,
+            ));
+            tmp32
+        };
 
         match fcmp.cc {
             FloatCC::Eq | FloatCC::Lt | FloatCC::Le => {
@@ -586,7 +584,7 @@ impl X86_64Lowering {
 
     fn select_select(
         &self,
-        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        ctx: &mut SelectionContext<'_>,
         select: veloc_lir::SelectInst,
     ) -> Result<SelectResult, crate::error::Error> {
         let dst_ty = if select.dst.is_vreg() {

@@ -11,5 +11,5 @@ pub use analysis::{
 };
 pub use compiled::{CompiledFunction, CompiledModule};
 pub use context::{FunctionPassContext, ModulePassContext};
-pub use pass::{FunctionPass, ModuleCodegenPass, StageTransformPass};
-pub use pipeline::{ModulePassPipeline, StagePassPipeline};
+pub use pass::{FunctionPass, ModuleCodegenPass};
+pub use pipeline::{FunctionPassPipeline, ModulePassPipeline};

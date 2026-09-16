@@ -22,7 +22,7 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
         i64::MAX,
     ] {
         for kind in [MemoryKind::Read, MemoryKind::Write] {
-            let mut f = MachineFunction::<LegalizedLir>::new("offset".into());
+            let mut f = MachineFunction::new("offset".into());
             f.blocks.push(MachineBlock::new(Block(0)));
             let base = f.alloc_vreg(Type::PTR);
             let value = f.alloc_vreg(Type::I64);
@@ -83,7 +83,7 @@ impl TargetLegalizer for Mode {
     fn legalize_action(
         &self,
         i: &veloc_lir::InstRef<'_>,
-        _: &MachineFunction<LegalizedLir>,
+        _: &MachineFunction,
     ) -> Result<Option<LegalizeAction>> {
         match (self, i.generic_opcode().unwrap()) {
             (Self::Missing, GenericOpcode::Sub) => Ok(None),
@@ -94,11 +94,7 @@ impl TargetLegalizer for Mode {
         }
     }
 
-    fn legalize_instruction(
-        &self,
-        id: InstId,
-        f: &mut MachineFunction<LegalizedLir>,
-    ) -> Result<LegalizeResult> {
+    fn legalize_instruction(&self, id: InstId, f: &mut MachineFunction) -> Result<LegalizeResult> {
         if matches!(self, Self::Loop) {
             return Ok(LegalizeResult::Replace(vec![id]));
         }
@@ -125,7 +121,7 @@ impl TargetLegalizer for Mode {
     }
 }
 
-fn function() -> MachineFunction<LegalizedLir> {
+fn function() -> MachineFunction {
     let mut f = MachineFunction::new("legalize".into());
     f.blocks.push(MachineBlock::new(Block(0)));
     {

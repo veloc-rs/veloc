@@ -7,27 +7,27 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use veloc_lir::MachineFunction;
 
-pub struct StagePassPipeline<S> {
-    passes: Vec<Box<dyn FunctionPass<S>>>,
+pub struct FunctionPassPipeline {
+    passes: Vec<Box<dyn FunctionPass>>,
 }
 
-impl<S> StagePassPipeline<S> {
+impl FunctionPassPipeline {
     pub fn new() -> Self {
         Self { passes: Vec::new() }
     }
 
-    pub fn add_pass<P: FunctionPass<S> + 'static>(&mut self, pass: P) {
+    pub fn add_pass<P: FunctionPass + 'static>(&mut self, pass: P) {
         self.passes.push(Box::new(pass));
     }
 
-    pub fn add_boxed_pass(&mut self, pass: Box<dyn FunctionPass<S>>) {
+    pub fn add_boxed_pass(&mut self, pass: Box<dyn FunctionPass>) {
         self.passes.push(pass);
     }
 
     pub fn run(
         &self,
-        mfunc: &mut MachineFunction<S>,
-        ctx: &mut FunctionPassContext<'_, S>,
+        mfunc: &mut MachineFunction,
+        ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         let mut combined = PassEffect::NONE;
         for pass in &self.passes {
@@ -41,7 +41,7 @@ impl<S> StagePassPipeline<S> {
     }
 }
 
-impl<S> Default for StagePassPipeline<S> {
+impl Default for FunctionPassPipeline {
     fn default() -> Self {
         Self::new()
     }

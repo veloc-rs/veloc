@@ -1,6 +1,5 @@
 use alloc::string::String;
 use alloc::vec::Vec;
-use veloc_lir::stages::PrologueEpilogueInserted;
 use veloc_lir::{MachineFunction, SymbolTable};
 use veloc_mir::FuncId;
 
@@ -8,7 +7,7 @@ use veloc_mir::FuncId;
 pub struct CompiledFunction {
     pub func_id: FuncId,
     pub name: String,
-    pub machine_function: MachineFunction<PrologueEpilogueInserted>,
+    pub machine_function: MachineFunction,
     pub emitted: Option<crate::EmittedCode>,
 }
 

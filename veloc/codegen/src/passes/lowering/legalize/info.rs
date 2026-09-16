@@ -250,7 +250,7 @@ impl<'a> Operands<'a> {
     fn is_empty(self) -> bool {
         self.results.is_empty() && self.inputs.is_empty() && self.fields.is_empty()
     }
-    fn take<S>(&mut self, mfunc: &MachineFunction<S>, pattern: OperandPattern) -> Result<bool> {
+    fn take(&mut self, mfunc: &MachineFunction, pattern: OperandPattern) -> Result<bool> {
         match pattern {
             OperandPattern::Def(ty) | OperandPattern::Use(ty) => {
                 let regs = if matches!(pattern, OperandPattern::Def(_)) {
@@ -285,9 +285,9 @@ impl<'a> Operands<'a> {
         }
     }
 }
-pub fn format_inst_operands<S>(
+pub fn format_inst_operands(
     inst: &veloc_lir::InstRef<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
 ) -> Result<String> {
     let mut parts = Vec::new();
     for &reg in inst.results() {
@@ -311,9 +311,9 @@ pub fn format_inst_operands<S>(
     }
     Ok(format!("[{}]", parts.join(", ")))
 }
-pub fn inst_matches_operands<S>(
+pub fn inst_matches_operands(
     inst: &veloc_lir::InstRef<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
     patterns: &[OperandPattern],
 ) -> Result<bool> {
     let mut operands = Operands::new(inst);
@@ -324,17 +324,17 @@ pub fn inst_matches_operands<S>(
     }
     Ok(operands.is_empty())
 }
-pub fn inst_matches_operand_sequence<S>(
+pub fn inst_matches_operand_sequence(
     inst: &veloc_lir::InstRef<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
     patterns: &[OperandSeqPattern],
 ) -> Result<bool> {
     match_operand_sequence_impl(Operands::new(inst), mfunc, patterns)
 }
 
-pub fn operand_type_at<S>(
+pub fn operand_type_at(
     inst: &veloc_lir::InstRef<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
     index: usize,
 ) -> Result<Option<Type>> {
     inst.results()
@@ -345,9 +345,9 @@ pub fn operand_type_at<S>(
         .transpose()
 }
 
-pub fn operand_bit_width_at<S>(
+pub fn operand_bit_width_at(
     inst: &veloc_lir::InstRef<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
     index: usize,
 ) -> Result<Option<usize>> {
     Ok(operand_type_at(inst, mfunc, index)?
@@ -355,31 +355,31 @@ pub fn operand_bit_width_at<S>(
         .map(|width| width as usize))
 }
 
-pub fn same_operand_types<S>(
+pub fn same_operand_types(
     inst: &veloc_lir::InstRef<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
     indices: &[usize],
 ) -> Result<bool> {
     same_operand_property(inst, mfunc, indices, operand_type_at)
 }
 
-pub fn same_operand_widths<S>(
+pub fn same_operand_widths(
     inst: &veloc_lir::InstRef<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
     indices: &[usize],
 ) -> Result<bool> {
     same_operand_property(inst, mfunc, indices, operand_bit_width_at)
 }
 
-fn same_operand_property<S, T, F>(
+fn same_operand_property<T, F>(
     inst: &veloc_lir::InstRef<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
     indices: &[usize],
     mut property_at: F,
 ) -> Result<bool>
 where
     T: Copy + PartialEq,
-    F: FnMut(&veloc_lir::InstRef<'_>, &MachineFunction<S>, usize) -> Result<Option<T>>,
+    F: FnMut(&veloc_lir::InstRef<'_>, &MachineFunction, usize) -> Result<Option<T>>,
 {
     let Some((&first_index, rest)) = indices.split_first() else {
         return Ok(true);
@@ -398,9 +398,9 @@ where
     Ok(true)
 }
 
-fn match_operand_sequence_impl<S>(
+fn match_operand_sequence_impl(
     mut operands: Operands<'_>,
-    mfunc: &MachineFunction<S>,
+    mfunc: &MachineFunction,
     patterns: &[OperandSeqPattern],
 ) -> Result<bool> {
     let Some((first, rest)) = patterns.split_first() else {
@@ -424,7 +424,7 @@ fn match_operand_sequence_impl<S>(
     }
 }
 
-fn reg_type<S>(mfunc: &MachineFunction<S>, reg: Reg) -> Result<Type> {
+fn reg_type(mfunc: &MachineFunction, reg: Reg) -> Result<Type> {
     if reg.is_vreg() {
         Ok(mfunc.vreg_data(reg).ty)
     } else if reg.is_preg() {
@@ -1248,14 +1248,13 @@ mod tests {
     };
     use alloc::string::ToString;
     use veloc_lir::InstBuild;
-    use veloc_lir::stages::RawLir;
     use veloc_lir::{
         GenericOpcode, MachineBlock, MachineFunction, MachineOpcode, SymbolId, Writable,
     };
     use veloc_mir::{Block, Type};
 
-    fn make_function() -> MachineFunction<RawLir> {
-        let mut mfunc = MachineFunction::<RawLir>::new("test".to_string());
+    fn make_function() -> MachineFunction {
+        let mut mfunc = MachineFunction::new("test".to_string());
         mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
         mfunc
     }

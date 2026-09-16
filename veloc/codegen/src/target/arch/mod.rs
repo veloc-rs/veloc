@@ -13,9 +13,6 @@ use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 pub use veloc_lir::ValueId;
-use veloc_lir::stages::{
-    LegalizedLir, PreIselPrepared, PrologueEpilogueInserted, RegAllocated, SelectedLir,
-};
 pub use veloc_lir::{InstId, MachineFunction, Reg, VReg};
 use veloc_mir::{Type, TypeInfo};
 
@@ -263,7 +260,7 @@ pub trait TargetEmitter: Send + Sync {
         &self,
         _emitter: &mut Emitter,
         _block: &veloc_lir::MachineBlock,
-        _mfunc: &MachineFunction<PrologueEpilogueInserted>,
+        _mfunc: &MachineFunction,
     ) -> Result<(), crate::error::Error> {
         Ok(())
     }
@@ -273,14 +270,14 @@ pub trait TargetEmitter: Send + Sync {
         &self,
         emitter: &mut Emitter,
         inst: &veloc_lir::InstRef<'_>,
-        mfunc: &MachineFunction<PrologueEpilogueInserted>,
+        mfunc: &MachineFunction,
     ) -> Result<(), crate::error::Error>;
 
     /// 完成整个函数的发射，例如回填分支位移。
     fn finish_function(
         &self,
         _emitter: &mut Emitter,
-        _mfunc: &MachineFunction<PrologueEpilogueInserted>,
+        _mfunc: &MachineFunction,
     ) -> Result<(), crate::error::Error> {
         Ok(())
     }
@@ -405,7 +402,7 @@ pub trait TargetLegalizer: Send + Sync {
     fn legalize_action(
         &self,
         _inst: &veloc_lir::InstRef<'_>,
-        _mfunc: &MachineFunction<LegalizedLir>,
+        _mfunc: &MachineFunction,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
         Ok(None)
     }
@@ -421,7 +418,7 @@ pub trait TargetLegalizer: Send + Sync {
     fn legalize_instruction(
         &self,
         inst_id: veloc_lir::InstId,
-        mfunc: &mut veloc_lir::MachineFunction<LegalizedLir>,
+        mfunc: &mut veloc_lir::MachineFunction,
     ) -> Result<LegalizeResult, crate::error::Error>;
 }
 
@@ -431,7 +428,7 @@ pub trait TargetInstructionSelector: Send + Sync {
     /// 返回选择结果，由指令选择驱动器统一处理。
     fn select_instruction(
         &self,
-        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        ctx: &mut SelectionContext<'_>,
     ) -> Result<SelectResult, crate::error::Error>;
 }
 
@@ -442,7 +439,7 @@ pub trait TargetOperandLowering: Send + Sync {
     fn preselect_operand_constraints(
         &self,
         _inst: &veloc_lir::InstRef<'_>,
-        _mfunc: &MachineFunction<PreIselPrepared>,
+        _mfunc: &MachineFunction,
     ) -> OperandConstraintSet {
         OperandConstraintSet::default()
     }
@@ -453,7 +450,7 @@ pub trait TargetOperandLowering: Send + Sync {
     fn postselect_operand_constraints(
         &self,
         _inst: &veloc_lir::InstRef<'_>,
-        _mfunc: &MachineFunction<SelectedLir>,
+        _mfunc: &MachineFunction,
     ) -> OperandConstraintSet {
         OperandConstraintSet::default()
     }
@@ -465,7 +462,7 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 目标相关语义在进入后续阶段前已经明确。
     fn build_preselect_reg_copy(
         &self,
-        _mfunc: &mut MachineFunction<PreIselPrepared>,
+        _mfunc: &mut MachineFunction,
         _dst: Reg,
         _src: Reg,
     ) -> Result<InstId, crate::error::Error> {
@@ -475,7 +472,7 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 为 post-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
     fn build_postselect_reg_copy(
         &self,
-        _mfunc: &mut MachineFunction<SelectedLir>,
+        _mfunc: &mut MachineFunction,
         _dst: Reg,
         _src: Reg,
     ) -> Result<InstId, crate::error::Error> {
@@ -488,7 +485,7 @@ pub trait TargetPostIsel: Send + Sync {
     ///
     /// 在指令选择后、寄存器分配前执行。
     /// 默认不做任何处理，目标后端可以按需覆写。
-    fn combine_instructions(&self, _mfunc: &mut MachineFunction<SelectedLir>) {}
+    fn combine_instructions(&self, _mfunc: &mut MachineFunction) {}
 }
 
 pub trait TargetFrameLowering: Send + Sync {
@@ -496,36 +493,31 @@ pub trait TargetFrameLowering: Send + Sync {
     ///
     /// 在寄存器分配之后、插入序言/尾声之前调用，用于计算 callee-saved 保存区、
     /// 最终栈大小和 ABI 对齐等目标相关信息。
-    fn finalize_stack_frame(
-        &self,
-        _mfunc: &mut MachineFunction<RegAllocated>,
-        _call_conv: CallConv,
-    ) {
-    }
+    fn finalize_stack_frame(&self, _mfunc: &mut MachineFunction, _call_conv: CallConv) {}
 
     /// 插入函数序言和尾声 (Prologue/Epilogue Insertion)
     /// 在寄存器分配之后调用，将序言/尾声指令插入到 LIR 中。
-    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>);
+    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction);
 }
 
 pub trait TargetPassConfig: Send + Sync {
     /// 在合法化之后追加 target 自定义 function passes。
-    fn post_legalize_passes(&self) -> Vec<Box<dyn FunctionPass<veloc_lir::stages::LegalizedLir>>> {
+    fn post_legalize_passes(&self) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 
     /// 在 generic combine 之后追加 target 自定义 function passes。
-    fn pre_isel_passes(&self) -> Vec<Box<dyn FunctionPass<veloc_lir::stages::PreIselPrepared>>> {
+    fn pre_isel_passes(&self) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 
     /// 在指令选择之后追加 target 自定义 function passes。
-    fn post_isel_passes(&self) -> Vec<Box<dyn FunctionPass<veloc_lir::stages::SelectedLir>>> {
+    fn post_isel_passes(&self) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 
     /// 在寄存器分配之后追加 target 自定义 function passes。
-    fn post_regalloc_passes(&self) -> Vec<Box<dyn FunctionPass<veloc_lir::stages::RegAllocated>>> {
+    fn post_regalloc_passes(&self) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 

@@ -4,11 +4,7 @@ use super::*;
 pub struct X86_64FrameLowering;
 
 impl TargetFrameLowering for X86_64FrameLowering {
-    fn finalize_stack_frame(
-        &self,
-        mfunc: &mut MachineFunction<RegAllocated>,
-        call_conv: TargetCallConv,
-    ) {
+    fn finalize_stack_frame(&self, mfunc: &mut MachineFunction, call_conv: TargetCallConv) {
         let preserved_regs = call_conv.preserved_regs(TargetArch::X86_64);
         let mut used_callee_saved = Vec::new();
         for block in &mfunc.blocks {
@@ -39,7 +35,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
         mfunc.stack_frame.total_size = total;
     }
 
-    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction<RegAllocated>) {
+    fn insert_prologue_epilogue(&self, mfunc: &mut MachineFunction) {
         use crate::target::x86_64::isle::{REG_RBP, REG_RSP, TargetInst};
         use veloc_lir::MachineOpcode;
 

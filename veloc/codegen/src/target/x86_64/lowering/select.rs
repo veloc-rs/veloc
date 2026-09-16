@@ -17,7 +17,7 @@ impl X86_64Selector {
 impl TargetInstructionSelector for X86_64Selector {
     fn select_instruction(
         &self,
-        ctx: &mut SelectionContext<'_, PreIselPrepared>,
+        ctx: &mut SelectionContext<'_>,
     ) -> Result<SelectResult, crate::error::Error> {
         let cpu = self.lowering.cpu;
         let inst = ctx.mfunc.inst(ctx.inst_id);
