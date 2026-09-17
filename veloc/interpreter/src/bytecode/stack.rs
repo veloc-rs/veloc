@@ -16,10 +16,10 @@ pub(crate) fn stack_layout(func: &Function) -> Result<StackLayout, String> {
         size: 0,
         align: 1,
     };
-    for &block in func.layout().block_order() {
-        for &inst in &func.layout().blocks()[block].insts {
+    for block in func.layout().block_order() {
+        for inst in func.layout().block_insts(block) {
             if let InstView::Alloca { size, align } = func.dfg().inst(inst) {
-                if Some(block) != func.entry_block {
+                if Some(block) != func.entry_block() {
                     return Err("non-entry alloca requires dynamic stack support".into());
                 }
                 if size == 0 || !align.is_power_of_two() {

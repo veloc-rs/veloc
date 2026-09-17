@@ -1,5 +1,5 @@
 //! Generated scalar evaluation and local rewrites; MIR owns only representation.
-use alloc::vec::Vec;
+use alloc::{borrow::ToOwned, vec::Vec};
 use smallvec::SmallVec;
 use veloc_mir::constant::ScalarConst;
 use veloc_mir::{Function, Inst, InstView, IntCC, Opcode, Type, Value};
@@ -66,26 +66,27 @@ pub(crate) fn rewrite(func: &mut Function, inst: Inst) -> Option<SmallVec<[Inst;
         Replacement::Value(value) => {
             assert_eq!(results.len(), 1);
             assert_eq!(
-                edit.function().dfg().value_type(results[0]),
-                edit.function().dfg().value_type(value)
+                edit.body().dfg().value_type(results[0]),
+                edit.body().dfg().value_type(value)
             );
-            edit.replace_all_uses(results[0], value);
-            edit.erase_inst(inst);
+            edit.replace_results(inst, &[value]);
         }
         Replacement::Constants(constants) => {
             assert_eq!(results.len(), constants.len());
-            let mut previous = inst;
-            for (index, (value, constant)) in results.into_iter().zip(constants).enumerate() {
-                assert_eq!(edit.function().dfg().value_type(value), constant.ty());
-                if index == 0 {
-                    edit.replace_inst(inst, |writer| writer.scalar_const(constant));
-                } else {
-                    let next =
-                        edit.insert_after(previous, |writer| writer.scalar_const(constant), &[]);
-                    edit.move_result(value, next);
-                    previous = next;
-                }
+            let mut replacements = SmallVec::<[Value; 4]>::new();
+            for (value, constant) in results.into_iter().zip(constants) {
+                assert_eq!(edit.body().dfg().value_type(value), constant.ty());
+                let next = edit.insert_before(
+                    inst,
+                    |writer| writer.scalar_const(constant),
+                    &[constant.ty()],
+                );
+                let replacement = edit.body().dfg().first_result(next).unwrap();
+                let name = edit.body().dfg().value_name(value).to_owned();
+                edit.set_value_name(replacement, &name);
+                replacements.push(replacement);
             }
+            edit.replace_results(inst, &replacements);
         }
     }
     Some(affected)

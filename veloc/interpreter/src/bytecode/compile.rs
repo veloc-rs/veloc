@@ -343,7 +343,7 @@ fn identify_fused_values(func: &Function, rpo: &[Block]) -> std::collections::Ha
     let mut insts_with_fused_op = std::collections::HashSet::new();
 
     for &block in rpo {
-        for &inst in &func.layout().blocks()[block].insts {
+        for inst in func.layout().block_insts(block) {
             let idata = &func.dfg().inst(inst);
             if matches!(idata, InstView::Iconst { .. } | InstView::Bconst { .. }) {
                 let res = func.dfg().first_result(inst).unwrap();
@@ -1212,8 +1212,8 @@ pub(crate) fn compile_function(
             "interpreter does not support value type {ty}"
         );
     }
-    let entry = func.entry_block.expect("Function must have entry block");
-    let rpo = func.layout().compute_rpo(entry);
+    let entry = func.entry_block().expect("Function must have entry block");
+    let rpo = func.cfg().compute_rpo(entry);
 
     let liveness = analyze_liveness(func);
     let fused_values = identify_fused_values(func, &rpo);
@@ -1227,16 +1227,14 @@ pub(crate) fn compile_function(
 
 impl<'a> Compiler<'a> {
     fn apply_rpo(&mut self, rpo: &[Block]) {
-        let entry_block = self.func.entry_block.unwrap();
-        for &param in &self.func.layout().blocks()[entry_block].params {
+        let entry_block = self.func.entry_block().unwrap();
+        for &param in &self.func.dfg().blocks()[entry_block].params {
             self.param_indices.push(self.mapper.reg(param));
         }
 
         for &block in rpo {
             self.block_to_pc[block] = self.code.len() as u32;
-            let block_data = &self.func.layout().blocks()[block];
-
-            for &inst in &block_data.insts {
+            for inst in self.func.layout().block_insts(block) {
                 self.compile_inst(inst);
             }
         }
@@ -1501,7 +1499,7 @@ fn calculate_moves(
 
     let target_block = call.block;
     let args = call.args;
-    let params = &func.layout().blocks()[target_block].params;
+    let params = &func.dfg().blocks()[target_block].params;
 
     // 1. Collect all move requests with pre-allocated capacity
     let mut pending: Vec<(Reg, Reg)> = Vec::with_capacity(params.len());

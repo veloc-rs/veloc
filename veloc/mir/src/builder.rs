@@ -80,11 +80,9 @@ pub struct FunctionBuilder<'a> {
 impl<'a> FunctionBuilder<'a> {
     pub(crate) fn new(module: &'a mut ModuleData, func_id: FuncId) -> Self {
         let sealed = module.functions[func_id]
-            .layout
-            .block_order
-            .iter()
-            .copied()
-            .collect();
+            .body()
+            .map(|body| body.layout().block_order().collect())
+            .unwrap_or_default();
         let mut builder = Self {
             module,
             func_id,
@@ -95,7 +93,7 @@ impl<'a> FunctionBuilder<'a> {
             sealed,
         };
 
-        if let Some(entry) = builder.func().entry_block {
+        if let Some(entry) = builder.func().entry_block() {
             builder.current_block = Some(entry);
         }
 
@@ -142,7 +140,7 @@ impl<'a> FunctionBuilder<'a> {
     /// Allocate a fixed object once per invocation, even when the builder is
     /// currently in a loop. This is an explicit placement choice, not hoisting.
     pub fn entry_alloca(&mut self, size: u32, align: u32) -> Value {
-        let entry = self.func().entry_block.expect("entry block initialized");
+        let entry = self.func().entry_block().expect("entry block initialized");
         let inst = self.func_mut().edit().prepend_inst(
             entry,
             |writer: InstWriter<'_>| writer.alloca(size, align),
@@ -152,39 +150,37 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn create_block(&mut self) -> Block {
-        self.func_mut().layout.create_block()
+        if self.func().body().is_none() {
+            return self.func_mut().define_body().entry_block();
+        }
+        self.func_mut().edit().create_block()
     }
 
     pub fn switch_to_block(&mut self, block: Block) {
-        if !self.func().layout.block_order.contains(&block) {
-            self.func_mut().layout.append_block(block);
+        if !self.func().layout().contains_block(block) {
+            self.func_mut().edit().append_block(block);
         }
         self.current_block = Some(block);
-        if !self.func().is_defined() {
-            self.func_mut().entry_block = Some(block);
-        }
     }
 
     pub fn block_params(&self, block: Block) -> &[Value] {
-        &self.func().layout.blocks[block].params
+        &self.func().dfg().blocks[block].params
     }
 
     pub fn value_type(&self, val: Value) -> Type {
-        self.func().dfg.value_type(val)
+        self.func().dfg().value_type(val)
     }
 
     pub fn set_value_name(&mut self, val: Value, name: &str) {
-        self.func_mut().dfg.set_value_name(val, name);
+        self.func_mut().edit().set_value_name(val, name);
     }
 
     pub fn add_block_param(&mut self, block: Block, ty: Type) -> Value {
-        let val = self.func_mut().dfg.append_block_param(block, ty);
-        self.func_mut().layout.blocks[block].params.push(val);
-        val
+        self.func_mut().edit().append_block_param(block, ty)
     }
 
     pub fn func_params(&self) -> &[Value] {
-        if let Some(entry) = self.func().entry_block {
+        if let Some(entry) = self.func().entry_block() {
             self.block_params(entry)
         } else {
             &[]
@@ -212,8 +208,8 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn is_current_block_terminated(&self) -> bool {
         let block = self.current_block.expect("No current block");
-        if let Some(&last_inst) = self.func().layout.blocks[block].insts.last() {
-            self.func().dfg.opcode(last_inst).spec().is_terminator()
+        if let Some(last_inst) = self.func().layout().last_inst(block) {
+            self.func().dfg().opcode(last_inst).spec().is_terminator()
         } else {
             false
         }
@@ -323,7 +319,7 @@ impl<'a> FunctionBuilder<'a> {
                 .or_default()
                 .push((var, val));
         } else {
-            let preds = &self.func().layout.blocks[block].preds;
+            let preds = &self.func().cfg().blocks[block].preds;
             if let &[pred] = preds.as_slice() {
                 val = self.use_var_on_block(pred, var);
             } else {
@@ -339,12 +335,12 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     fn add_phi_operands(&mut self, block: Block, var: Variable, phi: Value) {
-        let index = self.func().layout.blocks[block]
+        let index = self.func().dfg().blocks[block]
             .params
             .iter()
             .position(|&v| v == phi)
             .expect("Phi not found in block params");
-        let preds = self.func().layout.blocks[block].preds.clone();
+        let preds = self.func().cfg().blocks[block].preds.clone();
         for p in preds {
             let val = self.use_var_on_block(p, var);
             self.add_block_param_to_jump(p, block, index, val);
@@ -364,17 +360,17 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn seal_all_blocks(&mut self) {
-        let blocks = self.func().layout.block_order.clone();
+        let blocks = self.func().layout().block_order().collect::<Vec<_>>();
         for block in blocks {
             self.seal_block(block);
         }
     }
 
     fn add_block_param_to_jump(&mut self, pred: Block, target: Block, index: usize, val: Value) {
-        let Some(&inst) = self.func().layout.blocks[pred].insts.last() else {
+        let Some(inst) = self.func().layout().last_inst(pred) else {
             return;
         };
-        self.func_mut().dfg.edit_successors(inst, |edge| {
+        self.func_mut().edit().edit_successors(inst, |edge| {
             if edge.block() == target {
                 edge.set_arg(index, val);
             }
@@ -427,7 +423,7 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         let inst = self.insert(data, &types);
         self.builder
             .func()
-            .dfg
+            .dfg()
             .inst_results(inst)
             .try_into()
             .expect("insert must create one result per supplied type")
@@ -436,16 +432,18 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
     /// Resolve dynamic result types, such as a call's signature, before insertion.
     fn insert_inferred(&mut self, data: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {
         let block = self.block();
-        let inst = self.builder.func_mut().dfg.create_inst(data);
+        let inst = self.builder.func_mut().edit().create_inst(data);
         let types = self
             .builder
             .func()
-            .dfg
+            .dfg()
             .inst(inst)
-            .result_types(&self.builder.func().dfg, self.builder.module, &[])
+            .result_types(&self.builder.func().dfg(), self.builder.module, &[])
             .unwrap_or_else(|error| panic!("{error}"));
-        self.builder.func_mut().dfg.append_results(inst, &types);
-        self.builder.func_mut().edit().append_existing(block, inst);
+        self.builder
+            .func_mut()
+            .edit()
+            .finish_inst(block, inst, &types);
         inst
     }
 

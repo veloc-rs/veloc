@@ -155,7 +155,7 @@ pub(super) fn parse(
     };
     let construction = match host {
         Host::Packed(format) => format!(
-            "self.func.dfg.create_inst({})",
+            "self.func.edit().create_inst({})",
             crate::generate::packing::constructor(op, format, opcode, parameter)
         ),
         Host::Operands(storage) => storage

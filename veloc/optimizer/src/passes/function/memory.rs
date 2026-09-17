@@ -53,9 +53,9 @@ pub fn run_memory(
     // memory address may escape. Storing a pointer also escapes its object.
     let mut escaped = HashSet::new();
     let mut escape_roots = Vec::new();
-    let blocks = func.layout().block_order().to_vec();
+    let blocks = func.layout().block_order().collect::<Vec<_>>();
     for &block in &blocks {
-        for &inst in &func.layout().blocks()[block].insts {
+        for inst in func.layout().block_insts(block) {
             let view = func.dfg().inst(inst);
             let access = inst.memory_access(func.dfg());
             for &value in func.dfg().operands(inst) {
@@ -93,7 +93,7 @@ pub fn run_memory(
     let mut dead = HashSet::new();
     for block in blocks {
         let mut cells: Vec<Cell> = Vec::new();
-        let insts = func.layout().blocks()[block].insts.clone();
+        let insts = func.layout().block_insts(block).collect::<Vec<_>>();
         for inst in insts {
             let view = func.dfg().inst(inst);
             if view.opcode() == Opcode::Return {

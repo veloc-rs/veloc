@@ -27,14 +27,14 @@ struct Checker<'a> {
 
 impl Structure {
     pub(super) fn check(func: &Function, module: &ModuleData) -> Result<Self> {
-        let blocks = func.layout.blocks.len();
+        let blocks = func.dfg().blocks.len();
         let mut checker = Checker {
             func,
             module,
             blocks: vec![false; blocks],
-            defined: vec![false; func.dfg.values().len()],
+            defined: vec![false; func.dfg().values().len()],
             structure: Self {
-                positions: vec![UNSEEN; func.dfg.instructions().len()],
+                positions: vec![UNSEEN; func.dfg().instructions().len()],
                 successors: vec![Vec::new(); blocks],
                 predecessors: vec![Vec::new(); blocks],
             },
@@ -50,8 +50,8 @@ impl Structure {
     }
 
     pub(super) fn check_ssa(mut self, func: &Function) -> Result<()> {
-        for &block in &func.layout.block_order {
-            let data = &func.layout.blocks[block];
+        for block in func.layout().block_order() {
+            let data = &func.cfg().blocks[block];
             let mut succs = data.succs.clone();
             let mut preds = data.preds.clone();
             succs.sort_unstable();
@@ -63,18 +63,18 @@ impl Structure {
                 return func.fail(format!("CFG index disagrees with terminators at {block}"));
             }
         }
-        let Some(entry) = func.entry_block else {
+        let Some(entry) = func.entry_block() else {
             return Ok(());
         };
-        let dom = Dominators::compute(&func.layout, entry);
-        for &block in &func.layout.block_order {
-            for &inst in &func.layout.blocks[block].insts {
-                for &value in func.dfg.operands(inst) {
-                    let definition = func.dfg.value_def(value);
+        let dom = Dominators::compute(&func.cfg(), entry, func.dfg().blocks.len());
+        for block in func.layout().block_order() {
+            for inst in func.layout().block_insts(block) {
+                for &value in func.dfg().operands(inst) {
+                    let definition = func.dfg().value_def(value);
                     let (owner, source) = match definition {
                         ValueDef::Param(owner) => (owner, None),
                         ValueDef::Inst(source) => {
-                            (func.layout.inst_block(source).unwrap(), Some(source))
+                            (func.layout().inst_block(source).unwrap(), Some(source))
                         }
                     };
                     if owner == block {
@@ -101,11 +101,11 @@ impl Checker<'_> {
     /// Establish block membership before inspecting any instructions or targets.
     fn check_blocks(&mut self) -> Result<()> {
         let func = self.func;
-        let layout = &func.layout;
+        let layout = &func.layout();
         let Some(signature) = self.module.signatures.get(func.signature) else {
             return func.fail("unknown function signature".into());
         };
-        for &block in &layout.block_order {
+        for block in layout.block_order() {
             let Some(present) = self.blocks.get_mut(block.0 as usize) else {
                 return func.fail(format!("unknown block {block} in layout"));
             };
@@ -114,11 +114,11 @@ impl Checker<'_> {
             }
             *present = true;
         }
-        if let Some(entry) = func.entry_block {
+        if let Some(entry) = func.entry_block() {
             if !self.blocks.get(entry.0 as usize).copied().unwrap_or(false) {
                 return func.fail("entry block is not in layout".into());
             }
-            let params = &layout.blocks[entry].params;
+            let params = &func.dfg().blocks[entry].params;
             // Types are checked later, once all parameter handles are valid.
             if params.len() != signature.params().len() {
                 return func.fail(format!(
@@ -127,7 +127,7 @@ impl Checker<'_> {
                     params.len()
                 ));
             }
-        } else if !layout.block_order.is_empty() {
+        } else if !layout.block_order().next().is_none() {
             return func.fail("function with blocks has no entry".into());
         }
         Ok(())
@@ -136,16 +136,16 @@ impl Checker<'_> {
     /// Check instruction placement and definitions, and reconstruct the CFG.
     fn check_definitions(&mut self) -> Result<()> {
         let func = self.func;
-        let dfg = &func.dfg;
-        for &block in &func.layout.block_order {
-            let data = &func.layout.blocks[block];
+        let dfg = &func.dfg();
+        for block in func.layout().block_order() {
+            let data = &func.dfg().blocks[block];
             for &param in &data.params {
                 self.define(param, ValueDef::Param(block))?;
             }
-            let Some(&last) = data.insts.last() else {
+            let Some(last) = func.layout().last_inst(block) else {
                 return Err(ValidationError::EmptyBlock(block).into());
             };
-            for (position, &inst) in data.insts.iter().enumerate() {
+            for (position, inst) in func.layout().block_insts(block).enumerate() {
                 let Some(slot) = self.structure.positions.get_mut(inst.0 as usize) else {
                     return func.fail(format!("unknown instruction {inst} in {block}"));
                 };
@@ -153,7 +153,7 @@ impl Checker<'_> {
                     return func.fail(format!("instruction {inst} appears more than once"));
                 }
                 *slot = position;
-                if func.layout.inst_block(inst) != Some(block) {
+                if func.layout().inst_block(inst) != Some(block) {
                     return func.fail(format!(
                         "instruction {inst} has inconsistent block ownership"
                     ));
@@ -201,7 +201,7 @@ impl Checker<'_> {
 
     fn define(&mut self, value: Value, owner: ValueDef) -> Result<()> {
         let func = self.func;
-        let Some(data) = func.dfg.values().get(value) else {
+        let Some(data) = func.dfg().values().get(value) else {
             return func.fail(format!("unknown definition {value}"));
         };
         if data.def != owner {
@@ -218,9 +218,9 @@ impl Checker<'_> {
 
     fn check_operands(&self) -> Result<()> {
         let func = self.func;
-        for &block in &func.layout.block_order {
-            for &inst in &func.layout.blocks[block].insts {
-                for &value in func.dfg.operands(inst) {
+        for block in func.layout().block_order() {
+            for inst in func.layout().block_insts(block) {
+                for &value in func.dfg().operands(inst) {
                     if !self.defined.get(value.0 as usize).copied().unwrap_or(false) {
                         return func.fail(format!(
                             "operand {value} of {inst} has no attached definition"
@@ -234,19 +234,19 @@ impl Checker<'_> {
 
     fn check_entry_params(&self) -> Result<()> {
         let func = self.func;
-        let Some(entry) = func.entry_block else {
+        let Some(entry) = func.entry_block() else {
             return Ok(());
         };
         let signature = &self.module.signatures[func.signature];
-        for (&param, &expected) in func.layout.blocks[entry]
+        for (&param, &expected) in func.dfg().blocks[entry]
             .params
             .iter()
             .zip(signature.params())
         {
-            if func.dfg.value_type(param) != expected {
+            if func.dfg().value_type(param) != expected {
                 return func.fail(format!(
                     "entry parameter {param} type mismatch: expected {expected}, got {}",
-                    func.dfg.value_type(param)
+                    func.dfg().value_type(param)
                 ));
             }
         }

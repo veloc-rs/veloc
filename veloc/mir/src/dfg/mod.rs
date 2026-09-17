@@ -10,8 +10,14 @@ mod pool;
 pub(crate) use operands::OperandRange;
 pub use operands::{Use, Uses};
 
+#[derive(Debug, Clone, Default)]
+pub struct BlockData {
+    pub params: alloc::vec::Vec<Value>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DataFlowGraph {
+    pub(crate) blocks: PrimaryMap<crate::Block, BlockData>,
     pub(crate) instructions: PrimaryMap<Inst, StoredInst>,
     pub(crate) fields: FieldPool,
     pub(crate) values: PrimaryMap<Value, ValueData>,
@@ -33,6 +39,7 @@ impl DataFlowGraph {
 
     pub fn new() -> Self {
         Self {
+            blocks: PrimaryMap::new(),
             instructions: PrimaryMap::new(),
             fields: FieldPool::default(),
             values: PrimaryMap::new(),
@@ -44,7 +51,7 @@ impl DataFlowGraph {
     }
 
     /// 为指令添加多个结果值（支持多返回值）
-    pub fn append_results(&mut self, inst: Inst, types: &[Type]) -> ValueList {
+    pub(crate) fn append_results(&mut self, inst: Inst, types: &[Type]) -> ValueList {
         assert!(self.inst_results(inst).is_empty(), "results already bound");
         let values = types.iter().map(|&ty| {
             self.values.push(ValueData {
@@ -67,29 +74,21 @@ impl DataFlowGraph {
         self.inst_results(inst).first().copied()
     }
 
-    pub(crate) fn move_result(&mut self, value: Value, to: Inst) {
-        let ValueDef::Inst(from) = self.value_def(value) else {
-            panic!("cannot move a block parameter");
-        };
-        if from == to {
-            return;
-        }
-        let index = self
-            .inst_results(from)
-            .iter()
-            .position(|&v| v == value)
-            .expect("result missing from definition");
-        assert!(!self.inst_results(to).contains(&value), "duplicate result");
-        self.inst_results[from].remove(index, &mut self.value_list_pool);
-        self.inst_results[to].push(value, &mut self.value_list_pool);
-        self.values[value].def = ValueDef::Inst(to);
+    pub fn blocks(&self) -> &PrimaryMap<crate::Block, BlockData> {
+        &self.blocks
+    }
+
+    pub fn create_block(&mut self) -> crate::Block {
+        self.blocks.push(BlockData::default())
     }
 
     pub fn append_block_param(&mut self, block: Block, ty: Type) -> Value {
-        self.values.push(ValueData {
+        let value = self.values.push(ValueData {
             ty,
             def: ValueDef::Param(block),
-        })
+        });
+        self.blocks[block].params.push(value);
+        value
     }
 
     pub fn opcode(&self, inst: Inst) -> crate::Opcode {
@@ -113,6 +112,17 @@ impl DataFlowGraph {
             dfg: self,
             target: None,
         }
+    }
+
+    /// Construct standalone DFG data with its result definitions in one call.
+    pub fn create_inst_with_results(
+        &mut self,
+        build: impl FnOnce(InstWriter<'_>) -> Inst,
+        types: &[Type],
+    ) -> Inst {
+        let inst = self.create_inst(build);
+        self.append_results(inst, types);
+        inst
     }
 
     pub fn create_inst(&mut self, build: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {

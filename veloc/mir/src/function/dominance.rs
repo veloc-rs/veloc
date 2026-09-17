@@ -1,7 +1,7 @@
 //! Immediate dominators for the entry-reachable CFG. This is a snapshot: rebuild
 //! it after changing control flow. Instruction order is checked separately.
 
-use super::Layout;
+use super::ControlFlowGraph;
 use crate::Block;
 use alloc::vec::Vec;
 
@@ -13,9 +13,8 @@ pub struct Dominators {
 
 impl Dominators {
     /// Requires valid CFG adjacency and an entry present in the layout.
-    pub fn compute(layout: &Layout, entry: Block) -> Self {
-        let count = layout.blocks.len();
-        let order = layout.compute_rpo(entry);
+    pub fn compute(cfg: &ControlFlowGraph, entry: Block, count: usize) -> Self {
+        let order = cfg.compute_rpo(entry);
         let mut rank = vec![usize::MAX; count];
         for (index, block) in order.iter().enumerate() {
             rank[block.0 as usize] = index;
@@ -26,7 +25,7 @@ impl Dominators {
         while changed {
             changed = false;
             for &block in order.iter().skip(1) {
-                let mut preds = layout.blocks[block]
+                let mut preds = cfg.blocks[block]
                     .preds
                     .iter()
                     .copied()

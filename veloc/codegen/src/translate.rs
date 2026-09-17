@@ -87,18 +87,18 @@ impl<'a> IRTranslator<'a> {
     /// 将 IR 模块翻译为 MachineModule
     pub fn translate_module(&self) -> Result<MachineModule> {
         for (_, func) in &self.module.functions {
-            if func
-                .dfg()
-                .values()
-                .iter()
-                .any(|(_, value)| value.ty.is_callable())
-                || self
-                    .module
-                    .get_signature(func.signature)
-                    .params()
+            if func.body().is_some_and(|body| {
+                body.dfg()
+                    .values()
                     .iter()
-                    .chain(self.module.get_signature(func.signature).returns())
-                    .any(|ty| ty.is_callable())
+                    .any(|(_, value)| value.ty.is_callable())
+            }) || self
+                .module
+                .get_signature(func.signature)
+                .params()
+                .iter()
+                .chain(self.module.get_signature(func.signature).returns())
+                .any(|ty| ty.is_callable())
             {
                 return Err(Error::message(
                     "typed callables and tail calls require callable/environment and tail-call lowering before native code generation",
@@ -130,6 +130,9 @@ impl<'a> IRTranslator<'a> {
         func: &Function,
         mmodule: &mut MachineModule,
     ) -> Result<MachineFunction> {
+        if func.body().is_none() {
+            return Ok(MachineFunction::new(func.name.clone()));
+        }
         let mut ctx = TranslationContext {
             func,
             mmodule,
@@ -145,24 +148,30 @@ impl<'a> IRTranslator<'a> {
         }
 
         // 2. 翻译基本块和指令
-        for (idx, &block_id) in func.layout().block_order().iter().enumerate() {
+        let entry = func.entry_block();
+        let order = entry.into_iter().chain(
+            func.layout()
+                .block_order()
+                .filter(|&block| Some(block) != entry),
+        );
+        for block_id in order {
             let mut mblock = MachineBlock::new(block_id);
-            mblock.params = func.layout().blocks()[block_id]
+            mblock.params = func.dfg().blocks()[block_id]
                 .params
                 .iter()
                 .map(|value| ctx.value_map[*value])
                 .collect();
 
             // 如果是入口块，先处理函数参数
-            if idx == 0 {
-                if func.layout().blocks()[block_id].preds.is_empty() {
+            if Some(block_id) == entry {
+                if func.cfg().blocks()[block_id].preds.is_empty() {
                     // No backedge: Arg/ABI copies are the sole definitions.
                     mblock.params.clear();
                     self.lower_arguments(&mut ctx, &mut mblock, false);
                 } else {
                     // An entry loop needs genuine phi parameters. Give incoming
                     // ABI values a separate entry predecessor and fresh identities.
-                    let entry = veloc_mir::Block::from_u32(func.layout().blocks().len() as u32);
+                    let entry = veloc_mir::Block::from_u32(func.dfg().blocks().len() as u32);
                     let mut incoming = MachineBlock::new(entry);
                     let args = self.lower_arguments(&mut ctx, &mut incoming, true);
                     let jump = ctx.mfunc.writer().br(block_id);
@@ -177,7 +186,7 @@ impl<'a> IRTranslator<'a> {
                 }
             }
 
-            for &inst_id in &func.layout().blocks()[block_id].insts {
+            for inst_id in func.layout().block_insts(block_id) {
                 self.translate_instruction(inst_id, &mut ctx, &mut mblock)?;
             }
 
@@ -263,7 +272,7 @@ impl<'a> IRTranslator<'a> {
                 "tail calls require tail-call lowering before native code generation",
             )),
             InstView::Alloca { size, align } => {
-                if Some(mblock.id) != ctx.func.entry_block {
+                if Some(mblock.id) != ctx.func.entry_block() {
                     return Err(Error::translate(
                         "non-entry alloca requires dynamic stack lowering",
                     ));

@@ -21,9 +21,9 @@ fn main() {
         )?;
         let mut data = (*module).clone();
         let (_, func) = data.functions.iter_mut().next().unwrap();
-        let ret = *func.layout().blocks()[func.entry_block.unwrap()]
-            .insts
-            .last()
+        let ret = func
+            .layout()
+            .last_inst(func.entry_block().unwrap())
             .unwrap();
         let second = func.params()[1];
         let mut analyses = AnalysisManager::new(func);
@@ -359,7 +359,7 @@ fn roundtrip(module: &Module) -> Result<String> {
 fn simplify(module: Module) -> Result<Module> {
     let mut data = (*module).clone();
     for (_, function) in data.functions.iter_mut() {
-        if function.entry_block.is_none() {
+        if function.entry_block().is_none() {
             continue;
         }
         let mut metrics = Metrics::default();

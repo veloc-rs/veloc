@@ -50,12 +50,17 @@ impl Function {
     }
 
     fn validate_body(&self, module: &ModuleData) -> Result<()> {
+        if module.signatures.get(self.signature).is_none() {
+            return self.fail("unknown function signature".into());
+        }
+        if self.body().is_none() {
+            return Ok(());
+        }
         let structure = control::Structure::check(self, module)?;
-        let constants = ConstContext::new(&self.dfg);
+        let constants = ConstContext::new(&self.dfg());
         let context = VerifyContext::new(module, self.signature);
-        for &block in &self.layout.block_order {
-            let block_data = &self.layout.blocks[block];
-            for &inst in &block_data.insts {
+        for block in self.layout().block_order() {
+            for inst in self.layout().block_insts(block) {
                 self.validate_inst(module, inst, &constants, &context)?;
             }
         }
@@ -70,7 +75,7 @@ impl Function {
         constants: &ConstContext<'_>,
         context: &VerifyContext<'_>,
     ) -> Result<()> {
-        let data = &self.dfg.inst(inst);
+        let data = &self.dfg().inst(inst);
         let opcode = data.opcode();
         let spec = opcode.spec();
 
@@ -84,13 +89,13 @@ impl Function {
 
         let mut operands = SmallVec::<[Type; 4]>::new();
         data.visit_type_operands(|value| {
-            operands.push(self.dfg.value_type(value));
+            operands.push(self.dfg().value_type(value));
         });
         let results = self
-            .dfg
+            .dfg()
             .inst_results(inst)
             .iter()
-            .map(|&value| self.dfg.value_type(value))
+            .map(|&value| self.dfg().value_type(value))
             .collect::<SmallVec<[Type; 2]>>();
         opcode
             .validate_types(&operands, &results)
@@ -104,7 +109,14 @@ impl Function {
             })?;
 
         self.validate_constraints(
-            &self.dfg, module, inst, data, &operands, &results, constants, context,
+            &self.dfg(),
+            module,
+            inst,
+            data,
+            &operands,
+            &results,
+            constants,
+            context,
         )?;
 
         data.try_visit_successors(|call| self.validate_block_call(call, spec.mnemonic))
@@ -114,7 +126,7 @@ impl Function {
     fn constraint_error(&self, inst: Inst, message: &str) -> crate::Error {
         ValidationError::Other(alloc::format!(
             "{} constraint at {:?}: {}",
-            self.dfg.opcode(inst).spec().mnemonic,
+            self.dfg().opcode(inst).spec().mnemonic,
             inst,
             message
         ))
@@ -138,7 +150,7 @@ impl Function {
             ));
         }
         for (index, (&value, expected)) in values.iter().zip(expected).enumerate() {
-            let got = self.dfg.value_type(value);
+            let got = self.dfg().value_type(value);
             if got != expected {
                 return self.fail(alloc::format!(
                     "{} {} {} type mismatch: expected {}, got {}",
@@ -154,12 +166,12 @@ impl Function {
     }
 
     fn validate_block_call(&self, call: Successor<'_>, kind: &str) -> Result<()> {
-        let params = &self.layout.blocks[call.block].params;
+        let params = &self.dfg().blocks[call.block].params;
         self.validate_values(
             kind,
             "value",
             call.args,
-            params.iter().map(|&value| self.dfg.value_type(value)),
+            params.iter().map(|&value| self.dfg().value_type(value)),
         )
     }
 
@@ -199,7 +211,7 @@ mod tests {
             builder.init_entry_block();
             let args = builder.func_params().to_vec();
             let call = builder.ins().call(callee, &args);
-            let results = builder.func().dfg.inst_results(call).to_vec();
+            let results = builder.func().dfg().inst_results(call).to_vec();
             let target = builder.create_block();
             let params = types
                 .iter()
@@ -215,22 +227,26 @@ mod tests {
         let mut module = module.build_data();
 
         // A mismatch beyond the inline capacity must not be skipped.
-        module.functions[caller].dfg.values[last_param].ty = Type::I32;
+        module.functions[caller]
+            .edit()
+            .set_value_type(last_param, Type::I32);
         let error = module.validate().unwrap_err().to_string();
         assert!(error.contains("value 6 type mismatch"), "{error}");
-        module.functions[caller].dfg.values[last_param].ty = Type::BOOL;
+        module.functions[caller]
+            .edit()
+            .set_value_type(last_param, Type::BOOL);
         module.validate().unwrap();
 
-        module.functions[caller].layout.blocks[target].params.pop();
-        // Keep all uses attached so this case isolates the edge arity error.
         let func = &mut module.functions[caller];
-        let ret = *func.layout.blocks[target].insts.last().unwrap();
-        let params = func.layout.blocks[target].params.clone();
+        let entry = func.entry_block().unwrap();
+        let jump = func.layout().last_inst(entry).unwrap();
+        let args = func.params()[..6].to_vec();
+        let edge = crate::BlockCall::new(target, &args);
         func.edit()
-            .replace_inst(ret, |writer: crate::InstWriter<'_>| writer.ret(&params));
+            .replace_inst(jump, |writer| writer.jump(edge.as_view()));
         let error = module.validate().unwrap_err().to_string();
         assert!(
-            error.contains("value count mismatch: expected 6, got 7"),
+            error.contains("value count mismatch: expected 7, got 6"),
             "{error}"
         );
     }
@@ -250,14 +266,14 @@ mod tests {
         module.validate().unwrap();
         let mut module = module.build_data();
         let func = &mut module.functions[func];
-        let inst = *func.layout.blocks[func.entry_block.unwrap()]
-            .insts
-            .last()
+        let inst = func
+            .layout()
+            .last_inst(func.entry_block().unwrap())
             .unwrap();
-        let crate::InstView::BrTable { index, .. } = func.dfg.inst(inst) else {
+        let crate::InstView::BrTable { index, .. } = func.dfg().inst(inst) else {
             unreachable!()
         };
-        func.dfg
+        func.edit()
             .replace_inst(inst, |writer: crate::InstWriter<'_>| {
                 writer.br_table(index, [])
             });
@@ -296,10 +312,10 @@ mod tests {
             let mut builder = module.builder(id);
             builder.init_entry_block();
             let value = builder.ins().i32x4const([0; 4]);
-            let inst = builder.func().dfg.value_inst(value).unwrap();
+            let inst = builder.func().dfg().value_inst(value).unwrap();
             builder
                 .func_mut()
-                .dfg
+                .edit()
                 .replace_inst(inst, |writer: crate::InstWriter<'_>| {
                     writer.vconst(crate::VectorConst::dense(
                         crate::Type::I32X4.as_vector().unwrap(),

@@ -101,10 +101,10 @@ impl<'a> InstPrinter<'a> {
     }
 
     fn fmt_signature(&self, f: &mut dyn Write, sig: &Signature) -> Result {
-        f.write_char('(')?;
-        self.fmt_types(f, sig.params())?;
-        f.write_str(") -> ")?;
-        self.fmt_ret_types(f, sig.returns())
+        TypePrinter {
+            module: self.module,
+        }
+        .fmt_signature(f, sig)
     }
 
     pub(super) fn fmt_func_ref(&self, f: &mut dyn Write, id: FuncId) -> Result {
@@ -122,6 +122,52 @@ impl<'a> InstPrinter<'a> {
             write!(f, "{}", self.vf(value))?;
         }
         Ok(())
+    }
+
+    pub fn fmt_ret_types(&self, f: &mut dyn Write, types: &[Type]) -> Result {
+        TypePrinter {
+            module: self.module,
+        }
+        .fmt_ret_types(f, types)
+    }
+    fn fmt_type(&self, f: &mut dyn Write, ty: Type) -> Result {
+        TypePrinter {
+            module: self.module,
+        }
+        .fmt_type(f, ty)
+    }
+
+    pub(super) fn fmt_block_call(&self, f: &mut dyn Write, call: crate::Successor<'_>) -> Result {
+        write!(f, "{}(", call.block)?;
+        self.fmt_values(f, call.args)?;
+        f.write_char(')')
+    }
+
+    pub(super) fn fmt_block_calls(&self, f: &mut dyn Write, calls: Successors<'_>) -> Result {
+        f.write_char('[')?;
+        for (index, call) in calls.iter().enumerate() {
+            if index != 0 {
+                f.write_str(", ")?;
+            }
+            self.fmt_block_call(f, call)?;
+        }
+        f.write_char(']')
+    }
+
+    pub(super) fn vf(&self, value: Value) -> ValueFmt<'a> {
+        ValueFmt(self.dfg, value)
+    }
+}
+
+struct TypePrinter<'a> {
+    module: Option<&'a Module>,
+}
+impl TypePrinter<'_> {
+    fn fmt_signature(&self, f: &mut dyn Write, sig: &Signature) -> Result {
+        f.write_char('(')?;
+        self.fmt_types(f, sig.params())?;
+        f.write_str(") -> ")?;
+        self.fmt_ret_types(f, sig.returns())
     }
 
     fn fmt_types(&self, f: &mut dyn Write, types: &[Type]) -> Result {
@@ -161,48 +207,25 @@ impl<'a> InstPrinter<'a> {
             write!(f, "{ty}")
         }
     }
-
-    pub(super) fn fmt_block_call(&self, f: &mut dyn Write, call: crate::Successor<'_>) -> Result {
-        write!(f, "{}(", call.block)?;
-        self.fmt_values(f, call.args)?;
-        f.write_char(')')
-    }
-
-    pub(super) fn fmt_block_calls(&self, f: &mut dyn Write, calls: Successors<'_>) -> Result {
-        f.write_char('[')?;
-        for (index, call) in calls.iter().enumerate() {
-            if index != 0 {
-                f.write_str(", ")?;
-            }
-            self.fmt_block_call(f, call)?;
-        }
-        f.write_char(']')
-    }
-
-    pub(super) fn vf(&self, value: Value) -> ValueFmt<'a> {
-        ValueFmt(self.dfg, value)
-    }
 }
 
 pub struct FuncPrinter<'a> {
     pub func: &'a Function,
     pub module: &'a Module,
-    inst_printer: InstPrinter<'a>,
 }
 
 impl<'a> FuncPrinter<'a> {
     pub fn new(func: &'a Function, module: &'a Module) -> Self {
-        Self {
-            func,
-            module,
-            inst_printer: InstPrinter::new(&func.dfg, Some(module)),
-        }
+        Self { func, module }
     }
 
     pub fn print(&self, f: &mut dyn Write) -> Result {
         self.fmt_signature(f)?;
         writeln!(f)?;
-        for &block in &self.func.layout.block_order {
+        let Some(body) = self.func.body() else {
+            return Ok(());
+        };
+        for block in body.layout().block_order() {
             self.fmt_block(f, block)?;
         }
         Ok(())
@@ -211,16 +234,19 @@ impl<'a> FuncPrinter<'a> {
     fn fmt_signature(&self, f: &mut dyn Write) -> Result {
         write!(f, "{} function {}(", self.func.linkage, self.func.name)?;
         let sig = &self.module.signatures[self.func.signature];
-        self.inst_printer.fmt_types(f, sig.params())?;
+        let printer = TypePrinter {
+            module: Some(self.module),
+        };
+        printer.fmt_types(f, sig.params())?;
         f.write_str(") -> ")?;
-        self.inst_printer.fmt_ret_types(f, sig.returns())
+        printer.fmt_ret_types(f, sig.returns())
     }
 
     fn fmt_block(&self, f: &mut dyn Write, block: crate::Block) -> Result {
         self.fmt_block_header(f, block)?;
-        for &inst in &self.func.layout.blocks[block].insts {
+        for inst in self.func.layout().block_insts(block) {
             f.write_str("  ")?;
-            self.inst_printer.fmt_inst_with_results(f, inst)?;
+            InstPrinter::new(self.func.dfg(), Some(self.module)).fmt_inst_with_results(f, inst)?;
             writeln!(f)?;
         }
         Ok(())
@@ -228,11 +254,11 @@ impl<'a> FuncPrinter<'a> {
 
     fn fmt_block_header(&self, f: &mut dyn Write, block: crate::Block) -> Result {
         write!(f, "{block}(")?;
-        for (index, &param) in self.func.layout.blocks[block].params.iter().enumerate() {
+        for (index, &param) in self.func.dfg().blocks[block].params.iter().enumerate() {
             if index != 0 {
                 f.write_str(", ")?;
             }
-            self.inst_printer.fmt_definition(f, param)?;
+            InstPrinter::new(self.func.dfg(), Some(self.module)).fmt_definition(f, param)?;
         }
         writeln!(f, "):")
     }

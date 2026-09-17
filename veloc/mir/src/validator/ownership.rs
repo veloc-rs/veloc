@@ -15,31 +15,31 @@ struct Ownership<'a> {
 }
 
 pub(super) fn validate(func: &Function) -> Result<()> {
-    let Some(entry) = func.entry_block else {
+    let Some(entry) = func.entry_block() else {
         return Ok(());
     };
-    if !func.dfg.values().iter().any(|(_, v)| v.ty.is_owned()) {
+    if !func.dfg().values().iter().any(|(_, v)| v.ty.is_owned()) {
         return Ok(());
     }
     let mut ownership = Ownership {
         func,
-        entries: vec![None; func.layout.blocks.len()],
+        entries: vec![None; func.dfg().blocks.len()],
         pending: vec![entry],
     };
     ownership.entries[entry.0 as usize] = Some(
-        func.layout.blocks[entry]
+        func.dfg().blocks[entry]
             .params
             .iter()
             .copied()
-            .filter(|&v| func.dfg.value_type(v).is_owned())
+            .filter(|&v| func.dfg().value_type(v).is_owned())
             .collect(),
     );
     while let Some(block) = ownership.pending.pop() {
         let mut available = ownership.entries[block.0 as usize]
             .clone()
             .expect("pending blocks have an entry state");
-        for &inst in &func.layout.blocks[block].insts {
-            let view = func.dfg.inst(inst);
+        for inst in func.layout().block_insts(block) {
+            let view = func.dfg().inst(inst);
             // Non-edge inputs execute once, before choosing any successor.
             view.try_visit_ownership(|value, moves| {
                 consume(func, inst, &mut available, value, moves)
@@ -55,8 +55,8 @@ pub(super) fn validate(func: &Function) -> Result<()> {
                 continue;
             }
 
-            for &result in func.dfg.inst_results(inst) {
-                if func.dfg.value_type(result).is_owned() && !available.insert(result) {
+            for &result in func.dfg().inst_results(inst) {
+                if func.dfg().value_type(result).is_owned() && !available.insert(result) {
                     return Err(func
                         .constraint_error(inst, "owned callable overwritten before consumption"));
                 }
@@ -86,8 +86,8 @@ impl Ownership<'_> {
         for &value in edge.args {
             consume(self.func, inst, &mut next, value, true)?;
         }
-        for &param in &self.func.layout.blocks[edge.block].params {
-            if self.func.dfg.value_type(param).is_owned() && !next.insert(param) {
+        for &param in &self.func.dfg().blocks[edge.block].params {
+            if self.func.dfg().value_type(param).is_owned() && !next.insert(param) {
                 return Err(self
                     .func
                     .constraint_error(inst, "backedge overwrites an unconsumed callable"));
@@ -124,7 +124,7 @@ fn consume(
     value: Value,
     moves: bool,
 ) -> Result<()> {
-    if !func.dfg.value_type(value).is_owned() {
+    if !func.dfg().value_type(value).is_owned() {
         return Ok(());
     }
     if !moves {

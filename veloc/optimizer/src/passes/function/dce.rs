@@ -36,7 +36,7 @@ pub fn run_dce(func: &mut Function, print_removed: bool, metrics: &mut Metrics) 
 
     // 1. Identify roots: instructions with side effects
     for block in func.layout().block_order() {
-        for &inst in &func.layout().blocks()[*block].insts {
+        for inst in func.layout().block_insts(block) {
             if !func.dfg().inst(inst).can_erase() && live_insts.insert(inst) {
                 worklist.push(inst);
             }
@@ -58,10 +58,8 @@ pub fn run_dce(func: &mut Function, print_removed: bool, metrics: &mut Metrics) 
     let dead_insts: Vec<Inst> = func
         .layout()
         .block_order()
-        .iter()
-        .flat_map(|block| &func.layout().blocks()[*block].insts)
-        .filter(|&&inst| !live_insts.contains(&inst))
-        .copied()
+        .flat_map(|block| func.layout().block_insts(block))
+        .filter(|inst| !live_insts.contains(inst))
         .collect();
 
     for &inst in &dead_insts {

@@ -22,7 +22,7 @@ impl Function {
             let inst = self.dfg().value_inst(ptr)?;
             match self.dfg().inst(inst) {
                 crate::InstView::Alloca { .. }
-                    if self.layout().inst_block(inst) == self.entry_block =>
+                    if self.layout().inst_block(inst) == self.entry_block() =>
                 {
                     return Some((inst, offset));
                 }

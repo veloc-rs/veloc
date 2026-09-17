@@ -1,147 +1,200 @@
-//! Block order, instruction placement and control-flow edges within a function.
+//! Stable IDs with independently editable block and instruction order.
+//!
+//! Links live in indexed storage, not separately allocated nodes. Insertion and
+//! removal update only neighboring links; instruction ownership stays directly
+//! queryable. Iteration borrows the layout, so mutating passes use stable anchors
+//! or explicitly collect a snapshot when they need one.
+use crate::{Block, Inst};
+use cranelift_entity::{SecondaryMap, packed_option::PackedOption};
 
-use crate::{Block, Inst, Value};
-use alloc::vec::Vec;
-use cranelift_entity::{PrimaryMap, SecondaryMap, packed_option::PackedOption};
-
-#[derive(Debug, Clone)]
-pub struct BlockData {
-    pub params: Vec<Value>,
-    pub preds: Vec<Block>,
-    pub succs: Vec<Block>,
-    pub insts: Vec<Inst>,
+#[derive(Debug, Clone, Default)]
+struct BlockNode {
+    prev: PackedOption<Block>,
+    next: PackedOption<Block>,
+    inserted: bool,
+    first: PackedOption<Inst>,
+    last: PackedOption<Inst>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
+struct InstNode {
+    block: PackedOption<Block>,
+    prev: PackedOption<Inst>,
+    next: PackedOption<Inst>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct Layout {
-    pub(crate) blocks: PrimaryMap<Block, BlockData>,
-    pub(crate) block_order: Vec<Block>,
-    inst_blocks: SecondaryMap<Inst, PackedOption<Block>>,
+    blocks: SecondaryMap<Block, BlockNode>,
+    first: PackedOption<Block>,
+    last: PackedOption<Block>,
+    insts: SecondaryMap<Inst, InstNode>,
 }
 
 impl Layout {
     pub fn new() -> Self {
-        Self {
-            blocks: PrimaryMap::new(),
-            block_order: Vec::new(),
-            inst_blocks: SecondaryMap::new(),
+        Self::default()
+    }
+    /// Placed blocks in physical order, independently of CFG traversal order.
+    pub fn block_order(&self) -> impl DoubleEndedIterator<Item = Block> + '_ {
+        Order {
+            front: self.first.expand(),
+            back: self.last.expand(),
+            links: |b| (self.blocks[b].prev.expand(), self.blocks[b].next.expand()),
         }
     }
-
-    pub fn blocks(&self) -> &PrimaryMap<Block, BlockData> {
-        &self.blocks
+    /// Instructions in execution order; yields stable IDs, not array positions.
+    pub fn block_insts(&self, block: Block) -> impl DoubleEndedIterator<Item = Inst> + '_ {
+        Order {
+            front: self.first_inst(block),
+            back: self.last_inst(block),
+            links: |i| (self.prev_inst(i), self.next_inst(i)),
+        }
     }
-
-    pub fn block_order(&self) -> &[Block] {
-        &self.block_order
+    pub fn contains_block(&self, block: Block) -> bool {
+        self.blocks[block].inserted
     }
-
-    pub(crate) fn create_block(&mut self) -> Block {
-        self.blocks.push(BlockData {
-            params: Vec::new(),
-            preds: Vec::new(),
-            succs: Vec::new(),
-            insts: Vec::new(),
-        })
+    pub fn first_inst(&self, block: Block) -> Option<Inst> {
+        self.blocks[block].first.expand()
     }
-
+    pub fn last_inst(&self, block: Block) -> Option<Inst> {
+        self.blocks[block].last.expand()
+    }
+    pub fn next_inst(&self, inst: Inst) -> Option<Inst> {
+        self.insts[inst].next.expand()
+    }
+    pub fn prev_inst(&self, inst: Inst) -> Option<Inst> {
+        self.insts[inst].prev.expand()
+    }
+    pub fn inst_block(&self, inst: Inst) -> Option<Block> {
+        self.insts[inst].block.expand()
+    }
     pub(crate) fn append_block(&mut self, block: Block) {
-        self.block_order.push(block);
+        assert!(!self.contains_block(block), "block already in layout");
+        self.blocks[block].prev = self.last;
+        if let Some(last) = self.last.expand() {
+            self.blocks[last].next = block.into();
+        } else {
+            self.first = block.into();
+        }
+        self.last = block.into();
+        self.blocks[block].inserted = true;
     }
-
-    pub(crate) fn append_inst(&mut self, block: Block, inst: Inst) {
+    pub(crate) fn move_block_before(&mut self, block: Block, before: Block) {
+        assert!(self.contains_block(block) && self.contains_block(before));
+        if block == before {
+            return;
+        }
+        let prev = self.blocks[block].prev;
+        let next = self.blocks[block].next;
+        if let Some(prev) = prev.expand() {
+            self.blocks[prev].next = next;
+        } else {
+            self.first = next;
+        }
+        if let Some(next) = next.expand() {
+            self.blocks[next].prev = prev;
+        } else {
+            self.last = prev;
+        }
+        let prev = self.blocks[before].prev;
+        self.blocks[block].prev = prev;
+        self.blocks[block].next = before.into();
+        self.blocks[before].prev = block.into();
+        if let Some(prev) = prev.expand() {
+            self.blocks[prev].next = block.into();
+        } else {
+            self.first = block.into();
+        }
+    }
+    fn link_inst(&mut self, block: Block, inst: Inst, prev: Option<Inst>, next: Option<Inst>) {
         assert!(
-            self.inst_blocks[inst].is_none(),
+            self.inst_block(inst).is_none(),
             "instruction already in layout"
         );
-        self.inst_blocks[inst] = Some(block).into();
-        self.blocks[block].insts.push(inst);
+        self.insts[inst] = InstNode {
+            block: block.into(),
+            prev: prev.into(),
+            next: next.into(),
+        };
+        if let Some(prev) = prev {
+            self.insts[prev].next = inst.into();
+        } else {
+            self.blocks[block].first = inst.into();
+        }
+        if let Some(next) = next {
+            self.insts[next].prev = inst.into();
+        } else {
+            self.blocks[block].last = inst.into();
+        }
     }
-
-    pub fn inst_block(&self, inst: Inst) -> Option<Block> {
-        self.inst_blocks[inst].expand()
+    pub(crate) fn append_inst(&mut self, block: Block, inst: Inst) {
+        self.link_inst(block, inst, self.last_inst(block), None);
     }
-
     pub(crate) fn prepend_inst(&mut self, block: Block, inst: Inst) {
-        assert!(self.inst_blocks[inst].is_none());
-        self.inst_blocks[inst] = Some(block).into();
-        self.blocks[block].insts.insert(0, inst);
+        self.link_inst(block, inst, None, self.first_inst(block));
     }
-
     pub(crate) fn insert_after(&mut self, after: Inst, inst: Inst) {
         let block = self.inst_block(after).expect("anchor not in layout");
-        assert!(
-            self.inst_blocks[inst].is_none(),
-            "instruction already in layout"
-        );
-        let insts = &mut self.blocks[block].insts;
-        let index = insts
-            .iter()
-            .position(|&i| i == after)
-            .expect("missing anchor");
-        insts.insert(index + 1, inst);
-        self.inst_blocks[inst] = Some(block).into();
+        self.link_inst(block, inst, Some(after), self.next_inst(after));
     }
-
+    pub(crate) fn insert_before(&mut self, before: Inst, inst: Inst) {
+        let block = self.inst_block(before).expect("anchor not in layout");
+        self.link_inst(block, inst, self.prev_inst(before), Some(before));
+    }
+    /// Unlink placement only; definitions and uses remain in the DFG.
+    pub(crate) fn detach_inst(&mut self, inst: Inst) {
+        let Some(block) = self.inst_block(inst) else {
+            return;
+        };
+        let prev = self.insts[inst].prev;
+        let next = self.insts[inst].next;
+        if let Some(prev) = prev.expand() {
+            self.insts[prev].next = next;
+        } else {
+            self.blocks[block].first = next;
+        }
+        if let Some(next) = next.expand() {
+            self.insts[next].prev = prev;
+        } else {
+            self.blocks[block].last = prev;
+        }
+        self.insts[inst] = InstNode::default();
+    }
     pub(crate) fn remove_insts(&mut self, insts: &[Inst]) {
-        let dead: hashbrown::HashSet<_> = insts.iter().copied().collect();
-        let blocks: hashbrown::HashSet<_> =
-            insts.iter().filter_map(|&i| self.inst_block(i)).collect();
-        for block in blocks {
-            self.blocks[block].insts.retain(|i| !dead.contains(i));
-        }
         for &inst in insts {
-            self.inst_blocks[inst] = None.into();
+            self.detach_inst(inst);
         }
-    }
-
-    /// 计算从 entry 开始的后序遍历 (Post-Order)
-    /// 返回的列表满足：如果 A 支配 B 且 A != B，则 B 在 A 之前出现（对于无环图）
-    pub fn compute_post_order(&self, entry: Block) -> Vec<Block> {
-        let mut post_order = Vec::with_capacity(self.blocks.len());
-        let mut visited = SecondaryMap::<Block, bool>::with_capacity(self.blocks.len());
-        let mut stack = Vec::new();
-
-        stack.push((entry, false));
-
-        while let Some((block, is_processed)) = stack.pop() {
-            if is_processed {
-                post_order.push(block);
-                continue;
-            }
-
-            if visited[block] {
-                continue;
-            }
-
-            visited[block] = true;
-            // 重新压入当前块，标记为 is_processed=true
-            // 这样它会在所有子节点处理完后被弹出并加入 post_order
-            stack.push((block, true));
-
-            // 对后继节点进行深度优先探索
-            // 倒序压栈是为了在使用 pop 时能尽量保持和 succs 列表一致的探索顺序
-            for &succ in self.blocks[block].succs.iter().rev() {
-                if !visited[succ] {
-                    stack.push((succ, false));
-                }
-            }
-        }
-
-        post_order
-    }
-
-    /// 计算从 entry 开始的逆后序遍历 (Reverse Post-Order)
-    /// RPO 是数据流分析的最佳顺序，因为它保证了在大多数情况下 Def 在 Use 之前被访问
-    pub fn compute_rpo(&self, entry: Block) -> Vec<Block> {
-        let mut po = self.compute_post_order(entry);
-        po.reverse();
-        po
     }
 }
 
-impl Default for Layout {
-    fn default() -> Self {
-        Self::new()
+struct Order<T, F> {
+    front: Option<T>,
+    back: Option<T>,
+    links: F,
+}
+impl<T: Copy + Eq, F: Fn(T) -> (Option<T>, Option<T>)> Iterator for Order<T, F> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        let item = self.front?;
+        if self.back == Some(item) {
+            self.front = None;
+            self.back = None;
+        } else {
+            self.front = (self.links)(item).1;
+        }
+        Some(item)
+    }
+}
+impl<T: Copy + Eq, F: Fn(T) -> (Option<T>, Option<T>)> DoubleEndedIterator for Order<T, F> {
+    fn next_back(&mut self) -> Option<T> {
+        let item = self.back?;
+        if self.front == Some(item) {
+            self.front = None;
+            self.back = None;
+        } else {
+            self.back = (self.links)(item).0;
+        }
+        Some(item)
     }
 }

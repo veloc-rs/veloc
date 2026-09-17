@@ -40,8 +40,8 @@ impl FunctionPass for SimplifyPass {
 pub fn run_simplify(func: &mut Function, debug: bool, metrics: &mut Metrics) -> bool {
     let mut queue = VecDeque::new();
     let mut queued = SecondaryMap::<veloc_mir::Inst, bool>::new();
-    for &block in func.layout().block_order() {
-        for &inst in &func.layout().blocks()[block].insts {
+    for block in func.layout().block_order() {
+        for inst in func.layout().block_insts(block) {
             queue.push_back(inst);
             queued[inst] = true;
         }

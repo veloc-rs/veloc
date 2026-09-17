@@ -79,10 +79,10 @@ pub struct Liveness {
 }
 
 pub fn analyze_liveness(func: &Function) -> Liveness {
-    let entry = func.entry_block.expect("Function must have entry block");
-    let rpo = func.layout().compute_rpo(entry);
+    let entry = func.entry_block().expect("Function must have entry block");
+    let rpo = func.cfg().compute_rpo(entry);
     let num_values = func.dfg().values().len();
-    let num_blocks = func.layout().blocks().len();
+    let num_blocks = func.dfg().blocks().len();
     let num_insts = func.dfg().instructions().len();
 
     let mut intervals: SecondaryMap<Value, LiveInterval> = SecondaryMap::with_capacity(num_values);
@@ -101,13 +101,13 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
         block_starts[block] = inst_pc;
 
         // Block parameters are defined at the start of the block
-        for &param in &func.layout().blocks()[block].params {
+        for &param in &func.dfg().blocks()[block].params {
             def_pc[param] = inst_pc;
             def_block[param] = Some(block);
         }
         inst_pc += 2;
 
-        for &inst in &func.layout().blocks()[block].insts {
+        for inst in func.layout().block_insts(block) {
             let current_inst_pc = inst_pc;
             inst_pcs[inst] = current_inst_pc;
 
@@ -154,7 +154,7 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
                 intervals[v].add_range(block_starts[use_block], use_pc + 1);
                 if !live_in[use_block.index()] {
                     live_in.set(use_block.index(), true);
-                    for &pred in &func.layout().blocks()[use_block].preds {
+                    for &pred in &func.cfg().blocks()[use_block].preds {
                         if !live_in[pred.index()] {
                             worklist.push(pred);
                         }
@@ -173,7 +173,7 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
                 intervals[v].add_range(v_def_pc, block_ends[b]);
             } else {
                 intervals[v].add_range(block_starts[b], block_ends[b]);
-                for &pred in &func.layout().blocks()[b].preds {
+                for &pred in &func.cfg().blocks()[b].preds {
                     if !live_in[pred.index()] {
                         worklist.push(pred);
                     }

@@ -415,6 +415,7 @@ trait Fold {
 }
 fn fold(op: Opcode, args: &[ScalarConst]) -> Option<ScalarConst> {
     let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
+    dfg.create_block();
     let values = args
         .iter()
         .map(|c| dfg.append_block_param(veloc_mir::Block(0), c.ty()))

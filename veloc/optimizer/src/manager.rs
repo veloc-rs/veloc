@@ -76,6 +76,9 @@ impl PassManager {
                 Pass::Function(fp) => {
                     let mut fp_changed = false;
                     for (_, func) in module.functions.iter_mut() {
+                        if !func.is_defined() {
+                            continue;
+                        }
                         let mut analyses = AnalysisManager::new(func);
                         let pa = fp.run(&mut analyses, &self.config, &mut self.stats.metrics);
                         if pa.changed() {

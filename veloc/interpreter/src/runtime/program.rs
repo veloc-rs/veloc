@@ -340,7 +340,9 @@ impl<'a> ProgramBuilder<'a> {
             .validate()
             .map_err(|e| Error::Message(e.to_string()))?;
         for (_, function) in &self.module.functions {
-            crate::bytecode::stack_layout(function).map_err(Error::Message)?;
+            if function.is_defined() {
+                crate::bytecode::stack_layout(function).map_err(Error::Message)?;
+            }
         }
         // The generic host callback ABI carries raw bits, not owned handles.
         // Guest links instead compare structural types across module contexts.

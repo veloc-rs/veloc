@@ -21,7 +21,7 @@ pub mod validator;
 pub use builder::{FunctionBuilder, InstBuilder, ModuleBuilder};
 pub use constant::{ConstData, Constant, Float, Int, ScalarConst, VectorConst};
 pub use error::{Error, Result};
-pub use function::{EdgeRef, Function};
+pub use function::{EdgeRef, FuncBody, Function};
 pub use inst::type_methods;
 pub use inst::{
     Arguments, FloatCC, Inst, InstView, InstWriter, IntCC, MemFlags, Opcode, Successor,

@@ -121,13 +121,11 @@ fn new_ops_get_constraints_and_ownership_without_rust_opcode_cases() {
 fn instruction_queries_use_their_own_results() {
     use veloc_mir::{Block, MemFlags, dfg::DataFlowGraph};
     let mut dfg = DataFlowGraph::new();
+    dfg.create_block();
     let ptr = dfg.append_block_param(Block(0), Type::PTR);
     let flags = MemFlags::empty();
-    let first = dfg.writer().load(ptr, 4, flags);
-    let second = dfg.writer().load(ptr, 8, flags);
-    assert!(first.memory_access(&dfg).is_none());
-    dfg.append_results(first, &[Type::I32]);
-    dfg.append_results(second, &[Type::I64]);
+    let first = dfg.create_inst_with_results(|w| w.load(ptr, 4, flags), &[Type::I32]);
+    let second = dfg.create_inst_with_results(|w| w.load(ptr, 8, flags), &[Type::I64]);
     for (inst, ty, offset) in [(first, Type::I32, 4), (second, Type::I64, 8)] {
         let access = inst.memory_access(&dfg).unwrap();
         assert_eq!((access.ptr, access.ty, access.offset), (ptr, ty, offset));
@@ -146,6 +144,7 @@ fn instruction_queries_use_their_own_results() {
 fn host_queries_preserve_optional_results_through_helpers() {
     use veloc_mir::{Block, CallableKind, SigId, dfg::DataFlowGraph};
     let mut dfg = DataFlowGraph::new();
+    dfg.create_block();
     for (ty, expected) in [
         (
             Type::callable(SigId(7), CallableKind::Local),
@@ -248,31 +247,101 @@ fn variadic_ranges_grow_recycle_and_remain_independent_after_clone() {
 
 #[test]
 fn function_edits_keep_layout_and_successor_edges_in_sync() {
+    let mut declaration =
+        veloc_mir::Function::new("external".into(), veloc_mir::SigId(0), Linkage::Import);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            declaration.edit();
+        }))
+        .is_err()
+    );
+    assert!(declaration.body().is_none());
     let module = veloc_mir::ModuleParser::new().parse("local function main() -> void\nblock0():\n  jump block1()\nblock1():\n  return\nblock2():\n  return\n").unwrap();
     let mut data = (*module).clone();
     let (_, func) = data.functions.iter_mut().next().unwrap();
-    let entry = func.entry_block.unwrap();
-    let old = func.layout().block_order()[1];
-    let new = func.layout().block_order()[2];
-    let jump = func.layout().blocks()[entry].insts[0];
+    let entry = func.entry_block().unwrap();
+    let old = func.layout().block_order().nth(1).unwrap();
+    let new = func.layout().block_order().nth(2).unwrap();
+    let jump = func.layout().first_inst(entry).unwrap();
     let dest = BlockCall::new(new, &[]);
     func.edit()
         .replace_inst(jump, |writer: veloc_mir::InstWriter<'_>| {
             writer.jump(dest.as_view())
         });
-    assert!(func.layout().blocks()[old].preds.is_empty());
-    assert_eq!(func.layout().blocks()[new].preds, [entry]);
-    assert_eq!(func.layout().blocks()[entry].succs, [new]);
+    assert!(func.cfg().blocks()[old].preds.is_empty());
+    assert_eq!(func.cfg().blocks()[new].preds, [entry]);
+    assert_eq!(func.cfg().blocks()[entry].succs, [new]);
     func.edit().erase_inst(jump);
     assert!(func.layout().inst_block(jump).is_none());
-    assert!(func.layout().blocks()[new].preds.is_empty());
-    assert!(func.layout().blocks()[entry].succs.is_empty());
+    assert!(func.cfg().blocks()[new].preds.is_empty());
+    assert!(func.cfg().blocks()[entry].succs.is_empty());
     let replacement = func.edit().append_inst(
         entry,
         |writer: veloc_mir::InstWriter<'_>| writer.jump(dest.as_view()),
         &[],
     );
     assert_eq!(func.layout().inst_block(replacement), Some(entry));
+
+    // Exercise both ends and mixed-direction iteration after in-place edits.
+    let first = func.edit().prepend_inst(entry, |w| w.nop(), &[]);
+    let middle = func.edit().insert_after(first, |w| w.nop(), &[]);
+    let last = func.edit().insert_before(replacement, |w| w.nop(), &[]);
+    assert_eq!(
+        func.layout().block_insts(entry).collect::<Vec<_>>(),
+        [first, middle, last, replacement]
+    );
+    {
+        let mut order = func.layout().block_insts(entry);
+        assert_eq!(order.next(), Some(first));
+        assert_eq!(order.next_back(), Some(replacement));
+        assert_eq!(order.next_back(), Some(last));
+        assert_eq!(order.next(), Some(middle));
+        assert_eq!(order.next_back(), None);
+        assert_eq!(order.next(), None);
+    }
+    func.edit().move_before(last, first);
+    func.edit().move_before(last, last);
+    assert_eq!(func.layout().prev_inst(first), Some(last));
+    assert_eq!(func.layout().next_inst(last), Some(first));
+
+    let ret = func.layout().last_inst(old).unwrap();
+    func.edit().move_before(middle, ret);
+    assert_eq!(func.layout().inst_block(middle), Some(old));
+    func.edit().erase_insts(&[last, first, middle]);
+    assert_eq!(
+        func.layout().block_insts(entry).collect::<Vec<_>>(),
+        [replacement]
+    );
+
+    // Temporary edits may invalidate terminator placement; CFG still follows
+    // the actual tail, and explicit validation runs once the edit is complete.
+    let tail = func.edit().insert_after(replacement, |w| w.nop(), &[]);
+    assert!(func.cfg().blocks()[entry].succs.is_empty());
+    func.edit().erase_inst(tail);
+    assert_eq!(func.cfg().blocks()[entry].succs, [new]);
+
+    // Move a terminator away and back, updating both sides of cached CFG edges.
+    func.edit().move_to_end(replacement, old);
+    assert!(func.cfg().blocks()[entry].succs.is_empty());
+    assert_eq!(func.cfg().blocks()[old].succs, [new]);
+    assert_eq!(func.cfg().blocks()[new].preds, [old]);
+    func.edit().move_to_end(replacement, entry);
+    assert_eq!(func.cfg().blocks()[new].preds, [entry]);
+    assert!(func.cfg().blocks()[old].succs.is_empty());
+
+    func.edit().move_block_before(new, entry);
+    assert_eq!(
+        func.layout().block_order().collect::<Vec<_>>(),
+        [new, entry, old]
+    );
+    func.edit().move_block_before(new, old);
+    func.edit().move_block_before(old, new);
+    func.edit().move_block_before(entry, entry);
+    assert_eq!(
+        func.layout().block_order().rev().collect::<Vec<_>>(),
+        [new, old, entry]
+    );
+    assert_eq!(func.entry_block(), Some(entry));
     func.dfg().check_uses().unwrap();
     data.validate().unwrap();
 }
@@ -377,12 +446,14 @@ fn exact_use_index_survives_deterministic_edit_sequences() {
 fn closed_dead_cycles_are_erased_together() {
     use veloc_mir::dfg::DataFlowGraph;
     let mut dfg = DataFlowGraph::new();
-    let a =
-        dfg.create_inst(|writer: veloc_mir::InstWriter<'_>| writer.unary(Opcode::INeg, Value(1)));
-    dfg.append_results(a, &[Type::I32]);
-    let b =
-        dfg.create_inst(|writer: veloc_mir::InstWriter<'_>| writer.unary(Opcode::INeg, Value(0)));
-    dfg.append_results(b, &[Type::I32]);
+    let a = dfg.create_inst_with_results(
+        |writer: veloc_mir::InstWriter<'_>| writer.unary(Opcode::INeg, Value(1)),
+        &[Type::I32],
+    );
+    let b = dfg.create_inst_with_results(
+        |writer: veloc_mir::InstWriter<'_>| writer.unary(Opcode::INeg, Value(0)),
+        &[Type::I32],
+    );
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dfg.remove_inst(a))).is_err());
     dfg.check_uses().unwrap();
     dfg.remove_insts(&[a, b]);
@@ -668,6 +739,7 @@ fn construction_does_not_validate_type_contracts() {
 fn result_resolution_only_requires_construction_inputs() {
     use veloc_mir::{Block, ModuleData, SigId};
     let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
+    dfg.create_block();
     let module = ModuleData::default();
     let i = dfg.append_block_param(Block(0), Type::I32);
     let f = dfg.append_block_param(Block(0), Type::F32);

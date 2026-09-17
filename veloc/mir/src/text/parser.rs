@@ -6,7 +6,7 @@
 use super::lexer::{Cursor, Kind, Location};
 use crate::{
     Block, BlockCall, CallConv, FuncId, Function, Linkage, MemFlags, Module, ModuleData, Opcode,
-    Result, SigId, Signature, Type, Value, ValueDef, types::ValueData,
+    Result, SigId, Signature, Type, Value,
 };
 use alloc::{
     format,
@@ -153,7 +153,9 @@ impl Functions {
             let mut func = functions[id.0 as usize]
                 .take()
                 .expect("unique function declaration");
-            func.dfg.remap_functions(&map);
+            if func.body().is_some() {
+                func.edit().remap_functions(&map);
+            }
             module.functions.push(func);
         }
         Ok(())
@@ -294,8 +296,9 @@ impl Symbols {
             .strip_prefix("block")
             .and_then(|s| s.parse::<u32>().ok())
             .ok_or_else(|| location.error(format!("unknown block `{name}`")))?;
-        while func.layout.blocks.len() <= id as usize {
-            func.layout.create_block();
+        func.define_body();
+        while func.dfg().blocks.len() <= id as usize {
+            func.edit().create_block();
         }
         let block = Block(id);
         self.blocks.insert(name.into(), (block, location));
@@ -327,12 +330,8 @@ impl Symbols {
         };
         // Reserved slots are not definitions. Their placeholder def must not be
         // interpreted until parsing succeeds and all symbols are resolved.
-        while func.dfg.values.len() <= value.0 as usize {
-            func.dfg.values.push(ValueData {
-                ty: Type::INVALID,
-                def: ValueDef::Param(Block(0)),
-            });
-        }
+        func.define_body();
+        func.edit().reserve_value(value);
         set_value_name(value, name, func);
         self.values.insert(name.to_string(), value);
         self.definitions.entry(value).or_insert(Definition {
@@ -395,19 +394,12 @@ fn declare_block(
     if !symbols.block_defs.insert(block) {
         return Err(location.error(format!("duplicate block{block_id}")));
     }
-    func.layout.append_block(block);
-    if func.entry_block.is_none() {
-        func.entry_block = Some(block);
-    }
+    func.edit().append_block(block);
     if !input.eat(Kind::RParen) {
         loop {
             let param = parse_typed_name(input, module)?;
             let value = symbols.define(param.name, func, param.location)?;
-            func.dfg.values[value] = ValueData {
-                ty: param.ty,
-                def: ValueDef::Param(block),
-            };
-            func.layout.blocks[block].params.push(value);
+            func.edit().bind_param(block, value, param.ty);
             if !input.eat(Kind::Comma) {
                 break;
             }
@@ -438,8 +430,7 @@ impl OperandParser<'_> {
         let results = self.parse_results(input)?;
         let (opcode, flags) = parse_instruction_header(input)?;
         let inst = self.parse(opcode, flags, input, results.first().map(|(_, ty)| *ty))?;
-        self.func.edit().append_existing(block, inst);
-        self.func.dfg.bind_results(inst, &results);
+        self.func.edit().finish_parsed_inst(block, inst, &results);
         Ok(())
     }
 
@@ -791,7 +782,7 @@ fn set_value_name(value: Value, text: &str, func: &mut Function) {
     } else {
         text
     };
-    func.dfg.set_value_name(value, name);
+    func.edit().set_value_name(value, name);
 }
 
 include!(concat!(env!("OUT_DIR"), "/text_parser.rs"));
@@ -805,6 +796,7 @@ mod tests {
 
     fn with_parser(test: impl FnOnce(&mut OperandParser<'_>)) {
         let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
+        func.define_body();
         let mut symbols = Symbols::default();
         let mut module = ModuleData::default();
         let mut functions = Functions::default();
@@ -838,7 +830,7 @@ mod tests {
         let value = parse_typed::<C>(cx, text, ty).unwrap();
         let mut printed = String::new();
         C::print(
-            &InstPrinter::new(&cx.func.dfg, None),
+            &InstPrinter::new(&cx.func.dfg(), None),
             &mut printed,
             value.borrow(),
             ty,
@@ -1008,7 +1000,7 @@ mod tests {
     #[test]
     fn context_atoms_share_ssa_values_and_intern_signatures() {
         let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
-        let block = func.layout.create_block();
+        let block = func.define_body().entry_block();
         let mut symbols = Symbols::default();
         symbols
             .blocks

@@ -17,24 +17,14 @@ impl ConstantPoolId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Type, Value, ValueDef};
+    use crate::{Type, Value};
 
     #[test]
-    fn result_moves_preserve_identity_and_recycle_lists() {
+    fn erasure_recycles_result_lists() {
         let mut dfg = DataFlowGraph::new();
         let a = dfg.create_inst(|writer: crate::InstWriter<'_>| writer.nop());
         let b = dfg.create_inst(|writer: crate::InstWriter<'_>| writer.nop());
         let list = dfg.append_results(a, &[Type::I32, Type::I64]);
-        let values = dfg.inst_results(a).to_vec();
-        for _ in 0..100 {
-            dfg.move_result(values[1], b);
-            assert_eq!(dfg.inst_results(a), &values[..1]);
-            assert_eq!(dfg.inst_results(b), &values[1..]);
-            assert_eq!(dfg.value_def(values[1]), ValueDef::Inst(b));
-            dfg.move_result(values[1], a);
-            assert_eq!(dfg.inst_results(a), values);
-            assert!(dfg.inst_results(b).is_empty());
-        }
         dfg.remove_inst(a);
         let reused = dfg.append_results(b, &[Type::I32, Type::I64]);
         assert_eq!(

@@ -73,6 +73,7 @@ fn main() {
                 .unwrap();
         });
         let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
+        dfg.create_block();
         let lhs = dfg.append_block_param(veloc_mir::Block(0), Type::I32);
         let rhs = dfg.append_block_param(veloc_mir::Block(0), Type::I32);
         let context = ModuleData::default();

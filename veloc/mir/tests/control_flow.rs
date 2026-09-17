@@ -39,7 +39,7 @@ fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
     module.validate().unwrap();
     let function = &mut module.functions[entry];
     function.dfg().check_uses().unwrap();
-    let create = function.layout().blocks()[Block(0)].insts[0];
+    let create = function.layout().first_inst(Block(0)).unwrap();
     function
         .edit()
         .replace_inst(create, |writer: veloc_mir::InstWriter<'_>| {
@@ -116,12 +116,23 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
     let mut module = example();
     module.validate().unwrap();
     let func = &mut module.functions[veloc_mir::FuncId(0)];
-    let inst = func.layout().blocks()[Block(0)].insts[0];
-    func.edit().edit_edge(EdgeRef { inst, index: 1 }, |edge| {
-        assert_eq!(edge.args(), [Value(2)]);
-        edge.set_block(Block(2));
-        edge.set_args(&[Value(1)]);
-    });
+    let inst = func.layout().first_inst(Block(0)).unwrap();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            func.edit().redirect_edge(
+                EdgeRef {
+                    inst,
+                    index: u32::MAX,
+                },
+                Block(2),
+                &[],
+            );
+        }))
+        .is_err()
+    );
+    func.dfg().check_uses().unwrap();
+    func.edit()
+        .redirect_edge(EdgeRef { inst, index: 1 }, Block(2), &[Value(1)]);
     let mut edges = Vec::new();
     func.dfg()
         .inst(inst)
@@ -130,18 +141,18 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
         edges,
         [(Block(1), vec![Value(1)]), (Block(2), vec![Value(1)])]
     );
-    assert_eq!(func.layout().blocks()[Block(0)].succs, [Block(1), Block(2)]);
-    assert_eq!(func.layout().blocks()[Block(1)].preds, [Block(0)]);
-    assert_eq!(func.layout().blocks()[Block(2)].preds, [Block(0)]);
+    assert_eq!(func.cfg().blocks()[Block(0)].succs, [Block(1), Block(2)]);
+    assert_eq!(func.cfg().blocks()[Block(1)].preds, [Block(0)]);
+    assert_eq!(func.cfg().blocks()[Block(2)].preds, [Block(0)]);
     func.dfg().check_uses().unwrap();
     module.validate().unwrap();
 
     let func = &mut module.functions[veloc_mir::FuncId(0)];
     func.edit()
-        .edit_edge(EdgeRef { inst, index: 0 }, |edge| edge.set_block(Block(2)));
-    assert!(func.layout().blocks()[Block(1)].preds.is_empty());
-    assert_eq!(func.layout().blocks()[Block(2)].preds, [Block(0)]);
-    let dom = Dominators::compute(func.layout(), Block(0));
+        .redirect_edge(EdgeRef { inst, index: 0 }, Block(2), &[Value(1)]);
+    assert!(func.cfg().blocks()[Block(1)].preds.is_empty());
+    assert_eq!(func.cfg().blocks()[Block(2)].preds, [Block(0)]);
+    let dom = Dominators::compute(func.cfg(), Block(0), func.dfg().blocks().len());
     assert!(dom.dominates(Block(0), Block(2)));
     assert_eq!(dom.immediate_dominator(Block(2)), Some(Block(0)));
     assert!(!dom.is_reachable(Block(1)));
@@ -152,7 +163,7 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
 fn validator_rejects_detached_targets_and_unknown_values_without_panicking() {
     let mut module = example();
     let func = &mut module.functions[veloc_mir::FuncId(0)];
-    let inst = func.layout().blocks()[Block(1)].insts[0];
+    let inst = func.layout().first_inst(Block(1)).unwrap();
     func.edit().set_operand(inst, 0, Value(1000));
     assert!(
         module
