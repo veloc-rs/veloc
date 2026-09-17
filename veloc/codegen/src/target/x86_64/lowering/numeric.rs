@@ -20,7 +20,6 @@ fn unary(
 
 impl X86_64Lowering {
     pub(super) fn unsigned_conversion(
-        &self,
         mfunc: &mut MachineFunction,
         out: &mut Vec<InstId>,
         opcode: GenericOpcode,
@@ -36,9 +35,9 @@ impl X86_64Lowering {
             } else {
                 // Preserve the low bit as a sticky bit before rounding, avoiding
                 // double rounding when an unsigned value exceeds i64::MAX.
-                let one = self.emit_legalize_constant_reg(mfunc, out, Type::I64, 1);
-                let zero = self.emit_legalize_constant_reg(mfunc, out, Type::I64, 0);
-                let half = self.emit_legalize_binary_reg(
+                let one = Self::emit_legalize_constant_reg(mfunc, out, Type::I64, 1);
+                let zero = Self::emit_legalize_constant_reg(mfunc, out, Type::I64, 0);
+                let half = Self::emit_legalize_binary_reg(
                     mfunc,
                     out,
                     GenericOpcode::Lshr,
@@ -46,7 +45,7 @@ impl X86_64Lowering {
                     src,
                     one,
                 );
-                let low = self.emit_legalize_binary_reg(
+                let low = Self::emit_legalize_binary_reg(
                     mfunc,
                     out,
                     GenericOpcode::And,
@@ -54,7 +53,7 @@ impl X86_64Lowering {
                     src,
                     one,
                 );
-                let rounded = self.emit_legalize_binary_reg(
+                let rounded = Self::emit_legalize_binary_reg(
                     mfunc,
                     out,
                     GenericOpcode::Or,
@@ -63,7 +62,7 @@ impl X86_64Lowering {
                     low,
                 );
                 let half_float = unary(mfunc, out, GenericOpcode::Sitofp, dst_ty, rounded);
-                let doubled = self.emit_legalize_binary_reg(
+                let doubled = Self::emit_legalize_binary_reg(
                     mfunc,
                     out,
                     GenericOpcode::Fadd,
@@ -95,7 +94,7 @@ impl X86_64Lowering {
                 } else {
                     (Type::I64, (9223372036854775808.0f64).to_bits() as i64)
                 };
-                let bits = self.emit_legalize_constant_reg(mfunc, out, bits_ty, bits);
+                let bits = Self::emit_legalize_constant_reg(mfunc, out, bits_ty, bits);
                 let threshold = unary(mfunc, out, GenericOpcode::Bitcast, src_ty, bits);
                 let high = mfunc.alloc_vreg(Type::BOOL);
                 out.push(
@@ -103,7 +102,7 @@ impl X86_64Lowering {
                         .writer()
                         .fcmp(Writable(high), src, threshold, FloatCC::Ge),
                 );
-                let reduced = self.emit_legalize_binary_reg(
+                let reduced = Self::emit_legalize_binary_reg(
                     mfunc,
                     out,
                     GenericOpcode::Fsub,
@@ -112,8 +111,8 @@ impl X86_64Lowering {
                     threshold,
                 );
                 let converted = unary(mfunc, out, GenericOpcode::Fptosi, Type::I64, reduced);
-                let sign = self.emit_legalize_constant_reg(mfunc, out, Type::I64, i64::MIN);
-                let restored = self.emit_legalize_binary_reg(
+                let sign = Self::emit_legalize_constant_reg(mfunc, out, Type::I64, i64::MIN);
+                let restored = Self::emit_legalize_binary_reg(
                     mfunc,
                     out,
                     GenericOpcode::Xor,

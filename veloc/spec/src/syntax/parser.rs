@@ -33,6 +33,13 @@ enum Context {
     Value,
     Type,
     Expr,
+    // Like Rust, a bare struct literal is not a control-expression scrutinee.
+    Condition,
+}
+impl Context {
+    fn is_expr(self) -> bool {
+        matches!(self, Self::Expr | Self::Condition)
+    }
 }
 
 /// Declaration properties are assignments; type members and object literals
@@ -158,7 +165,7 @@ impl<'a> Parser<'a> {
         is_const: bool,
     ) -> Result<Decl, Error> {
         let name = self.name()?;
-        let signature = self.signature(owner, is_const)?;
+        let signature = self.signature(owner, is_const, false)?;
         let body = if owner.is_some() && self.eat(TokenKind::Semi)? {
             FunctionBody::Rust { offset, path: None }
         } else {
@@ -208,6 +215,11 @@ impl<'a> Parser<'a> {
         let name = self.name()?;
         let mut fields = BTreeMap::new();
         let kind = match kind {
+            TokenKind::Name("rule") if self.at(TokenKind::LParen) || self.at(TokenKind::Lt) => {
+                let signature = self.signature(None, false, true)?;
+                fields = self.fields(0, Context::Value, Fields::Properties)?;
+                DeclKind::Rule(signature)
+            }
             TokenKind::Name("template") => {
                 self.expect(TokenKind::LParen)?;
                 let params = self.sequence(TokenKind::RParen, Self::parameter)?;
@@ -261,7 +273,7 @@ impl<'a> Parser<'a> {
                 DeclKind::TypeSet(set)
             }
             TokenKind::Op => {
-                let signature = self.signature(None, false)?;
+                let signature = self.signature(None, false, false)?;
                 fields = self.fields(0, Context::Value, Fields::Properties)?;
                 DeclKind::Op(signature)
             }
@@ -283,7 +295,12 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn signature(&mut self, owner: Option<&str>, is_const: bool) -> Result<Signature, Error> {
+    fn signature(
+        &mut self,
+        owner: Option<&str>,
+        is_const: bool,
+        unit_default: bool,
+    ) -> Result<Signature, Error> {
         let generics = if self.eat(TokenKind::Lt)? {
             self.sequence(TokenKind::Gt, Self::parameter)?
         } else {
@@ -319,6 +336,14 @@ impl<'a> Parser<'a> {
                 p.parameter()
             }
         })?;
+        if unit_default && self.at(TokenKind::LBrace) {
+            return Ok(Signature {
+                is_const,
+                generics,
+                params,
+                results: Results::Fixed(Vec::new()),
+            });
+        }
         self.expect(TokenKind::Arrow)?;
         let results = if self.eat(TokenKind::LParen)? {
             Results::Fixed(self.sequence(TokenKind::RParen, Self::result)?)
@@ -507,7 +532,7 @@ impl<'a> Parser<'a> {
                 })?;
                 self.expression(
                     depth,
-                    if name == "meta" {
+                    if matches!(name.as_str(), "meta" | "when") {
                         Context::Expr
                     } else {
                         context
@@ -536,8 +561,8 @@ impl<'a> Parser<'a> {
     }
 
     fn expression(&mut self, depth: u8, context: Context) -> Result<Node, Error> {
-        if context == Context::Expr {
-            self.binary(depth, 0)
+        if context.is_expr() {
+            self.binary(depth, 0, context)
         } else {
             self.union(depth, context)
         }
@@ -585,14 +610,14 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn binary(&mut self, depth: u8, precedence: u8) -> Result<Node, Error> {
+    fn binary(&mut self, depth: u8, precedence: u8, context: Context) -> Result<Node, Error> {
         self.check_depth(depth, Context::Expr)?;
         let offset = self.token.offset;
         let kind = match self.token.kind {
             TokenKind::Bang | TokenKind::Minus => {
                 let op = self.token.kind.spelling();
                 self.bump()?;
-                Kind::Unary(op, Box::new(self.binary(depth + 1, 9)?))
+                Kind::Unary(op, Box::new(self.binary(depth + 1, 9, context)?))
             }
             TokenKind::Pipe => {
                 self.bump()?;
@@ -601,11 +626,11 @@ impl<'a> Parser<'a> {
                     names.push(self.name()?);
                 }
                 self.expect(TokenKind::Pipe)?;
-                Kind::Lambda(names, Box::new(self.binary(depth + 1, 0)?))
+                Kind::Lambda(names, Box::new(self.binary(depth + 1, 0, context)?))
             }
-            _ => self.atom(depth, Context::Expr)?.kind,
+            _ => self.atom(depth, context)?.kind,
         };
-        let mut lhs = self.postfix(Node { offset, kind }, depth, Context::Expr)?;
+        let mut lhs = self.postfix(Node { offset, kind }, depth, context)?;
         let mut chain = 0;
         while let Some((op, level)) = self.binary_operator() {
             if level < precedence {
@@ -614,7 +639,7 @@ impl<'a> Parser<'a> {
             chain += 1;
             self.check_depth(depth + chain, Context::Expr)?;
             self.bump()?;
-            let rhs = self.binary(depth + 1, level + 1)?;
+            let rhs = self.binary(depth + 1, level + 1, context)?;
             lhs = Node {
                 offset,
                 kind: Kind::Binary(op, Box::new(lhs), Box::new(rhs)),
@@ -643,7 +668,23 @@ impl<'a> Parser<'a> {
                     return Err(self.error(offset, ":: requires a type or namespace path"));
                 };
                 let name = format!("{owner}::{}", self.name()?);
-                let kind = if self.eat(TokenKind::LParen)? {
+                let kind = if !context.is_expr() && self.eat(TokenKind::Lt)? {
+                    let types = self.sequence(TokenKind::Gt, |p| {
+                        p.expression(depth + postfix, Context::Type)
+                    })?;
+                    if context == Context::Type {
+                        Kind::Call(name, types)
+                    } else {
+                        self.expect(TokenKind::LParen)?;
+                        Kind::TypedCall(
+                            name,
+                            types,
+                            self.sequence(TokenKind::RParen, |p| {
+                                p.expression(depth + postfix, context)
+                            })?,
+                        )
+                    }
+                } else if self.eat(TokenKind::LParen)? {
                     Kind::Call(
                         name,
                         self.sequence(TokenKind::RParen, |p| {
@@ -690,6 +731,26 @@ impl<'a> Parser<'a> {
         self.check_depth(depth, context)?;
         let Token { offset, kind } = self.bump()?;
         let kind = match kind {
+            TokenKind::Name("match") if context != Context::Type => {
+                let value = self.expression(depth + 1, Context::Condition)?;
+                self.expect(TokenKind::LBrace)?;
+                let arms = self.sequence(TokenKind::RBrace, |p| {
+                    let pattern = p.expression(depth + 1, Context::Expr)?;
+                    let guard = if p.eat(TokenKind::Name("if"))? {
+                        Some(p.expression(depth + 1, Context::Expr)?)
+                    } else {
+                        None
+                    };
+                    p.expect(TokenKind::FatArrow)?;
+                    let value = p.expression(depth + 1, context)?;
+                    Ok(super::MatchArm {
+                        pattern,
+                        guard,
+                        value,
+                    })
+                })?;
+                Kind::Match(Box::new(value), arms)
+            }
             TokenKind::Amp => Kind::Ref(Box::new(self.atom(depth + 1, context)?)),
             TokenKind::LParen => {
                 let node = self.expression(depth + 1, context)?;
@@ -716,7 +777,7 @@ impl<'a> Parser<'a> {
                 };
                 let value = i128::from_str_radix(digits, radix)
                     .map_err(|_| self.error(offset, "invalid or out-of-range integer literal"))?;
-                if context == Context::Expr {
+                if context.is_expr() {
                     Kind::Integer(value)
                 } else {
                     Kind::Number(
@@ -727,13 +788,21 @@ impl<'a> Parser<'a> {
             }
             word if word.name().is_some() => {
                 let name = word.name().unwrap().to_owned();
-                if context == Context::Type && self.eat(TokenKind::Lt)? {
-                    Kind::Call(
-                        name,
-                        self.sequence(TokenKind::Gt, |p| p.expression(depth + 1, Context::Type))?,
-                    )
+                if !context.is_expr() && self.eat(TokenKind::Lt)? {
+                    let types =
+                        self.sequence(TokenKind::Gt, |p| p.expression(depth + 1, Context::Type))?;
+                    if context != Context::Type {
+                        self.expect(TokenKind::LParen)?;
+                        Kind::TypedCall(
+                            name,
+                            types,
+                            self.sequence(TokenKind::RParen, |p| p.expression(depth + 1, context))?,
+                        )
+                    } else {
+                        Kind::Call(name, types)
+                    }
                 } else if self.eat(TokenKind::LParen)? {
-                    let arguments = if context == Context::Expr {
+                    let arguments = if context.is_expr() {
                         context
                     } else {
                         Context::Value
@@ -742,7 +811,9 @@ impl<'a> Parser<'a> {
                         name,
                         self.sequence(TokenKind::RParen, |p| p.expression(depth + 1, arguments))?,
                     )
-                } else if context != Context::Type && self.at(TokenKind::LBrace) {
+                } else if !matches!(context, Context::Type | Context::Condition)
+                    && self.at(TokenKind::LBrace)
+                {
                     Kind::Object(name, self.fields(depth + 1, context, Fields::Literal)?)
                 } else {
                     Kind::Name(name)
@@ -773,7 +844,7 @@ impl<'a> Parser<'a> {
         if depth < 64 {
             return Ok(());
         }
-        let kind = if context == Context::Expr {
+        let kind = if context.is_expr() {
             "expression"
         } else {
             "definition"

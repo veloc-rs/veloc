@@ -17,11 +17,14 @@ pub struct Node {
 
 #[derive(Debug, Clone)]
 pub enum Kind {
+    Match(Box<Node>, Vec<MatchArm>),
     Name(String),
     Text(String),
     Number(u32),
     List(Vec<Node>),
     Call(String, Vec<Node>),
+    /// An operation call with explicit result type arguments.
+    TypedCall(String, Vec<Node>, Vec<Node>),
     Member(Box<Node>, String),
     Method(Box<Node>, String, Vec<Node>),
     Object(String, BTreeMap<String, Node>),
@@ -39,6 +42,13 @@ pub enum Kind {
     Scoped(Box<Parameter>, Box<Node>),
     Let(String, Box<Node>),
     Query(String, Box<Node>),
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Node,
+    pub guard: Option<Node>,
+    pub value: Node,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +117,7 @@ pub enum DeclKind {
         value: Option<Node>,
     },
     Op(Signature),
+    Rule(Signature),
     /// Declarations whose body is entirely described by a field schema.
     Fields(String),
 }
@@ -121,13 +132,16 @@ impl Decl {
             DeclKind::Function { .. } => "fn",
             DeclKind::Constant { .. } => "const",
             DeclKind::Op(_) => "op",
+            DeclKind::Rule(_) => "rule",
             DeclKind::Fields(name) => name,
         }
     }
 
     pub fn signature(&self) -> Option<&Signature> {
         match &self.kind {
-            DeclKind::Function { signature, .. } | DeclKind::Op(signature) => Some(signature),
+            DeclKind::Function { signature, .. }
+            | DeclKind::Op(signature)
+            | DeclKind::Rule(signature) => Some(signature),
             _ => None,
         }
     }
@@ -187,7 +201,7 @@ impl Decl {
                     FunctionBody::Rust { offset, .. } => *offset += base,
                 }
             }
-            DeclKind::Op(signature) => signature.relocate(base),
+            DeclKind::Op(signature) | DeclKind::Rule(signature) => signature.relocate(base),
             DeclKind::Fields(_) => {}
         }
     }
@@ -237,6 +251,11 @@ impl Node {
                     arg.relocate(base);
                 }
             }
+            Kind::TypedCall(_, types, args) => {
+                for node in types.iter_mut().chain(args) {
+                    node.relocate(base);
+                }
+            }
             Kind::Object(_, fields) | Kind::Record(fields) => {
                 for node in fields.values_mut() {
                     node.relocate(base);
@@ -249,6 +268,16 @@ impl Node {
             | Kind::Lambda(_, node)
             | Kind::Query(_, node)
             | Kind::Try(node) => node.relocate(base),
+            Kind::Match(value, arms) => {
+                value.relocate(base);
+                for arm in arms {
+                    arm.pattern.relocate(base);
+                    if let Some(guard) = &mut arm.guard {
+                        guard.relocate(base);
+                    }
+                    arm.value.relocate(base);
+                }
+            }
             Kind::Binary(_, lhs, rhs) => {
                 lhs.relocate(base);
                 rhs.relocate(base);

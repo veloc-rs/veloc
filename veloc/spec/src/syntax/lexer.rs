@@ -17,6 +17,7 @@ pub(super) enum Kind<'a> {
     Text(String),
     ColonColon,
     Arrow,
+    FatArrow,
     PipePipe,
     AmpAmp,
     EqEq,
@@ -67,6 +68,7 @@ impl<'a> Kind<'a> {
         match self {
             Self::ColonColon => "::",
             Self::Arrow => "->",
+            Self::FatArrow => "=>",
             Self::PipePipe => "||",
             Self::AmpAmp => "&&",
             Self::EqEq => "==",
@@ -189,6 +191,7 @@ impl<'a> Lexer<'a> {
                 let kind = match (byte, bytes.get(offset + 1).copied()) {
                     (b':', Some(b':')) => Kind::ColonColon,
                     (b'-', Some(b'>')) => Kind::Arrow,
+                    (b'=', Some(b'>')) => Kind::FatArrow,
                     (b'|', Some(b'|')) => Kind::PipePipe,
                     (b'&', Some(b'&')) => Kind::AmpAmp,
                     (b'=', Some(b'=')) => Kind::EqEq,

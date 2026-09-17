@@ -15,7 +15,6 @@
 (decl is_f32 (vreg))
 (decl is_f64 (vreg))
 (decl is_ptr (vreg))
-(decl is_fpr (vreg))
 (decl has_bmi2 ())
 (decl has_avx2 ())
 (decl is_int32like (vreg))
@@ -27,34 +26,34 @@
 ;; -----------------------------------------------------------------------------
 
 (def-extractor (GPR8 $reg)
-    (and (is_i8 $reg) (not (is_fpr $reg))))
+    (is_i8 $reg))
 
 (def-extractor (GPR16 $reg)
-    (and (is_i16 $reg) (not (is_fpr $reg))))
+    (is_i16 $reg))
 
 (def-extractor (GPR32 $reg)
-    (and (is_i32 $reg) (not (is_fpr $reg))))
+    (is_i32 $reg))
 
 (def-extractor (GPR64 $reg)
-    (and (is_i64 $reg) (not (is_fpr $reg))))
+    (is_i64 $reg))
 
 (def-extractor (GPTR $reg)
-    (and (is_ptr $reg) (not (is_fpr $reg))))
+    (is_ptr $reg))
 
 (def-extractor (FPR32 $reg)
-    (and (is_f32 $reg) (is_fpr $reg)))
+    (is_f32 $reg))
 
 (def-extractor (FPR64 $reg)
-    (and (is_f64 $reg) (is_fpr $reg)))
+    (is_f64 $reg))
 
 (def-extractor (Constant $imm)
-    (and (is_i32 $unused) (not (is_fpr $unused))))
+    (is_i32 $unused))
 
 (def-extractor (GPR32Like $reg)
-    (and (is_int32like $reg) (not (is_fpr $reg))))
+    (is_int32like $reg))
 
 (def-extractor (GPR64Like $reg)
-    (and (is_64like $reg) (not (is_fpr $reg))))
+    (is_64like $reg))
 
 (def-extractor (BOOL $reg)
     (is_bool $reg))
@@ -1122,4 +1121,15 @@ do
     (emit ({{native}} $src))
     (covers (@n))
     (cost 4))
+end
+
+for (ty, native) in
+    GPR32, X86Popcnt32
+    GPR64, X86Popcnt64
+do
+(select-rule
+    (match (schema UnaryReg Ctpop (dst ({{ty}} $dst)) (src ({{ty}} $src)) @n))
+    (emit ({{native}} $src))
+    (covers (@n))
+    (cost 3))
 end

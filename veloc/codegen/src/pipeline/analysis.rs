@@ -1,4 +1,4 @@
-use crate::target::arch::TargetMachine;
+use crate::target::arch::TargetInstructions;
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use hashbrown::{HashMap, HashSet};
@@ -12,13 +12,12 @@ enum ChangeKind {
     InstSemantics = 1,
     BlockLayout = 2,
     Cfg = 3,
-    VregBanks = 4,
-    SelectedOpcodes = 5,
-    Regalloc = 6,
-    StackFrame = 7,
-    PhysicalRegs = 8,
-    SymbolUses = 9,
-    WholeFunction = 10,
+    SelectedOpcodes = 4,
+    Regalloc = 5,
+    StackFrame = 6,
+    PhysicalRegs = 7,
+    SymbolUses = 8,
+    WholeFunction = 9,
 }
 
 const CHANGE_KIND_COUNT: usize = ChangeKind::WholeFunction as usize + 1;
@@ -35,7 +34,6 @@ impl ChangeSet {
     pub const INST_SEMANTICS: Self = Self::single(ChangeKind::InstSemantics);
     pub const BLOCK_LAYOUT: Self = Self::single(ChangeKind::BlockLayout);
     pub const CFG: Self = Self::single(ChangeKind::Cfg);
-    pub const VREG_BANKS: Self = Self::single(ChangeKind::VregBanks);
     pub const SELECTED_OPCODES: Self = Self::single(ChangeKind::SelectedOpcodes);
     pub const REGALLOC: Self = Self::single(ChangeKind::Regalloc);
     pub const STACK_FRAME: Self = Self::single(ChangeKind::StackFrame);
@@ -76,7 +74,6 @@ impl ChangeSet {
                 | Self::BLOCK_LAYOUT.bits
                 | Self::INST_OPERANDS.bits
                 | Self::INST_SEMANTICS.bits
-                | Self::VREG_BANKS.bits
                 | Self::SELECTED_OPCODES.bits
                 | Self::REGALLOC.bits
                 | Self::STACK_FRAME.bits
@@ -92,7 +89,6 @@ impl ChangeSet {
             ChangeKind::InstSemantics,
             ChangeKind::BlockLayout,
             ChangeKind::Cfg,
-            ChangeKind::VregBanks,
             ChangeKind::SelectedOpcodes,
             ChangeKind::Regalloc,
             ChangeKind::StackFrame,
@@ -267,7 +263,7 @@ impl FunctionAnalysisCtx {
             .any(|kind| self.last_changed_revision[kind as usize] > built_revision)
     }
 
-    pub fn cfg(&mut self, mfunc: &MachineFunction, target: &dyn TargetMachine) -> &CfgInfo {
+    pub fn cfg(&mut self, mfunc: &MachineFunction, target: &dyn TargetInstructions) -> &CfgInfo {
         let deps = ChangeSet::CFG
             | ChangeSet::BLOCK_LAYOUT
             | ChangeSet::INST_OPERANDS
@@ -289,7 +285,7 @@ impl FunctionAnalysisCtx {
     pub fn dominators(
         &mut self,
         mfunc: &MachineFunction,
-        target: &dyn TargetMachine,
+        target: &dyn TargetInstructions,
     ) -> &DominatorTree {
         let deps = ChangeSet::CFG
             | ChangeSet::BLOCK_LAYOUT
@@ -313,7 +309,7 @@ impl FunctionAnalysisCtx {
     pub fn post_dominators(
         &mut self,
         mfunc: &MachineFunction,
-        target: &dyn TargetMachine,
+        target: &dyn TargetInstructions,
     ) -> &PostDominatorTree {
         let deps = ChangeSet::CFG
             | ChangeSet::BLOCK_LAYOUT
@@ -337,7 +333,7 @@ impl FunctionAnalysisCtx {
     pub fn liveness(
         &mut self,
         mfunc: &MachineFunction,
-        target: &dyn TargetMachine,
+        target: &dyn TargetInstructions,
     ) -> &LivenessInfo {
         let deps = ChangeSet::CFG
             | ChangeSet::BLOCK_LAYOUT
@@ -359,7 +355,11 @@ impl FunctionAnalysisCtx {
         &self.liveness.as_ref().unwrap().value
     }
 
-    pub fn loop_info(&mut self, mfunc: &MachineFunction, target: &dyn TargetMachine) -> &LoopInfo {
+    pub fn loop_info(
+        &mut self,
+        mfunc: &MachineFunction,
+        target: &dyn TargetInstructions,
+    ) -> &LoopInfo {
         let deps = ChangeSet::CFG
             | ChangeSet::BLOCK_LAYOUT
             | ChangeSet::INST_OPERANDS
@@ -383,7 +383,7 @@ impl FunctionAnalysisCtx {
     pub fn register_pressure(
         &mut self,
         mfunc: &MachineFunction,
-        target: &dyn TargetMachine,
+        target: &dyn TargetInstructions,
     ) -> &RegisterPressure {
         let deps = ChangeSet::CFG
             | ChangeSet::REGALLOC
@@ -444,7 +444,7 @@ impl ModuleAnalysisCtx {
     }
 }
 
-fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetMachine) -> CfgInfo {
+fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgInfo {
     let mut preds: HashMap<Block, Vec<Block>> = HashMap::new();
     let mut succs: HashMap<Block, Vec<Block>> = HashMap::new();
 

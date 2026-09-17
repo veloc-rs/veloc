@@ -8,11 +8,11 @@
 )
 
 (def-cpu "haswell"
-    (features SSE41 AVX AVX2 BMI1 BMI2)
+    (features SSE41 AVX AVX2 BMI1 BMI2 POPCNT)
     (limitations)
 )
 
 (def-cpu "skylake"
-    (features SSE41 AVX AVX2 BMI1 BMI2)
+    (features SSE41 AVX AVX2 BMI1 BMI2 POPCNT)
     (limitations SLOW_LEA)
 )

@@ -988,3 +988,19 @@ expand FloatUnary(X86F64ToF32, Prefix::F2, 0x5A);
 expand FloatUnary(X86SqrtF32, Prefix::F3, 0x51);
 
 expand FloatUnary(X86SqrtF64, Prefix::F2, 0x51);
+
+template Popcount(Opcode: ident, Wide: expr) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        requires = ["POPCNT"];
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0xB8, wide: Wide },
+            Form::ModRm(RegField::Register(dst), Rm::Register(src)),
+            Immediate::None,
+        );
+        registers = { dst: GPR64, src: GPR64 };
+        implicit = { clobbers: [EFLAGS] };
+        schedule = { latency: 3 };
+    }
+}
+expand Popcount(X86Popcnt32, false);
+expand Popcount(X86Popcnt64, true);

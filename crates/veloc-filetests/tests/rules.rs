@@ -6,6 +6,146 @@ use veloc_opgen::Source;
 #[allow(dead_code)] // This suite only needs the shared temporary directory helper.
 mod compiler;
 
+#[test]
+fn typed_legalization_contracts_reject_invalid_rules() {
+    use veloc_isle::rules::{DecisionRust, decisions};
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
+    let definitions = Source::load(root.join("lir/defs/module.ops"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let source = std::fs::read_to_string(root.join("codegen/isle/x86_64/legalize.rules")).unwrap();
+    let compile = |source: &str| {
+        decisions(
+            source,
+            &definitions,
+            DecisionRust {
+                dialect: "lir",
+                function: "decide",
+                opcode: "veloc_lir::GenericOpcode",
+                result: "Action",
+                value_rule: "crate::passes::lowering::LegalizeAction::values",
+            },
+        )
+    };
+    let output = compile(&source).unwrap();
+    assert!(output.contains("rewrite_widen_add"));
+    assert!(!output.contains("recipes.widen"));
+    // Nested decisions and host identifiers share the same expression compiler.
+    let nested = source.replace(
+        "_ => recipes.bit_count(),",
+        "_ => match true { true if false => recipes.legal(), _ => recipes.bit_count(), },",
+    );
+    assert!(compile(&nested).unwrap().contains("match true"));
+    let named_host = source
+        .replace("target: &Target", "__match_value: &Target")
+        .replace("target.supports", "__match_value.supports");
+    let output = compile(&named_host).unwrap();
+    assert!(output.contains("__match_value_ == "));
+    assert!(output.contains("__match_value.supports"));
+
+    for (from, to, diagnostic) in [
+        (
+            "_ => recipes.bit_count(),",
+            "",
+            "final unguarded _ fallback",
+        ),
+        (
+            "_ => recipes.bit_count(),",
+            "_ if false => recipes.bit_count(),",
+            "final unguarded _ fallback",
+        ),
+        (
+            "_ => recipes.bit_count(),",
+            "_ => recipes.bit_count(), Type::I32 => recipes.legal(), _ => recipes.bit_count(),",
+            "unreachable arm",
+        ),
+        (
+            "_ => recipes.bit_count(),",
+            "Type::I32 => recipes.legal(), Type::I32 => recipes.legal(), _ => recipes.bit_count(),",
+            "unreachable repeated",
+        ),
+        (
+            "Type::I32 if target.supports",
+            "unknown if target.supports",
+            "match patterns",
+        ),
+        (
+            "Type::I32 if target.supports",
+            "Type::UNDECLARED if target.supports",
+            "undeclared constant",
+        ),
+        (
+            "inst: lir::Add<T>",
+            "inst: unknown::Add<T>",
+            "unknown instruction namespace",
+        ),
+        (
+            "inst: lir::Add<T>",
+            "inst: lir::Missing<T>",
+            "unknown operation",
+        ),
+        (
+            "inst: lir::Add<T>",
+            "inst: lir::Add<T, T>",
+            "type arguments",
+        ),
+        (
+            "lir::Zext<Type::I32>(inst.lhs)",
+            "lir::Zext<Type::F32>(inst.lhs)",
+            "does not accept",
+        ),
+        (
+            "replace = lir::Trunc<T>(lir::Add",
+            "replace = lir::Trunc<Type::I8>(lir::Add",
+            "replacement result",
+        ),
+        (
+            "lir::Zext<Type::I32>(inst.rhs)",
+            "lir::Zext<Type::I32>(inst.missing)",
+            "unbound value",
+        ),
+        (
+            "recipes: &Recipes",
+            "other: &Recipes",
+            "undeclared host member",
+        ),
+        ("<T: Narrow>(inst", "<T: Unknown>(inst", "unknown type set"),
+        (
+            "lir::Add<Type::I32>(lir::Zext",
+            "lir::Add<Type::I64>(lir::Zext",
+            "requires equal",
+        ),
+        (
+            "target: &Target",
+            "other: &Target",
+            "undeclared host member",
+        ),
+        (
+            "target.supports(",
+            "target.undeclared(",
+            "undeclared host member",
+        ),
+        (
+            "Instruction::POPCNT32",
+            "Instruction::UNKNOWN",
+            "undeclared constant",
+        ),
+        (
+            "replace = lir::Trunc<T>",
+            "emit = lir::Trunc<T>",
+            "unknown decision rule field",
+        ),
+    ] {
+        assert!(source.contains(from));
+        let error = compile(&source.replacen(from, to, 1)).unwrap_err();
+        assert!(
+            error.message.contains(diagnostic),
+            "expected {diagnostic}, got {error}"
+        );
+    }
+}
+
 fn dialects() -> Dialects {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
     let mir = Source::load(root.join("mir/defs/module.ops"))

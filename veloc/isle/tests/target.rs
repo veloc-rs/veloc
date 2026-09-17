@@ -13,6 +13,8 @@ fn production_target_contracts_generate_all_consumers() {
                 .is_some_and(|extension| extension == "isle")
         })
         .collect::<Vec<_>>();
+    files.push(root.join("cpu/features.isle"));
+    files.push(root.join("cpu/models.isle"));
     files.sort();
     let input = files
         .iter()
@@ -29,6 +31,8 @@ fn production_target_contracts_generate_all_consumers() {
         "REG_R15D",
         "register_constraints",
         "pub fn validate",
+        "pub fn required_features",
+        "TargetInst::X86Popcnt32.required_features()",
         "pub fn write_assembly",
         "pub fn emit",
         "GenericOpcode::",
@@ -40,6 +44,12 @@ fn production_target_contracts_generate_all_consumers() {
         );
     }
     assert_eq!(output, compile(&input, "x86_64", &definitions).unwrap());
+    let unknown = input.replace("(def-feature POPCNT ", "(def-feature UNDECLARED ");
+    assert!(
+        compile(&unknown, "x86_64", &definitions)
+            .unwrap_err()
+            .contains("unknown target feature POPCNT")
+    );
 }
 
 #[test]

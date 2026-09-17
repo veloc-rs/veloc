@@ -1,5 +1,6 @@
 //! SSA edge arguments become physical parallel copies only after allocation.
 use super::linear_scan::RegisterAllocator;
+use crate::target::arch::SpillKind;
 use crate::{Error, Result};
 use alloc::format;
 use alloc::vec::Vec;
@@ -195,7 +196,11 @@ impl RegisterAllocator<'_> {
                     .ok_or_else(|| Error::codegen("edge stack copies require a frame pointer"))?;
                 out.push(self.target.spill_instruction(
                     f.writer(),
-                    load,
+                    if load {
+                        SpillKind::Load
+                    } else {
+                        SpillKind::Store
+                    },
                     reg,
                     slot.base.resolve(fp),
                     slot.offset as i64,

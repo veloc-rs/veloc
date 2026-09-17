@@ -230,6 +230,14 @@ pub(super) fn compile(
             }
         })
         .collect();
+    let features: BTreeSet<_> = module
+        .defs
+        .iter()
+        .filter_map(|d| match d {
+            Def::Feature(feature) => Some(feature.name.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut classes = BTreeMap::new();
     for def in &module.defs {
         match def {
@@ -281,6 +289,27 @@ pub(super) fn compile(
                 });
             }
             let mut fields = contract.fields;
+            let requires = match fields.remove("requires") {
+                None => Vec::new(),
+                Some(Node {
+                    kind: Kind::List(nodes),
+                    ..
+                }) => nodes
+                    .iter()
+                    .map(|node| {
+                        let Kind::Text(feature) = &node.kind else {
+                            return Err(
+                                "requires expects declared feature names as strings".to_owned()
+                            );
+                        };
+                        if !features.contains(feature.as_str()) {
+                            return Err(format!("unknown target feature {feature}"));
+                        }
+                        Ok(feature.clone())
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+                _ => return Err("requires expects a feature list".into()),
+            };
             let mut locations = fields
                 .remove("registers")
                 .map(object)
@@ -446,6 +475,7 @@ pub(super) fn compile(
                 is_pseudo,
                 assembly: None,
                 copy_bits,
+                requires,
             })
         };
         let inst = build().map_err(|e| format!("{op}: {e}"))?;

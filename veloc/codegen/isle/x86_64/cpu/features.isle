@@ -13,3 +13,5 @@
 ;; 2. Extractors Context
 (def-extractor (HAS_BMI2) (has_bmi2))
 (def-extractor (HAS_AVX2) (has_avx2))
+
+(def-feature POPCNT "Population count instruction")

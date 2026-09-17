@@ -92,6 +92,7 @@ pub(crate) struct Slot {
 }
 
 pub(crate) struct Op {
+    pub declaration: crate::syntax::Signature,
     pub offset: usize,
     pub name: String,
     pub mnemonic: String,

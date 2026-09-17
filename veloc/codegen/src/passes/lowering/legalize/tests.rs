@@ -1,7 +1,7 @@
 use super::*;
 use alloc::vec;
+use veloc_lir::{GenericOpcode, InstId, MachineBlock, MachineOpcode};
 use veloc_lir::{InstBuild, InstRead};
-use veloc_lir::{InstId, MachineBlock, MachineOpcode};
 use veloc_mir::Block;
 
 #[test]
@@ -45,9 +45,7 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
                 f.append_inst_id_to_block(0, id);
                 id
             };
-            Legalizer::new(target.target_legalizer())
-                .legalize(&mut f)
-                .unwrap();
+            Legalizer::new(target.legalizer()).legalize(&mut f).unwrap();
             let ids = f.block_insts(0);
             let expanded = i32::try_from(offset).is_err();
             assert_eq!(ids.len(), if expanded { 3 } else { 1 });
@@ -80,21 +78,27 @@ enum Mode {
 }
 
 impl TargetLegalizer for Mode {
-    fn legalize_action(
-        &self,
-        i: &veloc_lir::InstRef<'_>,
-        _: &MachineFunction,
-    ) -> Result<Option<LegalizeAction>> {
-        match (self, i.generic_opcode().unwrap()) {
-            (Self::Missing, GenericOpcode::Sub) => Ok(None),
+    fn legalize_action(&self, query: &Query) -> Result<Option<LegalizeAction>> {
+        let opcode = query.opcode;
+        let apply = match self {
+            Self::Loop => |id, f: &mut MachineFunction| Mode::Loop.rewrite(id, f),
+            Self::NewBlock => |id, f: &mut MachineFunction| Mode::NewBlock.rewrite(id, f),
+            _ => |id, f: &mut MachineFunction| Mode::Chain.rewrite(id, f),
+        };
+        Ok(match (self, opcode) {
+            (Self::Missing, GenericOpcode::Sub) => None,
             (Self::Loop, _) | (_, GenericOpcode::Neg | GenericOpcode::Sub) => {
-                Ok(Some(LegalizeAction::Lower))
+                Some(LegalizeAction::Rewrite(Rewrite {
+                    name: "test",
+                    apply,
+                }))
             }
-            _ => Ok(Some(LegalizeAction::Legal)),
-        }
+            _ => Some(LegalizeAction::Legal),
+        })
     }
-
-    fn legalize_instruction(&self, id: InstId, f: &mut MachineFunction) -> Result<LegalizeResult> {
+}
+impl Mode {
+    fn rewrite(&self, id: InstId, f: &mut MachineFunction) -> Result<LegalizeResult> {
         if matches!(self, Self::Loop) {
             return Ok(LegalizeResult::Replace(vec![id]));
         }

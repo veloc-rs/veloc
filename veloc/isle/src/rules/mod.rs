@@ -1,7 +1,10 @@
 //! Typed, cross-dialect value rules. Syntax and operation contracts come from
 //! OpSpec; this module knows neither MIR storage nor machine registers.
 mod check;
+mod decision;
 mod rust;
+mod typed;
+pub use decision::{DecisionRust, decisions};
 
 pub use rust::Rust;
 use std::collections::{BTreeMap, BTreeSet};

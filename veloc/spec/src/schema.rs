@@ -185,6 +185,9 @@ pub struct Signature {
 /// need an explicit adapter, rather than silently disappearing from the rule.
 #[derive(Debug, Clone)]
 pub struct Operation {
+    /// Original logical signature, including named attributes and variadic operands.
+    pub declaration: crate::syntax::Signature,
+    pub type_parameters: Vec<TypeSet>,
     pub name: String,
     pub signature: Result<Signature, String>,
     pub constrained: bool,
@@ -194,6 +197,10 @@ pub struct Operation {
 }
 
 impl Definitions {
+    /// Read a definition-owned type domain without depending on runtime Type.
+    pub fn type_domain(&self, name: &str) -> Option<&TypeSet> {
+        self.types.exact.get(name)
+    }
     pub fn operations(&self) -> impl Iterator<Item = Operation> + '_ {
         self.ops.iter().map(|op| {
             let signature = (|| {
@@ -264,6 +271,13 @@ impl Definitions {
                 None
             };
             Operation {
+                declaration: op.declaration.clone(),
+                type_parameters: op
+                    .declaration
+                    .generics
+                    .iter()
+                    .map(|p| self.types.set("", &p.ty).expect("checked generic domain"))
+                    .collect(),
                 name: op.name.clone(),
                 signature,
                 constrained: !op.constraints.is_empty(),

@@ -41,6 +41,7 @@ pub(super) fn parse(
         slots,
         type_bindings,
     } = signature(source, record.offset, sig.clone(), vocabulary)?;
+    let declaration = sig.clone();
     let mut fields = Fields::new(source, record);
     let mnemonic = match fields.optional("mnemonic") {
         Some(Node {
@@ -156,6 +157,7 @@ pub(super) fn parse(
         semantics.is_some(),
     )?;
     let mut op = Op {
+        declaration,
         offset: fields.offset,
         name: fields.name,
         mnemonic,

@@ -135,7 +135,6 @@ fn generate_pattern_condition(
             "is_i32" => format!("ctx.is_i32({})", var_name),
             "is_i64" => format!("ctx.is_i64({})", var_name),
             "is_ptr" => format!("ctx.is_ptr({})", var_name),
-            "is_fpr" => format!("ctx.is_fpr({})", var_name),
             "has_bmi2" => "ctx.has_bmi2()".to_string(),
             "has_avx2" => "ctx.has_avx2()".to_string(),
             "not" => positional_arg_at(args, 0)
@@ -169,7 +168,7 @@ fn pattern_condition_needs_value(pattern: &Pattern, decls: &HashMap<String, Decl
         | Pattern::StackSlot(_)
         | Pattern::Block(_) => false,
         Pattern::Opcode { opcode, args, .. } => match opcode.as_str() {
-            "is_i8" | "is_i16" | "is_i32" | "is_i64" | "is_ptr" | "is_fpr" => true,
+            "is_i8" | "is_i16" | "is_i32" | "is_i64" | "is_ptr" => true,
             "has_bmi2" | "has_avx2" => false,
             "not" => positional_arg_at(args, 0)
                 .map(|arg| pattern_condition_needs_value(arg, decls))
@@ -1146,7 +1145,7 @@ pub(crate) fn generate_select_instruction(
     writeln!(
         output,
         r#"
-pub fn select_instructions<C: LoweringContext{extra_bound}>(
+pub fn select_instructions<C: LoweringContext + crate::target::arch::TargetFeatures{extra_bound}>(
     ctx: &mut C,
     store: &mut veloc_lir::InstStore,
     source: veloc_lir::InstId,
@@ -1262,12 +1261,13 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
                         continue;
                     };
                     let mut var_map = collect_var_bindings(grouped_pattern);
-                    let conditions = collect_schema_rule_conditions(
+                    let mut conditions = collect_schema_rule_conditions(
                         grouped_args,
                         extractors,
                         schema_var,
                         schema_name,
                     );
+                    feature_conditions(&grouped_rule.emit, final_inst_defs, &mut conditions);
                     if conditions.is_empty() {
                         writeln!(output, "                {{").unwrap();
                     } else {
@@ -1298,7 +1298,8 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
                 writeln!(output, "            }}").unwrap();
             } else {
                 let mut var_map = collect_var_bindings(pattern);
-                let conditions = collect_positional_rule_conditions(args, extractors);
+                let mut conditions = collect_positional_rule_conditions(args, extractors);
+                feature_conditions(&rule.emit, final_inst_defs, &mut conditions);
 
                 if conditions.is_empty() {
                     writeln!(output, "            {{").unwrap();
@@ -1338,4 +1339,22 @@ pub fn select_instructions<C: LoweringContext{extra_bound}>(
     )
     .unwrap();
     writeln!(output, "}}").unwrap();
+}
+
+fn feature_conditions(
+    ctor: &Constructor,
+    instructions: &HashMap<String, FinalInstDef>,
+    out: &mut Vec<String>,
+) {
+    if let Constructor::Inst { opcode, args } = ctor {
+        if instructions
+            .get(opcode)
+            .is_some_and(|inst| !inst.requires.is_empty())
+        {
+            out.push(format!("TargetInst::{opcode}.required_features().iter().all(|feature| ctx.has_feature(feature))"));
+        }
+        for arg in args {
+            feature_conditions(arg, instructions, out);
+        }
+    }
 }

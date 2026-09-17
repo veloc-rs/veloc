@@ -123,6 +123,7 @@ fn alternate(op: &Op, alt: &LayoutAlternative, source: &str) -> Result<(Op, Form
     }
     Ok((
         Op {
+            declaration: op.declaration.clone(),
             offset: alt.text.offset,
             name: op.name.clone(),
             mnemonic: op.mnemonic.clone(),

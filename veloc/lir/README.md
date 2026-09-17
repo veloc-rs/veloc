@@ -5,12 +5,20 @@ schemas, registers and register banks, functions and blocks, stack-frame data,
 symbols and use-def chains. It supports `no_std` with `alloc` and
 has no dependency on codegen or any target backend.
 
-Codegen owns MIR-to-LIR translation, legalization, register-bank selection,
+Codegen owns MIR-to-LIR translation, legalization,
 instruction selection, register allocation, ABI handling and machine-code
 emission. A single mutable `MachineFunction` is shared by these passes; it does
 not carry phase type parameters or mutable selected/allocated flags. Codegen
 orders passes explicitly and optionally verifies the required invariants at
 boundaries. Analysis validity is tracked separately through pass change sets.
+
+Register-bank selection is not a mandatory stage. A target may install its own
+pre-selection pass through `TargetPassConfig::pre_isel_passes`. The x86 backend
+selects instructions directly from typed values without preassigning banks.
+Optional explicit bank constraints remain available for target temporaries;
+otherwise allocation uses the target's type-based class defaults together with
+the selected instructions' operand constraints. This is not a global bank-cost
+optimizer and does not yet synthesize transfers for incompatible operand classes.
 
 ## Machine SSA migration
 

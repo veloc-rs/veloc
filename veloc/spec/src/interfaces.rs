@@ -346,7 +346,14 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
     let mut out =
         String::from("// @generated interface contracts; implementations belong to Rust.\n");
     for (name, methods) in groups {
-        let qualifier = if methods[0].is_const { "const " } else { "" };
+        let qualifier = if methods
+            .iter()
+            .any(|method| method.is_const && !method.constant)
+        {
+            "const "
+        } else {
+            ""
+        };
         writeln!(out, "pub {qualifier}trait {name}: Sized {{").unwrap();
         for method in methods {
             let params = method

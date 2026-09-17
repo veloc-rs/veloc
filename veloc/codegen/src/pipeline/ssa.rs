@@ -1,6 +1,9 @@
 //! Validation at pass boundaries, independent of instruction construction.
 use super::FunctionAnalysisCtx;
-use crate::{Error, Result, target::arch::TargetMachine};
+use crate::{
+    Error, Result,
+    target::arch::{TargetInstructions, ValidationMode},
+};
 use alloc::{format, vec::Vec};
 use hashbrown::{HashMap, HashSet};
 #[cfg(test)]
@@ -10,7 +13,7 @@ use veloc_lir::{ControlFlow, InstExtra, InstField, MachineFunction, Reg};
 use veloc_mir::Block;
 
 /// Selected code must still be SSA and contain no generic instructions.
-pub fn verify_selected(f: &MachineFunction, target: &dyn TargetMachine) -> Result<()> {
+pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     verify(f, target)?;
     for block in &f.blocks {
         for &id in &block.insts {
@@ -24,7 +27,7 @@ pub fn verify_selected(f: &MachineFunction, target: &dyn TargetMachine) -> Resul
 
 /// Allocation removes SSA block parameters and all executable virtual registers.
 /// This check is explicit: no mutable phase flag can cause it to be skipped.
-pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetMachine) -> Result<()> {
+pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     f.check_refs().map_err(|e| Error::codegen(e))?;
     if !f.params.is_empty() {
         return Err(Error::codegen(
@@ -45,13 +48,13 @@ pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetMachine) -> Resu
                     "virtual register remains in {id:?}"
                 )));
             }
-            target.validate_instruction(&inst, true)?;
+            target.validate_instruction(&inst, ValidationMode::Allocated)?;
         }
     }
     Ok(())
 }
 
-pub fn verify(f: &MachineFunction, target: &dyn TargetMachine) -> Result<()> {
+pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     let fail = |message| Error::codegen(format!("machine SSA in {}: {message}", f.name));
     f.check_refs().map_err(|e| fail(e.into()))?;
     let mut defs = HashMap::new();
@@ -91,7 +94,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetMachine) -> Result<()> {
             if inst.is_generic() {
                 inst.validate()?;
             } else {
-                target.validate_instruction(&inst, false)?;
+                target.validate_instruction(&inst, ValidationMode::Virtual)?;
             }
             for reg in inst.defs() {
                 if transferred && reg.is_vreg() {

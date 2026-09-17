@@ -10,6 +10,30 @@ fn main() {
     let arch = "x86_64";
     let isle_dir = PathBuf::from(format!("isle/{}", arch));
 
+    let lir = veloc_opgen::Source::load("../lir/defs/module.ops").expect("load LIR contracts");
+    for path in lir.dependencies() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let definitions = lir.parse().expect("check LIR contracts");
+    let rules_path = isle_dir.join("legalize.rules");
+    println!("cargo:rerun-if-changed={}", rules_path.display());
+    let rules = fs::read_to_string(rules_path).expect("read legalization rules");
+    let code = veloc_isle::rules::decisions(
+        &rules,
+        &definitions,
+        veloc_isle::rules::DecisionRust {
+            dialect: "lir",
+            function: "decide",
+            opcode: "veloc_lir::GenericOpcode",
+            result: "Action",
+            value_rule: "crate::passes::lowering::LegalizeAction::values",
+        },
+    )
+    .expect("compile legalization rules");
+    let path = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("legalize_x86_64.rs");
+    fs::write(&path, code).expect("write legalization decisions");
+    rust_files.push(path);
+
     if isle_dir.exists() {
         let mut combined_input = String::new();
 

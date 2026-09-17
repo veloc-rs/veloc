@@ -11,14 +11,14 @@ mod machine;
 pub use emitter::X86_64CodeEmitter;
 pub use lowering::{
     X86_64FrameLowering, X86_64Legalizer, X86_64OperandLowering, X86_64PassConfig, X86_64PostIsel,
-    X86_64RegBankSelect, X86_64Selector,
+    X86_64Selector,
 };
 
-use crate::regalloc::regbank_select::TargetRegBankSelect;
 use crate::target::arch::{
-    CpuDescription, RegClass, RegClassInfo, RegisterFile, SpecialRegs, TargetConfig,
-    TargetDescription, TargetEmitter, TargetFrameLowering, TargetInstructionSelector,
-    TargetLegalizer, TargetMachine, TargetOperandLowering, TargetPassConfig, TargetPostIsel,
+    CpuDescription, RegClass, RegClassInfo, RegisterFile, SpecialRegs, SpillKind, TargetConfig,
+    TargetDescription, TargetEmitter, TargetFrameLowering, TargetInfo, TargetInstructionSelector,
+    TargetInstructions, TargetLegalizer, TargetMachine, TargetOperandLowering, TargetPassConfig,
+    TargetPostIsel, TargetRegalloc, TargetSchedule, ValidationMode,
 };
 use veloc_lir::RegisterBank;
 use veloc_types::{DataLayout, Type, TypeLayout};
@@ -108,7 +108,6 @@ pub struct X86_64TargetMachine {
     post_isel: X86_64PostIsel,
     frame_lowering: X86_64FrameLowering,
     pass_config: X86_64PassConfig,
-    regbank_select: X86_64RegBankSelect,
     emitter: X86_64CodeEmitter,
 }
 
@@ -125,13 +124,12 @@ impl X86_64TargetMachine {
         Self {
             config,
             desc,
-            legalizer: X86_64Legalizer::new(cpu),
+            legalizer: X86_64Legalizer { cpu },
             selector: X86_64Selector::new(cpu),
             operand_lowering: X86_64OperandLowering,
             post_isel: X86_64PostIsel,
             frame_lowering: X86_64FrameLowering,
             pass_config: X86_64PassConfig,
-            regbank_select: X86_64RegBankSelect,
             emitter: X86_64CodeEmitter::new(),
         }
     }
@@ -154,16 +152,24 @@ impl X86_64TargetMachine {
     }
 }
 
-impl TargetMachine for X86_64TargetMachine {
+impl TargetInstructions for X86_64TargetMachine {
     fn validate_instruction(
         &self,
         inst: &veloc_lir::InstRef<'_>,
-        allocated: bool,
+        mode: ValidationMode,
     ) -> crate::Result<()> {
         let veloc_lir::MachineOpcode::Target(op) = inst.opcode() else {
             return Err(crate::Error::codegen("expected a target instruction"));
         };
-        isle::TargetInst::from_u32(op).validate(inst, allocated)
+        let opcode = isle::TargetInst::from_u32(op);
+        for feature in opcode.required_features() {
+            if !self.desc.cpu.has_feature(feature) {
+                return Err(crate::Error::codegen(alloc::format!(
+                    "{opcode:?} requires target feature {feature}"
+                )));
+            }
+        }
+        opcode.validate(inst, mode)
     }
     fn write_assembly(
         &self,
@@ -175,13 +181,17 @@ impl TargetMachine for X86_64TargetMachine {
         };
         isle::TargetInst::from_u32(op).write_assembly(inst, out)
     }
-    fn target_inst_metadata(
+    fn instruction_metadata(
         &self,
         opcode: u32,
     ) -> &'static crate::target::arch::TargetInstMetadata {
         isle::target_inst_metadata(isle::TargetInst::from_u32(opcode))
     }
+}
 
+impl TargetSchedule for X86_64TargetMachine {}
+
+impl TargetRegalloc for X86_64TargetMachine {
     fn spill_scratch(&self, class: RegClass) -> &'static [veloc_lir::Reg] {
         match class {
             RegClass::GPR => &[isle::REG_R10, isle::REG_R11],
@@ -221,52 +231,52 @@ impl TargetMachine for X86_64TargetMachine {
     fn spill_instruction(
         &self,
         writer: veloc_lir::InstWriter<'_>,
-        load: bool,
+        kind: SpillKind,
         reg: veloc_lir::Reg,
         base: veloc_lir::Reg,
         offset: i64,
         ty: veloc_mir::Type,
     ) -> crate::error::Result<veloc_lir::InstId> {
-        machine::spill_instruction(writer, load, reg, base, offset, ty)
+        machine::spill_instruction(writer, kind, reg, base, offset, ty)
     }
+}
 
+impl TargetInfo for X86_64TargetMachine {
+    fn desc(&self) -> &TargetDescription {
+        &self.desc
+    }
+}
+
+impl TargetMachine for X86_64TargetMachine {
     fn config(&self) -> &TargetConfig {
         &self.config
     }
 
-    fn desc(&self) -> &TargetDescription {
-        &self.desc
-    }
-
-    fn target_legalizer(&self) -> &dyn TargetLegalizer {
+    fn legalizer(&self) -> &dyn TargetLegalizer {
         &self.legalizer
     }
 
-    fn target_selector(&self) -> &dyn TargetInstructionSelector {
+    fn selector(&self) -> &dyn TargetInstructionSelector {
         &self.selector
     }
 
-    fn target_operand_lowering(&self) -> &dyn TargetOperandLowering {
+    fn operand_lowering(&self) -> &dyn TargetOperandLowering {
         &self.operand_lowering
     }
 
-    fn target_post_isel(&self) -> &dyn TargetPostIsel {
+    fn post_isel(&self) -> &dyn TargetPostIsel {
         &self.post_isel
     }
 
-    fn target_frame_lowering(&self) -> &dyn TargetFrameLowering {
+    fn frame_lowering(&self) -> &dyn TargetFrameLowering {
         &self.frame_lowering
     }
 
-    fn target_pass_config(&self) -> &dyn TargetPassConfig {
+    fn pass_config(&self) -> &dyn TargetPassConfig {
         &self.pass_config
     }
 
-    fn target_emitter(&self) -> &dyn TargetEmitter {
+    fn emitter(&self) -> &dyn TargetEmitter {
         &self.emitter
-    }
-
-    fn target_regbank_select(&self) -> &dyn TargetRegBankSelect {
-        &self.regbank_select
     }
 }

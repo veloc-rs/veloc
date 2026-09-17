@@ -8,7 +8,6 @@ mod legalize;
 mod numeric;
 mod operand;
 mod pass_config;
-mod regbank;
 mod select;
 
 pub use crate::isel::SelectResult;
@@ -24,7 +23,6 @@ pub use frame::X86_64FrameLowering;
 pub use legalize::X86_64Legalizer;
 pub use operand::X86_64OperandLowering;
 pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
-pub use regbank::X86_64RegBankSelect;
 pub use select::X86_64Selector;
 use veloc_lir::InstBuild;
 use veloc_lir::RegisterBank;
@@ -158,7 +156,6 @@ impl X86_64Lowering {
     }
 
     fn emit_legalize_constant_reg(
-        &self,
         mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         ty: Type,
@@ -170,7 +167,6 @@ impl X86_64Lowering {
     }
 
     fn emit_legalize_binary_reg(
-        &self,
         mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         opcode: GenericOpcode,
@@ -188,7 +184,6 @@ impl X86_64Lowering {
     }
 
     fn legalize_ctpop_into(
-        &self,
         mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         src: Reg,
@@ -204,13 +199,13 @@ impl X86_64Lowering {
             );
         }
 
-        let shift1 = self.emit_legalize_constant_reg(mfunc, output, ty, 1);
-        let shift2 = self.emit_legalize_constant_reg(mfunc, output, ty, 2);
-        let shift4 = self.emit_legalize_constant_reg(mfunc, output, ty, 4);
-        let shift8 = self.emit_legalize_constant_reg(mfunc, output, ty, 8);
-        let shift16 = self.emit_legalize_constant_reg(mfunc, output, ty, 16);
+        let shift1 = Self::emit_legalize_constant_reg(mfunc, output, ty, 1);
+        let shift2 = Self::emit_legalize_constant_reg(mfunc, output, ty, 2);
+        let shift4 = Self::emit_legalize_constant_reg(mfunc, output, ty, 4);
+        let shift8 = Self::emit_legalize_constant_reg(mfunc, output, ty, 8);
+        let shift16 = Self::emit_legalize_constant_reg(mfunc, output, ty, 16);
 
-        let mask1 = self.emit_legalize_constant_reg(
+        let mask1 = Self::emit_legalize_constant_reg(
             mfunc,
             output,
             ty,
@@ -220,7 +215,7 @@ impl X86_64Lowering {
                 0x5555_5555_5555_5555u64 as i64
             },
         );
-        let mask2 = self.emit_legalize_constant_reg(
+        let mask2 = Self::emit_legalize_constant_reg(
             mfunc,
             output,
             ty,
@@ -230,7 +225,7 @@ impl X86_64Lowering {
                 0x3333_3333_3333_3333u64 as i64
             },
         );
-        let mask3 = self.emit_legalize_constant_reg(
+        let mask3 = Self::emit_legalize_constant_reg(
             mfunc,
             output,
             ty,
@@ -241,35 +236,42 @@ impl X86_64Lowering {
             },
         );
         let final_mask =
-            self.emit_legalize_constant_reg(mfunc, output, ty, if is_i32 { 0x3f } else { 0x7f });
+            Self::emit_legalize_constant_reg(mfunc, output, ty, if is_i32 { 0x3f } else { 0x7f });
 
-        let x1 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, src, shift1);
-        let x2 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x1, mask1);
-        let x3 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, src, x2);
-        let x4 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x3, mask2);
-        let x5 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x3, shift2);
-        let x6 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x5, mask2);
-        let x7 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x4, x6);
-        let x8 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x7, shift4);
-        let x9 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x7, x8);
-        let x10 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x9, mask3);
+        let x1 =
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, src, shift1);
+        let x2 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x1, mask1);
+        let x3 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, src, x2);
+        let x4 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x3, mask2);
+        let x5 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x3, shift2);
+        let x6 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x5, mask2);
+        let x7 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x4, x6);
+        let x8 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x7, shift4);
+        let x9 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x7, x8);
+        let x10 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x9, mask3);
         let x11 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x10, shift8);
-        let x12 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x10, x11);
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x10, shift8);
+        let x12 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x10, x11);
         let x13 =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x12, shift16);
-        let x14 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x12, x13);
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x12, shift16);
+        let x14 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x12, x13);
 
         let reduced = if is_i64 {
-            let shift32 = self.emit_legalize_constant_reg(mfunc, output, ty, 32);
-            let x15 =
-                self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x14, shift32);
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x14, x15)
+            let shift32 = Self::emit_legalize_constant_reg(mfunc, output, ty, 32);
+            let x15 = Self::emit_legalize_binary_reg(
+                mfunc,
+                output,
+                GenericOpcode::Lshr,
+                ty,
+                x14,
+                shift32,
+            );
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x14, x15)
         } else {
             x14
         };
 
-        let pop = self.emit_legalize_binary_reg(
+        let pop = Self::emit_legalize_binary_reg(
             mfunc,
             output,
             GenericOpcode::And,
@@ -284,7 +286,6 @@ impl X86_64Lowering {
     }
 
     fn legalize_cttz_into(
-        &self,
         mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         src: Reg,
@@ -299,18 +300,19 @@ impl X86_64Lowering {
             panic!("unsupported cttz type during x86_64 legalization: {:?}", ty);
         };
 
-        let zero = self.emit_legalize_constant_reg(mfunc, output, ty, 0);
-        let one = self.emit_legalize_constant_reg(mfunc, output, ty, 1);
-        let bit_width = self.emit_legalize_constant_reg(mfunc, output, ty, bits);
+        let zero = Self::emit_legalize_constant_reg(mfunc, output, ty, 0);
+        let one = Self::emit_legalize_constant_reg(mfunc, output, ty, 1);
+        let bit_width = Self::emit_legalize_constant_reg(mfunc, output, ty, bits);
         let is_zero = mfunc.alloc_vreg(Type::BOOL);
         output.push(mfunc.writer().icmp(Writable(is_zero), src, zero, IntCC::Eq));
 
-        let neg = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, zero, src);
-        let lowbit = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, src, neg);
+        let neg = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, zero, src);
+        let lowbit =
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, src, neg);
         let lowbit_minus_one =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, lowbit, one);
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, lowbit, one);
         let pop = mfunc.alloc_vreg(ty);
-        self.legalize_ctpop_into(mfunc, output, lowbit_minus_one, pop, ty)?;
+        Self::legalize_ctpop_into(mfunc, output, lowbit_minus_one, pop, ty)?;
 
         output.push(
             mfunc
@@ -321,7 +323,6 @@ impl X86_64Lowering {
     }
 
     fn legalize_ctlz_into(
-        &self,
         mfunc: &mut MachineFunction,
         output: &mut Vec<InstId>,
         src: Reg,
@@ -336,32 +337,34 @@ impl X86_64Lowering {
             panic!("unsupported ctlz type during x86_64 legalization: {:?}", ty);
         };
 
-        let zero = self.emit_legalize_constant_reg(mfunc, output, ty, 0);
-        let bit_width = self.emit_legalize_constant_reg(mfunc, output, ty, bits);
+        let zero = Self::emit_legalize_constant_reg(mfunc, output, ty, 0);
+        let bit_width = Self::emit_legalize_constant_reg(mfunc, output, ty, bits);
         let is_zero = mfunc.alloc_vreg(Type::BOOL);
         output.push(mfunc.writer().icmp(Writable(is_zero), src, zero, IntCC::Eq));
 
-        let shift1 = self.emit_legalize_constant_reg(mfunc, output, ty, 1);
-        let shift2 = self.emit_legalize_constant_reg(mfunc, output, ty, 2);
-        let shift4 = self.emit_legalize_constant_reg(mfunc, output, ty, 4);
-        let shift8 = self.emit_legalize_constant_reg(mfunc, output, ty, 8);
-        let shift16 = self.emit_legalize_constant_reg(mfunc, output, ty, 16);
+        let shift1 = Self::emit_legalize_constant_reg(mfunc, output, ty, 1);
+        let shift2 = Self::emit_legalize_constant_reg(mfunc, output, ty, 2);
+        let shift4 = Self::emit_legalize_constant_reg(mfunc, output, ty, 4);
+        let shift8 = Self::emit_legalize_constant_reg(mfunc, output, ty, 8);
+        let shift16 = Self::emit_legalize_constant_reg(mfunc, output, ty, 16);
 
-        let x1 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, src, shift1);
-        let x2 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, src, x1);
-        let x3 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x2, shift2);
-        let x4 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x2, x3);
-        let x5 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x4, shift4);
-        let x6 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x4, x5);
-        let x7 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x6, shift8);
-        let x8 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x6, x7);
-        let x9 = self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x8, shift16);
+        let x1 =
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, src, shift1);
+        let x2 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, src, x1);
+        let x3 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x2, shift2);
+        let x4 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x2, x3);
+        let x5 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x4, shift4);
+        let x6 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x4, x5);
+        let x7 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x6, shift8);
+        let x8 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x6, x7);
+        let x9 =
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x8, shift16);
         let mut filled =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x8, x9);
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x8, x9);
 
         if ty == Type::I64 {
-            let shift32 = self.emit_legalize_constant_reg(mfunc, output, ty, 32);
-            let x10 = self.emit_legalize_binary_reg(
+            let shift32 = Self::emit_legalize_constant_reg(mfunc, output, ty, 32);
+            let x10 = Self::emit_legalize_binary_reg(
                 mfunc,
                 output,
                 GenericOpcode::Lshr,
@@ -370,13 +373,13 @@ impl X86_64Lowering {
                 shift32,
             );
             filled =
-                self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, filled, x10);
+                Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, filled, x10);
         }
 
         let pop = mfunc.alloc_vreg(ty);
-        self.legalize_ctpop_into(mfunc, output, filled, pop, ty)?;
+        Self::legalize_ctpop_into(mfunc, output, filled, pop, ty)?;
         let clz =
-            self.emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, bit_width, pop);
+            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, bit_width, pop);
         output.push(
             mfunc
                 .writer()
@@ -694,9 +697,6 @@ impl LoweringContext for X86SelectionContext<'_> {
     fn get_type(&self, vreg: VReg) -> Type {
         self.vregs[vreg].ty
     }
-    fn get_bank(&self, vreg: VReg) -> Option<RegisterBank> {
-        self.vregs[vreg].bank
-    }
     fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<VReg> {
         let reg = inst.inputs().get(index)?;
         reg.is_vreg().then(|| VReg::from_u32(reg.index()))
@@ -708,5 +708,11 @@ impl X86LoweringContext for X86SelectionContext<'_> {
     }
     fn has_avx2(&self) -> bool {
         self.cpu.has_feature("AVX2")
+    }
+}
+
+impl crate::target::arch::TargetFeatures for X86SelectionContext<'_> {
+    fn has_feature(&self, feature: &str) -> bool {
+        self.cpu.has_feature(feature)
     }
 }

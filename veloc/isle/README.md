@@ -75,3 +75,58 @@ cargo run -p veloc --bin veloc-isle -- rules INPUT OUTPUT SOURCE_NAME SOURCE_OPS
 The rules command emits `lower` and its `Context` trait, referring to the host's
 `SourceOpcode` and `TargetOpcode` aliases. Build scripts can use `rules::Rust`
 to bind different enum paths and function names without changing rule files.
+
+## Legalization decisions
+
+`rules::decisions` binds one checked OpSpec unit to an explicit dialect name
+(`DecisionRust::dialect`). Node parameters use that namespace; their generics,
+operand names and type relationships come from the operation declarations.
+No second handwritten operand signature or implicit host variable is needed.
+
+```text
+rule widen_add<T: Narrow>(inst: lir::Add<T>) {
+    replace = lir::Trunc<T>(
+        lir::Add<Type::I32>(
+            lir::Zext<Type::I32>(inst.lhs),
+            lir::Zext<Type::I32>(inst.rhs),
+        ),
+    );
+}
+rule ctpop<T: Word>(inst: lir::Ctpop<T>, recipes: &Recipes, target: &Target) {
+    action = match T {
+        Type::I32 if target.supports(Instruction::POPCNT32) => recipes.legal(),
+        Type::I64 if target.supports(Instruction::POPCNT64) => recipes.legal(),
+        _ => recipes.bit_count(),
+    };
+}
+```
+
+Node type arguments specialize the declared operation generics. Construction
+expressions specify result types and infer input types from their arguments.
+Alternatives such as `lir::Add<T> | lir::Sub<T>` must have identical named
+value signatures. Rules are tried in source order; the first matching rule
+returns a plan. Related native candidates and their fallback can instead live
+in one action-level `match`, removing their dependence on inter-rule ordering.
+Matches evaluate the scrutinee once, test declared constants/literals and guards
+in order, and require a final unguarded `_` fallback. Nested matches are supported;
+binding/destructuring patterns and exhaustiveness inference are not yet supported.
+
+`replace` compiles a checked, fixed-arity pure value expression. `action`
+calls a declared Rust interface to obtain a plan for memory, control, variadic
+or other complex rewrites; planning does not mutate the function.
+`when` can combine declared predicates with boolean operators. A rule can
+only call a host explicitly passed in its parameter list. Instruction-local
+queries and immutable target capabilities are separate contexts; graph
+analysis is not implicitly available. Rust predicates are opaque to offline
+proof: declaring an interface does not provide an SMT model.
+
+Machine instructions declare `requires = ["POPCNT"]` in OpSpec. Feature names
+are checked against the target catalog. Generated requirements are shared by
+legality predicates, selector candidate filters (including nested emissions),
+and explicit final-instruction validation. Target CPU descriptions, not
+build-host CPUID, determine compilation. POPCNT is the first end-to-end
+consumer; other target instructions still need their requirements annotated.
+
+This is not yet a general graph-rewrite/proof engine: 1:N value conversion,
+analysis invalidation contracts, feature-expression coverage proofs and
+offline SMT rule certification are not implemented by this decision compiler.

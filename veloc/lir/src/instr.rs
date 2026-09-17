@@ -134,7 +134,9 @@ entity_impl!(StackSlot, "stackslot");
 #[derive(Debug, Clone)]
 pub struct VRegData {
     pub ty: Type,
-    pub bank: Option<RegisterBank>, // 寄存器库，在合法化/指令选择阶段确定
+    /// Optional target placement constraint, not a required pipeline stage.
+    /// `None` leaves register-class selection to the target and instruction constraints.
+    pub bank: Option<RegisterBank>,
 }
 
 include!(concat!(env!("OUT_DIR"), "/instructions.rs"));

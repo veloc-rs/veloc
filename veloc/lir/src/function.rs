@@ -289,6 +289,18 @@ impl MachineFunction {
         self.store.writer()
     }
 
+    /// Observe committed instruction edits, including RAUW of ordinary and edge
+    /// operands. Observers are scoped to a rewrite, so normal construction does
+    /// not allocate a change log. Return errors as values to close the scope.
+    pub fn track_inst_changes<R>(
+        &mut self,
+        rewrite: impl FnOnce(&mut Self) -> R,
+    ) -> (R, Vec<InstId>) {
+        self.store.start_tracking();
+        let result = rewrite(self);
+        (result, self.store.finish_tracking())
+    }
+
     pub fn rewriter(&mut self, id: InstId) -> InstWriter<'_> {
         self.store.rewriter(id)
     }
@@ -324,7 +336,7 @@ impl MachineFunction {
         self.alloc_vreg_with_bank_opt(ty, Some(bank))
     }
 
-    /// 创建未绑定 bank 的虚拟寄存器；调用方负责满足目标的 bank 要求。
+    /// Create a typed virtual register without prescribing a register bank.
     pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
         self.alloc_vreg_with_bank_opt(ty, None)
     }

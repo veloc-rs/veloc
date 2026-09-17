@@ -309,12 +309,12 @@ op Fcmp<T: ScalarFloat>(lhs: Value<T>, rhs: Value<T>, cc: FloatCC) -> (dst: Valu
     storage = FCmp { dst, lhs, rhs, cc };
 }
 
-op Ieqz(src: Value<Integer>) -> (dst: Value<Type::BOOL>) {
+op Ieqz<T: Integer>(src: Value<T>) -> (dst: Value<Type::BOOL>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Anyext(src: Value<Integer>) -> (dst: Value<Integer>) {
+op Anyext<T: Integer, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
@@ -434,27 +434,27 @@ op Usubsat<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
     storage = BinaryReg { dst, lhs, rhs };
 }
 
-op Load(base: Value<Type::PTR>) -> (dst: Value<Any>) {
+op Load<T: Any>(base: Value<Type::PTR>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     storage = Load { dst, base };
 }
 
-op Store(src: Value<Any>, base: Value<Type::PTR>) -> () {
+op Store<T: Any>(src: Value<T>, base: Value<Type::PTR>) -> () {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     storage = Store { src, base };
 }
 
-op PtrAdd(lhs: Value<Type::PTR>, rhs: Value<ScalarInteger>) -> (dst: Value<Type::PTR>) {
+op PtrAdd<T: ScalarInteger>(lhs: Value<Type::PTR>, rhs: Value<T>) -> (dst: Value<Type::PTR>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = BinaryReg { dst, lhs, rhs };
 }
 
-op StackLoad(slot: StackSlot) -> (dst: Value<Any>) {
+op StackLoad<T: Any>(slot: StackSlot) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::READ) };
     storage = StackLoad { dst, slot };
 }
 
-op StackStore(src: Value<Any>, slot: StackSlot) -> () {
+op StackStore<T: Any>(src: Value<T>, slot: StackSlot) -> () {
     meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::WRITE) };
     storage = StackStore { src, slot };
 }
@@ -464,92 +464,92 @@ op StackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
     storage = StackAddr { dst, slot };
 }
 
-op OffsetLoad(base: Value<Type::PTR>, offset: i64) -> (dst: Value<Any>) {
+op OffsetLoad<T: Any>(base: Value<Type::PTR>, offset: i64) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     storage = LoadOffset { dst, base, offset };
 }
 
-op OffsetStore(src: Value<Any>, base: Value<Type::PTR>, offset: i64) -> () {
+op OffsetStore<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64) -> () {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     storage = StoreOffset { src, base, offset };
 }
 
-op IndexedLoad(base: Value<Type::PTR>, offset: i64) -> (dst: Value<Any>, wb_dst: Value<Type::PTR>) {
+op IndexedLoad<T: Any>(base: Value<Type::PTR>, offset: i64) -> (dst: Value<T>, wb_dst: Value<Type::PTR>) {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     storage = IndexedLoad { dst, wb_dst, base, offset };
 }
 
-op IndexedStore(src: Value<Any>, base: Value<Type::PTR>, offset: i64) -> (wb_dst: Value<Type::PTR>) {
+op IndexedStore<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64) -> (wb_dst: Value<Type::PTR>) {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
     storage = IndexedStore { wb_dst, src, base, offset };
 }
 
-op Constant(imm: i64) -> (dst: Value<ScalarInteger | Type::BOOL | Type::PTR>) {
+op Constant<T: ScalarInteger | Type::BOOL | Type::PTR>(imm: i64) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = Constant { dst, imm };
 }
 
-op Fconstant(imm: f64) -> (dst: Value<ScalarFloat>) {
+op Fconstant<T: ScalarFloat>(imm: f64) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = FloatConstant { dst, imm };
 }
 
-op Trunc(src: Value<Integer>) -> (dst: Value<Integer>) {
+op Trunc<T: Integer, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Zext(src: Value<Integer | Type::BOOL | vectors(Type::BOOL)>) -> (dst: Value<Integer>) {
+op Zext<T: Integer, U: Integer | Type::BOOL | vectors(Type::BOOL)>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Sext(src: Value<Integer>) -> (dst: Value<Integer>) {
+op Sext<T: Integer, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Fptosi(src: Value<Float>) -> (dst: Value<Integer>) {
+op Fptosi<T: Integer, U: Float>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Fptoui(src: Value<Float>) -> (dst: Value<Integer>) {
+op Fptoui<T: Integer, U: Float>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Sitofp(src: Value<Integer>) -> (dst: Value<Float>) {
+op Sitofp<T: Float, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Uitofp(src: Value<Integer>) -> (dst: Value<Float>) {
+op Uitofp<T: Float, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Fptrunc(src: Value<Float>) -> (dst: Value<Float>) {
+op Fptrunc<T: Float, U: Float>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Fpext(src: Value<Float>) -> (dst: Value<Float>) {
+op Fpext<T: Float, U: Float>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Bitcast(src: Value<Any>) -> (dst: Value<Any>) {
+op Bitcast<T: Any, U: Any>(src: Value<U>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Inttoptr(src: Value<ScalarInteger>) -> (dst: Value<Type::PTR>) {
+op Inttoptr<T: ScalarInteger>(src: Value<T>) -> (dst: Value<Type::PTR>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
 
-op Ptrtoint(src: Value<Type::PTR>) -> (dst: Value<ScalarInteger>) {
+op Ptrtoint<T: ScalarInteger>(src: Value<Type::PTR>) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = UnaryReg { dst, src };
 }
@@ -566,7 +566,7 @@ op Brcond(cond: Value<Type::BOOL>, then_blk: Block, else_blk: Block) -> () {
     flow = Jump;
 }
 
-op Brjt(index: Value<ScalarInteger>) -> () {
+op Brjt<T: ScalarInteger>(index: Value<T>) -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
     storage = BranchTable { index };
     flow = Jump;
@@ -590,7 +590,7 @@ op Callind(callee: Value<Type::PTR>, args: sequence(Value)) -> signature {
     flow = Call;
 }
 
-op Arg(index: i64) -> (dst: Value<Any>) {
+op Arg<T: Any>(index: i64) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = Arg { dst, index };
     verify { require(index >= 0, "argument index must be nonnegative"); }

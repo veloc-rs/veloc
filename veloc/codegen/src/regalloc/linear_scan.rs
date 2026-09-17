@@ -1,7 +1,7 @@
 //! Global linear scan with CFG liveness, fixed registers and whole-range spills.
 use super::allocation::{Allocation, InstAllocation};
 use crate::pipeline::FunctionAnalysisCtx;
-use crate::target::arch::{CallConv, RegClass, TargetMachine};
+use crate::target::arch::{CallConv, RegClass, SpillKind, TargetRegalloc};
 use crate::{Error, Result};
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -19,13 +19,13 @@ struct Interval {
 }
 
 pub struct RegisterAllocator<'a> {
-    pub(super) target: &'a dyn TargetMachine,
+    pub(super) target: &'a dyn TargetRegalloc,
     pub(super) allocation: BTreeMap<Reg, Reg>,
     pub(super) spilled: BTreeMap<Reg, StackSlot>,
 }
 
 impl<'a> RegisterAllocator<'a> {
-    pub fn new(target: &'a dyn TargetMachine) -> Self {
+    pub fn new(target: &'a dyn TargetRegalloc) -> Self {
         Self {
             target,
             allocation: BTreeMap::new(),
@@ -57,7 +57,7 @@ impl<'a> RegisterAllocator<'a> {
             for &id in &block.insts {
                 let inst = &f.inst(id);
                 if let veloc_lir::MachineOpcode::Target(op) = inst.opcode() {
-                    for constraint in self.target.target_inst_metadata(op).register_constraints {
+                    for constraint in self.target.instruction_metadata(op).register_constraints {
                         let operands = if constraint.result {
                             inst.results()
                         } else {
@@ -223,13 +223,13 @@ impl<'a> RegisterAllocator<'a> {
                 let inst = &f.inst(id);
                 let ties = match inst.opcode() {
                     veloc_lir::MachineOpcode::Target(op) => {
-                        self.target.target_inst_metadata(op).tied_operands
+                        self.target.instruction_metadata(op).tied_operands
                     }
                     _ => &[],
                 };
                 let register_constraints = match inst.opcode() {
                     veloc_lir::MachineOpcode::Target(op) => {
-                        self.target.target_inst_metadata(op).register_constraints
+                        self.target.instruction_metadata(op).register_constraints
                     }
                     _ => &[],
                 };
@@ -396,7 +396,11 @@ impl<'a> RegisterAllocator<'a> {
                         );
                         let inst = self.target.spill_instruction(
                             f.writer(),
-                            load,
+                            if load {
+                                SpillKind::Load
+                            } else {
+                                SpillKind::Store
+                            },
                             reg,
                             base,
                             slot.offset as i64,

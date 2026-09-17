@@ -154,6 +154,44 @@ block0(v0: ptr, v1: i64):
 }
 
 #[test]
+fn narrow_integer_legalization_preserves_modular_arithmetic() {
+    let mut source = String::new();
+    let mut harness = String::from("#include <stdint.h>\n#include <assert.h>\n");
+    let mut checks = String::new();
+    for width in [8, 16] {
+        for (op, expression) in [
+            ("iadd", "a+b"),
+            ("isub", "a-b"),
+            ("imul", "a*b"),
+            ("iand", "a&b"),
+            ("ior", "a|b"),
+            ("ixor", "a^b"),
+        ] {
+            source += &format!(
+                "
+export function {op}{width}(i{width}, i{width}) -> i{width}
+block0(v0: i{width}, v1: i{width}):
+  v2: i{width} = {op} v0, v1
+  return v2
+"
+            );
+            harness +=
+                &format!("extern uint{width}_t {op}{width}(uint{width}_t, uint{width}_t);\n");
+            checks += &format!(
+                "assert({op}{width}((uint{width}_t)a,(uint{width}_t)b)==(uint{width}_t)({expression}));\n"
+            );
+        }
+    }
+    // Exhaust every i8 input pair and include i16 boundary/carry-heavy values.
+    harness += "int main(void) {\nfor(uint32_t a=0;a<256;a++) for(uint32_t b=0;b<256;b++) {\n";
+    harness += &checks;
+    harness += "}\nuint32_t values[]={0,1,127,128,255,256,32767,32768,65534,65535};\nfor(unsigned i=0;i<10;i++) for(unsigned j=0;j<10;j++) {\nuint32_t a=values[i],b=values[j];\n";
+    harness += &checks;
+    harness += "}\n}";
+    run(&source, &harness);
+}
+
+#[test]
 fn narrow_memory_and_negative_pointer_offsets_execute() {
     let mut source = String::new();
     let mut harness = String::from("#include <stdint.h>\n#include <assert.h>\n");
@@ -666,9 +704,17 @@ int main(void) {
 }
 
 fn run(source: &str, harness: &str) {
+    run_cpu(source, harness, "generic");
+}
+
+fn run_cpu(source: &str, harness: &str, cpu: &str) {
     let module = ModuleParser::new().parse(source).unwrap();
     module.validate().unwrap();
-    let target = create_target_machine(TargetConfig::default()).unwrap();
+    let target = create_target_machine(TargetConfig {
+        cpu: cpu.into(),
+        ..Default::default()
+    })
+    .unwrap();
     for optimize in [false, true] {
         let pipeline = CodegenPipeline::with_options(
             &*target,
@@ -884,4 +930,95 @@ __attribute__((noinline)) double twice(double x) { return x*2; }
 int main(void) { for(int n=-100;n<100;n++) assert(floats(n*0.25)==n*0.75); }
 "#,
     );
+}
+
+#[test]
+fn popcount_obeys_target_features_and_preserves_results() {
+    let source = r#"
+export function count32(i32) -> i32
+block0(v0: i32):
+  v1: i32 = ipopcnt v0
+  return v1
+export function count64(i64) -> i64
+block0(v0: i64):
+  v1: i64 = ipopcnt v0
+  return v1
+"#;
+    let harness = r#"
+#include <stdint.h>
+extern uint32_t count32(uint32_t);
+extern uint64_t count64(uint64_t);
+static unsigned reference(uint64_t x) {
+    unsigned n = 0;
+    for (; x; x >>= 1) n += x & 1;
+    return n;
+}
+int main(void) {
+    uint64_t x = 0;
+    for (unsigned i = 0; i < 10000; ++i) {
+        if (count32((uint32_t)x) != reference((uint32_t)x)) return 1;
+        if (count64(x) != reference(x)) return 2;
+        x = i == 0 ? UINT64_MAX : x * UINT64_C(6364136223846793005) + 1;
+    }
+    return 0;
+}
+"#;
+    let module = ModuleParser::new().parse(source).unwrap();
+    module.validate().unwrap();
+    for cpu in ["generic", "haswell"] {
+        let target = create_target_machine(TargetConfig {
+            cpu: cpu.into(),
+            ..Default::default()
+        })
+        .unwrap();
+        // The same requirement is enforced even if a pass directly builds a
+        // machine opcode, bypassing legalization and selection.
+        {
+            use veloc_codegen::target::x86_64::isle::{REG_RAX, REG_RDI, TargetInst};
+            let mut function = veloc_lir::MachineFunction::new("feature_check".into());
+            let id = function.writer().write(
+                veloc_lir::MachineOpcode::Target(TargetInst::X86Popcnt64 as u32),
+                &[REG_RAX],
+                &[REG_RDI],
+                &[],
+            );
+            let validation = target.validate_instruction(
+                &function.inst(id),
+                veloc_codegen::target::arch::ValidationMode::Allocated,
+            );
+            assert_eq!(validation.is_ok(), cpu == "haswell");
+            if cpu == "generic" {
+                assert!(validation.unwrap_err().to_string().contains("POPCNT"));
+            }
+        }
+        for optimize in [false, true] {
+            let pipeline = CodegenPipeline::with_options(
+                &*target,
+                CodegenOptions {
+                    optimize,
+                    ..Default::default()
+                },
+            );
+            let object = pipeline.compile_object(&module).unwrap();
+            let dir = Workspace::new();
+            let path = dir.0.join("counts.o");
+            fs::write(&path, object).unwrap();
+            let disassembly = Command::new("objdump")
+                .arg("-d")
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert!(disassembly.status.success());
+            let disassembly = String::from_utf8(disassembly.stdout).unwrap();
+            assert_eq!(
+                disassembly.contains("popcnt"),
+                cpu == "haswell",
+                "{cpu}, optimize={optimize}: {disassembly}"
+            );
+        }
+        // Cross-compilation must not use build-host CPUID; execution still must.
+        if cpu == "generic" || std::is_x86_feature_detected!("popcnt") {
+            run_cpu(source, harness, cpu);
+        }
+    }
 }

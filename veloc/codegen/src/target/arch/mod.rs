@@ -28,6 +28,11 @@ pub use types::{
 };
 
 /// 基础 Lowering Context 接口 (所有后端共用)
+/// Immutable target capabilities, independent of instruction operands or graph analyses.
+pub trait TargetFeatures {
+    fn has_feature(&self, feature: &str) -> bool;
+}
+
 pub trait LoweringContext {
     /// Create a fresh machine SSA temporary with the exemplar's type and bank.
     fn alloc_tmp(&mut self, like: Reg) -> Reg;
@@ -111,20 +116,10 @@ pub trait LoweringContext {
         self.get_type(val).is_ptr()
     }
 
-    /// 获取寄存器库
-    fn get_bank(&self, val: VReg) -> Option<veloc_lir::RegisterBank>;
-
-    /// 谓词：检查是否在 FPR (浮点寄存器库)
-    fn is_fpr(&self, val: VReg) -> bool {
-        matches!(self.get_bank(val), Some(veloc_lir::RegisterBank::FPR))
-    }
-
     /// 获取指定的寄存器操作数
     fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<VReg>;
 }
 
-/// Target Machine: 封装特定目标架构的所有组件和策略。
-/// 模仿 LLVM TargetMachine，作为从通用流程获取架构特定逻辑的统一入口。
 /// Operand rendering and symbol naming belong to the assembly host. Instruction
 /// mnemonics, widths and operand order come from the target definition schema.
 pub trait AssemblyWriter: core::fmt::Write {
@@ -136,11 +131,32 @@ pub trait AssemblyWriter: core::fmt::Write {
     fn stack_slot(&mut self, slot: veloc_lir::StackSlot, bits: u32) -> core::fmt::Result;
 }
 
-pub trait TargetMachine {
+/// Explicit validator policy; this does not tag or mutate the IR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationMode {
+    /// Virtual registers are permitted; fixed physical operands are still checked.
+    Virtual,
+    /// No virtual operands remain, and two-address ties must be satisfied.
+    Allocated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpillKind {
+    Load,
+    Store,
+}
+
+/// Immutable target description shared by backend algorithms.
+pub trait TargetInfo {
+    fn desc(&self) -> &TargetDescription;
+}
+
+/// Definition-owned instruction facts and their generated consumers.
+pub trait TargetInstructions {
     fn validate_instruction(
         &self,
         inst: &veloc_lir::InstRef<'_>,
-        allocated: bool,
+        mode: ValidationMode,
     ) -> crate::Result<()>;
     fn write_assembly(
         &self,
@@ -148,101 +164,82 @@ pub trait TargetMachine {
         out: &mut dyn AssemblyWriter,
     ) -> core::fmt::Result;
     /// Static instruction facts shared by control-flow and scheduling queries.
-    fn target_inst_metadata(&self, opcode: u32) -> &'static TargetInstMetadata;
+    fn instruction_metadata(&self, opcode: u32) -> &'static TargetInstMetadata;
 
     fn control_flow(&self, inst: &veloc_lir::InstRef<'_>) -> veloc_lir::ControlFlow {
         match inst.opcode() {
             veloc_lir::MachineOpcode::Invalid => veloc_lir::ControlFlow::Next,
             veloc_lir::MachineOpcode::Generic(op) => op.control(),
-            veloc_lir::MachineOpcode::Target(op) => self.target_inst_metadata(op).flow,
+            veloc_lir::MachineOpcode::Target(op) => self.instruction_metadata(op).flow,
         }
-    }
-
-    /// Unknown operations are scheduling barriers. Costs are estimates, not
-    /// cycle-accurate promises for every CPU implementing an ISA.
-    fn schedule_info(&self, inst: &veloc_lir::InstRef<'_>) -> Option<ScheduleInfo> {
-        if inst.memory().is_some() {
-            return None;
-        }
-        let veloc_lir::MachineOpcode::Target(op) = inst.opcode() else {
-            return None;
-        };
-        self.target_inst_metadata(op).schedule
     }
 
     fn is_call(&self, inst: &veloc_lir::InstRef<'_>) -> bool {
         self.control_flow(inst) == veloc_lir::ControlFlow::Call
     }
+}
 
-    /// Dedicated spill temporaries must not belong to any allocatable set.
-    fn spill_scratch(&self, _class: RegClass) -> &'static [Reg] {
-        &[]
+/// CPU-specific estimates, separate from instruction semantics and pass policy.
+pub trait TargetSchedule: TargetInfo + TargetInstructions {
+    /// CPU latency override; None retains the definition's baseline estimate.
+    /// Providing a cost does not establish that the instruction may be moved.
+    fn schedule_latency(&self, _opcode: u32) -> Option<u32> {
+        None
     }
+}
 
-    /// A physical register copy for allocation edits, with the value's type.
+/// Required primitives for the allocation algorithm; no late unsupported defaults.
+pub trait TargetRegalloc: TargetInfo + TargetInstructions {
+    /// Reserved temporaries must not overlap any allocatable register set.
+    fn spill_scratch(&self, class: RegClass) -> &'static [Reg];
     fn jump_instruction(
         &self,
-        _writer: veloc_lir::InstWriter<'_>,
-        _target: veloc_mir::Block,
-    ) -> crate::Result<InstId> {
-        Err(crate::Error::codegen("target does not support edge jumps"))
-    }
-
+        writer: veloc_lir::InstWriter<'_>,
+        target: veloc_mir::Block,
+    ) -> crate::Result<InstId>;
     fn copy_instruction(
         &self,
-        _writer: veloc_lir::InstWriter<'_>,
-        _dst: Reg,
-        _src: Reg,
-        _ty: Type,
-    ) -> crate::Result<InstId> {
-        Err(crate::Error::codegen(
-            "target does not support allocation copies",
-        ))
-    }
-
+        writer: veloc_lir::InstWriter<'_>,
+        dst: Reg,
+        src: Reg,
+        ty: Type,
+    ) -> crate::Result<InstId>;
     fn spill_instruction(
         &self,
-        _writer: veloc_lir::InstWriter<'_>,
-        _load: bool,
-        _reg: Reg,
-        _base: Reg,
-        _offset: i64,
-        _ty: Type,
-    ) -> crate::error::Result<InstId> {
-        Err(crate::error::Error::codegen(
-            "target does not support spill expansion",
-        ))
-    }
+        writer: veloc_lir::InstWriter<'_>,
+        kind: SpillKind,
+        reg: Reg,
+        base: Reg,
+        offset: i64,
+        ty: Type,
+    ) -> crate::Result<InstId>;
+}
 
+/// Backend composition root. Consumers accept narrower supertraits.
+pub trait TargetMachine: TargetRegalloc + TargetSchedule {
     /// 获取架构配置
     fn config(&self) -> &TargetConfig;
 
-    /// 获取当前 target instance 的完整描述。
-    fn desc(&self) -> &TargetDescription;
-
     /// 获取 legalize 组件。
-    fn target_legalizer(&self) -> &dyn TargetLegalizer;
+    fn legalizer(&self) -> &dyn TargetLegalizer;
 
     /// 获取指令选择组件。
-    fn target_selector(&self) -> &dyn TargetInstructionSelector;
+    fn selector(&self) -> &dyn TargetInstructionSelector;
 
     /// 获取操作数/寄存器拷贝 lowering 组件。
-    fn target_operand_lowering(&self) -> &dyn TargetOperandLowering;
+    fn operand_lowering(&self) -> &dyn TargetOperandLowering;
 
     /// 获取 post-isel 组件。
-    fn target_post_isel(&self) -> &dyn TargetPostIsel;
+    fn post_isel(&self) -> &dyn TargetPostIsel;
 
     /// 获取栈帧和序言/尾声 lowering 组件。
-    fn target_frame_lowering(&self) -> &dyn TargetFrameLowering;
+    fn frame_lowering(&self) -> &dyn TargetFrameLowering;
 
     /// 获取 target-specific pipeline 配置。
-    fn target_pass_config(&self) -> &dyn TargetPassConfig;
+    fn pass_config(&self) -> &dyn TargetPassConfig;
 
     /// 获取汇编器/发射器
-    fn target_emitter(&self) -> &dyn crate::target::arch::TargetEmitter;
-
-    /// 获取寄存器库选择逻辑
-    fn target_regbank_select(&self) -> &dyn crate::regalloc::regbank_select::TargetRegBankSelect;
+    fn emitter(&self) -> &dyn crate::target::arch::TargetEmitter;
 }
 
 /// A movable, nontrapping operation. It must not access memory, read flags, or
@@ -398,28 +395,12 @@ impl TargetInstMetadata {
 }
 
 pub trait TargetLegalizer: Send + Sync {
-    /// 查询一条 generic LIR 指令在当前目标上的 legalize 动作。
+    /// Pure instruction-local query. Missing coverage is an error at the driver,
+    /// never an implicit declaration of legality.
     fn legalize_action(
         &self,
-        _inst: &veloc_lir::InstRef<'_>,
-        _mfunc: &MachineFunction,
-    ) -> Result<Option<LegalizeAction>, crate::error::Error> {
-        Ok(None)
-    }
-
-    /// 应用 target-specific legalization。
-    ///
-    /// 只有当 `legalize_action()` 返回 `Some(LegalizeAction::Lower)` 时，
-    /// driver 才会调用这个 hook。
-    ///
-    /// 返回的指令按执行顺序排列，driver 会继续合法化其中的 generic 指令。
-    /// 原地改写时应返回原来的 ID；否则 driver 会使原指令失效。
-    /// 可以追加新块，但不能悄悄修改已处理的其他指令：driver 不会回访它们。
-    fn legalize_instruction(
-        &self,
-        inst_id: veloc_lir::InstId,
-        mfunc: &mut veloc_lir::MachineFunction,
-    ) -> Result<LegalizeResult, crate::error::Error>;
+        query: &crate::passes::lowering::legalize::Query,
+    ) -> Result<Option<LegalizeAction>, crate::error::Error>;
 }
 
 pub trait TargetInstructionSelector: Send + Sync {
@@ -506,7 +487,10 @@ pub trait TargetPassConfig: Send + Sync {
         Vec::new()
     }
 
-    /// 在 generic combine 之后追加 target 自定义 function passes。
+    /// Target preparation before instruction selection, after generic combine.
+    /// Targets needing bank assignment may install it here; it is not a
+    /// prerequisite imposed by the common pipeline. Changes to virtual-register
+    /// placement constraints invalidate INST_SEMANTICS analyses.
     fn pre_isel_passes(&self) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }

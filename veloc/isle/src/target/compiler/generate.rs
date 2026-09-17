@@ -413,7 +413,16 @@ pub(crate) fn generate_target_inst_metadata(
 }
 
 pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<String, FinalInstDef>) {
-    out.push_str("impl TargetInst { pub fn validate(&self, inst: &veloc_lir::InstRef<'_>, allocated: bool) -> crate::Result<()> {\nlet invalid = || crate::Error::codegen(alloc::format!(\"invalid operands for {:?}\", self));\nmatch self {\n");
+    out.push_str("impl TargetInst { pub fn required_features(self) -> &'static [&'static str] { match self {\n");
+    let mut ordered: Vec<_> = instructions.iter().collect();
+    ordered.sort_by_key(|(name, _)| *name);
+    for (name, instruction) in ordered {
+        if !instruction.requires.is_empty() {
+            writeln!(out, "Self::{name} => &{:?},", instruction.requires).unwrap();
+        }
+    }
+    out.push_str("_ => &[],\n} } }\n");
+    out.push_str("impl TargetInst { pub fn validate(&self, inst: &veloc_lir::InstRef<'_>, mode: crate::target::arch::ValidationMode) -> crate::Result<()> {\nlet invalid = || crate::Error::codegen(alloc::format!(\"invalid operands for {:?}\", self));\nmatch self {\n");
     let mut instructions: Vec<_> = instructions.iter().collect();
     instructions.sort_by_key(|(name, _)| *name);
     for (name, instruction) in instructions {
@@ -453,7 +462,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
                 "inputs"
             };
             let allowed = format_slice(registers.iter().map(|name| reg_const_name(name)).collect());
-            writeln!(out, "let reg = inst.{storage}()[{index}];\nif reg.is_preg() {{ if !({allowed}).contains(&reg) {{ return Err(invalid()); }} }} else if allocated {{ return Err(invalid()); }}").unwrap();
+            writeln!(out, "let reg = inst.{storage}()[{index}];\nif reg.is_preg() {{ if !({allowed}).contains(&reg) {{ return Err(invalid()); }} }} else if mode == crate::target::arch::ValidationMode::Allocated {{ return Err(invalid()); }}").unwrap();
         }
         for &(result, input) in &instruction.ties {
             let OperandConstraint::Def(ref result) = instruction.operands[result] else {
@@ -467,7 +476,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
             };
             let (result, _) = find_operand_info(result, &instruction.operands).unwrap();
             let (input, _) = find_operand_info(input, &instruction.operands).unwrap();
-            writeln!(out, "if allocated && inst.results()[{result}] != inst.inputs()[{input}] {{ return Err(invalid()); }}").unwrap();
+            writeln!(out, "if mode == crate::target::arch::ValidationMode::Allocated && inst.results()[{result}] != inst.inputs()[{input}] {{ return Err(invalid()); }}").unwrap();
         }
         out.push_str("Ok(())\n},\n");
     }

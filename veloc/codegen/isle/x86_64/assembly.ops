@@ -134,3 +134,6 @@ expand Asm(X86F32ToF64, "cvtss2sd", [reg(dst, 128), reg(src, 128)]);
 expand Asm(X86F64ToF32, "cvtsd2ss", [reg(dst, 128), reg(src, 128)]);
 expand Asm(X86SqrtF32, "sqrtss", [reg(dst, 128), reg(src, 128)]);
 expand Asm(X86SqrtF64, "sqrtsd", [reg(dst, 128), reg(src, 128)]);
+
+expand Asm(X86Popcnt32, "popcnt", [reg(dst, 32), reg(src, 32)]);
+expand Asm(X86Popcnt64, "popcnt", [reg(dst, 64), reg(src, 64)]);

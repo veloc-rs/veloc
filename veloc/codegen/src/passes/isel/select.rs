@@ -64,10 +64,6 @@ impl crate::target::arch::LoweringContext for SelectionContext<'_> {
         self.mfunc.vregs[vreg].ty
     }
 
-    fn get_bank(&self, vreg: veloc_lir::VReg) -> Option<veloc_lir::RegisterBank> {
-        self.mfunc.vregs[vreg].bank
-    }
-
     fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<veloc_lir::VReg> {
         let mut current = 0;
         for reg in inst

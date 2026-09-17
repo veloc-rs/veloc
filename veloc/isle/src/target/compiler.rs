@@ -24,6 +24,7 @@ pub(crate) struct FinalInstDef {
     is_pseudo: bool,
     assembly: Option<assembly::Assembly>,
     copy_bits: Option<u32>,
+    requires: Vec<String>,
 }
 
 fn parse_input(input: &str) -> Result<crate::target::ast::Module, String> {

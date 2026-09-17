@@ -254,7 +254,7 @@ impl<'a> CodegenPipeline<'a> {
     ) -> Result<MachineFunction> {
         use crate::pipeline::ssa::{verify, verify_allocated, verify_selected};
         self.verify_function("translated", &mfunc, verify)?;
-        let pass_config = self.target.target_pass_config();
+        let pass_config = self.target.pass_config();
         let mut ctx = FunctionPassContext::new(
             self.target,
             func_sig,
@@ -265,19 +265,38 @@ impl<'a> CodegenPipeline<'a> {
         );
 
         self.run_pass(
-            &LegalizePass::new(self.target.target_legalizer(), pass_config),
+            &LegalizePass::new(self.target.legalizer()),
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("legalized", &mfunc, verify)?;
+        let mut post_legalize = FunctionPassPipeline::new();
+        for pass in pass_config.post_legalize_passes() {
+            post_legalize.add_boxed_pass(pass);
+        }
+        post_legalize.run(&mut mfunc, &mut ctx)?;
+        crate::passes::lowering::reassociate::reassociate(&mut mfunc, ctx.function_analyses);
+        // Target hooks can introduce generic operations. Recheck them while
+        // operands still have semantic types, before ABI physical-register copies.
         self.run_pass(
-            &PreIselPass::new(self.target.target_operand_lowering(), pass_config),
+            &LegalizePass::new(self.target.legalizer()),
+            &mut mfunc,
+            &mut ctx,
+        )?;
+        self.run_pass(
+            &crate::passes::lowering::AbiLoweringPass::new(),
+            &mut mfunc,
+            &mut ctx,
+        )?;
+        self.verify_function("abi-lowered", &mfunc, verify)?;
+        self.run_pass(
+            &PreIselPass::new(self.target.operand_lowering(), pass_config),
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("pre-isel", &mfunc, verify)?;
         self.run_pass(
-            &InstructionSelectionPass::new(self.target.target_selector()),
+            &InstructionSelectionPass::new(self.target.selector()),
             &mut mfunc,
             &mut ctx,
         )?;
@@ -290,10 +309,7 @@ impl<'a> CodegenPipeline<'a> {
         post_isel.run(&mut mfunc, &mut ctx)?;
         self.verify_function("post-isel-target", &mfunc, verify_selected)?;
         self.run_pass(
-            &PostIselOptimizePass::new(
-                self.target.target_post_isel(),
-                self.target.target_operand_lowering(),
-            ),
+            &PostIselOptimizePass::new(self.target.post_isel(), self.target.operand_lowering()),
             &mut mfunc,
             &mut ctx,
         )?;
@@ -328,7 +344,7 @@ impl<'a> CodegenPipeline<'a> {
         post_regalloc.run(&mut mfunc, &mut ctx)?;
         self.verify_function("post-regalloc", &mfunc, verify_allocated)?;
         self.run_pass(
-            &FrameFinalizePass::new(self.target.target_frame_lowering()),
+            &FrameFinalizePass::new(self.target.frame_lowering()),
             &mut mfunc,
             &mut ctx,
         )?;
@@ -343,7 +359,7 @@ impl<'a> CodegenPipeline<'a> {
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<()> {
         let mut pipeline = ModulePassPipeline::new();
-        for pass in self.target.target_pass_config().pre_emit_module_passes() {
+        for pass in self.target.pass_config().pre_emit_module_passes() {
             pipeline.add_boxed_pass(pass);
         }
         let mut ctx = ModulePassContext::new(self.target, &self.options, stats, module_analyses);
@@ -358,7 +374,7 @@ impl<'a> CodegenPipeline<'a> {
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<()> {
         let mut pipeline = ModulePassPipeline::new();
-        for pass in self.target.target_pass_config().post_emit_module_passes() {
+        for pass in self.target.pass_config().post_emit_module_passes() {
             pipeline.add_boxed_pass(pass);
         }
         let mut ctx = ModulePassContext::new(self.target, &self.options, stats, module_analyses);
@@ -397,7 +413,7 @@ impl<'a> CodegenPipeline<'a> {
         &self,
         name: &str,
         mfunc: &MachineFunction,
-        verify: fn(&MachineFunction, &dyn TargetMachine) -> Result<()>,
+        verify: fn(&MachineFunction, &dyn crate::target::arch::TargetInstructions) -> Result<()>,
     ) -> Result<()> {
         if self.options.verify {
             verify(mfunc, self.target)
@@ -412,7 +428,7 @@ impl<'a> CodegenPipeline<'a> {
         mfunc: &MachineFunction,
         stats: &mut CodegenStats,
     ) -> Result<crate::EmittedCode> {
-        let emitter = self.target.target_emitter();
+        let emitter = self.target.emitter();
         let mut output = crate::Emitter::new();
 
         for block in &mfunc.blocks {

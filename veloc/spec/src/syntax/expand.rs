@@ -210,7 +210,7 @@ fn substitute_decl(
         node(source, value, bindings)?;
     }
     match &mut decl.kind {
-        DeclKind::Op(sig) => signature(source, sig, bindings)?,
+        DeclKind::Op(sig) | DeclKind::Rule(sig) => signature(source, sig, bindings)?,
         DeclKind::Function {
             signature: sig,
             body,
@@ -282,6 +282,16 @@ fn children<E>(
     visit: &mut impl FnMut(&mut Node) -> Result<(), E>,
 ) -> Result<(), E> {
     match &mut node.kind {
+        Kind::Match(value, arms) => {
+            visit(value)?;
+            for arm in arms {
+                visit(&mut arm.pattern)?;
+                if let Some(guard) = &mut arm.guard {
+                    visit(guard)?;
+                }
+                visit(&mut arm.value)?;
+            }
+        }
         Kind::List(items)
         | Kind::Call(_, items)
         | Kind::Union(items)
@@ -299,6 +309,11 @@ fn children<E>(
             visit(receiver)?;
             for arg in args {
                 visit(arg)?;
+            }
+        }
+        Kind::TypedCall(_, types, args) => {
+            for item in types.iter_mut().chain(args) {
+                visit(item)?;
             }
         }
         Kind::Binary(_, lhs, rhs) => {

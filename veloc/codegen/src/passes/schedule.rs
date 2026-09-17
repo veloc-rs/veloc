@@ -4,7 +4,7 @@
 //! Memory, traps and control effects remain barriers; this needs no alias guesses.
 use crate::pipeline::FunctionAnalysisCtx;
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{RegClass, ScheduleInfo, TargetMachine};
+use crate::target::arch::{RegClass, ScheduleInfo, TargetDescription, TargetSchedule};
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -42,7 +42,7 @@ impl FunctionPass for SchedulePass {
 
 pub(crate) fn schedule(
     f: &mut MachineFunction,
-    target: &dyn TargetMachine,
+    target: &dyn TargetSchedule,
     analyses: &mut FunctionAnalysisCtx,
 ) -> usize {
     // Bound scheduler work even for pathological generated basic blocks.
@@ -64,12 +64,19 @@ pub(crate) fn schedule(
             let mut info = Vec::new();
             while start > 0 && end - start < WINDOW {
                 let id = ids[start - 1];
-                if f.inst_extra(id).is_some() {
+                if f.inst_extra(id).is_some() || f.inst(id).memory().is_some() {
                     break;
                 }
-                let Some(cost) = target.schedule_info(&f.inst(id)) else {
+                let veloc_lir::MachineOpcode::Target(opcode) = f.inst(id).opcode() else {
                     break;
                 };
+                // Eligibility and flag effects are instruction facts, not CPU costs.
+                let Some(mut cost) = target.instruction_metadata(opcode).schedule else {
+                    break;
+                };
+                if let Some(latency) = target.schedule_latency(opcode) {
+                    cost.latency = latency;
+                }
                 info.push(cost);
                 start -= 1;
             }
@@ -81,7 +88,7 @@ pub(crate) fn schedule(
                 continue;
             }
             info.reverse();
-            let order = region(f, &ids[start..end], &info, target, &live);
+            let order = region(f, &ids[start..end], &info, target.desc(), &live);
             if order != ids[start..end] {
                 changed += 1;
             }
@@ -118,7 +125,7 @@ fn region(
     f: &MachineFunction,
     ids: &[InstId],
     info: &[ScheduleInfo],
-    target: &dyn TargetMachine,
+    target: &TargetDescription,
     live_out: &HashSet<Reg>,
 ) -> Vec<InstId> {
     let n = ids.len();
@@ -187,12 +194,12 @@ fn region(
         before(f, id, &mut live);
     }
     let mut capacity = [0isize; 5];
-    for class in target.desc().registers.reg_classes {
+    for class in target.registers.reg_classes {
         capacity[bank(class.kind)] = class.allocatable.len() as isize;
     }
     let reg_bank = |r| {
         let data = f.vreg_data(r);
-        bank(target.desc().reg_class_for_vreg(&data.ty, data.bank))
+        bank(target.reg_class_for_vreg(&data.ty, data.bank))
     };
     let mut pressure = [0isize; 5];
     for &reg in &live {

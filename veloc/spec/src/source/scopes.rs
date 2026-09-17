@@ -157,6 +157,15 @@ impl Checker<'_> {
                     self.node(arg, space, locals)?;
                 }
             }
+            Kind::TypedCall(name, types, args) => {
+                self.name(name, Space::Value, node.offset, locals)?;
+                for ty in types {
+                    self.node(ty, Some(Space::Type), locals)?;
+                }
+                for arg in args {
+                    self.node(arg, None, locals)?;
+                }
+            }
             Kind::Method(receiver, name, args) => {
                 if let Kind::Name(owner) = &receiver.kind
                     && !locals.contains(owner)
@@ -225,6 +234,18 @@ impl Checker<'_> {
                 let mut locals = locals.clone();
                 locals.extend(names.iter().cloned());
                 self.node(body, None, &locals)?;
+            }
+            Kind::Match(value, arms) => {
+                self.node(value, None, locals)?;
+                for arm in arms {
+                    if !matches!(&arm.pattern.kind, Kind::Name(name) if name == "_") {
+                        self.node(&arm.pattern, None, locals)?;
+                    }
+                    if let Some(guard) = &arm.guard {
+                        self.node(guard, None, locals)?;
+                    }
+                    self.node(&arm.value, None, locals)?;
+                }
             }
             Kind::Text(_) | Kind::Number(_) | Kind::Integer(_) => {}
         }

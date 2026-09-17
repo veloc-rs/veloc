@@ -161,6 +161,7 @@ pub struct InstStore {
     extras: Pool<InstExtra>,
     effects: Pool<RegEffects>,
     pub(crate) references: References,
+    changes: Option<Vec<InstId>>,
 }
 
 /// A single committed write. Generated methods encode directly from their typed
@@ -233,6 +234,20 @@ impl crate::InstBuild for InstWriter<'_> {
 }
 
 impl InstStore {
+    pub(crate) fn start_tracking(&mut self) {
+        assert!(self.changes.is_none(), "nested instruction change tracking");
+        self.changes = Some(Vec::new());
+    }
+    pub(crate) fn finish_tracking(&mut self) -> Vec<InstId> {
+        self.changes
+            .take()
+            .expect("instruction change tracking was not active")
+    }
+    fn changed(&mut self, id: InstId) {
+        if let Some(changes) = &mut self.changes {
+            changes.push(id);
+        }
+    }
     pub fn writer(&mut self) -> crate::InstWriter<'_> {
         crate::InstWriter {
             store: self,
@@ -266,12 +281,14 @@ impl InstStore {
         &self.results.data[self.instructions[id].results.indices()]
     }
     pub fn set_results(&mut self, id: InstId, results: &[Reg]) {
+        self.changed(id);
         self.clear_refs(id);
         self.results.release(self.instructions[id].results);
         self.instructions[id].results = self.results.insert(results);
         self.index_refs(id);
     }
     pub fn set_result(&mut self, id: InstId, index: usize, reg: Reg) {
+        self.changed(id);
         assert!(index < self.results(id).len());
         self.clear_refs(id);
         self.results.data[self.instructions[id].results.start as usize + index] = reg;
@@ -284,6 +301,7 @@ impl InstStore {
         &self.fields.data[self.instructions[id].fields.indices()]
     }
     pub fn set_input(&mut self, id: InstId, index: usize, reg: Reg) {
+        self.changed(id);
         let old = self.inputs(id)[index];
         if old == reg {
             return;
@@ -333,6 +351,7 @@ impl InstStore {
             effects: NONE,
         });
         self.index_refs(id);
+        self.changed(id);
         id
     }
     /// Transfer a detached instruction into a stable destination ID.
@@ -352,6 +371,7 @@ impl InstStore {
             effects: NONE,
         };
         self.instructions[id] = core::mem::replace(&mut self.instructions[source], empty);
+        self.changed(source);
         for link in self.instructions[id].refs.ids() {
             let mut site = self.references.links.owner(link);
             site.inst = id;
@@ -383,14 +403,17 @@ impl InstStore {
         self.index_refs(id);
     }
     pub fn set_fields(&mut self, id: InstId, fields: &[InstField]) {
+        self.changed(id);
         self.fields.release(self.instructions[id].fields);
         self.instructions[id].fields = self.fields.insert(fields);
     }
     pub fn set_field(&mut self, id: InstId, index: usize, field: InstField) {
+        self.changed(id);
         assert!(index < self.fields(id).len(), "field index out of bounds");
         self.fields.data[self.instructions[id].fields.start as usize + index] = field;
     }
     pub fn set_memory(&mut self, id: InstId, access: Option<MemoryAccess>) {
+        self.changed(id);
         self.memory.remove(self.instructions[id].memory);
         self.instructions[id].memory = access.map_or(NONE, |a| self.memory.insert(a));
     }
@@ -398,6 +421,7 @@ impl InstStore {
         self.effects.get(self.instructions[id].effects)
     }
     pub fn set_effects(&mut self, id: InstId, effects: RegEffects) {
+        self.changed(id);
         assert!(effects.uses.iter().chain(&effects.defs).all(Reg::is_preg));
         self.clear_refs(id);
         self.effects.remove(self.instructions[id].effects);
@@ -412,12 +436,14 @@ impl InstStore {
         self.extras.get(self.instructions[id].extra)
     }
     pub fn set_extra(&mut self, id: InstId, extra: InstExtra) {
+        self.changed(id);
         self.clear_refs(id);
         self.extras.remove(self.instructions[id].extra);
         self.instructions[id].extra = self.extras.insert(extra);
         self.index_refs(id);
     }
     pub fn clear_extra(&mut self, id: InstId) {
+        self.changed(id);
         self.clear_refs(id);
         self.extras.remove(self.instructions[id].extra);
         self.instructions[id].extra = NONE;
@@ -537,6 +563,7 @@ impl InstStore {
         let new = Reg::new_vreg(new.as_u32());
         while let Some(link) = self.references.head(old, RefRole::Use).expand() {
             let site = self.references.links.owner(link);
+            self.changed(site.inst);
             self.references.detach(link, old);
             match site.location() {
                 RefLocation::Result(_)
