@@ -19,6 +19,9 @@ pub use comparison::{FloatCC, IntCC};
 mod effects;
 pub use effects::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
 
+mod context;
+pub use context::TypeContext;
+
 mod signature;
 pub use signature::{CallConv, SigId, Signature, SignatureError, Signatures};
 

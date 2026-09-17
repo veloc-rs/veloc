@@ -638,7 +638,7 @@ impl VMInstance {
         let interp_module_id = if module.strategy() == Strategy::Interpreter {
             match module.artifact() {
                 ModuleArtifact::Interpreter(ir) => {
-                    let mut builder = store.program.builder(ir.clone());
+                    let mut builder = store.program.builder(ir.clone())?;
                     // 链接运行时函数
                     let runtime_names = [
                         "wasm_trap_handler",

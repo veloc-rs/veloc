@@ -1,4 +1,3 @@
-use veloc_types::TypeInfo;
 use crate::function::Function;
 use crate::types::{FuncId, SigId, Signature, Type};
 use alloc::string::String;
@@ -6,7 +5,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Deref;
 use cranelift_entity::PrimaryMap;
-use hashbrown::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linkage {
@@ -46,69 +44,37 @@ pub struct Global {
 #[derive(Debug, Default, Clone)]
 pub struct ModuleData {
     pub functions: PrimaryMap<FuncId, Function>,
-    pub signatures: veloc_types::Signatures,
+    types: Arc<veloc_types::TypeContext>,
     pub globals: Vec<Global>,
 }
 
 impl ModuleData {
-    /// Compare structural types from different module contexts. Compact data
-    /// types keep the constant-time path; interned IDs are never compared across
-    /// contexts. The worklist also terminates on malformed cyclic signatures.
-    pub fn type_eq(&self, lhs: Type, other: &Self, rhs: Type) -> bool {
-        if lhs.is_compact() || rhs.is_compact() {
-            return lhs == rhs;
+    /// Bind a module to an existing immutable type universe.
+    pub fn with_types(types: Arc<veloc_types::TypeContext>) -> Self {
+        Self {
+            types,
+            functions: PrimaryMap::new(),
+            globals: Vec::new(),
         }
-        let (Some((lhs, a)), Some((rhs, b))) = (lhs.as_callable(), rhs.as_callable()) else {
-            return false;
-        };
-        a == b && self.signature_eq(lhs, other, rhs)
     }
 
-    pub fn signature_eq(&self, lhs: SigId, other: &Self, rhs: SigId) -> bool {
-        if core::ptr::eq(self, other) {
-            return lhs == rhs && self.signatures.get(lhs).is_some();
-        }
-        let (Some(a), Some(b)) = (self.signatures.get(lhs), other.signatures.get(rhs)) else {
-            return false;
-        };
-        // Ordinary function signatures do not need structural traversal or any
-        // allocation, including cross-module indirect calls.
-        if a.types().iter().all(|ty| ty.is_compact()) {
-            return a == b;
-        }
-        let mut pending = alloc::vec![(lhs, rhs)];
-        let mut seen = HashSet::new();
-        while let Some((lhs, rhs)) = pending.pop() {
-            if !seen.insert((lhs, rhs)) {
-                continue;
-            }
-            let (Some(a), Some(b)) = (self.signatures.get(lhs), other.signatures.get(rhs)) else {
-                return false;
-            };
-            if a.call_conv != b.call_conv
-                || a.params().len() != b.params().len()
-                || a.returns().len() != b.returns().len()
-            {
-                return false;
-            }
-            for (&lhs, &rhs) in a.types().iter().zip(b.types()) {
-                if lhs.is_compact() || rhs.is_compact() {
-                    if lhs != rhs {
-                        return false;
-                    }
-                } else {
-                    let (Some((lhs, a)), Some((rhs, b))) = (lhs.as_callable(), rhs.as_callable())
-                    else {
-                        return false;
-                    };
-                    if a != b {
-                        return false;
-                    }
-                    pending.push((lhs, rhs));
-                }
-            }
-        }
-        true
+    pub fn types(&self) -> &veloc_types::TypeContext {
+        &self.types
+    }
+
+    /// Share type identity without sharing mutable function bodies.
+    pub fn shared_types(&self) -> Arc<veloc_types::TypeContext> {
+        Arc::clone(&self.types)
+    }
+
+    /// Detach a shared context before extending it. Existing IDs remain valid
+    /// in this module; newly assigned IDs belong to the detached context only.
+    pub fn types_mut(&mut self) -> &mut veloc_types::TypeContext {
+        Arc::make_mut(&mut self.types)
+    }
+
+    pub fn signatures(&self) -> &veloc_types::Signatures {
+        self.types.signatures()
     }
 
     pub fn get_func_id(&self, name: &str) -> Option<FuncId> {
@@ -119,7 +85,7 @@ impl ModuleData {
     }
 
     pub fn intern_signature(&mut self, signature: Signature) -> SigId {
-        self.signatures.insert(signature)
+        self.types_mut().insert_signature(signature)
     }
 
     pub fn declare_function(&mut self, name: String, sig_id: SigId, linkage: Linkage) -> FuncId {
@@ -156,7 +122,7 @@ impl Module {
     }
 
     pub fn get_signature(&self, sig_id: SigId) -> &Signature {
-        &self.inner.signatures[sig_id]
+        &self.inner.signatures()[sig_id]
     }
 }
 

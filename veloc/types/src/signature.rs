@@ -148,7 +148,7 @@ impl Signatures {
         id
     }
     /// Transfer an already constructed signature without cloning its payload.
-    pub fn insert(&mut self, signature: Signature) -> SigId {
+    pub(crate) fn insert(&mut self, signature: Signature) -> SigId {
         let hash = self.hasher.hash_one(&signature);
         self.find(
             hash,
@@ -160,7 +160,12 @@ impl Signatures {
     }
 
     /// Probe borrowed slices first: a hit does not allocate a signature.
-    pub fn intern(&mut self, params: &[Type], returns: &[Type], call_conv: CallConv) -> SigId {
+    pub(crate) fn intern(
+        &mut self,
+        params: &[Type],
+        returns: &[Type],
+        call_conv: CallConv,
+    ) -> SigId {
         let hash = self.hasher.hash_one((params, returns, call_conv));
         self.find(hash, params, returns, call_conv)
             .unwrap_or_else(|| self.append(hash, Signature::new(params, returns, call_conv)))
@@ -169,7 +174,7 @@ impl Signatures {
     /// Remap another context once. Nested signatures are interned before users,
     /// so subsequent comparisons in this context are comparisons of IDs.
     /// Validate the graph before appending anything to the destination.
-    pub fn import(&mut self, source: &Self) -> Result<Vec<SigId>, SignatureError> {
+    pub(crate) fn import(&mut self, source: &Self) -> Result<Vec<SigId>, SignatureError> {
         let order = source.dependency_order()?;
         let mut ids = alloc::vec![SigId(u32::MAX); source.len()];
         let mut types = Vec::new();

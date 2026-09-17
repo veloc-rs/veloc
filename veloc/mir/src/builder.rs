@@ -19,6 +19,12 @@ impl ModuleBuilder {
         }
     }
 
+    pub fn with_types(types: alloc::sync::Arc<veloc_types::TypeContext>) -> Self {
+        Self {
+            data: ModuleData::with_types(types),
+        }
+    }
+
     pub fn declare_function(&mut self, name: String, sig_id: SigId, linkage: Linkage) -> FuncId {
         self.data.declare_function(name, sig_id, linkage)
     }
@@ -29,7 +35,9 @@ impl ModuleBuilder {
         ret: Vec<Type>,
         call_conv: CallConv,
     ) -> SigId {
-        self.data.signatures.intern(&params, &ret, call_conv)
+        self.data
+            .types_mut()
+            .intern_signature(&params, &ret, call_conv)
     }
 
     pub fn get_func_id(&self, name: &str) -> Option<FuncId> {
@@ -106,8 +114,8 @@ impl<'a> FunctionBuilder<'a> {
         self.seal_block(entry);
 
         let sig_id = self.func().signature;
-        for index in 0..self.module.signatures[sig_id].params().len() {
-            let ty = self.module.signatures[sig_id].params()[index];
+        for index in 0..self.module.signatures()[sig_id].params().len() {
+            let ty = self.module.signatures()[sig_id].params()[index];
             self.add_block_param(entry, ty);
         }
         entry
@@ -130,7 +138,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub fn signature(&self, sig_id: SigId) -> &Signature {
-        &self.module.signatures[sig_id]
+        &self.module.signatures()[sig_id]
     }
 
     pub fn make_block_call(&mut self, block: Block, args: &[Value]) -> BlockCall {

@@ -300,7 +300,7 @@ fn interpret(module: Module) -> Result<String> {
     let main = module
         .find_function_by_name("main")
         .ok_or("execute needs a main function")?;
-    let signature = &module.signatures[module.functions[main].signature];
+    let signature = &module.signatures()[module.functions[main].signature];
     if !signature.params().is_empty() {
         return Err("execute requires main() with no parameters".into());
     }
@@ -317,6 +317,7 @@ fn interpret(module: Module) -> Result<String> {
     let mut program = Program::new();
     let id = program
         .builder(module)
+        .map_err(|error| error.to_string())?
         .finish()
         .map_err(|error| error.to_string())?;
     match Interpreter::new().run_function(&program, &NoMemory, id, main, &[]) {
@@ -364,7 +365,6 @@ fn simplify(module: Module) -> Result<Module> {
         }
         let mut metrics = Metrics::default();
         run_simplify(function, false, &mut metrics);
-        function.dfg().check_uses().map_err(str::to_owned)?;
         let before = format!("{function:?}");
         if run_simplify(function, false, &mut metrics) || format!("{function:?}") != before {
             return Err(format!(

@@ -1,5 +1,5 @@
 //! MIR validation: module types, instruction contracts, SSA and ownership.
-use crate::host::{ConstContext, VerifyContext};
+use crate::host::VerifyContext;
 use crate::inst::Inst;
 use crate::{Block, Function, InstView, ModuleData, Opcode, Result, Successor, Type, Value};
 use alloc::string::String;
@@ -50,18 +50,17 @@ impl Function {
     }
 
     fn validate_body(&self, module: &ModuleData) -> Result<()> {
-        if module.signatures.get(self.signature).is_none() {
+        if module.signatures().get(self.signature).is_none() {
             return self.fail("unknown function signature".into());
         }
         if self.body().is_none() {
             return Ok(());
         }
         let structure = control::Structure::check(self, module)?;
-        let constants = ConstContext::new(&self.dfg());
-        let context = VerifyContext::new(module, self.signature);
+        let context = VerifyContext::new(module, self);
         for block in self.layout().block_order() {
             for inst in self.layout().block_insts(block) {
-                self.validate_inst(module, inst, &constants, &context)?;
+                self.validate_inst(module, inst, &context)?;
             }
         }
         structure.check_ssa(self)?;
@@ -72,7 +71,6 @@ impl Function {
         &self,
         module: &ModuleData,
         inst: Inst,
-        constants: &ConstContext<'_>,
         context: &VerifyContext<'_>,
     ) -> Result<()> {
         let data = &self.dfg().inst(inst);
@@ -115,7 +113,6 @@ impl Function {
             data,
             &operands,
             &results,
-            constants,
             context,
         )?;
 

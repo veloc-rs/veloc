@@ -235,7 +235,7 @@ fn emit_body(
                         "_dfg.value_type({value}).as_callable().ok_or_else(|| {error})?.0"
                     ),
                 };
-                format!("{{ let signature = _module.signatures.get({id}).ok_or_else(|| {error})?; (signature.params(), signature.returns()) }}")
+                format!("{{ let signature = _module.signatures().get({id}).ok_or_else(|| {error})?; (signature.params(), signature.returns()) }}")
             },
             |role, values, types| {
                 format!(

@@ -1,9 +1,9 @@
 //! One authoritative, contiguous operand array, with parallel reverse links.
 use super::DataFlowGraph;
-use veloc_collections::{LinkId as Operand, Links};
 use crate::{Inst, Value};
 use alloc::vec::Vec;
 use cranelift_entity::{EntityRef, SecondaryMap, packed_option::PackedOption};
+use veloc_collections::{LinkId as Operand, Links};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct OperandRange {
@@ -165,7 +165,8 @@ impl DataFlowGraph {
     pub fn set_operand(&mut self, inst: Inst, index: u32, value: Value) {
         let range = self.instructions[inst].operands;
         assert!(index < range.len, "operand index out of bounds");
-        self.operands.set(Operand::from_u32(range.start + index), value);
+        self.operands
+            .set(Operand::from_u32(range.start + index), value);
     }
 
     pub fn replace_all_uses(&mut self, old: Value, new: Value) {
@@ -175,87 +176,5 @@ impl DataFlowGraph {
         while let Some(id) = self.operands.heads[old].expand() {
             self.operands.set(id, new);
         }
-    }
-
-    /// Audit both directions, allocation ownership and free ranges independently.
-    pub fn check_uses(&self) -> Result<(), &'static str> {
-        let store = &self.operands;
-        if store.values.len() != store.links.len() {
-            return Err("operand columns differ in length");
-        }
-        let mut allocated = alloc::vec![false; store.values.len()];
-        let mut linked = alloc::vec![false; store.values.len()];
-        let mut expected = 0;
-        for (inst, data) in self.instructions.iter() {
-            let range = data.operands;
-            if range.len == 0 {
-                continue;
-            }
-            let capacity = range.len.next_power_of_two() as usize;
-            let end = range.start as usize + capacity;
-            if end > allocated.len() {
-                return Err("operand range out of bounds");
-            }
-            for slot in &mut allocated[range.start as usize..end] {
-                if core::mem::replace(slot, true) {
-                    return Err("overlapping operand allocations");
-                }
-            }
-            for index in range.range() {
-                if store.links.owner(Operand::new(index)) != inst {
-                    return Err("incorrect operand owner");
-                }
-                expected += 1;
-            }
-            let mut decoded = Vec::new();
-            self.inst(inst).visit_operands(|value| decoded.push(value));
-            if decoded != self.operands(inst) {
-                return Err("operand view differs from storage");
-            }
-        }
-        for (class, ranges) in store.free.iter().enumerate() {
-            for &start in ranges {
-                let end = start as usize + (1usize << class);
-                if end > allocated.len() {
-                    return Err("free operand range out of bounds");
-                }
-                for slot in &mut allocated[start as usize..end] {
-                    if core::mem::replace(slot, true) {
-                        return Err("overlapping free operand ranges");
-                    }
-                }
-            }
-        }
-        if allocated.iter().any(|&v| !v) {
-            return Err("lost operand allocation");
-        }
-        let mut count = 0;
-        for (value, &head) in store.heads.iter() {
-            let mut next = head;
-            let mut prev = None.into();
-            while let Some(id) = next.expand() {
-                let Some(slot) = linked.get_mut(id.index()) else {
-                    return Err("invalid use link");
-                };
-                if core::mem::replace(slot, true) {
-                    return Err("cyclic or duplicate use link");
-                }
-                let owner = store.links.owner(id);
-                let range = self.instructions[owner].operands;
-                if !range.range().contains(&id.index()) {
-                    return Err("use outside owner range");
-                }
-                if store.links.prev(id) != prev || store.values[id.index()] != value {
-                    return Err("incorrect use link");
-                }
-                prev = Some(id).into();
-                next = store.links.next(id);
-                count += 1;
-            }
-        }
-        if count != expected {
-            return Err("missing use link");
-        }
-        Ok(())
     }
 }

@@ -155,7 +155,7 @@ fn signature_results(op: &Op, out: &mut String) {
             matches!(binding, Binding::Name(param) if param == name).then_some(field)
         })
         .expect("checked signature source storage");
-    writeln!(out, "(crate::Opcode::{}, Self::{} {{ {field}: source, .. }}) => {{\nlet sig = {id};\nlet sig = module.signatures.get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(sig.returns()))\n}},", op.name, op.format).unwrap();
+    writeln!(out, "(crate::Opcode::{}, Self::{} {{ {field}: source, .. }}) => {{\nlet sig = {id};\nlet sig = module.signatures().get(sig).ok_or(\"unknown signature\")?;\nOk(smallvec::SmallVec::from_slice(sig.returns()))\n}},", op.name, op.format).unwrap();
 }
 
 /// Build-time expressions, never emitted as runtime descriptors.

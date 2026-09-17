@@ -102,7 +102,7 @@ impl Checker<'_> {
     fn check_blocks(&mut self) -> Result<()> {
         let func = self.func;
         let layout = &func.layout();
-        let Some(signature) = self.module.signatures.get(func.signature) else {
+        let Some(signature) = self.module.signatures().get(func.signature) else {
             return func.fail("unknown function signature".into());
         };
         for block in layout.block_order() {
@@ -237,7 +237,7 @@ impl Checker<'_> {
         let Some(entry) = func.entry_block() else {
             return Ok(());
         };
-        let signature = &self.module.signatures[func.signature];
+        let signature = &self.module.signatures()[func.signature];
         for (&param, &expected) in func.dfg().blocks[entry]
             .params
             .iter()

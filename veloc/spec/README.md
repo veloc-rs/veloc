@@ -152,7 +152,7 @@ Construction and validation remain separate. Optimizer evaluation, offline
 semantics and backend lowering retain separate artifacts and consumers.
 
 Value validity requirements belong to the operation's explicit `verify` block.
-For example, `Vconst` checks its dense byte storage there using `ConstContext`;
+For example, `Vconst` checks its dense byte storage there using `VerifyContext`;
 parameter types do not implicitly attach additional validation contracts.
 
 ### Rust type bindings
@@ -309,9 +309,9 @@ lifetime elision, so the result cannot outlive that receiver.
 `verify(ctx: VerifyContext)` and `query name(ctx: SomeContext) -> Result { ... }` bind a
 read-only reference supplied by the caller. Generated validators take concrete
 context parameters; they never construct a context or invoke a conversion.
-The MIR validation entry creates `VerifyContext` and `ConstContext` once and
-passes them through its instruction checks. Standalone constant checks need only
-`ConstContext`, not module state.
+The MIR validation entry creates one `VerifyContext` for the current function and
+module and passes it through its instruction checks. It provides access to both
+constant storage and signatures.
 
 Each named query generates an `Inst` method whose parameters include its
 concrete context reference when needed. For example:
@@ -1427,10 +1427,9 @@ contract and its implementation status are documented in
 [callables.md](../mir/docs/callables.md).
 
 Simplification uses a deduplicated worklist of affected definitions and users
-instead of repeatedly scanning the whole function. It preserves Value IDs during
-multi-result constant replacement. Dead-code removal erases closed sets together
-so dead internal references do not obstruct deletion. `check_uses` independently
-reconstructs occurrences for structural tests; it is not run on every edit.
+instead of repeatedly scanning the whole function. Multi-result constant
+replacement updates uses through the function editor. Dead-code removal erases
+closed sets together so dead internal references do not obstruct deletion.
 
 `AnalysisManager` borrows one function exclusively. Reading analyses is cached;
 requesting mutable function access clears derived analyses. It cannot switch to a

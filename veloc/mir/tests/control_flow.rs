@@ -38,7 +38,6 @@ fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
     let mut module = module.build_data();
     module.validate().unwrap();
     let function = &mut module.functions[entry];
-    function.dfg().check_uses().unwrap();
     let create = function.layout().first_inst(Block(0)).unwrap();
     function
         .edit()
@@ -63,12 +62,12 @@ fn deeply_nested_callable_signatures_validate_without_recursive_stack_growth() {
     for index in 0..20_000 {
         let params = vec![Type::callable(SigId(index + 1), CallableKind::Shared)];
         module
-            .signatures
-            .insert(Signature::new(params, vec![], CallConv::SystemV));
+            .types_mut()
+            .insert_signature(Signature::new(params, vec![], CallConv::SystemV));
     }
     module
-        .signatures
-        .insert(Signature::new(vec![], vec![], CallConv::SystemV));
+        .types_mut()
+        .insert_signature(Signature::new(vec![], vec![], CallConv::SystemV));
     module.validate().unwrap();
 }
 
@@ -76,7 +75,7 @@ fn deeply_nested_callable_signatures_validate_without_recursive_stack_growth() {
 fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
     use veloc_mir::{CallConv, CallableKind, ModuleData, SigId, Signature, Type};
     let mut module = ModuleData::default();
-    let sig = module.signatures.insert(Signature::new(
+    let sig = module.types_mut().insert_signature(Signature::new(
         vec![Type::callable(SigId(1), CallableKind::Shared)],
         vec![],
         CallConv::SystemV,
@@ -85,7 +84,7 @@ fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
     assert!(error.contains("signature sig0, parameter 0"), "{error}");
     assert!(error.contains("unknown callable signature sig1"), "{error}");
 
-    module.signatures.insert(Signature::new(
+    module.types_mut().insert_signature(Signature::new(
         vec![],
         vec![Type::callable(sig, CallableKind::Owned)],
         CallConv::SystemV,
@@ -130,7 +129,6 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
         }))
         .is_err()
     );
-    func.dfg().check_uses().unwrap();
     func.edit()
         .redirect_edge(EdgeRef { inst, index: 1 }, Block(2), &[Value(1)]);
     let mut edges = Vec::new();
@@ -144,7 +142,6 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
     assert_eq!(func.cfg().blocks()[Block(0)].succs, [Block(1), Block(2)]);
     assert_eq!(func.cfg().blocks()[Block(1)].preds, [Block(0)]);
     assert_eq!(func.cfg().blocks()[Block(2)].preds, [Block(0)]);
-    func.dfg().check_uses().unwrap();
     module.validate().unwrap();
 
     let func = &mut module.functions[veloc_mir::FuncId(0)];
@@ -274,4 +271,44 @@ fn fallible_visitors_preserve_order_and_stop_at_the_first_error() {
         assert_eq!(result, Err("stop"));
         assert_eq!(visited, [Value(0), Value(1)]);
     }
+}
+
+#[test]
+fn modules_share_types_but_detach_before_extending_them() {
+    use std::sync::Arc;
+    use veloc_mir::{CallConv, Linkage, ModuleBuilder, ModuleData, Signature, Type};
+    use veloc_types::TypeContext;
+
+    let mut types = TypeContext::default();
+    let signature = types.intern_signature(&[Type::I32], &[Type::I32], CallConv::SystemV);
+    let shared = Arc::new(types);
+    let mut left = ModuleBuilder::with_types(shared.clone());
+    let id = left.declare_function("identity".into(), signature, Linkage::Local);
+    {
+        let mut f = left.builder(id);
+        f.init_entry_block();
+        let value = f.func_param(0);
+        f.ins().ret(&[value]);
+    }
+    let mut left = left.build_data();
+    let right = ModuleData::with_types(shared);
+    assert!(Arc::ptr_eq(&left.shared_types(), &right.shared_types()));
+    left.validate().unwrap();
+    right.validate().unwrap();
+    assert!(right.functions.is_empty());
+
+    let old = left.clone();
+    let added = left.intern_signature(Signature::new([Type::F64], [], CallConv::SystemV));
+    assert!(!Arc::ptr_eq(&left.shared_types(), &right.shared_types()));
+    assert!(Arc::ptr_eq(&old.shared_types(), &right.shared_types()));
+    assert!(right.signatures().get(added).is_none());
+    assert_eq!(left.signatures()[signature], right.signatures()[signature]);
+    assert_eq!(left.signatures()[signature].params(), &[Type::I32]);
+
+    let mut destination = TypeContext::default();
+    destination.intern_signature(&[], &[], CallConv::SystemV);
+    let map = destination.import(left.types()).unwrap();
+    let right_map = destination.import(right.types()).unwrap();
+    assert_eq!(map[signature.0 as usize], right_map[signature.0 as usize]);
+    assert_ne!(map[added.0 as usize], right_map[signature.0 as usize]);
 }

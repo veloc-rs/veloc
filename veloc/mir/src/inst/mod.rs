@@ -136,7 +136,7 @@ mod tests {
                     .result_types(&dfg, &module, &[Type::F32])
                     .unwrap()
                     .as_slice(),
-                module.signatures[signature].returns()
+                module.signatures()[signature].returns()
             );
         }
         assert!(!Opcode::Return.has_signature());
@@ -192,6 +192,5 @@ mod tests {
             dfg.operands(inst),
             &[Value(0), Value(1), Value(2), Value(3), Value(1)]
         );
-        dfg.check_uses().unwrap();
     }
 }

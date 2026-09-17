@@ -73,7 +73,7 @@ impl Fixture {
                 },
             ),
         );
-        let mut builder = program.builder(module);
+        let mut builder = program.builder(module).unwrap();
         builder.link_host(cleanup, host).unwrap();
         builder.link_host(cleanup_empty, host_empty).unwrap();
         builder.link_host(pair, host_pair).unwrap();
@@ -194,7 +194,7 @@ fn guest_links_compare_structural_signatures_and_preserve_environment_origin() {
         .find(|(name, _)| name == "make")
         .unwrap()
         .1;
-    let mut builder = f.program.builder(source);
+    let mut builder = f.program.builder(source).unwrap();
     builder.link_import(import, f.module, target).unwrap();
     let module = builder.finish().unwrap();
     let mut vm = Interpreter::new();
@@ -301,9 +301,8 @@ fn raw_host_imports_cannot_accept_or_produce_callable_handles() {
             "host".into(),
             HostFunction::new(signature, |_| panic!("raw callable callback must not run")),
         );
-        let mut builder = program.builder(module);
-        builder.link_host(import, host).unwrap();
-        let error = builder.finish().unwrap_err();
+        let mut builder = program.builder(module).unwrap();
+        let error = builder.link_host(import, host).err().unwrap();
         assert!(error.to_string().contains("host callable imports"));
     }
 }

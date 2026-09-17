@@ -4,7 +4,7 @@ use alloc::format;
 use veloc_types::TypeInfo;
 
 pub(super) fn validate(module: &ModuleData) -> Result<()> {
-    for (id, sig) in module.signatures.iter() {
+    for (id, sig) in module.signatures().iter() {
         for (role, types) in [("parameter", sig.params()), ("return", sig.returns())] {
             for (index, &ty) in types.iter().enumerate() {
                 check_type(module, ty).map_err(|error| {
@@ -35,7 +35,7 @@ pub(super) fn check_type(module: &ModuleData, ty: Type) -> Result<()> {
         return Err(crate::Error::Message("invalid value type".into()));
     }
     if let Some((id, _)) = ty.as_callable()
-        && module.signatures.get(id).is_none()
+        && module.signatures().get(id).is_none()
     {
         return Err(crate::Error::Message(format!(
             "unknown callable signature {id}"
@@ -58,7 +58,7 @@ fn check_returns(returns: &[Type]) -> Result<()> {
 /// Shared iterative graph checking handles forward references and deep nesting.
 fn check_cycles(module: &ModuleData) -> Result<()> {
     module
-        .signatures
+        .signatures()
         .dependency_order()
         .map(|_| ())
         .map_err(|error| crate::Error::Message(alloc::format!("{error}")))

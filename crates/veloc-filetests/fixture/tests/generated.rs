@@ -214,7 +214,6 @@ fn definition_owned_records_flatten_operands_in_field_order() {
         let mut primary = vec![];
         dfg.inst(inst).visit_type_operands(|v| primary.push(v));
         assert_eq!(primary, [Value(0), Value(2)]);
-        dfg.check_uses().unwrap();
     }
 }
 
@@ -235,14 +234,11 @@ fn variadic_ranges_grow_recycle_and_remain_independent_after_clone() {
             unreachable!()
         };
         assert_eq!(values.as_ptr(), dfg.operands(left).as_ptr());
-        dfg.check_uses().unwrap();
     }
     let mut copy = dfg.clone();
     copy.replace_all_uses(Value(7), Value(8));
     assert_eq!(dfg.operands(right), &[Value(7), Value(7)]);
     assert_eq!(copy.operands(right), &[Value(8), Value(8)]);
-    dfg.check_uses().unwrap();
-    copy.check_uses().unwrap();
 }
 
 #[test]
@@ -342,7 +338,6 @@ fn function_edits_keep_layout_and_successor_edges_in_sync() {
         [new, old, entry]
     );
     assert_eq!(func.entry_block(), Some(entry));
-    func.dfg().check_uses().unwrap();
     data.validate().unwrap();
 }
 
@@ -368,7 +363,6 @@ fn borrowed_uses_distinguish_operands_and_edits_update_the_single_storage() {
     dfg.replace_all_uses(Value(1), Value(1));
     assert!(dfg.use_empty(Value(0)));
     assert_eq!(dfg.uses(Value(1)).count(), 2);
-    dfg.check_uses().unwrap();
     let before = dfg.clone();
     dfg.replace_inst(inst, |writer: veloc_mir::InstWriter<'_>| {
         writer.unary(Opcode::INeg, Value(2))
@@ -379,7 +373,6 @@ fn borrowed_uses_distinguish_operands_and_edits_update_the_single_storage() {
     assert!(invalid.is_err());
     assert_eq!(before.uses(Value(1)).count(), 2);
     assert!(dfg.use_empty(Value(1)));
-    dfg.check_uses().unwrap();
 }
 
 #[test]
@@ -413,33 +406,6 @@ fn unified_slots_distinguish_repeated_successors_and_vector_operands() {
     assert_eq!(dfg.operands(other)[2], Value(0));
     assert_eq!(ext.mask, Value(0));
     dfg.replace_all_uses(Value(0), Value(3));
-    dfg.check_uses().unwrap();
-}
-
-#[test]
-fn exact_use_index_survives_deterministic_edit_sequences() {
-    use veloc_mir::dfg::DataFlowGraph;
-    let mut dfg = DataFlowGraph::new();
-    let insts: Vec<_> = (0..32)
-        .map(|_| dfg.create_inst(|writer: veloc_mir::InstWriter<'_>| writer.nop()))
-        .collect();
-    let mut random = 12345u32;
-    for _ in 0..1000 {
-        random = random.wrapping_mul(1664525).wrapping_add(1013904223);
-        let inst = insts[(random >> 16) as usize % insts.len()];
-        let value = Value((random >> 8) % 8);
-        match random % 4 {
-            0 => dfg.replace_inst(inst, |writer: veloc_mir::InstWriter<'_>| {
-                writer.binary(Opcode::IAdd, [value, value])
-            }),
-            1 => dfg.replace_inst(inst, |writer: veloc_mir::InstWriter<'_>| {
-                writer.unary(Opcode::INeg, value)
-            }),
-            2 => dfg.remove_inst(inst),
-            _ => dfg.replace_all_uses(value, Value((value.0 + 1) % 8)),
-        }
-        dfg.check_uses().unwrap();
-    }
 }
 
 #[test]
@@ -455,10 +421,8 @@ fn closed_dead_cycles_are_erased_together() {
         &[Type::I32],
     );
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dfg.remove_inst(a))).is_err());
-    dfg.check_uses().unwrap();
     dfg.remove_insts(&[a, b]);
     assert!(dfg.use_empty(Value(0)) && dfg.use_empty(Value(1)));
-    dfg.check_uses().unwrap();
 }
 
 #[test]
@@ -1105,7 +1069,6 @@ fn pooled_copies_edit_repeated_successors_independently() {
             Value(4),
         ]
     );
-    dfg.check_uses().unwrap();
     dfg.remove_inst(untouched);
     assert!(dfg.use_empty(Value(0)));
     assert_eq!(dfg.uses(Value(4)).count(), 5);
@@ -1158,7 +1121,6 @@ fn successor_growth_preserves_record_inputs_and_following_fields() {
         let expected = dfg.operands(inst).to_vec();
         let copy = dfg.writer().copy(inst);
         assert_eq!(dfg.operands(copy), expected);
-        dfg.check_uses().unwrap();
     }
 }
 

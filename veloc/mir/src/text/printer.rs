@@ -84,7 +84,7 @@ impl<'a> InstPrinter<'a> {
 
     pub(super) fn fmt_signature_ref(&self, f: &mut dyn Write, sig_id: SigId) -> Result {
         if let Some(module) = self.module {
-            self.fmt_signature(f, &module.signatures[sig_id])
+            self.fmt_signature(f, &module.signatures()[sig_id])
         } else {
             write!(f, "sig{}", sig_id.0)
         }
@@ -94,7 +94,7 @@ impl<'a> InstPrinter<'a> {
         let module = self.module.ok_or(core::fmt::Error)?;
         let function = module.functions.get(callee).ok_or(core::fmt::Error)?;
         let signature = module
-            .signatures
+            .signatures()
             .get(function.signature)
             .ok_or(core::fmt::Error)?;
         self.fmt_signature(f, signature)
@@ -195,7 +195,7 @@ impl TypePrinter<'_> {
     fn fmt_type(&self, f: &mut dyn Write, ty: Type) -> Result {
         if let Some((sig, kind)) = ty.as_callable() {
             let module = self.module.ok_or(core::fmt::Error)?;
-            let sig = module.signatures.get(sig).ok_or(core::fmt::Error)?;
+            let sig = module.signatures().get(sig).ok_or(core::fmt::Error)?;
             f.write_str(match kind {
                 crate::CallableKind::Local => "local<",
                 crate::CallableKind::Owned => "owned<",
@@ -233,7 +233,7 @@ impl<'a> FuncPrinter<'a> {
 
     fn fmt_signature(&self, f: &mut dyn Write) -> Result {
         write!(f, "{} function {}(", self.func.linkage, self.func.name)?;
-        let sig = &self.module.signatures[self.func.signature];
+        let sig = &self.module.signatures()[self.func.signature];
         let printer = TypePrinter {
             module: Some(self.module),
         };

@@ -24,7 +24,7 @@ pub struct Program {
     /// Loaded modules
     modules: PrimaryMap<ModuleId, RuntimeModule>,
     /// Canonical signatures for constant-time cross-module call checks.
-    signatures: veloc_types::Signatures,
+    types: veloc_types::TypeContext,
     host_signatures: PrimaryMap<HostFuncId, Option<veloc_mir::SigId>>,
     /// Stable opaque references used by indirect calls.
     func_refs: Vec<CallTarget>,
@@ -38,6 +38,7 @@ pub struct ProgramBuilder<'a> {
     module: Module,
     id: ModuleId,
     targets: PrimaryMap<FuncId, Option<CallTarget>>,
+    signatures: Vec<veloc_mir::SigId>,
 }
 
 impl Program {
@@ -101,7 +102,10 @@ impl Program {
         Ok(loaded.ir.get_signature(function.signature))
     }
     /// Start building a module without exposing partial state through `Program`.
-    pub fn builder(&mut self, module: Module) -> ProgramBuilder<'_> {
+    /// Validate and canonicalize types before linking. Abandoned builders leave
+    /// deduplicated type entries in the append-only pool, but publish no module
+    /// or function references.
+    pub fn builder(&mut self, module: Module) -> Result<ProgramBuilder<'_>> {
         ProgramBuilder::new(self, module)
     }
 
@@ -129,7 +133,7 @@ impl Program {
             hosts_by_name: HashMap::new(),
             hosts: PrimaryMap::new(),
             modules: PrimaryMap::new(),
-            signatures: veloc_types::Signatures::default(),
+            types: veloc_types::TypeContext::default(),
             host_signatures: PrimaryMap::new(),
             func_refs: Vec::new(),
             host_refs: PrimaryMap::new(),
@@ -208,8 +212,8 @@ impl Program {
         // Such calls remain rejected by the ownership-aware ABI checks.
         let sig = host.signature();
         let signature = sig.types().iter().all(|ty| ty.is_compact()).then(|| {
-            self.signatures
-                .intern(sig.params(), sig.returns(), sig.call_conv)
+            self.types
+                .intern_signature(sig.params(), sig.returns(), sig.call_conv)
         });
         let id = self.hosts.push(host);
         let sig_id = self.host_signatures.push(signature);
@@ -223,7 +227,16 @@ impl Program {
 }
 
 impl<'a> ProgramBuilder<'a> {
-    fn new(program: &'a mut Program, module: Module) -> Self {
+    fn new(program: &'a mut Program, module: Module) -> Result<Self> {
+        module
+            .validate()
+            .map_err(|e| Error::Message(e.to_string()))?;
+        // The append-only type pool retains interned entries if linking is
+        // abandoned. No module or callable reference is published before finish.
+        let signatures = program
+            .types
+            .import(module.types())
+            .map_err(|e| Error::Message(e.to_string()))?;
         let id = program.modules.next_key();
         let mut targets = PrimaryMap::new();
         for (func, function) in module.functions.iter() {
@@ -233,12 +246,13 @@ impl<'a> ProgramBuilder<'a> {
             let actual = targets.push(target);
             debug_assert_eq!(func, actual);
         }
-        Self {
+        Ok(Self {
             program,
             module,
             id,
             targets,
-        }
+            signatures,
+        })
     }
 
     /// ID the module will have after a successful `finish`.
@@ -285,10 +299,13 @@ impl<'a> ProgramBuilder<'a> {
         }
 
         let source = &self.module.functions[import];
-        if !self
-            .module
-            .signature_eq(source.signature, target, target_data.signature)
-        {
+        let source_sig = self.signatures[source.signature.0 as usize];
+        let target_sig = if target_module == self.id {
+            self.signatures[target_data.signature.0 as usize]
+        } else {
+            self.program.modules[target_module].signatures[target_data.signature.0 as usize]
+        };
+        if source_sig != target_sig {
             return Err(Error::SignatureMismatch {
                 module: self.id,
                 func: import,
@@ -304,14 +321,24 @@ impl<'a> ProgramBuilder<'a> {
     /// Link one import to a host function.
     pub fn link_host(&mut self, import: FuncId, host: HostFuncId) -> Result<&mut Self> {
         self.validate_import(import)?;
-        let host_func = self
+        let host_signature = self
             .program
-            .hosts
+            .host_signatures
             .get(host)
             .ok_or(Error::InvalidHostFunction(host))?;
         let source = &self.module.functions[import];
-        let signature = self.module.get_signature(source.signature);
-        if host_func.signature() != signature {
+        if self
+            .module
+            .get_signature(source.signature)
+            .types()
+            .iter()
+            .any(|ty| ty.is_callable())
+        {
+            return Err(Error::Message(
+                "host callable imports require an ownership-aware ABI lowering".into(),
+            ));
+        }
+        if *host_signature != Some(self.signatures[source.signature.0 as usize]) {
             return Err(Error::HostSignatureMismatch {
                 module: self.id,
                 func: import,
@@ -334,26 +361,11 @@ impl<'a> ProgramBuilder<'a> {
         }
     }
 
-    /// Validate, compile, and atomically add the module to the program.
+    /// Compile and publish the module only after all imports are linked.
     pub fn finish(self) -> Result<ModuleId> {
-        self.module
-            .validate()
-            .map_err(|e| Error::Message(e.to_string()))?;
         for (_, function) in &self.module.functions {
             if function.is_defined() {
                 crate::bytecode::stack_layout(function).map_err(Error::Message)?;
-            }
-        }
-        // The generic host callback ABI carries raw bits, not owned handles.
-        // Guest links instead compare structural types across module contexts.
-        for (id, function) in &self.module.functions {
-            let sig = self.module.get_signature(function.signature);
-            if matches!(self.targets[id], Some(CallTarget::Host(_)))
-                && sig.types().iter().any(|ty| ty.is_callable())
-            {
-                return Err(Error::Message(
-                    "host callable imports require an ownership-aware ABI lowering".into(),
-                ));
             }
         }
         for (func, function) in self.module.functions.iter() {
@@ -370,6 +382,7 @@ impl<'a> ProgramBuilder<'a> {
             module,
             id,
             targets,
+            signatures,
         } = self;
         debug_assert_eq!(id, program.modules.next_key());
 
@@ -391,11 +404,6 @@ impl<'a> ProgramBuilder<'a> {
             debug_assert_eq!(func, ref_id);
         }
 
-        // The module has been validated; import resolves nested signatures once.
-        let signatures = program
-            .signatures
-            .import(&module.signatures)
-            .expect("validated signature graph");
         let actual = program.modules.push(RuntimeModule {
             signatures,
             ir: module,
@@ -460,7 +468,7 @@ mod tests {
         let mut program = Program::new();
         let (local_module, local_function) =
             module_with_func("local", Linkage::Export, Vec::new(), Vec::new());
-        let local_module = program.builder(local_module).finish().unwrap();
+        let local_module = program.builder(local_module).unwrap().finish().unwrap();
         assert_eq!(
             program.modules[local_module].call_targets[local_function],
             CallTarget::Bytecode(local_module, local_function)
@@ -472,13 +480,21 @@ mod tests {
             Some(CallTarget::Bytecode(local_module, local_function))
         );
 
+        let type_count = program.types.signatures().len();
+        let ref_count = program.func_refs.len();
         let (import_module, import_function) =
-            module_with_func("missing", Linkage::Import, Vec::new(), Vec::new());
+            module_with_func("missing", Linkage::Import, vec![Type::I32], Vec::new());
+        let retry = import_module.clone();
         assert!(matches!(
-            program.builder(import_module).finish(),
+            program.builder(import_module).unwrap().finish(),
             Err(Error::UnresolvedImport { func, .. }) if func == import_function
         ));
         assert_eq!(program.modules.len(), 1);
+        assert_eq!(program.func_refs.len(), ref_count);
+        assert_eq!(program.types.signatures().len(), type_count + 1);
+        assert!(program.builder(retry).unwrap().finish().is_err());
+        assert_eq!(program.types.signatures().len(), type_count + 1);
+        assert_eq!(program.func_refs.len(), ref_count);
     }
 
     #[test]
@@ -486,11 +502,11 @@ mod tests {
         let mut program = Program::new();
         let (target, target_function) =
             module_with_func("target", Linkage::Export, Vec::new(), Vec::new());
-        let target = program.builder(target).finish().unwrap();
+        let target = program.builder(target).unwrap().finish().unwrap();
 
         let (source, import) =
             module_with_func("target", Linkage::Import, vec![Type::I32], Vec::new());
-        let mut builder = program.builder(source);
+        let mut builder = program.builder(source).unwrap();
         assert!(matches!(
             builder.link_import(import, target, target_function),
             Err(Error::SignatureMismatch { .. })
@@ -498,7 +514,7 @@ mod tests {
         drop(builder);
 
         let (source, import) = module_with_func("target", Linkage::Import, Vec::new(), Vec::new());
-        let mut builder = program.builder(source);
+        let mut builder = program.builder(source).unwrap();
         builder
             .link_import(import, target, target_function)
             .unwrap();
@@ -510,7 +526,7 @@ mod tests {
 
         let (defined, function) =
             module_with_func("defined", Linkage::Export, Vec::new(), Vec::new());
-        let mut builder = program.builder(defined);
+        let mut builder = program.builder(defined).unwrap();
         assert!(matches!(
             builder.link_import(function, target, target_function),
             Err(Error::ExpectedImport { .. })
@@ -537,7 +553,7 @@ mod tests {
                 |values| values[0] = InterpreterValue::i32(values[0].unwrap_i32() + 1),
             ),
         );
-        let mut builder = program.builder(module);
+        let mut builder = program.builder(module).unwrap();
         assert!(matches!(
             builder.link_host(import, wrong),
             Err(Error::HostSignatureMismatch { .. })
