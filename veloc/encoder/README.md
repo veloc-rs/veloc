@@ -3,7 +3,7 @@
 Standalone, `no_std` machine-code encoding. Runtime code has no dependency on
 MIR, LIR, ISLE, allocation, stack frames, symbols, or code layout.
 
-`defs/x86_64.ops` owns the descriptor structs and enums. The build script uses
+`defs/x86_64.spec` owns the descriptor structs and enums. The build script uses
 OpSpec's shared data-type generator; Rust implements only encoding algorithms
 and the checked hardware-register number type.
 

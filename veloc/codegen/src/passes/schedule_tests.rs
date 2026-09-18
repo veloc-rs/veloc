@@ -2,14 +2,14 @@ use super::*;
 use crate::TargetConfig;
 use crate::target::x86_64::{
     X86_64TargetMachine,
-    isle::{REG_RAX, TargetInst},
+    inst::{REG_RAX, TargetInst},
 };
 use veloc_lir::{InstField, MachineOpcode, Writable};
 use veloc_mir::Type;
 
 #[test]
 fn fills_a_dependency_gap_without_reordering_flag_consumers() {
-    let target = X86_64TargetMachine::new(TargetConfig::default());
+    let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
     let mut f = MachineFunction::new("schedule".into());
     f.editor().create_block();
     let x = f.editor().alloc_vreg(Type::I64);
@@ -26,31 +26,17 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
         id
     };
     let copy = {
-        let id = f.editor().writer().unary(
-            MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
-            Writable(a),
-            x,
-        );
+        let id = TargetInst::X86Mov64.write(f.editor().writer(), &[a], &[x], &[]);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
     let first = {
-        let id = f.editor().writer().binary(
-            MachineOpcode::Target(TargetInst::X86IMul64.as_u32()),
-            Writable(a),
-            x,
-            a,
-        );
+        let id = TargetInst::X86IMul64.write(f.editor().writer(), &[a], &[x, a], &[]);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
     let last = {
-        let id = f.editor().writer().binary(
-            MachineOpcode::Target(TargetInst::X86IMul64.as_u32()),
-            Writable(a),
-            x,
-            a,
-        );
+        let id = TargetInst::X86IMul64.write(f.editor().writer(), &[a], &[x, a], &[]);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
@@ -73,8 +59,8 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
             .collect::<Vec<_>>(),
         &[copy, first, imm, last, consume]
     );
-    // Schema constructors supply fixed implicit operands even outside ISLE.
-    use crate::target::x86_64::isle::REG_RDX;
+    // Schema constructors supply fixed implicit operands even outside Spec.
+    use crate::target::x86_64::inst::REG_RDX;
     let divide = TargetInst::X86IDiv64.write(f.editor().writer(), &[], &[x], &[]);
     assert_eq!(f.inst(divide).inputs(), &[x]);
     assert!(f.inst(divide).results().is_empty());
@@ -90,27 +76,19 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
 
 #[test]
 fn preserves_register_anti_dependencies_and_memory_barriers() {
-    let target = X86_64TargetMachine::new(TargetConfig::default());
+    let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
     let mut f = MachineFunction::new("dependencies".into());
     f.editor().create_block();
     let a = f.editor().alloc_vreg(Type::I64);
     let b = f.editor().alloc_vreg(Type::I64);
     let c = f.editor().alloc_vreg(Type::I64);
     let read = {
-        let id = f.editor().writer().unary(
-            MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
-            Writable(b),
-            a,
-        );
+        let id = TargetInst::X86Mov64.write(f.editor().writer(), &[b], &[a], &[]);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
     let overwrite = {
-        let id = f.editor().writer().unary(
-            MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
-            Writable(a),
-            c,
-        );
+        let id = TargetInst::X86Mov64.write(f.editor().writer(), &[a], &[c], &[]);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
@@ -125,11 +103,7 @@ fn preserves_register_anti_dependencies_and_memory_barriers() {
         id
     };
     let after = {
-        let id = f.editor().writer().unary(
-            MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
-            Writable(c),
-            a,
-        );
+        let id = TargetInst::X86Mov64.write(f.editor().writer(), &[c], &[a], &[]);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };

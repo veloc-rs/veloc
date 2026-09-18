@@ -1,0 +1,2 @@
+// Shared type and operation vocabulary, independent of any instruction storage.
+import "types.spec";

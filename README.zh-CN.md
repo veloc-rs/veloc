@@ -98,10 +98,10 @@ WebAssembly 和 C 源码都会转换为同一种 Veloc 中层 IR（MIR）。运�
 | `veloc-optimizer` | Pass 管理、指标统计、常量折叠和死代码消除。 |
 | `veloc-interpreter` | IR 到字节码的编译器及寄存器字节码运行时。 |
 | `veloc-codegen` | 与目标无关的 LIR 流水线及 x86-64 后端。 |
-| `veloc-isle` | 复用 OpSpec 契约的跨 IR 类型化值规则编译器，以及目标描述和指令选择。 |
+| `veloc-spec` | 复用 OpSpec 契约的跨 IR 类型化值规则编译器，以及目标描述和指令选择。 |
 | `veloc-wasm` | WebAssembly 翻译器、运行时、CLI、链接器、JIT 和 WASI 支持。 |
 | `veloc-c` | 实验性 C 解析器和 IR 前端。 |
-| `veloc-spec` | WebAssembly 规范测试运行器。 |
+| `veloc-wasm-spec` | WebAssembly 规范测试运行器。 |
 
 ## 开发与测试
 
@@ -124,7 +124,7 @@ cargo test -p veloc-wasm
 规范测试运行器可以接收一个 `.wast` 文件，也可以接收上游 WebAssembly 规范测试中的目录：
 
 ```bash
-cargo run --release -p veloc-spec -- \
+cargo run --release -p veloc-wasm-spec -- \
   /path/to/wasm-spec/test/core \
   --strategy interp
 ```
@@ -135,7 +135,7 @@ cargo run --release -p veloc-spec -- \
 
 ```bash
 git submodule update --init crates/veloc-wasm/tests/testsuite
-CARGO_INCREMENTAL=0 cargo run -p veloc-spec -- \
+CARGO_INCREMENTAL=0 cargo run -p veloc-wasm-spec -- \
   crates/veloc-wasm/tests/testsuite/i32.wast --strategy jit --opt-level 1 --verbose
 ```
 

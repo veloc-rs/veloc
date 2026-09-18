@@ -31,6 +31,8 @@ pub fn parse(source: &str) -> Result<Vec<Decl>, Error> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Context {
     Value,
+    // Typed rewrite expressions admit full-width integer attributes.
+    Rewrite,
     Type,
     Expr,
     // Like Rust, a bare struct literal is not a control-expression scrutinee.
@@ -197,15 +199,61 @@ impl<'a> Parser<'a> {
             })
         } else {
             let offset = self.token.offset;
-            let mut fields = self.fields(0, Context::Expr, Fields::Properties)?;
-            if let Some((field, node)) = fields.iter().find(|(name, _)| name.as_str() != "value") {
-                return Err(self.error(node.offset, format!("unknown function field `{field}`")));
+            self.expect(TokenKind::LBrace)?;
+            // Existing property-style pure expressions share the same AST with
+            // construction functions; no second function declaration language.
+            if matches!(self.token.kind, TokenKind::Name(_))
+                && self.lexer.clone().next()?.kind == TokenKind::Eq
+            {
+                if let TokenKind::Name(name) = self.token.kind {
+                    if name != "value" {
+                        return Err(self.error(
+                            self.token.offset,
+                            format!("unknown function field `{name}`"),
+                        ));
+                    }
+                }
+                self.bump()?;
+                self.expect(TokenKind::Eq)?;
+                let value = self.expression(0, Context::Expr)?;
+                self.expect(TokenKind::Semi)?;
+                self.expect(TokenKind::RBrace)?;
+                return Ok(FunctionBody::Value(value));
             }
-            let value = fields
-                .remove("value")
-                .ok_or_else(|| self.error(offset, "missing function field `value`"))?;
-            Ok(FunctionBody::Value(value))
+            Ok(FunctionBody::Value(self.statements(
+                offset,
+                0,
+                Context::Rewrite,
+            )?))
         }
+    }
+
+    /// The opening brace has already been consumed. A trailing result may omit `;`.
+    fn statements(&mut self, offset: usize, depth: u8, context: Context) -> Result<Node, Error> {
+        let mut statements = Vec::new();
+        while !self.at(TokenKind::RBrace) {
+            let at = self.token.offset;
+            let binding = self.eat(TokenKind::Let)?;
+            let statement = if binding {
+                let name = self.name()?;
+                self.expect(TokenKind::Eq)?;
+                Node {
+                    offset: at,
+                    kind: Kind::Let(name, Box::new(self.expression(depth + 1, context)?)),
+                }
+            } else {
+                self.expression(depth + 1, context)?
+            };
+            statements.push(statement);
+            if binding || !self.at(TokenKind::RBrace) {
+                self.expect(TokenKind::Semi)?;
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(Node {
+            offset,
+            kind: Kind::List(statements),
+        })
     }
 
     fn declaration(&mut self, offset: usize, kind: TokenKind<'a>) -> Result<Decl, Error> {
@@ -215,10 +263,33 @@ impl<'a> Parser<'a> {
         let name = self.name()?;
         let mut fields = BTreeMap::new();
         let kind = match kind {
-            TokenKind::Name("rule") if self.at(TokenKind::LParen) || self.at(TokenKind::Lt) => {
+            TokenKind::Name("rule" | "rewrite")
+                if self.at(TokenKind::LParen) || self.at(TokenKind::Lt) =>
+            {
                 let signature = self.signature(None, false, true)?;
-                fields = self.fields(0, Context::Value, Fields::Properties)?;
-                DeclKind::Rule(signature)
+                if declaration_name == "rewrite" && self.at(TokenKind::Eq) {
+                    let FunctionBody::Rust {
+                        offset,
+                        path: Some(path),
+                    } = self.function_body()?
+                    else {
+                        unreachable!()
+                    };
+                    fields.insert(
+                        "rust".into(),
+                        Node {
+                            offset,
+                            kind: Kind::Text(path),
+                        },
+                    );
+                } else {
+                    fields = self.fields(0, Context::Value, Fields::Properties)?;
+                }
+                if declaration_name == "rewrite" {
+                    DeclKind::Rewrite(signature)
+                } else {
+                    DeclKind::Rule(signature)
+                }
             }
             TokenKind::Name("template") => {
                 self.expect(TokenKind::LParen)?;
@@ -336,7 +407,7 @@ impl<'a> Parser<'a> {
                 p.parameter()
             }
         })?;
-        if unit_default && self.at(TokenKind::LBrace) {
+        if unit_default && (self.at(TokenKind::LBrace) || self.at(TokenKind::Eq)) {
             return Ok(Signature {
                 is_const,
                 generics,
@@ -488,35 +559,20 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-            let block =
-                mode == Fields::Properties && name == "verify" && self.at(TokenKind::LBrace);
+            let block = mode == Fields::Properties
+                && matches!(name.as_str(), "verify" | "replace")
+                && self.at(TokenKind::LBrace);
             let mut node = if block {
                 self.expect(TokenKind::LBrace)?;
-                let mut statements = Vec::new();
-                while !self.at(TokenKind::RBrace) {
-                    let offset = self.token.offset;
-                    let statement = if self.token.kind == TokenKind::Let {
-                        self.bump()?;
-                        let name = self.name()?;
-                        self.expect(TokenKind::Eq)?;
-                        Node {
-                            offset,
-                            kind: Kind::Let(
-                                name,
-                                Box::new(self.expression(depth + 1, Context::Expr)?),
-                            ),
-                        }
-                    } else {
-                        self.expression(depth + 1, Context::Expr)?
-                    };
-                    statements.push(statement);
-                    self.expect(TokenKind::Semi)?;
-                }
-                self.expect(TokenKind::RBrace)?;
-                Node {
+                self.statements(
                     offset,
-                    kind: Kind::List(statements),
-                }
+                    depth,
+                    if name == "verify" {
+                        Context::Expr
+                    } else {
+                        Context::Rewrite
+                    },
+                )?
             } else if mode == Fields::Literal
                 && (self.at(TokenKind::Comma) || self.at(TokenKind::RBrace))
             {
@@ -534,6 +590,8 @@ impl<'a> Parser<'a> {
                     depth,
                     if matches!(name.as_str(), "meta" | "when") {
                         Context::Expr
+                    } else if name == "replace" {
+                        Context::Rewrite
                     } else {
                         context
                     },
@@ -691,6 +749,13 @@ impl<'a> Parser<'a> {
                             p.expression(depth + postfix, context)
                         })?,
                     )
+                } else if !matches!(context, Context::Type | Context::Condition)
+                    && self.at(TokenKind::LBrace)
+                {
+                    Kind::Object(
+                        name,
+                        self.fields(depth + postfix, context, Fields::Literal)?,
+                    )
                 } else {
                     Kind::Name(name)
                 };
@@ -764,6 +829,17 @@ impl<'a> Parser<'a> {
                 Kind::Record(self.field_body(depth + 1, context, Fields::Literal)?)
             }
             TokenKind::Text(text) => Kind::Text(text),
+            TokenKind::Minus if context == Context::Rewrite => {
+                let value = self.atom(depth + 1, context)?;
+                let Kind::Integer(value) = value.kind else {
+                    return Err(self.error(offset, "expected integer after minus"));
+                };
+                Kind::Integer(
+                    value
+                        .checked_neg()
+                        .ok_or_else(|| self.error(offset, "integer is out of range"))?,
+                )
+            }
             TokenKind::Number(text) => {
                 let text = text.replace('_', "");
                 let (digits, radix) = if let Some(digits) = text.strip_prefix("0x") {
@@ -777,7 +853,7 @@ impl<'a> Parser<'a> {
                 };
                 let value = i128::from_str_radix(digits, radix)
                     .map_err(|_| self.error(offset, "invalid or out-of-range integer literal"))?;
-                if context.is_expr() {
+                if context.is_expr() || context == Context::Rewrite {
                     Kind::Integer(value)
                 } else {
                     Kind::Number(

@@ -157,16 +157,6 @@ pub enum MachineOpcode {
     Target(u32),
 }
 
-// Target-independent construction helpers.
-impl crate::InstWriter<'_> {
-    pub fn unary(self, opcode: MachineOpcode, def: Writable<Reg>, src: Reg) -> InstId {
-        self.write(opcode, &[def.to_reg()], &[src], &[])
-    }
-    pub fn binary(self, opcode: MachineOpcode, def: Writable<Reg>, lhs: Reg, rhs: Reg) -> InstId {
-        self.write(opcode, &[def.to_reg()], &[lhs, rhs], &[])
-    }
-}
-
 /// Borrowed access to an instruction in its function's store.
 #[derive(Clone, Copy)]
 pub struct InstRef<'a> {

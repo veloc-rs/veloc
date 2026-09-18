@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use super::{evaluate, packing};
 use crate::model::Definitions;
 use crate::storage::Strategy;
-use crate::{Error, Generated};
+use crate::{Artifacts, Error};
 
 /// A definition unit with all selected-output checks and projections prepared.
 /// Construction can fail; generating artifacts from a plan cannot report a
@@ -99,8 +99,47 @@ impl Plan {
     }
 
     /// Emit reusable artifacts without rechecking or resolving source syntax.
-    pub fn generate(&self) -> Generated {
-        super::generate(self)
+    pub fn generate(&self) -> Artifacts {
+        crate::Emit::ALL
+            .iter()
+            .copied()
+            .filter(|&kind| self.supports(kind))
+            .map(|kind| (kind, self.emit(kind)))
+            .collect()
+    }
+
+    pub(crate) fn supports(&self, artifact: crate::Emit) -> bool {
+        use crate::Emit;
+        match self.output {
+            Output::Operands(_) => matches!(
+                artifact,
+                Emit::Types
+                    | Emit::TypeRules
+                    | Emit::Instructions
+                    | Emit::Checks
+                    | Emit::Semantics
+                    | Emit::TextParser
+                    | Emit::TextPrinter
+            ),
+            Output::Packed(_) => matches!(
+                artifact,
+                Emit::Types
+                    | Emit::TypeRules
+                    | Emit::Opcodes
+                    | Emit::Instructions
+                    | Emit::Builders
+                    | Emit::Validator
+                    | Emit::Checks
+                    | Emit::Evaluation
+                    | Emit::Semantics
+                    | Emit::TextParser
+                    | Emit::TextPrinter
+            ),
+        }
+    }
+
+    pub(crate) fn emit(&self, artifact: crate::Emit) -> String {
+        super::emit(self, artifact)
     }
 
     pub fn definitions(&self) -> &Definitions {

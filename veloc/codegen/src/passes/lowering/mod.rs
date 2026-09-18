@@ -1,4 +1,5 @@
 pub mod abi;
+pub(crate) mod control;
 pub mod legalize;
 pub(crate) mod reassociate;
 

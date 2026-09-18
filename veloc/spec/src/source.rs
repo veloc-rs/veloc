@@ -6,7 +6,7 @@ pub(crate) mod scopes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::{Definitions, Error, Generated, Plan, model, syntax};
+use crate::{Artifacts, Definitions, Error, Plan, model, syntax};
 
 #[derive(Debug)]
 pub struct SourceError {
@@ -99,6 +99,14 @@ impl Source {
     pub(crate) fn files(&self) -> &[File] {
         &self.files
     }
+    /// Shared lexical import checking for every consumer of Spec declarations.
+    pub(crate) fn check_imports(&self) -> Result<(), SourceError> {
+        let data = crate::model::data::Types::compile(self.declarations(), self.text())
+            .map_err(|e| self.locate(e))?;
+        scopes::check(self.text(), self.declarations(), self.files(), &data)
+            .map_err(|e| self.locate(e))
+    }
+
     pub fn interfaces(&self, namespace: &str) -> Result<String, SourceError> {
         crate::interfaces::generate(self, namespace).map_err(|e| self.locate(e))
     }
@@ -116,7 +124,7 @@ impl Source {
         Plan::prepare(self.parse()?, &self.text).map_err(|e| self.locate(e))
     }
 
-    pub fn compile(&self) -> Result<Generated, SourceError> {
+    pub fn compile(&self) -> Result<Artifacts, SourceError> {
         Ok(self.plan()?.generate())
     }
 

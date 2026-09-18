@@ -107,7 +107,7 @@ are not implemented by these operations.
 
 ## Definitions and validation
 
-`mir.ops` specifies callable operations, signatures, capture constraints, ownership
+`mir.spec` specifies callable operations, signatures, capture constraints, ownership
 transfers, effects and text syntax. Ordinary signatures and `verify` predicates
 describe validity; `MAY_TRAP` and `TERMINATOR` are explicit metadata rather than
 facts inferred from a separate control declaration.

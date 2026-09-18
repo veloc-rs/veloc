@@ -10,7 +10,7 @@ path = "runner.rs"
 harness = false
 
 [dev-dependencies]
-veloc-isle = { workspace = true }
+veloc-spec = { workspace = true }
 veloc-types = { workspace = true }
 filecheck = "0.5"
 libtest-mimic = "0.8"
@@ -19,5 +19,4 @@ veloc-analyzer = { workspace = true }
 veloc-optimizer = { workspace = true }
 veloc-codegen = { workspace = true }
 veloc-interpreter = { workspace = true }
-veloc-opgen = { workspace = true }
 veloc-test-mir = { path = "fixture" }

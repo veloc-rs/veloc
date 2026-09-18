@@ -19,7 +19,7 @@ hashbrown = { workspace = true, features = ["ahash", "inline-more"] }
 smallvec = { workspace = true }
 
 [build-dependencies]
-veloc-opgen = { workspace = true }
+veloc-spec = { workspace = true }
 
 [dev-dependencies]
 veloc-semantics = { workspace = true }

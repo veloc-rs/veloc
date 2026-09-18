@@ -1,4 +1,4 @@
-//! Scalar types, named vectors and exact type-set expressions from types.ops.
+//! Scalar types, named vectors and exact type-set expressions from types.spec.
 
 use std::collections::BTreeMap;
 
@@ -8,6 +8,7 @@ use crate::syntax::{Decl, DeclKind, Kind, Node};
 
 pub(crate) mod cases;
 pub(crate) mod generate;
+pub(crate) mod infer;
 mod resolve;
 pub(crate) mod rules;
 

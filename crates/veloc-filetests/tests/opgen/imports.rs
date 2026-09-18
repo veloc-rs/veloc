@@ -2,19 +2,19 @@
 use super::common;
 
 use std::path::Path;
-use veloc_opgen::Source;
+use veloc_spec::Source;
 
 struct Files(common::compiler::Temp);
 impl Files {
     fn new() -> Self {
-        let files = Self(common::compiler::Temp::new("veloc-opgen-imports").unwrap());
-        files.write("prelude.ops", &common::BUILTINS);
+        let files = Self(common::compiler::Temp::new("veloc-spec-imports").unwrap());
+        files.write("prelude.spec", &common::BUILTINS);
         files
     }
     fn write(&self, name: &str, text: &str) {
         std::fs::write(self.0.join(name), text).unwrap();
     }
-    fn load(&self, name: &str) -> Result<Source, veloc_opgen::SourceError> {
+    fn load(&self, name: &str) -> Result<Source, veloc_spec::SourceError> {
         common::load(self.0.join(name))
     }
 }
@@ -23,19 +23,19 @@ impl Files {
 fn diamond_imports_generate_each_definition_once() {
     let files = Files::new();
     files.write(
-        "shared.ops",
-        "import \"prelude.ops\";\n// no final newline\ntypeset Small = Type::I8 | Type::I16;\ntypeset Unused = Type::I8;",
+        "shared.spec",
+        "import \"prelude.spec\";\n// no final newline\ntypeset Small = Type::I8 | Type::I16;\ntypeset Unused = Type::I8;",
     );
     files.write(
-        "left.ops",
-        "import \"prelude.ops\";\nimport \"shared.ops\";\n",
+        "left.spec",
+        "import \"prelude.spec\";\nimport \"shared.spec\";\n",
     );
-    files.write("right.ops", "import \"./shared.ops\";\n");
+    files.write("right.spec", "import \"./shared.spec\";\n");
     files.write(
-        "root.ops",
+        "root.spec",
         r#"// import "not-a-dependency";
-import "left.ops";
-import "right.ops";
+import "left.spec";
+import "right.spec";
 struct Unary { arg: Value }
 op Example<T: Small>(arg: Value<T>) -> Value<T> {
     meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = "example";
@@ -43,10 +43,15 @@ op Example<T: Small>(arg: Value<T>) -> Value<T> {
 }
 "#,
     );
-    let source = files.load("root.ops").unwrap();
+    let source = files.load("root.spec").unwrap();
     let generated = source.compile().unwrap();
-    assert_eq!(generated.opcodes.matches("pub const Small:").count(), 1);
-    assert!(!generated.opcodes.contains("pub const Unused:"));
+    assert_eq!(
+        generated[veloc_spec::Emit::Opcodes]
+            .matches("pub const Small:")
+            .count(),
+        1
+    );
+    assert!(!generated[veloc_spec::Emit::Opcodes].contains("pub const Unused:"));
     // Importing shared contracts uses the Rust definitions, not parallel types.
     for declaration in [
         "pub struct MemFlags",
@@ -54,15 +59,15 @@ op Example<T: Small>(arg: Value<T>) -> Value<T> {
         "pub struct MemoryEffects",
         "pub enum MemoryEffect",
     ] {
-        assert!(!generated.opcodes.contains(declaration));
-        assert!(!generated.instructions.contains(declaration));
+        assert!(!generated[veloc_spec::Emit::Opcodes].contains(declaration));
+        assert!(!generated[veloc_spec::Emit::Instructions].contains(declaration));
     }
     for name in [
-        "root.ops",
-        "left.ops",
-        "right.ops",
-        "shared.ops",
-        "prelude.ops",
+        "root.spec",
+        "left.spec",
+        "right.spec",
+        "shared.spec",
+        "prelude.spec",
     ] {
         assert!(source.dependencies().any(|path| path == files.0.join(name)));
     }
@@ -77,23 +82,23 @@ op Example<T: Small>(arg: Value<T>) -> Value<T> {
 fn imported_hosts_and_helpers_need_no_capability_configuration() {
     let files = Files::new();
     files.write(
-        "host.ops",
+        "host.spec",
         r#"
 type Numbers = rust("crate::host::Numbers") { fn next(&self, n: u32) -> u32; }
 fn Next(ctx: &Numbers, n: u32) -> u32 { value = ctx.next(n); }
 "#,
     );
     files.write(
-        "helpers.ops",
+        "helpers.spec",
         r#"
-import "host.ops";
+import "host.spec";
 fn Twice(ctx: &Numbers, n: u32) -> u32 { value = Next(ctx, Next(ctx, n)); }
 "#,
     );
     let consumer = r#"
-import "prelude.ops";
-import "helpers.ops";
-import "host.ops";
+import "prelude.spec";
+import "helpers.spec";
+import "host.spec";
 struct Summary { count: u32 }
 struct Data { n: u32 }
 op Example(n: u32) -> () {
@@ -101,36 +106,47 @@ op Example(n: u32) -> () {
     storage = Data { n: n }; query summary(ctx: Numbers) -> Summary { count: Twice(ctx, n) }
 }
 "#;
-    files.write("consumer.ops", consumer);
-    let source = files.load("consumer.ops").unwrap();
+    files.write("consumer.spec", consumer);
+    let source = files.load("consumer.spec").unwrap();
     let generated = source.compile().unwrap();
-    assert!(generated.instructions.contains("pub trait Numbers"));
+    assert!(generated[veloc_spec::Emit::Instructions].contains("pub trait Numbers"));
     assert_eq!(
-        generated
-            .instructions
+        generated[veloc_spec::Emit::Instructions]
             .matches("crate::type_methods::Numbers>::next")
             .count(),
         2
     );
-    assert!(source.dependencies().any(|path| path.ends_with("host.ops")));
+    assert!(
+        source
+            .dependencies()
+            .any(|path| path.ends_with("host.spec"))
+    );
 
     // Importing definitions is still required; there is no implicit host registry.
     files.write(
-        "helpers.ops",
+        "helpers.spec",
         "fn Twice(ctx: &Numbers, n: u32) -> u32 { value = ctx.next(n); }",
     );
-    let error = files.load("consumer.ops").unwrap().compile().err().unwrap();
-    assert_eq!(error.path, files.0.join("helpers.ops"));
+    let error = files
+        .load("consumer.spec")
+        .unwrap()
+        .compile()
+        .err()
+        .unwrap();
+    assert_eq!(error.path, files.0.join("helpers.spec"));
 }
 
 #[test]
 fn model_errors_retain_imported_file_line_and_column() {
     let files = Files::new();
-    files.write("bad.ops", "// 类型定义\ntypeset Broken = Missing;");
-    files.write("root.ops", "import \"prelude.ops\";\nimport \"bad.ops\";");
-    let source = files.load("root.ops").unwrap();
+    files.write("bad.spec", "// 类型定义\ntypeset Broken = Missing;");
+    files.write(
+        "root.spec",
+        "import \"prelude.spec\";\nimport \"bad.spec\";",
+    );
+    let source = files.load("root.spec").unwrap();
     let error = source.parse().err().unwrap();
-    assert_eq!(error.path, files.0.join("bad.ops"));
+    assert_eq!(error.path, files.0.join("bad.spec"));
     assert_eq!(error.diagnostic.line, 2);
     assert!(error.diagnostic.column > 1);
     assert!(error.diagnostic.message.contains("Missing"));
@@ -139,14 +155,14 @@ fn model_errors_retain_imported_file_line_and_column() {
 #[test]
 fn imported_files_are_syntactically_independent() {
     let files = Files::new();
-    files.write("bad.ops", "typeset Broken = \n");
-    files.write("root.ops", "import \"bad.ops\";\n}");
-    let error = files.load("root.ops").err().unwrap();
+    files.write("bad.spec", "typeset Broken = \n");
+    files.write("root.spec", "import \"bad.spec\";\n}");
+    let error = files.load("root.spec").err().unwrap();
     // The root is also malformed. Neither file may complete the other's braces.
     assert!(error.diagnostic.message.contains("expected"));
-    files.write("root.ops", "import \"bad.ops\";\n");
-    let error = files.load("root.ops").err().unwrap();
-    assert_eq!(error.path, files.0.join("bad.ops"));
+    files.write("root.spec", "import \"bad.spec\";\n");
+    let error = files.load("root.spec").err().unwrap();
+    assert_eq!(error.path, files.0.join("bad.spec"));
     assert_eq!(error.diagnostic.line, 2);
     assert!(error.diagnostic.message.contains("imported from"));
 }
@@ -154,19 +170,22 @@ fn imported_files_are_syntactically_independent() {
 #[test]
 fn cycles_missing_files_and_late_imports_have_diagnostics() {
     let files = Files::new();
-    files.write("a.ops", "import \"b.ops\";");
-    files.write("b.ops", "import \"./a.ops\";");
-    let error = files.load("a.ops").err().unwrap();
+    files.write("a.spec", "import \"b.spec\";");
+    files.write("b.spec", "import \"./a.spec\";");
+    let error = files.load("a.spec").err().unwrap();
     assert!(error.to_string().contains("import cycle"));
-    assert!(error.to_string().contains("b.ops"));
-    files.write("missing.ops", "\nimport \"missing-target.ops\";");
-    let error = files.load("missing.ops").err().unwrap();
-    assert!(error.to_string().contains("missing-target.ops"));
-    assert!(error.to_string().contains("missing.ops:2:1"));
-    files.write("late.ops", "typeset A = Type::I8;\nimport \"prelude.ops\";");
+    assert!(error.to_string().contains("b.spec"));
+    files.write("missing.spec", "\nimport \"missing-target.spec\";");
+    let error = files.load("missing.spec").err().unwrap();
+    assert!(error.to_string().contains("missing-target.spec"));
+    assert!(error.to_string().contains("missing.spec:2:1"));
+    files.write(
+        "late.spec",
+        "typeset A = Type::I8;\nimport \"prelude.spec\";",
+    );
     assert!(
         files
-            .load("late.ops")
+            .load("late.spec")
             .err()
             .unwrap()
             .diagnostic
@@ -178,17 +197,17 @@ fn cycles_missing_files_and_late_imports_have_diagnostics() {
 #[test]
 fn import_strings_are_not_a_second_ad_hoc_lexer() {
     let files = Files::new();
-    files.write("space name.ops", "import \"prelude.ops\";");
-    files.write("root.ops", "import \"space name.ops\";\n");
-    files.load("root.ops").unwrap().compile().unwrap();
+    files.write("space name.spec", "import \"prelude.spec\";");
+    files.write("root.spec", "import \"space name.spec\";\n");
+    files.load("root.spec").unwrap().compile().unwrap();
     for text in [
         "import prelude;",
         "import \"\";",
-        "import \"/absolute.ops\";",
-        "import \"prelude.ops\"",
+        "import \"/absolute.spec\";",
+        "import \"prelude.spec\"",
     ] {
-        files.write("invalid.ops", text);
-        assert!(files.load("invalid.ops").is_err(), "{text}");
+        files.write("invalid.spec", text);
+        assert!(files.load("invalid.spec").is_err(), "{text}");
     }
 }
 
@@ -196,47 +215,47 @@ fn import_strings_are_not_a_second_ad_hoc_lexer() {
 #[test]
 fn symlink_identity_and_dependencies_are_both_preserved() {
     let files = Files::new();
-    std::os::unix::fs::symlink(Path::new("prelude.ops"), files.0.join("alias.ops")).unwrap();
-    files.write("root.ops", "import \"prelude.ops\";\nimport \"alias.ops\";");
-    let source = files.load("root.ops").unwrap();
+    std::os::unix::fs::symlink(Path::new("prelude.spec"), files.0.join("alias.spec")).unwrap();
+    files.write(
+        "root.spec",
+        "import \"prelude.spec\";\nimport \"alias.spec\";",
+    );
+    let source = files.load("root.spec").unwrap();
     source.compile().unwrap();
     assert!(
         source
             .dependencies()
-            .any(|path| path.ends_with("alias.ops"))
+            .any(|path| path.ends_with("alias.spec"))
     );
     assert!(
         source
             .dependencies()
-            .any(|path| path.ends_with("prelude.ops"))
+            .any(|path| path.ends_with("prelude.spec"))
     );
 }
 
 #[test]
 fn production_entry_points_generate_the_same_runtime_contracts() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
-    let mir = common::load(root.join("mir/defs/module.ops")).unwrap();
-    let lir = common::load(root.join("lir/defs/module.ops")).unwrap();
-    assert!(mir.compile().unwrap().opcodes.contains("pub enum Opcode"));
+    let mir = common::load(root.join("mir/defs/module.spec")).unwrap();
+    let lir = common::load(root.join("lir/defs/module.spec")).unwrap();
+    assert!(mir.compile().unwrap()[veloc_spec::Emit::Opcodes].contains("pub enum Opcode"));
     assert!(
-        lir.compile()
-            .unwrap()
-            .instructions
-            .contains("pub enum GenericOpcode")
+        lir.compile().unwrap()[veloc_spec::Emit::Instructions].contains("pub enum GenericOpcode")
     );
-    assert!(mir.dependencies().any(|p| p.ends_with("defs/types.ops")));
+    assert!(mir.dependencies().any(|p| p.ends_with("defs/types.spec")));
 }
 
 #[test]
 fn original_offsets_survive_unicode_imports_and_comments() {
     let files = Files::new();
-    files.write("类型.ops", "");
+    files.write("类型.spec", "");
     files.write(
-        "root.ops",
-        "import \"prelude.ops\";\nimport \"类型.ops\"; // 原文保留\n\ntypeset Broken = Missing;",
+        "root.spec",
+        "import \"prelude.spec\";\nimport \"类型.spec\"; // 原文保留\n\ntypeset Broken = Missing;",
     );
-    let error = files.load("root.ops").unwrap().parse().err().unwrap();
-    assert_eq!(error.path, files.0.join("root.ops"));
+    let error = files.load("root.spec").unwrap().parse().err().unwrap();
+    assert_eq!(error.path, files.0.join("root.spec"));
     assert_eq!(error.diagnostic.line, 4);
     assert_eq!(error.diagnostic.column, 18);
     assert!(error.diagnostic.message.contains("Missing"));
@@ -245,12 +264,15 @@ fn original_offsets_survive_unicode_imports_and_comments() {
 #[test]
 fn output_plan_errors_keep_the_imported_source_location() {
     let files = Files::new();
-    files.write("bad.ops", "import \"prelude.ops\"; struct Work {}\nop Work() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = \"emit\"; storage = Work {}; }");
-    files.write("root.ops", "import \"prelude.ops\";\nimport \"bad.ops\";");
-    let source = files.load("root.ops").unwrap();
+    files.write("bad.spec", "import \"prelude.spec\"; struct Work {}\nop Work() -> () { meta = OpInfo { memory: MemoryEffect::NONE }; mnemonic = \"emit\"; storage = Work {}; }");
+    files.write(
+        "root.spec",
+        "import \"prelude.spec\";\nimport \"bad.spec\";",
+    );
+    let source = files.load("root.spec").unwrap();
     source.parse().unwrap();
     let error = source.plan().err().expect("invalid output plan");
-    assert_eq!(error.path, files.0.join("bad.ops"));
+    assert_eq!(error.path, files.0.join("bad.spec"));
     assert_eq!(error.diagnostic.line, 2);
     assert!(error.diagnostic.message.contains("InstBuilder method"));
 }
@@ -258,32 +280,32 @@ fn output_plan_errors_keep_the_imported_source_location() {
 #[test]
 fn rust_type_bindings_follow_imports_and_preserve_diagnostics() {
     let files = Files::new();
-    files.write("types.ops", "type Token = rust(\"crate::tokens::Token\");");
+    files.write("types.spec", "type Token = rust(\"crate::tokens::Token\");");
     files.write(
-        "consumer.ops",
+        "consumer.spec",
         r#"
-import "prelude.ops";
-import "types.ops";
+import "prelude.spec";
+import "types.spec";
 type Tokens = rust("crate::host::Tokens") { fn read(&self, value: Token) -> Token; }
 struct Entry { value: Token }
 "#,
     );
-    let generated = files.load("consumer.ops").unwrap().compile().unwrap();
-    assert!(
-        generated
-            .instructions
-            .contains("value: crate::tokens::Token")
-    );
-    assert!(
-        generated
-            .instructions
-            .contains("pub value: crate::tokens::Token")
-    );
-    assert!(!generated.instructions.contains("pub struct Token"));
+    let generated = files.load("consumer.spec").unwrap().compile().unwrap();
+    assert!(generated[veloc_spec::Emit::Instructions].contains("value: crate::tokens::Token"));
+    assert!(generated[veloc_spec::Emit::Instructions].contains("pub value: crate::tokens::Token"));
+    assert!(!generated[veloc_spec::Emit::Instructions].contains("pub struct Token"));
 
-    files.write("types.ops", "type Token = rust(\"crate::Token; invalid\");");
-    let error = files.load("consumer.ops").unwrap().compile().err().unwrap();
-    assert_eq!(error.path, files.0.join("types.ops"));
+    files.write(
+        "types.spec",
+        "type Token = rust(\"crate::Token; invalid\");",
+    );
+    let error = files
+        .load("consumer.spec")
+        .unwrap()
+        .compile()
+        .err()
+        .unwrap();
+    assert_eq!(error.path, files.0.join("types.spec"));
     assert_eq!(error.diagnostic.line, 1);
 }
 
@@ -312,19 +334,19 @@ fn imports_are_file_local_even_when_siblings_are_loaded_first() {
             "Value",
         ),
     ] {
-        files.write("consumer.ops", body);
+        files.write("consumer.spec", body);
         for root in [
-            "import \"prelude.ops\"; import \"consumer.ops\";",
-            "import \"consumer.ops\"; import \"prelude.ops\";",
+            "import \"prelude.spec\"; import \"consumer.spec\";",
+            "import \"consumer.spec\"; import \"prelude.spec\";",
         ] {
-            files.write("root.ops", root);
+            files.write("root.spec", root);
             let error = files
-                .load("root.ops")
+                .load("root.spec")
                 .unwrap()
                 .parse()
                 .err()
                 .expect("sibling import leaked");
-            assert_eq!(error.path, files.0.join("consumer.ops"));
+            assert_eq!(error.path, files.0.join("consumer.spec"));
             assert!(
                 error
                     .diagnostic
@@ -333,16 +355,19 @@ fn imports_are_file_local_even_when_siblings_are_loaded_first() {
                 "{error}"
             );
         }
-        files.write("consumer.ops", &format!("import \"prelude.ops\";\n{body}"));
-        files.load("root.ops").unwrap().compile().unwrap();
+        files.write(
+            "consumer.spec",
+            &format!("import \"prelude.spec\";\n{body}"),
+        );
+        files.load("root.spec").unwrap().compile().unwrap();
     }
 
     files.write(
-        "references.ops",
+        "references.spec",
         r#"type Ref = rust("crate::Value") { field = operand; }"#,
     );
     let consumer = r#"
-import "prelude.ops";
+import "prelude.spec";
 struct Inputs { args: ValueList }
 op Consume(args: sequence(Ref)) -> () {
     meta = OpInfo { memory: MemoryEffect::NONE };
@@ -355,27 +380,27 @@ op Consume(args: sequence(Ref)) -> () {
             .replace("args: ValueList", "args: Value")
             .replace("sequence(Ref)", "Ref<Type::I32>"),
     ] {
-        files.write("consumer.ops", &consumer);
+        files.write("consumer.spec", &consumer);
         files.write(
-            "root.ops",
-            r#"import "references.ops"; import "consumer.ops";"#,
+            "root.spec",
+            r#"import "references.spec"; import "consumer.spec";"#,
         );
         let error = files
-            .load("root.ops")
+            .load("root.spec")
             .unwrap()
             .parse()
             .err()
             .expect("SSA reference import leaked");
-        assert_eq!(error.path, files.0.join("consumer.ops"));
+        assert_eq!(error.path, files.0.join("consumer.spec"));
         assert!(
             error.diagnostic.message.contains("`Ref` is not imported"),
             "{error}"
         );
         files.write(
-            "consumer.ops",
-            &format!("import \"references.ops\";\n{consumer}"),
+            "consumer.spec",
+            &format!("import \"references.spec\";\n{consumer}"),
         );
-        files.load("root.ops").unwrap().compile().unwrap();
+        files.load("root.spec").unwrap().compile().unwrap();
     }
 }
 
@@ -383,28 +408,28 @@ op Consume(args: sequence(Ref)) -> () {
 fn imported_type_sets_do_not_expose_unimported_rust_types() {
     let files = Files::new();
     files.write(
-        "scalar-types.ops",
+        "scalar-types.spec",
         "type F32 = float(32); type F64 = float(64); type Type = rust(\"crate::Type\"); typeset Float = Type::F32 | Type::F64;",
     );
     files.write(
-        "consumer.ops",
-        "import \"scalar-types.ops\"; struct Holder { value: Float }",
+        "consumer.spec",
+        "import \"scalar-types.spec\"; struct Holder { value: Float }",
     );
     files.write(
-        "root.ops",
-        "import \"prelude.ops\"; import \"consumer.ops\";",
+        "root.spec",
+        "import \"prelude.spec\"; import \"consumer.spec\";",
     );
     files.write(
-        "prelude.ops",
-        "import \"scalar-types.ops\"; type Float = rust(\"crate::Float\");",
+        "prelude.spec",
+        "import \"scalar-types.spec\"; type Float = rust(\"crate::Float\");",
     );
     let error = files
-        .load("root.ops")
+        .load("root.spec")
         .unwrap()
         .parse()
         .err()
         .expect("data namespace leaked");
-    assert_eq!(error.path, files.0.join("consumer.ops"));
+    assert_eq!(error.path, files.0.join("consumer.spec"));
     assert!(
         error.diagnostic.message.contains("`Float` is not imported"),
         "{error}"

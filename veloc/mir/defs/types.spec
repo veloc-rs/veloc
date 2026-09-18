@@ -1,0 +1,17 @@
+import "../../defs/prelude.spec";
+
+// Contexts are ordinary Rust-bound types. Borrowed results are tied to &self.
+type Signature = rust("veloc_types::Signature") {
+    trait = rust("crate::type_methods::SignatureInfo");
+    fn params(&self) -> sequence(Type);
+    fn returns(&self) -> sequence(Type);
+    fn types(&self) -> sequence(Type);
+}
+
+type VerifyContext = rust("crate::host::VerifyContext") {
+    trait = rust("crate::type_methods::VerifyContextInfo");
+    fn bytes(&self, value: VectorConst) -> optional(sequence(u8));
+    fn function_signature(&self, func: FuncId) -> optional(&Signature);
+    fn current_signature(&self) -> optional(&Signature);
+    fn signature(&self, sig: SigId) -> optional(&Signature);
+}

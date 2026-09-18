@@ -184,7 +184,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     let rw = f
         .editor()
         .writer()
-        .binary(veloc_lir::MachineOpcode::Target(0), Writable(a), b, a);
+        .write(veloc_lir::MachineOpcode::Target(0), &[a], &[b, a], &[]);
     f.editor()
         .replace_uses(a.as_vreg().unwrap(), b.as_vreg().unwrap());
     assert_eq!(f.uses(a).count(), 0);
@@ -631,10 +631,11 @@ fn optional_validation_is_separate_from_direct_views() {
         function.editor().set_inst_results(ret, &[dst.to_reg()]);
     }
     assert!(function.inst(ret).validate().is_err());
-    let target = function
-        .editor()
-        .writer()
-        .unary(MachineOpcode::Target(0), dst, src);
+    let target =
+        function
+            .editor()
+            .writer()
+            .write(MachineOpcode::Target(0), &[dst.to_reg()], &[src], &[]);
     assert!(function.inst(target).validate().is_err());
     function.editor().invalidate_inst(target);
     assert!(function.inst(target).validate().is_err());

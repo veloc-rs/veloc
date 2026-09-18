@@ -2,7 +2,7 @@
 use super::common;
 use std::{fs, path::Path, process::Command};
 
-fn checked(predicate: &str) -> Result<veloc_opgen::Generated, veloc_opgen::Error> {
+fn checked(predicate: &str) -> Result<veloc_spec::Artifacts, veloc_spec::Error> {
     common::compile(&format!(
         r#"
 fn Double(n: u64) -> u64 {{ value = n * 2; }}
@@ -59,7 +59,7 @@ mod dfg {
     .iter()
     .enumerate()
     {
-        let validation = checked(predicate).unwrap().validation;
+        let validation = checked(predicate).unwrap()[veloc_spec::Emit::Validator].to_owned();
         code.push_str(&format!(r#"
 mod numeric_{index} {{
     use super::*;
@@ -119,8 +119,8 @@ op Example(data: Bytes, other: Bytes) -> Value<Vector> {{
 }}
 "#
         ))
-        .unwrap()
-        .validation;
+        .unwrap()[veloc_spec::Emit::Validator]
+            .to_owned();
         code.push_str(&format!(r#"
 mod sequences_{index} {{
     use super::*;
@@ -166,13 +166,13 @@ op Example(number: u64, flag: bool) -> Value<Type::I32> {
 }
 "#;
     let generated = common::compile(ops).unwrap();
-    let host = veloc_opgen::interfaces::declarations(
-        &veloc_opgen::syntax::parse(ops).unwrap(),
+    let host = veloc_spec::interfaces::declarations(
+        &veloc_spec::syntax::parse(ops).unwrap(),
         ops,
         "crate::type_methods",
     )
     .unwrap();
-    let validation = generated.validation;
+    let validation = &generated[veloc_spec::Emit::Validator].to_owned();
     code.push_str(&format!(r#"
 type VectorConst = ();
 type FuncId = u32;
@@ -313,10 +313,12 @@ op Pair(move first: Value<Type::I32>, second: Value<Type::I64>, tag: Tag) -> (lo
     .unwrap();
     // Compile the actual builder emitted by opgen. The small machine container
     // observes encoded operand order without duplicating the projection logic.
-    let start = generated.instructions.find("pub trait Build").unwrap();
+    let start = generated[veloc_spec::Emit::Instructions]
+        .find("pub trait Build")
+        .unwrap();
     let mut depth = 0;
     let mut end = start;
-    for (offset, ch) in generated.instructions[start..].char_indices() {
+    for (offset, ch) in generated[veloc_spec::Emit::Instructions][start..].char_indices() {
         match ch {
             '{' => depth += 1,
             '}' => {
@@ -329,14 +331,13 @@ op Pair(move first: Value<Type::I32>, second: Value<Type::I64>, tag: Tag) -> (lo
             _ => {}
         }
     }
-    let builder = &generated.instructions[start..end];
-    let views = generated
-        .instructions
+    let builder = &generated[veloc_spec::Emit::Instructions][start..end];
+    let views = generated[veloc_spec::Emit::Instructions]
         .find("#[derive(Debug, Clone, Copy)] pub enum View")
         .unwrap();
-    let reader = &generated.instructions[views..start];
-    assert!(generated.type_rules.contains("impl crate::Code"));
-    assert!(!generated.instructions.contains("GenericOpcode"));
+    let reader = &generated[veloc_spec::Emit::Instructions][views..start];
+    assert!(generated[veloc_spec::Emit::TypeRules].contains("impl crate::Code"));
+    assert!(!generated[veloc_spec::Emit::Instructions].contains("GenericOpcode"));
     let signatures = common::compile(r#"
 type Cell = rust("crate::Cell");
 enum SigField { variants = [Sig(SigId), Number(i64)]; }
@@ -348,12 +349,13 @@ op Invoke(sig: SigId, args: sequence(Value)) -> signature {
     signature = sig;
 }
 "#).unwrap();
-    let begin = signatures
-        .instructions
+    let begin = signatures[veloc_spec::Emit::Instructions]
         .find("#[derive(Debug, Clone, Copy)] pub enum SigView")
         .unwrap();
-    let end = signatures.instructions.find("pub trait SigBuild").unwrap();
-    let signature_reader = &signatures.instructions[begin..end];
+    let end = signatures[veloc_spec::Emit::Instructions]
+        .find("pub trait SigBuild")
+        .unwrap();
+    let signature_reader = &signatures[veloc_spec::Emit::Instructions][begin..end];
     let signature_host = r#"
     use super::*;
     #[derive(Debug, Clone, Copy)] pub enum SigCode { Invoke }
@@ -477,8 +479,8 @@ mod atom {
         assert_eq!(store[id], store[id2]);
     }
 "#;
-    let text_parser = &generated.text_parser;
-    let text_printer = &generated.text_printer;
+    let text_parser = &generated[veloc_spec::Emit::TextParser];
+    let text_printer = &generated[veloc_spec::Emit::TextPrinter];
     let code = format!(
         r#"
 #![allow(dead_code, non_camel_case_types)]
@@ -632,13 +634,12 @@ op Check() -> () {
 "#;
     let generated = common::raw_plan(defs).unwrap().generate();
     assert!(
-        generated
-            .opcodes
+        generated[veloc_spec::Emit::Opcodes]
             .contains("as crate::type_methods::TokenConst>::number")
     );
-    let declarations = veloc_opgen::syntax::parse(defs).unwrap();
+    let declarations = veloc_spec::syntax::parse(defs).unwrap();
     let traits =
-        veloc_opgen::interfaces::declarations(&declarations, defs, "crate::type_methods").unwrap();
+        veloc_spec::interfaces::declarations(&declarations, defs, "crate::type_methods").unwrap();
     let code = format!(
         r#"
 #![feature(const_trait_impl)]
@@ -671,7 +672,7 @@ fn main() {{
     assert_eq!(info.next, Some(7));
 }}
 "#,
-        generated.opcodes
+        generated[veloc_spec::Emit::Opcodes]
     );
     let result = fixture.compile(&code);
     assert!(
@@ -722,7 +723,7 @@ fn generated_traits_require_an_explicit_rust_implementation() {
         }
     }
     let _cleanup = Cleanup(dir.clone());
-    let defs = dir.join("interface.ops");
+    let defs = dir.join("interface.spec");
     fs::write(
         &defs,
         r#"
@@ -733,7 +734,7 @@ type Token = rust("fixture::Token") {
 "#,
     )
     .unwrap();
-    let source = veloc_opgen::Source::load(&defs).unwrap();
+    let source = veloc_spec::Source::load(&defs).unwrap();
     let traits = source.interfaces("fixture::traits").unwrap();
     assert!(!traits.contains("impl "));
     let input = dir.join("main.rs");
@@ -796,13 +797,13 @@ fn generated_files_are_formatted_together_and_invalid_syntax_is_reported() {
     .unwrap();
     fs::write(&files[1], "struct Example{value:u32}\n").unwrap();
     let config = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rustfmt.toml");
-    veloc_opgen::format_rust(&files, &config).unwrap();
+    veloc_spec::format_rust(&files, &config).unwrap();
     let formatted = files
         .each_ref()
         .map(|path| fs::read_to_string(path).unwrap());
     assert!(formatted[0].contains("    match x {\n        true => 1,"));
     assert!(formatted[1].contains("struct Example {\n    value: u32,\n}"));
-    veloc_opgen::format_rust(&files, &config).unwrap();
+    veloc_spec::format_rust(&files, &config).unwrap();
     assert_eq!(
         formatted,
         files
@@ -811,6 +812,6 @@ fn generated_files_are_formatted_together_and_invalid_syntax_is_reported() {
     );
 
     fs::write(&files[0], "fn broken( {").unwrap();
-    let error = veloc_opgen::format_rust(&files, &config).unwrap_err();
+    let error = veloc_spec::format_rust(&files, &config).unwrap_err();
     assert!(error.to_string().contains("rustfmt failed"));
 }

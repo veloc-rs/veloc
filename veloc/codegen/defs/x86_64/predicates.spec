@@ -1,0 +1,12 @@
+predicate is_i8 { params = [vreg]; }
+predicate is_i16 { params = [vreg]; }
+predicate is_i32 { params = [vreg]; }
+predicate is_i64 { params = [vreg]; }
+predicate is_f32 { params = [vreg]; }
+predicate is_f64 { params = [vreg]; }
+predicate is_ptr { params = [vreg]; }
+predicate has_bmi2 { params = []; }
+predicate has_avx2 { params = []; }
+predicate is_int32like { params = [vreg]; }
+predicate is_64like { params = [vreg]; }
+predicate is_bool { params = [vreg]; }

@@ -1,0 +1,840 @@
+import "formats.spec";
+
+// Logical signatures name SSA operands and properties; result names are optional.
+// Storage mappings preserve the current compact MIR layout and SSA traversal order.
+// Structural constraints compile to direct checks, not a runtime rule list.
+
+// Query data, not instruction storage. Value(Type::PTR) checks the logical signature
+// at definition time; the runtime representation is an ordinary SSA Value.
+struct MemoryAccess {
+    ptr: Value(Type::PTR),
+    offset: i64,
+    ty: Type,
+    stored: optional(Value),
+    flags: MemFlags,
+    effects: MemoryEffect,
+}
+
+// First-class callable values. Captures bind a prefix of the function parameters;
+// the resulting callable signature describes the remaining inputs and answer.
+// Allocation/ownership are effects: these operations are not arithmetic CSE/DCE.
+op ClosureNew(func_id: FuncId, move captures: sequence(Value), cleanup: FuncId) -> (result: Value<Callable>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    mnemonic = "closure-new";
+    storage = ClosureNew { func_id, captures, cleanup };
+    text = "{func_id}({captures}) : {function(func_id)}, {cleanup}";
+
+    verify(ctx: VerifyContext) {
+        let func = ctx.function_signature(func_id)?;
+        let sig = ctx.signature(result.signature()?)?;
+        let cleanup_sig = ctx.function_signature(cleanup)?;
+        require(result.is_owned(), "callable ownership kind mismatch");
+        require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
+        require(all(captures, |v| !v.ty().is_local() && !v.ty().is_ptr()), "capture would escape a borrow or duplicate an owned environment");
+        require(cleanup_sig.params() == prefix(func.params(), len(captures)) && len(cleanup_sig.returns()) == 0, "cleanup must consume the captured parameters and return void");
+    }
+}
+
+op ClosureLocal(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Callable>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    mnemonic = "closure-local";
+    storage = Closure { func_id, captures };
+    text = "{func_id}({captures}) : {function(func_id)}";
+
+    verify(ctx: VerifyContext) {
+        let func = ctx.function_signature(func_id)?;
+        let sig = ctx.signature(result.signature()?)?;
+        require(result.is_local(), "callable ownership kind mismatch");
+        require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
+        require(all(captures, |v| !v.ty().is_owned()), "capture would escape a borrow or duplicate an owned environment");
+    }
+}
+
+op ClosureShared(func_id: FuncId, captures: sequence(Value)) -> (result: Value<Callable>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    mnemonic = "closure-shared";
+    storage = Closure { func_id, captures };
+    text = "{func_id}({captures}) : {function(func_id)}";
+
+    verify(ctx: VerifyContext) {
+        let func = ctx.function_signature(func_id)?;
+        let sig = ctx.signature(result.signature()?)?;
+        require(result.is_shared(), "callable ownership kind mismatch");
+        require(matches_types(captures, prefix(func.params(), len(captures))), "capture parameter type mismatch");
+        require(suffix(func.params(), len(captures)) == sig.params() && func.returns() == sig.returns(), "callable inputs or answer do not match the unbound function signature");
+        require(all(captures, |v| (v.ty().is_compact() && !v.ty().is_ptr()) || v.ty().is_shared()), "capture would escape a borrow or duplicate an owned environment");
+    }
+}
+
+op TailCall(func_id: FuncId, move args: sequence(Value)) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN };
+    mnemonic = "tail-call";
+    storage = TailCall { func_id, args };
+    text = "{func_id}({args}) : {function(func_id)}";
+
+    verify(ctx: VerifyContext) {
+        let func = ctx.function_signature(func_id)?;
+        require(matches_types(args, func.params()), "tail-call parameter type mismatch");
+        require(func.returns() == ctx.current_signature()?.returns(), "tail-call answer type mismatch");
+    }
+}
+
+op TailCallValue(move callee: Value<Callable>, move args: sequence(Value)) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP), memory: MemoryEffect::UNKNOWN };
+    mnemonic = "tail-call-value";
+    storage = CallValue { callee, args };
+    text = "{callee}({args})";
+
+    verify(ctx: VerifyContext) {
+        let callee_sig = ctx.signature(callee.ty().signature()?)?;
+        require(matches_types(args, callee_sig.params()), "tail-call-value parameter type mismatch");
+        require(callee_sig.returns() == ctx.current_signature()?.returns(), "tail-call-value answer type mismatch");
+    }
+}
+
+op CallValue(move callee: Value<Callable>, move args: sequence(Value)) -> signature {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    mnemonic = "call-value";
+    storage = CallValue { callee, args };
+    signature = callable(callee);
+    text = "{callee}({args})";
+}
+
+op ClosureDrop(move callee: Value<Callable>) -> () {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    mnemonic = "closure-drop";
+    storage = Unary { arg: callee };
+
+    verify {
+        require(callee.ty().is_owned(), "only an owned one-shot callable can be dropped");
+    }
+}
+
+op Iconst(value: Int) -> Value<type(value)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "iconst";
+    storage = Iconst { value };
+}
+
+op Fconst(value: Float) -> Value<type(value)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fconst";
+    storage = Fconst { value };
+}
+
+op Bconst(value: bool) -> Value<Type::BOOL> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "bconst";
+    storage = Bconst { value };
+}
+
+op Vconst(value: VectorConst) -> Value<type(value)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "vconst";
+    storage = Vconst { value };
+    verify(ctx: VerifyContext) {
+        require(!value.is_dense() || value.ty().is_fixed(), "dense vector constant requires a fixed type");
+        require(!value.is_dense() || len(ctx.bytes(value)?) == value.encoded_size()?, "dense vector constant byte count must match its type");
+        require(!value.is_dense() || !value.ty().is_predicate() || all(ctx.bytes(value)?, |byte| byte <= 1), "boolean constant lanes must be zero or one");
+    }
+}
+
+op IAdd<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "iadd";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.add(lhs, rhs)
+; }
+
+op ISub<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "isub";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.sub(lhs, rhs)
+; }
+
+op IMul<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "imul";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.mul(lhs, rhs)
+; }
+
+op INeg<T: Integer>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "ineg";
+    storage = Unary { arg };
+    semantics = bv.sub(bv.zero(), arg)
+; }
+
+// Signed saturation: clamp to the signed range of each lane.
+op IAddSatS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "iadd-sat-s";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = select(
+        bv.slt(bv.and(bv.xor(lhs, bv.add(lhs, rhs)), bv.xor(rhs, bv.add(lhs, rhs))), bv.zero()),
+        select(bv.slt(lhs, bv.zero()), bv.smin(), bv.xor(bv.smin(), bv.ones())),
+        bv.add(lhs, rhs)
+    )
+; }
+
+op ISubSatS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "isub-sat-s";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = select(
+        bv.slt(bv.and(bv.xor(lhs, rhs), bv.xor(lhs, bv.sub(lhs, rhs))), bv.zero()),
+        select(bv.slt(lhs, bv.zero()), bv.smin(), bv.xor(bv.smin(), bv.ones())),
+        bv.sub(lhs, rhs)
+    )
+; }
+
+op IAddWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
+    meta = OpInfo {};
+    mnemonic = "iadd-with-overflow";
+    storage = Binary { args: [lhs, rhs] };
+    // The result wraps; the flag reports SIGNED overflow, not unsigned carry.
+    semantics = [
+        bv.add(lhs, rhs),
+        bv.slt(bv.and(bv.xor(lhs, bv.add(lhs, rhs)), bv.xor(rhs, bv.add(lhs, rhs))), bv.zero())
+    ]
+; }
+
+op ISubWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
+    meta = OpInfo {};
+    mnemonic = "isub-with-overflow";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = [
+        bv.sub(lhs, rhs),
+        bv.slt(bv.and(bv.xor(lhs, rhs), bv.xor(lhs, bv.sub(lhs, rhs))), bv.zero())
+    ]
+; }
+
+op IMulWithOverflow<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (Value<T>, Value<Type::BOOL>) {
+    meta = OpInfo {};
+    mnemonic = "imul-with-overflow";
+    storage = Binary { args: [lhs, rhs] };
+    // bv.sdiv is total; this does not introduce a division trap.
+    semantics = [
+        bv.mul(lhs, rhs),
+        bv.and(bv.xor(bv.eq(rhs, bv.zero()), bv.ones(result(1))),
+            bv.or(bv.xor(bv.eq(bv.sdiv(bv.mul(lhs, rhs), rhs), lhs), bv.ones(result(1))),
+                bv.and(bv.eq(lhs, bv.smin()), bv.eq(rhs, bv.ones()))))
+    ]
+; }
+
+op IDivS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "idiv-s";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.sdiv(lhs, rhs);
+    traps = [
+        DivisionByZero(bv.eq(rhs, bv.zero())),
+        IntegerOverflow(bv.and(bv.eq(lhs, bv.smin()), bv.eq(rhs, bv.ones())))
+    ]
+; }
+
+op IDivU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "idiv-u";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.udiv(lhs, rhs);
+    traps = [DivisionByZero(bv.eq(rhs, bv.zero()))]
+; }
+
+op IRemS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "irem-s";
+    storage = Binary { args: [lhs, rhs] };
+    // Signed MIN % -1 returns zero; unlike signed division it does not trap.
+    semantics = bv.srem(lhs, rhs);
+    traps = [DivisionByZero(bv.eq(rhs, bv.zero()))]
+; }
+
+op IRemU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "irem-u";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.urem(lhs, rhs);
+    traps = [DivisionByZero(bv.eq(rhs, bv.zero()))]
+; }
+
+op FAdd<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fadd";
+    storage = Binary { args: [lhs, rhs] };
+}
+
+op FSub<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fsub";
+    storage = Binary { args: [lhs, rhs] };
+}
+
+op FMul<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fmul";
+    storage = Binary { args: [lhs, rhs] };
+}
+
+op FNeg<T: Float>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fneg";
+    storage = Unary { arg };
+}
+
+op FDiv<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fdiv";
+    storage = Binary { args: [lhs, rhs] };
+}
+
+op FMin<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fmin";
+    storage = Binary { args: [lhs, rhs] };
+}
+
+op FMax<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fmax";
+    storage = Binary { args: [lhs, rhs] };
+}
+
+op FCopysign<T: Float>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fcopysign";
+    storage = Binary { args: [lhs, rhs] };
+}
+
+op FAbs<T: Float>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fabs";
+    storage = Unary { arg };
+}
+
+op FSqrt<T: Float>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fsqrt";
+    storage = Unary { arg };
+}
+
+op FCeil<T: Float>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fceil";
+    storage = Unary { arg };
+}
+
+op FFloor<T: Float>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "ffloor";
+    storage = Unary { arg };
+}
+
+op FTrunc<T: Float>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "ftrunc";
+    storage = Unary { arg };
+}
+
+op FNearest<T: Float>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fnearest";
+    storage = Unary { arg };
+}
+
+op IAnd<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "iand";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.and(lhs, rhs)
+; }
+
+op IOr<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "ior";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.or(lhs, rhs)
+; }
+
+op IXor<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "ixor";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.xor(lhs, rhs)
+; }
+
+op IShl<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "ishl";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.shl(lhs, bv.urem(rhs, bv.width()))
+; }
+
+op IShrS<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "ishr-s";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.ashr(lhs, bv.urem(rhs, bv.width()))
+; }
+
+op IShrU<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "ishr-u";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.lshr(lhs, bv.urem(rhs, bv.width()))
+; }
+
+op IRotl<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "irotl";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.or(
+        bv.shl(lhs, bv.urem(rhs, bv.width())),
+        bv.lshr(lhs, bv.sub(bv.width(), bv.urem(rhs, bv.width())))
+    )
+; }
+
+op IRotr<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "irotr";
+    storage = Binary { args: [lhs, rhs] };
+    semantics = bv.or(
+        bv.lshr(lhs, bv.urem(rhs, bv.width())),
+        bv.shl(lhs, bv.sub(bv.width(), bv.urem(rhs, bv.width())))
+    )
+; }
+
+op IClz<T: Integer>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "iclz";
+    storage = Unary { arg };
+    semantics = bv.clz(arg)
+; }
+
+op ICtz<T: Integer>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "ictz";
+    storage = Unary { arg };
+    semantics = bv.ctz(arg)
+; }
+
+op IPopcnt<T: Integer>(arg: Value<T>) -> Value<T> {
+    meta = OpInfo {};
+    mnemonic = "ipopcnt";
+    storage = Unary { arg };
+    semantics = bv.popcnt(arg)
+; }
+
+op IEqz(arg: Value<ScalarInteger>) -> Value<Type::BOOL> {
+    meta = OpInfo {};
+    mnemonic = "ieqz";
+    storage = Unary { arg };
+    semantics = bv.eq(arg, bv.zero())
+; }
+
+op Icmp<T: ScalarInteger | Type::PTR>(kind: IntCC, lhs: Value<T>, rhs: Value<T>) -> Value<Type::BOOL> {
+    meta = OpInfo {};
+    mnemonic = "icmp";
+    storage = IntCompare { kind, args: [lhs, rhs] };
+    text = "{kind} {lhs}, {rhs}";
+    semantics = bv.cmp(kind, lhs, rhs);
+    verify {
+        require(!lhs.ty().is_ptr() || kind == IntCC::Eq || kind == IntCC::Ne, "pointer comparison only supports eq and ne");
+    }
+}
+
+op Fcmp<T: ScalarFloat>(kind: FloatCC, lhs: Value<T>, rhs: Value<T>) -> Value<Type::BOOL> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "fcmp";
+    storage = FloatCompare { kind, args: [lhs, rhs] };
+    text = "{kind} {lhs}, {rhs}";
+}
+
+op ExtendS<T: Integer, U: Integer>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo {};
+    mnemonic = "extends";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(U.wider_than(T), "result must have more bits per lane than arg");
+    }
+    semantics = bv.sext(arg, result(0))
+; }
+
+op ExtendU<T: Integer | Type::BOOL | vectors(Type::BOOL), U: Integer>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo {};
+    mnemonic = "extendu";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(U.wider_than(T), "result must have more bits per lane than arg");
+    }
+    semantics = bv.zext(arg, result(0))
+; }
+
+op Wrap<T: Integer, U: Integer>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo {};
+    mnemonic = "wrap";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+        require(T.wider_than(U), "result must have fewer bits per lane than arg");
+    }
+    semantics = bv.trunc(arg, result(0))
+; }
+
+op FloatToIntSatS<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "float-to-int-sat-s";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+    }
+}
+
+op FloatToIntSatU<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "float-to-int-sat-u";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+    }
+}
+
+op FloatToIntS<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    mnemonic = "float-to-int-s";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+    }
+}
+
+op FloatToIntU<T: Float, U: Integer>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    mnemonic = "float-to-int-u";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+    }
+}
+
+op IntToFloatS<T: Integer, U: Float>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "int-to-float-s";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+    }
+}
+
+op IntToFloatU<T: Integer, U: Float>(arg: Value<T>) -> Value<U> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "int-to-float-u";
+    storage = Unary { arg };
+    verify {
+        require(U.same_shape(T), "input and result must have the same shape");
+    }
+}
+
+op FloatPromote(arg: Value<Type::F32>) -> Value<Type::F64> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "float-promote";
+    storage = Unary { arg };
+}
+
+op FloatDemote(arg: Value<Type::F64>) -> Value<Type::F32> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "float-demote";
+    storage = Unary { arg };
+}
+
+op Reinterpret(arg: Value<Number>) -> (result: Value<Number>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "reinterpret";
+    storage = Unary { arg };
+    verify {
+        require(arg.ty() != result && arg.ty().bit_size()? == result.bit_size()?, "reinterpret requires distinct types with equal bit sizes");
+    }
+}
+
+op IntToPtr(arg: Value<ScalarInteger>) -> Value<Type::PTR> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "inttoptr";
+    storage = IntToPtr { arg };
+}
+
+op PtrToInt(arg: Value<Type::PTR>) -> Value<ScalarInteger> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "ptrtoint";
+    storage = PtrToInt { arg };
+}
+
+op Load(ptr: Value<Type::PTR>, offset: u32, flags: MemFlags) -> (result: Value<Any>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) };
+    mnemonic = "load";
+    storage = Load { ptr, offset, flags };
+    text = "{.flags} {ptr}, offset={offset}";
+    query memory_access -> MemoryAccess {
+        ptr,
+        offset: i64(offset),
+        ty: result,
+        stored: none,
+        flags,
+        effects: MemoryEffect::known(MemoryEffects::READ),
+    }
+}
+
+op Store(ptr: Value<Type::PTR>, value: Value<Any>, offset: u32, flags: MemFlags) -> () {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: field(memory_access, effects) };
+    mnemonic = "store";
+    storage = Store { ptr, value, offset, flags };
+    text = "{.flags} {value}, {ptr}, offset={offset}";
+    query memory_access -> MemoryAccess {
+        ptr,
+        offset: i64(offset),
+        ty: value.ty(),
+        stored: some(value),
+        flags,
+        effects: MemoryEffect::known(MemoryEffects::WRITE),
+    }
+}
+
+// A fresh, uninitialized local object, valid until the invocation returns.
+// Physical resource exhaustion is outside MIR equivalence: unused objects may
+// be eliminated, but distinct live objects must not be merged or speculated.
+op Alloca(size: u32, align: u32) -> Value<Type::PTR> {
+    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::ALLOCATE) };
+    mnemonic = "alloca";
+    storage = Alloca { size, align };
+    text = "size={size}, align={align}";
+
+    verify {
+        require(size > 0, "alloca size must be positive");
+        require(is_power_of_two(align), "alloca alignment must be a power of two");
+    }
+}
+
+op PtrOffset(ptr: Value<Type::PTR>, offset: i32) -> Value<Type::PTR> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "ptr-offset";
+    storage = PtrOffset { ptr, offset };
+}
+
+op PtrIndex(ptr: Value<Type::PTR>, index: Value<ScalarInteger>, imm: PtrIndexImm) -> Value<Type::PTR> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "ptr-index";
+    storage = PtrIndex { ptr, index, imm_id: imm };
+    text = "{ptr}, {index}, scale={imm.scale}, offset={imm.offset}";
+
+    verify {
+        require(imm.scale != 0, "ptr-index scale must be non-zero");
+    }
+}
+
+op Call(func_id: FuncId, move args: sequence(Value)) -> signature {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    mnemonic = "call";
+    storage = Call { func_id, args };
+    signature = function(func_id);
+    text = "{func_id}({args}) : {function(func_id)}";
+}
+
+op CallIndirect(sig_id: SigId, ptr: Value<Type::PTR>, move args: sequence(Value)) -> signature {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    mnemonic = "call-indirect";
+    storage = CallIndirect { ptr, args, sig_id };
+    signature = sig_id;
+    text = "{ptr}({args}) : {sig_id}";
+
+    verify(ctx: VerifyContext) {
+        let sig = ctx.signature(sig_id)?;
+        require(all(sig.types(), |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
+    }
+}
+
+op CallIntrinsic(intrinsic: Intrinsic, sig_id: SigId, move args: sequence(Value)) -> signature {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    mnemonic = "call-intrinsic";
+    storage = CallIntrinsic { intrinsic, args, sig_id };
+    signature = sig_id;
+    text = "{intrinsic}({args}) : {sig_id}";
+
+    verify(ctx: VerifyContext) {
+        let sig = ctx.signature(sig_id)?;
+        require(all(sig.types(), |t| !t.is_callable()), "indirect and intrinsic callable calls require an ownership-aware callable type");
+    }
+}
+
+op Jump(dest: successor) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    mnemonic = "jump";
+    storage = Jump { dest };
+}
+
+op Br(condition: Value<Type::BOOL>, then_dest: successor, else_dest: successor) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    mnemonic = "br";
+    storage = Br { condition, then_dest, else_dest };
+}
+
+op BrTable(index: Value<Type::I32>, cases: successors, default: successor) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    mnemonic = "br-table";
+    storage = BrTable { index, table: table(cases, default) };
+}
+
+op Return(move values: sequence(Value)) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    mnemonic = "return";
+    storage = Return { values };
+
+    verify(ctx: VerifyContext) {
+        require(matches_types(values, ctx.current_signature()?.returns()), "return value type mismatch");
+    }
+}
+
+op Select<T: Any>(condition: Value<Type::BOOL>, if_true: Value<T>, if_false: Value<T>) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "select";
+    storage = Ternary { args: [condition, if_true, if_false] };
+}
+
+op Unreachable() -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::MAY_TRAP).union(OpTraits::ABORT), memory: MemoryEffect::NONE };
+    mnemonic = "unreachable";
+    storage = Unreachable {};
+}
+
+op Nop() -> () {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "nop";
+    storage = Nop {};
+}
+
+op Splat<T: Scalar>(arg: Value<T>) -> Value<vector(T)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "splat";
+    storage = Unary { arg };
+}
+
+op Shuffle<T: Vector>(lhs: Value<T>, rhs: Value<T>, mask: Bytes) -> Value<T> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "shuffle";
+    storage = Shuffle { args: [lhs, rhs], mask: pool(mask) };
+    text = "{lhs}, {rhs}, mask={mask:bytes}";
+
+    verify {
+        require(lhs.ty().is_fixed(), "shuffle requires a fixed-width vector");
+        require(len(mask) == lhs.ty().lanes()?, "shuffle mask length must match its lane count");
+        require(all(mask, |i| i < 2 * lhs.ty().lanes()?), "shuffle selector is out of range");
+    }
+}
+
+op InsertElement<T: Vector>(vector: Value<T>, scalar: Value<element(T)>, index: Value<ScalarInteger>) -> Value<T> {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    mnemonic = "insertelement";
+    storage = Ternary { args: [vector, scalar, index] };
+    // Unsigned index; an index >= the runtime lane count traps.
+}
+
+op ExtractElement<T: Vector>(vector: Value<T>, index: Value<ScalarInteger>) -> Value<element(T)> {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    mnemonic = "extractelement";
+    storage = Binary { args: [vector, index] };
+    // Unsigned index; an index >= the runtime lane count traps.
+}
+
+// Add in increasing lane order, starting at lane 0 (no extra zero).
+// Integer addition wraps. Floating addition uses the scalar FAdd contract.
+op ReduceAdd<T: Number & Vector>(arg: Value<T>) -> Value<element(T)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "reduce-add";
+    storage = Unary { arg };
+}
+
+// Integer extrema use signed comparison. Float extrema propagate NaN;
+// min(-0,+0) is -0, max(-0,+0) is +0. Fold in increasing lane order.
+op ReduceMin<T: Number & Vector>(arg: Value<T>) -> Value<element(T)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "reduce-min";
+    storage = Unary { arg };
+}
+
+op ReduceMax<T: Number & Vector>(arg: Value<T>) -> Value<element(T)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "reduce-max";
+    storage = Unary { arg };
+}
+
+op ReduceAnd<T: Integer & Vector | vectors(Type::BOOL)>(arg: Value<T>) -> Value<element(T)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "reduce-and";
+    storage = Unary { arg };
+}
+
+op ReduceOr<T: Integer & Vector | vectors(Type::BOOL)>(arg: Value<T>) -> Value<element(T)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "reduce-or";
+    storage = Unary { arg };
+}
+
+op ReduceXor<T: Integer & Vector | vectors(Type::BOOL)>(arg: Value<T>) -> Value<element(T)> {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    mnemonic = "reduce-xor";
+    storage = Unary { arg };
+}
+
+op LoadStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, mem: VectorMemOptions) -> (result: Value<Vector>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
+    mnemonic = "load-stride";
+    storage = VectorLoadStrided { ptr, stride, ext: mem };
+    text = "{mem.scale=1} {.mem.flags} {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]";
+
+    verify {
+        require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == result.shape()?), "mask must match vector shape");
+        require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
+    }
+}
+
+op StoreStride(ptr: Value<Type::PTR>, stride: Value<ScalarInteger>, value: Value<Vector>, mem: VectorMemOptions) -> () {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) };
+    mnemonic = "store-stride";
+    storage = VectorStoreStrided { args: [ptr, stride, value], ext: mem };
+    text = "{mem.scale=1} {.mem.flags} {value}, {ptr}, stride={stride}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]";
+
+    verify {
+        require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == value.ty().shape()?), "mask must match vector shape");
+        require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
+    }
+}
+
+op Gather<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>, mem: VectorMemOptions) -> Value<U> {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::READ) };
+    mnemonic = "gather";
+    storage = VectorGather { ptr, index, ext: mem };
+    text = "{.mem.flags} {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]";
+
+    verify {
+        require(U.same_shape(T), "index and result must have the same shape");
+        require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == U.shape()?), "mask must match vector shape");
+        require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
+    }
+}
+
+op Scatter<T: Integer & Vector, U: Vector>(ptr: Value<Type::PTR>, index: Value<T>, value: Value<U>, mem: VectorMemOptions) -> () {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::known(MemoryEffects::WRITE) };
+    mnemonic = "scatter";
+    storage = VectorScatter { args: [ptr, index, value], ext: mem };
+    text = "{.mem.flags} {value}, {ptr}, index={index}, scale={mem.scale}, offset={mem.offset}[, mask={mem.mask}][, evl={mem.evl}]";
+
+    verify {
+        require(U.same_shape(T), "index and value must have the same shape");
+        require(all(mem.mask, |v| v.ty().is_predicate() && v.ty().shape()? == value.ty().shape()?), "mask must match vector shape");
+        require(all(mem.evl, |v| v.ty() == Type::I32), "EVL must be i32");
+    }
+}

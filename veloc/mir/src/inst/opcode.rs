@@ -1,9 +1,9 @@
 //! Instruction kinds: opcodes, metadata, memory flags and type contracts.
 //!
-//! Layouts, type checks and operation tables are compiled from `defs/*.ops`.
+//! Layouts, type checks and operation tables are compiled from `defs/*.spec`.
 //! Their shared runtime support lives alongside the generated definitions.
 
-pub use veloc_types::{IntCC, FloatCC, MemFlags, MemoryEffect, MemoryEffects, OpTraits};
+pub use veloc_types::{FloatCC, IntCC, MemFlags, MemoryEffect, MemoryEffects, OpTraits};
 
 include!(concat!(env!("OUT_DIR"), "/opcodes.rs"));
 
@@ -61,9 +61,9 @@ impl OpSpec {
 
 #[cfg(test)]
 mod tests {
-    use veloc_types::TypeInfo;
     use super::{MemoryEffect, MemoryEffects};
     use crate::{FloatCC, IntCC, Opcode, Type};
+    use veloc_types::TypeInfo;
 
     #[test]
     fn opcode_mnemonics_are_unique_and_round_trip() {

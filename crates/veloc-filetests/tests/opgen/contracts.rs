@@ -1,10 +1,10 @@
 //! Compile full operation contracts and reject malformed layouts and signatures.
 use super::common::{self, compile};
 
-const FORMATS: &str = include_str!("../../../../veloc/mir/defs/formats.ops");
+const FORMATS: &str = include_str!("../../../../veloc/mir/defs/formats.spec");
 
 fn definitions() -> String {
-    [FORMATS, include_str!("../../../../veloc/mir/defs/mir.ops")]
+    [FORMATS, include_str!("../../../../veloc/mir/defs/mir.spec")]
         .join("\n")
         .lines()
         .filter(|line| !line.trim_start().starts_with("import "))
@@ -65,24 +65,57 @@ const CALL_VALUE: &str = r#"
 #[test]
 fn the_actual_mir_definitions_compile_deterministically() {
     let source = common::load(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../veloc/mir/defs/module.ops"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../veloc/mir/defs/module.spec"),
     )
     .unwrap();
     let plan = source.plan().unwrap();
     assert!(plan.definitions().operation_count() > 0);
     let first = plan.generate();
     let second = plan.generate();
-    assert_eq!(first.instructions, source.compile().unwrap().instructions);
-    assert_eq!(first.types, second.types);
-    assert_eq!(first.builders, second.builders);
-    assert_eq!(first.type_rules, second.type_rules);
-    assert_eq!(first.validation, second.validation);
-    assert_eq!(first.opcodes, second.opcodes);
-    assert_eq!(first.instructions, second.instructions);
-    assert_eq!(first.text_parser, second.text_parser);
-    assert_eq!(first.text_printer, second.text_printer);
-    assert_eq!(first.evaluation, second.evaluation);
-    assert_eq!(first.semantics, second.semantics);
+    assert_eq!(
+        first[veloc_spec::Emit::Instructions],
+        source.compile().unwrap()[veloc_spec::Emit::Instructions]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::Types],
+        second[veloc_spec::Emit::Types]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::Builders],
+        second[veloc_spec::Emit::Builders]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::TypeRules],
+        second[veloc_spec::Emit::TypeRules]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::Validator],
+        second[veloc_spec::Emit::Validator]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::Opcodes],
+        second[veloc_spec::Emit::Opcodes]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::Instructions],
+        second[veloc_spec::Emit::Instructions]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::TextParser],
+        second[veloc_spec::Emit::TextParser]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::TextPrinter],
+        second[veloc_spec::Emit::TextPrinter]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::Evaluation],
+        second[veloc_spec::Emit::Evaluation]
+    );
+    assert_eq!(
+        first[veloc_spec::Emit::Semantics],
+        second[veloc_spec::Emit::Semantics]
+    );
 }
 
 const BINARY: &str = "type Reg = rust(\"crate::Reg\");
@@ -421,7 +454,7 @@ storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; w
             ADD.replace("semantics =", "text = \"{lhs}, {rhs}\"; semantics =")
         ));
         let generated = common::raw_plan(&source).unwrap().generate();
-        assert!(!generated.text_parser.is_empty());
-        assert!(!generated.text_printer.is_empty());
+        assert!(!generated[veloc_spec::Emit::TextParser].is_empty());
+        assert!(!generated[veloc_spec::Emit::TextPrinter].is_empty());
     }
 }

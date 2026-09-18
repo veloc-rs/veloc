@@ -190,6 +190,8 @@ pub struct Operation {
     pub type_parameters: Vec<TypeSet>,
     pub name: String,
     pub signature: Result<Signature, String>,
+    /// Pure value operation with one signed integer attribute and no value inputs.
+    pub integer_literal: Option<Signature>,
     pub constrained: bool,
     pub primitive: Option<veloc_semantics::BvOp>,
     /// Generated constructor, when the declared storage supports value-only calls.
@@ -203,8 +205,8 @@ impl Definitions {
     }
     pub fn operations(&self) -> impl Iterator<Item = Operation> + '_ {
         self.ops.iter().map(|op| {
-            let signature = (|| {
-                if op.params.iter().any(|p| p.kind != ParamKind::Value) {
+            let value_signature = |literal: bool| {
+                if !literal && op.params.iter().any(|p| p.kind != ParamKind::Value) {
                     return Err(
                         "properties, variadic operands or successors require an adapter".into(),
                     );
@@ -251,7 +253,14 @@ impl Definitions {
                     inputs: inputs.iter().map(term).collect::<Result<_, _>>()?,
                     results: results.iter().map(term).collect::<Result<_, _>>()?,
                 })
-            })();
+            };
+            let signature = value_signature(false);
+            let integer_literal = match op.declaration.params.as_slice() {
+                [param] if matches!(&param.ty.kind, crate::syntax::Kind::Name(n) if n == "i64") => {
+                    value_signature(true).ok()
+                }
+                _ => None,
+            };
             // A primitive describes only the value computation. Never infer a
             // rewrite that drops a memory effect or observable control behavior.
             let primitive = if !["MAY_TRAP", "ABORT", "TERMINATOR"]
@@ -280,6 +289,7 @@ impl Definitions {
                     .collect(),
                 name: op.name.clone(),
                 signature,
+                integer_literal,
                 constrained: !op.constraints.is_empty(),
                 constructor,
                 primitive,

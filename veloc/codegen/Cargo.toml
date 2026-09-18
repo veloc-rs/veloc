@@ -16,8 +16,7 @@ smallvec.workspace = true
 
 [build-dependencies]
 # 构建时依赖
-veloc-isle = { path = "../isle" }
-veloc-opgen = { workspace = true }
+veloc-spec = { workspace = true }
 
 [features]
 default = ["std"]

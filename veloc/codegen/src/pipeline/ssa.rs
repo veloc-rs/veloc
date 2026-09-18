@@ -225,10 +225,11 @@ mod tests {
 
     #[test]
     fn checks_representation_invariants_without_phase_tags() {
-        use crate::target::x86_64::isle::{REG_RAX, TargetInst};
+        use crate::target::x86_64::inst::{REG_RAX, TargetInst};
         use veloc_lir::{InstField, MachineOpcode};
         let target =
-            crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default());
+            crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default())
+                .unwrap();
         let mut f = MachineFunction::new("boundaries".into());
         f.editor().create_block();
         let value = f.editor().alloc_vreg(Type::I64);
@@ -272,7 +273,8 @@ mod tests {
     #[test]
     fn verifies_definitions_dominance_and_edge_contracts() {
         let target =
-            crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default());
+            crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default())
+                .unwrap();
         let mut f = MachineFunction::new("diamond".into());
         let blocks: Vec<_> = (0..4).map(|_| f.editor().create_block()).collect();
         let x = f.editor().alloc_vreg(Type::I64);

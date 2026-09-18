@@ -17,7 +17,6 @@ members = [
 	"veloc/encoder",
 	"veloc/analyzer",
 	"veloc/optimizer",
-	"veloc/isle",
 	"veloc/spec",
 	"veloc/semantics",
 ]
@@ -40,9 +39,8 @@ veloc-encoder = { path = "veloc/encoder" }
 veloc-analyzer = { path = "veloc/analyzer" }
 veloc-wasm = { path = "crates/veloc-wasm" }
 
-# --- ISLE ---
-veloc-isle = { path = "veloc/isle" }
-veloc-opgen = { path = "veloc/spec" }
+# --- Definition compiler ---
+veloc-spec = { path = "veloc/spec" }
 veloc-semantics = { path = "veloc/semantics" }
 
 # --- WebAssembly ---
@@ -81,8 +79,6 @@ anyhow = "1.0"
 elf_loader = { version = "0.14.1" }
 
 [dependencies]
-veloc-opgen = { workspace = true }
-veloc-isle = { workspace = true }
 veloc-mir = { workspace = true }
 veloc-lir = { workspace = true }
 veloc-interpreter = { workspace = true }

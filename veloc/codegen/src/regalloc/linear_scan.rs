@@ -434,25 +434,20 @@ mod tests {
     use super::*;
     use crate::target::x86_64::{
         X86_64TargetMachine,
-        isle::{REG_RAX, REG_RCX, REG_RDX, TargetInst},
+        inst::{REG_RAX, REG_RCX, REG_RDX, TargetInst},
     };
-    use veloc_lir::{MachineOpcode, Type, Writable};
+    use veloc_lir::Type;
 
     #[test]
     fn tied_allocation_preserves_inputs_with_collisions_and_spills() {
-        let target = X86_64TargetMachine::new(crate::TargetConfig::default());
+        let target = X86_64TargetMachine::new(crate::TargetConfig::default()).unwrap();
         for mode in 0..3 {
             let mut f = MachineFunction::new("reuse".into());
             f.editor().create_block();
             let lhs = f.editor().alloc_vreg(Type::I64);
             let rhs = f.editor().alloc_vreg(Type::I64);
             let dst = f.editor().alloc_vreg(Type::I64);
-            let id = f.editor().writer().binary(
-                MachineOpcode::Target(TargetInst::X86Sub64.as_u32()),
-                Writable(dst),
-                rhs,
-                lhs,
-            );
+            let id = TargetInst::X86Sub64.write(f.editor().writer(), &[dst], &[rhs, lhs], &[]);
             f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             let mut allocator = RegisterAllocator::new(&target);
             let mut frame = f.stack_frame.clone();

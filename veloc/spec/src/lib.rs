@@ -3,13 +3,17 @@
 //! Definitions are checked before Rust generation. This crate does not depend
 //! on a runtime IR; the MIR emitter is one consumer of its definition model.
 
+mod emit;
 mod generate;
+pub use emit::{Artifacts, Decisions, Emit, Options, Target, ValueRules};
 mod model;
+pub mod rules;
 pub mod schema;
 mod semantic;
 mod source;
 mod storage;
 pub mod syntax;
+pub mod target;
 mod text;
 mod types;
 
@@ -43,22 +47,6 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-/// Generated MIR, optimizer and offline artifacts; callers choose which to write.
-#[derive(Default)]
-pub struct Generated {
-    pub checks: String,
-    pub types: String,
-    pub type_rules: String,
-    pub validation: String,
-    pub evaluation: String,
-    pub semantics: String,
-    pub opcodes: String,
-    pub instructions: String,
-    pub builders: String,
-    pub text_parser: String,
-    pub text_printer: String,
-}
 
 pub mod interfaces;
 /// Format generated Rust files with the workspace's rustfmt configuration.

@@ -8,4 +8,11 @@ pub struct X86_64PassConfig;
 
 impl TargetPostIsel for X86_64PostIsel {}
 
-impl TargetPassConfig for X86_64PassConfig {}
+impl TargetPassConfig for X86_64PassConfig {
+    fn post_legalize_passes(&self) -> Vec<alloc::boxed::Box<dyn crate::pipeline::FunctionPass>> {
+        // Policy: use a comparison chain until jump-table selection is available.
+        alloc::vec![alloc::boxed::Box::new(
+            crate::passes::lowering::control::BranchTableLowering
+        )]
+    }
+}

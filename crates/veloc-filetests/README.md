@@ -12,7 +12,7 @@ cargo test -p veloc-filetests --test files optimizer/simplify
 cargo test --workspace
 ```
 
-Each `.mir` or `.ops` file under `cases/` is discovered automatically. Use
+Each `.mir` or `.spec` file under `cases/` is discovered automatically. Use
 `// ----- name` to separate independent cases in one file. Every case needs
 exactly one `// run:` and at least one positive output check. Names and filters
 appear in Cargo's test output; failures include the actual output and matching
@@ -60,7 +60,7 @@ the presence of an opcode. Assertions belong in `//` comments.
 | `fixture-error` | Require a parser diagnostic from that test MIR |
 | `fixture-validate-error` | Parsing succeeds, but test MIR validation fails |
 
-The `.ops` driver prepends the shared type declarations. Input files explicitly supply their operation/storage records.
+The `.spec` driver prepends the shared type declarations. Input files explicitly supply their operation/storage records.
 This driver is for definitions using the standard type encoding; low-level
 encoding changes and definition-order metamorphic tests live in the `opgen` Rust suite.
 
@@ -87,7 +87,7 @@ has four modules: `types`, `contracts`, `imports`, and `execution`, sharing one
 `common` module. It includes standalone Rust compilation and formatting tests
 as well as runtime-backed generation tests.
 
-The `.ops` corpus is grouped into types, signatures, constraints, storage, text,
+The `.spec` corpus is grouped into types, signatures, constraints, storage, text,
 interfaces, semantics, and diagnostics. Individual cases retain their names and
 independent execution, so regrouping files does not hide later failures behind
 an earlier assertion. Private invariant tests stay next to their implementation;
@@ -95,7 +95,7 @@ native execution and frontend suites retain separate entry points.
 
 ## Generator coverage
 
-`fixture/extra.ops` extends production MIR with unusual contracts: custom field
+`fixture/extra.spec` extends production MIR with unusual contracts: custom field
 names, reversed text order, multiple results, result-only bindings, alternate
 storage, predicates and composite semantics. `fixture` compiles the **real MIR
 sources** against those definitions; it does not copy the runtime or mock types.

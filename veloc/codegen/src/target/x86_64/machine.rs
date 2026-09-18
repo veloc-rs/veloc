@@ -1,5 +1,5 @@
 //! Target facts used by scheduling and allocation, not by generic algorithms.
-use super::isle::TargetInst;
+use super::inst::TargetInst;
 use veloc_lir::{InstField, InstId, MachineOpcode, Reg};
 use veloc_mir::{Type, TypeInfo};
 

@@ -13,8 +13,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .parse(&source)
         .map_err(|e| e.to_string())?;
     module.validate().map_err(|e| format!("{e:?}"))?;
-    let target =
-        create_target_machine(TargetConfig::default()).ok_or("x86-64 target unavailable")?;
+    let target = create_target_machine(TargetConfig::default())?;
     let pipeline = CodegenPipeline::with_options(
         &*target,
         CodegenOptions {

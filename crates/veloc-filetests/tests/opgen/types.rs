@@ -32,7 +32,7 @@ fn analysis_contracts_are_not_hardcoded_rust_paths() {
     let source = common::source(ADD).replace("veloc_types::OpTraits", "crate::Unrelated");
     let code = common::raw_plan(&source).unwrap().generate();
     assert!(
-        code.opcodes
+        code[veloc_spec::Emit::Opcodes]
             .contains("<crate::Unrelated as veloc_types::traits::OpTraits>")
     );
 }
@@ -169,8 +169,8 @@ fn type_domains_and_semantics() {
     // set unions drive both generated contracts and semantic checks
     {
         let output = compile(ADD).unwrap();
-        assert!(output.type_rules.contains("C::Bits"));
-        assert!(output.opcodes.contains("veloc_types::Scalar::Int(32)"));
+        assert!(output[veloc_spec::Emit::TypeRules].contains("C::Bits"));
+        assert!(output[veloc_spec::Emit::Opcodes].contains("veloc_types::Scalar::Int(32)"));
         let mixed = ADD.replace("= ScalarInteger;", "= ScalarInteger | ScalarFloat;");
         common::raw_rejected(
             &common::source(&mixed),

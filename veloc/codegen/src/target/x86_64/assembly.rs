@@ -1,6 +1,6 @@
 //! Intel assembly rendering. Instruction spelling and operand order are
 //! generated; this host only renders registers, addresses and external names.
-use super::isle;
+use super::inst;
 use crate::target::arch::AssemblyWriter;
 use core::fmt::{self, Write};
 use veloc_lir::BlockId as Block;
@@ -16,7 +16,7 @@ pub fn write(
     let MachineOpcode::Target(opcode) = inst.opcode() else {
         return Err(fmt::Error);
     };
-    isle::TargetInst::from_u32(opcode).write_assembly(inst, &mut Intel { out, frame, symbol })
+    inst::TargetInst::from_u32(opcode).write_assembly(inst, &mut Intel { out, frame, symbol })
 }
 
 struct Intel<'a, F> {
@@ -34,7 +34,7 @@ impl<F> Write for Intel<'_, F> {
 impl<F: FnMut(SymbolId, &mut dyn Write) -> fmt::Result> AssemblyWriter for Intel<'_, F> {
     fn register(&mut self, reg: Reg, bits: u32) -> fmt::Result {
         self.out
-            .write_str(isle::register_name(reg, bits).ok_or(fmt::Error)?)
+            .write_str(inst::register_name(reg, bits).ok_or(fmt::Error)?)
     }
     fn immediate(&mut self, value: i64) -> fmt::Result {
         write!(self.out, "{value}")
@@ -69,7 +69,7 @@ impl<F: FnMut(SymbolId, &mut dyn Write) -> fmt::Result> AssemblyWriter for Intel
     fn stack_slot(&mut self, slot: StackSlot, bits: u32) -> fmt::Result {
         let slot = &self.frame.slots[slot];
         self.memory(
-            slot.base.resolve(isle::SPECIAL_REG_FRAME_POINTER),
+            slot.base.resolve(inst::SPECIAL_REG_FRAME_POINTER),
             i64::from(slot.offset),
             bits,
         )

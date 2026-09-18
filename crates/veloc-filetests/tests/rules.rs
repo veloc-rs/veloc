@@ -1,20 +1,46 @@
 //! Compile real OpSpec contracts and rules to Rust, then execute the result.
 use std::{fs, path::PathBuf, process::Command};
-use veloc_isle::rules::{Dialects, Program, Rust};
-use veloc_opgen::Source;
+use veloc_spec::Source;
+use veloc_spec::rules::{Dialects, Program, Rust};
 #[path = "../compiler.rs"]
 #[allow(dead_code)] // This suite only needs the shared temporary directory helper.
 mod compiler;
 
 #[test]
 fn typed_legalization_contracts_reject_invalid_rules() {
-    use veloc_isle::rules::{DecisionRust, decisions};
+    use veloc_spec::rules::{DecisionRust, decisions};
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
-    let definitions = Source::load(root.join("lir/defs/module.ops"))
+    let definitions = Source::load(root.join("lir/defs/module.spec"))
         .unwrap()
         .parse()
         .unwrap();
-    let source = std::fs::read_to_string(root.join("codegen/isle/x86_64/legalize.rules")).unwrap();
+    let strip_imports = |text: String| {
+        text.lines()
+            .filter(|line| !line.starts_with("import "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let header = std::fs::read_to_string(root.join("codegen/defs/legalize_types.spec")).unwrap();
+    let target = format!(
+        "{header}\n{}",
+        strip_imports(
+            std::fs::read_to_string(root.join("codegen/defs/x86_64/legalize.spec")).unwrap()
+        )
+    );
+    let shared =
+        strip_imports(std::fs::read_to_string(root.join("codegen/defs/legalize.spec")).unwrap());
+    let mut source = format!("{target}\n{shared}");
+    // Exercise nested host decisions independently of target policy spelling.
+    source.push_str(
+        r#"
+rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
+    action = match T {
+        Type::I32 if target.supports(Instruction::POPCNT32) => legal,
+        _ => legal,
+    };
+}
+"#,
+    );
     let compile = |source: &str| {
         decisions(
             source,
@@ -25,16 +51,45 @@ fn typed_legalization_contracts_reject_invalid_rules() {
                 opcode: "veloc_lir::GenericOpcode",
                 result: "Action",
                 value_rule: "crate::passes::lowering::LegalizeAction::values",
+                rust_rule: "crate::passes::lowering::LegalizeAction::rewrite",
+                legal_action: "crate::passes::lowering::LegalizeAction::Legal",
             },
         )
     };
+    // Moving templates before or after policy cannot affect decision priority.
+    let decision = |code: String| {
+        code.split("pub fn decide")
+            .nth(1)
+            .unwrap()
+            .split("#[allow(dead_code)]")
+            .next()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(
+        decision(compile(&format!("{target}\n{shared}")).unwrap()),
+        decision(compile(&format!("{shared}\n{target}")).unwrap())
+    );
+    // Templates alone are checked and generated, but create no matching cases.
+    let declarations = target.split("rule arg_0").next().unwrap();
+    let templates_only = compile(&format!("{declarations}\n{shared}")).unwrap();
+    assert!(!templates_only.contains("GenericOpcode::Ctpop =>"));
+    assert!(!templates_only.contains("GenericOpcode::Ctlz =>"));
+    assert!(!templates_only.contains("GenericOpcode::Cttz =>"));
     let output = compile(&source).unwrap();
     assert!(output.contains("rewrite_widen_add"));
-    assert!(!output.contains("recipes.widen"));
+    assert!(!output.contains("Recipes"));
+    assert!(output.contains("fn rewrite_load_displacement_host()"));
+    let unused = source.replace("expand(load_displacement, inst)", "legal");
+    assert!(
+        compile(&unused)
+            .unwrap()
+            .contains("fn rewrite_load_displacement_host()")
+    );
     // Nested decisions and host identifiers share the same expression compiler.
     let nested = source.replace(
-        "_ => recipes.bit_count(),",
-        "_ => match true { true if false => recipes.legal(), _ => recipes.bit_count(), },",
+        "_ => legal,",
+        "_ => match true { true if false => legal, _ => legal, },",
     );
     assert!(compile(&nested).unwrap().contains("match true"));
     let named_host = source
@@ -44,25 +99,128 @@ fn typed_legalization_contracts_reject_invalid_rules() {
     assert!(output.contains("__match_value_ == "));
     assert!(output.contains("__match_value.supports"));
 
+    // Fragments compose without introducing root mutations or runtime calls.
+    let composed = format!(
+        "{source}\n{}",
+        r#"
+fn twice<T: BitWord>(x: T) -> T {
+    lir::Add<T>(x, x)
+}
+fn nested<U: BitWord>(x: U) -> U {
+    let a = twice<U>(x);
+    twice<U>(a)
+}
+rewrite composition(inst: lir::Ctpop<Type::I32>) {
+    replace = nested<Type::I32>(lir::Constant<Type::I32>(9));
+}
+"#
+    );
+    let generated = compile(&composed).unwrap();
+    let body = generated
+        .split("fn rewrite_composition_case1")
+        .nth(1)
+        .unwrap();
+    assert_eq!(body.matches("ctx.emit_integer_at(").count(), 1);
+    assert_eq!(body.matches("GenericOpcode::Add").count(), 2);
+    assert!(!body.contains("nested("));
+    for (extra, diagnostic) in [
+        ("fn bad<T: BitWord>(x: T) -> T { bad<T>(x) }", "recursive"),
+        (
+            "fn bad<T: BitWord>(x: T) -> T { other<T>(x) } fn other<U: BitWord>(x: U) -> U { bad<U>(x) }",
+            "recursive",
+        ),
+        (
+            "fn bad(x: Type::I32) -> Type::I64 { x }",
+            "result type mismatch",
+        ),
+        (
+            "fn bad(x: Type::I32) -> Type::I32 { low_bit<Type::I64>(x) }",
+            "argument type mismatch",
+        ),
+        (
+            "fn bad(x: Type::F32) -> Type::F32 { low_bit<Type::F32>(x) }",
+            "outside domain",
+        ),
+        ("fn bad(x: Type::I32) -> Type::I32 { low_bit(x) }", "arity"),
+        (
+            "fn bad<T: BitWord>(x: T) -> T { inst.src }",
+            "unbound value",
+        ),
+        (
+            "fn bad(x: Type::I32) -> Type::I32 { let x = x; x }",
+            "duplicate",
+        ),
+    ] {
+        let error = compile(&format!("{source}\n{extra}")).unwrap_err();
+        assert!(error.message.contains(diagnostic), "{error}");
+    }
+
     for (from, to, diagnostic) in [
         (
-            "_ => recipes.bit_count(),",
-            "",
+            "expand(load_displacement, inst)",
+            "expand(store_displacement, inst)",
+            "node signature",
+        ),
+        (
+            "lowering::legalize::displacement",
+            "lowering::legalize::displacement;panic!()",
+            "Rust",
+        ),
+        (
+            "expand(popcount32, inst)",
+            "expand(missing, inst)",
+            "unknown rewrite",
+        ),
+        (
+            "expand(popcount32, inst)",
+            "expand(popcount64, inst)",
+            "type domain",
+        ),
+        (
+            "expand(popcount32, inst)",
+            "expand(leading_zeros32, inst)",
+            "node signature",
+        ),
+        (
+            "expand(popcount32, inst)",
+            "expand(popcount32, unknown)",
+            "matched instruction",
+        ),
+        ("rewrite popcount32", "rule popcount32", "unknown rewrite"),
+        (
+            "let nibbles =",
+            "let pairs =",
+            "duplicate replacement binding",
+        ),
+        (
+            "lir::Lshr<Type::I32>(pairs,",
+            "lir::Lshr<Type::I32>(missing,",
+            "unbound value",
+        ),
+        (
+            "lir::Constant<Type::I32>(1)",
+            "lir::Constant<Type::F32>(1)",
+            "does not accept",
+        ),
+        (
+            "lir::Constant<Type::I32>(1)",
+            "lir::Constant<Type::I32>(9223372036854775808)",
+            "exceeds i64",
+        ),
+        ("_ => legal,", "", "final unguarded _ fallback"),
+        (
+            "_ => legal,",
+            "_ if false => legal,",
             "final unguarded _ fallback",
         ),
         (
-            "_ => recipes.bit_count(),",
-            "_ if false => recipes.bit_count(),",
-            "final unguarded _ fallback",
-        ),
-        (
-            "_ => recipes.bit_count(),",
-            "_ => recipes.bit_count(), Type::I32 => recipes.legal(), _ => recipes.bit_count(),",
+            "_ => legal,",
+            "_ => legal, Type::I32 => legal, _ => legal,",
             "unreachable arm",
         ),
         (
-            "_ => recipes.bit_count(),",
-            "Type::I32 => recipes.legal(), Type::I32 => recipes.legal(), _ => recipes.bit_count(),",
+            "_ => legal,",
+            "Type::I32 => legal, Type::I32 => legal, _ => legal,",
             "unreachable repeated",
         ),
         (
@@ -105,11 +263,6 @@ fn typed_legalization_contracts_reject_invalid_rules() {
             "lir::Zext<Type::I32>(inst.missing)",
             "unbound value",
         ),
-        (
-            "recipes: &Recipes",
-            "other: &Recipes",
-            "undeclared host member",
-        ),
         ("<T: Narrow>(inst", "<T: Unknown>(inst", "unknown type set"),
         (
             "lir::Add<Type::I32>(lir::Zext",
@@ -148,11 +301,11 @@ fn typed_legalization_contracts_reject_invalid_rules() {
 
 fn dialects() -> Dialects {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
-    let mir = Source::load(root.join("mir/defs/module.ops"))
+    let mir = Source::load(root.join("mir/defs/module.spec"))
         .unwrap()
         .parse()
         .unwrap();
-    let lir = Source::load(root.join("lir/defs/module.ops"))
+    let lir = Source::load(root.join("lir/defs/module.spec"))
         .unwrap()
         .parse()
         .unwrap();
@@ -163,7 +316,7 @@ fn dialects() -> Dialects {
     let fixture = Source::load(
         root.parent()
             .unwrap()
-            .join("crates/veloc-filetests/fixture/module.ops"),
+            .join("crates/veloc-filetests/fixture/module.spec"),
     )
     .unwrap()
     .parse()
@@ -174,7 +327,7 @@ fn dialects() -> Dialects {
 
 #[test]
 fn compiled_value_rules_execute_with_an_independent_host() {
-    let program = Program::compile(include_str!("fixtures/values.rules"), &dialects()).unwrap();
+    let program = Program::compile(include_str!("fixtures/values.spec"), &dialects()).unwrap();
     let code = program
         .rust(Rust {
             function: "lower",
@@ -183,7 +336,7 @@ fn compiled_value_rules_execute_with_an_independent_host() {
             target: ("after", "After"),
         })
         .unwrap();
-    let temp = compiler::Temp::new("veloc-isle-rules").unwrap();
+    let temp = compiler::Temp::new("veloc-spec-rules").unwrap();
     let source = temp.join("rules.rs");
     let executable = temp.join(format!("rules{}", std::env::consts::EXE_SUFFIX));
     fs::write(
@@ -301,4 +454,62 @@ fn primitive_inference_uses_the_same_contract_checker() {
             .message
             .contains("ambiguous")
     );
+}
+
+#[test]
+fn construction_functions_compose_with_checked_rust_bindings() {
+    use veloc_spec::rules::{DecisionRust, decisions};
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
+    let definitions = Source::load(root.join("lir/defs/module.spec"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let code = decisions(
+        include_str!("fixtures/construction.spec"),
+        &definitions,
+        DecisionRust {
+            dialect: "lir",
+            function: "decide",
+            opcode: "crate::Opcode",
+            result: "Action",
+            value_rule: "crate::values",
+            rust_rule: "crate::unused_rewrite",
+            legal_action: "crate::unused_legal",
+        },
+    )
+    .unwrap();
+    let temp = compiler::Temp::new("veloc-construction").unwrap();
+    let source = temp.join("construction.rs");
+    let executable = temp.join(format!("construction{}", std::env::consts::EXE_SUFFIX));
+    let host = include_str!("fixtures/construction.rs");
+    for (host, valid) in [
+        (host.to_owned(), true),
+        (
+            host.replace("ctx.emit(Opcode::Add, ty, &[x, x])", "ctx.input(0)"),
+            false,
+        ),
+        (host.replace("-> C::Value {", "-> () {"), false),
+    ] {
+        fs::write(&source, format!("{host}\nmod generated {{ {code} }}")).unwrap();
+        let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .args(["--edition=2024", "-o"])
+            .arg(&executable)
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.success(),
+            valid,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if valid {
+            let output = Command::new(&executable).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 }

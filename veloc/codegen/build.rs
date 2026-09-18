@@ -1,92 +1,80 @@
-use std::env;
-use std::fs;
-use std::path::PathBuf;
-use veloc_isle::target::compile;
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+use veloc_spec::{Decisions, Emit, Options, Source, Target};
+
+fn load(path: impl AsRef<Path>) -> Source {
+    let source = Source::load(path).expect("load compiler definitions");
+    for path in source.dependencies() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    source
+}
 
 fn main() {
     println!("cargo:rerun-if-changed=../../rustfmt.toml");
     println!("cargo:rerun-if-env-changed=RUSTFMT");
-    let mut rust_files = Vec::new();
-    let arch = "x86_64";
-    let isle_dir = PathBuf::from(format!("isle/{}", arch));
-
-    let lir = veloc_opgen::Source::load("../lir/defs/module.ops").expect("load LIR contracts");
-    for path in lir.dependencies() {
-        println!("cargo:rerun-if-changed={}", path.display());
+    let dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
+    let lir = load("../lir/defs/module.spec");
+    let rules = load("defs/x86_64/legalize.spec");
+    let target = load("defs/x86_64/module.spec");
+    let contracts = load("defs/x86_64/instructions.spec");
+    let decisions = rules
+        .generate(
+            &[Emit::Decisions],
+            Options {
+                decisions: Some(Decisions {
+                    definitions: &lir,
+                    rust: veloc_spec::rules::DecisionRust {
+                        dialect: "lir",
+                        function: "decide",
+                        opcode: "veloc_lir::GenericOpcode",
+                        result: "Action",
+                        value_rule: "crate::passes::lowering::LegalizeAction::values",
+                        rust_rule: "crate::passes::lowering::LegalizeAction::rewrite",
+                        legal_action: "crate::passes::lowering::LegalizeAction::Legal",
+                    },
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("compile legalization decisions");
+    let machine = target
+        .generate(
+            &[Emit::Target],
+            Options {
+                target: Some(Target {
+                    arch: "x86_64",
+                    context: "crate::target::x86_64::lowering::X86LoweringContext",
+                    definitions: &contracts,
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("compile target definitions");
+    let host = contracts
+        .generate(
+            &[Emit::Interfaces],
+            Options {
+                interfaces: Some("crate::target::x86_64::emitter::host"),
+                ..Default::default()
+            },
+        )
+        .expect("compile encoder host contracts");
+    let mut files = Vec::new();
+    for (name, text) in [
+        (
+            "legalize_x86_64.rs",
+            decisions.get(Emit::Decisions).unwrap(),
+        ),
+        ("machine_x86_64.rs", machine.get(Emit::Target).unwrap()),
+        ("encoding_host.rs", host.get(Emit::Interfaces).unwrap()),
+    ] {
+        let path = dir.join(name);
+        fs::write(&path, text).expect("write codegen artifacts");
+        files.push(path);
     }
-    let definitions = lir.parse().expect("check LIR contracts");
-    let rules_path = isle_dir.join("legalize.rules");
-    println!("cargo:rerun-if-changed={}", rules_path.display());
-    let rules = fs::read_to_string(rules_path).expect("read legalization rules");
-    let code = veloc_isle::rules::decisions(
-        &rules,
-        &definitions,
-        veloc_isle::rules::DecisionRust {
-            dialect: "lir",
-            function: "decide",
-            opcode: "veloc_lir::GenericOpcode",
-            result: "Action",
-            value_rule: "crate::passes::lowering::LegalizeAction::values",
-        },
-    )
-    .expect("compile legalization rules");
-    let path = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("legalize_x86_64.rs");
-    fs::write(&path, code).expect("write legalization decisions");
-    rust_files.push(path);
-
-    if isle_dir.exists() {
-        let mut combined_input = String::new();
-
-        // 加载所有 .isle 文件
-        let mut isle_files = Vec::new();
-        let mut dirs = vec![isle_dir.clone()];
-        while let Some(dir) = dirs.pop() {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        dirs.push(path);
-                    } else if path.extension().map_or(false, |ext| ext == "isle") {
-                        isle_files.push(path);
-                    }
-                }
-            }
-        }
-        isle_files.sort();
-
-        for path in isle_files {
-            let content = fs::read_to_string(&path).expect("Failed to read ISLE file");
-            combined_input.push_str(&content);
-            combined_input.push_str("\n\n");
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
-
-        let contracts = veloc_opgen::Source::load(isle_dir.join("instructions.ops"))
-            .expect("load target instruction definitions");
-        let host_code = contracts
-            .interfaces("crate::target::x86_64::emitter::host")
-            .expect("check encoding host contracts");
-        for path in contracts.dependencies() {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
-        let output = match compile(&combined_input, arch, &contracts) {
-            Ok(out) => out,
-            Err(e) => {
-                // e 已经是经过 miette 格式化的 Debug 输出（字符串）
-                // 在 panic 中直接使用它，或者去掉引号前缀
-                panic!("\n\nISLE 编译失败:\n{}\n", e);
-            }
-        };
-
-        let out_dir = env::var_os("OUT_DIR").map(PathBuf::from).unwrap();
-        let host_path = out_dir.join("encoding_host.rs");
-        fs::write(&host_path, host_code).expect("write encoding host contracts");
-        rust_files.push(host_path);
-        let dest_path = out_dir.join(format!("isle_{}.rs", arch));
-
-        fs::write(&dest_path, output).expect("Failed to write generated file");
-        rust_files.push(dest_path);
-    }
-    veloc_opgen::format_rust(&rust_files, std::path::Path::new("../../rustfmt.toml"))
-        .expect("format generated codegen definitions");
+    veloc_spec::format_rust(&files, Path::new("../../rustfmt.toml"))
+        .expect("format codegen artifacts");
 }

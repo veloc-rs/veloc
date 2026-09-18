@@ -8,7 +8,7 @@ use crate::pipeline::{ChangeSet, FunctionAnalysisCtx};
 use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
-use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, Writable};
+use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg};
 use veloc_mir::TypeInfo;
 
 #[derive(Clone, Copy)]
@@ -126,11 +126,11 @@ impl Tree {
     fn emit(&self, f: &mut MachineFunction, output: &mut Vec<InstId>) {
         let mut acc = self.leaves[0];
         for (node, &rhs) in self.nodes.iter().zip(&self.leaves[1..]) {
-            f.editor().rewriter(node.id).binary(
+            f.editor().rewriter(node.id).write(
                 MachineOpcode::Generic(self.opcode),
-                Writable(node.dst),
-                acc,
-                rhs,
+                &[node.dst],
+                &[acc, rhs],
+                &[],
             );
             output.push(node.id);
             acc = node.dst;

@@ -1,16 +1,24 @@
 use super::*;
-use crate::passes::lowering::legalize::{Query, Rewrite};
+use crate::passes::lowering::legalize::Query;
 use veloc_lir::{InstBuild, InstRead};
 
-impl host::ValueRewrite for crate::passes::lowering::legalize::ValueRewriter<'_> {
+impl host::ValueBuild for crate::passes::lowering::legalize::ValueRewriter<'_> {
     type Value = Reg;
+    fn emit(&mut self, opcode: GenericOpcode, ty: Type, inputs: &[Reg]) -> Reg {
+        self.emit(opcode, ty, inputs, None)
+    }
+    fn emit_integer(&mut self, opcode: GenericOpcode, ty: Type, value: i64) -> Reg {
+        self.emit_integer(opcode, ty, value, None)
+    }
+}
+impl host::ValueRewrite for crate::passes::lowering::legalize::ValueRewriter<'_> {
     fn input(&self, index: usize) -> Reg {
         self.input(index)
     }
     fn value_type(&self, result: bool, index: usize) -> Type {
         self.value_type(result, index)
     }
-    fn emit(
+    fn emit_at(
         &mut self,
         opcode: GenericOpcode,
         ty: Type,
@@ -18,6 +26,15 @@ impl host::ValueRewrite for crate::passes::lowering::legalize::ValueRewriter<'_>
         result: Option<usize>,
     ) -> Reg {
         self.emit(opcode, ty, inputs, result)
+    }
+    fn emit_integer_at(
+        &mut self,
+        opcode: GenericOpcode,
+        ty: Type,
+        value: i64,
+        result: Option<usize>,
+    ) -> Reg {
+        self.emit_integer(opcode, ty, value, result)
     }
     fn bind(&mut self, result: usize, value: Reg) {
         self.bind(result, value)
@@ -32,27 +49,38 @@ mod host {
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64Legalizer {
-    pub cpu: CpuDescription,
+    pub features: generated::FeatureSet,
 }
-impl host::Instruction for crate::target::x86_64::isle::TargetInst {
+impl host::Instruction for crate::target::x86_64::inst::TargetInst {
     const POPCNT32: Self = Self::X86Popcnt32;
     const POPCNT64: Self = Self::X86Popcnt64;
 }
-impl host::Target for CpuDescription {
-    fn supports(&self, instruction: crate::target::x86_64::isle::TargetInst) -> bool {
-        instruction
-            .required_features()
-            .iter()
-            .all(|feature| self.has_feature(feature))
+impl host::Target for generated::FeatureSet {
+    fn supports(&self, instruction: crate::target::x86_64::inst::TargetInst) -> bool {
+        self.contains_all(instruction.required_features())
     }
 }
 
 impl TargetLegalizer for X86_64Legalizer {
+    fn legalize_target(
+        &self,
+        inst: &veloc_lir::InstRef<'_>,
+    ) -> Result<Option<LegalizeAction>, crate::error::Error> {
+        let MachineOpcode::Target(code) = inst.opcode() else {
+            unreachable!()
+        };
+        let opcode = TargetInst::from_u32(code);
+        Ok((!opcode.is_pseudo()
+            && opcode.has_encoding()
+            && self.features.contains_all(opcode.required_features()))
+        .then_some(LegalizeAction::Legal))
+    }
+
     fn legalize_action(
         &self,
         query: &Query,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
-        Ok(host::decide(query.opcode, query, self, &self.cpu))
+        Ok(host::decide(query.opcode, query, &self.features))
     }
 }
 impl host::Query for Query {
@@ -86,110 +114,6 @@ impl host::Type for Type {
     const F64: Self = Self::F64;
     const PTR: Self = Self::PTR;
 }
-impl host::Recipes for X86_64Legalizer {
-    fn legal(&self) -> LegalizeAction {
-        LegalizeAction::Legal
-    }
-    fn unsigned(&self) -> LegalizeAction {
-        LegalizeAction::Rewrite(Rewrite {
-            name: "unsigned",
-            apply: unsigned,
-        })
-    }
-    fn float_sign(&self) -> LegalizeAction {
-        LegalizeAction::Rewrite(Rewrite {
-            name: "float_sign",
-            apply: float_sign,
-        })
-    }
-    fn displacement(&self) -> LegalizeAction {
-        LegalizeAction::Rewrite(Rewrite {
-            name: "displacement",
-            apply: displacement,
-        })
-    }
-    fn bit_count(&self) -> LegalizeAction {
-        LegalizeAction::Rewrite(Rewrite {
-            name: "bit_count",
-            apply: bit_count,
-        })
-    }
-    fn branch_table(&self) -> LegalizeAction {
-        LegalizeAction::Rewrite(Rewrite {
-            name: "branch_table",
-            apply: branch_table,
-        })
-    }
-}
-
-fn unsigned(
-    inst_id: InstId,
-    mfunc: &mut MachineFunction,
-) -> Result<LegalizeResult, crate::error::Error> {
-    let mut output = Vec::new();
-    let opcode = mfunc.inst(inst_id).generic_opcode().unwrap();
-
-    let inst = mfunc.inst(inst_id);
-    let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
-        unreachable!()
-    };
-    X86_64Lowering::unsigned_conversion(mfunc, &mut output, opcode, unary.dst, unary.src);
-    return Ok(LegalizeResult::Replace(output));
-}
-
-fn float_sign(
-    inst_id: InstId,
-    mfunc: &mut MachineFunction,
-) -> Result<LegalizeResult, crate::error::Error> {
-    let mut output = Vec::new();
-    let opcode = mfunc.inst(inst_id).generic_opcode().unwrap();
-
-    let inst = mfunc.inst(inst_id);
-    let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
-        unreachable!()
-    };
-    let float = mfunc.vreg_data(unary.dst).ty;
-    let (integer, sign) = if float == Type::F32 {
-        (Type::I32, 1i64 << 31)
-    } else {
-        (Type::I64, i64::MIN)
-    };
-    let bits = mfunc.editor().alloc_vreg(integer);
-    output.push(mfunc.editor().writer().unary(
-        MachineOpcode::Generic(GenericOpcode::Bitcast),
-        Writable(bits),
-        unary.src,
-    ));
-    let mask = X86_64Lowering::emit_legalize_constant_reg(
-        mfunc,
-        &mut output,
-        integer,
-        if opcode == GenericOpcode::Fneg {
-            sign
-        } else {
-            sign.wrapping_sub(1)
-        },
-    );
-    let changed = X86_64Lowering::emit_legalize_binary_reg(
-        mfunc,
-        &mut output,
-        if opcode == GenericOpcode::Fneg {
-            GenericOpcode::Xor
-        } else {
-            GenericOpcode::And
-        },
-        integer,
-        bits,
-        mask,
-    );
-    output.push(mfunc.editor().writer().unary(
-        MachineOpcode::Generic(GenericOpcode::Bitcast),
-        Writable(unary.dst),
-        changed,
-    ));
-    return Ok(LegalizeResult::Replace(output));
-}
-
 fn displacement(
     inst_id: InstId,
     mfunc: &mut MachineFunction,
@@ -226,97 +150,4 @@ fn displacement(
     mfunc.editor().set_inst_memory(access, memory);
     mfunc.editor().replace_inst(inst_id, access);
     return Ok(LegalizeResult::Replace(alloc::vec![constant, add, inst_id]));
-}
-
-fn bit_count(
-    inst_id: InstId,
-    mfunc: &mut MachineFunction,
-) -> Result<LegalizeResult, crate::error::Error> {
-    let mut output = Vec::new();
-    let opcode = mfunc.inst(inst_id).generic_opcode().unwrap();
-
-    let inst = mfunc.inst(inst_id);
-    let veloc_lir::InstView::UnaryReg(unary) = inst.view() else {
-        unreachable!("unary legalization opcode");
-    };
-    let ty = if unary.dst.is_vreg() {
-        mfunc.vreg_data(unary.dst).ty
-    } else {
-        panic!(
-            "x86_64 legalization expected virtual register destination for {:?}",
-            inst.opcode()
-        );
-    };
-    match opcode {
-        GenericOpcode::Ctpop => {
-            X86_64Lowering::legalize_ctpop_into(mfunc, &mut output, unary.src, unary.dst, ty)?;
-        }
-        GenericOpcode::Ctlz => {
-            X86_64Lowering::legalize_ctlz_into(mfunc, &mut output, unary.src, unary.dst, ty)?;
-        }
-        GenericOpcode::Cttz => {
-            X86_64Lowering::legalize_cttz_into(mfunc, &mut output, unary.src, unary.dst, ty)?;
-        }
-        _ => unreachable!(),
-    };
-    return Ok(LegalizeResult::Replace(output));
-}
-
-fn branch_table(
-    inst_id: InstId,
-    mfunc: &mut MachineFunction,
-) -> Result<LegalizeResult, crate::error::Error> {
-    let mut output = Vec::new();
-    let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).map(|e| e.to_owned()) else {
-        panic!("missing br_table extra during x86_64 br_table legalization");
-    };
-    let veloc_lir::InstView::BranchTable(brjt) = mfunc.inst(inst_id).view() else {
-        panic!("invalid br_table instruction during x86_64 legalization");
-    };
-
-    if info.targets.is_empty() {
-        return Ok(LegalizeResult::Replace(output));
-    }
-
-    let index = brjt.index;
-    let default_target = info.targets.last().unwrap();
-
-    for (case_idx, target) in info.targets[..info.targets.len() - 1].iter().enumerate() {
-        let cmp_inst = TargetInst::X86Cmp32ri.write(
-            mfunc.editor().writer(),
-            &[],
-            &[index],
-            &[InstField::Imm(case_idx as i64)],
-        );
-        output.push(cmp_inst);
-
-        let je_inst = TargetInst::X86Je.write(
-            mfunc.editor().writer(),
-            &[],
-            &[],
-            &[InstField::Block(target.block)],
-        );
-        mfunc.editor().set_inst_extra(
-            je_inst,
-            InstExtra::Branch(veloc_lir::BranchInfo {
-                args: target.args.clone(),
-            }),
-        );
-        output.push(je_inst);
-    }
-
-    let jmp_inst = TargetInst::X86Jmp.write(
-        mfunc.editor().writer(),
-        &[],
-        &[],
-        &[InstField::Block(default_target.block)],
-    );
-    mfunc.editor().set_inst_extra(
-        jmp_inst,
-        InstExtra::Branch(veloc_lir::BranchInfo {
-            args: default_target.args.clone(),
-        }),
-    );
-    output.push(jmp_inst);
-    return Ok(LegalizeResult::Replace(output));
 }

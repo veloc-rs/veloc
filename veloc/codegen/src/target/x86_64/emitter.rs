@@ -43,9 +43,9 @@ impl TargetEmitter for X86_64CodeEmitter {
                 );
             }
             MachineOpcode::Target(target_inst_code) => {
-                let target = crate::target::x86_64::isle::TargetInst::from_u32(*target_inst_code);
+                let target = crate::target::x86_64::inst::TargetInst::from_u32(*target_inst_code);
                 if let Some(access) = inst.memory() {
-                    let shape = super::isle::target_inst_metadata(target).memory;
+                    let shape = super::inst::target_inst_metadata(target).memory;
                     if shape != Some((access.kind, access.bytes))
                         || !access.alignment.is_power_of_two()
                     {
@@ -63,7 +63,7 @@ impl TargetEmitter for X86_64CodeEmitter {
 }
 
 pub(crate) fn register(reg: veloc_lir::Reg) -> crate::Result<veloc_encoder::x86_64::Reg> {
-    super::isle::register_encoding(reg)
+    super::inst::register_encoding(reg)
         .and_then(veloc_encoder::x86_64::Reg::new)
         .ok_or_else(|| crate::Error::codegen("invalid physical register for x86 encoding"))
 }
@@ -76,7 +76,7 @@ pub(crate) fn stack_address(
     let slot = &frame.slots[slot];
     Ok(Address::BaseIndex(Memory {
         base: Some(register(
-            slot.base.resolve(super::isle::SPECIAL_REG_FRAME_POINTER),
+            slot.base.resolve(super::inst::SPECIAL_REG_FRAME_POINTER),
         )?),
         index: None,
         displacement: i64::from(slot.offset),

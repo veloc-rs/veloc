@@ -8,9 +8,6 @@ pub mod driver;
 mod emitter;
 pub mod error;
 pub use emitter::{EmittedCode, Emitter, ExternalRelocation, Target as FixupTarget};
-pub mod isle {
-    pub use crate::target::x86_64::isle::*;
-}
 // Exported macros use the dependency's canonical name for hygienic paths.
 #[doc(hidden)]
 pub use veloc_lir;
@@ -32,13 +29,13 @@ pub use target::arch::{
 };
 
 /// 根据目标配置创建对应的目标机器
-pub fn create_target_machine(config: TargetConfig) -> Option<alloc::boxed::Box<dyn TargetMachine>> {
+pub fn create_target_machine(config: TargetConfig) -> Result<alloc::boxed::Box<dyn TargetMachine>> {
     use target::arch::TargetArch;
     match config.arch {
-        TargetArch::X86_64 => Some(alloc::boxed::Box::new(
-            target::x86_64::X86_64TargetMachine::new(config),
+        TargetArch::X86_64 => Ok(alloc::boxed::Box::new(
+            target::x86_64::X86_64TargetMachine::new(config)?,
         )),
-        _ => None,
+        _ => Err(Error::target_machine_unavailable(config.arch)),
     }
 }
 

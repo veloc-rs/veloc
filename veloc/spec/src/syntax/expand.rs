@@ -210,7 +210,9 @@ fn substitute_decl(
         node(source, value, bindings)?;
     }
     match &mut decl.kind {
-        DeclKind::Op(sig) | DeclKind::Rule(sig) => signature(source, sig, bindings)?,
+        DeclKind::Op(sig) | DeclKind::Rule(sig) | DeclKind::Rewrite(sig) => {
+            signature(source, sig, bindings)?
+        }
         DeclKind::Function {
             signature: sig,
             body,

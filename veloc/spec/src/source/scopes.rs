@@ -25,7 +25,13 @@ pub(crate) fn check(
             let space = match &record.kind {
                 DeclKind::Type { .. } if rust_binding(record).is_some() => Space::Data,
                 DeclKind::Type { .. } | DeclKind::TypeSet(_) => Space::Type,
-                DeclKind::Function { .. } => Space::Function,
+                DeclKind::Function { .. } | DeclKind::Rewrite(_) => Space::Function,
+                DeclKind::Fields(kind) if matches!(kind.as_str(), "extractor" | "predicate") => {
+                    Space::Function
+                }
+                DeclKind::Fields(kind) if matches!(kind.as_str(), "feature" | "cpu") => {
+                    Space::Value
+                }
                 DeclKind::Constant { .. } => Space::Value,
                 DeclKind::Fields(kind)
                     if matches!(kind.as_str(), "struct" | "enum" | "encoding") =>
@@ -131,7 +137,11 @@ impl Checker<'_> {
                     } else if self.symbols.contains_key(&(Space::Value, name.clone())) {
                         Space::Value
                     } else {
-                        Space::Data
+                        if self.symbols.contains_key(&(Space::Function, name.clone())) {
+                            Space::Function
+                        } else {
+                            Space::Data
+                        }
                     };
                     self.name(name, space, node.offset, locals)?;
                 }
@@ -158,6 +168,7 @@ impl Checker<'_> {
                 }
             }
             Kind::TypedCall(name, types, args) => {
+                self.name(name, Space::Function, node.offset, locals)?;
                 self.name(name, Space::Value, node.offset, locals)?;
                 for ty in types {
                     self.node(ty, Some(Space::Type), locals)?;

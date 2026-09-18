@@ -98,10 +98,10 @@ WebAssembly and C source are translated into the same Veloc middle-level IR (MIR
 | `veloc-optimizer` | Pass management, metrics, constant folding, and dead-code elimination. |
 | `veloc-interpreter` | IR-to-bytecode compiler and register-bytecode runtime. |
 | `veloc-codegen` | Target-independent LIR pipeline and x86-64 backend. |
-| `veloc-isle` | Typed cross-IR value-rule compiler sharing OpSpec contracts, plus target descriptions and instruction selection. |
+| `veloc-spec` | Typed cross-IR value-rule compiler sharing OpSpec contracts, plus target descriptions and instruction selection. |
 | `veloc-wasm` | WebAssembly translator, runtime, CLI, linker, JIT, and WASI support. |
 | `veloc-c` | Experimental C parser and IR frontend. |
-| `veloc-spec` | WebAssembly specification test runner. |
+| `veloc-wasm-spec` | WebAssembly specification test runner. |
 
 ## Development
 
@@ -124,7 +124,7 @@ cargo test -p veloc-wasm
 The specification runner accepts either a `.wast` file or a directory from the upstream WebAssembly specification tests:
 
 ```bash
-cargo run --release -p veloc-spec -- \
+cargo run --release -p veloc-wasm-spec -- \
   /path/to/wasm-spec/test/core \
   --strategy interp
 ```
@@ -135,7 +135,7 @@ To use the pinned testsuite submodule, for example the integer suite:
 
 ```bash
 git submodule update --init crates/veloc-wasm/tests/testsuite
-CARGO_INCREMENTAL=0 cargo run -p veloc-spec -- \
+CARGO_INCREMENTAL=0 cargo run -p veloc-wasm-spec -- \
   crates/veloc-wasm/tests/testsuite/i32.wast --strategy jit --opt-level 1 --verbose
 ```
 

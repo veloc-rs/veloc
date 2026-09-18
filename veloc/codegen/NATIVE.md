@@ -21,6 +21,26 @@ The result is `sum(100) = 5050`. `--no-opt` disables scheduling; `VELOC_DUMP_LIR
 prints intermediate stages. This driver validates MIR before compilation and
 emits an ELF object; it does not implement a JIT or a linker.
 
+## CPU features
+
+`TargetConfig.cpu` selects a generated CPU model. `TargetConfig.features` applies
+ordered overrides: `NAME` or `+NAME` enables a feature, and `-NAME` disables it.
+Feature names are case-insensitive; the last override for a feature wins.
+For example, `generic` with `+popcnt` permits POPCNT, while `haswell` with
+`-popcnt` uses the software lowering.
+
+Dependencies are declared with the feature, for example
+`(def-feature AVX2 "..." (requires AVX))`. Target creation enables dependencies,
+but rejects an explicitly disabled dependency instead of silently re-enabling
+it. Unknown CPU or feature names are errors. `create_target_machine` returns a
+`Result`, including for unsupported architectures.
+
+CPU defaults and instruction requirements compile to target-local `Feature` and
+`FeatureSet` types. Legalization, selection and validation consume the resolved
+feature set, not string lists. Configuration describes the compilation target:
+it does not detect build-host capabilities or guarantee that emitted code can
+execute on the host. Scheduling costs remain separate from ISA availability.
+
 ## Contracts
 
 1. MIR translation produces typed generic LIR. Local stack slots have a symbolic
@@ -28,7 +48,7 @@ emits an ELF object; it does not implement a JIT or a linker.
 2. Block arguments become edge copies, including cycle breaking and split edges.
 3. Legalization checks expansions; ABI lowering places argument copies before
    calls and result copies after them, and reserves the maximum outgoing area.
-4. ISLE selects target instructions. Calls explicitly expose ABI register uses
+4. Spec selects target instructions. Calls explicitly expose ABI register uses
    and caller-saved clobbers, even though these operands have no encoding fields.
 5. Operand constraints are materialized before scheduling. A move defines its
    destination; it must not pretend to read the previous destination value.
@@ -118,9 +138,9 @@ scheduling. These numbers are a baseline, not an LLVM comparison.
 
 ## Next architectural work
 
-Generic LIR storage now comes from `lir/defs/generic.ops`, compiled by the shared
+Generic LIR storage now comes from `lir/defs/generic.spec`, compiled by the shared
 OpSpec frontend. Opcode-specific arity checks and generic control-flow facts are
-generated. Target control descriptors are generated from ISLE and feed the same
+generated. Target control descriptors are generated from Spec and feed the same
 CFG algorithm; there is no target fallthrough guess. Logical signatures/type rules
 are shared with MIR, but machine schemas do not yet replace target legality or
 precise memory/effect descriptions.

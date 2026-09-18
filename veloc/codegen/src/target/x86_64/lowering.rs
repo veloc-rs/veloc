@@ -1,6 +1,6 @@
 //! x86_64 Target Lowering
 //!
-//! 使用 ISLE (Instruction Selection Lowering Expressions) 生成的代码
+//! 使用 Spec 生成的代码
 //! 进行指令选择。
 
 mod frame;
@@ -13,18 +13,17 @@ mod select;
 pub use crate::isel::SelectResult;
 use crate::passes::lowering::{LegalizeAction, LegalizeResult};
 use crate::target::arch::{
-    CallConv as TargetCallConv, CpuDescription, LoweringContext, OperandConstraintSet,
-    SelectionContext, TargetArch, TargetFrameLowering, TargetInstructionSelector, TargetLegalizer,
+    CallConv as TargetCallConv, LoweringContext, OperandConstraintSet, SelectionContext,
+    TargetArch, TargetFrameLowering, TargetInstructionSelector, TargetLegalizer,
     TargetOperandLowering, TargetPassConfig, TargetPostIsel,
 };
-use crate::target::x86_64::isle::{TargetInst, generated};
+use crate::target::x86_64::inst::{self as generated, TargetInst};
 use alloc::vec::Vec;
 pub use frame::X86_64FrameLowering;
 pub use legalize::X86_64Legalizer;
 pub use operand::X86_64OperandLowering;
 pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
 pub use select::X86_64Selector;
-use veloc_lir::InstBuild;
 use veloc_lir::RegisterBank;
 use veloc_lir::{
     GenericOpcode, InstExtra, InstField, InstId, MachineFunction, MachineOpcode, Reg, VReg,
@@ -136,262 +135,16 @@ fn build_target_binary_uses(
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64Lowering {
     /// 当前 target instance 选中的 CPU 描述。
-    pub cpu: CpuDescription,
+    pub features: generated::FeatureSet,
 }
 
 impl X86_64Lowering {
-    pub fn new(cpu: CpuDescription) -> Self {
-        Self { cpu }
+    pub fn new(features: generated::FeatureSet) -> Self {
+        Self { features }
     }
 
     fn alloc_gpr_temp(&self, mfunc: &mut MachineFunction, ty: Type) -> Reg {
         mfunc.editor().alloc_vreg_in_bank(ty, RegisterBank::GPR)
-    }
-
-    fn emit_legalize_constant_reg(
-        mfunc: &mut MachineFunction,
-        output: &mut Vec<InstId>,
-        ty: Type,
-        imm: i64,
-    ) -> Reg {
-        let reg = mfunc.editor().alloc_vreg(ty);
-        output.push(mfunc.editor().writer().constant(Writable(reg), imm));
-        reg
-    }
-
-    fn emit_legalize_binary_reg(
-        mfunc: &mut MachineFunction,
-        output: &mut Vec<InstId>,
-        opcode: GenericOpcode,
-        ty: Type,
-        lhs: Reg,
-        rhs: Reg,
-    ) -> Reg {
-        let dst = mfunc.editor().alloc_vreg(ty);
-        output.push(mfunc.editor().writer().binary(
-            MachineOpcode::Generic(opcode),
-            Writable(dst),
-            lhs,
-            rhs,
-        ));
-        dst
-    }
-
-    fn legalize_ctpop_into(
-        mfunc: &mut MachineFunction,
-        output: &mut Vec<InstId>,
-        src: Reg,
-        dst: Reg,
-        ty: Type,
-    ) -> Result<(), crate::error::Error> {
-        let is_i32 = ty == Type::I32;
-        let is_i64 = ty == Type::I64;
-        if !is_i32 && !is_i64 {
-            panic!(
-                "unsupported ctpop type during x86_64 legalization: {:?}",
-                ty
-            );
-        }
-
-        let shift1 = Self::emit_legalize_constant_reg(mfunc, output, ty, 1);
-        let shift2 = Self::emit_legalize_constant_reg(mfunc, output, ty, 2);
-        let shift4 = Self::emit_legalize_constant_reg(mfunc, output, ty, 4);
-        let shift8 = Self::emit_legalize_constant_reg(mfunc, output, ty, 8);
-        let shift16 = Self::emit_legalize_constant_reg(mfunc, output, ty, 16);
-
-        let mask1 = Self::emit_legalize_constant_reg(
-            mfunc,
-            output,
-            ty,
-            if is_i32 {
-                0x5555_5555
-            } else {
-                0x5555_5555_5555_5555u64 as i64
-            },
-        );
-        let mask2 = Self::emit_legalize_constant_reg(
-            mfunc,
-            output,
-            ty,
-            if is_i32 {
-                0x3333_3333
-            } else {
-                0x3333_3333_3333_3333u64 as i64
-            },
-        );
-        let mask3 = Self::emit_legalize_constant_reg(
-            mfunc,
-            output,
-            ty,
-            if is_i32 {
-                0x0f0f_0f0f
-            } else {
-                0x0f0f_0f0f_0f0f_0f0fu64 as i64
-            },
-        );
-        let final_mask =
-            Self::emit_legalize_constant_reg(mfunc, output, ty, if is_i32 { 0x3f } else { 0x7f });
-
-        let x1 =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, src, shift1);
-        let x2 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x1, mask1);
-        let x3 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, src, x2);
-        let x4 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x3, mask2);
-        let x5 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x3, shift2);
-        let x6 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x5, mask2);
-        let x7 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x4, x6);
-        let x8 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x7, shift4);
-        let x9 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x7, x8);
-        let x10 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, x9, mask3);
-        let x11 =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x10, shift8);
-        let x12 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x10, x11);
-        let x13 =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x12, shift16);
-        let x14 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x12, x13);
-
-        let reduced = if is_i64 {
-            let shift32 = Self::emit_legalize_constant_reg(mfunc, output, ty, 32);
-            let x15 = Self::emit_legalize_binary_reg(
-                mfunc,
-                output,
-                GenericOpcode::Lshr,
-                ty,
-                x14,
-                shift32,
-            );
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Add, ty, x14, x15)
-        } else {
-            x14
-        };
-
-        let pop = Self::emit_legalize_binary_reg(
-            mfunc,
-            output,
-            GenericOpcode::And,
-            ty,
-            reduced,
-            final_mask,
-        );
-        if pop != dst {
-            output.push(mfunc.editor().writer().copy(Writable(dst), pop));
-        }
-        Ok(())
-    }
-
-    fn legalize_cttz_into(
-        mfunc: &mut MachineFunction,
-        output: &mut Vec<InstId>,
-        src: Reg,
-        dst: Reg,
-        ty: Type,
-    ) -> Result<(), crate::error::Error> {
-        let bits = if ty == Type::I32 {
-            32
-        } else if ty == Type::I64 {
-            64
-        } else {
-            panic!("unsupported cttz type during x86_64 legalization: {:?}", ty);
-        };
-
-        let zero = Self::emit_legalize_constant_reg(mfunc, output, ty, 0);
-        let one = Self::emit_legalize_constant_reg(mfunc, output, ty, 1);
-        let bit_width = Self::emit_legalize_constant_reg(mfunc, output, ty, bits);
-        let is_zero = mfunc.editor().alloc_vreg(Type::BOOL);
-        output.push(
-            mfunc
-                .editor()
-                .writer()
-                .icmp(Writable(is_zero), src, zero, IntCC::Eq),
-        );
-
-        let neg = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, zero, src);
-        let lowbit =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::And, ty, src, neg);
-        let lowbit_minus_one =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, lowbit, one);
-        let pop = mfunc.editor().alloc_vreg(ty);
-        Self::legalize_ctpop_into(mfunc, output, lowbit_minus_one, pop, ty)?;
-
-        output.push(
-            mfunc
-                .editor()
-                .writer()
-                .select(Writable(dst), is_zero, bit_width, pop),
-        );
-        Ok(())
-    }
-
-    fn legalize_ctlz_into(
-        mfunc: &mut MachineFunction,
-        output: &mut Vec<InstId>,
-        src: Reg,
-        dst: Reg,
-        ty: Type,
-    ) -> Result<(), crate::error::Error> {
-        let bits = if ty == Type::I32 {
-            32
-        } else if ty == Type::I64 {
-            64
-        } else {
-            panic!("unsupported ctlz type during x86_64 legalization: {:?}", ty);
-        };
-
-        let zero = Self::emit_legalize_constant_reg(mfunc, output, ty, 0);
-        let bit_width = Self::emit_legalize_constant_reg(mfunc, output, ty, bits);
-        let is_zero = mfunc.editor().alloc_vreg(Type::BOOL);
-        output.push(
-            mfunc
-                .editor()
-                .writer()
-                .icmp(Writable(is_zero), src, zero, IntCC::Eq),
-        );
-
-        let shift1 = Self::emit_legalize_constant_reg(mfunc, output, ty, 1);
-        let shift2 = Self::emit_legalize_constant_reg(mfunc, output, ty, 2);
-        let shift4 = Self::emit_legalize_constant_reg(mfunc, output, ty, 4);
-        let shift8 = Self::emit_legalize_constant_reg(mfunc, output, ty, 8);
-        let shift16 = Self::emit_legalize_constant_reg(mfunc, output, ty, 16);
-
-        let x1 =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, src, shift1);
-        let x2 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, src, x1);
-        let x3 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x2, shift2);
-        let x4 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x2, x3);
-        let x5 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x4, shift4);
-        let x6 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x4, x5);
-        let x7 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x6, shift8);
-        let x8 = Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x6, x7);
-        let x9 =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Lshr, ty, x8, shift16);
-        let mut filled =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, x8, x9);
-
-        if ty == Type::I64 {
-            let shift32 = Self::emit_legalize_constant_reg(mfunc, output, ty, 32);
-            let x10 = Self::emit_legalize_binary_reg(
-                mfunc,
-                output,
-                GenericOpcode::Lshr,
-                ty,
-                filled,
-                shift32,
-            );
-            filled =
-                Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Or, ty, filled, x10);
-        }
-
-        let pop = mfunc.editor().alloc_vreg(ty);
-        Self::legalize_ctpop_into(mfunc, output, filled, pop, ty)?;
-        let clz =
-            Self::emit_legalize_binary_reg(mfunc, output, GenericOpcode::Sub, ty, bit_width, pop);
-        output.push(
-            mfunc
-                .editor()
-                .writer()
-                .select(Writable(dst), is_zero, bit_width, clz),
-        );
-        Ok(())
     }
 
     fn normalize_cond_to_i32(
@@ -694,7 +447,7 @@ impl X86_64Lowering {
 /// x86_64 专属的 Context 扩展实现
 pub struct X86SelectionContext<'a> {
     pub vregs: veloc_lir::VRegBuilder<'a>,
-    pub cpu: CpuDescription,
+    pub features: generated::FeatureSet,
 }
 impl LoweringContext for X86SelectionContext<'_> {
     fn alloc_tmp(&mut self, like: Reg) -> Reg {
@@ -714,15 +467,16 @@ impl LoweringContext for X86SelectionContext<'_> {
 }
 impl X86LoweringContext for X86SelectionContext<'_> {
     fn has_bmi2(&self) -> bool {
-        self.cpu.has_feature("BMI2")
+        self.features.contains(generated::Feature::BMI2)
     }
     fn has_avx2(&self) -> bool {
-        self.cpu.has_feature("AVX2")
+        self.features.contains(generated::Feature::AVX2)
     }
 }
 
 impl crate::target::arch::TargetFeatures for X86SelectionContext<'_> {
-    fn has_feature(&self, feature: &str) -> bool {
-        self.cpu.has_feature(feature)
+    type Features = generated::FeatureSet;
+    fn supports_features(&self, required: Self::Features) -> bool {
+        self.features.contains_all(required)
     }
 }

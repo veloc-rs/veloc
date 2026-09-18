@@ -20,13 +20,8 @@ fn pattern(p: &Pattern, sets: &Sets) -> String {
     }
 }
 
-pub(crate) fn generate(
-    defs: &Definitions,
-    sets: &Sets,
-    validation: &mut String,
-    instructions: &mut String,
-) {
-    let (ids, groups) = validation_rules(defs, sets, "crate::Opcode", validation);
+pub(crate) fn generate_results(defs: &Definitions, instructions: &mut String) {
+    let (ids, groups) = signature_groups(defs);
     // Only the dynamic construction path needs opcode dispatch. Generated
     // builders use the same result expressions directly on their arguments.
     instructions.push_str("impl crate::InstView<'_> {\n/// Determine result types without validating the instruction's type contract.\n/// Explicit types are used only when the signature cannot infer its results.\n/// Referenced values and physical storage must exist.\npub fn result_types(&self, dfg: &crate::dfg::DataFlowGraph, module: &crate::ModuleData, explicit: &[crate::Type]) -> core::result::Result<smallvec::SmallVec<[crate::Type; 2]>, &'static str> {\nuse crate::Type;\nlet _ = (dfg, module, explicit);\nmatch (self.opcode(), self) {\n");
@@ -294,18 +289,9 @@ fn validation_rules<'a>(
     opcode: &str,
     validation: &mut String,
 ) -> (BTreeMap<&'a TypeDef, usize>, Vec<Vec<&'a str>>) {
-    let mut ids = BTreeMap::new();
-    let mut groups: Vec<Vec<&str>> = Vec::new();
-    for op in &defs.ops {
-        let ty = &op.signature;
-        // Structural equality preserves all checks and diagnostic positions.
-        let next = groups.len();
-        let id = *ids.entry(ty).or_insert(next);
-        if id == next {
-            emit_rule(id, ty, sets, validation);
-            groups.push(Vec::new());
-        }
-        groups[id].push(&op.name);
+    let (ids, groups) = signature_groups(defs);
+    for (ty, &id) in &ids {
+        emit_rule(id, ty, sets, validation);
     }
     writeln!(validation, "impl {opcode} {{").unwrap();
     validation.push_str("/// Validate operand and result types without constructing an instruction.\n#[inline]\npub fn validate_types(self, operands: &[crate::Type], results: &[crate::Type]) -> core::result::Result<(), super::TypeError> {\n    match self {\n");
@@ -331,5 +317,19 @@ fn validation_rules<'a>(
     }
     validation.push_str("    }\n}\n}\n");
 
+    (ids, groups)
+}
+
+fn signature_groups(defs: &Definitions) -> (BTreeMap<&TypeDef, usize>, Vec<Vec<&str>>) {
+    let mut ids = BTreeMap::new();
+    let mut groups: Vec<Vec<&str>> = Vec::new();
+    for op in &defs.ops {
+        let next = groups.len();
+        let id = *ids.entry(&op.signature).or_insert(next);
+        if id == next {
+            groups.push(Vec::new());
+        }
+        groups[id].push(&op.name);
+    }
     (ids, groups)
 }

@@ -336,13 +336,13 @@ static ABI_CLASSIFIER_REGISTRY: &[AbiClassifierEntry] = &[
 #[cfg(test)]
 #[inline]
 pub(crate) fn x86_64_rax() -> Reg {
-    crate::target::x86_64::isle::REG_RAX
+    crate::target::x86_64::inst::REG_RAX
 }
 
 #[cfg(test)]
 #[inline]
 pub(crate) fn x86_64_rdx() -> Reg {
-    crate::target::x86_64::isle::REG_RDX
+    crate::target::x86_64::inst::REG_RDX
 }
 
 #[cfg(test)]
@@ -351,11 +351,11 @@ fn x86_64_systemv_arg_regs() -> &'static [Reg] {
 }
 
 fn x86_64_systemv_descriptor() -> &'static AbiDescriptor {
-    &crate::target::x86_64::isle::ABI_X86_64SYSTEMV
+    &crate::target::x86_64::inst::ABI_X86_64SYSTEMV
 }
 
 fn x86_64_win64_descriptor() -> &'static AbiDescriptor {
-    &crate::target::x86_64::isle::ABI_X86_64WINDOWSFASTCALL
+    &crate::target::x86_64::inst::ABI_X86_64WINDOWSFASTCALL
 }
 
 fn aarch64_aapcs_descriptor() -> &'static AbiDescriptor {

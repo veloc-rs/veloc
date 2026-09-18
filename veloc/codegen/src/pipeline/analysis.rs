@@ -714,7 +714,7 @@ mod tests {
             f.editor().append_inst(veloc_lir::BlockId::from_u32(2), id);
             id
         };
-        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg = analyses.cfg(&f, &target);
         assert!(cfg.succs(Block::from_u32(0)).is_empty());
@@ -734,9 +734,9 @@ mod tests {
 
     #[test]
     fn selected_control_distinguishes_branch_fallthrough_and_terminal_transfer() {
-        use crate::target::x86_64::isle::TargetInst;
+        use crate::target::x86_64::inst::TargetInst;
         use veloc_lir::{InstField, MachineOpcode};
-        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut f = MachineFunction::new("selected".into());
         for _id in 0..8 {
             f.editor().create_block();
@@ -785,9 +785,9 @@ mod tests {
 
     #[test]
     fn layout_and_opcode_changes_invalidate_control_analyses() {
-        use crate::target::x86_64::isle::TargetInst;
+        use crate::target::x86_64::inst::TargetInst;
         use veloc_lir::MachineOpcode;
-        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut f = MachineFunction::new("layout".into());
         for _id in 0..3 {
             f.editor().create_block();
@@ -845,7 +845,7 @@ mod tests {
             f.editor().append_inst(veloc_lir::BlockId::from_u32(2), id);
             id
         };
-        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut analyses = FunctionAnalysisCtx::default();
         assert_eq!(
             analyses.cfg(&f, &target).succs(Block::from_u32(0)),
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn cfg_change_invalidates_cfg_and_dependents() {
-        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut mfunc = MachineFunction::new("test".into());
         mfunc.editor().create_block();
         mfunc.editor().create_block();
@@ -898,7 +898,7 @@ mod tests {
 
     #[test]
     fn stack_frame_change_does_not_invalidate_cfg() {
-        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut mfunc = MachineFunction::new("test".into());
         mfunc.editor().create_block();
         let mut analyses = FunctionAnalysisCtx::default();

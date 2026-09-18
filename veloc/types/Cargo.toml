@@ -9,4 +9,4 @@ bitflags = { workspace = true }
 hashbrown = { workspace = true, features = ["ahash", "inline-more"] }
 
 [build-dependencies]
-veloc-opgen = { workspace = true }
+veloc-spec = { workspace = true }

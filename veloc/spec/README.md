@@ -1,17 +1,17 @@
 # Operation definitions
 
-`veloc-opgen` is the build-time definition compiler. It is independent of runtime
+`veloc-spec` is the build-time definition compiler. It is independent of runtime
 IR containers and `veloc-types` (including test dependencies); `veloc-mir/build.rs` uses its MIR emitter. HIR is reserved
 for a future structured representation. The machine-facing IR is LIR, in
 `veloc-lir`; bytecode is a separate execution format.
 
 Rust methods are declared on their types. A `trait: rust("owner::traits::TypeInfo")`
 binding selects the owning trait; `Source::interfaces(namespace)` emits its
-signature, never a forwarding implementation. The owning crate uses opgen in
+signature, never a forwarding implementation. The owning crate uses Spec in
 its build script and writes the Rust implementation itself. Free functions may
 still bind a Rust path directly; methods use their declared trait.
 
-Opgen never loads a runtime type catalog or calls a foreign Rust function.
+Spec never loads a runtime type catalog or calls a foreign Rust function.
 Logical scalar/vector domains are declared in ops. Associated constants and
 `const fn` calls remain typed expressions in generated Rust, where rustc checks
 their signatures, evaluates static metadata and selects admissible semantic
@@ -25,14 +25,14 @@ beside the implementation.
 File tests distinguish definition errors from Rust type errors and const-evaluation
 failures; moving a check to rustc does not remove its negative test.
 
-Shared vocabulary lives in `veloc/defs/`: `types.ops`, imported by `prelude.ops`. MIR owns its packed
-`formats.ops` and logical `mir.ops`; LIR owns `generic.ops` with operand-array
-formats and logical operations. Each consumer has a `defs/module.ops` entry:
+Shared vocabulary lives in `veloc/defs/`: `types.spec`, imported by `prelude.spec`. MIR owns its packed
+`formats.spec` and logical `mir.spec`; LIR owns `generic.spec` with operand-array
+formats and logical operations. Each consumer has a `defs/module.spec` entry:
 
 ```text
-import "../../defs/prelude.ops";
-import "formats.ops";
-import "mir.ops";
+import "../../defs/prelude.spec";
+import "formats.spec";
+import "mir.spec";
 ```
 
 `Source::load(path)` resolves relative imports against the importing file,
@@ -52,8 +52,8 @@ parser and the checked model. Associated constants retain their declared type
 rather than being represented as zero-argument functions.
 
 Each file sees its own declarations and its transitive imports, not unrelated
-files loaded by an entry module. For example, `mir.ops` imports `formats.ops`,
-which imports the shared prelude. Shared Rust bindings live together in `types.ops`.
+files loaded by an entry module. For example, `mir.spec` imports `formats.spec`,
+which imports the shared prelude. Shared Rust bindings live together in `types.spec`.
 Rust data types such as `Type` and `Float` need an explicit declaration or import.
 IR type sets and Rust data types occupy distinct namespaces: importing the
 `Float` set does not import the Rust `Float` property type. Primitive syntax types
@@ -69,16 +69,16 @@ projections differ, but signatures, type expressions and semantic checking are
 shared. Unsupported projection capabilities fail while preparing an output plan,
 before any Rust artifact is emitted.
 
-The public stages are explicit:
+The public stages remain available for inspecting and reusing an IR plan:
 
 ```rust,ignore
-let source = veloc_opgen::Source::load("defs/module.ops")?;
-let plan = source.plan()?;      // resolve and check the selected output
+let source = veloc_spec::Source::load("defs/module.spec")?;
+let plan = source.plan()?;      // resolve and check IR output projections
 let generated = plan.generate(); // infallible emission; reusable
 ```
 
-String input uses `plan(text)?`. Existing `compile` entry points
-compose planning and generation. `parse` checks the definition model without
+`Source::compile()` composes planning and generation of all supported IR
+artifacts. Production consumers use `Source::generate` with an explicit list. `parse` checks the definition model without
 emitting storage code; it is not a promise that every output supports every
 contract. Property validators are checked there, independently of output choice.
 
@@ -320,7 +320,7 @@ parameter. No generic query-dispatch trait is needed. One query's opcode
 implementations must agree on the context type; context-free arms may share that
 entry. No context provider trait, conversion registry, or generic adapter is needed.
 
-MIR-specific context declarations live in `veloc/mir/defs/types.ops`, not the
+MIR-specific context declarations live in `veloc/mir/defs/types.spec`, not the
 shared prelude. All types and helpers still require ordinary file-local imports.
 
 `optional(T)` lowers to `Option<T>`; `sequence(T)` lowers to a borrowed slice.
@@ -375,7 +375,7 @@ primitive; operations need not repeat them. Memory effects remain explicit.
 
 ## Comparison predicates
 
-Condition codes are ordinary Rust-bound types declared in `veloc/types/defs/types.ops`.
+Condition codes are ordinary Rust-bound types declared in `veloc/types/defs/types.spec`.
 Rust owns `IntCC` and `FloatCC` in veloc-types; the definition language has no
 special comparison declaration. Associated constants and methods use the same
 generated trait contracts as other Rust-bound types.
@@ -410,7 +410,7 @@ fields and generated method conflicts are checked before code generation.
 Unlike flag sets, packed structs do not expose `union` or `contains`.
 
 Shared contracts `MemFlags`, `OpTraits`, `MemoryEffects` and `MemoryEffect` are
-defined in `veloc-types` and explicitly bound in `types.ops`. Their representation,
+defined in `veloc-types` and explicitly bound in `types.spec`. Their representation,
 display and behavioral rules live together in Rust. Ops declare the constants and
 methods they use, and generated traits enforce this interface. Opgen never reads
 `bitflags::Flags::FLAGS` or interprets a Rust enum. Each operation declares its
@@ -459,7 +459,7 @@ still report inference errors; complete type validation remains a separate stage
 ## Types and type sets
 
 ```text
-import "../../defs/types.ops";
+import "../../defs/types.spec";
 
 type SV4 = vector(Type::I32, scalable(4));
 type WORD = Type::I32;
@@ -477,7 +477,7 @@ types are rejected. `vector(...)` constructs one type; `vectors(set)` constructs
 a type set.
 
 Logical scalar domains use `int(bits)`, `float(bits)`, `bool` and `ptr`.
-Their declarations live beside the Rust interface in `veloc/types/defs/types.ops`.
+Their declarations live beside the Rust interface in `veloc/types/defs/types.spec`.
 Rust owns codes and physical representations. Generated constant assertions
 require those representations to agree with the declared scalar domains.
 Vector aliases emit calls to Rust's checked constructor. None of these methods
@@ -585,7 +585,7 @@ Structs are shared by instruction properties and build-time metadata. Enums
 and flags are ordinary field types, not special operation keywords:
 
 ```text
-import "../../defs/types.ops";
+import "../../defs/types.spec";
 struct Example {}
 
 op Example() -> () {
@@ -1093,7 +1093,7 @@ validation and constant folding:
 
 ```sh
 cargo run --release -q -p veloc-optimizer --example type_schemes -- all 3
-cargo test -p veloc-mir -p veloc-opgen -p veloc-filetests
+cargo test -p veloc-mir -p veloc-spec -p veloc-filetests
 ```
 
 It contains 200 repetitions of add/sub/mul/extend/wrap, plus constants and return
@@ -1442,7 +1442,7 @@ liveness. Those mechanisms can use the edit boundary without becoming IR storage
 requirements. Runtime and memory improvements require measurement.
 
 Codegen joins checked direct MIR primitive applications with the reviewed LIR
-semantics in `lir/defs/generic.ops` at build time. Both definition modules use
+semantics in `lir/defs/generic.spec` at build time. Both definition modules use
 the shared `Source` API and checked operation model; operand-array storage
 emission is separate from MIR's packed SSA projection. The same definitions supply opcode/schema mappings,
 builders, decoders, control behavior and build-only primitive bindings. The result is a direct
@@ -1492,7 +1492,7 @@ model is a subsequent step. The `split_add` semantics example demonstrates a
 fixed-width representation check; it is not an enabled wide-integer backend pass.
 
 ```sh
-cargo test -p veloc-opgen -p veloc-mir -p veloc-optimizer -p veloc-semantics -p veloc-filetests
+cargo test -p veloc-spec -p veloc-mir -p veloc-optimizer -p veloc-semantics -p veloc-filetests
 cargo run -q -p veloc-semantics --example split_add | z3 -in
 cargo run -q -p veloc-optimizer --example semantic_check -- overflow | z3 -in
 cargo run -q -p veloc-optimizer --example semantic_check -- overflow --broken | z3 -in
@@ -1506,3 +1506,53 @@ declarations into other files. The pinned toolchain includes rustfmt, and the
 `RUSTFMT` environment variable can override its executable. Missing rustfmt or
 invalid generated syntax fails the build rather than silently skipping formatting.
 Building the compiler does not require a solver or a model service.
+
+## Artifact selection
+
+The `veloc-spec` binary belongs to this crate and requires the optional `cli`
+feature. Build-script dependencies do not enable it or pull in clap.
+It uses the same `Source::generate(&[Emit], Options)`
+entry point as every production build script. Parsing, import resolution and
+checking are shared; only selected artifacts are emitted. There is no runtime
+rule interpreter or build-time call into arbitrary Rust code.
+
+```sh
+cargo run -p veloc-spec --features cli -- veloc/mir/defs/module.spec \
+  --emit opcodes,builders --out-dir /tmp/mir-generated
+
+cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/module.spec \
+  --emit target --arch x86_64 --context crate::target::x86_64::lowering::X86LoweringContext \
+  --definitions veloc/codegen/defs/x86_64/instructions.spec -o /tmp/machine.rs
+```
+
+`--emit` accepts a comma-separated list or repeated options. `-o -` writes
+one artifact to stdout; `--out-dir` writes standard artifact filenames.
+Invalid configuration or source errors produce no output files. Output
+selection does not disable definition checks. Unsupported storage/artifact
+combinations are errors, not empty compatibility outputs.
+
+- IR: `types`, `type-rules`, `opcodes`, `instructions`, `builders`,
+  `validator`, `checks`, `evaluation`, `semantics`, `text-parser`, `text-printer`.
+- Rust bindings: `data-types`, `interfaces` (with `--namespace`).
+- Machine descriptions: `target` generates the complete integration unit;
+  `selector`, `encoder`, `assembly` generate fragments for that unit's host
+  scope, not standalone Rust crates.
+- Transformations: `rules` and `decisions`, with explicit IR and Rust bindings.
+
+```sh
+cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/legalize.spec \
+  --emit decisions --definitions veloc/lir/defs/module.spec \
+  --source-dialect lir --source-opcode veloc_lir::GenericOpcode \
+  --function decide --result Action \
+  --value-rule crate::passes::lowering::LegalizeAction::values \
+  --rust-rule crate::passes::lowering::LegalizeAction::rewrite \
+  --legal-action crate::passes::lowering::LegalizeAction::Legal -o /tmp/legalize.rs
+```
+
+Cross-IR `rules` takes `--source-definitions`, `--definitions` (destination),
+`--source-dialect`, `--target-dialect`, `--source-opcode`,
+`--target-opcode`, `--function`, and `--context`.
+Primitive identity-rule inference is opt-in via `--infer-primitives`.
+See [rule contracts and composable construction](rules.md).
+
+The Wasm conformance runner is a separate package named `veloc-wasm-spec`.

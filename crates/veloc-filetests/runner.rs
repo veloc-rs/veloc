@@ -67,7 +67,7 @@ fn discover(root: &Path, dir: &Path, tests: &mut Vec<Trial>) -> std::io::Result<
             discover(root, &path, tests)?;
         } else if matches!(
             path.extension().and_then(|ext| ext.to_str()),
-            Some("mir" | "ops")
+            Some("mir" | "spec")
         ) {
             let text = fs::read_to_string(&path)?;
             let name = path.strip_prefix(root).unwrap().display().to_string();
@@ -139,10 +139,10 @@ fn execute(mode: &str, source: &str) -> Result<String> {
     match mode {
         "opgen" | "opgen-error" | "opgen-const" | "opgen-const-error" | "opgen-rust-error" => {
             let builtins = concat!(
-                include_str!("../../veloc/types/defs/types.ops"),
+                include_str!("../../veloc/types/defs/types.spec"),
                 "\n",
-                include_str!("../../veloc/defs/types.ops"),
-                include_str!("../../veloc/mir/defs/types.ops"),
+                include_str!("../../veloc/defs/types.spec"),
+                include_str!("../../veloc/mir/defs/types.spec"),
                 "\n",
             );
             let builtins = builtins
@@ -179,10 +179,16 @@ fn execute(mode: &str, source: &str) -> Result<String> {
             } else {
                 result
                     .map(|generated| {
-                        generated.instructions
-                            + &generated.validation
-                            + &generated.opcodes
-                            + &generated.type_rules
+                        use veloc_spec::Emit;
+                        [
+                            Emit::Instructions,
+                            Emit::Validator,
+                            Emit::Opcodes,
+                            Emit::TypeRules,
+                        ]
+                        .into_iter()
+                        .filter_map(|kind| generated.get(kind))
+                        .collect::<String>()
                     })
                     .map_err(|error| error.to_string())
             }

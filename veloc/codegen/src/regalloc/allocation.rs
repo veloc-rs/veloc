@@ -124,14 +124,14 @@ mod tests {
     use crate::regalloc::RegisterAllocator;
     use crate::target::x86_64::{
         X86_64TargetMachine,
-        isle::{REG_RAX, TargetInst},
+        inst::{REG_RAX, TargetInst},
     };
     use veloc_lir::InstField;
     use veloc_lir::{MachineOpcode, Type};
 
     #[test]
     fn allocation_preserves_input_and_materializes_spills_in_order() {
-        let target = X86_64TargetMachine::new(TargetConfig::default());
+        let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut f = MachineFunction::new("pressure".into());
         f.editor().create_block();
         let mut values = Vec::new();
@@ -152,11 +152,7 @@ mod tests {
         }
         for &reg in &values {
             {
-                let id = f.editor().writer().unary(
-                    MachineOpcode::Target(TargetInst::X86Mov64.as_u32()),
-                    veloc_lir::Writable(REG_RAX),
-                    reg,
-                );
+                let id = TargetInst::X86Mov64.write(f.editor().writer(), &[REG_RAX], &[reg], &[]);
                 f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
                 id
             };

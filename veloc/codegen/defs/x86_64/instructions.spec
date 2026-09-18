@@ -1,0 +1,1003 @@
+import "../../../defs/prelude.spec";
+import "assembly.spec";
+import "../../../encoder/defs/x86_64.spec";
+import "registers.spec";
+
+type Block = rust("veloc_lir::BlockId");
+type Global = rust("veloc_lir::SymbolId");
+type StackSlot = rust("veloc_lir::StackSlot");
+
+type Emission = rust("crate::target::x86_64::emitter::Emission") {
+    trait = rust("crate::target::x86_64::emitter::host::Emission");
+    fn legacy(descriptor: Legacy, form: Form, immediate: Immediate) -> Self;
+    fn branch(target: Block, form: Branch) -> Self;
+    fn relative(target: Global, descriptor: Legacy, form: Form, addend: i64) -> Self;
+}
+
+// Arguments name ModRM fields, not semantic source/destination roles.
+fn legacy_rr(opcode: u8, wide: bool, reg: Reg, rm: Reg) -> Emission {
+    value = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: opcode, wide: wide },
+        Form::ModRm(RegField::Register(reg), Rm::Register(rm)),
+        Immediate::None,
+    );
+}
+
+fn memory(base: Reg, offset: i64) -> Rm {
+    value = Rm::Memory(Address::BaseIndex(Memory {
+        base: some(base), index: none, displacement: offset,
+    }));
+}
+
+// Machine values retain their source type; register classes constrain placement.
+// Each instruction owns its encoding; templates share static family structure.
+
+template GprBinary(Opcode: ident, Byte: expr, Wide: expr) {
+    op Opcode(src2: Value<Any>, src1: Value<Any>) -> (dst: Value<Any>) {
+        encoding = legacy_rr(Byte, Wide, src2, dst);
+        registers = {
+            dst: tied(src1, GPR64),
+            src2: GPR64,
+            src1: GPR64,
+        };
+        implicit = {
+            clobbers: [EFLAGS],
+        };
+        schedule = { latency: 1 };
+    }
+}
+
+expand GprBinary(X86Add32, 0x01, false);
+
+expand GprBinary(X86Sub32, 0x29, false);
+
+expand GprBinary(X86And32, 0x21, false);
+
+expand GprBinary(X86Or32, 0x09, false);
+
+expand GprBinary(X86Xor32, 0x31, false);
+
+template GprCompare(Opcode: ident, Byte: expr, Wide: expr) {
+    op Opcode(lhs: Value<Any>, rhs: Value<Any>) -> () {
+        encoding = legacy_rr(Byte, Wide, rhs, lhs);
+        registers = {
+            lhs: GPR64,
+            rhs: GPR64,
+        };
+        implicit = {
+            clobbers: [EFLAGS],
+        };
+        schedule = { latency: 1 };
+    }
+}
+
+expand GprCompare(X86Cmp32, 0x39, false);
+
+op X86Cmp32ri(src: Value<Any>, imm: i64) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x81, wide: false },
+        Form::ModRm(RegField::Extension(7), Rm::Register(src)),
+        Immediate::Bits32(imm),
+    );
+    registers = {
+        src: GPR64,
+    };
+    implicit = {
+        clobbers: [EFLAGS],
+    };
+    schedule = { latency: 1 };
+}
+
+expand GprCompare(X86Test32, 0x85, false);
+
+template FloatCompare(Opcode: ident, Prefix: expr) {
+    op Opcode(lhs: Value<Any>, rhs: Value<Any>) -> () {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2E, wide: false },
+            Form::ModRm(RegField::Register(lhs), Rm::Register(rhs)),
+            Immediate::None,
+        );
+        registers = {
+            lhs: FPR128,
+            rhs: FPR128,
+        };
+        implicit = {
+            clobbers: [EFLAGS],
+        };
+    }
+}
+
+expand FloatCompare(X86Ucomiss, Prefix::None);
+
+expand GprBinary(X86Add64, 0x01, true);
+
+expand GprBinary(X86Sub64, 0x29, true);
+
+template GprBinaryImm(Opcode: ident, Wide: expr, Extension: expr, Imm: ident) {
+    op Opcode(imm: i64, src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x81, wide: Wide },
+            Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
+            Imm(imm),
+        );
+        registers = {
+            dst: tied(src, GPR64),
+            src: GPR64,
+        };
+        implicit = {
+            clobbers: [EFLAGS],
+        };
+        schedule = { latency: 1 };
+    }
+}
+
+expand GprBinaryImm(X86Add64ri, true, 0, Immediate::Signed32);
+
+expand GprBinaryImm(X86Sub64ri, true, 5, Immediate::Signed32);
+
+expand GprBinary(X86And64, 0x21, true);
+
+expand GprBinaryImm(X86And32ri, false, 4, Immediate::Bits32);
+
+expand GprBinaryImm(X86And64ri, true, 4, Immediate::Signed32);
+
+expand GprBinary(X86Or64, 0x09, true);
+
+expand GprBinary(X86Xor64, 0x31, true);
+
+expand GprCompare(X86Cmp64, 0x39, true);
+
+expand GprCompare(X86Test64, 0x85, true);
+
+expand FloatCompare(X86Ucomisd, Prefix::P66);
+
+template GprMultiply(Opcode: ident, Wide: expr) {
+    op Opcode(src2: Value<Any>, src1: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xAF, wide: Wide },
+            Form::ModRm(RegField::Register(dst), Rm::Register(src2)),
+            Immediate::None,
+        );
+        registers = {
+            dst: tied(src1, GPR64),
+            src2: GPR64,
+            src1: GPR64,
+        };
+        implicit = {
+            clobbers: [EFLAGS],
+        };
+        schedule = { latency: 3 };
+    }
+}
+
+expand GprMultiply(X86IMul32, false);
+
+expand GprMultiply(X86IMul64, true);
+
+template GprShiftCl(Opcode: ident, Wide: expr, Extension: expr) {
+    op Opcode(count: Value<Any>, src1: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xD3, wide: Wide },
+            Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
+            Immediate::None,
+        );
+        registers = {
+            dst: tied(src1, GPR64),
+            count: fixed(RCX, GPR64),
+            src1: GPR64,
+        };
+        implicit = {
+            clobbers: [EFLAGS],
+        };
+    }
+}
+
+expand GprShiftCl(X86Rol32Cl, false, 0);
+
+expand GprShiftCl(X86Rol64Cl, true, 0);
+
+expand GprShiftCl(X86Ror32Cl, false, 1);
+
+expand GprShiftCl(X86Ror64Cl, true, 1);
+
+expand GprShiftCl(X86Shl32Cl, false, 4);
+
+expand GprShiftCl(X86Shl64Cl, true, 4);
+
+expand GprShiftCl(X86Shr32Cl, false, 5);
+
+expand GprShiftCl(X86Shr64Cl, true, 5);
+
+expand GprShiftCl(X86Sar32Cl, false, 7);
+
+expand GprShiftCl(X86Sar64Cl, true, 7);
+
+template GprShiftImm(Opcode: ident, Wide: expr, Extension: expr) {
+    op Opcode(imm: i64, src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xC1, wide: Wide },
+            Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
+            Immediate::Bits8(imm),
+        );
+        registers = {
+            dst: tied(src, GPR64),
+            src: GPR64,
+        };
+        implicit = {
+            clobbers: [EFLAGS],
+        };
+    }
+}
+
+expand GprShiftImm(X86Shl32ri, false, 4);
+
+expand GprShiftImm(X86Shl64ri, true, 4);
+
+expand GprShiftImm(X86Sar32ri, false, 7);
+
+expand GprShiftImm(X86Sar64ri, true, 7);
+
+template GprExtend(Opcode: ident, Map: expr, Byte: expr, Wide: expr, RmKind: ident) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::None, map: Map, opcode: Byte, wide: Wide },
+            Form::ModRm(RegField::Register(dst), RmKind(src)),
+            Immediate::None,
+        );
+        registers = {
+            dst: GPR64,
+            src: GPR64,
+        };
+        schedule = { latency: 1 };
+    }
+}
+
+template GprMove(Opcode: ident, Bits: expr, Wide: expr) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = legacy_rr(0x89, Wide, src, dst);
+        registers = {
+            dst: GPR64,
+            src: GPR64,
+        };
+        schedule = { latency: 1 };
+    }
+}
+
+expand GprMove(X86Mov32, 32, false);
+
+expand GprMove(X86Mov64, 64, true);
+
+template FloatMove(Opcode: ident, Bits: expr, Prefix: expr) {
+    op Opcode(src2: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
+            Form::ModRm(RegField::Register(dst), Rm::Register(src2)),
+            Immediate::None,
+        );
+        registers = {
+            dst: FPR128,
+            src2: FPR128,
+        };
+        schedule = { latency: 1 };
+    }
+}
+
+expand FloatMove(X86Movss, 32, Prefix::F3);
+
+expand FloatMove(X86Movsd, 64, Prefix::F2);
+
+template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::P66, map: OpcodeMap::Map0F, opcode: 0x6E, wide: Wide },
+            Form::ModRm(RegField::Register(dst), Rm::Register(src)),
+            Immediate::None,
+        );
+        registers = {
+            dst: FPR128,
+            src: GPR64,
+        };
+        schedule = { latency: 1 };
+    }
+}
+
+expand GprToXmmMove(X86MovdToXmm, 32, false);
+
+template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::P66, map: OpcodeMap::Map0F, opcode: 0x7E, wide: Wide },
+            Form::ModRm(RegField::Register(src), Rm::Register(dst)),
+            Immediate::None,
+        );
+        registers = {
+            dst: GPR64,
+            src: FPR128,
+        };
+        schedule = { latency: 1 };
+    }
+}
+
+expand XmmToGprMove(X86MovdFromXmm, 32, false);
+
+expand GprToXmmMove(X86MovqToXmm, 64, true);
+
+expand XmmToGprMove(X86MovqFromXmm, 64, true);
+
+expand GprExtend(X86Movzx8to32, OpcodeMap::Map0F, 0xB6, false, Rm::ByteRegister);
+
+expand GprExtend(X86Movzx16to32, OpcodeMap::Map0F, 0xB7, false, Rm::Register);
+
+expand GprExtend(X86Movsx8to32, OpcodeMap::Map0F, 0xBE, false, Rm::ByteRegister);
+
+expand GprExtend(X86Movsx16to32, OpcodeMap::Map0F, 0xBF, false, Rm::Register);
+
+expand GprExtend(X86Movsx8to64, OpcodeMap::Map0F, 0xBE, true, Rm::ByteRegister);
+
+expand GprExtend(X86Movsx16to64, OpcodeMap::Map0F, 0xBF, true, Rm::Register);
+
+expand GprExtend(X86Movsxd32to64, OpcodeMap::Primary, 0x63, true, Rm::Register);
+
+op X86Mov32Imm(imm: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xB8, wide: false },
+        Form::OpcodeReg(dst),
+        Immediate::Bits32(imm),
+    );
+    registers = {
+        dst: GPR64,
+    };
+    schedule = { latency: 1 };
+}
+
+op X86Mov64Imm32(imm: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xC7, wide: true },
+        Form::ModRm(RegField::Extension(0), Rm::Register(dst)),
+        Immediate::Signed32(imm),
+    );
+    registers = {
+        dst: GPR64,
+    };
+    schedule = { latency: 1 };
+}
+
+op X86Mov64Imm64(imm: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xB8, wide: true },
+        Form::OpcodeReg(dst),
+        Immediate::Bits64(imm),
+    );
+    registers = {
+        dst: GPR64,
+    };
+    schedule = { latency: 1 };
+}
+
+op X86Load8U32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB6, wide: false },
+        Form::ModRm(RegField::Register(dst), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+        base: GPR64,
+    };
+    memory = { kind: Read, bytes: 1 };
+}
+
+op X86Load16U32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB7, wide: false },
+        Form::ModRm(RegField::Register(dst), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+        base: GPR64,
+    };
+    memory = { kind: Read, bytes: 2 };
+}
+
+op X86Load32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: false },
+        Form::ModRm(RegField::Register(dst), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+        base: GPR64,
+    };
+    memory = { kind: Read, bytes: 4 };
+}
+
+op X86Load64(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: true },
+        Form::ModRm(RegField::Register(dst), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+        base: GPR64,
+    };
+    memory = { kind: Read, bytes: 8 };
+}
+
+op X86LoadF32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
+        Form::ModRm(RegField::Register(dst), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        dst: FPR128,
+        base: GPR64,
+    };
+    memory = { kind: Read, bytes: 4 };
+}
+
+op X86LoadF64(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::F2, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
+        Form::ModRm(RegField::Register(dst), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        dst: FPR128,
+        base: GPR64,
+    };
+    memory = { kind: Read, bytes: 8 };
+}
+
+op X86Store8(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x88, wide: false },
+        Form::ModRm(RegField::ByteRegister(src), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        src: GPR64,
+        base: GPR64,
+    };
+    memory = { kind: Write, bytes: 1 };
+}
+
+op X86Store16(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::P66, map: OpcodeMap::Primary, opcode: 0x89, wide: false },
+        Form::ModRm(RegField::Register(src), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        src: GPR64,
+        base: GPR64,
+    };
+    memory = { kind: Write, bytes: 2 };
+}
+
+op X86Store32(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: false },
+        Form::ModRm(RegField::Register(src), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        src: GPR64,
+        base: GPR64,
+    };
+    memory = { kind: Write, bytes: 4 };
+}
+
+op X86Store64(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: true },
+        Form::ModRm(RegField::Register(src), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        src: GPR64,
+        base: GPR64,
+    };
+    memory = { kind: Write, bytes: 8 };
+}
+
+op X86StoreF32(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0x11, wide: false },
+        Form::ModRm(RegField::Register(src), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        src: FPR128,
+        base: GPR64,
+    };
+    memory = { kind: Write, bytes: 4 };
+}
+
+op X86StoreF64(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::F2, map: OpcodeMap::Map0F, opcode: 0x11, wide: false },
+        Form::ModRm(RegField::Register(src), memory(base, off)),
+        Immediate::None,
+    );
+    registers = {
+        src: FPR128,
+        base: GPR64,
+    };
+    memory = { kind: Write, bytes: 8 };
+}
+
+template SetCondition(Opcode: ident, Byte: expr) {
+    op Opcode() -> (dst: Value<Any>) {
+        implicit = { reads: [EFLAGS] };
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
+            Form::ModRm(RegField::Extension(0), Rm::ByteRegister(dst)),
+            Immediate::None,
+        );
+        registers = {
+            dst: GPR64,
+        };
+    }
+}
+
+expand SetCondition(X86Sete, 0x94);
+
+expand SetCondition(X86Setne, 0x95);
+
+expand SetCondition(X86Setb, 0x92);
+
+expand SetCondition(X86Seta, 0x97);
+
+expand SetCondition(X86Setbe, 0x96);
+
+expand SetCondition(X86Setae, 0x93);
+
+expand SetCondition(X86Setl, 0x9C);
+
+expand SetCondition(X86Setg, 0x9F);
+
+expand SetCondition(X86Setle, 0x9E);
+
+expand SetCondition(X86Setge, 0x9D);
+
+expand SetCondition(X86Setp, 0x9A);
+
+expand SetCondition(X86Setnp, 0x9B);
+
+op X86Load8U32Stack(slot: StackSlot) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB6, wide: false },
+        Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+    };
+    memory = { kind: Read, bytes: 1 };
+}
+
+op X86Load16U32Stack(slot: StackSlot) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB7, wide: false },
+        Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+    };
+    memory = { kind: Read, bytes: 2 };
+}
+
+op X86Load32Stack(slot: StackSlot) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: false },
+        Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+    };
+    memory = { kind: Read, bytes: 4 };
+}
+
+op X86Load64Stack(slot: StackSlot) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: true },
+        Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+    };
+    memory = { kind: Read, bytes: 8 };
+}
+
+op X86LoadF32Stack(slot: StackSlot) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
+        Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        dst: FPR128,
+    };
+    memory = { kind: Read, bytes: 4 };
+}
+
+op X86LoadF64Stack(slot: StackSlot) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::F2, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
+        Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        dst: FPR128,
+    };
+    memory = { kind: Read, bytes: 8 };
+}
+
+op X86Store8Stack(src: Value<Any>, slot: StackSlot) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x88, wide: false },
+        Form::ModRm(RegField::ByteRegister(src), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        src: GPR64,
+    };
+    memory = { kind: Write, bytes: 1 };
+}
+
+op X86Store16Stack(src: Value<Any>, slot: StackSlot) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::P66, map: OpcodeMap::Primary, opcode: 0x89, wide: false },
+        Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        src: GPR64,
+    };
+    memory = { kind: Write, bytes: 2 };
+}
+
+op X86Store32Stack(src: Value<Any>, slot: StackSlot) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: false },
+        Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        src: GPR64,
+    };
+    memory = { kind: Write, bytes: 4 };
+}
+
+op X86Store64Stack(src: Value<Any>, slot: StackSlot) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: true },
+        Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        src: GPR64,
+    };
+    memory = { kind: Write, bytes: 8 };
+}
+
+op X86StoreF32Stack(src: Value<Any>, slot: StackSlot) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0x11, wide: false },
+        Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        src: FPR128,
+    };
+    memory = { kind: Write, bytes: 4 };
+}
+
+op X86StoreF64Stack(src: Value<Any>, slot: StackSlot) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::F2, map: OpcodeMap::Map0F, opcode: 0x11, wide: false },
+        Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        src: FPR128,
+    };
+    memory = { kind: Write, bytes: 8 };
+}
+
+op X86Call(target: Global) -> () {
+    encoding = Emission::relative(target, Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xE8, wide: false }, Form::None, 0);
+    flow = Call;
+}
+
+op X86CallReg(target: Value<Any>) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xFF, wide: false },
+        Form::ModRm(RegField::Extension(2), Rm::Register(target)),
+        Immediate::None,
+    );
+    registers = {
+        target: GPR64,
+    };
+    flow = Call;
+}
+
+op X86Ret() -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xC3, wide: false },
+        Form::None,
+        Immediate::None,
+    );
+    flow = Return;
+}
+
+op X86Ud2() -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB, wide: false },
+        Form::None,
+        Immediate::None,
+    );
+    flow = Trap;
+}
+
+op X86Jmp(target: Block) -> () {
+    encoding = Emission::branch(
+        target,
+        Branch { map: OpcodeMap::Primary, near: 0xE9, short: 0xEB },
+    );
+    flow = Jump;
+}
+
+op X86Jne(target: Block) -> () {
+    encoding = Emission::branch(
+        target,
+        Branch { map: OpcodeMap::Map0F, near: 0x85, short: 0x75 },
+    );
+    implicit = {
+        reads: [EFLAGS],
+    };
+    flow = Branch;
+}
+
+op X86Je(target: Block) -> () {
+    encoding = Emission::branch(
+        target,
+        Branch { map: OpcodeMap::Map0F, near: 0x84, short: 0x74 },
+    );
+    implicit = {
+        reads: [EFLAGS],
+    };
+    flow = Branch;
+}
+
+op X86PushRbp(rbp: Value<Any>) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x50, wide: false },
+        Form::OpcodeReg(rbp),
+        Immediate::None,
+    );
+    registers = {
+        rbp: fixed(RBP, GPR64),
+    };
+}
+
+op X86PopRbp() -> (rbp: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x58, wide: false },
+        Form::OpcodeReg(rbp),
+        Immediate::None,
+    );
+    registers = {
+        rbp: fixed(RBP, GPR64),
+    };
+}
+
+op X86MovRbpRsp(rsp: Value<Any>) -> (rbp: Value<Any>) {
+    encoding = legacy_rr(0x89, true, rsp, rbp);
+    registers = {
+        rbp: fixed(RBP, GPR64),
+        rsp: fixed(RSP, GPR64),
+    };
+}
+
+template Divide32(Opcode: ident, Extension: expr) {
+    op Opcode(src: Value<Any>) -> () {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xF7, wide: false },
+            Form::ModRm(RegField::Extension(Extension), Rm::Register(src)),
+            Immediate::None,
+        );
+        registers = {
+            src: GPR64,
+        };
+        implicit = {
+            reads: [EAX, EDX],
+            writes: [EAX, EDX],
+            clobbers: [EFLAGS],
+        };
+    }
+}
+
+expand Divide32(X86IDiv32, 7);
+
+template Divide64(Opcode: ident, Extension: expr) {
+    op Opcode(src: Value<Any>) -> () {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xF7, wide: true },
+            Form::ModRm(RegField::Extension(Extension), Rm::Register(src)),
+            Immediate::None,
+        );
+        registers = {
+            src: GPR64,
+        };
+        implicit = {
+            reads: [RAX, RDX],
+            writes: [RAX, RDX],
+            clobbers: [EFLAGS],
+        };
+    }
+}
+
+expand Divide64(X86IDiv64, 7);
+
+expand Divide32(X86Div32, 6);
+
+expand Divide64(X86Div64, 6);
+
+op X86Cqo() -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x99, wide: true },
+        Form::None,
+        Immediate::None,
+    );
+    implicit = {
+        reads: [RAX],
+        writes: [RDX],
+    };
+}
+
+op X86Cdq() -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x99, wide: false },
+        Form::None,
+        Immediate::None,
+    );
+    implicit = {
+        reads: [EAX],
+        writes: [EDX],
+    };
+}
+
+template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr) {
+    op Opcode(rhs: Value<Any>, lhs: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
+            Form::ModRm(RegField::Register(dst), Rm::Register(rhs)),
+            Immediate::None,
+        );
+        registers = {
+            dst: tied(lhs, FPR128),
+            rhs: FPR128,
+            lhs: FPR128,
+        };
+    }
+}
+
+expand FloatBinary(X86FAdd32, Prefix::F3, 0x58);
+
+expand FloatBinary(X86FAdd64, Prefix::F2, 0x58);
+
+expand FloatBinary(X86FSub32, Prefix::F3, 0x5C);
+
+expand FloatBinary(X86FSub64, Prefix::F2, 0x5C);
+
+expand FloatBinary(X86FMul32, Prefix::F3, 0x59);
+
+expand FloatBinary(X86FMul64, Prefix::F2, 0x59);
+
+expand FloatBinary(X86FDiv32, Prefix::F3, 0x5E);
+
+expand FloatBinary(X86FDiv64, Prefix::F2, 0x5E);
+
+op X86LeaStack(slot: StackSlot) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8D, wide: true },
+        Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
+        Immediate::None,
+    );
+    registers = {
+        dst: GPR64,
+    };
+}
+
+template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2A, wide: Wide },
+            Form::ModRm(RegField::Register(dst), Rm::Register(src)),
+            Immediate::None,
+        );
+        registers = {
+            dst: FPR128,
+            src: GPR64,
+        };
+        schedule = { latency: 4 };
+    }
+}
+
+expand IntToFloat(X86I32ToF32, Prefix::F3, false);
+
+expand IntToFloat(X86I64ToF32, Prefix::F3, true);
+
+expand IntToFloat(X86I32ToF64, Prefix::F2, false);
+
+expand IntToFloat(X86I64ToF64, Prefix::F2, true);
+
+template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2C, wide: Wide },
+            Form::ModRm(RegField::Register(dst), Rm::Register(src)),
+            Immediate::None,
+        );
+        registers = {
+            dst: GPR64,
+            src: FPR128,
+        };
+        schedule = { latency: 4 };
+    }
+}
+
+expand FloatToInt(X86F32ToI32, Prefix::F3, false);
+
+expand FloatToInt(X86F32ToI64, Prefix::F3, true);
+
+expand FloatToInt(X86F64ToI32, Prefix::F2, false);
+
+expand FloatToInt(X86F64ToI64, Prefix::F2, true);
+
+template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
+            Form::ModRm(RegField::Register(dst), Rm::Register(src)),
+            Immediate::None,
+        );
+        registers = {
+            dst: FPR128,
+            src: FPR128,
+        };
+        schedule = { latency: 4 };
+    }
+}
+
+expand FloatUnary(X86F32ToF64, Prefix::F3, 0x5A);
+
+expand FloatUnary(X86F64ToF32, Prefix::F2, 0x5A);
+
+expand FloatUnary(X86SqrtF32, Prefix::F3, 0x51);
+
+expand FloatUnary(X86SqrtF64, Prefix::F2, 0x51);
+
+template Popcount(Opcode: ident, Wide: expr) {
+    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+        requires = ["POPCNT"];
+        encoding = Emission::legacy(
+            Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0xB8, wide: Wide },
+            Form::ModRm(RegField::Register(dst), Rm::Register(src)),
+            Immediate::None,
+        );
+        registers = { dst: GPR64, src: GPR64 };
+        implicit = { clobbers: [EFLAGS] };
+        schedule = { latency: 3 };
+    }
+}
+expand Popcount(X86Popcnt32, false);
+expand Popcount(X86Popcnt64, true);

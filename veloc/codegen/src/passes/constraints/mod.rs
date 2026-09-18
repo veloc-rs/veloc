@@ -252,13 +252,7 @@ mod tests {
         let dst = Reg::new_vreg(0);
         let src = Reg::new_vreg(1);
         let fixed = Reg::new_preg(7);
-        let inst = |writer: veloc_lir::InstWriter<'_>| {
-            writer.unary(
-                veloc_lir::MachineOpcode::Generic(veloc_lir::GenericOpcode::Neg),
-                Writable(dst),
-                src,
-            )
-        };
+        let inst = |writer: veloc_lir::InstWriter<'_>| writer.neg(Writable(dst), src);
         let (mut mfunc, inst_id) = make_function_with_inst(inst);
         let lowering = DummyLowering::new(OperandConstraintSet {
             fixed_uses: vec![FixedUseConstraint {

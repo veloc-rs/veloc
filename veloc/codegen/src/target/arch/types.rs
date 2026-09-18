@@ -146,27 +146,12 @@ impl RegisterFile {
     }
 }
 
-/// CPU 级别的描述信息。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CpuDescription {
-    pub name: &'static str,
-    pub features: &'static [&'static str],
-    pub limitations: &'static [&'static str],
-}
-
-impl CpuDescription {
-    pub fn has_feature(&self, feature: &str) -> bool {
-        self.features.contains(&feature)
-    }
-}
-
 /// 当前 target instance 的完整描述。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetDescription {
     pub arch: TargetArch,
     pub registers: RegisterFile,
     pub data_layout: DataLayout,
-    pub cpu: CpuDescription,
 }
 
 impl TargetDescription {
@@ -221,8 +206,10 @@ impl TargetDescription {
 #[derive(Debug, Clone)]
 pub struct TargetConfig {
     pub arch: TargetArch,
+    /// Feature overrides: NAME/+NAME enables, -NAME disables; last setting wins.
+    /// Dependencies are enabled unless explicitly disabled, which is an error.
     pub features: Vec<String>,
-    /// CPU 型号，用于从 ISLE 获取特定 CPU 的优化信息
+    /// CPU 型号，用于从 Spec 获取特定 CPU 的优化信息
     pub cpu: String,
     /// 调优目标，可能与 cpu 不同（如编译在通用 CPU 上运行但针对特定 CPU 优化）
     pub tune: String,
@@ -329,12 +316,6 @@ mod tests {
         types: &[],
     };
 
-    const TEST_CPU: CpuDescription = CpuDescription {
-        name: "test",
-        features: &[],
-        limitations: &[],
-    };
-
     const TEST_DESC_WITHOUT_VR: TargetDescription = TargetDescription {
         arch: TargetArch::Riscv64,
         registers: RegisterFile {
@@ -347,7 +328,6 @@ mod tests {
             },
         },
         data_layout: TEST_DATA_LAYOUT,
-        cpu: TEST_CPU,
     };
 
     const TEST_DESC_WITH_VR: TargetDescription = TargetDescription {
@@ -362,7 +342,6 @@ mod tests {
             },
         },
         data_layout: TEST_DATA_LAYOUT,
-        cpu: TEST_CPU,
     };
 
     #[test]

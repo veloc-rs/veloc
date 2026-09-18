@@ -134,6 +134,7 @@ pub(super) struct Token<'a> {
     pub kind: Kind<'a>,
 }
 
+#[derive(Clone)]
 pub(super) struct Lexer<'a> {
     source: &'a str,
     offset: usize,

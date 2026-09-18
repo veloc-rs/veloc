@@ -4,7 +4,7 @@
 //! `TargetMachine + CodegenPipeline`。这里提供一个轻量适配层，默认使用 x86_64 ELF。
 
 use crate::driver::CodegenPipeline;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::target::arch::{TargetConfig, TargetMachine};
 use alloc::boxed::Box;
 use veloc_mir::Module;
@@ -24,9 +24,7 @@ impl Backend {
 
     /// 使用显式目标配置创建 backend。
     pub fn with_target_config(config: TargetConfig) -> Result<Self> {
-        let arch = config.arch;
-        let target = crate::create_target_machine(config)
-            .ok_or_else(|| Error::target_machine_unavailable(arch))?;
+        let target = crate::create_target_machine(config)?;
         Ok(Self { target })
     }
 

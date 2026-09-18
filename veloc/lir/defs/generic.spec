@@ -1,0 +1,613 @@
+import "../../defs/prelude.spec";
+
+// Operand-array storage is independent of operation semantics and type contracts.
+type StackSlot = rust("crate::StackSlot");
+type Block = rust("crate::BlockId");
+
+type Reg = rust("crate::Reg");
+enum InstField {
+    variants = [Imm(i64), FImm(f64), Block(Block), StackSlot(StackSlot), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId)];
+}
+enum ControlFlow {
+    variants = [Next, Branch, Jump, Return, Call, Trap];
+}
+storage Operands {
+    opcode = GenericOpcode;
+    view = InstView;
+    reader = InstRead;
+    writer = InstBuild;
+    register = Reg;
+    attributes = InstField;
+    control = ControlFlow::Next;
+}
+
+struct UnaryReg {
+    dst: Reg,
+    src: Reg,
+}
+
+struct BinaryReg {
+    dst: Reg,
+    lhs: Reg,
+    rhs: Reg,
+}
+
+struct BinaryRegWithFlags {
+    dst: Reg,
+    flag: Reg,
+    lhs: Reg,
+    rhs: Reg,
+    carry_in: optional(Reg),
+}
+
+struct Load {
+    dst: Reg,
+    base: Reg,
+}
+
+struct LoadOffset {
+    dst: Reg,
+    base: Reg,
+    offset: i64,
+}
+
+struct IndexedLoad {
+    dst: Reg,
+    wb_dst: Reg,
+    base: Reg,
+    offset: i64,
+}
+
+struct Store {
+    src: Reg,
+    base: Reg,
+}
+
+struct StackLoad {
+    dst: Reg,
+    slot: StackSlot,
+}
+
+struct StackAddr {
+    dst: Reg,
+    slot: StackSlot,
+}
+
+struct StackStore {
+    src: Reg,
+    slot: StackSlot,
+}
+
+struct StoreOffset {
+    src: Reg,
+    base: Reg,
+    offset: i64,
+}
+
+struct IndexedStore {
+    wb_dst: Reg,
+    src: Reg,
+    base: Reg,
+    offset: i64,
+}
+
+struct Constant {
+    dst: Reg,
+    imm: i64,
+}
+
+struct FloatConstant {
+    dst: Reg,
+    imm: f64,
+}
+
+struct Branch {
+    target: Block,
+}
+
+struct BranchCond {
+    cond: Reg,
+    then_blk: Block,
+    else_blk: Block,
+}
+
+struct BranchTable {
+    index: Reg,
+}
+
+struct Select {
+    dst: Reg,
+    cond: Reg,
+    v1: Reg,
+    v2: Reg,
+}
+
+struct ICmp {
+    dst: Reg,
+    lhs: Reg,
+    rhs: Reg,
+    cc: IntCC,
+}
+
+struct FCmp {
+    dst: Reg,
+    lhs: Reg,
+    rhs: Reg,
+    cc: FloatCC,
+}
+
+struct Arg {
+    dst: Reg,
+    index: i64,
+}
+
+struct Return {
+    values: sequence(Reg),
+}
+
+struct Unreachable {
+
+}
+
+struct Call {
+    results: sequence(Reg),
+    callee: SymbolId,
+    args: sequence(Reg),
+}
+struct CallIndirect {
+    results: sequence(Reg),
+    callee: Reg,
+    args: sequence(Reg),
+}
+
+// Logical signatures use the same operation model and type checker as every IR.
+
+op Add<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo {};
+    storage = BinaryReg { dst, lhs, rhs };
+    semantics = bv.add(lhs, rhs)
+; }
+
+op Sub<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo {};
+    storage = BinaryReg { dst, lhs, rhs };
+    semantics = bv.sub(lhs, rhs)
+; }
+
+op Mul<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo {};
+    storage = BinaryReg { dst, lhs, rhs };
+    semantics = bv.mul(lhs, rhs)
+; }
+
+op Sdiv<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Udiv<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Srem<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Urem<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Neg<T: Integer>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo {};
+    storage = UnaryReg { dst, src };
+    semantics = bv.neg(src)
+; }
+
+op Fadd<T: Float>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Fsub<T: Float>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Fmul<T: Float>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Fdiv<T: Float>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Fneg<T: Float>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Fabs<T: Float>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Fsqrt<T: Float>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op And<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo {};
+    storage = BinaryReg { dst, lhs, rhs };
+    semantics = bv.and(lhs, rhs)
+; }
+
+op Or<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo {};
+    storage = BinaryReg { dst, lhs, rhs };
+    semantics = bv.or(lhs, rhs)
+; }
+
+op Xor<T: Integer | Type::BOOL | vectors(Type::BOOL)>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo {};
+    storage = BinaryReg { dst, lhs, rhs };
+    semantics = bv.xor(lhs, rhs)
+; }
+
+op Ctpop<T: Integer>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Ctlz<T: Integer>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Cttz<T: Integer>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Shl<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Lshr<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Ashr<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Rotl<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Rotr<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Icmp<T: ScalarInteger | Type::PTR>(lhs: Value<T>, rhs: Value<T>, cc: IntCC) -> (dst: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = ICmp { dst, lhs, rhs, cc };
+}
+
+op Fcmp<T: ScalarFloat>(lhs: Value<T>, rhs: Value<T>, cc: FloatCC) -> (dst: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = FCmp { dst, lhs, rhs, cc };
+}
+
+op Ieqz<T: Integer>(src: Value<T>) -> (dst: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Anyext<T: Integer, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Abs<T: Integer>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Smin<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Smax<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Umin<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Umax<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Uaddo<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none };
+}
+
+op Saddo<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none };
+}
+
+op Usubo<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none };
+}
+
+op Ssubo<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none };
+}
+
+op Uadde<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>, carry_in: Value<Type::BOOL>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) };
+}
+
+op Sadde<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>, carry_in: Value<Type::BOOL>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) };
+}
+
+op Usube<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>, carry_in: Value<Type::BOOL>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) };
+}
+
+op Ssube<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>, carry_in: Value<Type::BOOL>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: some(carry_in) };
+}
+
+op Umulo<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none };
+}
+
+op Smulo<T: ScalarInteger>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>, flag: Value<Type::BOOL>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryRegWithFlags { dst, flag, lhs, rhs, carry_in: none };
+}
+
+op Umulh<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Smulh<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op CtlzZeroUndef<T: Integer>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op CttzZeroUndef<T: Integer>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Saddsat<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Uaddsat<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Ssubsat<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Usubsat<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op Load<T: Any>(base: Value<Type::PTR>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    storage = Load { dst, base };
+}
+
+op Store<T: Any>(src: Value<T>, base: Value<Type::PTR>) -> () {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    storage = Store { src, base };
+}
+
+op PtrAdd<T: ScalarInteger>(lhs: Value<Type::PTR>, rhs: Value<T>) -> (dst: Value<Type::PTR>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = BinaryReg { dst, lhs, rhs };
+}
+
+op StackLoad<T: Any>(slot: StackSlot) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::READ) };
+    storage = StackLoad { dst, slot };
+}
+
+op StackStore<T: Any>(src: Value<T>, slot: StackSlot) -> () {
+    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::WRITE) };
+    storage = StackStore { src, slot };
+}
+
+op StackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = StackAddr { dst, slot };
+}
+
+op OffsetLoad<T: Any>(base: Value<Type::PTR>, offset: i64) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    storage = LoadOffset { dst, base, offset };
+}
+
+op OffsetStore<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64) -> () {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    storage = StoreOffset { src, base, offset };
+}
+
+op IndexedLoad<T: Any>(base: Value<Type::PTR>, offset: i64) -> (dst: Value<T>, wb_dst: Value<Type::PTR>) {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    storage = IndexedLoad { dst, wb_dst, base, offset };
+}
+
+op IndexedStore<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64) -> (wb_dst: Value<Type::PTR>) {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    storage = IndexedStore { wb_dst, src, base, offset };
+}
+
+op Constant<T: ScalarInteger | Type::BOOL | Type::PTR>(imm: i64) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = Constant { dst, imm };
+}
+
+op Fconstant<T: ScalarFloat>(imm: f64) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = FloatConstant { dst, imm };
+}
+
+op Trunc<T: Integer, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Zext<T: Integer, U: Integer | Type::BOOL | vectors(Type::BOOL)>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Sext<T: Integer, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Fptosi<T: Integer, U: Float>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Fptoui<T: Integer, U: Float>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Sitofp<T: Float, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Uitofp<T: Float, U: Integer>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Fptrunc<T: Float, U: Float>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Fpext<T: Float, U: Float>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Bitcast<T: Any, U: Any>(src: Value<U>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Inttoptr<T: ScalarInteger>(src: Value<T>) -> (dst: Value<Type::PTR>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Ptrtoint<T: ScalarInteger>(src: Value<Type::PTR>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Br(target: Block) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    storage = Branch { target };
+    flow = Jump;
+}
+
+op Brcond(cond: Value<Type::BOOL>, then_blk: Block, else_blk: Block) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    storage = BranchCond { cond, then_blk, else_blk };
+    flow = Jump;
+}
+
+op Brjt<T: ScalarInteger>(index: Value<T>) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    storage = BranchTable { index };
+    flow = Jump;
+}
+
+op Ret(values: sequence(Value)) -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
+    storage = Return { values };
+    flow = Return;
+}
+
+op Call(callee: SymbolId, args: sequence(Value)) -> signature {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    storage = Call { results: results(), callee, args };
+    flow = Call;
+}
+
+op Callind(callee: Value<Type::PTR>, args: sequence(Value)) -> signature {
+    meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
+    storage = CallIndirect { results: results(), callee, args };
+    flow = Call;
+}
+
+op Arg<T: Any>(index: i64) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = Arg { dst, index };
+    verify { require(index >= 0, "argument index must be nonnegative"); }
+}
+
+op Select<T: Any>(cond: Value<Type::BOOL>, v1: Value<T>, v2: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = Select { dst, cond, v1, v2 };
+}
+
+op Copy<T: Any>(src: Value<T>) -> (dst: Value<T>) {
+    meta = OpInfo { memory: MemoryEffect::NONE };
+    storage = UnaryReg { dst, src };
+}
+
+op Unreachable() -> () {
+    meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::ABORT).union(OpTraits::MAY_TRAP), memory: MemoryEffect::NONE };
+    storage = Unreachable {};
+    flow = Trap;
+}

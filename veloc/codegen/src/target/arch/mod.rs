@@ -22,14 +22,15 @@ pub use abi::{
 };
 pub use callconv::CallConv;
 pub use types::{
-    CpuDescription, RegClass, RegClassInfo, RegInfo, RegisterFile, RegisterView, RegisterWrite,
-    SpecialRegs, TargetArch, TargetConfig, TargetDescription,
+    RegClass, RegClassInfo, RegInfo, RegisterFile, RegisterView, RegisterWrite, SpecialRegs,
+    TargetArch, TargetConfig, TargetDescription,
 };
 
 /// 基础 Lowering Context 接口 (所有后端共用)
 /// Immutable target capabilities, independent of instruction operands or graph analyses.
 pub trait TargetFeatures {
-    fn has_feature(&self, feature: &str) -> bool;
+    type Features;
+    fn supports_features(&self, required: Self::Features) -> bool;
 }
 
 pub trait LoweringContext {
@@ -394,6 +395,16 @@ impl TargetInstMetadata {
 }
 
 pub trait TargetLegalizer: Send + Sync {
+    /// Target nodes need explicit acceptance or a rewrite, just like generic nodes.
+    /// The default deliberately rejects them; a target namespace is not a proof
+    /// that a pseudo has been expanded or that its feature requirements hold.
+    fn legalize_target(
+        &self,
+        _inst: &veloc_lir::InstRef<'_>,
+    ) -> Result<Option<LegalizeAction>, crate::error::Error> {
+        Ok(None)
+    }
+
     /// Pure instruction-local query. Missing coverage is an error at the driver,
     /// never an implicit declaration of legality.
     fn legalize_action(

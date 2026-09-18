@@ -121,8 +121,8 @@ a general rollback facility. Schema decoding
 returns `DecodeError`; codegen wraps it without making LIR depend on backend
 error types. Symbol interning takes a name and linkage, not a MIR module.
 
-`defs/module.ops` imports the shared `veloc/defs/prelude.ops` and the local
-`generic.ops`. Both MIR and LIR use `veloc_opgen::Source::load(...).compile()`,
+`defs/module.spec` imports the shared `veloc/defs/prelude.spec` and the local
+`generic.spec`. Both MIR and LIR use `veloc_spec::Source::load(...).compile()`,
 one logical operation model and one type/semantic checker. Import resolution,
 dependency tracking and physical-file diagnostics are shared build infrastructure.
 

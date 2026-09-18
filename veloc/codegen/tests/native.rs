@@ -243,8 +243,8 @@ int main(void) {
 
 #[test]
 fn extension_encodings_match_system_assembler_for_every_register_pair() {
-    use veloc_codegen::target::x86_64::isle::*;
-    use veloc_lir::{MachineFunction, MachineOpcode, Writable};
+    use veloc_codegen::target::x86_64::inst::*;
+    use veloc_lir::MachineFunction;
     let regs = [
         REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI, REG_R8, REG_R9,
         REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15,
@@ -282,11 +282,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
                 let line = format!("{mnemonic} %{}, %{}\n", sources[src], destinations[dst]);
                 cases.push((emitter.position(), line.clone()));
                 assembly.push_str(&line);
-                let inst = f.editor().writer().unary(
-                    MachineOpcode::Target(opcode.as_u32()),
-                    Writable(regs[dst]),
-                    regs[src],
-                );
+                let inst = opcode.write(f.editor().writer(), &[regs[dst]], &[regs[src]], &[]);
                 opcode.emit(&mut emitter, &f.inst(inst), &f).unwrap();
             }
         }
@@ -704,17 +700,13 @@ int main(void) {
 }
 
 fn run(source: &str, harness: &str) {
-    run_cpu(source, harness, "generic");
+    run_config(source, harness, TargetConfig::default());
 }
 
-fn run_cpu(source: &str, harness: &str, cpu: &str) {
+fn run_config(source: &str, harness: &str, config: TargetConfig) {
     let module = ModuleParser::new().parse(source).unwrap();
     module.validate().unwrap();
-    let target = create_target_machine(TargetConfig {
-        cpu: cpu.into(),
-        ..Default::default()
-    })
-    .unwrap();
+    let target = create_target_machine(config).unwrap();
     for optimize in [false, true] {
         let pipeline = CodegenPipeline::with_options(
             &*target,
@@ -933,7 +925,7 @@ int main(void) { for(int n=-100;n<100;n++) assert(floats(n*0.25)==n*0.75); }
 }
 
 #[test]
-fn popcount_obeys_target_features_and_preserves_results() {
+fn bit_counts_obey_target_features_and_preserve_results() {
     let source = r#"
 export function count32(i32) -> i32
 block0(v0: i32):
@@ -943,11 +935,39 @@ export function count64(i64) -> i64
 block0(v0: i64):
   v1: i64 = ipopcnt v0
   return v1
+export function leading32(i32) -> i32
+block0(v0: i32):
+  v1: i32 = iclz v0
+  return v1
+export function leading64(i64) -> i64
+block0(v0: i64):
+  v1: i64 = iclz v0
+  return v1
+export function trailing32(i32) -> i32
+block0(v0: i32):
+  v1: i32 = ictz v0
+  return v1
+export function trailing64(i64) -> i64
+block0(v0: i64):
+  v1: i64 = ictz v0
+  return v1
 "#;
     let harness = r#"
 #include <stdint.h>
 extern uint32_t count32(uint32_t);
 extern uint64_t count64(uint64_t);
+extern uint32_t leading32(uint32_t), trailing32(uint32_t);
+extern uint64_t leading64(uint64_t), trailing64(uint64_t);
+static unsigned leading(uint64_t x, unsigned bits) {
+    unsigned n = 0;
+    for (uint64_t mask = UINT64_C(1) << (bits-1); mask && !(x & mask); mask >>= 1) ++n;
+    return n;
+}
+static unsigned trailing(uint64_t x, unsigned bits) {
+    unsigned n = 0;
+    while (n < bits && !(x & 1)) { ++n; x >>= 1; }
+    return n;
+}
 static unsigned reference(uint64_t x) {
     unsigned n = 0;
     for (; x; x >>= 1) n += x & 1;
@@ -958,23 +978,58 @@ int main(void) {
     for (unsigned i = 0; i < 10000; ++i) {
         if (count32((uint32_t)x) != reference((uint32_t)x)) return 1;
         if (count64(x) != reference(x)) return 2;
-        x = i == 0 ? UINT64_MAX : x * UINT64_C(6364136223846793005) + 1;
+        if (leading32((uint32_t)x) != leading((uint32_t)x, 32)) return 3;
+        if (leading64(x) != leading(x, 64)) return 4;
+        if (trailing32((uint32_t)x) != trailing((uint32_t)x, 32)) return 5;
+        if (trailing64(x) != trailing(x, 64)) return 6;
+        x = i == 0 ? UINT64_MAX : i <= 64 ? UINT64_C(1) << (i-1) : x * UINT64_C(6364136223846793005) + 1;
     }
     return 0;
 }
 "#;
     let module = ModuleParser::new().parse(source).unwrap();
     module.validate().unwrap();
-    for cpu in ["generic", "haswell"] {
-        let target = create_target_machine(TargetConfig {
-            cpu: cpu.into(),
-            ..Default::default()
-        })
+    // Parsing failures are reported at target creation, before lowering.
+    for (cpu, features) in [
+        ("unknown-cpu", vec![]),
+        ("generic", vec!["+typo"]),
+        ("generic", vec!["+avx2", "-avx"]),
+        ("haswell", vec!["-avx"]),
+    ] {
+        assert!(
+            create_target_machine(TargetConfig {
+                cpu: cpu.into(),
+                features: features.into_iter().map(Into::into).collect(),
+                ..Default::default()
+            })
+            .is_err()
+        );
+    }
+    use veloc_codegen::target::x86_64::inst::{Feature, FeatureSet};
+    let enabled = FeatureSet::empty().resolve(&["+avx2".into()]).unwrap();
+    assert!(enabled.contains(Feature::AVX2));
+    assert!(enabled.contains(Feature::AVX));
+    let disabled = FeatureSet::empty()
+        .resolve(&["+popcnt".into(), "-popcnt".into()])
         .unwrap();
+    assert!(!disabled.contains(Feature::POPCNT));
+    for (cpu, features, has_popcnt) in [
+        ("generic", vec![], false),
+        ("haswell", vec![], true),
+        ("generic", vec!["+popcnt"], true),
+        ("haswell", vec!["-popcnt"], false),
+        ("generic", vec!["+popcnt", "-popcnt", "+POPCNT"], true),
+    ] {
+        let config = TargetConfig {
+            cpu: cpu.into(),
+            features: features.into_iter().map(Into::into).collect(),
+            ..Default::default()
+        };
+        let target = create_target_machine(config.clone()).unwrap();
         // The same requirement is enforced even if a pass directly builds a
         // machine opcode, bypassing legalization and selection.
         {
-            use veloc_codegen::target::x86_64::isle::{REG_RAX, REG_RDI, TargetInst};
+            use veloc_codegen::target::x86_64::inst::{REG_RAX, REG_RDI, TargetInst};
             let mut function = veloc_lir::MachineFunction::new("feature_check".into());
             let id = function.editor().writer().write(
                 veloc_lir::MachineOpcode::Target(TargetInst::X86Popcnt64 as u32),
@@ -982,12 +1037,20 @@ int main(void) {
                 &[REG_RDI],
                 &[],
             );
+            assert_eq!(
+                target
+                    .legalizer()
+                    .legalize_target(&function.inst(id))
+                    .unwrap()
+                    .is_some(),
+                has_popcnt
+            );
             let validation = target.validate_instruction(
                 &function.inst(id),
                 veloc_codegen::target::arch::ValidationMode::Allocated,
             );
-            assert_eq!(validation.is_ok(), cpu == "haswell");
-            if cpu == "generic" {
+            assert_eq!(validation.is_ok(), has_popcnt);
+            if !has_popcnt {
                 assert!(validation.unwrap_err().to_string().contains("POPCNT"));
             }
         }
@@ -1012,13 +1075,50 @@ int main(void) {
             let disassembly = String::from_utf8(disassembly.stdout).unwrap();
             assert_eq!(
                 disassembly.contains("popcnt"),
-                cpu == "haswell",
+                has_popcnt,
                 "{cpu}, optimize={optimize}: {disassembly}"
             );
         }
         // Cross-compilation must not use build-host CPUID; execution still must.
-        if cpu == "generic" || std::is_x86_feature_detected!("popcnt") {
-            run_cpu(source, harness, cpu);
+        if !has_popcnt || std::is_x86_feature_detected!("popcnt") {
+            run_config(source, harness, config);
         }
     }
+}
+
+#[test]
+fn branch_tables_preserve_edge_arguments_and_unsigned_default() {
+    run(
+        r#"
+export function choose(i32, i64, i64) -> i64
+block0(v0: i32, v1: i64, v2: i64):
+  br-table v0, [block1(v1), block1(v2), block2(v1)], block2(v2)
+block1(v3: i64):
+  return v3
+block2(v4: i64):
+  v5: i64 = iconst 1
+  v6: i64 = iadd v4, v5
+  return v6
+export function fallback(i32, i64) -> i64
+block0(v0: i32, v1: i64):
+  br-table v0, [], block1(v1)
+block1(v2: i64):
+  return v2
+"#,
+        r#"
+#include <stdint.h>
+extern uint64_t choose(uint32_t, uint64_t, uint64_t);
+extern uint64_t fallback(uint32_t, uint64_t);
+int main(void) {
+    uint32_t indices[] = {0, 1, 2, 3, 100, 0x80000000u, 0xffffffffu};
+    for (unsigned i = 0; i < sizeof(indices)/sizeof(indices[0]); ++i) {
+        uint32_t x = indices[i];
+        uint64_t expected = x == 0 ? 17 : x == 1 ? 42 : x == 2 ? 18 : 43;
+        if (choose(x, 17, 42) != expected) return 1;
+        if (fallback(x, 91) != 91) return 2;
+    }
+    return 0;
+}
+"#,
+    );
 }

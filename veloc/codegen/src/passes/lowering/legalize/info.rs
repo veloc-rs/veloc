@@ -93,6 +93,12 @@ pub enum LegalizeAction {
 }
 
 impl LegalizeAction {
+    pub fn rewrite(
+        name: &'static str,
+        apply: fn(InstId, &mut MachineFunction) -> Result<LegalizeResult>,
+    ) -> Self {
+        Self::Rewrite(Rewrite { name, apply })
+    }
     pub fn values(name: &'static str, apply: fn(&mut ValueRewriter<'_>)) -> Self {
         Self::Values { name, apply }
     }
@@ -128,6 +134,26 @@ pub struct ValueRewriter<'a> {
     output: Vec<InstId>,
 }
 impl ValueRewriter<'_> {
+    pub fn emit_integer(
+        &mut self,
+        opcode: GenericOpcode,
+        ty: Type,
+        value: i64,
+        result: Option<usize>,
+    ) -> veloc_lir::Reg {
+        let dst = match result {
+            Some(i) => self.function.inst(self.root).results()[i],
+            None => self.function.editor().alloc_vreg(ty),
+        };
+        self.output.push(self.function.editor().writer().write(
+            veloc_lir::MachineOpcode::Generic(opcode),
+            &[dst],
+            &[],
+            &[InstField::Imm(value)],
+        ));
+        dst
+    }
+
     pub fn input(&self, index: usize) -> veloc_lir::Reg {
         self.function.inst(self.root).inputs()[index]
     }

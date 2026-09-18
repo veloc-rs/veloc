@@ -51,16 +51,17 @@ impl<'a> Legalizer<'a> {
                 if inst.is_invalid() {
                     continue;
                 }
-                if inst.generic_opcode().is_none() {
-                    continue;
-                }
-                let query = Query::from_inst(inst, mfunc)?;
-                match self.target.legalize_action(&query)? {
+                let action = if inst.is_generic() {
+                    let query = Query::from_inst(inst, mfunc)?;
+                    self.target.legalize_action(&query)?
+                } else {
+                    self.target.legalize_target(inst)?
+                };
+                match action {
                     None => {
-                        let opcode = query.opcode;
-                        let operands = (&query.results, &query.inputs);
                         return Err(Error::codegen(alloc::format!(
-                            "missing legalization rule for {opcode:?} with signature {operands:?}"
+                            "missing legalization rule for {:?}",
+                            inst.opcode()
                         )));
                     }
                     Some(LegalizeAction::Legal) => {}

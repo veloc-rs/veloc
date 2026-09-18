@@ -10,7 +10,7 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
     use crate::target::x86_64::X86_64TargetMachine;
     use veloc_lir::{MemoryAccess, MemoryKind, Writable};
     use veloc_mir::Type;
-    let target = X86_64TargetMachine::new(crate::TargetConfig::default());
+    let target = X86_64TargetMachine::new(crate::TargetConfig::default()).unwrap();
     for offset in [
         i64::MIN,
         i32::MIN as i64 - 1,
@@ -81,6 +81,15 @@ enum Mode {
 }
 
 impl TargetLegalizer for Mode {
+    fn legalize_target(&self, _: &veloc_lir::InstRef<'_>) -> Result<Option<LegalizeAction>> {
+        Ok(match self {
+            Self::Missing => None,
+            _ => Some(LegalizeAction::Rewrite(Rewrite {
+                name: "target_expansion",
+                apply: |id, f| Mode::Chain.rewrite(id, f),
+            })),
+        })
+    }
     fn legalize_action(&self, query: &Query) -> Result<Option<LegalizeAction>> {
         let opcode = query.opcode;
         let apply = match self {
@@ -157,26 +166,35 @@ fn function() -> MachineFunction {
 
 #[test]
 fn expansions_are_revisited_in_order_including_in_place_changes() {
-    let mut f = function();
-    let old = f
-        .block_insts(veloc_lir::BlockId::from_u32(0))
-        .collect::<Vec<_>>()[0];
-    Legalizer::new(&Mode::Chain).legalize(&mut f).unwrap();
-    let ops: alloc::vec::Vec<_> = f
-        .block_insts(veloc_lir::BlockId::from_u32(0))
-        .collect::<Vec<_>>()
-        .iter()
-        .map(|&id| f.inst(id).generic_opcode().unwrap())
-        .collect();
-    assert_eq!(
-        ops,
-        [
-            GenericOpcode::Add,
-            GenericOpcode::Constant,
-            GenericOpcode::Ret
-        ]
-    );
-    assert!(f.inst(old).is_invalid());
+    for target_node in [false, true] {
+        let mut f = function();
+        let old = f
+            .block_insts(veloc_lir::BlockId::from_u32(0))
+            .collect::<Vec<_>>()[0];
+        if target_node {
+            f.editor()
+                .rewriter(old)
+                .write(MachineOpcode::Target(0), &[], &[], &[]);
+            let error = Legalizer::new(&Mode::Missing).legalize(&mut f).unwrap_err();
+            assert!(alloc::format!("{error}").contains("missing legalization rule for Target(0)"));
+        }
+        Legalizer::new(&Mode::Chain).legalize(&mut f).unwrap();
+        let ops: alloc::vec::Vec<_> = f
+            .block_insts(veloc_lir::BlockId::from_u32(0))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|&id| f.inst(id).generic_opcode().unwrap())
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                GenericOpcode::Add,
+                GenericOpcode::Constant,
+                GenericOpcode::Ret
+            ]
+        );
+        assert!(f.inst(old).is_invalid());
+    }
 }
 
 #[test]
@@ -184,7 +202,7 @@ fn missing_rules_and_nonconvergent_expansions_are_errors() {
     let error = Legalizer::new(&Mode::Missing)
         .legalize(&mut function())
         .unwrap_err();
-    assert!(alloc::format!("{error}").contains("missing legalization rule for Sub"));
+    assert!(alloc::format!("{error}").contains("missing legalization rule for Generic(Sub)"));
     let error = Legalizer::new(&Mode::Loop)
         .legalize(&mut function())
         .unwrap_err();

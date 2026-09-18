@@ -1,8 +1,17 @@
 [package]
-name = "veloc-opgen"
+name = "veloc-spec"
 version = "0.1.0"
 edition = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+cli = ["dep:clap"]
+
+[[bin]]
+name = "veloc-spec"
+path = "src/bin/veloc-spec.rs"
+required-features = ["cli"]
+
 [dependencies]
+clap = { workspace = true, optional = true }
 veloc-semantics = { workspace = true }

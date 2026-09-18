@@ -7,9 +7,9 @@ pub struct X86_64Selector {
 }
 
 impl X86_64Selector {
-    pub fn new(cpu: CpuDescription) -> Self {
+    pub fn new(features: generated::FeatureSet) -> Self {
         Self {
-            lowering: X86_64Lowering::new(cpu),
+            lowering: X86_64Lowering::new(features),
         }
     }
 }
@@ -19,7 +19,7 @@ impl TargetInstructionSelector for X86_64Selector {
         &self,
         ctx: &mut SelectionContext<'_>,
     ) -> Result<SelectResult, crate::error::Error> {
-        let cpu = self.lowering.cpu;
+        let features = self.lowering.features;
         let inst = ctx.mfunc.inst(ctx.inst_id);
 
         if !inst.is_generic() {
@@ -75,7 +75,7 @@ impl TargetInstructionSelector for X86_64Selector {
         let result = {
             let mut edit = ctx.mfunc.editor();
             let (vregs, mut store) = edit.instruction_parts();
-            let mut x86_ctx = X86SelectionContext { vregs, cpu };
+            let mut x86_ctx = X86SelectionContext { vregs, features };
             generated::select_instructions(&mut x86_ctx, &mut store, ctx.inst_id, ctx.selected)?
         };
 

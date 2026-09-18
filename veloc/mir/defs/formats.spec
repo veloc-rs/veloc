@@ -1,0 +1,174 @@
+import "types.spec";
+
+// Logical records. SSA fields are extracted into the instruction's operands.
+struct PtrIndexImm {
+    offset: i32,
+    scale: u32,
+}
+struct VectorMemOptions {
+    offset: i32,
+    flags: MemFlags,
+    scale: u8,
+    mask: optional(Value),
+    evl: optional(Value),
+}
+struct VectorExtData {
+    mask: Value,
+    evl: optional(Value),
+}
+
+// Fields describe logical groups, not physical storage. All SSA inputs,
+// including successor arguments and struct inputs, occupy one operand range.
+// values(N) is fixed-arity; ValueList is variadic.
+// An op's storage mapping selects a struct as an instruction layout.
+// Opcode fields are inferred from its users, never part of the struct itself.
+
+struct Unary {
+    arg: Value,
+}
+struct Binary {
+    args: values(2),
+}
+struct Ternary {
+    args: values(3),
+}
+struct Iconst {
+    value: Int,
+}
+struct Fconst {
+    value: Float,
+}
+struct Bconst {
+    value: bool,
+}
+struct Vconst {
+    value: VectorConst,
+}
+struct Load {
+    ptr: Value,
+    offset: u32,
+    flags: MemFlags,
+}
+struct Store {
+    ptr: Value,
+    value: Value,
+    offset: u32,
+    flags: MemFlags,
+}
+struct Alloca {
+    size: u32,
+    align: u32,
+}
+struct PtrOffset {
+    ptr: Value,
+    offset: i32,
+}
+struct PtrIndex {
+    ptr: Value,
+    index: Value,
+    imm_id: PtrIndexImm,
+}
+struct IntToPtr {
+    arg: Value,
+}
+struct PtrToInt {
+    arg: Value,
+}
+struct Call {
+    func_id: FuncId,
+    args: ValueList,
+}
+struct ClosureNew {
+    func_id: FuncId,
+    captures: ValueList,
+    cleanup: FuncId,
+}
+struct Closure {
+    func_id: FuncId,
+    captures: ValueList,
+}
+struct TailCall {
+    func_id: FuncId,
+    args: ValueList,
+}
+struct CallValue {
+    callee: Value,
+    args: ValueList,
+}
+struct CallIndirect {
+    ptr: Value,
+    args: ValueList,
+    sig_id: SigId,
+}
+struct CallIntrinsic {
+    intrinsic: Intrinsic,
+    args: ValueList,
+    sig_id: SigId,
+}
+struct Jump {
+    dest: BlockCall,
+}
+struct Br {
+    condition: Value,
+    then_dest: BlockCall,
+    else_dest: BlockCall,
+}
+struct BrTable {
+    index: Value,
+    table: JumpTable,
+}
+struct Return {
+    values: ValueList,
+}
+struct IntCompare {
+    kind: IntCC,
+    args: values(2),
+}
+struct FloatCompare {
+    kind: FloatCC,
+    args: values(2),
+}
+struct VectorLoadStrided {
+    ptr: Value,
+    stride: Value,
+    ext: VectorMemOptions,
+}
+struct VectorStoreStrided {
+    args: values(3),
+    ext: VectorMemOptions,
+}
+struct VectorGather {
+    ptr: Value,
+    index: Value,
+    ext: VectorMemOptions,
+}
+struct VectorScatter {
+    args: values(3),
+    ext: VectorMemOptions,
+}
+struct Shuffle {
+    args: values(2),
+    mask: ConstantPoolId,
+}
+struct Unreachable {
+
+}
+struct Nop {
+
+}
+
+// Predication adds auxiliary operands while keeping the operation's
+// logical Unary/Binary/Ternary format and type rules.
+struct VectorOpWithExt {
+    args: ValueList,
+    ext: VectorExtData,
+}
+layout VectorOpWithExt {
+    format = arity(args, [Unary, Binary, Ternary]);
+    text = "{args}, mask={ext.mask}[, evl={ext.evl}]";
+    verify {
+        require(len(results()) == 1 && all(results(), |t| t.is_vector()), "predicated operation must produce a vector");
+        require(all(results(), |t| ext.mask.ty().is_predicate() && ext.mask.ty().shape()? == t.shape()?), "mask must match vector shape");
+        require(all(ext.evl, |v| v.ty() == Type::I32), "EVL must be i32");
+    }
+}
