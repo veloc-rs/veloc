@@ -24,7 +24,6 @@ pub struct FuncBody {
     layout: crate::layout::Layout,
     store: crate::store::InstStore,
     vregs: PrimaryMap<VReg, VRegData>,
-    changed_blocks: Option<Vec<Block>>,
 }
 
 impl FuncBody {

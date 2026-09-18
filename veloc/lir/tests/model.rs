@@ -36,7 +36,7 @@ fn function_editor_preserves_layout_and_references() {
         );
         assert_eq!(f.block_insts(entry).collect::<Vec<_>>(), [b, a]);
     }
-    let (result, _) = f.track_edits(|f| {
+    let (result, _) = f.editor().track(|f| {
         f.editor().invalidate_inst(b);
         Err::<(), _>("stop")
     });
@@ -55,7 +55,7 @@ fn function_editor_preserves_layout_and_references() {
         .editor()
         .writer()
         .write(veloc_lir::MachineOpcode::Target(4), &[], &[], &[]);
-    let (tail, changes) = f.track_edits(|f| {
+    let (tail, changes) = f.editor().track(|f| {
         f.editor().insert_after(a, c);
         f.editor().insert_before(c, d);
         let tail = f.editor().split_block(d);
@@ -80,7 +80,9 @@ fn function_editor_preserves_layout_and_references() {
     let y = f.editor().alloc_vreg(Type::I64);
     let branch = f.editor().writer().br(entry);
     f.editor().append_inst(exit, branch);
-    let (_, changes) = f.track_edits(|f| f.editor().redirect_edge(branch, 0, new, &[x]));
+    let (_, changes) = f
+        .editor()
+        .track(|f| f.editor().redirect_edge(branch, 0, new, &[x]));
     assert!(changes.insts.contains(&branch));
     assert_eq!(f.uses(x).count(), 1);
     f.editor().redirect_edge(branch, 0, entry, &[y]);
@@ -94,11 +96,51 @@ fn function_editor_preserves_layout_and_references() {
     assert_eq!(cloned.uses(y).count(), 1);
     f.check_refs().unwrap();
     cloned.check_refs().unwrap();
+    // Split builders and reborrowed editors retain the same notification sink.
+    let ((created, snapshot), changes) = f.editor().track(|edit| {
+        let (mut regs, mut insts) = edit.instruction_parts();
+        let dst = regs.alloc(veloc_lir::VRegData {
+            ty: Type::I64,
+            bank: None,
+        });
+        let created = insts.writer().copy(Writable(dst), x);
+        edit.append_inst(entry, created);
+        edit.replace_uses(x.as_vreg().unwrap(), y.as_vreg().unwrap());
+        (created, MachineFunction::clone(edit))
+    });
+    assert!(changes.insts.contains(&created));
+    assert_eq!(f.inst(created).inputs(), &[y]);
+    let mut snapshot = snapshot;
+    let (_, changes) = snapshot
+        .editor()
+        .track(|edit| edit.set_inst_input(created, 0, x));
+    assert_eq!(changes.insts, [created]);
+    assert_eq!(f.inst(created).inputs(), &[y]);
+    f.editor().invalidate_inst(created);
+
+    // RAUW reports every existing owner, not only newly built instructions.
+    let user = f.editor().writer().copy(Writable(x), y);
+    let (_, changes) = f.editor().track(|edit| {
+        edit.replace_uses(y.as_vreg().unwrap(), x.as_vreg().unwrap());
+    });
+    assert!(changes.insts.contains(&user));
+    f.editor().invalidate_inst(user);
+
+    // Nested sessions cannot silently divert notifications from the outer one.
+    let (_, changes) = f.editor().track(|edit| {
+        let nested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            edit.track(|_| ());
+        }));
+        assert!(nested.is_err());
+        edit.move_before(a, c);
+    });
+    assert!(changes.insts.contains(&a));
+
     // Tracking is scoped even when an editor callback panics.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f.track_edits(|_| panic!("abandon edit"));
+        f.editor().track(|_| panic!("abandon edit"));
     }));
-    let (_, changes) = f.track_edits(|f| f.editor().move_before(a, c));
+    let (_, changes) = f.editor().track(|f| f.editor().move_before(a, c));
     assert!(changes.blocks.contains(&entry));
 
     // Replacements update the real layout immediately, including retained roots.

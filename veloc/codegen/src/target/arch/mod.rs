@@ -7,7 +7,7 @@ mod callconv;
 mod types;
 
 use crate::Emitter;
-pub use crate::passes::lowering::{LegalizeAction, LegalizeResult};
+pub use crate::passes::lowering::{LegalizeAction, RewriteContext};
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -395,16 +395,6 @@ impl TargetInstMetadata {
 }
 
 pub trait TargetLegalizer: Send + Sync {
-    /// Target nodes need explicit acceptance or a rewrite, just like generic nodes.
-    /// The default deliberately rejects them; a target namespace is not a proof
-    /// that a pseudo has been expanded or that its feature requirements hold.
-    fn legalize_target(
-        &self,
-        _inst: &veloc_lir::InstRef<'_>,
-    ) -> Result<Option<LegalizeAction>, crate::error::Error> {
-        Ok(None)
-    }
-
     /// Pure instruction-local query. Missing coverage is an error at the driver,
     /// never an implicit declaration of legality.
     fn legalize_action(

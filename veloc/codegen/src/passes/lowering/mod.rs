@@ -9,7 +9,7 @@ use crate::target::arch::TargetLegalizer;
 use veloc_lir::MachineFunction;
 
 pub use abi::AbiLoweringPass;
-pub use legalize::{LegalizeAction, LegalizeResult, Legalizer};
+pub use legalize::{LegalizeAction, Legalizer, RewriteContext};
 
 pub struct LegalizePass<'a> {
     legalizer: &'a dyn TargetLegalizer,

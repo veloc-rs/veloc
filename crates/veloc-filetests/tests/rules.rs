@@ -20,7 +20,9 @@ fn typed_legalization_contracts_reject_invalid_rules() {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let header = std::fs::read_to_string(root.join("codegen/defs/legalize_types.spec")).unwrap();
+    let header = ["types/defs/types.spec", "defs/type_sets.spec"]
+        .map(|path| strip_imports(std::fs::read_to_string(root.join(path)).unwrap()))
+        .join("\n");
     let target = format!(
         "{header}\n{}",
         strip_imports(
@@ -49,9 +51,11 @@ rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
                 dialect: "lir",
                 function: "decide",
                 opcode: "veloc_lir::GenericOpcode",
+                field: "veloc_lir::InstField",
                 result: "Action",
-                value_rule: "crate::passes::lowering::LegalizeAction::values",
-                rust_rule: "crate::passes::lowering::LegalizeAction::rewrite",
+                value_interface: "ValueRules",
+                value_adapter: "crate::passes::lowering::RewriteContext::replace_values",
+                rewrite: "crate::passes::lowering::LegalizeAction::rewrite",
                 legal_action: "crate::passes::lowering::LegalizeAction::Legal",
             },
         )
@@ -61,7 +65,7 @@ rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
         code.split("pub fn decide")
             .nth(1)
             .unwrap()
-            .split("#[allow(dead_code)]")
+            .split("_ => None,\n} }\n")
             .next()
             .unwrap()
             .to_owned()
@@ -76,7 +80,55 @@ rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
     assert!(!templates_only.contains("GenericOpcode::Ctpop =>"));
     assert!(!templates_only.contains("GenericOpcode::Ctlz =>"));
     assert!(!templates_only.contains("GenericOpcode::Cttz =>"));
+    for (from, to, message) in [
+        (
+            "IntCC::LtS",
+            "FloatCC::Lt",
+            "attribute constant type mismatch",
+        ),
+        ("IntCC::LtS", "IntCC::Missing", "undeclared constant"),
+    ] {
+        let error = compile(&source.replace(from, to)).unwrap_err();
+        assert!(error.message.contains(message), "{}", error.message);
+    }
+    let renamed = compile(
+        &source
+            .replace("fn emit(&mut self", "fn construct(&mut self")
+            .replace("emit = emit;", "emit = construct;"),
+    )
+    .unwrap();
+    assert!(renamed.contains("ctx.construct("));
+    for (from, to, message) in [
+        (
+            "emit = emit;",
+            "emit = missing;",
+            "undeclared rewrite method",
+        ),
+        (
+            "result: optional(RewriteValue)",
+            "result: usize",
+            "invalid signature for rewrite role emit",
+        ),
+    ] {
+        let error = compile(&source.replace(from, to)).unwrap_err();
+        assert!(error.message.contains(message), "{}", error.message);
+    }
     let output = compile(&source).unwrap();
+    assert!(!output.contains("ctx.input("));
+    assert!(!output.contains("ctx.value_type("));
+    assert!(!output.contains("ctx.bind("));
+    assert!(output.contains("destination: Option<veloc_lir::Reg>"));
+    assert!(!output.contains("pub trait Query"));
+    assert!(output.contains("&impl crate::passes::lowering::legalize::contracts::Query"));
+    // Rules use the shared Type representation without a second constant trait.
+    assert!(output.contains("veloc_types::Type::PTR"));
+    assert!(!output.contains("pub trait Type {"));
+    assert!(
+        compile(&source.replace("Type::I32 if", "Type::MISSING if"))
+            .unwrap_err()
+            .message
+            .contains("undeclared constant")
+    );
     assert!(output.contains("rewrite_widen_add"));
     assert!(!output.contains("Recipes"));
     assert!(output.contains("fn rewrite_load_displacement_host()"));
@@ -103,10 +155,10 @@ rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
     let composed = format!(
         "{source}\n{}",
         r#"
-fn twice<T: BitWord>(x: T) -> T {
+fn twice<T: Word>(x: T) -> T {
     lir::Add<T>(x, x)
 }
-fn nested<U: BitWord>(x: U) -> U {
+fn nested<U: Word>(x: U) -> U {
     let a = twice<U>(x);
     twice<U>(a)
 }
@@ -120,13 +172,13 @@ rewrite composition(inst: lir::Ctpop<Type::I32>) {
         .split("fn rewrite_composition_case1")
         .nth(1)
         .unwrap();
-    assert_eq!(body.matches("ctx.emit_integer_at(").count(), 1);
+    assert_eq!(body.matches("GenericOpcode::Constant").count(), 1);
     assert_eq!(body.matches("GenericOpcode::Add").count(), 2);
     assert!(!body.contains("nested("));
     for (extra, diagnostic) in [
-        ("fn bad<T: BitWord>(x: T) -> T { bad<T>(x) }", "recursive"),
+        ("fn bad<T: Word>(x: T) -> T { bad<T>(x) }", "recursive"),
         (
-            "fn bad<T: BitWord>(x: T) -> T { other<T>(x) } fn other<U: BitWord>(x: U) -> U { bad<U>(x) }",
+            "fn bad<T: Word>(x: T) -> T { other<T>(x) } fn other<U: Word>(x: U) -> U { bad<U>(x) }",
             "recursive",
         ),
         (
@@ -142,10 +194,7 @@ rewrite composition(inst: lir::Ctpop<Type::I32>) {
             "outside domain",
         ),
         ("fn bad(x: Type::I32) -> Type::I32 { low_bit(x) }", "arity"),
-        (
-            "fn bad<T: BitWord>(x: T) -> T { inst.src }",
-            "unbound value",
-        ),
+        ("fn bad<T: Word>(x: T) -> T { inst.src }", "unbound value"),
         (
             "fn bad(x: Type::I32) -> Type::I32 { let x = x; x }",
             "duplicate",
@@ -326,7 +375,7 @@ fn dialects() -> Dialects {
 }
 
 #[test]
-fn compiled_value_rules_execute_with_an_independent_host() {
+fn compiled_value_adapters_execute_with_an_independent_host() {
     let program = Program::compile(include_str!("fixtures/values.spec"), &dialects()).unwrap();
     let code = program
         .rust(Rust {
@@ -471,9 +520,11 @@ fn construction_functions_compose_with_checked_rust_bindings() {
             dialect: "lir",
             function: "decide",
             opcode: "crate::Opcode",
+            field: "crate::Field",
             result: "Action",
-            value_rule: "crate::values",
-            rust_rule: "crate::unused_rewrite",
+            value_interface: "ValueRules",
+            value_adapter: "crate::replace_values",
+            rewrite: "crate::rewrite",
             legal_action: "crate::unused_legal",
         },
     )
@@ -485,10 +536,13 @@ fn construction_functions_compose_with_checked_rust_bindings() {
     for (host, valid) in [
         (host.to_owned(), true),
         (
-            host.replace("ctx.emit(Opcode::Add, ty, &[x, x])", "ctx.input(0)"),
+            host.replace(
+                "ctx.emit(Opcode::Add, ty, &[x, x], &[], None)",
+                "ctx.editor()",
+            ),
             false,
         ),
-        (host.replace("-> C::Value {", "-> () {"), false),
+        (host.replace("-> Value {", "-> () {"), false),
     ] {
         fs::write(&source, format!("{host}\nmod generated {{ {code} }}")).unwrap();
         let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))

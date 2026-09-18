@@ -5,13 +5,12 @@
 
 mod frame;
 mod legalize;
-mod numeric;
 mod operand;
 mod pass_config;
 mod select;
 
 pub use crate::isel::SelectResult;
-use crate::passes::lowering::{LegalizeAction, LegalizeResult};
+use crate::passes::lowering::{LegalizeAction, RewriteContext};
 use crate::target::arch::{
     CallConv as TargetCallConv, LoweringContext, OperandConstraintSet, SelectionContext,
     TargetArch, TargetFrameLowering, TargetInstructionSelector, TargetLegalizer,
@@ -29,7 +28,7 @@ use veloc_lir::{
     GenericOpcode, InstExtra, InstField, InstId, MachineFunction, MachineOpcode, Reg, VReg,
     Writable,
 };
-use veloc_mir::{FloatCC, IntCC, Type, TypeInfo};
+use veloc_mir::{FloatCC, Type, TypeInfo};
 
 /// x86_64 专属的 Context 扩展 (架构私有)
 pub trait X86LoweringContext: LoweringContext {

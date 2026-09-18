@@ -7,11 +7,13 @@ use crate::target::arch::TargetEmitter;
 use veloc_lir::{MachineFunction, MachineOpcode};
 
 /// x86_64 机器码发射器实现
-pub struct X86_64CodeEmitter;
+pub struct X86_64CodeEmitter {
+    features: super::inst::FeatureSet,
+}
 
 impl X86_64CodeEmitter {
-    pub fn new() -> Self {
-        Self
+    pub fn new(features: super::inst::FeatureSet) -> Self {
+        Self { features }
     }
 }
 
@@ -44,6 +46,16 @@ impl TargetEmitter for X86_64CodeEmitter {
             }
             MachineOpcode::Target(target_inst_code) => {
                 let target = crate::target::x86_64::inst::TargetInst::from_u32(*target_inst_code);
+                if target.is_pseudo() || !target.has_encoding() {
+                    return Err(crate::Error::codegen(alloc::format!(
+                        "{target:?} has no final encoding"
+                    )));
+                }
+                if !self.features.contains_all(target.required_features()) {
+                    return Err(crate::Error::codegen(alloc::format!(
+                        "{target:?} requires unavailable target features"
+                    )));
+                }
                 if let Some(access) = inst.memory() {
                     let shape = super::inst::target_inst_metadata(target).memory;
                     if shape != Some((access.kind, access.bytes))

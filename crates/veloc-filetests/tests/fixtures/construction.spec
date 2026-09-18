@@ -1,4 +1,5 @@
-type Type = rust("crate::Ty") { const I32: Self; }
+type I32 = int(32);
+type Type = rust("crate::Ty");
 type Action = rust("crate::Action");
 type Query = rust("crate::Q") {
     fn signature(&self, results: sequence(sequence(Type)), inputs: sequence(sequence(Type))) -> bool;
@@ -21,4 +22,18 @@ rule shared(inst: lir::Ctlz<Type::I32>) {
         let y = host_twice<Type::I32>(x);
         x
     }
+}
+
+type RewriteValue = rust("crate::Value");
+type RewriteOpcode = rust("crate::Opcode");
+type RewriteField = rust("crate::Field");
+type RewriteContext = rust("crate::Eval") {
+    fn emit(&mut self, opcode: RewriteOpcode, ty: Type,
+        inputs: sequence(RewriteValue), fields: sequence(RewriteField),
+        result: optional(RewriteValue)) -> RewriteValue;
+}
+
+rewrite_interface ValueRules {
+    contract = RewriteContext;
+    emit = emit;
 }

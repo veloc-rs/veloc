@@ -1,15 +1,7 @@
-import "../legalize_types.spec";
 import "../legalize.spec";
 
 // Instruction-local legality and concrete rewrite plans. Order is priority.
 type Action = rust("crate::passes::lowering::LegalizeAction");
-type Query = rust("crate::passes::lowering::legalize::Query") {
-    fn signature(&self, results: sequence(sequence(Type)), inputs: sequence(sequence(Type))) -> bool;
-    fn same(&self, indices: sequence(u32)) -> bool;
-    fn value_type(&self, result: bool, index: u32) -> Type;
-    fn input_is(&self, index: u32, ty: Type) -> bool;
-    fn signed_offset(&self, bits: u32) -> bool;
-}
 type Instruction = rust("crate::target::x86_64::inst::TargetInst") {
     const POPCNT32: Self;
     const POPCNT64: Self;
@@ -18,7 +10,7 @@ type Target = rust("crate::target::x86_64::inst::FeatureSet") {
     fn supports(&self, instruction: Instruction) -> bool;
 }
 
-rule arg_0<T: Scalar>(inst: lir::Arg<T>) {
+rule arg_0<T: Scalar | Type::PTR>(inst: lir::Arg<T>) {
     action = legal;
 }
 
@@ -91,7 +83,7 @@ rule icmp_0<T: WordOrPtr>(inst: lir::Icmp<T>) {
     action = legal;
 }
 
-rule fcmp_0<T: Float>(inst: lir::Fcmp<T>) {
+rule fcmp_0<T: ScalarFloat>(inst: lir::Fcmp<T>) {
     action = legal;
 }
 
@@ -103,11 +95,11 @@ rule select_1<T: WordValue>(inst: lir::Select<T>) {
     action = legal;
 }
 
-rule load_0<T: Scalar>(inst: lir::Load<T>) {
+rule load_0<T: Scalar | Type::PTR>(inst: lir::Load<T>) {
     action = legal;
 }
 
-rule stackload_0<T: Scalar>(inst: lir::StackLoad<T>) {
+rule stackload_0<T: Scalar | Type::PTR>(inst: lir::StackLoad<T>) {
     action = legal;
 }
 
@@ -115,37 +107,37 @@ rule stackaddr_0(inst: lir::StackAddr) {
     action = legal;
 }
 
-rule stackstore_0<T: Scalar>(inst: lir::StackStore<T>) {
+rule stackstore_0<T: Scalar | Type::PTR>(inst: lir::StackStore<T>) {
     action = legal;
 }
 
-rule store_0<T: Scalar>(inst: lir::Store<T>) {
+rule store_0<T: Scalar | Type::PTR>(inst: lir::Store<T>) {
     action = legal;
 }
 
-rule offsetload_0_large<T: Scalar>(inst: lir::OffsetLoad<T>, query: &Query) {
+rule offsetload_0_large<T: Scalar | Type::PTR>(inst: lir::OffsetLoad<T>, query: &Query) {
     when = !query.signed_offset(32);
     action = expand(load_displacement, inst);
 }
 
-rule offsetload_0<T: Scalar>(inst: lir::OffsetLoad<T>) {
+rule offsetload_0<T: Scalar | Type::PTR>(inst: lir::OffsetLoad<T>) {
     action = legal;
 }
 
-rule offsetstore_0_large<T: Scalar>(inst: lir::OffsetStore<T>, query: &Query) {
+rule offsetstore_0_large<T: Scalar | Type::PTR>(inst: lir::OffsetStore<T>, query: &Query) {
     when = !query.signed_offset(32);
     action = expand(store_displacement, inst);
 }
 
-rule offsetstore_0<T: Scalar>(inst: lir::OffsetStore<T>) {
+rule offsetstore_0<T: Scalar | Type::PTR>(inst: lir::OffsetStore<T>) {
     action = legal;
 }
 
-rule indexedload_0<T: Number>(inst: lir::IndexedLoad<T>) {
+rule indexedload_0<T: Word | ScalarFloat>(inst: lir::IndexedLoad<T>) {
     action = legal;
 }
 
-rule indexedstore_0<T: Number>(inst: lir::IndexedStore<T>) {
+rule indexedstore_0<T: Word | ScalarFloat>(inst: lir::IndexedStore<T>) {
     action = legal;
 }
 
@@ -177,23 +169,33 @@ rule fabs64(inst: lir::Fabs<Type::F64>) {
     action = expand(fabs_bits64, inst);
 }
 
-rule sitofp_0<T: Float, U: Word>(inst: lir::Sitofp<T, U>) {
+rule sitofp_0<T: ScalarFloat, U: Word>(inst: lir::Sitofp<T, U>) {
     action = legal;
 }
 
-rule fptosi_0<T: Word, U: Float>(inst: lir::Fptosi<T, U>) {
+rule fptosi_0<T: Word, U: ScalarFloat>(inst: lir::Fptosi<T, U>) {
     action = legal;
 }
 
-rule uitofp_0<T: Float, U: Word>(inst: lir::Uitofp<T, U>) {
-    action = expand(unsigned_to_float, inst);
+rule uitofp32<T: ScalarFloat>(inst: lir::Uitofp<T, Type::I32>) {
+    replace = unsigned32_to_float<T>(inst.src);
+}
+rule uitofp64<T: ScalarFloat>(inst: lir::Uitofp<T, Type::I64>) {
+    replace = unsigned64_to_float<T>(inst.src);
+}
+rule fptoui32<T: ScalarFloat>(inst: lir::Fptoui<Type::I32, T>) {
+    replace = float_to_unsigned32<T>(inst.src);
+}
+rule f32_to_u64(inst: lir::Fptoui<Type::I64, Type::F32>) {
+    replace = float_to_unsigned64<Type::F32>(
+        inst.src, lir::Bitcast<Type::F32>(lir::Constant<Type::I32>(0x5f000000)));
+}
+rule f64_to_u64(inst: lir::Fptoui<Type::I64, Type::F64>) {
+    replace = float_to_unsigned64<Type::F64>(
+        inst.src, lir::Bitcast<Type::F64>(lir::Constant<Type::I64>(0x43e0000000000000)));
 }
 
-rule fptoui_0<T: Word, U: Float>(inst: lir::Fptoui<T, U>) {
-    action = expand(float_to_unsigned, inst);
-}
-
-rule fsqrt_0<T: Float>(inst: lir::Fsqrt<T>) {
+rule fsqrt_0<T: ScalarFloat>(inst: lir::Fsqrt<T>) {
     action = legal;
 }
 
@@ -241,7 +243,7 @@ rule ptradd_0(inst: lir::PtrAdd<Type::I64>) {
     action = legal;
 }
 
-rule copy_0<T: Scalar>(inst: lir::Copy<T>) {
+rule copy_0<T: Scalar | Type::PTR>(inst: lir::Copy<T>) {
     action = legal;
 }
 
@@ -261,11 +263,11 @@ rule bitcast_3(inst: lir::Bitcast<Type::I64, Type::F64>) {
     action = legal;
 }
 
-rule fconstant_0<T: Float>(inst: lir::Fconstant<T>) {
+rule fconstant_0<T: ScalarFloat>(inst: lir::Fconstant<T>) {
     action = legal;
 }
 
-rule fadd_0<T: Float>(inst: lir::Fadd<T> | lir::Fsub<T> | lir::Fmul<T> | lir::Fdiv<T>) {
+rule fadd_0<T: ScalarFloat>(inst: lir::Fadd<T> | lir::Fsub<T> | lir::Fmul<T> | lir::Fdiv<T>) {
     action = legal;
 }
 
@@ -296,11 +298,7 @@ rule cttz<T: Word>(inst: lir::Cttz<T>) {
     action = expand(trailing_zeros, inst);
 }
 
-rewrite unsigned_to_float<T: Float, U: Word>(inst: lir::Uitofp<T, U>)
-    = rust("crate::target::x86_64::lowering::numeric::unsigned_conversion");
-rewrite float_to_unsigned<T: Word, U: Float>(inst: lir::Fptoui<T, U>)
-    = rust("crate::target::x86_64::lowering::numeric::unsigned_conversion");
-rewrite load_displacement<T: Scalar>(inst: lir::OffsetLoad<T>)
+rewrite load_displacement<T: Scalar | Type::PTR>(inst: lir::OffsetLoad<T>)
     = rust("crate::target::x86_64::lowering::legalize::displacement");
-rewrite store_displacement<T: Scalar>(inst: lir::OffsetStore<T>)
+rewrite store_displacement<T: Scalar | Type::PTR>(inst: lir::OffsetStore<T>)
     = rust("crate::target::x86_64::lowering::legalize::displacement");

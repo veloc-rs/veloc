@@ -12,11 +12,14 @@ pub struct DecisionRust<'a> {
     pub dialect: &'a str,
     pub function: &'a str,
     pub opcode: &'a str,
+    pub field: &'a str,
     pub result: &'a str,
-    /// Runtime adapter for a generated value rewrite: (name, body) -> action.
-    pub value_rule: &'a str,
-    /// Runtime constructor for host rewrites; Rust checks the callback signature.
-    pub rust_rule: &'a str,
+    /// Explicit rewrite_interface declaration used for value construction.
+    pub value_interface: &'a str,
+    /// Value-building adapter: (rewrite context, body) -> rewrite result.
+    pub value_adapter: &'a str,
+    /// Shared action constructor for generated and host rewrites.
+    pub rewrite: &'a str,
     pub legal_action: &'a str,
 }
 
@@ -49,10 +52,15 @@ fn compile(
         return Err(Error::at(source, 0, "invalid Rust function name"));
     }
     interfaces::rust_path(source, 0, config.opcode)?;
-    interfaces::rust_path(source, 0, config.value_rule)?;
-    interfaces::rust_path(source, 0, config.rust_rule)?;
+    interfaces::rust_path(source, 0, config.field)?;
+    interfaces::rust_path(source, 0, config.value_adapter)?;
+    interfaces::rust_path(source, 0, config.rewrite)?;
     interfaces::rust_path(source, 0, config.legal_action)?;
-    let bindings = interfaces::Bindings::compile(&declarations, source)?;
+    let bindings = interfaces::Bindings::compile(declarations, source)?;
+    let interface = ValueInterface::compile(declarations, source, config, &bindings)?;
+    let emit_method = &interface.emit;
+    let bound = &interface.contract;
+    let logical_types = crate::types::Types::compile(declarations, source)?;
     let types: BTreeMap<_, _> = declarations
         .iter()
         .filter_map(|d| matches!(d.kind, DeclKind::Type { .. }).then_some((d.name.as_str(), d)))
@@ -65,14 +73,14 @@ fn compile(
         })
         .collect();
     let operations: BTreeMap<_, _> = defs.operations().map(|op| (op.name.clone(), op)).collect();
-    let functions = super::functions::Functions::compile(source, &declarations, &aliases)?;
+    let functions = super::functions::Functions::compile(source, declarations, &aliases)?;
     functions.validate(source, &operations, defs, config.dialect)?;
     let result = bindings
         .0
         .get(config.result)
         .ok_or_else(|| Error::at(source, 0, "unknown decision result type"))?;
     let result_path = result.path.clone();
-    let mut out = interfaces::declarations(&declarations, source, "host")?;
+    let mut out = interfaces::declarations(declarations, source, "host")?;
     let mut bodies = String::new();
     let mut hosts = BTreeMap::new();
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -112,15 +120,12 @@ fn compile(
             writeln!(
                 bodies,
                 "fn rewrite_{}_host() -> {result_path} {{ {}({:?}, {path}) }}",
-                d.name, config.rust_rule, d.name
+                d.name, config.rewrite, d.name
             )
             .unwrap();
             format!("rewrite_{}_host()", d.name)
         } else {
-            format!(
-                "{}({:?}, |ctx| rewrite_{}_case1(ctx))",
-                config.value_rule, d.name, d.name
-            )
+            format!("rewrite_{}_case1_action()", d.name)
         };
         if rewrites
             .insert(d.name.clone(), (sig, roots, action))
@@ -131,7 +136,9 @@ fn compile(
     }
     let mut names = BTreeSet::new();
     for d in declarations {
-        if matches!(d.kind, DeclKind::Type { .. } | DeclKind::TypeSet(_)) {
+        if matches!(d.kind, DeclKind::Type { .. } | DeclKind::TypeSet(_))
+            || matches!(&d.kind, DeclKind::Fields(k) if k == "rewrite_interface")
+        {
             continue;
         }
         if !names.insert(&d.name) {
@@ -190,6 +197,7 @@ fn compile(
         let expressions = Expressions {
             source,
             types: &types,
+            logical_types: &logical_types,
             bindings: &bindings,
             hosts: &sig.hosts,
             signature: &sig,
@@ -305,19 +313,39 @@ fn compile(
                     ));
                 }
                 let function = format!("rewrite_{}_case{}", d.name, seen.len());
-                writeln!(bodies, "fn {function}<C: ValueRewrite>(ctx: &mut C) {{").unwrap();
+                let value_ty = &interface.value;
+                let type_ty = &bindings.0["Type"].path;
+                let mut parameters = vec!["ctx: &mut C".to_owned()];
+                let mut arguments = vec!["builder".to_owned()];
                 for (i, _) in sig.inputs.iter().enumerate() {
-                    writeln!(bodies, "let input{i} = ctx.input({i});").unwrap();
+                    parameters.push(format!("input{i}: {value_ty}"));
+                    arguments.push(format!("inputs[{i}]"));
                 }
-                for (generic, _) in &sig.generics {
+                for (i, generic) in sig.generics.keys().enumerate() {
+                    if !insts.iter().any(|inst| {
+                        inst.ty.name == *generic
+                            || matches!(&inst.op, super::typed::Call::Host { types, .. }
+                            if types.iter().any(|ty| ty.name == *generic))
+                    }) {
+                        continue;
+                    }
+                    parameters.push(format!("ty{i}: {type_ty}"));
                     let (result, index) = sig.anchor(generic).unwrap();
-                    writeln!(
-                        bodies,
-                        "let ty{} = ctx.value_type({result}, {index});",
-                        sig.generics.keys().position(|n| n == generic).unwrap()
-                    )
-                    .unwrap();
+                    let index = if result {
+                        index
+                    } else {
+                        sig.results.len() + index
+                    };
+                    arguments.push(format!("_types[{index}]"));
                 }
+                parameters.push(format!("destination: Option<{value_ty}>"));
+                arguments.push("Some(destination)".into());
+                writeln!(
+                    bodies,
+                    "#[allow(unused_variables)]\nfn {function}<C: {bound}>({}) -> {value_ty} {{",
+                    parameters.join(", ")
+                )
+                .unwrap();
                 for inst in &insts {
                     let ty = if sig.generics.contains_key(&inst.ty.name) {
                         format!(
@@ -331,25 +359,46 @@ fn compile(
                         expressions.constant(&inst.ty.name, emit.offset)?
                     };
                     let destination = if inst.result == value {
-                        "Some(0)"
+                        "destination"
                     } else {
                         "None"
                     };
-                    let binding = if inst.result == value
-                        && !insts.iter().any(|user| user.inputs.contains(&value))
-                    {
-                        String::new()
-                    } else {
-                        format!("let {} = ", inst.result)
-                    };
+                    let binding = format!("let {} = ", inst.result);
                     match &inst.op {
                         super::typed::Call::Integer(op, immediate) => {
-                            writeln!(bodies, "{binding}ctx.emit_integer_at({}::{op}, {ty}, {immediate}, {destination});", config.opcode).unwrap();
+                            let variant = operations[op]
+                                .attributes
+                                .first()
+                                .ok_or_else(|| {
+                                    Error::at(
+                                        source,
+                                        emit.offset,
+                                        "integer attribute requires a storage codec",
+                                    )
+                                })?
+                                .2
+                                .as_str();
+                            writeln!(bodies, "{binding}ctx.{emit_method}({}::{op}, {ty}, &[], &[{}::{variant}({immediate})], {destination});", config.opcode, config.field).unwrap();
+                        }
+                        super::typed::Call::Attributed(op, attributes) => {
+                            let fields = attributes
+                                .iter()
+                                .map(|(variant, name)| {
+                                    Ok(format!(
+                                        "{}::{variant}({})",
+                                        config.field,
+                                        expressions.constant(name, emit.offset)?
+                                    ))
+                                })
+                                .collect::<Result<Vec<_>, Error>>()?
+                                .join(", ");
+                            writeln!(bodies, "{binding}ctx.{emit_method}({}::{op}, {ty}, &[{}], &[{fields}], {destination});",
+                                config.opcode, inst.inputs.join(", ")).unwrap();
                         }
                         super::typed::Call::Instruction(op) => {
                             writeln!(
                                 bodies,
-                                "{binding}ctx.emit_at({}::{op}, {ty}, &[{}], {destination});",
+                                "{binding}ctx.{emit_method}({}::{op}, {ty}, &[{}], &[], {destination});",
                                 config.opcode,
                                 inst.inputs.join(", ")
                             )
@@ -378,14 +427,12 @@ fn compile(
                         }
                     }
                 }
-                if !insts
-                    .iter()
-                    .any(|i| i.result == value && !matches!(i.op, super::typed::Call::Host { .. }))
-                {
-                    writeln!(bodies, "ctx.bind(0, {value});").unwrap();
-                }
-                bodies.push_str("}\n");
-                format!("{}({:?}, |ctx| {function}(ctx))", config.value_rule, d.name)
+                writeln!(bodies, "{value}\n}}").unwrap();
+                writeln!(bodies,
+                    "fn {function}_action() -> {result_path} {{ {}({:?}, |ctx| {}(ctx, |builder, inputs, _types, destination| {function}({}))) }}",
+                    config.rewrite, d.name, config.value_adapter, arguments.join(", ")
+                ).unwrap();
+                format!("{function}_action()")
             } else {
                 expressions.rust(emit)?
             };
@@ -410,7 +457,11 @@ fn compile(
     hosts.insert("query".into(), "Query".into());
     let args = hosts
         .iter()
-        .map(|(name, ty)| format!("{name}: &impl {ty}"))
+        .map(|(name, ty)| {
+            let contract = bindings.method_trait(ty, "host", false);
+            let contract = contract.strip_prefix("host::").unwrap_or(&contract);
+            format!("{name}: &impl {contract}")
+        })
         .collect::<Vec<_>>()
         .join(", ");
     writeln!(
@@ -434,19 +485,7 @@ fn compile(
         .get("Type")
         .ok_or_else(|| Error::at(source, 0, "value rules require a Type binding"))?
         .path;
-    writeln!(out, "#[allow(dead_code)]\n    pub trait ValueBuild {{
-        type Value: Copy;
-        fn emit(&mut self, opcode: {}, ty: {ty}, inputs: &[Self::Value]) -> Self::Value;
-        fn emit_integer(&mut self, opcode: {}, ty: {ty}, value: i64) -> Self::Value;
-    }}
-    pub trait ValueRewrite: ValueBuild {{
-        fn input(&self, index: usize) -> Self::Value;
-        fn value_type(&self, result: bool, index: usize) -> {ty};
-        fn emit_at(&mut self, opcode: {}, ty: {ty}, inputs: &[Self::Value], result: Option<usize>) -> Self::Value;
-        fn emit_integer_at(&mut self, opcode: {}, ty: {ty}, value: i64, result: Option<usize>) -> Self::Value;
-        fn bind(&mut self, result: usize, value: Self::Value);
-    }}", config.opcode, config.opcode, config.opcode, config.opcode).unwrap();
-    out.push_str(&functions.wrappers(ty));
+    out.push_str(&functions.wrappers(ty, bound, &interface.value));
     out.push_str(&bodies);
     Ok(out)
 }
@@ -456,6 +495,7 @@ struct Expressions<'a> {
     rewrites: &'a BTreeMap<String, (Signature, Vec<String>, String)>,
     roots: &'a [String],
     source: &'a str,
+    logical_types: &'a crate::types::Types,
     types: &'a BTreeMap<&'a str, &'a Decl>,
     bindings: &'a interfaces::Bindings,
     hosts: &'a [(String, String)],
@@ -544,6 +584,12 @@ impl Expressions<'_> {
     fn constant(&self, name: &str, offset: usize) -> Result<String, Error> {
         let fail = || Error::at(self.source, offset, format!("undeclared constant {name}"));
         let (owner, member) = name.split_once("::").ok_or_else(fail)?;
+        if owner == "Type" && self.logical_types.exact.contains_key(member) {
+            return Ok(format!(
+                "{}::{member}",
+                self.bindings.0.get(owner).ok_or_else(fail)?.path
+            ));
+        }
         let declaration = self.types.get(owner).ok_or_else(fail)?;
         if !declaration
             .members()
@@ -552,9 +598,12 @@ impl Expressions<'_> {
         {
             return Err(fail());
         }
+        let interface = self.bindings.method_trait(owner, "host", true);
+        let interface = interface.strip_prefix("host::").unwrap_or(&interface);
         Ok(format!(
-            "<{} as {owner}>::{member}",
-            self.bindings.0.get(owner).ok_or_else(fail)?.path
+            "<{} as {}>::{member}",
+            self.bindings.0.get(owner).ok_or_else(fail)?.path,
+            interface
         ))
     }
     fn match_expr(&self, value: &Node, arms: &[crate::syntax::MatchArm]) -> Result<String, Error> {
@@ -698,6 +747,121 @@ impl Expressions<'_> {
                 )
             }
             _ => return Err(fail()),
+        })
+    }
+}
+
+struct ValueInterface {
+    contract: String,
+    value: String,
+    emit: String,
+}
+impl ValueInterface {
+    fn compile(
+        declarations: &[Decl],
+        source: &str,
+        config: DecisionRust<'_>,
+        bindings: &interfaces::Bindings,
+    ) -> Result<Self, Error> {
+        use crate::syntax::Results;
+        let fail = |message| Error::at(source, 0, message);
+        let records: Vec<_> = declarations
+            .iter()
+            .filter(|d| {
+                d.name == config.value_interface
+                    && matches!(&d.kind, DeclKind::Fields(k) if k == "rewrite_interface")
+            })
+            .collect();
+        let [record] = records.as_slice() else {
+            return Err(fail("expected one rewrite_interface declaration"));
+        };
+        for key in record.fields.keys() {
+            if !matches!(key.as_str(), "contract" | "emit") {
+                return Err(Error::at(
+                    source,
+                    record.offset,
+                    "unknown rewrite interface role",
+                ));
+            }
+        }
+        let name = |role: &str| -> Result<String, Error> {
+            match record.fields.get(role) {
+                Some(Node {
+                    kind: Kind::Name(name),
+                    ..
+                }) => Ok(name.clone()),
+                _ => Err(Error::at(
+                    source,
+                    record.offset,
+                    format!("missing rewrite interface role {role}"),
+                )),
+            }
+        };
+        let owner = name("contract")?;
+        let declaration = declarations
+            .iter()
+            .find(|d| d.name == owner && interfaces::rust_binding(d).is_some())
+            .ok_or_else(|| fail("rewrite interface requires a Rust-bound type"))?;
+        let emit = name("emit")?;
+        let method = declaration
+            .members()
+            .iter()
+            .find(|m| m.name == emit)
+            .ok_or_else(|| {
+                Error::at(
+                    source,
+                    record.offset,
+                    format!("undeclared rewrite method {emit}"),
+                )
+            })?;
+        let known = bindings.0.keys().cloned().collect();
+        let signature = method
+            .signature()
+            .ok_or_else(|| fail("rewrite role requires a method"))?;
+        let Results::Fixed(results) = &signature.results else {
+            return Err(fail("invalid emit result"));
+        };
+        let [result] = results.as_slice() else {
+            return Err(fail("emit must return one value"));
+        };
+        let value = interfaces::Type::parse(&result.ty, source, &known)?.rust(bindings);
+        let ty = &bindings
+            .0
+            .get("Type")
+            .ok_or_else(|| fail("missing Type binding"))?
+            .path;
+        let expected = vec![
+            config.opcode.to_owned(),
+            ty.clone(),
+            format!("&[{value}]"),
+            format!("&[{}]", config.field),
+            format!("Option<{value}>"),
+        ];
+        let valid_receiver = signature.params.first().is_some_and(|p| {
+            p.name == "self" && matches!(&p.ty.kind, Kind::Call(n, _) if n == "mut_ref")
+        });
+        let actual = signature
+            .params
+            .iter()
+            .skip(1)
+            .map(|p| interfaces::Type::parse(&p.ty, source, &known).map(|t| t.rust(bindings)))
+            .collect::<Result<Vec<_>, _>>()?;
+        if !valid_receiver || actual != expected {
+            return Err(Error::at(
+                source,
+                method.offset,
+                "invalid signature for rewrite role emit",
+            ));
+        }
+        let contract = bindings.method_trait(&owner, "host", false);
+        let contract = contract
+            .strip_prefix("host::")
+            .unwrap_or(&contract)
+            .to_owned();
+        Ok(Self {
+            contract,
+            value,
+            emit,
         })
     }
 }

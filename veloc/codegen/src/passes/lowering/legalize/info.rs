@@ -1,9 +1,6 @@
 use crate::error::{Error, Result};
-use alloc::vec::Vec;
 use smallvec::SmallVec;
-use veloc_lir::{
-    GenericOpcode, InstBuild, InstField, InstId, InstRef, MachineFunction, MemoryAccess,
-};
+use veloc_lir::{GenericOpcode, InstField, InstId, InstRef, MachineFunction, MemoryAccess};
 use veloc_mir::Type;
 
 /// Instruction-local facts, also constructible for prospective instructions.
@@ -34,26 +31,40 @@ impl Query {
             memory: inst.memory(),
         })
     }
+}
 
-    pub fn signature(&self, results: &[&[Type]], inputs: &[&[Type]]) -> bool {
+pub mod contracts {
+    include!(concat!(env!("OUT_DIR"), "/legalize_contract.rs"));
+}
+
+impl contracts::Query for Query {
+    fn value_type(&self, result: bool, index: u32) -> Type {
+        if result {
+            self.results[index as usize]
+        } else {
+            self.inputs[index as usize]
+        }
+    }
+
+    fn signature(&self, results: &[&[Type]], inputs: &[&[Type]]) -> bool {
         fn matches(actual: &[Type], sets: &[&[Type]]) -> bool {
             actual.len() == sets.len() && actual.iter().zip(sets).all(|(ty, set)| set.contains(ty))
         }
         matches(&self.results, results) && matches(&self.inputs, inputs)
     }
 
-    pub fn same(&self, indices: &[u32]) -> bool {
+    fn same(&self, indices: &[u32]) -> bool {
         let ty = |i: u32| self.results.iter().chain(&self.inputs).nth(i as usize);
-        indices
-            .first()
-            .is_none_or(|&first| ty(first).is_some() && indices.iter().all(|&i| ty(i) == ty(first)))
+        indices.split_first().is_none_or(|(&first, rest)| {
+            ty(first).is_some_and(|first| rest.iter().all(|&i| ty(i) == Some(first)))
+        })
     }
 
-    pub fn input_is(&self, index: u32, ty: Type) -> bool {
+    fn input_is(&self, index: u32, ty: Type) -> bool {
         self.inputs.get(index as usize) == Some(&ty)
     }
 
-    pub fn signed_offset(&self, bits: u32) -> bool {
+    fn signed_offset(&self, bits: u32) -> bool {
         self.fields
             .iter()
             .find_map(|field| match field {
@@ -74,7 +85,7 @@ impl Query {
 #[derive(Clone, Copy)]
 pub struct Rewrite {
     pub name: &'static str,
-    pub apply: fn(InstId, &mut MachineFunction) -> Result<LegalizeResult>,
+    pub apply: fn(&mut RewriteContext<'_>) -> Result<()>,
 }
 impl core::fmt::Debug for Rewrite {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -86,120 +97,134 @@ impl core::fmt::Debug for Rewrite {
 pub enum LegalizeAction {
     Legal,
     Rewrite(Rewrite),
-    Values {
-        name: &'static str,
-        apply: fn(&mut ValueRewriter<'_>),
-    },
 }
 
 impl LegalizeAction {
-    pub fn rewrite(
-        name: &'static str,
-        apply: fn(InstId, &mut MachineFunction) -> Result<LegalizeResult>,
-    ) -> Self {
+    pub fn rewrite(name: &'static str, apply: fn(&mut RewriteContext<'_>) -> Result<()>) -> Self {
         Self::Rewrite(Rewrite { name, apply })
     }
-    pub fn values(name: &'static str, apply: fn(&mut ValueRewriter<'_>)) -> Self {
-        Self::Values { name, apply }
-    }
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Legal => "legal",
-            Self::Rewrite(r) => r.name,
-            Self::Values { name, .. } => name,
-        }
-    }
-    pub fn apply(self, id: InstId, f: &mut MachineFunction) -> Result<LegalizeResult> {
-        match self {
-            Self::Legal => unreachable!("legal instructions do not have rewrite bodies"),
-            Self::Rewrite(r) => (r.apply)(id, f),
-            Self::Values { apply, .. } => {
-                let mut rewriter = ValueRewriter {
-                    root: id,
-                    function: f,
-                    output: Vec::new(),
-                };
-                apply(&mut rewriter);
-                Ok(LegalizeResult::Replace(rewriter.output))
-            }
-        }
+}
+
+impl Rewrite {
+    pub(super) fn apply(self, id: InstId, f: &mut veloc_lir::FuncEditor<'_>) -> Result<()> {
+        (self.apply)(&mut RewriteContext {
+            root: id,
+            function: f.editor(),
+        })
     }
 }
 
-/// Value-only rewrite adapter. Graph edits remain in the instruction store;
-/// generated rules cannot mutate unrelated values or silently change types.
-pub struct ValueRewriter<'a> {
+/// A rewrite can read the function and edit through its invariant-preserving
+/// editor. It cannot replace the function or bypass scoped change tracking.
+/// Edits commit immediately; this is not a rollback transaction.
+pub struct RewriteContext<'a> {
     root: InstId,
-    function: &'a mut MachineFunction,
-    output: Vec<InstId>,
+    function: veloc_lir::FuncEditor<'a>,
 }
-impl ValueRewriter<'_> {
-    pub fn emit_integer(
+impl core::ops::Deref for RewriteContext<'_> {
+    type Target = MachineFunction;
+    fn deref(&self) -> &Self::Target {
+        &self.function
+    }
+}
+impl RewriteContext<'_> {
+    /// Snapshot the matched values/types, then build with explicit arguments.
+    /// Construction may reuse the destination; existing-value results use RAUW.
+    /// Edits are immediate and are not rolled back on failure.
+    pub fn replace_values(
         &mut self,
-        opcode: GenericOpcode,
-        ty: Type,
-        value: i64,
-        result: Option<usize>,
-    ) -> veloc_lir::Reg {
-        let dst = match result {
-            Some(i) => self.function.inst(self.root).results()[i],
-            None => self.function.editor().alloc_vreg(ty),
-        };
-        self.output.push(self.function.editor().writer().write(
-            veloc_lir::MachineOpcode::Generic(opcode),
-            &[dst],
-            &[],
-            &[InstField::Imm(value)],
-        ));
-        dst
+        build: impl FnOnce(&mut Self, &[veloc_lir::Reg], &[Type], veloc_lir::Reg) -> veloc_lir::Reg,
+    ) -> Result<()> {
+        let root = self.function.inst(self.root);
+        assert_eq!(root.results().len(), 1, "value rewrite requires one result");
+        let destination = root.results()[0];
+        let inputs: SmallVec<[veloc_lir::Reg; 3]> = root.inputs().iter().copied().collect();
+        let types: SmallVec<[Type; 4]> = core::iter::once(destination)
+            .chain(inputs.iter().copied())
+            .map(|reg| self.function.vreg_data(reg).ty)
+            .collect();
+        let value = build(self, &inputs, &types, destination);
+        if value != destination {
+            assert_eq!(
+                self.function.vreg_data(destination).ty,
+                self.function.vreg_data(value).ty,
+                "replacement result type"
+            );
+            replace_uses(&mut self.function, destination, value);
+        }
+        self.function.invalidate_inst(self.root);
+        Ok(())
     }
 
-    pub fn input(&self, index: usize) -> veloc_lir::Reg {
-        self.function.inst(self.root).inputs()[index]
+    /// Replace results with independent, same-typed values and erase the root.
+    /// Values must not depend on the root; this is not a wrapping transformation.
+    pub fn replace_results(&mut self, values: &[veloc_lir::Reg]) {
+        let results: SmallVec<[veloc_lir::Reg; 2]> = self
+            .function
+            .inst(self.root)
+            .results()
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(results.len(), values.len(), "replacement result arity");
+        // Check the complete mapping before editing any uses. In particular,
+        // mappings among old results would not survive erasing their definition.
+        for (&old, &new) in results.iter().zip(values) {
+            assert!(
+                !results.contains(&new),
+                "replacement refers to an erased result"
+            );
+            assert_eq!(
+                self.function.vreg_data(old).ty,
+                self.function.vreg_data(new).ty,
+                "replacement result type"
+            );
+        }
+        for (&old, &new) in results.iter().zip(values) {
+            replace_uses(&mut self.function, old, new);
+        }
+        self.function.invalidate_inst(self.root);
     }
-    pub fn value_type(&self, result: bool, index: usize) -> Type {
-        let inst = self.function.inst(self.root);
-        self.function
-            .vreg_data(if result {
-                inst.results()[index]
-            } else {
-                inst.inputs()[index]
-            })
-            .ty
+
+    pub fn root(&self) -> InstId {
+        self.root
     }
-    pub fn emit(
+    pub fn editor(&mut self) -> veloc_lir::function::FuncEditor<'_> {
+        self.function.editor()
+    }
+    pub fn replace(&mut self, output: &[InstId]) {
+        self.function.editor().replace_with(self.root, output);
+    }
+}
+
+fn replace_uses(editor: &mut veloc_lir::FuncEditor<'_>, old: veloc_lir::Reg, new: veloc_lir::Reg) {
+    editor.replace_uses(
+        old.as_vreg().expect("SSA result must be virtual"),
+        new.as_vreg().expect("SSA replacement must be virtual"),
+    );
+}
+
+pub use contracts::ValueRewrite;
+impl ValueRewrite for RewriteContext<'_> {
+    fn emit(
         &mut self,
         opcode: GenericOpcode,
         ty: Type,
         inputs: &[veloc_lir::Reg],
-        result: Option<usize>,
+        fields: &[InstField],
+        result: Option<veloc_lir::Reg>,
     ) -> veloc_lir::Reg {
         let dst = match result {
-            Some(i) => self.function.inst(self.root).results()[i],
-            None => self.function.editor().alloc_vreg(ty),
+            Some(value) => value,
+            None => self.function.alloc_vreg(ty),
         };
-        self.output.push(self.function.editor().writer().write(
+        let inst = self.function.writer().write(
             veloc_lir::MachineOpcode::Generic(opcode),
             &[dst],
             inputs,
-            &[],
-        ));
+            fields,
+        );
+        self.function.insert_before(self.root, inst);
         dst
     }
-    pub fn bind(&mut self, result: usize, value: veloc_lir::Reg) {
-        let dst = self.function.inst(self.root).results()[result];
-        if dst != value {
-            self.output.push(
-                self.function
-                    .editor()
-                    .writer()
-                    .copy(veloc_lir::Writable(dst), value),
-            );
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LegalizeResult {
-    Replace(Vec<InstId>),
 }

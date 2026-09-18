@@ -192,6 +192,8 @@ pub struct Operation {
     pub signature: Result<Signature, String>,
     /// Pure value operation with one signed integer attribute and no value inputs.
     pub integer_literal: Option<Signature>,
+    pub attributed: Option<Signature>,
+    pub attributes: Vec<(usize, String, String)>,
     pub constrained: bool,
     pub primitive: Option<veloc_semantics::BvOp>,
     /// Generated constructor, when the declared storage supports value-only calls.
@@ -261,6 +263,49 @@ impl Definitions {
                 }
                 _ => None,
             };
+            // Reuse the checked storage projection, including attribute order
+            // and codecs; rule compilation must not invent a second ABI.
+            let mut attributes = Vec::new();
+            if let crate::model::Projection::Operands(plan) = &op.projection {
+                let mut members: Vec<_> = plan
+                    .members
+                    .iter()
+                    .filter(|m| m.domain == crate::storage::operands::Domain::Attribute)
+                    .collect();
+                members.sort_by_key(|m| m.index);
+                for member in members {
+                    let Some(name) = &member.binding else {
+                        continue;
+                    };
+                    let Some(index) = op.params.iter().position(|p| &p.name == name) else {
+                        continue;
+                    };
+                    let ParamKind::Property(ty) = &op.params[index].kind else {
+                        continue;
+                    };
+                    if member.field.shape != crate::storage::operands::Shape::One {
+                        continue;
+                    }
+                    let Some(codec) = &member.field.codec else {
+                        continue;
+                    };
+                    let (_, variant) = codec.rsplit_once("::").expect("checked attribute codec");
+                    attributes.push((index, ty.clone(), variant.to_owned()));
+                }
+            }
+            let attributed = (!attributes.is_empty()
+                && op
+                    .params
+                    .iter()
+                    .all(|p| matches!(p.kind, ParamKind::Value | ParamKind::Property(_)))
+                && attributes.len()
+                    == op
+                        .params
+                        .iter()
+                        .filter(|p| matches!(p.kind, ParamKind::Property(_)))
+                        .count())
+            .then(|| value_signature(true).ok())
+            .flatten();
             // A primitive describes only the value computation. Never infer a
             // rewrite that drops a memory effect or observable control behavior.
             let primitive = if !["MAY_TRAP", "ABORT", "TERMINATOR"]
@@ -290,6 +335,8 @@ impl Definitions {
                 name: op.name.clone(),
                 signature,
                 integer_literal,
+                attributed,
+                attributes,
                 constrained: !op.constraints.is_empty(),
                 constructor,
                 primitive,

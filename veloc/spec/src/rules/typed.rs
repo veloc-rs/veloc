@@ -291,7 +291,12 @@ impl Signature {
         let sig = op
             .signature
             .as_ref()
-            .or_else(|e| op.integer_literal.as_ref().ok_or(e))
+            .or_else(|e| {
+                op.integer_literal
+                    .as_ref()
+                    .or(op.attributed.as_ref())
+                    .ok_or(e)
+            })
             .map_err(|e| Error::at(source, offset, e))?;
         if inputs.len() != sig.inputs.len() || outputs.len() != sig.results.len() {
             return Err(Error::at(
@@ -490,9 +495,38 @@ impl Signature {
             });
             return Ok((ty, result));
         }
+        let mut properties = Vec::new();
+        if op.attributed.is_some() {
+            if args.len() != op.declaration.params.len() {
+                return Err(Error::at(
+                    source,
+                    node.offset,
+                    "wrong attributed instruction arity",
+                ));
+            }
+            for (index, ty, variant) in &op.attributes {
+                let Kind::Name(name) = &args[*index].kind else {
+                    return Err(Error::at(
+                        source,
+                        args[*index].offset,
+                        "expected a declared attribute constant",
+                    ));
+                };
+                if name.split_once("::").map(|(owner, _)| owner) != Some(ty.as_str()) {
+                    return Err(Error::at(
+                        source,
+                        args[*index].offset,
+                        "attribute constant type mismatch",
+                    ));
+                }
+                properties.push((variant.clone(), name.clone()));
+            }
+        }
         let args = args
             .iter()
-            .map(|a| {
+            .enumerate()
+            .filter(|(index, _)| !op.attributes.iter().any(|(i, _, _)| i == index))
+            .map(|(_, a)| {
                 self.expression(
                     source, a, operations, defs, insts, dialect, locals, functions, active,
                 )
@@ -508,7 +542,11 @@ impl Signature {
         )?;
         let result = format!("v{}", insts.len());
         insts.push(Inst {
-            op: Call::Instruction(op.name.clone()),
+            op: if properties.is_empty() {
+                Call::Instruction(op.name.clone())
+            } else {
+                Call::Attributed(op.name.clone(), properties)
+            },
             ty: ty.clone(),
             inputs: args.into_iter().map(|(_, value)| value).collect(),
             result: result.clone(),
@@ -527,5 +565,6 @@ pub(super) struct Inst {
 pub(super) enum Call {
     Instruction(String),
     Integer(String, i64),
+    Attributed(String, Vec<(String, String)>),
     Host { name: String, types: Vec<Ty> },
 }

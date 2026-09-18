@@ -19,95 +19,63 @@ impl<'a> Legalizer<'a> {
     }
 
     pub fn legalize(&self, mfunc: &mut MachineFunction) -> Result<bool> {
-        // Process expansions in program order, including generic instructions
-        // produced by other rules. A single forward scan is not a legalizer.
-        // One budget for the entire run: a rule creating blocks must not reset
-        // the convergence guard by moving its next rewrite to another block.
-        let budget = mfunc.inst_count().max(1).saturating_mul(1024);
+        use alloc::collections::VecDeque;
+        const REWRITES_PER_INST: usize = 1024;
+        const TRACE_LENGTH: usize = 16;
+
+        // Queries depend only on instruction data and immutable value types.
+        // CFG changes alone cannot change legality; placement events report the
+        // affected instructions, including instructions entering new blocks.
+        let budget = mfunc.inst_count().max(1).saturating_mul(REWRITES_PER_INST);
+        let mut pending: VecDeque<_> = mfunc
+            .blocks()
+            .flat_map(|block| mfunc.block_insts(block))
+            .collect();
+        let mut queued: hashbrown::HashSet<_> = pending.iter().copied().collect();
         let mut rewrites = 0;
-        let mut trace = alloc::collections::VecDeque::new();
-        let mut pending = alloc::vec::Vec::new();
-        let mut dirty = alloc::collections::BTreeSet::new();
-        let mut queued: alloc::collections::VecDeque<_> = mfunc.blocks().collect();
-        let mut known: hashbrown::HashSet<_> = mfunc.blocks().collect();
-        let mut visited = hashbrown::HashSet::new();
-        while !queued.is_empty() || !dirty.is_empty() {
-            let block = if let Some(block) = dirty.pop_first() {
-                block
-            } else {
-                queued.pop_front().unwrap()
-            };
-            if !mfunc.layout().contains_block(block) {
+        let mut trace = VecDeque::new();
+        while let Some(id) = pending.pop_front() {
+            queued.remove(&id);
+            if mfunc.inst_block(id).is_none() {
                 continue;
             }
-            visited.insert(block);
-            pending.clear();
-            pending.extend(mfunc.block_insts(block).rev());
-            while let Some(id) = pending.pop() {
-                if mfunc.inst_block(id) != Some(block) {
-                    continue;
-                }
-                let inst = &mfunc.inst(id);
-                if inst.is_invalid() {
-                    continue;
-                }
-                let action = if inst.is_generic() {
-                    let query = Query::from_inst(inst, mfunc)?;
-                    self.target.legalize_action(&query)?
-                } else {
-                    self.target.legalize_target(inst)?
-                };
-                match action {
-                    None => {
-                        return Err(Error::codegen(alloc::format!(
-                            "missing legalization rule for {:?}",
-                            inst.opcode()
-                        )));
-                    }
-                    Some(LegalizeAction::Legal) => {}
-                    Some(action) => {
-                        let rule = action.name();
-                        if rewrites == budget {
-                            return Err(Error::codegen(alloc::format!(
-                                "legalization did not converge after {budget} rewrites; recent rules: {trace:?}; next: {:?} {rule:?}",
-                                inst.opcode(),
-                            )));
-                        }
-                        rewrites += 1;
-                        if trace.len() == 16 {
-                            trace.pop_front();
-                        }
-                        trace.push_back((id, inst.opcode(), rule));
-                        let (result, changes) = mfunc.track_edits(|f| action.apply(id, f));
-                        let LegalizeResult::Replace(output) = result?;
-                        for &owner in &changes.blocks {
-                            if !mfunc.layout().contains_block(owner) {
-                                continue;
-                            }
-                            if known.insert(owner) {
-                                queued.push_back(owner);
-                            }
-                            if visited.contains(&owner) {
-                                dirty.insert(owner);
-                            }
-                        }
-                        for changed in changes.insts {
-                            if let Some(owner) = mfunc.inst_block(changed) {
-                                if visited.contains(&owner) {
-                                    dirty.insert(owner);
-                                }
-                            }
-                        }
-                        mfunc.editor().replace_with(id, &output);
-                        pending.extend(output.into_iter().rev());
-                    }
-                }
+            let inst = mfunc.inst(id);
+            // Target nodes belong to selection/expansion and final emission,
+            // not generic instruction legalization.
+            if !inst.is_generic() || inst.is_invalid() {
+                continue;
             }
-            if known.len() != mfunc.num_blocks() {
-                for block in mfunc.blocks() {
-                    if known.insert(block) {
-                        queued.push_back(block);
-                    }
+            let opcode = inst.opcode();
+            let query = Query::from_inst(&inst, mfunc)?;
+            let action = self.target.legalize_action(&query)?.ok_or_else(|| {
+                Error::codegen(alloc::format!("missing legalization rule for {opcode:?}"))
+            })?;
+            let LegalizeAction::Rewrite(rewrite) = action else {
+                continue;
+            };
+            let rule = rewrite.name;
+            if rewrites == budget {
+                return Err(Error::codegen(alloc::format!(
+                    "legalization did not converge after {budget} rewrites; recent rules: {trace:?}; next: {id:?} {opcode:?} {rule:?}"
+                )));
+            }
+            let (result, changes) = mfunc.editor().track(|f| rewrite.apply(id, f));
+            result?;
+            if changes.insts.is_empty() && changes.blocks.is_empty() {
+                return Err(Error::codegen(alloc::format!(
+                    "legalization rule {rule:?} made no edits for {id:?} {opcode:?}"
+                )));
+            }
+            rewrites += 1;
+            if trace.len() == TRACE_LENGTH {
+                trace.pop_front();
+            }
+            trace.push_back((id, opcode, rule));
+            // A successful callback is not proof that its surviving root is
+            // legal. Re-query it even when only another instruction was edited.
+            for changed in changes.insts.into_iter().chain(core::iter::once(id)) {
+                if mfunc.inst_block(changed).is_some() && queued.insert(changed) {
+                    pending.push_back(changed);
                 }
             }
         }

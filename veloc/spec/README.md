@@ -25,7 +25,11 @@ beside the implementation.
 File tests distinguish definition errors from Rust type errors and const-evaluation
 failures; moving a check to rustc does not remove its negative test.
 
-Shared vocabulary lives in `veloc/defs/`: `types.spec`, imported by `prelude.spec`. MIR owns its packed
+Shared vocabulary lives in `veloc/defs/`: `type_sets.spec` contains only reusable
+type domains and imports the Rust owner's `veloc/types/defs/types.spec`.
+`types.spec` adds IR-specific value, successor, property and metadata declarations;
+`prelude.spec` imports it. Legalization imports only `type_sets.spec`, retaining
+policy-specific domains such as `Narrow` and `Word` in codegen. MIR owns its packed
 `formats.spec` and logical `mir.spec`; LIR owns `generic.spec` with operand-array
 formats and logical operations. Each consumer has a `defs/module.spec` entry:
 
@@ -1543,9 +1547,11 @@ combinations are errors, not empty compatibility outputs.
 cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/legalize.spec \
   --emit decisions --definitions veloc/lir/defs/module.spec \
   --source-dialect lir --source-opcode veloc_lir::GenericOpcode \
+  --field veloc_lir::InstField \
   --function decide --result Action \
-  --value-rule crate::passes::lowering::LegalizeAction::values \
-  --rust-rule crate::passes::lowering::LegalizeAction::rewrite \
+  --value-interface ValueRules \
+  --value-adapter crate::passes::lowering::RewriteContext::replace_values \
+  --rewrite crate::passes::lowering::LegalizeAction::rewrite \
   --legal-action crate::passes::lowering::LegalizeAction::Legal -o /tmp/legalize.rs
 ```
 

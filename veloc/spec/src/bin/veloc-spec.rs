@@ -48,7 +48,7 @@ struct Args {
     /// Generated Rust function name.
     #[arg(long)]
     function: Option<String>,
-    /// Selector host trait path or generated value-rule host context name.
+    /// Selector host trait path or generated value-adapter host context name.
     #[arg(long)]
     context: Option<String>,
     /// Infer identity rules for compatible semantic primitives.
@@ -57,12 +57,18 @@ struct Args {
     /// Decision result type declared in the module.
     #[arg(long)]
     result: Option<String>,
+    /// Explicit rewrite_interface declaration for value construction.
+    #[arg(long)]
+    value_interface: Option<String>,
+    /// Rust attribute enum used by value construction.
+    #[arg(long)]
+    field: Option<String>,
     /// Rust adapter for value rewrites.
     #[arg(long)]
-    value_rule: Option<String>,
-    /// Rust adapter for host rewrites.
+    value_adapter: Option<String>,
+    /// Shared Rust action constructor for generated and host rewrites.
     #[arg(long)]
-    rust_rule: Option<String>,
+    rewrite: Option<String>,
     /// Rust constructor for a legal decision.
     #[arg(long)]
     legal_action: Option<String>,
@@ -121,8 +127,10 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 function: required(args.function.as_deref(), "function")?,
                 opcode: required(args.source_opcode.as_deref(), "source-opcode")?,
                 result: required(args.result.as_deref(), "result")?,
-                value_rule: required(args.value_rule.as_deref(), "value-rule")?,
-                rust_rule: required(args.rust_rule.as_deref(), "rust-rule")?,
+                value_interface: required(args.value_interface.as_deref(), "value-interface")?,
+                field: required(args.field.as_deref(), "field")?,
+                value_adapter: required(args.value_adapter.as_deref(), "value-adapter")?,
+                rewrite: required(args.rewrite.as_deref(), "rewrite")?,
                 legal_action: required(args.legal_action.as_deref(), "legal-action")?,
             },
         })

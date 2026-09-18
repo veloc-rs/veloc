@@ -1,7 +1,6 @@
 use super::*;
-use alloc::vec;
 use alloc::vec::Vec;
-use veloc_lir::{GenericOpcode, InstId, MachineOpcode};
+use veloc_lir::{GenericOpcode, MachineOpcode};
 use veloc_lir::{InstBuild, InstRead};
 
 #[test]
@@ -81,21 +80,12 @@ enum Mode {
 }
 
 impl TargetLegalizer for Mode {
-    fn legalize_target(&self, _: &veloc_lir::InstRef<'_>) -> Result<Option<LegalizeAction>> {
-        Ok(match self {
-            Self::Missing => None,
-            _ => Some(LegalizeAction::Rewrite(Rewrite {
-                name: "target_expansion",
-                apply: |id, f| Mode::Chain.rewrite(id, f),
-            })),
-        })
-    }
     fn legalize_action(&self, query: &Query) -> Result<Option<LegalizeAction>> {
         let opcode = query.opcode;
         let apply = match self {
-            Self::Loop => |id, f: &mut MachineFunction| Mode::Loop.rewrite(id, f),
-            Self::NewBlock => |id, f: &mut MachineFunction| Mode::NewBlock.rewrite(id, f),
-            _ => |id, f: &mut MachineFunction| Mode::Chain.rewrite(id, f),
+            Self::Loop => |f: &mut RewriteContext<'_>| Mode::Loop.rewrite(f),
+            Self::NewBlock => |f: &mut RewriteContext<'_>| Mode::NewBlock.rewrite(f),
+            _ => |f: &mut RewriteContext<'_>| Mode::Chain.rewrite(f),
         };
         Ok(match (self, opcode) {
             (Self::Missing, GenericOpcode::Sub) => None,
@@ -110,9 +100,10 @@ impl TargetLegalizer for Mode {
     }
 }
 impl Mode {
-    fn rewrite(&self, id: InstId, f: &mut MachineFunction) -> Result<LegalizeResult> {
+    fn rewrite(&self, f: &mut RewriteContext<'_>) -> Result<()> {
+        let id = f.root();
         if matches!(self, Self::Loop) {
-            return Ok(LegalizeResult::Replace(vec![id]));
+            return Ok(());
         }
         if f.inst(id).generic_opcode() == Some(GenericOpcode::Sub) {
             f.editor().rewriter(id).write(
@@ -121,7 +112,7 @@ impl Mode {
                 &[],
                 &[],
             );
-            return Ok(LegalizeResult::Replace(vec![id]));
+            return Ok(());
         }
         let first =
             f.editor()
@@ -130,7 +121,8 @@ impl Mode {
         if matches!(self, Self::NewBlock) {
             let block = f.editor().create_block();
             f.editor().append_inst(block, first);
-            return Ok(LegalizeResult::Replace(vec![]));
+            f.replace(&[]);
+            return Ok(());
         }
         let second = f.editor().writer().write(
             MachineOpcode::Generic(GenericOpcode::Constant),
@@ -138,7 +130,8 @@ impl Mode {
             &[],
             &[],
         );
-        Ok(LegalizeResult::Replace(vec![first, second]))
+        f.replace(&[first, second]);
+        Ok(())
     }
 }
 
@@ -175,8 +168,9 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
             f.editor()
                 .rewriter(old)
                 .write(MachineOpcode::Target(0), &[], &[], &[]);
-            let error = Legalizer::new(&Mode::Missing).legalize(&mut f).unwrap_err();
-            assert!(alloc::format!("{error}").contains("missing legalization rule for Target(0)"));
+            assert!(!Legalizer::new(&Mode::Missing).legalize(&mut f).unwrap());
+            assert_eq!(f.inst(old).opcode(), MachineOpcode::Target(0));
+            continue;
         }
         Legalizer::new(&Mode::Chain).legalize(&mut f).unwrap();
         let ops: alloc::vec::Vec<_> = f
@@ -206,7 +200,7 @@ fn missing_rules_and_nonconvergent_expansions_are_errors() {
     let error = Legalizer::new(&Mode::Loop)
         .legalize(&mut function())
         .unwrap_err();
-    assert!(alloc::format!("{error}").contains("did not converge"));
+    assert!(alloc::format!("{error}").contains("made no edits"));
 }
 
 #[test]
@@ -222,4 +216,116 @@ fn blocks_created_by_expansion_are_legalized() {
         .generic_opcode(),
         Some(GenericOpcode::Add)
     );
+}
+
+#[test]
+fn edits_to_previously_visited_instructions_are_revisited() {
+    struct CrossEdit;
+    impl TargetLegalizer for CrossEdit {
+        fn legalize_action(&self, query: &Query) -> Result<Option<LegalizeAction>> {
+            Ok(Some(match query.opcode {
+                GenericOpcode::Ret => LegalizeAction::rewrite("cross_edit", |ctx| {
+                    let first = ctx
+                        .blocks()
+                        .flat_map(|b| ctx.block_insts(b))
+                        .next()
+                        .unwrap();
+                    ctx.editor().rewriter(first).write(
+                        MachineOpcode::Generic(GenericOpcode::Sub),
+                        &[],
+                        &[],
+                        &[],
+                    );
+                    ctx.replace(&[]);
+                    Ok(())
+                }),
+                GenericOpcode::Sub => LegalizeAction::rewrite("sub_to_add", |ctx| {
+                    let root = ctx.root();
+                    ctx.editor().rewriter(root).write(
+                        MachineOpcode::Generic(GenericOpcode::Add),
+                        &[],
+                        &[],
+                        &[],
+                    );
+                    Ok(())
+                }),
+                _ => LegalizeAction::Legal,
+            }))
+        }
+    }
+    let mut f = function();
+    Legalizer::new(&CrossEdit).legalize(&mut f).unwrap();
+    let first = f.blocks().flat_map(|b| f.block_insts(b)).next().unwrap();
+    assert_eq!(f.inst(first).generic_opcode(), Some(GenericOpcode::Add));
+}
+
+#[test]
+fn placement_of_an_existing_detached_instruction_is_reported() {
+    let mut f = function();
+    let detached =
+        f.editor()
+            .writer()
+            .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], &[]);
+    let block = f.blocks().next().unwrap();
+    let (_, changes) = f
+        .editor()
+        .track(|f| f.editor().append_inst(block, detached));
+    assert!(changes.insts.contains(&detached));
+}
+
+#[test]
+fn cycles_across_new_blocks_share_one_budget() {
+    struct Cycle;
+    impl TargetLegalizer for Cycle {
+        fn legalize_action(&self, _: &Query) -> Result<Option<LegalizeAction>> {
+            Ok(Some(LegalizeAction::rewrite("cycle", |ctx| {
+                let root = ctx.root();
+                let block = ctx.editor().create_block();
+                ctx.editor().detach_inst(root);
+                ctx.editor().append_inst(block, root);
+                Ok(())
+            })))
+        }
+    }
+    let error = Legalizer::new(&Cycle)
+        .legalize(&mut function())
+        .unwrap_err();
+    assert!(alloc::format!("{error}").contains("did not converge"));
+}
+
+#[test]
+fn existing_value_replacement_updates_users_without_a_copy() {
+    use veloc_lir::{Type, Writable};
+    for generated in [false, true] {
+        let mut f = MachineFunction::new("replace".into());
+        let block = f.editor().create_block();
+        let input = f.editor().alloc_vreg(Type::I64);
+        let result = f.editor().alloc_vreg(Type::I64);
+        let output = f.editor().alloc_vreg(Type::I64);
+        let root = f.editor().writer().copy(Writable(result), input);
+        let user = f.editor().writer().copy(Writable(output), result);
+        f.editor().append_inst(block, root);
+        f.editor().append_inst(block, user);
+        let action = if generated {
+            LegalizeAction::rewrite("generated_identity", |ctx| {
+                ctx.replace_values(|_, inputs, _, _| inputs[0])
+            })
+        } else {
+            LegalizeAction::rewrite("host_identity", |ctx| {
+                let input = ctx.inst(ctx.root()).inputs()[0];
+                ctx.replace_results(&[input]);
+                Ok(())
+            })
+        };
+        let LegalizeAction::Rewrite(rewrite) = action else {
+            unreachable!();
+        };
+        let (result, changes) = f.editor().track(|edit| rewrite.apply(root, edit));
+        result.unwrap();
+        assert_eq!(f.block_insts(block).collect::<Vec<_>>(), [user]);
+        assert_eq!(f.inst(user).inputs(), &[input]);
+        assert!(changes.insts.contains(&user));
+        assert!(f.inst(root).is_invalid());
+        f.check_refs().unwrap();
+    }
 }

@@ -11,7 +11,6 @@ use std::fmt::Write;
 
 struct Function {
     signature: Signature,
-    parameters: Vec<String>,
     generics: Vec<String>,
     body: FunctionBody,
     offset: usize,
@@ -99,7 +98,6 @@ impl Functions {
             sig.results.push(sig.ty(source, &results[0].ty)?);
             let function = Function {
                 signature: sig,
-                parameters: signature.params.iter().map(|p| p.name.clone()).collect(),
                 generics: signature.generics.iter().map(|p| p.name.clone()).collect(),
                 body: body.clone(),
                 offset: d.offset,
@@ -117,7 +115,7 @@ impl Functions {
 
     /// A generic wrapper checks every Rust binding, even when never selected.
     /// Its bound deliberately omits root lookup/replacement capabilities.
-    pub fn wrappers(&self, ty: &str) -> String {
+    pub fn wrappers(&self, ty: &str, bound: &str, value: &str) -> String {
         let mut out = String::new();
         for (name, f) in &self.0 {
             let FunctionBody::Rust {
@@ -129,18 +127,18 @@ impl Functions {
             let types = (0..f.generics.len())
                 .map(|i| format!("ty{i}"))
                 .collect::<Vec<_>>();
-            let values = (0..f.parameters.len())
+            let values = (0..f.signature.inputs.len())
                 .map(|i| format!("arg{i}"))
                 .collect::<Vec<_>>();
             let params = types
                 .iter()
                 .map(|n| format!("{n}: {ty}"))
-                .chain(values.iter().map(|n| format!("{n}: C::Value")))
+                .chain(values.iter().map(|n| format!("{n}: {value}")))
                 .collect::<Vec<_>>();
             let args = types.iter().chain(&values).cloned().collect::<Vec<_>>();
             writeln!(
                 out,
-                "fn build_{name}<C: ValueBuild>(ctx: &mut C, {}) -> C::Value {{ {path}(ctx, {}) }}",
+                "fn build_{name}<C: {bound}>(ctx: &mut C, {}) -> {value} {{ {path}(ctx, {}) }}",
                 params.join(", "),
                 args.join(", ")
             )
@@ -233,7 +231,7 @@ impl Functions {
                 ),
             ));
         }
-        if types.len() != f.generics.len() || args.len() != f.parameters.len() {
+        if types.len() != f.generics.len() || args.len() != f.signature.inputs.len() {
             return Err(Error::at(
                 source,
                 offset,
@@ -295,7 +293,13 @@ impl Functions {
             hosts: Vec::new(),
             generics: bindings,
         };
-        let mut locals = f.parameters.iter().cloned().zip(args).collect();
+        let mut locals = f
+            .signature
+            .inputs
+            .iter()
+            .map(|(name, _)| name.clone())
+            .zip(args)
+            .collect();
         active.push(name.into());
         let result = sig.expression(
             source,

@@ -140,6 +140,7 @@ pub(crate) fn primitive(name: &str) -> bool {
     matches!(
         name,
         "bool"
+            | "usize"
             | "u8"
             | "u16"
             | "u32"
@@ -158,20 +159,29 @@ pub(crate) fn primitive(name: &str) -> bool {
 /// Neutral signature types, usable without loading an implementation.
 #[derive(Debug, Clone)]
 pub enum Type {
+    Unit,
     Named(String),
     Ref(Box<Self>),
+    RefMut(Box<Self>),
     Optional(Box<Self>),
     Sequence(Box<Self>),
     Array(Box<Self>, u32),
 }
 
 impl Type {
-    fn parse(node: &Node, source: &str, known: &BTreeSet<String>) -> Result<Self, Error> {
+    pub(crate) fn parse(
+        node: &Node,
+        source: &str,
+        known: &BTreeSet<String>,
+    ) -> Result<Self, Error> {
         match &node.kind {
             Kind::Ref(inner) => Ok(Self::Ref(Box::new(Self::parse(inner, source, known)?))),
             Kind::Name(name) if name == "Self" || primitive(name) || known.contains(name) => {
                 Ok(Self::Named(name.clone()))
             }
+            Kind::Call(name, args) if name == "mut_ref" && args.len() == 1 => Ok(Self::RefMut(
+                Box::new(Self::parse(&args[0], source, known)?),
+            )),
             Kind::Call(name, args)
                 if matches!(name.as_str(), "optional" | "sequence") && args.len() == 1 =>
             {
@@ -198,8 +208,10 @@ impl Type {
             _ => Err(Error::at(source, node.offset, "unknown interface type")),
         }
     }
-    fn rust(&self, bindings: &Bindings) -> String {
+    pub(crate) fn rust(&self, bindings: &Bindings) -> String {
         match self {
+            Self::Unit => "()".into(),
+            Self::RefMut(t) => format!("&mut {}", t.rust(bindings)),
             Self::Ref(t) => format!("&{}", t.rust(bindings)),
             Self::Named(n) => bindings
                 .0
@@ -289,13 +301,6 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
                         "method requires one result type",
                     ));
                 };
-                let [result] = results.as_slice() else {
-                    return Err(Error::at(
-                        source,
-                        record.offset,
-                        "method requires one result type",
-                    ));
-                };
                 let mut seen = BTreeSet::new();
                 let params = signature
                     .params
@@ -311,7 +316,17 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
                         Ok((p.name.clone(), Type::parse(&p.ty, source, &known)?))
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
-                let result = Type::parse(&result.ty, source, &known)?;
+                let result = match results.as_slice() {
+                    [] => Type::Unit,
+                    [result] => Type::parse(&result.ty, source, &known)?,
+                    _ => {
+                        return Err(Error::at(
+                            source,
+                            record.offset,
+                            "method requires at most one result",
+                        ));
+                    }
+                };
                 (params, result, signature.is_const, false)
             };
         let path = bindings.method_trait(owner, namespace, is_const);
@@ -361,7 +376,9 @@ pub fn declarations(records: &[Decl], source: &str, namespace: &str) -> Result<S
                 .iter()
                 .map(|(name, ty)| {
                     if name == "self" {
-                        if matches!(ty, Type::Ref(_)) {
+                        if matches!(ty, Type::RefMut(_)) {
+                            "&mut self".into()
+                        } else if matches!(ty, Type::Ref(_)) {
                             "&self".into()
                         } else {
                             "self".into()

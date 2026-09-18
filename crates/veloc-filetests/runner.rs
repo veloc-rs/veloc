@@ -141,6 +141,8 @@ fn execute(mode: &str, source: &str) -> Result<String> {
             let builtins = concat!(
                 include_str!("../../veloc/types/defs/types.spec"),
                 "\n",
+                include_str!("../../veloc/defs/type_sets.spec"),
+                "\n",
                 include_str!("../../veloc/defs/types.spec"),
                 include_str!("../../veloc/mir/defs/types.spec"),
                 "\n",

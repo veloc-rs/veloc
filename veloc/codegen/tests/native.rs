@@ -1039,10 +1039,13 @@ int main(void) {
             );
             assert_eq!(
                 target
-                    .legalizer()
-                    .legalize_target(&function.inst(id))
-                    .unwrap()
-                    .is_some(),
+                    .emitter()
+                    .emit_instruction(
+                        &mut veloc_codegen::Emitter::new(),
+                        &function.inst(id),
+                        &function
+                    )
+                    .is_ok(),
                 has_popcnt
             );
             let validation = target.validate_instruction(

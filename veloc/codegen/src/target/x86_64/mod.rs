@@ -139,7 +139,7 @@ impl X86_64TargetMachine {
             post_isel: X86_64PostIsel,
             frame_lowering: X86_64FrameLowering,
             pass_config: X86_64PassConfig,
-            emitter: X86_64CodeEmitter::new(),
+            emitter: X86_64CodeEmitter::new(features),
         })
     }
 }

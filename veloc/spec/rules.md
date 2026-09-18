@@ -158,16 +158,17 @@ fn helper<T: Word>(x: T) -> T = rust("crate::helper");
 Its Rust signature is generic over the generated builder contract:
 
 ```rust,ignore
-fn helper<C: ValueBuild>(ctx: &mut C, ty: Type, x: C::Value) -> C::Value
+fn helper<C: ValueRewrite>(ctx: &mut C, ty: Type, x: Reg) -> Reg
 ```
 
 Type arguments precede value arguments, in declaration order. Generated wrappers
-check even unused bindings. `ValueBuild` only exposes temporary value construction;
-the outer `ValueRewrite` contract adds root lookup and result binding. Therefore a
-generic fragment cannot use the root's inputs or replace it by accident. A host
-fragment is called only when applying the selected plan, never during matching.
-Its body remains trusted Rust: declaring a signature does not prove the emitted
-instructions pure, terminating or semantically correct.
+check even unused bindings. The host contract is an ordinary Rust-bound type
+declaration in `legalize.spec`; `rewrite_interface` names its construction method.
+Inputs, types and an optional destination value are explicit parameters of the
+construction function; it returns the replacement value. The outer adapter reads
+the matched instruction, binds the returned value and erases the root. The
+generated helper is bounded by that contract and cannot access arbitrary graph
+editing APIs. Instruction attributes use the checked OpSpec storage codecs.
 
 `replace` compiles checked, fixed-arity pure value expressions with local
 bindings and integer attributes. Rust bindings support memory and other complex

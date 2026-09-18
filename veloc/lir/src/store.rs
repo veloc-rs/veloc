@@ -140,26 +140,27 @@ pub struct InstStore {
     memory: SecondaryMap<InstId, Option<MemoryAccess>>,
     extras: HashMap<InstId, InstExtra<Range>>,
     pub(crate) references: References,
-    changes: Option<Vec<InstId>>,
 }
 
 /// Append-only instruction construction for selection rules. Existing instructions
 /// can be read, but replacement/erasure must go through the function editor.
 pub struct InstBuilder<'a> {
     pub(crate) store: &'a mut InstStore,
+    pub(crate) changes: Option<&'a mut crate::EditChanges>,
 }
 impl InstBuilder<'_> {
     pub fn get(&self, id: InstId) -> InstRef<'_> {
         self.store.get(id)
     }
     pub fn writer(&mut self) -> InstWriter<'_> {
-        self.store.writer()
+        self.store.writer().tracking(self.changes.as_deref_mut())
     }
 }
 
 /// A single committed write. Generated methods encode directly from their typed
 /// arguments; no owning instruction or temporary operand vector is required.
 pub struct InstWriter<'a> {
+    changes: Option<&'a mut crate::EditChanges>,
     store: &'a mut InstStore,
     target: Option<InstId>,
     memory: Option<crate::MemoryAccess>,
@@ -167,6 +168,11 @@ pub struct InstWriter<'a> {
 }
 
 impl<'a> InstWriter<'a> {
+    pub(crate) fn tracking(mut self, changes: Option<&'a mut crate::EditChanges>) -> Self {
+        self.changes = changes;
+        self
+    }
+
     pub fn with_effects(mut self, uses: &'a [Reg], defs: &'a [Reg]) -> Self {
         assert!(
             uses.iter().chain(defs).all(Reg::is_preg),
@@ -191,7 +197,7 @@ impl<'a> InstWriter<'a> {
             uses: self.effects.uses,
             defs: self.effects.defs,
         };
-        match self.target {
+        let id = match self.target {
             Some(id) => {
                 self.store.write_full_at(
                     id,
@@ -207,7 +213,11 @@ impl<'a> InstWriter<'a> {
             None => self
                 .store
                 .write_full(opcode, results, inputs, fields, self.memory, implicit),
+        };
+        if let Some(changes) = self.changes {
+            changes.insts.push(id);
         }
+        id
     }
 }
 
@@ -250,23 +260,10 @@ impl StoredInst {
 }
 
 impl InstStore {
-    pub(crate) fn start_tracking(&mut self) {
-        assert!(self.changes.is_none(), "nested instruction change tracking");
-        self.changes = Some(Vec::new());
-    }
-    pub(crate) fn finish_tracking(&mut self) -> Vec<InstId> {
-        self.changes
-            .take()
-            .expect("instruction change tracking was not active")
-    }
-    fn changed(&mut self, id: InstId) {
-        if let Some(changes) = &mut self.changes {
-            changes.push(id);
-        }
-    }
     pub fn writer(&mut self) -> crate::InstWriter<'_> {
         crate::InstWriter {
             store: self,
+            changes: None,
             target: None,
             memory: None,
             effects: RegEffects::default(),
@@ -276,6 +273,7 @@ impl InstStore {
     pub fn rewriter(&mut self, id: InstId) -> InstWriter<'_> {
         InstWriter {
             store: self,
+            changes: None,
             target: Some(id),
             memory: None,
             effects: RegEffects::default(),
@@ -324,7 +322,6 @@ impl InstStore {
         self.references.detach(link, old);
         self.registers.data[id.as_u32() as usize] = reg;
         self.references.attach(link, reg, owner);
-        self.changed(owner.inst);
     }
     pub fn set_results(&mut self, id: InstId, results: &[Reg]) {
         if self.results(id).len() == results.len() {
@@ -336,7 +333,6 @@ impl InstStore {
         let implicit = self.implicit_defs(id).to_vec();
         self.release_registers(self.instructions[id].results.all);
         self.instructions[id].results = self.alloc_group(id, RefRole::Def, results, &implicit);
-        self.changed(id);
     }
     pub fn set_result(&mut self, id: InstId, index: usize, reg: Reg) {
         self.set_operand(self.result_id(id, index), reg);
@@ -399,7 +395,6 @@ impl InstStore {
         if memory.is_some() {
             self.memory[id] = memory;
         }
-        self.changed(id);
         id
     }
     /// Transfer a detached instruction into a stable destination ID.
@@ -422,7 +417,6 @@ impl InstStore {
         if let Some(extra) = self.extras.remove(&source) {
             self.extras.insert(id, extra);
         }
-        self.changed(source);
         for link in self.instructions[id]
             .operand_ranges(self.extras.get(&id))
             .flat_map(|(range, _)| range.ids())
@@ -475,17 +469,14 @@ impl InstStore {
         self.instructions[id].opcode = opcode;
     }
     pub fn set_fields(&mut self, id: InstId, fields: &[InstField]) {
-        self.changed(id);
         self.fields.release(self.instructions[id].fields);
         self.instructions[id].fields = self.fields.insert(fields);
     }
     pub fn set_field(&mut self, id: InstId, index: usize, field: InstField) {
-        self.changed(id);
         assert!(index < self.fields(id).len(), "field index out of bounds");
         self.fields.data[self.instructions[id].fields.start as usize + index] = field;
     }
     pub fn set_memory(&mut self, id: InstId, access: Option<MemoryAccess>) {
-        self.changed(id);
         if access.is_some() || self.memory[id].is_some() {
             self.memory[id] = access;
         }
@@ -509,7 +500,6 @@ impl InstStore {
         self.release_registers(self.instructions[id].results.all);
         self.instructions[id].inputs = self.alloc_group(id, RefRole::Use, &inputs, &effects.uses);
         self.instructions[id].results = self.alloc_group(id, RefRole::Def, &results, &effects.defs);
-        self.changed(id);
     }
     pub fn extra(&self, id: InstId) -> Option<crate::InstExtraRef<'_>> {
         use crate::{BrTableRef, BranchCondInfo, BranchInfo, InstExtraRef as View};
@@ -544,7 +534,6 @@ impl InstStore {
                 self.release_registers(range);
             }
         }
-        self.changed(id);
     }
     pub fn uses(&self, reg: Reg) -> RegRefs<'_> {
         RegRefs {

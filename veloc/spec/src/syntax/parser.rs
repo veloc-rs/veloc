@@ -380,6 +380,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LParen)?;
         let params = self.sequence(TokenKind::RParen, |p| {
             let borrowed = owner.is_some() && p.eat(TokenKind::Amp)?;
+            let mutable = borrowed && p.eat(TokenKind::Name("mut"))?;
             if let Some(owner) = owner
                 && p.token.kind == TokenKind::SelfValue
             {
@@ -391,7 +392,11 @@ impl<'a> Parser<'a> {
                 if borrowed {
                     ty = Node {
                         offset,
-                        kind: Kind::Ref(Box::new(ty)),
+                        kind: if mutable {
+                            Kind::Call("mut_ref".into(), vec![ty])
+                        } else {
+                            Kind::Ref(Box::new(ty))
+                        },
                     };
                 }
                 Ok(Parameter {

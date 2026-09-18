@@ -8,20 +8,11 @@ pub struct EditChanges {
     pub blocks: Vec<Block>,
 }
 
-struct EditSession<'a>(&'a mut MachineFunction);
-impl Drop for EditSession<'_> {
-    fn drop(&mut self) {
-        if self.0.body.changed_blocks.take().is_some() {
-            // Restore tracking state even if the callback unwinds.
-            let _ = self.0.body.store.finish_tracking();
-        }
-    }
-}
-
 /// Exclusive structural editing. Reads are available through Deref, but there
 /// is deliberately no DerefMut or escape hatch to mutable function storage.
 pub struct FuncEditor<'a> {
     function: &'a mut MachineFunction,
+    changes: Option<&'a mut EditChanges>,
 }
 impl core::ops::Deref for FuncEditor<'_> {
     type Target = MachineFunction;
@@ -31,15 +22,29 @@ impl core::ops::Deref for FuncEditor<'_> {
 }
 impl MachineFunction {
     pub fn editor(&mut self) -> FuncEditor<'_> {
-        FuncEditor { function: self }
+        FuncEditor {
+            function: self,
+            changes: None,
+        }
     }
 }
 impl FuncEditor<'_> {
+    /// Reborrow the editor, retaining the current session's notifications.
+    pub fn editor(&mut self) -> FuncEditor<'_> {
+        FuncEditor {
+            function: self.function,
+            changes: self.changes.as_deref_mut(),
+        }
+    }
+    fn changed_inst(&mut self, inst: InstId) {
+        if let Some(changes) = &mut self.changes {
+            changes.insts.push(inst);
+        }
+    }
     pub fn create_block(&mut self) -> Block {
-        if let Some(last) = self.function.body.layout.block_order().next_back() {
-            if let Some(changes) = &mut self.function.body.changed_blocks {
-                changes.push(last);
-            }
+        let last = self.function.body.layout.block_order().next_back();
+        if let Some(last) = last {
+            self.changed_block(last);
         }
         let block = self.function.body.blocks.push(BlockData::default());
         self.function.body.layout.append_block(block);
@@ -113,6 +118,7 @@ impl FuncEditor<'_> {
         }
         for &inst in insts {
             self.function.body.layout.append_inst(block, inst);
+            self.changed_inst(inst);
         }
         self.changed_block(block);
     }
@@ -120,6 +126,9 @@ impl FuncEditor<'_> {
     /// order. Including the root keeps its identity; otherwise it is erased.
     pub fn replace_with(&mut self, root: InstId, output: &[InstId]) {
         let block = self.inst_block(root).expect("replacement root is detached");
+        if output == [root] {
+            return;
+        }
         let next = self.layout().next_inst(root);
         let mut seen = hashbrown::HashSet::new();
         for &inst in output {
@@ -146,16 +155,19 @@ impl FuncEditor<'_> {
     pub fn append_inst(&mut self, block: Block, inst: InstId) {
         let _ = self.inst(inst);
         self.function.body.layout.append_inst(block, inst);
+        self.changed_inst(inst);
         self.changed_block(block);
     }
     pub fn insert_before(&mut self, anchor: InstId, inst: InstId) {
         let _ = self.inst(inst);
         self.function.body.layout.insert_before(anchor, inst);
+        self.changed_inst(inst);
         self.changed_block(self.inst_block(anchor).unwrap());
     }
     pub fn insert_after(&mut self, anchor: InstId, inst: InstId) {
         let _ = self.inst(inst);
         self.function.body.layout.insert_after(anchor, inst);
+        self.changed_inst(inst);
         self.changed_block(self.inst_block(anchor).unwrap());
     }
     pub fn detach_inst(&mut self, inst: InstId) {
@@ -163,6 +175,7 @@ impl FuncEditor<'_> {
             self.changed_block(block);
         }
         self.function.body.layout.detach_inst(inst);
+        self.changed_inst(inst);
     }
     pub fn move_before(&mut self, inst: InstId, anchor: InstId) {
         assert!(self.inst_block(anchor).is_some(), "detached anchor");
@@ -208,21 +221,30 @@ impl FuncEditor<'_> {
     }
 
     pub fn writer(&mut self) -> InstWriter<'_> {
-        self.function.body.store.writer()
+        self.function
+            .body
+            .store
+            .writer()
+            .tracking(self.changes.as_deref_mut())
     }
 
     fn changed_block(&mut self, block: Block) {
-        if let Some(blocks) = &mut self.function.body.changed_blocks {
-            blocks.push(block);
+        if let Some(changes) = &mut self.changes {
+            changes.blocks.push(block);
         }
     }
 
     pub fn rewriter(&mut self, id: InstId) -> InstWriter<'_> {
-        self.function.body.store.rewriter(id)
+        self.function
+            .body
+            .store
+            .rewriter(id)
+            .tracking(self.changes.as_deref_mut())
     }
 
     pub fn set_inst_fields(&mut self, id: InstId, fields: &[crate::InstField]) {
         self.function.body.store.set_fields(id, fields);
+        self.changed_inst(id);
     }
 
     pub fn alloc_vreg_data(&mut self, data: VRegData) -> Reg {
@@ -248,34 +270,54 @@ impl FuncEditor<'_> {
             VRegBuilder(&mut self.function.body.vregs),
             crate::InstBuilder {
                 store: &mut self.function.body.store,
+                changes: self.changes.as_deref_mut(),
             },
         )
     }
 
     pub fn set_inst_effects(&mut self, id: InstId, effects: crate::RegEffects) {
         self.function.body.store.set_effects(id, effects);
+        self.changed_inst(id);
     }
     pub fn set_inst_inputs(&mut self, id: InstId, inputs: &[Reg]) {
         self.function.body.store.set_inputs(id, inputs);
+        self.changed_inst(id);
     }
     pub fn set_inst_input(&mut self, id: InstId, index: usize, reg: Reg) {
         self.function.body.store.set_input(id, index, reg);
+        self.changed_inst(id);
     }
     pub fn set_inst_results(&mut self, id: InstId, results: &[Reg]) {
         self.function.body.store.set_results(id, results);
+        self.changed_inst(id);
     }
     pub fn set_inst_result(&mut self, id: InstId, index: usize, reg: Reg) {
         self.function.body.store.set_result(id, index, reg);
+        self.changed_inst(id);
     }
     pub fn set_inst_field(&mut self, id: InstId, index: usize, field: crate::InstField) {
         self.function.body.store.set_field(id, index, field);
+        self.changed_inst(id);
     }
     pub fn replace_uses(&mut self, old: VReg, new: VReg) {
+        if old == new {
+            return;
+        }
+        if let Some(changes) = &mut self.changes {
+            changes.insts.extend(
+                self.function
+                    .body
+                    .store
+                    .uses(Reg::new_vreg(old.as_u32()))
+                    .map(|site| site.inst()),
+            );
+        }
         self.function.body.store.replace_uses(old, new)
     }
 
     pub fn set_inst_memory(&mut self, id: InstId, access: Option<crate::MemoryAccess>) {
         self.function.body.store.set_memory(id, access);
+        self.changed_inst(id);
     }
 
     /// 分配栈槽
@@ -308,6 +350,8 @@ impl FuncEditor<'_> {
             "replacement source must be detached"
         );
         self.function.body.store.replace(inst_id, source);
+        self.changed_inst(inst_id);
+        self.changed_inst(source);
     }
 
     /// 将指令标记为无效。
@@ -391,28 +435,29 @@ impl FuncEditor<'_> {
     /// 为指令挂载额外 payload。
     pub fn set_inst_extra(&mut self, inst_id: InstId, extra: InstExtra) {
         self.function.body.store.set_extra(inst_id, extra);
+        self.changed_inst(inst_id);
     }
 
     /// 清理指令的额外 payload。
     pub fn clear_inst_extra(&mut self, inst_id: InstId) {
         self.function.body.store.clear_extra(inst_id);
+        self.changed_inst(inst_id);
     }
-}
 
-impl MachineFunction {
     /// Run an edit session and report changed instructions and blocks. Edits
     /// commit as they happen; errors and unwinding do not imply rollback.
-    pub fn track_edits<R>(&mut self, rewrite: impl FnOnce(&mut Self) -> R) -> (R, EditChanges) {
-        self.body.store.start_tracking();
-        self.body.changed_blocks = Some(Vec::new());
-        let session = EditSession(self);
-        let result = rewrite(session.0);
-        let mut insts = session.0.body.store.finish_tracking();
-        let mut blocks = session.0.body.changed_blocks.take().unwrap();
-        insts.sort_unstable();
-        insts.dedup();
-        blocks.sort_unstable();
-        blocks.dedup();
-        (result, EditChanges { insts, blocks })
+    /// Nested tracking is rejected; reborrow the active editor instead.
+    pub fn track<R>(&mut self, rewrite: impl FnOnce(&mut FuncEditor<'_>) -> R) -> (R, EditChanges) {
+        assert!(self.changes.is_none(), "nested edit tracking");
+        let mut changes = EditChanges::default();
+        let result = rewrite(&mut FuncEditor {
+            function: self.function,
+            changes: Some(&mut changes),
+        });
+        changes.insts.sort_unstable();
+        changes.insts.dedup();
+        changes.blocks.sort_unstable();
+        changes.blocks.dedup();
+        (result, changes)
     }
 }

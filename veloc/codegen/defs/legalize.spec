@@ -1,18 +1,50 @@
-import "legalize_types.spec";
+import "../../defs/type_sets.spec";
+
+// Legalization policy domains, not alternative definitions of common types.
+typeset Narrow = Type::I8 | Type::I16;
+typeset Word = Type::I32 | Type::I64;
+typeset IntOrPtr = ScalarInteger | Type::PTR;
+typeset WordValue = Type::BOOL | Word | ScalarFloat | Type::PTR;
+typeset WordOrPtr = Word | Type::PTR;
+typeset SmallInt = Narrow | Type::I32;
+
+// Instruction-local query contract shared by target policies.
+type Query = rust("crate::passes::lowering::legalize::Query") {
+    trait = rust("crate::passes::lowering::legalize::contracts::Query");
+    fn signature(&self, results: sequence(sequence(Type)), inputs: sequence(sequence(Type))) -> bool;
+    fn same(&self, indices: sequence(u32)) -> bool;
+    fn value_type(&self, result: bool, index: u32) -> Type;
+    fn input_is(&self, index: u32, ty: Type) -> bool;
+    fn signed_offset(&self, bits: u32) -> bool;
+}
+
+type RewriteValue = rust("veloc_lir::Reg");
+type RewriteOpcode = rust("veloc_lir::GenericOpcode");
+type RewriteField = rust("veloc_lir::InstField");
+type RewriteContext = rust("crate::passes::lowering::legalize::RewriteContext") {
+    trait = rust("crate::passes::lowering::legalize::contracts::ValueRewrite");
+    fn emit(&mut self, opcode: RewriteOpcode, ty: Type,
+        inputs: sequence(RewriteValue), fields: sequence(RewriteField),
+        result: optional(RewriteValue)) -> RewriteValue;
+}
+
+rewrite_interface ValueRules {
+    contract = RewriteContext;
+    emit = emit;
+}
 
 // Reusable value construction and explicit node rewrites. Functions do not replace roots.
 // Fixed-width plans are straight-line: no runtime graph construction loop.
-typeset BitWord = Type::I32 | Type::I64;
 
-fn shift_fill<T: BitWord>(x: T, shift: T) -> T {
+fn shift_fill<T: Word>(x: T, shift: T) -> T {
     lir::Or<T>(x, lir::Lshr<T>(x, shift))
 }
 
-fn low_bit<T: BitWord>(x: T) -> T {
+fn low_bit<T: Word>(x: T) -> T {
     lir::And<T>(x, lir::Sub<T>(lir::Constant<T>(0), x))
 }
 
-fn low_mask<T: BitWord>(x: T) -> T {
+fn low_mask<T: Word>(x: T) -> T {
     lir::Sub<T>(low_bit<T>(x), lir::Constant<T>(1))
 }
 
@@ -85,7 +117,7 @@ rewrite leading_zeros64(inst: lir::Ctlz<Type::I64>) {
 }
 
 // Wrapping subtraction yields all ones for zero, so ctpop returns the width.
-rewrite trailing_zeros<T: BitWord>(inst: lir::Cttz<T>) {
+rewrite trailing_zeros<T: Word>(inst: lir::Cttz<T>) {
     replace {
         lir::Ctpop<T>(low_mask<T>(inst.src));
     }
@@ -127,4 +159,37 @@ rewrite fabs_bits64(inst: lir::Fabs<Type::F64>) {
         let changed = lir::And<Type::I64>(bits, mask);
         lir::Bitcast<Type::F64>(changed);
     }
+}
+
+// Signed-conversion fallback algorithms. Targets choose when to use them.
+fn unsigned32_to_float<T: ScalarFloat>(x: Type::I32) -> T {
+    lir::Sitofp<T>(lir::Zext<Type::I64>(x))
+}
+
+fn unsigned64_to_float<T: ScalarFloat>(x: Type::I64) -> T {
+    // Preserve a sticky low bit before rounding, then restore the factor of two.
+    let half = lir::Lshr<Type::I64>(x, lir::Constant<Type::I64>(1));
+    let low = lir::And<Type::I64>(x, lir::Constant<Type::I64>(1));
+    let rounded = lir::Or<Type::I64>(half, low);
+    let converted = lir::Sitofp<T>(rounded);
+    let doubled = lir::Fadd<T>(converted, converted);
+    let direct = lir::Sitofp<T>(x);
+    let high = lir::Icmp<Type::BOOL>(x, lir::Constant<Type::I64>(0), IntCC::LtS);
+    lir::Select<T>(high, doubled, direct)
+}
+
+fn float_to_unsigned32<T: ScalarFloat>(x: T) -> Type::I32 {
+    lir::Trunc<Type::I32>(lir::Fptosi<Type::I64>(x))
+}
+
+fn float_to_unsigned64<T: ScalarFloat>(x: T, threshold: T) -> Type::I64 {
+    // For the upper half, subtract 2^63 and restore its bit after conversion.
+    // These fallbacks retain the existing non-trapping conversion contract;
+    // strict floating-point exception behavior needs a separate legalization.
+    let high = lir::Fcmp<Type::BOOL>(x, threshold, FloatCC::Ge);
+    let reduced = lir::Fsub<T>(x, threshold);
+    let converted = lir::Fptosi<Type::I64>(reduced);
+    let restored = lir::Xor<Type::I64>(converted, lir::Constant<Type::I64>(-9223372036854775808));
+    let direct = lir::Fptosi<Type::I64>(x);
+    lir::Select<Type::I64>(high, restored, direct)
 }
