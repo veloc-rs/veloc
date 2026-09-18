@@ -3,7 +3,6 @@ use core::fmt;
 
 use crate::target::arch::TargetArch;
 use veloc_lir::MachineOpcode;
-use veloc_mir::Opcode;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -11,7 +10,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 pub enum Error {
     Lir(veloc_lir::ValidationError),
     Codegen(CodegenError),
-    Translate(TranslateError),
+    Translate(String),
     Select(InstructionError),
     Emit(InstructionError),
     Message(String),
@@ -42,13 +41,6 @@ pub enum CodegenError {
     UnsupportedObjectFormat {
         arch: TargetArch,
     },
-    Message(String),
-}
-
-#[derive(Debug, Clone)]
-pub enum TranslateError {
-    UnsupportedBinaryOpcode { opcode: Opcode },
-    UnsupportedUnaryOpcode { opcode: Opcode },
     Message(String),
 }
 
@@ -121,15 +113,7 @@ impl Error {
     }
 
     pub fn translate(message: impl Into<String>) -> Self {
-        Self::Translate(TranslateError::Message(message.into()))
-    }
-
-    pub fn unsupported_binary_opcode(opcode: Opcode) -> Self {
-        Self::Translate(TranslateError::UnsupportedBinaryOpcode { opcode })
-    }
-
-    pub fn unsupported_unary_opcode(opcode: Opcode) -> Self {
-        Self::Translate(TranslateError::UnsupportedUnaryOpcode { opcode })
+        Self::Translate(message.into())
     }
 
     pub fn select(opcode: MachineOpcode, reason: impl Into<String>) -> Self {
@@ -199,20 +183,6 @@ impl fmt::Display for CodegenError {
     }
 }
 
-impl fmt::Display for TranslateError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TranslateError::UnsupportedBinaryOpcode { opcode } => {
-                write!(f, "unsupported binary opcode: {:?}", opcode)
-            }
-            TranslateError::UnsupportedUnaryOpcode { opcode } => {
-                write!(f, "unsupported unary opcode: {:?}", opcode)
-            }
-            TranslateError::Message(s) => write!(f, "{}", s),
-        }
-    }
-}
-
 impl fmt::Display for InstructionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?} - {}", self.opcode, self.reason)
@@ -224,9 +194,6 @@ impl std::error::Error for Error {}
 
 #[cfg(feature = "std")]
 impl std::error::Error for CodegenError {}
-
-#[cfg(feature = "std")]
-impl std::error::Error for TranslateError {}
 
 #[cfg(feature = "std")]
 impl std::error::Error for InstructionError {}
@@ -246,12 +213,6 @@ impl From<&str> for Error {
 impl From<CodegenError> for Error {
     fn from(err: CodegenError) -> Self {
         Self::Codegen(err)
-    }
-}
-
-impl From<TranslateError> for Error {
-    fn from(err: TranslateError) -> Self {
-        Self::Translate(err)
     }
 }
 

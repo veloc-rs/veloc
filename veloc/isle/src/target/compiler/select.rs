@@ -560,23 +560,11 @@ fn emit_single_inst(
     };
 
     if let Some(inst_def) = ctx.final_inst_defs.get(opcode) {
-        let implicit_uses: Vec<u32> = inst_def
-            .implicit_uses
-            .iter()
-            .filter_map(|r| ctx.reg_map.get(r).copied())
-            .collect();
-        let implicit_defs: Vec<u32> = inst_def
-            .implicit_defs
-            .iter()
-            .filter_map(|r| ctx.reg_map.get(r).copied())
-            .collect();
-        let ops_binding =
-            if inst_def.operands.is_empty() && implicit_uses.is_empty() && implicit_defs.is_empty()
-            {
-                ""
-            } else {
-                "mut "
-            };
+        let ops_binding = if inst_def.operands.is_empty() {
+            ""
+        } else {
+            "mut "
+        };
         writeln!(
             output,
             "                #[allow(unused_mut)] let {}ops_{} = SmallVec::<[InstField; 4]>::new();",
@@ -665,35 +653,10 @@ fn emit_single_inst(
 
         writeln!(
             commits,
-            "                let inst_{} = store.writer().with_effects(&[{}], &[{}]).write(",
-            request.index,
-            implicit_uses
-                .iter()
-                .map(|r| format!("Reg::new_preg({r})"))
-                .collect::<Vec<_>>()
-                .join(", "),
-            implicit_defs
-                .iter()
-                .map(|r| format!("Reg::new_preg({r})"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            "                let inst_{} = TargetInst::{opcode}.write(store.writer(),",
+            request.index
         )
         .unwrap();
-        if ctx.final_inst_defs.contains_key(opcode) {
-            writeln!(
-                commits,
-                "                    MachineOpcode::Target(TargetInst::{}.as_u32()),",
-                opcode
-            )
-            .unwrap();
-        } else {
-            writeln!(
-                commits,
-                "                    MachineOpcode::Generic(GenericOpcode::{}),",
-                opcode
-            )
-            .unwrap();
-        }
         writeln!(commits, "                    &results_{},", request.index).unwrap();
         writeln!(
             commits,
@@ -1147,7 +1110,7 @@ pub(crate) fn generate_select_instruction(
         r#"
 pub fn select_instructions<C: LoweringContext + crate::target::arch::TargetFeatures{extra_bound}>(
     ctx: &mut C,
-    store: &mut veloc_lir::InstStore,
+    store: &mut veloc_lir::InstBuilder<'_>,
     source: veloc_lir::InstId,
     out: &mut alloc::vec::Vec<veloc_lir::InstId>,
 ) -> Result<SelectResult, crate::error::Error> {{

@@ -4,22 +4,18 @@ use crate::target::arch::SpillKind;
 use crate::{Error, Result};
 use alloc::format;
 use alloc::vec::Vec;
-use veloc_lir::{InstExtra, InstField, InstId, MachineFunction, Reg, StackFrame, StackSlot};
+use veloc_lir::{InstField, InstId, MachineFunction, Reg, StackFrame, StackSlot};
 use veloc_mir::Type;
 
 /// A physical move sequence for one selected branch, detached until materialization.
 pub struct EdgeAllocation {
     pub(crate) branch: InstId,
-    pub(crate) operand: usize,
     pub(crate) instructions: Vec<InstId>,
 }
 
 impl EdgeAllocation {
     pub fn branch(&self) -> InstId {
         self.branch
-    }
-    pub fn target_operand(&self) -> usize {
-        self.operand
     }
     pub fn instructions(&self) -> &[InstId] {
         &self.instructions
@@ -54,15 +50,13 @@ impl RegisterAllocator<'_> {
     ) -> Result<Vec<EdgeAllocation>> {
         let mut edges = Vec::new();
         let mut cycle_slots = alloc::collections::BTreeMap::new();
-        let ids: Vec<_> = f
-            .blocks
-            .iter()
-            .flat_map(|b| b.insts.iter().copied())
-            .collect();
+        let ids: Vec<_> = f.blocks().flat_map(|b| f.block_insts(b)).collect();
         for id in ids {
             let args = match f.inst_extra(id) {
-                Some(InstExtra::Branch(info)) => info.args.clone(),
-                Some(InstExtra::BranchCond(_) | InstExtra::BrTable(_)) => {
+                Some(veloc_lir::InstExtraRef::Branch(info)) => info.args.to_vec(),
+                Some(
+                    veloc_lir::InstExtraRef::BranchCond(_) | veloc_lir::InstExtraRef::BrTable(_),
+                ) => {
                     return Err(Error::codegen(
                         "selected branches must carry one explicit edge each",
                     ));
@@ -82,7 +76,7 @@ impl RegisterAllocator<'_> {
                     }
                 })
                 .collect();
-            let [(operand, target)] = targets.as_slice() else {
+            let [(_, target)] = targets.as_slice() else {
                 return Err(Error::codegen("selected edge requires exactly one target"));
             };
             let params = f
@@ -136,10 +130,9 @@ impl RegisterAllocator<'_> {
                 }
             }
             if !instructions.is_empty() {
-                instructions.push(self.target.jump_instruction(f.writer(), *target)?);
+                instructions.push(self.target.jump_instruction(f.editor().writer(), *target)?);
                 edges.push(EdgeAllocation {
                     branch: id,
-                    operand: *operand,
                     instructions,
                 });
             }
@@ -158,7 +151,10 @@ impl RegisterAllocator<'_> {
     ) -> Result<()> {
         match (dst, src) {
             (Location::Reg(dst), Location::Reg(src)) => {
-                out.push(self.target.copy_instruction(f.writer(), dst, src, ty)?);
+                out.push(
+                    self.target
+                        .copy_instruction(f.editor().writer(), dst, src, ty)?,
+                );
             }
             (Location::Stack(dst), Location::Stack(src)) => {
                 let class = self.target.desc().reg_class_for_vreg(&ty, None);
@@ -195,7 +191,7 @@ impl RegisterAllocator<'_> {
                     .frame_pointer
                     .ok_or_else(|| Error::codegen("edge stack copies require a frame pointer"))?;
                 out.push(self.target.spill_instruction(
-                    f.writer(),
+                    f.editor().writer(),
                     if load {
                         SpillKind::Load
                     } else {

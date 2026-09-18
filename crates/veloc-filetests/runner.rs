@@ -257,14 +257,13 @@ fn execute(mode: &str, source: &str) -> Result<String> {
                     .translate_module()
                     .map_err(|error| error.to_string())?;
                     return Ok(lir
-                        .func_order
+                        .functions
                         .iter()
-                        .map(|&id| {
-                            let function = &lir.functions[id];
+                        .map(|(_, function)| {
                             let mut text = function.format_for_dump();
                             // Expose result types as well as the operand identities
                             // already present in the LIR dump.
-                            for (reg, data) in &function.vregs {
+                            for (reg, data) in function.vregs() {
                                 text.push_str(&format!("type v{}: {}\n", reg.as_u32(), data.ty));
                             }
                             text

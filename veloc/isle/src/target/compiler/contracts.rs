@@ -434,30 +434,6 @@ pub(super) fn compile(
                 Some(node) if name(&node)? == "true" => true,
                 _ => return Err("pseudo must be true when specified".into()),
             };
-            let copy_bits = fields
-                .remove("copy")
-                .map(|node| {
-                    let bits = number(&node)?;
-                    if bits == 0
-                        || bits % 8 != 0
-                        || contract.results.len() != 1
-                        || operands.len() != 2
-                        || !matches!(&operands[1], OperandConstraint::Use(_))
-                        || !ties.is_empty()
-                        || memory.is_some()
-                        || flow != "Next"
-                        || !implicit_uses.is_empty()
-                        || !implicit_defs.is_empty()
-                        || !clobbers.is_empty()
-                    {
-                        return Err(
-                            "copy requires one input, one result and no observable effects"
-                                .to_owned(),
-                        );
-                    }
-                    Ok(bits)
-                })
-                .transpose()?;
             // Checked by the shared expression compiler after operand resolution.
             fields.remove("encoding");
             finish(&fields)?;
@@ -474,7 +450,6 @@ pub(super) fn compile(
                 encoding: None,
                 is_pseudo,
                 assembly: None,
-                copy_bits,
                 requires,
             })
         };

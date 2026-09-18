@@ -7,7 +7,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
-use veloc_lir::{InstExtra, InstId, MachineFunction, Reg, StackFrame, StackSlot};
+use veloc_lir::{InstId, MachineFunction, Reg, StackFrame, StackSlot};
 
 #[derive(Clone)]
 struct Interval {
@@ -47,14 +47,14 @@ impl<'a> RegisterAllocator<'a> {
         let mut calls = Vec::new();
         let mut constraints: BTreeMap<Reg, Vec<Reg>> = BTreeMap::new();
         let mut pos = 0u32;
-        for block in &f.blocks {
+        for block in f.blocks() {
             let start = pos * 2;
-            let end = (pos + block.insts.len() as u32) * 2;
+            let end = (pos + f.block_insts(block).count() as u32) * 2;
             let mut local = BTreeMap::new();
-            for &param in &block.params {
+            for &param in f.block_params(block).unwrap() {
                 extend(&mut local, param, start);
             }
-            for &id in &block.insts {
+            for id in f.block_insts(block) {
                 let inst = &f.inst(id);
                 if let veloc_lir::MachineOpcode::Target(op) = inst.opcode() {
                     for constraint in self.target.instruction_metadata(op).register_constraints {
@@ -91,16 +91,17 @@ impl<'a> RegisterAllocator<'a> {
                 for reg in inst.defs() {
                     extend(&mut local, reg, pos * 2 + 1);
                 }
-                if self.target.is_call(inst) || matches!(f.inst_extra(id), Some(InstExtra::Call(_)))
+                if self.target.is_call(inst)
+                    || matches!(f.inst_extra(id), Some(veloc_lir::InstExtraRef::Call(_)))
                 {
                     calls.push(pos * 2 + 1);
                 }
                 pos += 1;
             }
-            for &reg in live.live_in(block.id).into_iter().flatten() {
+            for &reg in live.live_in(block).into_iter().flatten() {
                 extend(&mut local, reg, start);
             }
-            for &reg in live.live_out(block.id).into_iter().flatten() {
+            for &reg in live.live_out(block).into_iter().flatten() {
                 extend(&mut local, reg, end);
             }
             for (reg, (start, end)) in local {
@@ -213,11 +214,7 @@ impl<'a> RegisterAllocator<'a> {
         frame: &StackFrame,
     ) -> Result<SecondaryMap<InstId, InstAllocation>> {
         let mut instructions = SecondaryMap::new();
-        let layout: Vec<_> = f
-            .blocks
-            .iter()
-            .flat_map(|b| b.insts.iter().copied())
-            .collect();
+        let layout: Vec<_> = f.blocks().flat_map(|b| f.block_insts(b)).collect();
         for id in layout {
             {
                 let inst = &f.inst(id);
@@ -378,8 +375,12 @@ impl<'a> RegisterAllocator<'a> {
                 }
                 // Reloads precede input copies; output copies precede spill stores.
                 for (dst, src, ty) in copies_after {
-                    plan.after
-                        .push(self.target.copy_instruction(f.writer(), dst, src, ty)?);
+                    plan.after.push(self.target.copy_instruction(
+                        f.editor().writer(),
+                        dst,
+                        src,
+                        ty,
+                    )?);
                 }
                 for (load, accesses) in [(true, loads), (false, stores)] {
                     for (slot, reg, ty) in accesses {
@@ -395,7 +396,7 @@ impl<'a> RegisterAllocator<'a> {
                                 })?,
                         );
                         let inst = self.target.spill_instruction(
-                            f.writer(),
+                            f.editor().writer(),
                             if load {
                                 SpillKind::Load
                             } else {
@@ -414,8 +415,12 @@ impl<'a> RegisterAllocator<'a> {
                     }
                 }
                 for (dst, src, ty) in copies_before {
-                    plan.before
-                        .push(self.target.copy_instruction(f.writer(), dst, src, ty)?);
+                    plan.before.push(self.target.copy_instruction(
+                        f.editor().writer(),
+                        dst,
+                        src,
+                        ty,
+                    )?);
                 }
                 instructions[id] = plan;
             }
@@ -438,17 +443,17 @@ mod tests {
         let target = X86_64TargetMachine::new(crate::TargetConfig::default());
         for mode in 0..3 {
             let mut f = MachineFunction::new("reuse".into());
-            f.create_synthetic_block();
-            let lhs = f.alloc_vreg(Type::I64);
-            let rhs = f.alloc_vreg(Type::I64);
-            let dst = f.alloc_vreg(Type::I64);
-            let id = f.writer().binary(
+            f.editor().create_block();
+            let lhs = f.editor().alloc_vreg(Type::I64);
+            let rhs = f.editor().alloc_vreg(Type::I64);
+            let dst = f.editor().alloc_vreg(Type::I64);
+            let id = f.editor().writer().binary(
                 MachineOpcode::Target(TargetInst::X86Sub64.as_u32()),
                 Writable(dst),
                 rhs,
                 lhs,
             );
-            f.append_inst_id_to_block(0, id);
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             let mut allocator = RegisterAllocator::new(&target);
             let mut frame = f.stack_frame.clone();
             if mode == 2 {

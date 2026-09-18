@@ -32,7 +32,7 @@ impl<'a> FunctionPass for LegalizePass<'a> {
     ) -> Result<PassEffect> {
         let legalizer = Legalizer::new(self.legalizer);
         let changed = legalizer.legalize(mfunc)?;
-        ctx.stats.legalized_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
+        ctx.stats.legalized_inst_count = mfunc.blocks().map(|b| mfunc.block_insts(b).count()).sum();
         Ok(if changed {
             PassEffect::new(ChangeSet::INST_SEMANTICS | ChangeSet::CFG)
         } else {

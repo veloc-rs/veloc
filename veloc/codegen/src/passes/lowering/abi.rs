@@ -52,7 +52,9 @@ fn stack_slot_for_assignment(
                 }
                 crate::target::arch::AbiStackBase::OutgoingArgs => stack_pointer,
             };
-            mfunc.alloc_stack_slot_with_base(base_reg, offset, size, align)
+            mfunc
+                .editor()
+                .alloc_stack_slot_with_base(base_reg, offset, size, align)
         }
         AbiLocation::Reg(_) => unreachable!("stack slot requested for register assignment"),
     }
@@ -67,10 +69,10 @@ fn build_load_from_assignment(
 ) -> InstId {
     let part = single_part_assignment(assignment, kind);
     match part.loc {
-        AbiLocation::Reg(reg) => mfunc.writer().copy(Writable(dst), reg),
+        AbiLocation::Reg(reg) => mfunc.editor().writer().copy(Writable(dst), reg),
         AbiLocation::Stack { .. } => {
             let slot = stack_slot_for_assignment(target, mfunc, part);
-            mfunc.writer().stack_load(Writable(dst), slot)
+            mfunc.editor().writer().stack_load(Writable(dst), slot)
         }
     }
 }
@@ -84,10 +86,10 @@ fn build_store_to_assignment(
 ) -> InstId {
     let part = single_part_assignment(assignment, kind);
     match part.loc {
-        AbiLocation::Reg(reg) => mfunc.writer().copy(Writable(reg), src),
+        AbiLocation::Reg(reg) => mfunc.editor().writer().copy(Writable(reg), src),
         AbiLocation::Stack { .. } => {
             let slot = stack_slot_for_assignment(target, mfunc, part);
-            mfunc.writer().stack_store(src, slot)
+            mfunc.editor().writer().stack_store(src, slot)
         }
     }
 }
@@ -97,52 +99,37 @@ fn lower_formal_arguments(
     mfunc: &mut MachineFunction,
     plan: &CallConvPlan,
 ) {
-    if mfunc.blocks.is_empty() {
+    if mfunc.num_blocks() == 0 {
         return;
     }
 
-    let func_name = mfunc.name.clone();
-    mfunc
-        .rewrite_block::<(), _>(0, |cursor| {
-            let inst = cursor.current_inst();
-            // Legalization may already have introduced target instructions.
-            if !inst.is_generic() {
-                cursor.keep_current();
-                return Ok(());
-            }
-            if let veloc_lir::InstView::Arg(decoded) = inst.view() {
-                let assignment = match plan
-                    .args
-                    .get(usize::try_from(decoded.index).expect("negative argument index"))
-                {
-                    Some(assignment) => assignment,
-                    None => panic!(
-                        "missing ABI assignment for argument {} in {}",
-                        decoded.index, func_name
-                    ),
-                };
-                let inst = build_load_from_assignment(
-                    target,
-                    cursor.mfunc_mut(),
-                    assignment,
-                    decoded.dst,
-                    "argument",
-                );
-                cursor.replace_current(inst);
-            } else {
-                cursor.keep_current();
-            }
-            Ok(())
-        })
-        .unwrap_or_else(|_: ()| panic!("ABI argument lowering failed for `{}`", func_name));
+    let entry = mfunc.entry_block().unwrap();
+    let ids: Vec<_> = mfunc.block_insts(entry).collect();
+    for id in ids {
+        let inst = mfunc.inst(id);
+        if !inst.is_generic() {
+            continue;
+        }
+        if let veloc_lir::InstView::Arg(decoded) = inst.view() {
+            let assignment = plan
+                .args
+                .get(usize::try_from(decoded.index).expect("negative argument index"))
+                .expect("missing ABI argument assignment");
+            let dst = decoded.dst;
+            let replacement =
+                build_load_from_assignment(target, mfunc, assignment, dst, "argument");
+            mfunc.editor().replace_inst(id, replacement);
+        }
+    }
 }
 
 fn lower_callsite(
     target: &dyn TargetMachine,
-    cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
+    mfunc: &mut MachineFunction,
+    id: InstId,
     plan: &CallConvPlan,
 ) {
-    let inst = cursor.current_inst();
+    let inst = mfunc.inst(id);
     let (results, args) = match inst.view() {
         veloc_lir::InstView::Call(call) => (call.results, call.args),
         veloc_lir::InstView::CallIndirect(call) => (call.results, call.args),
@@ -177,25 +164,19 @@ fn lower_callsite(
             }
         })
         .collect();
-    let id = cursor.current_inst_id();
-    cursor.mfunc_mut().set_inst_results(id, &returns);
+    mfunc.editor().set_inst_results(id, &returns);
     for (src, assignment) in args.into_iter().zip(plan.args.iter()) {
-        let inst =
-            build_store_to_assignment(target, cursor.mfunc_mut(), src, assignment, "call argument");
-        cursor.emit(inst);
+        let inst = build_store_to_assignment(target, mfunc, src, assignment, "call argument");
+        mfunc.editor().insert_before(id, inst);
     }
 
-    cursor.keep_current();
-    cursor.mfunc_mut().stack_frame.arg_size = cursor
-        .mfunc()
-        .stack_frame
-        .arg_size
-        .max(plan.stack_arg_bytes);
+    mfunc.stack_frame.arg_size = mfunc.stack_frame.arg_size.max(plan.stack_arg_bytes);
+    let mut after = id;
 
     for (dst, assignment) in defs.into_iter().zip(plan.returns.iter()) {
-        let inst =
-            build_load_from_assignment(target, cursor.mfunc_mut(), assignment, dst, "call return");
-        cursor.emit(inst);
+        let inst = build_load_from_assignment(target, mfunc, assignment, dst, "call return");
+        mfunc.editor().insert_after(after, inst);
+        after = inst;
     }
 }
 
@@ -249,67 +230,38 @@ impl FunctionPass for AbiLoweringPass {
         mfunc.stack_frame.arg_size = 0;
         lower_formal_arguments(ctx.target, mfunc, &plan);
 
-        let func_name = mfunc.name.clone();
-        let num_blocks = mfunc.num_blocks();
-        for block_idx in 0..num_blocks {
-            mfunc
-                .rewrite_block::<(), _>(block_idx, |cursor| {
-                    let inst = cursor.current_inst();
-                    let inst_id = cursor.current_inst_id();
-
-                    match inst.opcode() {
-                        MachineOpcode::Generic(GenericOpcode::Call)
-                        | MachineOpcode::Generic(GenericOpcode::Callind) => {
-                            let call_plan = {
-                                let call = cursor.mfunc().call_info(inst_id);
-                                plan_callsite(ctx.target, &call.sig).unwrap_or_else(|err| {
-                                    panic!(
-                                    "failed to plan callsite for `{:?}` while lowering `{}`: {}",
-                                    call.sig, func_name, err
-                                );
-                                })
-                            };
-                            lower_callsite(ctx.target, cursor, &call_plan);
-                        }
-                        MachineOpcode::Generic(GenericOpcode::Ret) => {
-                            let veloc_lir::InstView::Return(ret) = inst.view() else {
-                                unreachable!()
-                            };
-                            let values: Vec<_> = ret.values.to_vec();
-                            let ret_plan = &plan;
-                            let pre = lower_return(
-                                ctx.target,
-                                cursor.mfunc_mut(),
-                                ctx.func_sig,
-                                ret_plan,
-                                &values,
-                            );
-                            for inst in pre {
-                                cursor.emit(inst);
-                            }
-                            let regs: Vec<_> = ret_plan
-                                .returns
-                                .iter()
-                                .flat_map(|assignment| {
-                                    assignment.parts.iter().filter_map(|part| match part.loc {
-                                        AbiLocation::Reg(reg) => Some(reg),
-                                        _ => None,
-                                    })
-                                })
-                                .collect();
-                            let id = cursor.mfunc_mut().writer().ret(&regs);
-                            cursor.replace_current(id);
-                        }
-                        _ => cursor.keep_current(),
+        let ids: Vec<_> = mfunc.blocks().flat_map(|b| mfunc.block_insts(b)).collect();
+        for inst_id in ids {
+            let inst = mfunc.inst(inst_id);
+            match inst.opcode() {
+                MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind) => {
+                    let call_plan = plan_callsite(ctx.target, &mfunc.call_info(inst_id).sig)?;
+                    lower_callsite(ctx.target, mfunc, inst_id, &call_plan);
+                }
+                MachineOpcode::Generic(GenericOpcode::Ret) => {
+                    let veloc_lir::InstView::Return(ret) = inst.view() else {
+                        unreachable!()
+                    };
+                    let values = ret.values.to_vec();
+                    let pre = lower_return(ctx.target, mfunc, ctx.func_sig, &plan, &values);
+                    for inst in pre {
+                        mfunc.editor().insert_before(inst_id, inst);
                     }
-                    Ok(())
-                })
-                .unwrap_or_else(|_: ()| {
-                    panic!(
-                        "ABI lowering failed while rewriting block {} in `{}`",
-                        block_idx, func_name
-                    )
-                });
+                    let regs: Vec<_> = plan
+                        .returns
+                        .iter()
+                        .flat_map(|assignment| {
+                            assignment.parts.iter().filter_map(|part| match part.loc {
+                                AbiLocation::Reg(reg) => Some(reg),
+                                _ => None,
+                            })
+                        })
+                        .collect();
+                    let replacement = mfunc.editor().writer().ret(&regs);
+                    mfunc.editor().replace_inst(inst_id, replacement);
+                }
+                _ => {}
+            }
         }
 
         Ok(PassEffect::new(

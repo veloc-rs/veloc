@@ -3,9 +3,9 @@
 use super::isle;
 use crate::target::arch::AssemblyWriter;
 use core::fmt::{self, Write};
+use veloc_lir::BlockId as Block;
 use veloc_lir::SymbolId;
 use veloc_lir::{InstRef, MachineOpcode, Reg, StackFrame, StackSlot};
-use veloc_mir::Block;
 
 pub fn write(
     inst: &InstRef<'_>,
@@ -40,7 +40,7 @@ impl<F: FnMut(SymbolId, &mut dyn Write) -> fmt::Result> AssemblyWriter for Intel
         write!(self.out, "{value}")
     }
     fn block(&mut self, block: Block) -> fmt::Result {
-        write!(self.out, ".Lblock{}", block.0)
+        write!(self.out, ".Lblock{}", block.as_u32())
     }
     fn symbol(&mut self, symbol: SymbolId) -> fmt::Result {
         (self.symbol)(symbol, self.out)

@@ -49,12 +49,9 @@ pub(crate) fn schedule(
     const WINDOW: usize = 256;
     let liveness = analyses.liveness(f, target);
     let mut changed = 0;
-    for b in 0..f.num_blocks() {
-        let ids = f.block_insts(b).to_vec();
-        let mut live = liveness
-            .live_out(f.blocks[b].id)
-            .cloned()
-            .unwrap_or_default();
+    for b in f.blocks().collect::<Vec<_>>() {
+        let ids = f.block_insts(b).collect::<Vec<_>>();
+        let mut live = liveness.live_out(b).cloned().unwrap_or_default();
         let mut output = Vec::with_capacity(ids.len());
         let mut end = ids.len();
         // Walk regions backward so live-out is available without storing a live
@@ -99,7 +96,7 @@ pub(crate) fn schedule(
             end = start;
         }
         output.reverse();
-        f.blocks[b].insts = output;
+        f.editor().reorder_block(b, &output);
     }
     changed
 }

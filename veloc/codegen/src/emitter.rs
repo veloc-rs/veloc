@@ -4,8 +4,8 @@ use crate::{Error, Result};
 use alloc::{format, vec, vec::Vec};
 use hashbrown::HashMap;
 use veloc_encoder::{Encoded, Fixup};
+use veloc_lir::BlockId as Block;
 use veloc_lir::SymbolId;
-use veloc_mir::Block;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Target {

@@ -410,6 +410,16 @@ pub(crate) fn generate_target_inst_metadata(
     }
     writeln!(output, "    }}").unwrap();
     writeln!(output, "}}").unwrap();
+    output.push_str(r#"
+impl TargetInst {
+    /// Construct explicit and fixed implicit operands together from the schema.
+    pub fn write(self, writer: veloc_lir::InstWriter<'_>, results: &[Reg], inputs: &[Reg], fields: &[InstField]) -> veloc_lir::InstId {
+        let metadata = target_inst_metadata(self);
+        writer.with_effects(metadata.implicit_uses, metadata.implicit_defs)
+            .write(veloc_lir::MachineOpcode::Target(self.as_u32()), results, inputs, fields)
+    }
+}
+"#);
 }
 
 pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<String, FinalInstDef>) {

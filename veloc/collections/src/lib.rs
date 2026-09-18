@@ -2,6 +2,9 @@
 #![no_std]
 extern crate alloc;
 
+mod layout;
+pub use layout::EntityLayout;
+
 use alloc::vec::Vec;
 use cranelift_entity::{EntityRef, packed_option::PackedOption};
 

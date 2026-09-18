@@ -228,8 +228,8 @@ impl<'a> CodegenPipeline<'a> {
         let sig = module.get_signature(func.signature);
         let mut function_analyses = FunctionAnalysisCtx::default();
 
-        stats.initial_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
-        stats.vreg_count = mfunc.vregs.len();
+        stats.initial_inst_count = mfunc.blocks().map(|b| mfunc.block_insts(b).count()).sum();
+        stats.vreg_count = mfunc.vregs().len();
         self.maybe_dump_mfunc("translated", &mfunc);
 
         let final_mfunc =
@@ -324,7 +324,7 @@ impl<'a> CodegenPipeline<'a> {
             ctx.function_analyses,
         )?;
         let mut mfunc = allocation.materialize();
-        ctx.stats.final_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
+        ctx.stats.final_inst_count = mfunc.blocks().map(|b| mfunc.block_insts(b).count()).sum();
         ctx.stats.stack_slot_count = mfunc.stack_frame.slots.len();
         use crate::pipeline::ChangeSet;
         ctx.function_analyses.apply(
@@ -428,12 +428,15 @@ impl<'a> CodegenPipeline<'a> {
         mfunc: &MachineFunction,
         stats: &mut CodegenStats,
     ) -> Result<crate::EmittedCode> {
+        if mfunc.entry_block() != mfunc.blocks().next() {
+            return Err(Error::codegen("function entry must be first at emission"));
+        }
         let emitter = self.target.emitter();
         let mut output = crate::Emitter::new();
 
-        for block in &mfunc.blocks {
+        for block in mfunc.blocks() {
             emitter.begin_block(&mut output, block, mfunc)?;
-            for &inst_id in &block.insts {
+            for inst_id in mfunc.block_insts(block) {
                 let inst = &mfunc.inst(inst_id);
                 if inst.is_generic() || inst.defs().chain(inst.uses()).any(|r| r.is_vreg()) {
                     return Err(Error::codegen(alloc::format!(
@@ -489,10 +492,8 @@ block0(v0: ptr):
         for wrong_direction in [false, true] {
             let mut f = translated.functions.iter().next().unwrap().1.clone();
             let id = f
-                .blocks
-                .iter()
-                .flat_map(|b| &b.insts)
-                .copied()
+                .blocks()
+                .flat_map(|b| f.block_insts(b))
                 .find(|id| f.inst(*id).memory().is_some())
                 .unwrap();
             let mut access = f.inst(id).memory().unwrap();
@@ -501,7 +502,7 @@ block0(v0: ptr):
             } else {
                 access.bytes = 4;
             }
-            f.set_inst_memory(id, Some(access));
+            f.editor().set_inst_memory(id, Some(access));
             let err = pipeline
                 .run_function_pipeline(
                     f,
@@ -555,10 +556,9 @@ block0(v0: ptr, v1: i64):
                 .unwrap();
             let f = &compiled.functions[0].machine_function;
             let accesses: Vec<_> = f
-                .blocks
-                .iter()
-                .flat_map(|b| &b.insts)
-                .filter_map(|id| f.inst(*id).memory())
+                .blocks()
+                .flat_map(|b| f.block_insts(b))
+                .filter_map(|id| f.inst(id).memory())
                 .collect();
             assert_eq!(accesses.len(), 4);
             for (access, kind) in accesses.iter().zip([

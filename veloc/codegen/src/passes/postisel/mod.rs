@@ -30,7 +30,7 @@ impl<'a> FunctionPass for PostIselOptimizePass<'a> {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         self.post_isel.combine_instructions(mfunc);
-        ctx.stats.combined_inst_count = mfunc.blocks.iter().map(|b| b.insts.len()).sum();
+        ctx.stats.combined_inst_count = mfunc.blocks().map(|b| mfunc.block_insts(b).count()).sum();
         crate::passes::constraints::PostSelectOperandConstraintPass::new(self.operand_lowering)
             .run(mfunc)?;
         Ok(PassEffect::new(

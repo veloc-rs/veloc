@@ -2,8 +2,8 @@ use crate::target::arch::TargetInstructions;
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use hashbrown::{HashMap, HashSet};
+use veloc_lir::BlockId as Block;
 use veloc_lir::{MachineFunction, Reg};
-use veloc_mir::Block;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -449,16 +449,16 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
     let mut succs: HashMap<Block, Vec<Block>> = HashMap::new();
 
     let mut block_order = Vec::new();
-    for block in &mfunc.blocks {
-        block_order.push(block.id);
-        preds.entry(block.id).or_default();
-        succs.entry(block.id).or_default();
+    for block in mfunc.blocks() {
+        block_order.push(block);
+        preds.entry(block).or_default();
+        succs.entry(block).or_default();
     }
 
-    for (index, block) in mfunc.blocks.iter().enumerate() {
+    for (index, block) in mfunc.blocks().enumerate() {
         let mut block_succs = Vec::new();
         let mut falls_through = true;
-        for &id in &block.insts {
+        for id in mfunc.block_insts(block) {
             let inst = &mfunc.inst(id);
             let flow = target.control_flow(inst);
             if matches!(
@@ -470,8 +470,8 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
                         block_succs.push(*target);
                     }
                 }
-                if let Some(veloc_lir::InstExtra::BrTable(info)) = mfunc.inst_extra(id) {
-                    block_succs.extend(info.targets.iter().map(|target| target.block));
+                if let Some(veloc_lir::InstExtraRef::BrTable(info)) = mfunc.inst_extra(id) {
+                    block_succs.extend(info.targets().map(|target| target.block));
                 }
             }
             if matches!(
@@ -491,9 +491,9 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
         }
         block_succs.sort();
         block_succs.dedup();
-        succs.insert(block.id, block_succs.clone());
+        succs.insert(block, block_succs.clone());
         for succ in block_succs {
-            preds.entry(succ).or_default().push(block.id);
+            preds.entry(succ).or_default().push(block);
         }
     }
 
@@ -501,8 +501,8 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
 }
 
 fn compute_dominators(mfunc: &MachineFunction, cfg: &CfgInfo) -> DominatorTree {
-    let blocks: Vec<Block> = mfunc.blocks.iter().map(|b| b.id).collect();
-    let Some(entry) = blocks.first().copied() else {
+    let blocks: Vec<Block> = mfunc.blocks().collect();
+    let Some(entry) = mfunc.entry_block() else {
         return DominatorTree::default();
     };
 
@@ -546,7 +546,7 @@ fn compute_dominators(mfunc: &MachineFunction, cfg: &CfgInfo) -> DominatorTree {
 }
 
 fn compute_post_dominators(mfunc: &MachineFunction, cfg: &CfgInfo) -> PostDominatorTree {
-    let blocks: Vec<Block> = mfunc.blocks.iter().map(|b| b.id).collect();
+    let blocks: Vec<Block> = mfunc.blocks().collect();
     let exits: Vec<Block> = blocks
         .iter()
         .copied()
@@ -601,10 +601,10 @@ fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
     let mut live_in: HashMap<Block, HashSet<Reg>> = HashMap::new();
     let mut live_out: HashMap<Block, HashSet<Reg>> = HashMap::new();
 
-    for block in &mfunc.blocks {
+    for block in mfunc.blocks() {
         let mut uses = HashSet::new();
-        let mut defs: HashSet<_> = block.params.iter().copied().collect();
-        for &inst_id in &block.insts {
+        let mut defs: HashSet<_> = mfunc.block_params(block).unwrap().iter().copied().collect();
+        for inst_id in mfunc.block_insts(block) {
             let inst = &mfunc.inst(inst_id);
             for reg in inst.uses() {
                 if !defs.contains(&reg) {
@@ -615,35 +615,35 @@ fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
                 defs.insert(reg);
             }
         }
-        block_uses.insert(block.id, uses);
-        block_defs.insert(block.id, defs);
-        live_in.insert(block.id, HashSet::new());
-        live_out.insert(block.id, HashSet::new());
+        block_uses.insert(block, uses);
+        block_defs.insert(block, defs);
+        live_in.insert(block, HashSet::new());
+        live_out.insert(block, HashSet::new());
     }
 
     let mut changed = true;
     while changed {
         changed = false;
-        for block in mfunc.blocks.iter().rev() {
+        for block in mfunc.blocks().rev() {
             let mut out = HashSet::new();
-            for succ in cfg.succs(block.id) {
+            for succ in cfg.succs(block) {
                 if let Some(succ_in) = live_in.get(succ) {
                     out.extend(succ_in.iter().copied());
                 }
             }
-            let mut new_in = block_uses.get(&block.id).cloned().unwrap_or_default();
-            let defs = block_defs.get(&block.id).cloned().unwrap_or_default();
+            let mut new_in = block_uses.get(&block).cloned().unwrap_or_default();
+            let defs = block_defs.get(&block).cloned().unwrap_or_default();
             for reg in &out {
                 if !defs.contains(reg) {
                     new_in.insert(*reg);
                 }
             }
-            if live_out.get(&block.id) != Some(&out) {
-                live_out.insert(block.id, out);
+            if live_out.get(&block) != Some(&out) {
+                live_out.insert(block, out);
                 changed = true;
             }
-            if live_in.get(&block.id) != Some(&new_in) {
-                live_in.insert(block.id, new_in);
+            if live_in.get(&block) != Some(&new_in) {
+                live_in.insert(block, new_in);
                 changed = true;
             }
         }
@@ -666,9 +666,9 @@ fn compute_loop_info(cfg: &CfgInfo, dom: &DominatorTree) -> LoopInfo {
 
 fn compute_register_pressure(mfunc: &MachineFunction, liveness: &LivenessInfo) -> RegisterPressure {
     let mut per_block_max_live = HashMap::new();
-    for block in &mfunc.blocks {
-        let live = liveness.live_out(block.id).cloned().unwrap_or_default();
-        per_block_max_live.insert(block.id, live.len());
+    for block in mfunc.blocks() {
+        let live = liveness.live_out(block).cloned().unwrap_or_default();
+        per_block_max_live.insert(block, live.len());
     }
     RegisterPressure { per_block_max_live }
 }
@@ -678,45 +678,51 @@ mod tests {
     use super::{ChangeSet, FunctionAnalysisCtx};
     use crate::target::arch::TargetConfig;
     use crate::target::x86_64::X86_64TargetMachine;
+    use veloc_lir::BlockId as Block;
     use veloc_lir::InstBuild;
-    use veloc_lir::{MachineBlock, MachineFunction};
-    use veloc_mir::{Block, Type};
+    use veloc_lir::MachineFunction;
+    use veloc_mir::Type;
 
     #[test]
     fn generic_control_comes_from_definitions_not_layout_or_last_instruction() {
         let mut f = MachineFunction::new("control".into());
-        for id in 0..4 {
-            f.blocks.push(MachineBlock::new(Block(id)));
+        for _id in 0..4 {
+            f.editor().create_block();
         }
         {
-            let id = f.writer().unreachable();
-            f.append_inst_id_to_block(0, id);
+            let id = f.editor().writer().unreachable();
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             id
         };
         // Dead instructions cannot introduce successors after a trap.
         {
-            let id = f.writer().br(Block(2));
-            f.append_inst_id_to_block(0, id);
+            let id = f.editor().writer().br(Block::from_u32(2));
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             id
         };
         {
-            let id = f
-                .writer()
-                .brcond(veloc_lir::Reg::new_vreg(0), Block(0), Block(3));
-            f.append_inst_id_to_block(1, id);
+            let id = f.editor().writer().brcond(
+                veloc_lir::Reg::new_vreg(0),
+                Block::from_u32(0),
+                Block::from_u32(3),
+            );
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(1), id);
             id
         };
         {
-            let id = f.writer().ret(&[]);
-            f.append_inst_id_to_block(2, id);
+            let id = f.editor().writer().ret(&[]);
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(2), id);
             id
         };
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg = analyses.cfg(&f, &target);
-        assert!(cfg.succs(Block(0)).is_empty());
-        assert_eq!(cfg.succs(Block(1)), &[Block(0), Block(3)]);
-        assert!(cfg.succs(Block(2)).is_empty());
+        assert!(cfg.succs(Block::from_u32(0)).is_empty());
+        assert_eq!(
+            cfg.succs(Block::from_u32(1)),
+            &[Block::from_u32(0), Block::from_u32(3)]
+        );
+        assert!(cfg.succs(Block::from_u32(2)).is_empty());
     }
 
     #[test]
@@ -732,21 +738,21 @@ mod tests {
         use veloc_lir::{InstField, MachineOpcode};
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut f = MachineFunction::new("selected".into());
-        for id in 0..8 {
-            f.blocks.push(MachineBlock::new(Block(id)));
+        for _id in 0..8 {
+            f.editor().create_block();
         }
         let mut emit = |block, op: TargetInst, targets: &[u32]| {
             {
-                let id = f.writer().write(
+                let id = f.editor().writer().write(
                     MachineOpcode::Target(op.as_u32()),
                     &[],
                     &[],
                     &targets
                         .iter()
-                        .map(|&b| InstField::Block(Block(b)))
+                        .map(|&b| InstField::Block(Block::from_u32(b)))
                         .collect::<alloc::vec::Vec<_>>(),
                 );
-                f.append_inst_id_to_block(block, id);
+                f.editor().append_inst(Block::from_u32(block), id);
                 id
             };
         };
@@ -761,14 +767,20 @@ mod tests {
         emit(6, TargetInst::X86Ret, &[]);
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg = analyses.cfg(&f, &target);
-        assert!(cfg.succs(Block(0)).is_empty());
-        assert!(cfg.succs(Block(1)).is_empty());
-        assert_eq!(cfg.succs(Block(2)), &[Block(0)]);
-        assert_eq!(cfg.succs(Block(3)), &[Block(0), Block(2)]);
-        assert_eq!(cfg.succs(Block(4)), &[Block(1), Block(5)]);
-        assert_eq!(cfg.succs(Block(5)), &[Block(6)]);
-        assert!(cfg.succs(Block(6)).is_empty());
-        assert!(cfg.succs(Block(7)).is_empty());
+        assert!(cfg.succs(Block::from_u32(0)).is_empty());
+        assert!(cfg.succs(Block::from_u32(1)).is_empty());
+        assert_eq!(cfg.succs(Block::from_u32(2)), &[Block::from_u32(0)]);
+        assert_eq!(
+            cfg.succs(Block::from_u32(3)),
+            &[Block::from_u32(0), Block::from_u32(2)]
+        );
+        assert_eq!(
+            cfg.succs(Block::from_u32(4)),
+            &[Block::from_u32(1), Block::from_u32(5)]
+        );
+        assert_eq!(cfg.succs(Block::from_u32(5)), &[Block::from_u32(6)]);
+        assert!(cfg.succs(Block::from_u32(6)).is_empty());
+        assert!(cfg.succs(Block::from_u32(7)).is_empty());
     }
 
     #[test]
@@ -777,67 +789,85 @@ mod tests {
         use veloc_lir::MachineOpcode;
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut f = MachineFunction::new("layout".into());
-        for id in 0..3 {
-            f.blocks.push(MachineBlock::new(Block(id)));
+        for _id in 0..3 {
+            f.editor().create_block();
         }
         let mut analyses = FunctionAnalysisCtx::default();
-        assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(1)]);
-        f.blocks.swap(1, 2);
+        assert_eq!(
+            analyses.cfg(&f, &target).succs(Block::from_u32(0)),
+            &[Block::from_u32(1)]
+        );
+        f.editor()
+            .move_block_before(Block::from_u32(2), Block::from_u32(1));
         analyses.apply(ChangeSet::BLOCK_LAYOUT);
-        assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(2)]);
+        assert_eq!(
+            analyses.cfg(&f, &target).succs(Block::from_u32(0)),
+            &[Block::from_u32(2)]
+        );
         {
-            let id = f.writer().write(
+            let id = f.editor().writer().write(
                 MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
                 &[],
                 &[],
                 &[],
             );
-            f.append_inst_id_to_block(0, id);
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             id
         };
         analyses.apply(ChangeSet::SELECTED_OPCODES);
-        assert!(analyses.cfg(&f, &target).succs(Block(0)).is_empty());
+        assert!(
+            analyses
+                .cfg(&f, &target)
+                .succs(Block::from_u32(0))
+                .is_empty()
+        );
     }
 
     #[test]
     fn branch_operand_change_invalidates_cfg_and_liveness() {
         let mut f = MachineFunction::new("control".into());
-        for id in 0..3 {
-            f.blocks.push(MachineBlock::new(Block(id)));
+        for _id in 0..3 {
+            f.editor().create_block();
         }
-        let value = f.alloc_vreg(Type::I64);
+        let value = f.editor().alloc_vreg(Type::I64);
         let jump = {
-            let id = f.writer().br(Block(1));
-            f.append_inst_id_to_block(0, id);
+            let id = f.editor().writer().br(Block::from_u32(1));
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             id
         };
         {
-            let id = f.writer().ret(&[value]);
-            f.append_inst_id_to_block(1, id);
+            let id = f.editor().writer().ret(&[value]);
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(1), id);
             id
         };
         {
-            let id = f.writer().ret(&[]);
-            f.append_inst_id_to_block(2, id);
+            let id = f.editor().writer().ret(&[]);
+            f.editor().append_inst(veloc_lir::BlockId::from_u32(2), id);
             id
         };
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut analyses = FunctionAnalysisCtx::default();
-        assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(1)]);
+        assert_eq!(
+            analyses.cfg(&f, &target).succs(Block::from_u32(0)),
+            &[Block::from_u32(1)]
+        );
         assert!(
             analyses
                 .liveness(&f, &target)
-                .live_out(Block(0))
+                .live_out(Block::from_u32(0))
                 .unwrap()
                 .contains(&value)
         );
-        f.rewriter(jump).br(Block(2));
+        f.editor().rewriter(jump).br(Block::from_u32(2));
         analyses.apply(ChangeSet::INST_OPERANDS);
-        assert_eq!(analyses.cfg(&f, &target).succs(Block(0)), &[Block(2)]);
+        assert_eq!(
+            analyses.cfg(&f, &target).succs(Block::from_u32(0)),
+            &[Block::from_u32(2)]
+        );
         assert!(
             !analyses
                 .liveness(&f, &target)
-                .live_out(Block(0))
+                .live_out(Block::from_u32(0))
                 .unwrap()
                 .contains(&value)
         );
@@ -847,15 +877,15 @@ mod tests {
     fn cfg_change_invalidates_cfg_and_dependents() {
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut mfunc = MachineFunction::new("test".into());
-        mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
-        mfunc.blocks.push(MachineBlock::new(Block::from_u32(1)));
+        mfunc.editor().create_block();
+        mfunc.editor().create_block();
         let mut analyses = FunctionAnalysisCtx::default();
         let succs_before = analyses
             .cfg(&mfunc, &target)
             .succs(Block::from_u32(0))
             .len();
         analyses.apply(ChangeSet::CFG);
-        mfunc.blocks.push(MachineBlock::new(Block::from_u32(2)));
+        mfunc.editor().create_block();
         let succs_after = analyses
             .cfg(&mfunc, &target)
             .succs(Block::from_u32(1))
@@ -870,7 +900,7 @@ mod tests {
     fn stack_frame_change_does_not_invalidate_cfg() {
         let target = X86_64TargetMachine::new(TargetConfig::default());
         let mut mfunc = MachineFunction::new("test".into());
-        mfunc.blocks.push(MachineBlock::new(Block::from_u32(0)));
+        mfunc.editor().create_block();
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg_before = analyses.cfg(&mfunc, &target) as *const _;
         analyses.apply(ChangeSet::STACK_FRAME);

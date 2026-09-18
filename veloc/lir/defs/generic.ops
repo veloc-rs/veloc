@@ -2,7 +2,7 @@ import "../../defs/prelude.ops";
 
 // Operand-array storage is independent of operation semantics and type contracts.
 type StackSlot = rust("crate::StackSlot");
-type Block = rust("veloc_mir::Block");
+type Block = rust("crate::BlockId");
 
 type Reg = rust("crate::Reg");
 enum InstField {

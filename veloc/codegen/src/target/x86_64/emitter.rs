@@ -4,7 +4,7 @@
 //! stays here; architecture encoding algorithms live in veloc-encoder.
 
 use crate::target::arch::TargetEmitter;
-use veloc_lir::{MachineBlock, MachineFunction, MachineOpcode};
+use veloc_lir::{MachineFunction, MachineOpcode};
 
 /// x86_64 机器码发射器实现
 pub struct X86_64CodeEmitter;
@@ -19,10 +19,10 @@ impl TargetEmitter for X86_64CodeEmitter {
     fn begin_block(
         &self,
         emitter: &mut crate::Emitter,
-        block: &MachineBlock,
+        block: veloc_lir::BlockId,
         _mfunc: &MachineFunction,
     ) -> Result<(), crate::error::Error> {
-        emitter.mark_block(block.id);
+        emitter.mark_block(block);
         Ok(())
     }
 
@@ -97,7 +97,7 @@ pub(crate) enum Emission {
         veloc_encoder::x86_64::Form,
         veloc_encoder::x86_64::Immediate,
     ),
-    Branch(veloc_mir::Block, veloc_encoder::x86_64::Branch),
+    Branch(veloc_lir::BlockId, veloc_encoder::x86_64::Branch),
     Relative(
         veloc_lir::SymbolId,
         veloc_encoder::x86_64::Legacy,
@@ -114,7 +114,7 @@ impl host::Emission for Emission {
     ) -> Self {
         Self::Legacy(descriptor, form, immediate)
     }
-    fn branch(target: veloc_mir::Block, form: veloc_encoder::x86_64::Branch) -> Self {
+    fn branch(target: veloc_lir::BlockId, form: veloc_encoder::x86_64::Branch) -> Self {
         Self::Branch(target, form)
     }
     fn relative(

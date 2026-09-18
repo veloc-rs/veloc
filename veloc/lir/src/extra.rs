@@ -1,8 +1,9 @@
 //! Low-level IR (LIR) 指令附加信息定义
 
+use crate::BlockId as Block;
 use alloc::vec::Vec;
 use smallvec::SmallVec;
-use veloc_mir::{Block, Signature};
+use veloc_mir::Signature;
 
 use crate::Reg;
 
@@ -14,30 +15,30 @@ pub struct CallInfo {
 
 /// `br_table` 的单个目标。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrTableTarget {
+pub struct BrTableTarget<A = SmallVec<[Reg; 2]>> {
     pub block: Block,
-    pub args: SmallVec<[Reg; 2]>,
+    pub args: A,
 }
 
 /// 无条件分支的边参数。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchInfo {
-    pub args: SmallVec<[Reg; 2]>,
+pub struct BranchInfo<A = SmallVec<[Reg; 2]>> {
+    pub args: A,
 }
 
 /// 条件分支的边参数。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchCondInfo {
-    pub then_args: SmallVec<[Reg; 2]>,
-    pub else_args: SmallVec<[Reg; 2]>,
+pub struct BranchCondInfo<A = SmallVec<[Reg; 2]>> {
+    pub then_args: A,
+    pub else_args: A,
 }
 
 /// 跳转表附加信息。
 ///
 /// `targets` 的最后一个元素是 default 目标。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrTableInfo {
-    pub targets: Vec<BrTableTarget>,
+pub struct BrTableInfo<A = SmallVec<[Reg; 2]>> {
+    pub targets: Vec<BrTableTarget<A>>,
 }
 
 /// 寻址更新模式
@@ -51,50 +52,96 @@ pub enum AMode {
 
 /// 少数复杂 LIR 指令的附加 payload。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InstExtra {
+pub enum InstExtra<A = SmallVec<[Reg; 2]>> {
     Call(CallInfo),
-    Branch(BranchInfo),
-    BranchCond(BranchCondInfo),
-    BrTable(BrTableInfo),
+    Branch(BranchInfo<A>),
+    BranchCond(BranchCondInfo<A>),
+    BrTable(BrTableInfo<A>),
     AMode(AMode),
 }
 
-impl InstExtra {
-    /// One flattened order for edge-argument traversal and controlled editing.
-    pub fn edge_args(&self) -> impl Iterator<Item = Reg> + '_ {
-        let (first, second, table): (&[Reg], &[Reg], &[BrTableTarget]) = match self {
-            Self::Branch(info) => (&info.args, &[], &[]),
-            Self::BranchCond(info) => (&info.then_args, &info.else_args, &[]),
-            Self::BrTable(info) => (&[], &[], &info.targets),
-            Self::Call(_) | Self::AMode(_) => (&[], &[], &[]),
+impl<A> InstExtra<A> {
+    pub(crate) fn map_args<B>(self, mut f: impl FnMut(A) -> B) -> InstExtra<B> {
+        match self {
+            Self::Call(info) => InstExtra::Call(info),
+            Self::AMode(mode) => InstExtra::AMode(mode),
+            Self::Branch(info) => InstExtra::Branch(BranchInfo { args: f(info.args) }),
+            Self::BranchCond(info) => InstExtra::BranchCond(BranchCondInfo {
+                then_args: f(info.then_args),
+                else_args: f(info.else_args),
+            }),
+            Self::BrTable(info) => InstExtra::BrTable(BrTableInfo {
+                targets: info
+                    .targets
+                    .into_iter()
+                    .map(|t| BrTableTarget {
+                        block: t.block,
+                        args: f(t.args),
+                    })
+                    .collect(),
+            }),
+        }
+    }
+    pub(crate) fn arg_ranges(&self) -> impl Iterator<Item = &A> {
+        let (first, second, table): (Option<&A>, Option<&A>, &[BrTableTarget<A>]) = match self {
+            Self::Branch(info) => (Some(&info.args), None, &[]),
+            Self::BranchCond(info) => (Some(&info.then_args), Some(&info.else_args), &[]),
+            Self::BrTable(info) => (None, None, &info.targets),
+            _ => (None, None, &[]),
         };
         first
-            .iter()
+            .into_iter()
             .chain(second)
-            .chain(table.iter().flat_map(|t| &t.args))
-            .copied()
+            .chain(table.iter().map(|t| &t.args))
     }
+}
 
-    pub(crate) fn edge_arg_mut(&mut self, mut index: usize) -> &mut Reg {
+/// Borrowed payload view. Reading edge arguments never copies their registers.
+#[derive(Debug)]
+pub enum InstExtraRef<'a> {
+    Call(&'a CallInfo),
+    Branch(BranchInfo<&'a [Reg]>),
+    BranchCond(BranchCondInfo<&'a [Reg]>),
+    BrTable(BrTableRef<'a>),
+    AMode(AMode),
+}
+#[derive(Debug)]
+pub struct BrTableRef<'a> {
+    pub(crate) store: &'a crate::InstStore,
+    pub(crate) info: &'a BrTableInfo<crate::store::Range>,
+}
+impl<'a> BrTableRef<'a> {
+    pub fn targets(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = BrTableTarget<&'a [Reg]>> + ExactSizeIterator + 'a {
+        let store = self.store;
+        self.info.targets.iter().map(move |t| BrTableTarget {
+            block: t.block,
+            args: store.registers(t.args),
+        })
+    }
+}
+impl InstExtraRef<'_> {
+    pub fn to_owned(&self) -> InstExtra {
         match self {
-            Self::Branch(info) => &mut info.args[index],
-            Self::BranchCond(info) => {
-                if index < info.then_args.len() {
-                    &mut info.then_args[index]
-                } else {
-                    &mut info.else_args[index - info.then_args.len()]
-                }
-            }
-            Self::BrTable(info) => {
-                for target in &mut info.targets {
-                    if index < target.args.len() {
-                        return &mut target.args[index];
-                    }
-                    index -= target.args.len();
-                }
-                panic!("edge argument index out of bounds");
-            }
-            Self::Call(_) | Self::AMode(_) => panic!("payload has no edge arguments"),
+            Self::Call(info) => InstExtra::Call((*info).clone()),
+            Self::AMode(mode) => InstExtra::AMode(*mode),
+            Self::Branch(info) => InstExtra::Branch(BranchInfo {
+                args: info.args.into(),
+            }),
+            Self::BranchCond(info) => InstExtra::BranchCond(BranchCondInfo {
+                then_args: info.then_args.into(),
+                else_args: info.else_args.into(),
+            }),
+            Self::BrTable(info) => InstExtra::BrTable(BrTableInfo {
+                targets: info
+                    .targets()
+                    .map(|t| BrTableTarget {
+                        block: t.block,
+                        args: t.args.into(),
+                    })
+                    .collect(),
+            }),
         }
     }
 }

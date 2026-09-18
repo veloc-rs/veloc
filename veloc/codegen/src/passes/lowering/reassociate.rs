@@ -126,7 +126,7 @@ impl Tree {
     fn emit(&self, f: &mut MachineFunction, output: &mut Vec<InstId>) {
         let mut acc = self.leaves[0];
         for (node, &rhs) in self.nodes.iter().zip(&self.leaves[1..]) {
-            f.rewriter(node.id).binary(
+            f.editor().rewriter(node.id).binary(
                 MachineOpcode::Generic(self.opcode),
                 Writable(node.dst),
                 acc,
@@ -142,8 +142,8 @@ impl Tree {
 /// Existing instruction IDs and virtual registers are reused.
 pub(crate) fn reassociate(f: &mut MachineFunction, analyses: &mut FunctionAnalysisCtx) -> usize {
     let mut changes = 0;
-    for block in 0..f.num_blocks() {
-        let ids = f.block_insts(block).to_vec();
+    for block in f.blocks().collect::<Vec<_>>() {
+        let ids = f.block_insts(block).collect::<Vec<_>>();
         let positions: HashMap<_, _> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
         let mut visited = vec![false; ids.len()];
         let mut removed = vec![false; ids.len()];
@@ -178,7 +178,7 @@ pub(crate) fn reassociate(f: &mut MachineFunction, analyses: &mut FunctionAnalys
                 output.push(id);
             }
         }
-        f.blocks[block].insts = output;
+        f.editor().reorder_block(block, &output);
     }
     if changes != 0 {
         analyses

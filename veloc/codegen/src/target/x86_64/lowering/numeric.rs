@@ -9,9 +9,10 @@ fn unary(
     ty: Type,
     src: Reg,
 ) -> Reg {
-    let dst = mfunc.alloc_vreg(ty);
+    let dst = mfunc.editor().alloc_vreg(ty);
     out.push(
         mfunc
+            .editor()
             .writer()
             .unary(MachineOpcode::Generic(opcode), Writable(dst), src),
     );
@@ -71,11 +72,17 @@ impl X86_64Lowering {
                     half_float,
                 );
                 let direct = unary(mfunc, out, GenericOpcode::Sitofp, dst_ty, src);
-                let high = mfunc.alloc_vreg(Type::BOOL);
-                out.push(mfunc.writer().icmp(Writable(high), src, zero, IntCC::LtS));
-                let result = mfunc.alloc_vreg(dst_ty);
+                let high = mfunc.editor().alloc_vreg(Type::BOOL);
                 out.push(
                     mfunc
+                        .editor()
+                        .writer()
+                        .icmp(Writable(high), src, zero, IntCC::LtS),
+                );
+                let result = mfunc.editor().alloc_vreg(dst_ty);
+                out.push(
+                    mfunc
+                        .editor()
                         .writer()
                         .select(Writable(result), high, doubled, direct),
                 );
@@ -96,9 +103,10 @@ impl X86_64Lowering {
                 };
                 let bits = Self::emit_legalize_constant_reg(mfunc, out, bits_ty, bits);
                 let threshold = unary(mfunc, out, GenericOpcode::Bitcast, src_ty, bits);
-                let high = mfunc.alloc_vreg(Type::BOOL);
+                let high = mfunc.editor().alloc_vreg(Type::BOOL);
                 out.push(
                     mfunc
+                        .editor()
                         .writer()
                         .fcmp(Writable(high), src, threshold, FloatCC::Ge),
                 );
@@ -121,15 +129,16 @@ impl X86_64Lowering {
                     sign,
                 );
                 let direct = unary(mfunc, out, GenericOpcode::Fptosi, Type::I64, src);
-                let result = mfunc.alloc_vreg(dst_ty);
+                let result = mfunc.editor().alloc_vreg(dst_ty);
                 out.push(
                     mfunc
+                        .editor()
                         .writer()
                         .select(Writable(result), high, restored, direct),
                 );
                 result
             }
         };
-        out.push(mfunc.writer().copy(Writable(dst), result));
+        out.push(mfunc.editor().writer().copy(Writable(dst), result));
     }
 }

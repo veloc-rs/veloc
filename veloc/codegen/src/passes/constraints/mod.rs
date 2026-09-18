@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{FixedUseConstraint, TargetOperandLowering};
+use crate::target::arch::TargetOperandLowering;
 use core::marker::PhantomData;
 use veloc_lir::InstBuild;
 use veloc_lir::{InstId, MachineFunction, Reg, Writable};
@@ -45,7 +45,7 @@ impl ConstraintPolicy for PreSelectConstraints {
         src: Reg,
     ) -> InstId {
         if dst.is_vreg() && src.is_vreg() {
-            mfunc.writer().copy(Writable(dst), src)
+            mfunc.editor().writer().copy(Writable(dst), src)
         } else {
             lowering
                 .build_preselect_reg_copy(mfunc, dst, src)
@@ -113,85 +113,28 @@ where
     }
 
     fn apply(&self, mfunc: &mut MachineFunction) -> Result<usize> {
-        let num_blocks = mfunc.num_blocks();
         let mut changed = 0usize;
-        for block_idx in 0..num_blocks {
-            mfunc.rewrite_block(block_idx, |cursor| self.rewrite_block(cursor, &mut changed))?;
-        }
-
-        Ok(changed)
-    }
-
-    fn rewrite_block(
-        &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
-        changed: &mut usize,
-    ) -> Result<()> {
-        if cursor.current_inst().is_invalid() {
-            cursor.remove_current();
-            *changed += 1;
-            return Ok(());
-        }
-
-        let constraints =
-            Policy::operand_constraints(self.lowering, &cursor.current_inst(), cursor.mfunc());
-        if constraints.is_empty() {
-            cursor.keep_current();
-            return Ok(());
-        }
-
-        let inst_changed = self.apply_constraints(cursor, &constraints)?;
-        if inst_changed {
-            *changed += 1;
-            cursor.keep_current();
-        } else {
-            cursor.keep_current();
-        }
-        Ok(())
-    }
-
-    fn apply_constraints(
-        &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
-        constraints: &crate::target::arch::OperandConstraintSet,
-    ) -> Result<bool> {
-        let mut changed = false;
-        for fixed in constraints.fixed_uses.iter() {
-            if self.apply_fixed_use_constraint(cursor, fixed)? {
-                changed = true;
+        let ids: alloc::vec::Vec<_> = mfunc.blocks().flat_map(|b| mfunc.block_insts(b)).collect();
+        for id in ids {
+            if mfunc.inst(id).is_invalid() {
+                continue;
             }
+            let constraints = Policy::operand_constraints(self.lowering, &mfunc.inst(id), mfunc);
+            let mut inst_changed = false;
+            for fixed in constraints.fixed_uses.iter() {
+                let current = mfunc.inst(id).inputs()[fixed.use_operand];
+                if current == fixed.reg {
+                    continue;
+                }
+                let copy = Policy::build_copy(self.lowering, mfunc, fixed.reg, current);
+                let mut edit = mfunc.editor();
+                edit.insert_before(id, copy);
+                edit.set_inst_input(id, fixed.use_operand, fixed.reg);
+                inst_changed = true;
+            }
+            changed += usize::from(inst_changed);
         }
-
         Ok(changed)
-    }
-
-    fn apply_fixed_use_constraint(
-        &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
-        fixed: &FixedUseConstraint,
-    ) -> Result<bool> {
-        let inst = cursor.current_inst();
-        let index = fixed.use_operand;
-        let current = inst.inputs()[index];
-        if current == fixed.reg {
-            return Ok(false);
-        }
-
-        self.emit_constraint_copy(cursor, fixed.reg, current)?;
-        let id = cursor.current_inst_id();
-        cursor.mfunc_mut().set_inst_input(id, index, fixed.reg);
-        Ok(true)
-    }
-
-    fn emit_constraint_copy(
-        &self,
-        cursor: &mut veloc_lir::BlockRewriteCursor<'_>,
-        dst: Reg,
-        src: Reg,
-    ) -> Result<()> {
-        let copy_inst = Policy::build_copy(self.lowering, cursor.mfunc_mut(), dst, src);
-        cursor.emit(copy_inst);
-        Ok(())
     }
 }
 
@@ -261,7 +204,7 @@ mod tests {
     use crate::target::arch::{FixedUseConstraint, OperandConstraintSet, TargetOperandLowering};
     use alloc::vec;
     use veloc_lir::{InstBuild, InstRead};
-    use veloc_lir::{InstId, MachineBlock, MachineFunction, Reg, Writable};
+    use veloc_lir::{InstId, MachineFunction, Reg, Writable};
 
     struct DummyLowering {
         constraints: OperandConstraintSet,
@@ -288,7 +231,7 @@ mod tests {
             dst: Reg,
             src: Reg,
         ) -> Result<InstId, crate::error::Error> {
-            Ok(mfunc.writer().copy(Writable(dst), src))
+            Ok(mfunc.editor().writer().copy(Writable(dst), src))
         }
     }
 
@@ -296,11 +239,11 @@ mod tests {
         build: impl FnOnce(veloc_lir::InstWriter<'_>) -> InstId,
     ) -> (MachineFunction, veloc_lir::InstId) {
         let mut mfunc = MachineFunction::new("test".into());
+        mfunc.editor().create_block();
+        let inst_id = build(mfunc.editor().writer());
         mfunc
-            .blocks
-            .push(MachineBlock::new(veloc_mir::Block::from_u32(0)));
-        let inst_id = build(mfunc.writer());
-        mfunc.append_inst_id_to_block(0, inst_id);
+            .editor()
+            .append_inst(veloc_lir::BlockId::from_u32(0), inst_id);
         (mfunc, inst_id)
     }
 
@@ -329,8 +272,20 @@ mod tests {
             .run(&mut mfunc)
             .unwrap();
 
-        assert_eq!(mfunc.blocks[0].insts.len(), 2);
-        let veloc_lir::InstView::UnaryReg(copy) = mfunc.inst(mfunc.blocks[0].insts[0]).view()
+        assert_eq!(
+            mfunc
+                .block_insts(veloc_lir::BlockId::from_u32(0))
+                .collect::<alloc::vec::Vec<_>>()
+                .len(),
+            2
+        );
+        let veloc_lir::InstView::UnaryReg(copy) = mfunc
+            .inst(
+                mfunc
+                    .block_insts(veloc_lir::BlockId::from_u32(0))
+                    .collect::<alloc::vec::Vec<_>>()[0],
+            )
+            .view()
         else {
             panic!("expected UnaryReg");
         };

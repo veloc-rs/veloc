@@ -1,8 +1,8 @@
 use super::*;
 use alloc::vec;
-use veloc_lir::{GenericOpcode, InstId, MachineBlock, MachineOpcode};
+use alloc::vec::Vec;
+use veloc_lir::{GenericOpcode, InstId, MachineOpcode};
 use veloc_lir::{InstBuild, InstRead};
-use veloc_mir::Block;
 
 #[test]
 fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
@@ -23,30 +23,33 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
     ] {
         for kind in [MemoryKind::Read, MemoryKind::Write] {
             let mut f = MachineFunction::new("offset".into());
-            f.blocks.push(MachineBlock::new(Block(0)));
-            let base = f.alloc_vreg(Type::PTR);
-            let value = f.alloc_vreg(Type::I64);
+            f.editor().create_block();
+            let base = f.editor().alloc_vreg(Type::PTR);
+            let value = f.editor().alloc_vreg(Type::I64);
             let mut memory = MemoryAccess::new(kind, 8);
             memory.alignment = 8;
             memory.volatile = true;
             let inst = match kind {
-                MemoryKind::Read => {
-                    f.writer()
-                        .with_memory(memory)
-                        .offset_load(Writable(value), base, offset)
-                }
+                MemoryKind::Read => f.editor().writer().with_memory(memory).offset_load(
+                    Writable(value),
+                    base,
+                    offset,
+                ),
                 MemoryKind::Write => f
+                    .editor()
                     .writer()
                     .with_memory(memory)
                     .offset_store(value, base, offset),
             };
             let id = {
                 let id = inst;
-                f.append_inst_id_to_block(0, id);
+                f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
                 id
             };
             Legalizer::new(target.legalizer()).legalize(&mut f).unwrap();
-            let ids = f.block_insts(0);
+            let ids = f
+                .block_insts(veloc_lir::BlockId::from_u32(0))
+                .collect::<Vec<_>>();
             let expanded = i32::try_from(offset).is_err();
             assert_eq!(ids.len(), if expanded { 3 } else { 1 });
             assert_eq!(ids.last(), Some(&id));
@@ -103,19 +106,24 @@ impl Mode {
             return Ok(LegalizeResult::Replace(vec![id]));
         }
         if f.inst(id).generic_opcode() == Some(GenericOpcode::Sub) {
-            f.rewriter(id)
-                .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], &[]);
+            f.editor().rewriter(id).write(
+                MachineOpcode::Generic(GenericOpcode::Add),
+                &[],
+                &[],
+                &[],
+            );
             return Ok(LegalizeResult::Replace(vec![id]));
         }
-        let first = f
-            .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::Sub), &[], &[], &[]);
+        let first =
+            f.editor()
+                .writer()
+                .write(MachineOpcode::Generic(GenericOpcode::Sub), &[], &[], &[]);
         if matches!(self, Self::NewBlock) {
-            f.create_synthetic_block();
-            f.append_inst_id_to_block(f.num_blocks() - 1, first);
+            let block = f.editor().create_block();
+            f.editor().append_inst(block, first);
             return Ok(LegalizeResult::Replace(vec![]));
         }
-        let second = f.writer().write(
+        let second = f.editor().writer().write(
             MachineOpcode::Generic(GenericOpcode::Constant),
             &[],
             &[],
@@ -127,19 +135,21 @@ impl Mode {
 
 fn function() -> MachineFunction {
     let mut f = MachineFunction::new("legalize".into());
-    f.blocks.push(MachineBlock::new(Block(0)));
+    f.editor().create_block();
     {
-        let id = f
-            .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::Neg), &[], &[], &[]);
-        f.append_inst_id_to_block(0, id);
+        let id =
+            f.editor()
+                .writer()
+                .write(MachineOpcode::Generic(GenericOpcode::Neg), &[], &[], &[]);
+        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
     {
-        let id = f
-            .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::Ret), &[], &[], &[]);
-        f.append_inst_id_to_block(0, id);
+        let id =
+            f.editor()
+                .writer()
+                .write(MachineOpcode::Generic(GenericOpcode::Ret), &[], &[], &[]);
+        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
     f
@@ -148,10 +158,13 @@ fn function() -> MachineFunction {
 #[test]
 fn expansions_are_revisited_in_order_including_in_place_changes() {
     let mut f = function();
-    let old = f.block_insts(0)[0];
+    let old = f
+        .block_insts(veloc_lir::BlockId::from_u32(0))
+        .collect::<Vec<_>>()[0];
     Legalizer::new(&Mode::Chain).legalize(&mut f).unwrap();
     let ops: alloc::vec::Vec<_> = f
-        .block_insts(0)
+        .block_insts(veloc_lir::BlockId::from_u32(0))
+        .collect::<Vec<_>>()
         .iter()
         .map(|&id| f.inst(id).generic_opcode().unwrap())
         .collect();
@@ -184,7 +197,11 @@ fn blocks_created_by_expansion_are_legalized() {
     Legalizer::new(&Mode::NewBlock).legalize(&mut f).unwrap();
     assert_eq!(f.num_blocks(), 2);
     assert_eq!(
-        f.inst(f.block_insts(1)[0]).generic_opcode(),
+        f.inst(
+            f.block_insts(veloc_lir::BlockId::from_u32(1))
+                .collect::<Vec<_>>()[0]
+        )
+        .generic_opcode(),
         Some(GenericOpcode::Add)
     );
 }

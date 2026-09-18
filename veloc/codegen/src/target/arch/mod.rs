@@ -12,7 +12,6 @@ use crate::pipeline::{FunctionPass, ModuleCodegenPass};
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-pub use veloc_lir::ValueId;
 pub use veloc_lir::{InstId, MachineFunction, Reg, VReg};
 use veloc_mir::{Type, TypeInfo};
 
@@ -125,7 +124,7 @@ pub trait LoweringContext {
 pub trait AssemblyWriter: core::fmt::Write {
     fn register(&mut self, reg: Reg, bits: u32) -> core::fmt::Result;
     fn immediate(&mut self, value: i64) -> core::fmt::Result;
-    fn block(&mut self, block: veloc_mir::Block) -> core::fmt::Result;
+    fn block(&mut self, block: veloc_lir::BlockId) -> core::fmt::Result;
     fn symbol(&mut self, symbol: veloc_lir::SymbolId) -> core::fmt::Result;
     fn memory(&mut self, base: Reg, offset: i64, bits: u32) -> core::fmt::Result;
     fn stack_slot(&mut self, slot: veloc_lir::StackSlot, bits: u32) -> core::fmt::Result;
@@ -195,7 +194,7 @@ pub trait TargetRegalloc: TargetInfo + TargetInstructions {
     fn jump_instruction(
         &self,
         writer: veloc_lir::InstWriter<'_>,
-        target: veloc_mir::Block,
+        target: veloc_lir::BlockId,
     ) -> crate::Result<InstId>;
     fn copy_instruction(
         &self,
@@ -256,7 +255,7 @@ pub trait TargetEmitter: Send + Sync {
     fn begin_block(
         &self,
         _emitter: &mut Emitter,
-        _block: &veloc_lir::MachineBlock,
+        _block: veloc_lir::BlockId,
         _mfunc: &MachineFunction,
     ) -> Result<(), crate::error::Error> {
         Ok(())

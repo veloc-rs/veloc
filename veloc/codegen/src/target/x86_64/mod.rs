@@ -203,7 +203,7 @@ impl TargetRegalloc for X86_64TargetMachine {
     fn jump_instruction(
         &self,
         writer: veloc_lir::InstWriter<'_>,
-        target: veloc_mir::Block,
+        target: veloc_lir::BlockId,
     ) -> crate::Result<veloc_lir::InstId> {
         Ok(writer.write(
             veloc_lir::MachineOpcode::Target(isle::TargetInst::X86Jmp.as_u32()),

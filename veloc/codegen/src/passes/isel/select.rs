@@ -7,7 +7,7 @@
 
 use crate::target::arch::TargetInstructionSelector;
 use alloc::vec::Vec;
-use veloc_lir::{BlockRewriteCursor, InstId, MachineFunction};
+use veloc_lir::{InstId, MachineFunction};
 
 fn format_select_failure_inst(mfunc: &MachineFunction, inst_id: InstId) -> alloc::string::String {
     use alloc::format;
@@ -58,10 +58,10 @@ pub struct SelectionContext<'a> {
 impl crate::target::arch::LoweringContext for SelectionContext<'_> {
     fn alloc_tmp(&mut self, like: veloc_lir::Reg) -> veloc_lir::Reg {
         let data = self.mfunc.vreg_data(like).clone();
-        veloc_lir::Reg::new_vreg(self.mfunc.vregs.push(data).as_u32())
+        self.mfunc.editor().alloc_vreg_data(data)
     }
     fn get_type(&self, vreg: veloc_lir::VReg) -> veloc_mir::Type {
-        self.mfunc.vregs[vreg].ty
+        self.mfunc.vregs()[vreg].ty
     }
 
     fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<veloc_lir::VReg> {
@@ -89,35 +89,35 @@ impl crate::target::arch::LoweringContext for SelectionContext<'_> {
     }
 }
 
-fn apply_select_result<'a>(
-    cursor: &mut BlockRewriteCursor<'a>,
+fn apply_select_result(
+    mfunc: &mut MachineFunction,
+    id: InstId,
     selected: &mut Vec<InstId>,
     result: SelectResult,
 ) -> Result<(), crate::error::Error> {
+    let mut edit = mfunc.editor();
     match result {
         SelectResult::Keep => {
-            debug_assert!(selected.is_empty());
-            cursor.keep_current();
+            assert!(selected.is_empty());
         }
         SelectResult::InPlace => {
-            let inst = selected.pop().ok_or_else(|| {
-                crate::error::Error::select(
-                    cursor.current_inst().opcode().clone(),
-                    alloc::string::String::from("InPlace expects one selected inst"),
-                )
-            })?;
-            debug_assert!(selected.is_empty());
-            cursor.replace_current(inst);
+            if selected.len() != 1 {
+                return Err(crate::error::Error::select(
+                    edit.inst(id).opcode(),
+                    "InPlace expects one selected instruction",
+                ));
+            }
+            edit.replace_inst(id, selected.pop().unwrap());
         }
         SelectResult::Replace => {
-            cursor.remove_current();
             for inst in selected.drain(..) {
-                cursor.emit(inst);
+                edit.insert_before(id, inst);
             }
+            edit.invalidate_inst(id);
         }
         SelectResult::Remove => {
-            debug_assert!(selected.is_empty());
-            cursor.remove_current();
+            assert!(selected.is_empty());
+            edit.invalidate_inst(id);
         }
     }
     Ok(())
@@ -141,23 +141,21 @@ impl<'a> InstructionSelector<'a> {
     ///
     /// 与 `select` 相同，提供更清晰的命名。
     pub fn select(&self, mfunc: &mut MachineFunction) -> Result<(), crate::error::Error> {
-        let num_blocks = mfunc.blocks.len();
         // 复用的临时缓冲区，避免每条指令分配
         let mut selected: Vec<InstId> = Vec::with_capacity(4);
-        for i in 0..num_blocks {
-            mfunc.rewrite_block(i, |cursor| {
-                let inst_id = cursor.current_inst_id();
+        for i in mfunc.blocks().collect::<Vec<_>>() {
+            let original: Vec<_> = mfunc.block_insts(i).collect();
+            for inst_id in original {
                 // 如果指令在之前的融合中已被标记为无效，则跳过
-                if cursor.current_inst().is_invalid() {
-                    cursor.remove_current();
-                    return Ok(());
+                if mfunc.inst(inst_id).is_invalid() {
+                    continue;
                 }
 
                 // 进行指令选择。由具体的后端返回选择结果
                 selected.clear();
                 let result = {
                     let mut ctx = SelectionContext {
-                        mfunc: cursor.mfunc_mut(),
+                        mfunc,
                         inst_id,
                         selected: &mut selected,
                     };
@@ -178,8 +176,8 @@ impl<'a> InstructionSelector<'a> {
                     }
                 };
 
-                apply_select_result(cursor, &mut selected, result)
-            })?;
+                apply_select_result(mfunc, inst_id, &mut selected, result)?;
+            }
         }
 
         Ok(())

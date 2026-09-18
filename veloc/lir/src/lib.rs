@@ -9,6 +9,7 @@ pub mod error;
 pub mod extra;
 pub mod function;
 pub mod instr;
+pub mod layout;
 pub mod memory;
 pub mod module;
 mod store;
@@ -22,11 +23,10 @@ pub use function::*;
 pub use instr::*;
 pub use memory::*;
 pub use module::*;
-pub use store::{InstStore, InstWriter, RegEffects};
+pub use store::{InstBuilder, InstStore, InstWriter, RegEffects};
 pub use symbol::*;
-pub use use_def::{RefLocation, RefRole, RegRef, RegRefs};
+pub use use_def::{OperandId, RefRole, RegRef, RegRefs};
 pub use validation::TypeError;
-pub use veloc_mir::Value as ValueId;
 pub use veloc_types::{Type, TypeBits, TypeInfo};
 
 pub mod types {

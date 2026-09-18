@@ -3,7 +3,7 @@ import "assembly.ops";
 import "../../../encoder/defs/x86_64.ops";
 import "registers.ops";
 
-type Block = rust("veloc_mir::Block");
+type Block = rust("veloc_lir::BlockId");
 type Global = rust("veloc_lir::SymbolId");
 type StackSlot = rust("veloc_lir::StackSlot");
 
@@ -255,7 +255,6 @@ template GprExtend(Opcode: ident, Map: expr, Byte: expr, Wide: expr, RmKind: ide
 template GprMove(Opcode: ident, Bits: expr, Wide: expr) {
     op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
         encoding = legacy_rr(0x89, Wide, src, dst);
-        copy = Bits;
         registers = {
             dst: GPR64,
             src: GPR64,
@@ -275,7 +274,6 @@ template FloatMove(Opcode: ident, Bits: expr, Prefix: expr) {
             Form::ModRm(RegField::Register(dst), Rm::Register(src2)),
             Immediate::None,
         );
-        copy = Bits;
         registers = {
             dst: FPR128,
             src2: FPR128,
@@ -295,7 +293,6 @@ template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr) {
             Form::ModRm(RegField::Register(dst), Rm::Register(src)),
             Immediate::None,
         );
-        copy = Bits;
         registers = {
             dst: FPR128,
             src: GPR64,
@@ -313,7 +310,6 @@ template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr) {
             Form::ModRm(RegField::Register(src), Rm::Register(dst)),
             Immediate::None,
         );
-        copy = Bits;
         registers = {
             dst: GPR64,
             src: FPR128,

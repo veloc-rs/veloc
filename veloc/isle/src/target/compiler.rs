@@ -23,7 +23,6 @@ pub(crate) struct FinalInstDef {
     encoding: Option<String>,
     is_pseudo: bool,
     assembly: Option<assembly::Assembly>,
-    copy_bits: Option<u32>,
     requires: Vec<String>,
 }
 

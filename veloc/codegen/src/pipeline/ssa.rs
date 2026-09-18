@@ -6,17 +6,17 @@ use crate::{
 };
 use alloc::{format, vec::Vec};
 use hashbrown::{HashMap, HashSet};
+use veloc_lir::BlockId as Block;
 #[cfg(test)]
 use veloc_lir::InstBuild;
 use veloc_lir::InstRead;
-use veloc_lir::{ControlFlow, InstExtra, InstField, MachineFunction, Reg};
-use veloc_mir::Block;
+use veloc_lir::{ControlFlow, InstField, MachineFunction, Reg};
 
 /// Selected code must still be SSA and contain no generic instructions.
 pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     verify(f, target)?;
-    for block in &f.blocks {
-        for &id in &block.insts {
+    for block in f.blocks() {
+        for id in f.block_insts(block) {
             if !matches!(f.inst(id).opcode(), veloc_lir::MachineOpcode::Target(_)) {
                 return Err(Error::codegen(format!("unselected instruction {id:?}")));
             }
@@ -34,11 +34,11 @@ pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) ->
             "function parameters remain after allocation",
         ));
     }
-    for block in &f.blocks {
-        if !block.params.is_empty() {
+    for block in f.blocks() {
+        if !f.block_params(block).unwrap().is_empty() {
             return Err(Error::codegen("block parameters remain after allocation"));
         }
-        for &id in &block.insts {
+        for id in f.block_insts(block) {
             let inst = f.inst(id);
             if !matches!(inst.opcode(), veloc_lir::MachineOpcode::Target(_)) {
                 return Err(Error::codegen(format!("unselected instruction {id:?}")));
@@ -60,33 +60,33 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
     let mut defs = HashMap::new();
     let mut blocks = HashSet::new();
     let mut instructions = HashSet::new();
-    for block in &f.blocks {
-        if !blocks.insert(block.id) {
-            return Err(fail(format!("duplicate block {}", block.id)));
+    for block in f.blocks() {
+        if !blocks.insert(block) {
+            return Err(fail(format!("duplicate block {}", block)));
         }
         let mut define = |reg: Reg, pos| -> Result<()> {
             let Some(value) = reg.as_vreg() else {
                 return Ok(());
             };
-            if f.vregs.get(value).is_none() {
+            if f.vregs().get(value).is_none() {
                 return Err(fail(format!("unknown value {reg:?}")));
             }
-            if let Some(previous) = defs.insert(reg, (block.id, pos)) {
+            if let Some(previous) = defs.insert(reg, (block, pos)) {
                 return Err(fail(format!(
                     "multiple definitions of {reg:?}: {previous:?} and ({:?}, {pos})",
-                    block.id
+                    block
                 )));
             }
             Ok(())
         };
-        for &param in &block.params {
+        for &param in f.block_params(block).unwrap() {
             if param.is_preg() {
                 return Err(fail("physical block parameter before allocation".into()));
             }
             define(param, 0)?;
         }
         let mut transferred = false;
-        for (index, &id) in block.insts.iter().enumerate() {
+        for (index, id) in f.block_insts(block).enumerate() {
             if !instructions.insert(id) {
                 return Err(fail(format!("instruction {id:?} occurs twice in layout")));
             }
@@ -107,7 +107,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
             match target.control_flow(&inst) {
                 ControlFlow::Branch => transferred = true,
                 ControlFlow::Jump | ControlFlow::Return | ControlFlow::Trap
-                    if index + 1 != block.insts.len() =>
+                    if f.layout().next_inst(id).is_some() =>
                 {
                     return Err(fail(format!("instruction after unconditional exit {id:?}")));
                 }
@@ -118,40 +118,40 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
     let mut analyses = FunctionAnalysisCtx::default();
     let cfg = analyses.cfg(f, target).clone();
     let mut reachable = HashSet::new();
-    let mut pending: Vec<_> = f.blocks.first().map(|b| b.id).into_iter().collect();
+    let mut pending: Vec<_> = f.entry_block().into_iter().collect();
     while let Some(block) = pending.pop() {
         if reachable.insert(block) {
             pending.extend_from_slice(cfg.succs(block));
         }
     }
     let dom = analyses.dominators(f, target);
-    for (block_index, block) in f.blocks.iter().enumerate() {
-        let falls_through = block.insts.last().is_none_or(|&id| {
+    for block in f.blocks() {
+        let falls_through = f.layout().last_inst(block).is_none_or(|id| {
             matches!(
                 target.control_flow(&f.inst(id)),
                 ControlFlow::Next | ControlFlow::Call | ControlFlow::Branch
             )
         });
         if falls_through
-            && f.blocks
-                .get(block_index + 1)
-                .is_some_and(|next| !next.params.is_empty())
+            && f.layout()
+                .next_block(block)
+                .is_some_and(|next| !f.block_params(next).unwrap().is_empty())
         {
             return Err(fail(format!(
                 "fallthrough from {} cannot supply block parameters",
-                block.id
+                block
             )));
         }
-        for (index, &id) in block.insts.iter().enumerate() {
+        for (index, id) in f.block_insts(block).enumerate() {
             let inst = f.inst(id);
             for reg in inst.uses().filter(|r| r.is_vreg()) {
                 let &(owner, pos) = defs
                     .get(&reg)
                     .ok_or_else(|| fail(format!("undefined {reg:?} used by {id:?}")))?;
-                if (owner == block.id && pos >= index + 1)
-                    || (owner != block.id
-                        && reachable.contains(&block.id)
-                        && !dom.dominates(owner, block.id))
+                if (owner == block && pos >= index + 1)
+                    || (owner != block
+                        && reachable.contains(&block)
+                        && !dom.dominates(owner, block))
                 {
                     return Err(fail(format!(
                         "definition of {reg:?} does not dominate {id:?}"
@@ -188,21 +188,21 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
                 Ok(())
             };
             match f.inst_extra(id) {
-                Some(InstExtra::Branch(info)) => {
+                Some(veloc_lir::InstExtraRef::Branch(info)) => {
                     let [target] = targets.as_slice() else {
                         return Err(fail("invalid single-edge shape".into()));
                     };
                     check_edge(*target, &info.args)?;
                 }
-                Some(InstExtra::BranchCond(info)) => {
+                Some(veloc_lir::InstExtraRef::BranchCond(info)) => {
                     let [yes, no] = targets.as_slice() else {
                         return Err(fail("invalid conditional-edge shape".into()));
                     };
                     check_edge(*yes, &info.then_args)?;
                     check_edge(*no, &info.else_args)?;
                 }
-                Some(InstExtra::BrTable(info)) => {
-                    for edge in &info.targets {
+                Some(veloc_lir::InstExtraRef::BrTable(info)) => {
+                    for edge in info.targets() {
                         check_edge(edge.block, &edge.args)?;
                     }
                 }
@@ -221,7 +221,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
 mod tests {
     use super::*;
     use alloc::string::ToString;
-    use veloc_lir::{BranchCondInfo, BranchInfo, Type, Writable};
+    use veloc_lir::{BranchCondInfo, BranchInfo, InstExtra, Type, Writable};
 
     #[test]
     fn checks_representation_invariants_without_phase_tags() {
@@ -230,22 +230,23 @@ mod tests {
         let target =
             crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default());
         let mut f = MachineFunction::new("boundaries".into());
-        f.create_synthetic_block();
-        let value = f.alloc_vreg(Type::I64);
-        let constant = f.writer().constant(Writable(value), 42);
-        f.append_inst_id_to_block(0, constant);
-        let ret = f.writer().ret(&[value]);
-        f.append_inst_id_to_block(0, ret);
+        f.editor().create_block();
+        let value = f.editor().alloc_vreg(Type::I64);
+        let constant = f.editor().writer().constant(Writable(value), 42);
+        f.editor()
+            .append_inst(veloc_lir::BlockId::from_u32(0), constant);
+        let ret = f.editor().writer().ret(&[value]);
+        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), ret);
         verify(&f, &target).unwrap();
         assert!(verify_selected(&f, &target).is_err());
 
-        f.rewriter(constant).write(
+        f.editor().rewriter(constant).write(
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
             &[value],
             &[],
             &[InstField::Imm(42)],
         );
-        f.rewriter(ret).write(
+        f.editor().rewriter(ret).write(
             MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
             &[],
             &[],
@@ -254,7 +255,7 @@ mod tests {
         verify_selected(&f, &target).unwrap();
         assert!(verify_allocated(&f, &target).is_err());
 
-        f.rewriter(constant).write(
+        f.editor().rewriter(constant).write(
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
             &[REG_RAX],
             &[],
@@ -264,7 +265,7 @@ mod tests {
         f.params.push(value);
         assert!(verify_allocated(&f, &target).is_err());
         f.params.clear();
-        f.blocks[0].params.push(value);
+        f.editor().append_block_param(Block::from_u32(0), value);
         assert!(verify_allocated(&f, &target).is_err());
     }
 
@@ -273,52 +274,57 @@ mod tests {
         let target =
             crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default());
         let mut f = MachineFunction::new("diamond".into());
-        let blocks: Vec<_> = (0..4).map(|_| f.create_synthetic_block()).collect();
-        let x = f.alloc_vreg(Type::I64);
-        let y = f.alloc_vreg(Type::I64);
-        let p = f.alloc_vreg(Type::I64);
-        let c = f.alloc_vreg(Type::BOOL);
-        let r = f.alloc_vreg(Type::I64);
-        f.blocks[3].params.push(p);
-        let a = f.writer().constant(Writable(x), 1);
-        f.append_inst_id_to_block(0, a);
-        let b = f.writer().constant(Writable(c), 1);
-        f.append_inst_id_to_block(0, b);
-        let branch = f.writer().brcond(c, blocks[1], blocks[2]);
-        f.set_inst_extra(
+        let blocks: Vec<_> = (0..4).map(|_| f.editor().create_block()).collect();
+        let x = f.editor().alloc_vreg(Type::I64);
+        let y = f.editor().alloc_vreg(Type::I64);
+        let p = f.editor().alloc_vreg(Type::I64);
+        let c = f.editor().alloc_vreg(Type::BOOL);
+        let r = f.editor().alloc_vreg(Type::I64);
+        f.editor().append_block_param(blocks[3], p);
+        let a = f.editor().writer().constant(Writable(x), 1);
+        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), a);
+        let b = f.editor().writer().constant(Writable(c), 1);
+        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), b);
+        let branch = f.editor().writer().brcond(c, blocks[1], blocks[2]);
+        f.editor().set_inst_extra(
             branch,
             InstExtra::BranchCond(BranchCondInfo {
                 then_args: Default::default(),
                 else_args: Default::default(),
             }),
         );
-        f.append_inst_id_to_block(0, branch);
-        let left = f.writer().br(blocks[3]);
-        f.set_inst_extra(
+        f.editor()
+            .append_inst(veloc_lir::BlockId::from_u32(0), branch);
+        let left = f.editor().writer().br(blocks[3]);
+        f.editor().set_inst_extra(
             left,
             InstExtra::Branch(BranchInfo {
                 args: smallvec::smallvec![x],
             }),
         );
-        f.append_inst_id_to_block(1, left);
-        let def_y = f.writer().constant(Writable(y), 2);
-        f.append_inst_id_to_block(2, def_y);
-        let right = f.writer().br(blocks[3]);
-        f.set_inst_extra(
+        f.editor()
+            .append_inst(veloc_lir::BlockId::from_u32(1), left);
+        let def_y = f.editor().writer().constant(Writable(y), 2);
+        f.editor()
+            .append_inst(veloc_lir::BlockId::from_u32(2), def_y);
+        let right = f.editor().writer().br(blocks[3]);
+        f.editor().set_inst_extra(
             right,
             InstExtra::Branch(BranchInfo {
                 args: smallvec::smallvec![y],
             }),
         );
-        f.append_inst_id_to_block(2, right);
-        let copy = f.writer().copy(Writable(r), p);
-        f.append_inst_id_to_block(3, copy);
-        let ret = f.writer().ret(&[r]);
-        f.append_inst_id_to_block(3, ret);
+        f.editor()
+            .append_inst(veloc_lir::BlockId::from_u32(2), right);
+        let copy = f.editor().writer().copy(Writable(r), p);
+        f.editor()
+            .append_inst(veloc_lir::BlockId::from_u32(3), copy);
+        let ret = f.editor().writer().ret(&[r]);
+        f.editor().append_inst(veloc_lir::BlockId::from_u32(3), ret);
         verify(&f, &target).unwrap();
 
         let mut broken = f.clone();
-        broken.rewriter(copy).copy(Writable(p), x);
+        broken.editor().rewriter(copy).copy(Writable(p), x);
         assert!(
             verify(&broken, &target)
                 .unwrap_err()
@@ -326,7 +332,7 @@ mod tests {
                 .contains("multiple definitions")
         );
         let mut broken = f.clone();
-        broken.set_inst_extra(
+        broken.editor().set_inst_extra(
             left,
             InstExtra::Branch(BranchInfo {
                 args: smallvec::smallvec![y],
@@ -339,7 +345,7 @@ mod tests {
                 .contains("does not dominate")
         );
         let mut broken = f.clone();
-        broken.clear_inst_extra(left);
+        broken.editor().clear_inst_extra(left);
         assert!(
             verify(&broken, &target)
                 .unwrap_err()
@@ -347,7 +353,7 @@ mod tests {
                 .contains("arguments for")
         );
         let mut broken = f.clone();
-        broken.set_inst_extra(
+        broken.editor().set_inst_extra(
             left,
             InstExtra::Branch(BranchInfo {
                 args: smallvec::smallvec![c],
@@ -360,7 +366,7 @@ mod tests {
                 .contains("type mismatch")
         );
         let mut broken = f.clone();
-        broken.rewriter(a).copy(Writable(x), x);
+        broken.editor().rewriter(a).copy(Writable(x), x);
         assert!(
             verify(&broken, &target)
                 .unwrap_err()

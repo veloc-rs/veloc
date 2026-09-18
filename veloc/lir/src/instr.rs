@@ -14,6 +14,11 @@ pub enum RegisterBank {
     Special,
 }
 
+/// Function-local block identity, independent of MIR and physical order.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BlockId(u32);
+entity_impl!(BlockId, "block");
+
 /// 机器指令索引
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InstId(u32);
@@ -217,7 +222,13 @@ impl<'a> InstRef<'a> {
     pub fn fields(self) -> &'a [crate::InstField] {
         self.store.fields(self.id)
     }
-    pub fn effects(self) -> Option<&'a crate::RegEffects> {
+    pub fn implicit_uses(self) -> &'a [Reg] {
+        self.store.implicit_uses(self.id)
+    }
+    pub fn implicit_defs(self) -> &'a [Reg] {
+        self.store.implicit_defs(self.id)
+    }
+    pub fn effects(self) -> Option<crate::RegEffects<&'a [Reg]>> {
         self.store.effects(self.id)
     }
     pub fn memory(self) -> Option<crate::MemoryAccess> {
@@ -231,28 +242,18 @@ impl<'a> InstRef<'a> {
 
     /// Explicit results and implicit physical register writes.
     pub fn defs(&self) -> impl Iterator<Item = Reg> + 'a {
-        self.results().iter().copied().chain(
-            self.effects()
-                .into_iter()
-                .flat_map(|e| e.defs.iter().copied()),
-        )
+        self.results()
+            .iter()
+            .copied()
+            .chain(self.implicit_defs().iter().copied())
     }
 
     /// Explicit register inputs, edge arguments and implicit physical reads.
     pub fn uses(&self) -> impl Iterator<Item = Reg> + 'a {
         let operands = self.inputs().iter().copied();
         operands
-            .chain(
-                self.effects()
-                    .into_iter()
-                    .flat_map(|e| e.uses.iter().copied()),
-            )
-            .chain(
-                self.store
-                    .extra(self.id)
-                    .into_iter()
-                    .flat_map(crate::InstExtra::edge_args),
-            )
+            .chain(self.implicit_uses().iter().copied())
+            .chain(self.store.edge_args(self.id))
     }
 
     /// 检查是否是通用操作码（尚未指令选择）

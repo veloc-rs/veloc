@@ -127,10 +127,6 @@ impl RegisterFile {
         self.reg_classes.iter().find(|info| info.kind == class)
     }
 
-    pub fn has_reg_class(&self, class: RegClass) -> bool {
-        self.reg_class(class).is_some()
-    }
-
     pub fn bank_for_reg_class(&self, class: RegClass) -> Option<RegisterBank> {
         self.reg_class(class).map(|info| info.bank)
     }

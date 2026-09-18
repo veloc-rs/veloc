@@ -34,8 +34,14 @@ impl TargetInstructionSelector for X86_64Selector {
                 // ABI result registers stay live through RET, including across
                 // otherwise dead instructions moved by the scheduler.
                 let inputs = inst.inputs().to_vec();
-                let ret = build_target_inst(ctx.mfunc.writer(), TargetInst::X86Ret, &[], &[], &[]);
-                ctx.mfunc.set_inst_effects(
+                let ret = build_target_inst(
+                    ctx.mfunc.editor().writer(),
+                    TargetInst::X86Ret,
+                    &[],
+                    &[],
+                    &[],
+                );
+                ctx.mfunc.editor().set_inst_effects(
                     ret,
                     veloc_lir::RegEffects {
                         uses: inputs,
@@ -67,9 +73,10 @@ impl TargetInstructionSelector for X86_64Selector {
         }
 
         let result = {
-            let (vregs, store) = ctx.mfunc.instruction_parts();
+            let mut edit = ctx.mfunc.editor();
+            let (vregs, mut store) = edit.instruction_parts();
             let mut x86_ctx = X86SelectionContext { vregs, cpu };
-            generated::select_instructions(&mut x86_ctx, store, ctx.inst_id, ctx.selected)?
+            generated::select_instructions(&mut x86_ctx, &mut store, ctx.inst_id, ctx.selected)?
         };
 
         if matches!(
@@ -90,7 +97,10 @@ impl TargetInstructionSelector for X86_64Selector {
                     .mfunc
                     .inst(selected)
                     .effects()
-                    .cloned()
+                    .map(|e| veloc_lir::RegEffects {
+                        uses: e.uses.to_vec(),
+                        defs: e.defs.to_vec(),
+                    })
                     .unwrap_or_default();
                 // Keep ABI register uses/clobbers explicit after Call disappears.
                 for part in plan.args.iter().flat_map(|a| &a.parts) {
@@ -110,15 +120,20 @@ impl TargetInstructionSelector for X86_64Selector {
                 effects.uses.dedup();
                 effects.defs.sort_unstable();
                 effects.defs.dedup();
-                ctx.mfunc.set_inst_effects(selected, effects);
+                ctx.mfunc.editor().set_inst_effects(selected, effects);
             }
         }
         // A selected conditional is a branch followed by a jump. Each keeps
         // its own edge arguments, including duplicate targets with different args.
         let edge_args = match ctx.mfunc.inst_extra(ctx.inst_id) {
-            Some(InstExtra::Branch(info)) => alloc::vec![info.args.clone()],
-            Some(InstExtra::BranchCond(info)) => {
-                alloc::vec![info.then_args.clone(), info.else_args.clone()]
+            Some(veloc_lir::InstExtraRef::Branch(info)) => {
+                alloc::vec![smallvec::SmallVec::<[Reg; 2]>::from_slice(info.args)]
+            }
+            Some(veloc_lir::InstExtraRef::BranchCond(info)) => {
+                alloc::vec![
+                    smallvec::SmallVec::from_slice(info.then_args),
+                    smallvec::SmallVec::from_slice(info.else_args)
+                ]
             }
             _ => Vec::new(),
         };
@@ -144,6 +159,7 @@ impl TargetInstructionSelector for X86_64Selector {
             }
             for (id, args) in branches.into_iter().zip(edge_args) {
                 ctx.mfunc
+                    .editor()
                     .set_inst_extra(id, InstExtra::Branch(veloc_lir::BranchInfo { args }));
             }
         }
@@ -167,7 +183,9 @@ impl TargetInstructionSelector for X86_64Selector {
             let index = memory_inst.ok_or_else(|| {
                 crate::error::Error::codegen("selection dropped the source memory access")
             })?;
-            ctx.mfunc.set_inst_memory(ctx.selected[index], Some(access));
+            ctx.mfunc
+                .editor()
+                .set_inst_memory(ctx.selected[index], Some(access));
         }
         Ok(result)
     }

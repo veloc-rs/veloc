@@ -27,77 +27,87 @@ impl<'a> Legalizer<'a> {
         let mut rewrites = 0;
         let mut trace = alloc::collections::VecDeque::new();
         let mut pending = alloc::vec::Vec::new();
-        let mut owners = alloc::vec![None; mfunc.inst_count()];
-        for (block, data) in mfunc.blocks.iter().enumerate() {
-            for id in &data.insts {
-                owners[id.as_u32() as usize] = Some(block);
-            }
-        }
         let mut dirty = alloc::collections::BTreeSet::new();
-        let mut fresh = 0;
-        while fresh < mfunc.blocks.len() || !dirty.is_empty() {
+        let mut queued: alloc::collections::VecDeque<_> = mfunc.blocks().collect();
+        let mut known: hashbrown::HashSet<_> = mfunc.blocks().collect();
+        let mut visited = hashbrown::HashSet::new();
+        while !queued.is_empty() || !dirty.is_empty() {
             let block = if let Some(block) = dirty.pop_first() {
                 block
             } else {
-                let block = fresh;
-                fresh += 1;
-                block
+                queued.pop_front().unwrap()
             };
-            mfunc.rewrite_block(block, |cursor| {
-                pending.clear();
-                pending.push(cursor.current_inst_id());
-                cursor.detach_current();
-                while let Some(id) = pending.pop() {
-                    let inst = &cursor.mfunc().inst(id);
-                    if inst.is_invalid() {
-                        continue;
+            if !mfunc.layout().contains_block(block) {
+                continue;
+            }
+            visited.insert(block);
+            pending.clear();
+            pending.extend(mfunc.block_insts(block).rev());
+            while let Some(id) = pending.pop() {
+                if mfunc.inst_block(id) != Some(block) {
+                    continue;
+                }
+                let inst = &mfunc.inst(id);
+                if inst.is_invalid() {
+                    continue;
+                }
+                if inst.generic_opcode().is_none() {
+                    continue;
+                }
+                let query = Query::from_inst(inst, mfunc)?;
+                match self.target.legalize_action(&query)? {
+                    None => {
+                        let opcode = query.opcode;
+                        let operands = (&query.results, &query.inputs);
+                        return Err(Error::codegen(alloc::format!(
+                            "missing legalization rule for {opcode:?} with signature {operands:?}"
+                        )));
                     }
-                    if inst.generic_opcode().is_none() {
-                        cursor.emit(id);
-                        continue;
-                    }
-                    let query = Query::from_inst(inst, cursor.mfunc())?;
-                    match self.target.legalize_action(&query)? {
-                        None => {
-                            let opcode = query.opcode;
-                            let operands = (&query.results, &query.inputs);
+                    Some(LegalizeAction::Legal) => {}
+                    Some(action) => {
+                        let rule = action.name();
+                        if rewrites == budget {
                             return Err(Error::codegen(alloc::format!(
-                                "missing legalization rule for {opcode:?} with signature {operands:?}"
+                                "legalization did not converge after {budget} rewrites; recent rules: {trace:?}; next: {:?} {rule:?}",
+                                inst.opcode(),
                             )));
                         }
-                        Some(LegalizeAction::Legal) => cursor.emit(id),
-                        Some(action) => {
-                            let rule = action.name();
-                            if rewrites == budget {
-                                return Err(Error::codegen(alloc::format!(
-                                    "legalization did not converge after {budget} rewrites; recent rules: {trace:?}; next: {:?} {rule:?}",
-                                    inst.opcode(),
-                                )));
+                        rewrites += 1;
+                        if trace.len() == 16 {
+                            trace.pop_front();
+                        }
+                        trace.push_back((id, inst.opcode(), rule));
+                        let (result, changes) = mfunc.track_edits(|f| action.apply(id, f));
+                        let LegalizeResult::Replace(output) = result?;
+                        for &owner in &changes.blocks {
+                            if !mfunc.layout().contains_block(owner) {
+                                continue;
                             }
-                            rewrites += 1;
-                            if trace.len() == 16 { trace.pop_front(); }
-                            trace.push_back((id, inst.opcode(), rule));
-                            let (result, changes) = cursor.mfunc_mut().track_inst_changes(|f| action.apply(id, f));
-                            let LegalizeResult::Replace(output) = result?;
-                            for changed in changes {
-                                if let Some(Some(owner)) = owners.get(changed.as_u32() as usize) {
-                                    if *owner < fresh { dirty.insert(*owner); }
+                            if known.insert(owner) {
+                                queued.push_back(owner);
+                            }
+                            if visited.contains(&owner) {
+                                dirty.insert(owner);
+                            }
+                        }
+                        for changed in changes.insts {
+                            if let Some(owner) = mfunc.inst_block(changed) {
+                                if visited.contains(&owner) {
+                                    dirty.insert(owner);
                                 }
                             }
-                            // Rules may rewrite the same ID in place. Preserve it
-                            // in that case and check its new form on the worklist.
-                            if !output.contains(&id) {
-                                cursor.mfunc_mut().invalidate_inst(id);
-                            }
-                            pending.extend(output.into_iter().rev());
                         }
+                        mfunc.editor().replace_with(id, &output);
+                        pending.extend(output.into_iter().rev());
                     }
                 }
-                Ok(())
-            })?;
-            owners.resize(mfunc.inst_count(), None);
-            for id in &mfunc.blocks[block].insts {
-                owners[id.as_u32() as usize] = Some(block);
+            }
+            if known.len() != mfunc.num_blocks() {
+                for block in mfunc.blocks() {
+                    if known.insert(block) {
+                        queued.push_back(block);
+                    }
+                }
             }
         }
         Ok(rewrites != 0)

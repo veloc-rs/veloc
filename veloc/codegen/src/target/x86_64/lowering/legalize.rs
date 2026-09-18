@@ -154,8 +154,8 @@ fn float_sign(
     } else {
         (Type::I64, i64::MIN)
     };
-    let bits = mfunc.alloc_vreg(integer);
-    output.push(mfunc.writer().unary(
+    let bits = mfunc.editor().alloc_vreg(integer);
+    output.push(mfunc.editor().writer().unary(
         MachineOpcode::Generic(GenericOpcode::Bitcast),
         Writable(bits),
         unary.src,
@@ -182,7 +182,7 @@ fn float_sign(
         bits,
         mask,
     );
-    output.push(mfunc.writer().unary(
+    output.push(mfunc.editor().writer().unary(
         MachineOpcode::Generic(GenericOpcode::Bitcast),
         Writable(unary.dst),
         changed,
@@ -205,19 +205,26 @@ fn displacement(
     let memory = inst.memory();
     // x86 disp32 sign-extends. Materialize the full displacement
     // before the access rather than silently truncating it.
-    let displacement = mfunc.alloc_vreg(Type::I64);
-    let address = mfunc.alloc_vreg(Type::PTR);
-    let constant = mfunc.writer().constant(Writable(displacement), offset);
+    let displacement = mfunc.editor().alloc_vreg(Type::I64);
+    let address = mfunc.editor().alloc_vreg(Type::PTR);
+    let constant = mfunc
+        .editor()
+        .writer()
+        .constant(Writable(displacement), offset);
     let add = mfunc
+        .editor()
         .writer()
         .ptr_add(Writable(address), base, displacement);
     let access = if opcode == GenericOpcode::OffsetLoad {
-        mfunc.writer().offset_load(Writable(value), address, 0)
+        mfunc
+            .editor()
+            .writer()
+            .offset_load(Writable(value), address, 0)
     } else {
-        mfunc.writer().offset_store(value, address, 0)
+        mfunc.editor().writer().offset_store(value, address, 0)
     };
-    mfunc.set_inst_memory(access, memory);
-    mfunc.replace_inst(inst_id, access);
+    mfunc.editor().set_inst_memory(access, memory);
+    mfunc.editor().replace_inst(inst_id, access);
     return Ok(LegalizeResult::Replace(alloc::vec![constant, add, inst_id]));
 }
 
@@ -260,7 +267,7 @@ fn branch_table(
     mfunc: &mut MachineFunction,
 ) -> Result<LegalizeResult, crate::error::Error> {
     let mut output = Vec::new();
-    let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).cloned() else {
+    let Some(InstExtra::BrTable(info)) = mfunc.inst_extra(inst_id).map(|e| e.to_owned()) else {
         panic!("missing br_table extra during x86_64 br_table legalization");
     };
     let veloc_lir::InstView::BranchTable(brjt) = mfunc.inst(inst_id).view() else {
@@ -275,21 +282,21 @@ fn branch_table(
     let default_target = info.targets.last().unwrap();
 
     for (case_idx, target) in info.targets[..info.targets.len() - 1].iter().enumerate() {
-        let cmp_inst = mfunc.writer().write(
-            MachineOpcode::Target(TargetInst::X86Cmp32ri.as_u32()),
+        let cmp_inst = TargetInst::X86Cmp32ri.write(
+            mfunc.editor().writer(),
             &[],
             &[index],
             &[InstField::Imm(case_idx as i64)],
         );
         output.push(cmp_inst);
 
-        let je_inst = mfunc.writer().write(
-            MachineOpcode::Target(TargetInst::X86Je.as_u32()),
+        let je_inst = TargetInst::X86Je.write(
+            mfunc.editor().writer(),
             &[],
             &[],
             &[InstField::Block(target.block)],
         );
-        mfunc.set_inst_extra(
+        mfunc.editor().set_inst_extra(
             je_inst,
             InstExtra::Branch(veloc_lir::BranchInfo {
                 args: target.args.clone(),
@@ -298,13 +305,13 @@ fn branch_table(
         output.push(je_inst);
     }
 
-    let jmp_inst = mfunc.writer().write(
-        MachineOpcode::Target(TargetInst::X86Jmp.as_u32()),
+    let jmp_inst = TargetInst::X86Jmp.write(
+        mfunc.editor().writer(),
         &[],
         &[],
         &[InstField::Block(default_target.block)],
     );
-    mfunc.set_inst_extra(
+    mfunc.editor().set_inst_extra(
         jmp_inst,
         InstExtra::Branch(veloc_lir::BranchInfo {
             args: default_target.args.clone(),

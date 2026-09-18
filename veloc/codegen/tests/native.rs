@@ -15,8 +15,8 @@ struct Workspace(PathBuf);
 fn branch_layout_preserves_boundaries_and_symbolic_fixups() {
     use veloc_codegen::FixupTarget as Target;
     use veloc_encoder::x86_64::*;
+    use veloc_lir::BlockId as Block;
     use veloc_lir::SymbolId;
-    use veloc_mir::Block;
 
     let descriptor = Branch {
         map: OpcodeMap::Primary,
@@ -282,7 +282,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
                 let line = format!("{mnemonic} %{}, %{}\n", sources[src], destinations[dst]);
                 cases.push((emitter.position(), line.clone()));
                 assembly.push_str(&line);
-                let inst = f.writer().unary(
+                let inst = f.editor().writer().unary(
                     MachineOpcode::Target(opcode.as_u32()),
                     Writable(regs[dst]),
                     regs[src],
@@ -976,7 +976,7 @@ int main(void) {
         {
             use veloc_codegen::target::x86_64::isle::{REG_RAX, REG_RDI, TargetInst};
             let mut function = veloc_lir::MachineFunction::new("feature_check".into());
-            let id = function.writer().write(
+            let id = function.editor().writer().write(
                 veloc_lir::MachineOpcode::Target(TargetInst::X86Popcnt64 as u32),
                 &[REG_RAX],
                 &[REG_RDI],

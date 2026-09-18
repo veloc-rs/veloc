@@ -21,7 +21,7 @@ impl Query {
     pub fn from_inst(inst: &InstRef<'_>, f: &MachineFunction) -> Result<Self> {
         let ty = |r: &veloc_lir::Reg| {
             r.as_vreg()
-                .map(|v| f.vregs[v].ty)
+                .map(|v| f.vregs()[v].ty)
                 .ok_or_else(|| Error::codegen("legalization requires typed virtual operands"))
         };
         Ok(Self {
@@ -150,9 +150,9 @@ impl ValueRewriter<'_> {
     ) -> veloc_lir::Reg {
         let dst = match result {
             Some(i) => self.function.inst(self.root).results()[i],
-            None => self.function.alloc_vreg(ty),
+            None => self.function.editor().alloc_vreg(ty),
         };
-        self.output.push(self.function.writer().write(
+        self.output.push(self.function.editor().writer().write(
             veloc_lir::MachineOpcode::Generic(opcode),
             &[dst],
             inputs,
@@ -163,8 +163,12 @@ impl ValueRewriter<'_> {
     pub fn bind(&mut self, result: usize, value: veloc_lir::Reg) {
         let dst = self.function.inst(self.root).results()[result];
         if dst != value {
-            self.output
-                .push(self.function.writer().copy(veloc_lir::Writable(dst), value));
+            self.output.push(
+                self.function
+                    .editor()
+                    .writer()
+                    .copy(veloc_lir::Writable(dst), value),
+            );
         }
     }
 }
