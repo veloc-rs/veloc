@@ -29,7 +29,7 @@ fn named<'a>(source: &str, node: &'a Node) -> Result<&'a str, Error> {
     }
 }
 
-pub(super) fn domain(
+pub(crate) fn domain(
     source: &str,
     node: &Node,
     aliases: &BTreeMap<String, Node>,

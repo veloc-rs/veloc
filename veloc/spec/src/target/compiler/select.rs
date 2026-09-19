@@ -10,29 +10,6 @@ fn strip_node_binds(pattern: &Pattern) -> &Pattern {
     pattern.strip_node_binds()
 }
 
-fn pattern_opcode(pattern: &Pattern) -> Option<&str> {
-    match strip_node_binds(pattern) {
-        Pattern::Opcode { opcode, .. } => Some(opcode.as_str()),
-        Pattern::Schema { opcode, .. } => Some(opcode.as_str()),
-        _ => None,
-    }
-}
-
-fn pattern_args(pattern: &Pattern) -> Option<&[PatternArg]> {
-    match strip_node_binds(pattern) {
-        Pattern::Opcode { args, .. } => Some(args.as_slice()),
-        Pattern::Schema { args, .. } => Some(args.as_slice()),
-        _ => None,
-    }
-}
-
-fn pattern_schema_name(pattern: &Pattern) -> Option<&str> {
-    match strip_node_binds(pattern) {
-        Pattern::Schema { schema, .. } => Some(schema.as_str()),
-        _ => None,
-    }
-}
-
 fn positional_arg_at(args: &[PatternArg], index: usize) -> Option<&Pattern> {
     args.iter()
         .filter_map(|arg| match arg {
@@ -46,18 +23,6 @@ fn named_args(args: &[PatternArg]) -> impl Iterator<Item = (&str, &Pattern)> {
     args.iter().filter_map(|arg| match arg {
         PatternArg::Named { name, pattern } => Some((name.as_str(), pattern.as_ref())),
         PatternArg::Positional(_) => None,
-    })
-}
-
-pub(crate) fn module_has_positional_rules(module: &crate::target::ast::Module) -> bool {
-    module.defs.iter().any(|def| {
-        let Def::SelectRule(rule) = def else {
-            return false;
-        };
-        let Some(pattern) = rule.patterns.first() else {
-            return false;
-        };
-        pattern_schema_name(pattern).is_none()
     })
 }
 
@@ -137,14 +102,10 @@ fn collect_select_rules_by_opcode<'a>(
     let mut opcode_rules: HashMap<String, Vec<&SelectRuleDef>> = HashMap::new();
     for def in &module.defs {
         if let Def::SelectRule(rule) = def {
-            if let Some(pattern) = rule.patterns.first() {
-                if let Some(opcode) = pattern_opcode(pattern) {
-                    opcode_rules
-                        .entry(opcode.to_string())
-                        .or_default()
-                        .push(rule);
-                }
-            }
+            opcode_rules
+                .entry(rule.opcode.clone())
+                .or_default()
+                .push(rule);
         }
     }
     opcode_rules
@@ -152,7 +113,6 @@ fn collect_select_rules_by_opcode<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BindingSource {
-    OperandIndex(usize),
     SchemaValue,
 }
 
@@ -211,6 +171,7 @@ fn pattern_condition_needs_value(pattern: &Pattern, decls: &HashMap<String, Decl
         Pattern::And(parts) => parts
             .iter()
             .any(|part| pattern_condition_needs_value(part, decls)),
+        Pattern::Typed { .. } => true,
         Pattern::Schema { .. }
         | Pattern::Variable(_)
         | Pattern::IntConst(_)
@@ -260,7 +221,8 @@ fn collect_used_extractors_in_pattern(
                 collect_used_extractors_in_pattern(part, extractors, used);
             }
         }
-        Pattern::Variable(_)
+        Pattern::Typed { .. }
+        | Pattern::Variable(_)
         | Pattern::IntConst(_)
         | Pattern::CondCode(_)
         | Pattern::StackSlot(_)
@@ -278,52 +240,42 @@ fn collect_used_extractors(
         let Def::SelectRule(rule) = def else {
             continue;
         };
-        for pattern in &rule.patterns {
+        for (_, pattern) in named_args(&rule.fields) {
             collect_used_extractors_in_pattern(pattern, extractors, &mut used);
         }
     }
     used
 }
 
-fn collect_positional_rule_conditions(
-    args: &[PatternArg],
-    extractors: &HashMap<String, ExtractorDef>,
-) -> Vec<String> {
-    args.iter()
-        .enumerate()
-        .filter_map(|(i, arg)| {
-            let PatternArg::Positional(pattern) = arg else {
-                return None;
-            };
-            if let Pattern::Opcode {
-                opcode: exc_name, ..
-            } = strip_node_binds(pattern)
-            {
-                if extractors.contains_key(exc_name) {
-                    Some(format!("is_{}(v{})", exc_name.to_lowercase(), i))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 fn collect_schema_rule_conditions(
-    args: &[PatternArg],
+    rule: &SelectRuleDef,
     extractors: &HashMap<String, ExtractorDef>,
     schema_var: &str,
-    schema_name: &str,
 ) -> Vec<String> {
-    named_args(args)
+    named_args(&rule.fields)
         .filter_map(|(field, pattern)| {
+            let schema_name = field
+                .split_once('.')
+                .and_then(|(owner, _)| {
+                    rule.definitions
+                        .iter()
+                        .find(|p| p.name == owner)
+                        .map(|p| p.schema.as_str())
+                })
+                .unwrap_or(&rule.schema);
             collect_schema_field_conditions(field, pattern, extractors, schema_var, schema_name)
                 .map(|parts| parts.join(" && "))
         })
         .filter(|cond| !cond.is_empty())
         .collect()
+}
+
+fn field_expr(field: &str, root: &str) -> String {
+    if let Some((producer, member)) = field.split_once('.') {
+        format!("def_{producer}.{member}")
+    } else {
+        format!("{root}.{field}")
+    }
 }
 
 fn collect_schema_field_conditions(
@@ -333,7 +285,12 @@ fn collect_schema_field_conditions(
     schema_var: &str,
     schema_name: &str,
 ) -> Option<Vec<String>> {
+    let value = field_expr(field, schema_var);
     match strip_node_binds(pattern) {
+        Pattern::Typed { types, .. } => Some(vec![format!(
+            "reg_value_to_vreg({value}).is_some_and(|reg| [{}].contains(&ctx.get_type(reg)))",
+            types.join(", ")
+        )]),
         Pattern::Variable(_) => None,
         Pattern::And(parts) => {
             let conds: Vec<String> = parts
@@ -357,9 +314,14 @@ fn collect_schema_field_conditions(
             schema_var,
             field
         )]),
-        Pattern::IntConst(value) => Some(vec![format!("{}.{} == {}", schema_var, field, value)]),
-        Pattern::CondCode(cc) => render_cond_code_match(schema_name, *cc)
-            .map(|expr| vec![format!("{}.{} == {}", schema_var, field, expr)]),
+        Pattern::IntConst(value) => Some(vec![format!(
+            "{} == {}",
+            field_expr(field, schema_var),
+            value
+        )]),
+        Pattern::CondCode(cc) => {
+            render_cond_code_match(schema_name, *cc).map(|expr| vec![format!("{value} == {expr}")])
+        }
         Pattern::Block(_) => None,
         Pattern::StackSlot(_) | Pattern::Opcode { .. } => None,
         Pattern::Schema { .. } => None,
@@ -393,21 +355,10 @@ fn render_cond_code_match(schema_name: &str, cc: CondCode) -> Option<&'static st
     }
 }
 
-fn collect_var_bindings(pattern: &Pattern) -> HashMap<String, BindingSource> {
+fn collect_var_bindings(args: &[PatternArg]) -> HashMap<String, BindingSource> {
     let mut map = HashMap::new();
-    if let Some(args) = pattern_args(pattern) {
-        if pattern_schema_name(pattern).is_some() {
-            for (_field, arg) in named_args(args) {
-                collect_vars_in_pattern(arg, BindingSource::SchemaValue, &mut map);
-            }
-        } else {
-            for (idx, arg) in args.iter().enumerate() {
-                let PatternArg::Positional(arg) = arg else {
-                    continue;
-                };
-                collect_vars_in_pattern(arg, BindingSource::OperandIndex(idx), &mut map);
-            }
-        }
+    for (_, arg) in named_args(args) {
+        collect_vars_in_pattern(arg, BindingSource::SchemaValue, &mut map);
     }
     map
 }
@@ -419,17 +370,15 @@ fn emit_schema_value_bindings_for_group(
 ) {
     let mut needed_vars = BTreeSet::new();
     for rule in rules {
-        collect_constructor_variables(&rule.emit, &mut needed_vars);
+        for build in &rule.builds {
+            collect_constructor_variables(build, &mut needed_vars);
+        }
+        needed_vars.extend(rule.temps.iter().map(|(_, like)| like.clone()));
     }
 
     let mut bindings = BTreeMap::new();
     for rule in rules {
-        let Some(pattern) = rule.patterns.first() else {
-            continue;
-        };
-        let Some(args) = pattern_args(pattern) else {
-            continue;
-        };
+        let args = &rule.fields;
         for (field, pattern) in named_args(args) {
             let mut vars = Vec::new();
             collect_pattern_variables(pattern, &mut vars);
@@ -445,8 +394,9 @@ fn emit_schema_value_bindings_for_group(
         let rust_var = rust_ident(&var);
         writeln!(
             output,
-            "                let {} = {}.{}.clone();",
-            rust_var, schema_var, field
+            "                let {} = {}.clone();",
+            rust_var,
+            field_expr(&field, schema_var)
         )
         .unwrap();
     }
@@ -455,7 +405,7 @@ fn emit_schema_value_bindings_for_group(
 fn collect_pattern_variables(pattern: &Pattern, vars: &mut Vec<String>) {
     match pattern {
         Pattern::NodeBind { inner, .. } => collect_pattern_variables(inner, vars),
-        Pattern::Variable(name) => vars.push(name.clone()),
+        Pattern::Variable(name) | Pattern::Typed { name, .. } => vars.push(name.clone()),
         Pattern::Opcode { args, .. } | Pattern::Schema { args, .. } => {
             for arg in args {
                 match arg {
@@ -493,26 +443,22 @@ fn schema_group_needs_binding(
 ) -> bool {
     let mut needed_vars = BTreeSet::new();
     for rule in rules {
-        collect_constructor_variables(&rule.emit, &mut needed_vars);
+        for build in &rule.builds {
+            collect_constructor_variables(build, &mut needed_vars);
+        }
     }
 
     for rule in rules {
-        let Some(pattern) = rule.patterns.first() else {
-            continue;
-        };
-        let Some(args) = pattern_args(pattern) else {
-            continue;
-        };
+        let args = &rule.fields;
+        if !rule.definitions.is_empty() {
+            return true;
+        }
 
         if infer_schema_source_def_field(args).is_some() {
             return true;
         }
-        if let Some(schema_name) = pattern_schema_name(pattern) {
-            if !collect_schema_rule_conditions(args, extractors, "schema_inst", schema_name)
-                .is_empty()
-            {
-                return true;
-            }
+        if !collect_schema_rule_conditions(rule, extractors, "schema_inst").is_empty() {
+            return true;
         }
         for (_field, pattern) in named_args(args) {
             let mut vars = Vec::new();
@@ -533,7 +479,7 @@ fn collect_vars_in_pattern(
 ) {
     match pat {
         Pattern::NodeBind { inner, .. } => collect_vars_in_pattern(inner, source, map),
-        Pattern::Variable(name) => {
+        Pattern::Variable(name) | Pattern::Typed { name, .. } => {
             map.insert(name.clone(), source);
         }
         Pattern::Opcode { args, .. } => {
@@ -559,36 +505,27 @@ fn collect_vars_in_pattern(
 
 fn emit_constructor_sequence(
     output: &mut String,
-    constructor: &Constructor,
+    constructors: &[Constructor],
     ctx: &InstEmitContext<'_>,
-    request: InstEmitRequest,
 ) {
-    // Decode every operand before the first store write. This also makes a
-    // failed match side-effect free and ends source-view borrows before emission.
+    // Preparation decodes operands without writing instructions.
     let mut commits = String::new();
-    match constructor {
-        Constructor::Inst { opcode, args } if opcode == "seq" => {
-            for (i, c) in args.iter().enumerate() {
-                emit_single_inst(
-                    output,
-                    &mut commits,
-                    c,
-                    ctx,
-                    InstEmitRequest {
-                        index: i,
-                        preserve_operands: false,
-                    },
-                );
-            }
-            output.push_str(&commits);
-            writeln!(output, "                return Ok(SelectResult::Replace);").unwrap();
-        }
-        _ => {
-            emit_single_inst(output, &mut commits, constructor, ctx, request);
-            output.push_str(&commits);
-            writeln!(output, "                return Ok(SelectResult::InPlace);").unwrap();
-        }
+    let single = constructors.len() == 1;
+    for (index, ctor) in constructors.iter().enumerate() {
+        emit_single_inst(
+            output,
+            &mut commits,
+            ctor,
+            ctx,
+            InstEmitRequest {
+                index,
+                preserve_operands: single,
+            },
+        );
     }
+    output.push_str(&commits);
+    let result = if single { "InPlace" } else { "Replace" };
+    writeln!(output, "                return Ok(SelectResult::{result});").unwrap();
 }
 
 fn emit_single_inst(
@@ -639,15 +576,10 @@ fn emit_single_inst(
                 index = request.index
             )
             .unwrap();
-            writeln!(
-                output,
-                "                let mut source_def_cursor_{index} = 0usize;",
-                index = request.index
-            )
-            .unwrap();
         }
 
         let mut explicit_arg_cursor = 0usize;
+        let mut source_def_cursor = 0usize;
         for (operand_index, operand) in inst_def.operands.iter().enumerate() {
             let use_source_def = request.preserve_operands
                 && matches!(operand, OperandConstraint::Def(_))
@@ -668,7 +600,8 @@ fn emit_single_inst(
                         field,
                     );
                 } else {
-                    emit_source_result(output, request.index, operand);
+                    emit_source_result(output, request.index, source_def_cursor);
+                    source_def_cursor += 1;
                 }
                 continue;
             }
@@ -739,18 +672,13 @@ fn inst_def_result_count(operands: &[OperandConstraint]) -> usize {
         .count()
 }
 
-fn emit_source_result(output: &mut String, index: usize, operand: &OperandConstraint) {
-    let _op_ctor = match operand {
-        OperandConstraint::Def(_) => "Def",
-        _ => panic!("source defs can only satisfy def-like operands"),
-    };
+fn emit_source_result(output: &mut String, index: usize, source_def: usize) {
     writeln!(
         output,
         r#"                {{
                     let reg = *source_defs_{index}
-                        .get(source_def_cursor_{index})
+                        .get({source_def})
                         .ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from("Source def mapping failed")))?;
-                    source_def_cursor_{index} += 1;
                     results_{index}.push(reg);
                 }}"#
     )
@@ -805,10 +733,6 @@ fn emit_constructor_operand(
         Constructor::Variable(name) => match var_map.get(name) {
             Some(BindingSource::SchemaValue) => {
                 let push = schema_value_operand_expr(name, operand);
-                writeln!(output, "                {buffer}_{index}.push({push});").unwrap();
-            }
-            Some(BindingSource::OperandIndex(op_index)) => {
-                let push = operand_index_expr(*op_index, operand);
                 writeln!(output, "                {buffer}_{index}.push({push});").unwrap();
             }
             None => {
@@ -874,29 +798,6 @@ fn rust_ident(name: &str) -> String {
         | "dyn" | "abstract" | "become" | "box" | "do" | "final" | "macro" | "override"
         | "priv" | "try" | "typeof" | "unsized" | "virtual" | "yield" => format!("r#{}", name),
         _ => name.to_string(),
-    }
-}
-
-fn operand_index_expr(op_index: usize, operand: &OperandConstraint) -> String {
-    match operand {
-        OperandConstraint::Use(_) | OperandConstraint::FixedUse { .. } => format!(
-            "inst.inputs().get({op_index}).copied().ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?"
-        ),
-        OperandConstraint::Def(_) => format!(
-            "inst.inputs().get({op_index}).copied().ok_or_else(|| crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand reg mapping failed\")))?"
-        ),
-        OperandConstraint::Imm(_) => format!(
-            "match field_by_index(inst, {op_index}) {{ Some(InstField::Imm(v)) => InstField::Imm(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand immediate mapping failed\"))), }}"
-        ),
-        OperandConstraint::Block(_) => format!(
-            "match field_by_index(inst, {op_index}) {{ Some(InstField::Block(v)) => InstField::Block(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand block mapping failed\"))), }}"
-        ),
-        OperandConstraint::Global(_) => format!(
-            "match field_by_index(inst, {op_index}) {{ Some(InstField::Global(v)) => InstField::Global(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand global mapping failed\"))), }}"
-        ),
-        OperandConstraint::StackSlot(_) => format!(
-            "match field_by_index(inst, {op_index}) {{ Some(InstField::StackSlot(v)) => InstField::StackSlot(v), _ => return Err(crate::error::Error::select(inst.opcode().clone(), alloc::string::String::from(\"Operand stackslot mapping failed\"))), }}"
-        ),
     }
 }
 
@@ -1032,25 +933,17 @@ fn derive_generic_inst_metadata(
         let Def::SelectRule(rule) = def else {
             continue;
         };
-        let Some(pattern) = rule.patterns.first() else {
-            continue;
-        };
-        let Some(schema_name) = pattern_schema_name(pattern) else {
-            continue;
-        };
-        if schema_name != "BinaryReg" {
+        if rule.schema != "BinaryReg" {
             continue;
         }
-        let Some(opcode) = pattern_opcode(pattern) else {
-            continue;
-        };
-        let Some(pattern_args) = pattern_args(pattern) else {
-            continue;
-        };
-        let Constructor::Inst {
-            opcode: target_opcode,
-            args: constructor_args,
-        } = &rule.emit
+        let opcode = &rule.opcode;
+        let pattern_args = &rule.fields;
+        let [
+            Constructor::Inst {
+                opcode: target_opcode,
+                args: constructor_args,
+            },
+        ] = rule.builds.as_slice()
         else {
             continue;
         };
@@ -1079,7 +972,7 @@ fn derive_generic_inst_metadata(
             let Some(field) = field_bindings.get(var_name) else {
                 continue;
             };
-            let Some(source_operand_index) = schema_field_operand_index(schema_name, field) else {
+            let Some(source_operand_index) = schema_field_operand_index(&rule.schema, field) else {
                 continue;
             };
             let fixed = (source_operand_index, reg.clone());
@@ -1099,23 +992,42 @@ fn derive_generic_inst_metadata(
     result
 }
 
-pub(super) fn check_temps(rule: &crate::target::ast::SelectRuleDef) -> Result<(), String> {
-    let [root] = rule.patterns.as_slice() else {
-        return Err(
-            "selection requires exactly one root pattern; multi-node matching is not implemented"
-                .into(),
-        );
-    };
-    let root_node = match root {
-        Pattern::NodeBind { node, .. } => Some(node.as_str()),
-        _ => None,
-    };
-    if !rule.covers.is_empty()
-        && (rule.covers.len() != 1 || Some(rule.covers[0].as_str()) != root_node)
-    {
-        return Err("covers must name only the matched root node".into());
+pub(super) fn check_construction(
+    rule: &SelectRuleDef,
+    instructions: &HashMap<String, FinalInstDef>,
+) -> Result<(), String> {
+    let sequence = rule.builds.len() > 1;
+    for ctor in &rule.builds {
+        let Constructor::Inst { opcode, args } = ctor else {
+            return Err("build requires an instruction constructor".into());
+        };
+        let definition = instructions
+            .get(opcode)
+            .ok_or_else(|| format!("unknown target instruction {opcode}"))?;
+        let count = definition.operands.len();
+        let required = if sequence {
+            count
+        } else {
+            min_explicit_args_from(&definition.operands, 0)
+        };
+        if args.len() < required || args.len() > count {
+            return Err(format!(
+                "{opcode} expects {required}..={count} operands, got {}",
+                args.len()
+            ));
+        }
+        if args
+            .iter()
+            .any(|arg| matches!(arg, Constructor::Inst { .. }))
+        {
+            return Err("nested instruction constructors require separate build operations".into());
+        }
     }
-    let mut bindings = collect_var_bindings(root);
+    Ok(())
+}
+
+pub(super) fn check_temps(rule: &crate::target::ast::SelectRuleDef) -> Result<(), String> {
+    let mut bindings = collect_var_bindings(&rule.fields);
     for (name, like) in &rule.temps {
         if !bindings.contains_key(like) || bindings.contains_key(name) {
             return Err(format!(
@@ -1135,9 +1047,6 @@ fn emit_temps(
     for (name, like) in temps {
         let exemplar = match bindings[like] {
             BindingSource::SchemaValue => format!("reg_value({})", rust_ident(like)),
-            BindingSource::OperandIndex(index) => {
-                format!("inst.inputs().get({index}).copied()")
-            }
         };
         writeln!(
             output,
@@ -1158,9 +1067,8 @@ pub(crate) fn generate_select_instruction(
     context: &str,
 ) {
     let reg_map = collect_reg_ids(module);
-    let needs_positional_helpers = module_has_positional_rules(module);
     let decls = collect_decl_map(module);
-    let mut opcode_rules = collect_select_rules_by_opcode(module);
+    let opcode_rules = collect_select_rules_by_opcode(module);
     let used_extractors = collect_used_extractors(module, extractors);
 
     writeln!(
@@ -1172,7 +1080,7 @@ pub fn select_instructions<C: LoweringContext + crate::target::arch::TargetFeatu
     source: veloc_lir::InstId,
     out: &mut alloc::vec::Vec<veloc_lir::InstId>,
 ) -> Result<SelectResult, crate::error::Error> {{
-    use veloc_lir::{{GenericOpcode, MachineOpcode, VReg}};
+    use veloc_lir::{{GenericOpcode, MachineOpcode}};
     let inst = &store.get(source);
     let decoded = &veloc_lir::InstRead::view(*inst);
     use crate::target::arch::SelectResult;
@@ -1183,11 +1091,6 @@ pub fn select_instructions<C: LoweringContext + crate::target::arch::TargetFeatu
         arch = arch,
     )
     .unwrap();
-    if needs_positional_helpers {
-        writeln!(output, "    let v0 = vreg_by_index(inst, 0);").unwrap();
-        writeln!(output, "    let v1 = vreg_by_index(inst, 1);").unwrap();
-        writeln!(output, "    let v2 = vreg_by_index(inst, 2);").unwrap();
-    }
     writeln!(output).unwrap();
 
     for name in used_extractors {
@@ -1202,7 +1105,7 @@ pub fn select_instructions<C: LoweringContext + crate::target::arch::TargetFeatu
         };
         writeln!(
             output,
-            "    let is_{} = |v_opt: Option<VReg>| v_opt.map_or(false, |{}| {});",
+            "    let is_{} = |v_opt: Option<veloc_lir::VReg>| v_opt.map_or(false, |{}| {});",
             name.to_lowercase(),
             value_param,
             cond
@@ -1222,136 +1125,115 @@ pub fn select_instructions<C: LoweringContext + crate::target::arch::TargetFeatu
     writeln!(output, "    // 尝试按规则选择指令序列").unwrap();
     writeln!(output, "    match opcode {{").unwrap();
 
-    for rules in opcode_rules.values_mut() {
-        rules.sort_by_key(|rule| rule.cost);
-    }
     let mut opcodes: Vec<_> = opcode_rules.keys().cloned().collect();
     opcodes.sort();
 
     for op in opcodes {
         writeln!(output, "        GenericOpcode::{} => {{", op).unwrap();
         let rules = &opcode_rules[&op];
-        let mut rule_index = 0usize;
-        while rule_index < rules.len() {
-            let rule = rules[rule_index];
-            let Some(pattern) = rule.patterns.first() else {
-                rule_index += 1;
-                continue;
-            };
-            let Some(args) = pattern_args(pattern) else {
-                rule_index += 1;
-                continue;
-            };
-
-            if let Some(schema_name) = pattern_schema_name(pattern) {
-                let mut group_end = rule_index;
-                while group_end < rules.len() {
-                    let Some(group_pattern) = rules[group_end].patterns.first() else {
-                        group_end += 1;
-                        continue;
-                    };
-                    if pattern_schema_name(group_pattern) != Some(schema_name) {
-                        break;
-                    }
-                    group_end += 1;
+        let schema = &rules[0].schema;
+        let schema_var = if schema_group_needs_binding(rules, extractors) {
+            "schema_inst"
+        } else {
+            "_schema_inst"
+        };
+        writeln!(
+            output,
+            "            if let veloc_lir::InstView::{schema}({schema_var}) = decoded {{"
+        )
+        .unwrap();
+        // Checks are pure: identical type/feature predicates can be evaluated once
+        // without moving allocations or construction out of their selected case.
+        let candidate_conditions = rules
+            .iter()
+            .map(|rule| {
+                let mut conditions = collect_schema_rule_conditions(rule, extractors, schema_var);
+                for build in &rule.builds {
+                    feature_conditions(build, final_inst_defs, &mut conditions);
                 }
-
-                let schema_var =
-                    if schema_group_needs_binding(&rules[rule_index..group_end], extractors) {
-                        "schema_inst"
-                    } else {
-                        "_schema_inst"
-                    };
-                writeln!(
-                    output,
-                    "            if let veloc_lir::InstView::{}({}) = decoded {{",
-                    schema_name, schema_var
-                )
-                .unwrap();
-                emit_schema_value_bindings_for_group(
-                    output,
-                    &rules[rule_index..group_end],
-                    schema_var,
-                );
-
-                while rule_index < group_end {
-                    let grouped_rule = rules[rule_index];
-                    let Some(grouped_pattern) = grouped_rule.patterns.first() else {
-                        rule_index += 1;
-                        continue;
-                    };
-                    let Some(grouped_args) = pattern_args(grouped_pattern) else {
-                        rule_index += 1;
-                        continue;
-                    };
-                    let mut var_map = collect_var_bindings(grouped_pattern);
-                    let mut conditions = collect_schema_rule_conditions(
-                        grouped_args,
-                        extractors,
-                        schema_var,
-                        schema_name,
-                    );
-                    feature_conditions(&grouped_rule.emit, final_inst_defs, &mut conditions);
-                    if conditions.is_empty() {
-                        writeln!(output, "                {{").unwrap();
-                    } else {
-                        writeln!(output, "                if {} {{", conditions.join(" && "))
-                            .unwrap();
-                    }
-                    emit_temps(output, &grouped_rule.temps, &mut var_map);
-                    let emit_ctx = InstEmitContext {
-                        var_map: &var_map,
-                        final_inst_defs,
-                        reg_map: &reg_map,
-                        schema_var: Some(schema_var),
-                        schema_source_def_field: infer_schema_source_def_field(grouped_args),
-                    };
-                    emit_constructor_sequence(
-                        output,
-                        &grouped_rule.emit,
-                        &emit_ctx,
-                        InstEmitRequest {
-                            index: 0,
-                            preserve_operands: true,
-                        },
-                    );
-                    writeln!(output, "                }}").unwrap();
-                    rule_index += 1;
-                }
-
-                writeln!(output, "            }}").unwrap();
-            } else {
-                let mut var_map = collect_var_bindings(pattern);
-                let mut conditions = collect_positional_rule_conditions(args, extractors);
-                feature_conditions(&rule.emit, final_inst_defs, &mut conditions);
-
-                if conditions.is_empty() {
-                    writeln!(output, "            {{").unwrap();
-                } else {
-                    writeln!(output, "            if {} {{", conditions.join(" && ")).unwrap();
-                }
-
-                emit_temps(output, &rule.temps, &mut var_map);
-                let emit_ctx = InstEmitContext {
-                    var_map: &var_map,
-                    final_inst_defs,
-                    reg_map: &reg_map,
-                    schema_var: None,
-                    schema_source_def_field: None,
-                };
-                emit_constructor_sequence(
-                    output,
-                    &rule.emit,
-                    &emit_ctx,
-                    InstEmitRequest {
-                        index: 0,
-                        preserve_operands: true,
-                    },
-                );
-                writeln!(output, "            }}").unwrap();
-                rule_index += 1;
+                conditions
+            })
+            .collect::<Vec<_>>();
+        let mut counts = BTreeMap::<&str, usize>::new();
+        for conditions in &candidate_conditions {
+            for condition in conditions {
+                *counts.entry(condition).or_default() += 1;
             }
         }
+        let shared = counts
+            .into_iter()
+            .filter(|(condition, count)| *count > 1 && !condition.contains("def_"))
+            .enumerate()
+            .map(|(id, (condition, _))| (condition, format!("check_{id}")))
+            .collect::<BTreeMap<_, _>>();
+        for (condition, name) in &shared {
+            writeln!(output, "                let {name} = {condition};").unwrap();
+        }
+        for (rule, conditions) in rules.iter().zip(&candidate_conditions) {
+            // Every lookup and opcode test falls through to the next candidate.
+            // Definition lookup is independent of the fold-safety check below.
+            for p in &rule.definitions {
+                let input = field_expr(&p.input, schema_var);
+                writeln!(output, "if let Some(def_{0}_id) = reg_value({input}).and_then(|reg| store.def(reg)) {{", p.name).unwrap();
+                writeln!(output, "let def_{0}_inst = store.get(def_{0}_id);", p.name).unwrap();
+                writeln!(
+                    output,
+                    "if def_{0}_inst.generic_opcode() == Some(GenericOpcode::{1}) {{",
+                    p.name, p.opcode
+                )
+                .unwrap();
+                writeln!(output, "if let veloc_lir::InstView::{1}(def_{0}) = veloc_lir::InstRead::view(def_{0}_inst) {{", p.name, p.schema).unwrap();
+            }
+            let mut var_map = collect_var_bindings(&rule.fields);
+            let conditions = conditions
+                .iter()
+                .map(|condition| {
+                    shared
+                        .get(condition.as_str())
+                        .map(String::as_str)
+                        .unwrap_or(condition.as_str())
+                })
+                .collect::<Vec<_>>();
+            if conditions.is_empty() {
+                writeln!(output, "                {{").unwrap();
+            } else {
+                writeln!(output, "                if {} {{", conditions.join(" && ")).unwrap();
+            }
+            // Until effect/dependency legality is modeled, committing a graph
+            // rewrite requires pure, single-result matched definitions.
+            if !rule.definitions.is_empty() {
+                let safe = rule
+                    .definitions
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "def_{0}_inst.is_pure_value() && def_{0}_inst.results().len() == 1",
+                            p.name
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" && ");
+                writeln!(output, "if {safe} {{").unwrap();
+            }
+            emit_schema_value_bindings_for_group(output, &[*rule], schema_var);
+            emit_temps(output, &rule.temps, &mut var_map);
+            let emit_ctx = InstEmitContext {
+                var_map: &var_map,
+                final_inst_defs,
+                reg_map: &reg_map,
+                schema_var: Some(schema_var),
+                schema_source_def_field: infer_schema_source_def_field(&rule.fields),
+            };
+            emit_constructor_sequence(output, &rule.builds, &emit_ctx);
+            if !rule.definitions.is_empty() {
+                writeln!(output, "}}").unwrap();
+            }
+            writeln!(output, "                }}").unwrap();
+            for _ in &rule.definitions {
+                writeln!(output, "}} }} }}").unwrap();
+            }
+        }
+        writeln!(output, "            }}").unwrap();
         writeln!(output, "        }}").unwrap();
     }
     writeln!(output, "        _ => {{}}").unwrap();

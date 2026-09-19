@@ -149,6 +149,15 @@ pub struct InstBuilder<'a> {
     pub(crate) changes: Option<&'a mut crate::EditChanges>,
 }
 impl InstBuilder<'_> {
+    /// Find a virtual value's unique defining instruction. This is a read-only
+    /// SSA query, not permission to move, fold or erase the definition.
+    pub fn def(&self, reg: Reg) -> Option<InstId> {
+        if !reg.is_vreg() {
+            return None;
+        }
+        Some(self.store.defs(reg).single()?.inst())
+    }
+
     pub fn get(&self, id: InstId) -> InstRef<'_> {
         self.store.get(id)
     }
@@ -505,7 +514,6 @@ impl InstStore {
         use crate::{BrTableRef, BranchCondInfo, BranchInfo, InstExtraRef as View};
         self.extras.get(&id).map(|extra| match extra {
             InstExtra::Call(info) => View::Call(info),
-            InstExtra::AMode(mode) => View::AMode(*mode),
             InstExtra::Branch(info) => View::Branch(BranchInfo {
                 args: self.registers(info.args),
             }),
@@ -694,7 +702,7 @@ mod tests {
                 f.editor()
                     .rewriter(id)
                     .with_memory(access)
-                    .offset_load(Writable(reg), reg, 16),
+                    .load(Writable(reg), reg, 16),
                 id
             );
             f.editor().set_inst_extra(
@@ -718,11 +726,11 @@ mod tests {
         assert!(f.inst(id).is_generic());
         assert!(f.inst(target).is_target());
         let access = MemoryAccess::new(MemoryKind::Read, 8);
-        let replacement =
-            f.editor()
-                .writer()
-                .with_memory(access)
-                .offset_load(Writable(reg), reg, 0);
+        let replacement = f
+            .editor()
+            .writer()
+            .with_memory(access)
+            .load(Writable(reg), reg, 0);
         let extra = InstExtra::Branch(BranchInfo {
             args: Default::default(),
         });

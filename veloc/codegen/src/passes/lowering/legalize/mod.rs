@@ -46,7 +46,7 @@ impl<'a> Legalizer<'a> {
                 continue;
             }
             let opcode = inst.opcode();
-            let query = Query::from_inst(&inst, mfunc)?;
+            let query = Query::from_inst(inst, mfunc.vregs())?;
             let action = self.target.legalize_action(&query)?.ok_or_else(|| {
                 Error::codegen(alloc::format!("missing legalization rule for {opcode:?}"))
             })?;

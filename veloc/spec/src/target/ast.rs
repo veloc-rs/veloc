@@ -84,14 +84,26 @@ pub struct ExtractorDef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectRuleDef {
-    /// Static candidate cost; equal-cost candidates retain declaration order.
-    pub cost: u32,
-    /// Nodes removed when this rule succeeds (currently the root only).
-    pub covers: Vec<String>,
-    /// Fresh rule-local registers, each inheriting a bound value's type and bank.
+    pub opcode: String,
+    pub type_args: Vec<Vec<String>>,
+    pub schema: String,
+    pub definitions: Vec<DefMatch>,
+    /// Named root fields and their pure matching constraints.
+    pub fields: Vec<PatternArg>,
+    /// Fresh registers allocated only after matching succeeds.
     pub temps: Vec<(String, String)>,
-    pub patterns: Vec<Pattern>,
-    pub emit: Constructor,
+    /// Deferred instruction construction, committed in order.
+    pub builds: Vec<Constructor>,
+}
+
+/// One fallible use-def lookup, ordered after the definitions it depends on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefMatch {
+    pub name: String,
+    pub input: String,
+    pub opcode: String,
+    pub type_args: Vec<Vec<String>>,
+    pub schema: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +166,8 @@ pub enum PatternArg {
 /// 模式匹配表达式
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
+    /// A value binding constrained by a resolved logical type domain.
+    Typed { name: String, types: Vec<String> },
     /// Schema 模式: (schema SchemaName OPCODE args...)
     Schema {
         schema: String,

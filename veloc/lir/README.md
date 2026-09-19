@@ -43,8 +43,7 @@ Two-address instructions have separate result and input lists. ISLE expands
 a tied encoding declaration into an output, an appended input and a static
 location constraint. Selection explicitly supplies both values. Allocation
 resolves the constraint with physical input/output copies, including scratch
-handling when the destination overlaps another input. Indexed memory operations
-likewise have independent output and base operands; there is no ReadWrite role.
+handling when the destination overlaps another input. There is no ReadWrite role; updating an address is an explicit pointer computation.
 
 Virtual registers remain in SSA through selection and scheduling. Block
 parameters and branch arguments survive until allocation; edge moves are
@@ -252,3 +251,19 @@ This is not yet a model for atomic accesses, multiple accesses or scalable sizes
 cargo test -p veloc-lir
 cargo check -p veloc-lir --no-default-features
 ```
+
+## Canonical memory operations
+
+Generic loads and stores always carry a constant byte offset, including zero.
+Stack access uses `StackAddr` followed by these same operations; ABI lowering
+attaches access width, alignment and non-trapping stack metadata.
+Target stack spill/reload instructions remain available after allocation.
+The current single-root selector does not yet fuse StackAddr with its users.
+
+Writeback addressing is not a generic memory operation: compute the updated
+pointer explicitly and use either the old or new pointer for the access.
+A future target combiner may select a writeback instruction from that sequence.
+
+`Trap` terminates execution with a trap. It is not an optimizer assertion that
+execution can never reach the instruction. MIR's current Unreachable lowering
+preserves its existing trapping behavior by selecting this operation.

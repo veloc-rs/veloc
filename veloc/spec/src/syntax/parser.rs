@@ -260,6 +260,33 @@ impl<'a> Parser<'a> {
         let declaration_name = kind
             .name()
             .ok_or_else(|| self.error(offset, "expected a name"))?;
+        if declaration_name == "select" {
+            let signature = self.signature(None, false, true)?;
+            self.expect(TokenKind::LBrace)?;
+            self.expect(TokenKind::Name("choose"))?;
+            self.expect(TokenKind::LBrace)?;
+            let mut cases = Vec::new();
+            while !self.at(TokenKind::RBrace) {
+                let at = self.token.offset;
+                self.expect(TokenKind::Name("case"))?;
+                self.expect(TokenKind::LBrace)?;
+                cases.push(self.statements(at, 0, Context::Rewrite)?);
+            }
+            self.expect(TokenKind::RBrace)?;
+            self.expect(TokenKind::RBrace)?;
+            return Ok(Decl {
+                offset,
+                name: String::new(),
+                kind: DeclKind::Select(signature),
+                fields: BTreeMap::from([(
+                    "cases".into(),
+                    Node {
+                        offset,
+                        kind: Kind::List(cases),
+                    },
+                )]),
+            });
+        }
         let name = self.name()?;
         let mut fields = BTreeMap::new();
         let kind = match kind {

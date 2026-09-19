@@ -690,7 +690,7 @@ mod tests {
             f.editor().create_block();
         }
         {
-            let id = f.editor().writer().unreachable();
+            let id = f.editor().writer().trap();
             f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             id
         };

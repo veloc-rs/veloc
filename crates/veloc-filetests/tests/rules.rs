@@ -7,6 +7,68 @@ use veloc_spec::rules::{Dialects, Program, Rust};
 mod compiler;
 
 #[test]
+fn selector_types_share_domains_and_reject_unknown_types() {
+    use veloc_spec::{Emit, Options, Target};
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");
+    let definitions = Source::load(root.join("codegen/defs/x86_64/instructions.spec")).unwrap();
+    let lir = Source::load(root.join("lir/defs/module.spec")).unwrap();
+    let header = [
+        "types/defs/types.spec",
+        "defs/type_sets.spec",
+        "codegen/defs/x86_64/predicates.spec",
+        "codegen/defs/x86_64/cpu/features.spec",
+    ]
+    .map(|path| {
+        fs::read_to_string(root.join(path))
+            .unwrap()
+            .lines()
+            .filter(|line| !line.starts_with("import "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+    .join("\n");
+    let rule = r#"
+typeset Small = Type::I8 | Type::I16 | Type::I32;
+select(n: lir::Constant) {
+    choose {
+        case {
+            require(type_is<Small>(n.dst));
+            replace(n, build(X86Mov32Imm(n.imm)));
+        }
+    }
+}
+"#;
+    let compile = |text: &str| {
+        compiler::source(&format!("{header}\n{text}"))
+            .unwrap()
+            .generate(
+                &[Emit::Selector],
+                Options {
+                    target: Some(Target {
+                        input: Some(("lir", &lir)),
+                        arch: "x86_64",
+                        context: "crate::Host",
+                        definitions: &definitions,
+                    }),
+                    ..Default::default()
+                },
+            )
+    };
+    let output = compile(rule).unwrap();
+    let code = output.get(Emit::Selector).unwrap();
+    assert!(code.contains("ctx.get_type(reg)"));
+    assert!(code.contains("veloc_types::Type::I32"));
+    assert!(!code.contains("is_i32"));
+    for (from, to) in [
+        ("Type::I8", "Type::MISSING"),
+        ("type_is<Small>(n.dst)", "type_is<Missing>(n.dst)"),
+        ("type_is<Small>(n.dst)", "type_is<Small>(n.dst, other)"),
+    ] {
+        assert!(compile(&rule.replace(from, to)).is_err());
+    }
+}
+
+#[test]
 fn typed_legalization_contracts_reject_invalid_rules() {
     use veloc_spec::rules::{DecisionRust, decisions};
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../veloc");

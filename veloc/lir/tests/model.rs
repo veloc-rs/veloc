@@ -518,7 +518,7 @@ fn generated_builders_and_views_agree() {
     assert_eq!(decoded.opcode, veloc_lir::BinaryRegOpcode::Add);
     assert_eq!(GenericOpcode::Add.control(), ControlFlow::Next);
     assert_eq!(GenericOpcode::Brcond.control(), ControlFlow::Jump);
-    assert_eq!(GenericOpcode::Unreachable.control(), ControlFlow::Trap);
+    assert_eq!(GenericOpcode::Trap.control(), ControlFlow::Trap);
 }
 
 #[test]
@@ -560,26 +560,6 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
     }
     assert!(function.inst(add).validate().is_err());
     assert!(function.inst(adc).validate().is_err());
-}
-
-#[test]
-fn explicit_tied_mapping_preserves_input_and_output_register_identity() {
-    let mut function = MachineFunction::new("test".into());
-    let dst = Writable(Reg::new_vreg(0));
-    let updated = Writable(Reg::new_vreg(1));
-    let base = Reg::new_vreg(2);
-    let inst = function
-        .editor()
-        .writer()
-        .indexed_load(dst, updated, base, 16);
-    let veloc_lir::InstView::IndexedLoad(decoded) = function.inst(inst).view() else {
-        panic!("expected IndexedLoad");
-    };
-    assert_eq!(
-        (decoded.dst, decoded.wb_dst, decoded.base, decoded.offset),
-        (dst.to_reg(), updated.to_reg(), base, 16)
-    );
-    assert_eq!(function.inst(inst).results()[1], updated.to_reg());
 }
 
 #[test]

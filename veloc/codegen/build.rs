@@ -56,6 +56,7 @@ fn main() {
             &[Emit::Target],
             Options {
                 target: Some(Target {
+                    input: Some(("lir", &lir)),
                     arch: "x86_64",
                     context: "crate::target::x86_64::lowering::X86LoweringContext",
                     definitions: &contracts,

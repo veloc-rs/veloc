@@ -43,29 +43,7 @@ struct BinaryRegWithFlags {
 struct Load {
     dst: Reg,
     base: Reg,
-}
-
-struct LoadOffset {
-    dst: Reg,
-    base: Reg,
     offset: i64,
-}
-
-struct IndexedLoad {
-    dst: Reg,
-    wb_dst: Reg,
-    base: Reg,
-    offset: i64,
-}
-
-struct Store {
-    src: Reg,
-    base: Reg,
-}
-
-struct StackLoad {
-    dst: Reg,
-    slot: StackSlot,
 }
 
 struct StackAddr {
@@ -73,19 +51,7 @@ struct StackAddr {
     slot: StackSlot,
 }
 
-struct StackStore {
-    src: Reg,
-    slot: StackSlot,
-}
-
-struct StoreOffset {
-    src: Reg,
-    base: Reg,
-    offset: i64,
-}
-
-struct IndexedStore {
-    wb_dst: Reg,
+struct Store {
     src: Reg,
     base: Reg,
     offset: i64,
@@ -145,7 +111,7 @@ struct Return {
     values: sequence(Reg),
 }
 
-struct Unreachable {
+struct Trap {
 
 }
 
@@ -434,29 +400,9 @@ op Usubsat<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) {
     storage = BinaryReg { dst, lhs, rhs };
 }
 
-op Load<T: Any>(base: Value<Type::PTR>) -> (dst: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    storage = Load { dst, base };
-}
-
-op Store<T: Any>(src: Value<T>, base: Value<Type::PTR>) -> () {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    storage = Store { src, base };
-}
-
 op PtrAdd<T: ScalarInteger>(lhs: Value<Type::PTR>, rhs: Value<T>) -> (dst: Value<Type::PTR>) {
     meta = OpInfo { memory: MemoryEffect::NONE };
     storage = BinaryReg { dst, lhs, rhs };
-}
-
-op StackLoad<T: Any>(slot: StackSlot) -> (dst: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::READ) };
-    storage = StackLoad { dst, slot };
-}
-
-op StackStore<T: Any>(src: Value<T>, slot: StackSlot) -> () {
-    meta = OpInfo { memory: MemoryEffect::known(MemoryEffects::WRITE) };
-    storage = StackStore { src, slot };
 }
 
 op StackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
@@ -464,24 +410,14 @@ op StackAddr(slot: StackSlot) -> (dst: Value<Type::PTR>) {
     storage = StackAddr { dst, slot };
 }
 
-op OffsetLoad<T: Any>(base: Value<Type::PTR>, offset: i64) -> (dst: Value<T>) {
+op Load<T: Any>(base: Value<Type::PTR>, offset: i64) -> (dst: Value<T>) {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    storage = LoadOffset { dst, base, offset };
+    storage = Load { dst, base, offset };
 }
 
-op OffsetStore<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64) -> () {
+op Store<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64) -> () {
     meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    storage = StoreOffset { src, base, offset };
-}
-
-op IndexedLoad<T: Any>(base: Value<Type::PTR>, offset: i64) -> (dst: Value<T>, wb_dst: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    storage = IndexedLoad { dst, wb_dst, base, offset };
-}
-
-op IndexedStore<T: Any>(src: Value<T>, base: Value<Type::PTR>, offset: i64) -> (wb_dst: Value<Type::PTR>) {
-    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
-    storage = IndexedStore { wb_dst, src, base, offset };
+    storage = Store { src, base, offset };
 }
 
 op Constant<T: ScalarInteger | Type::BOOL | Type::PTR>(imm: i64) -> (dst: Value<T>) {
@@ -606,8 +542,8 @@ op Copy<T: Any>(src: Value<T>) -> (dst: Value<T>) {
     storage = UnaryReg { dst, src };
 }
 
-op Unreachable() -> () {
+op Trap() -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR.union(OpTraits::ABORT).union(OpTraits::MAY_TRAP), memory: MemoryEffect::NONE };
-    storage = Unreachable {};
+    storage = Trap {};
     flow = Trap;
 }

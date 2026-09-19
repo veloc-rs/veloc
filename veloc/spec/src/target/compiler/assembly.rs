@@ -28,6 +28,7 @@ enum Operand {
         result: bool,
         index: usize,
         offset: usize,
+        address_index: Option<usize>,
         bits: u32,
     },
     Stack {
@@ -84,7 +85,15 @@ fn operand(node: &Node, inst: &FinalInstDef) -> Result<Operand, String> {
             (i, OperandConstraint::Global(_)) => Ok(Operand::Symbol(i)),
             _ => Err("target requires a block or symbol".into()),
         },
-        ("mem", [base, offset, bits]) => {
+        ("mem", [base, offset, bits]) | ("mem", [base, _, offset, bits]) => {
+            let address_index = if args.len() == 4 {
+                let (index, OperandConstraint::Use(_)) = field(&args[1])? else {
+                    return Err("memory index must be an input register".into());
+                };
+                Some(index)
+            } else {
+                None
+            };
             let (index, role) = field(base)?;
             let result = match role {
                 OperandConstraint::Def(_) => true,
@@ -95,6 +104,7 @@ fn operand(node: &Node, inst: &FinalInstDef) -> Result<Operand, String> {
                 return Err("memory offset must be an immediate".into());
             };
             Ok(Operand::Memory {
+                address_index,
                 result,
                 index,
                 offset,
@@ -221,6 +231,7 @@ fn emit(out: &mut String, op: &Operand) {
         )
         .unwrap(),
         Operand::Memory {
+            address_index,
             result,
             index,
             offset,
@@ -228,8 +239,11 @@ fn emit(out: &mut String, op: &Operand) {
         } => {
             writeln!(
                 out,
-                "out.memory({}, {}, {bits})?;",
+                "out.memory({}, {}, {}, {bits})?;",
                 register(*result, *index),
+                address_index
+                    .map(|index| format!("Some({})", register(false, index)))
+                    .unwrap_or_else(|| "None".into()),
                 field(*offset, "Imm")
             )
             .unwrap();

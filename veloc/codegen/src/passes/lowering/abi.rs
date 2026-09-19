@@ -2,8 +2,10 @@ use crate::error::Result;
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use crate::target::arch::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
 use alloc::vec::Vec;
+use smallvec::{SmallVec, smallvec};
 use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot, Writable};
 use veloc_lir::{InstBuild, InstRead};
+use veloc_lir::{MemoryAccess, MemoryKind};
 
 pub struct AbiLoweringPass;
 
@@ -60,19 +62,45 @@ fn stack_slot_for_assignment(
     }
 }
 
+fn stack_access(
+    target: &dyn TargetMachine,
+    ty: veloc_lir::Type,
+    align: u32,
+    kind: MemoryKind,
+) -> MemoryAccess {
+    let bytes = target
+        .desc()
+        .data_layout
+        .layout_of(ty)
+        .and_then(|layout| layout.store_size.fixed_bytes())
+        .expect("ABI stack value requires a fixed storage layout");
+    let mut access = MemoryAccess::new(kind, bytes);
+    access.alignment = align;
+    access.may_trap = false;
+    access
+}
+
 fn build_load_from_assignment(
     target: &dyn TargetMachine,
     mfunc: &mut MachineFunction,
     assignment: &AbiAssignment,
     dst: Reg,
     kind: &'static str,
-) -> InstId {
+) -> SmallVec<[InstId; 2]> {
     let part = single_part_assignment(assignment, kind);
     match part.loc {
-        AbiLocation::Reg(reg) => mfunc.editor().writer().copy(Writable(dst), reg),
-        AbiLocation::Stack { .. } => {
+        AbiLocation::Reg(reg) => smallvec![mfunc.editor().writer().copy(Writable(dst), reg)],
+        AbiLocation::Stack { align, .. } => {
             let slot = stack_slot_for_assignment(target, mfunc, part);
-            mfunc.editor().writer().stack_load(Writable(dst), slot)
+            let address = mfunc.editor().alloc_vreg(veloc_lir::Type::PTR);
+            let addr = mfunc.editor().writer().stack_addr(Writable(address), slot);
+            let access = stack_access(target, part.ty, align, MemoryKind::Read);
+            let load = mfunc
+                .editor()
+                .writer()
+                .with_memory(access)
+                .load(Writable(dst), address, 0);
+            smallvec![addr, load]
         }
     }
 }
@@ -83,13 +111,21 @@ fn build_store_to_assignment(
     src: Reg,
     assignment: &AbiAssignment,
     kind: &'static str,
-) -> InstId {
+) -> SmallVec<[InstId; 2]> {
     let part = single_part_assignment(assignment, kind);
     match part.loc {
-        AbiLocation::Reg(reg) => mfunc.editor().writer().copy(Writable(reg), src),
-        AbiLocation::Stack { .. } => {
+        AbiLocation::Reg(reg) => smallvec![mfunc.editor().writer().copy(Writable(reg), src)],
+        AbiLocation::Stack { align, .. } => {
             let slot = stack_slot_for_assignment(target, mfunc, part);
-            mfunc.editor().writer().stack_store(src, slot)
+            let address = mfunc.editor().alloc_vreg(veloc_lir::Type::PTR);
+            let addr = mfunc.editor().writer().stack_addr(Writable(address), slot);
+            let access = stack_access(target, part.ty, align, MemoryKind::Write);
+            let store = mfunc
+                .editor()
+                .writer()
+                .with_memory(access)
+                .store(src, address, 0);
+            smallvec![addr, store]
         }
     }
 }
@@ -118,7 +154,7 @@ fn lower_formal_arguments(
             let dst = decoded.dst;
             let replacement =
                 build_load_from_assignment(target, mfunc, assignment, dst, "argument");
-            mfunc.editor().replace_inst(id, replacement);
+            mfunc.editor().replace_with(id, &replacement);
         }
     }
 }
@@ -166,17 +202,19 @@ fn lower_callsite(
         .collect();
     mfunc.editor().set_inst_results(id, &returns);
     for (src, assignment) in args.into_iter().zip(plan.args.iter()) {
-        let inst = build_store_to_assignment(target, mfunc, src, assignment, "call argument");
-        mfunc.editor().insert_before(id, inst);
+        for inst in build_store_to_assignment(target, mfunc, src, assignment, "call argument") {
+            mfunc.editor().insert_before(id, inst);
+        }
     }
 
     mfunc.stack_frame.arg_size = mfunc.stack_frame.arg_size.max(plan.stack_arg_bytes);
     let mut after = id;
 
     for (dst, assignment) in defs.into_iter().zip(plan.returns.iter()) {
-        let inst = build_load_from_assignment(target, mfunc, assignment, dst, "call return");
-        mfunc.editor().insert_after(after, inst);
-        after = inst;
+        for inst in build_load_from_assignment(target, mfunc, assignment, dst, "call return") {
+            mfunc.editor().insert_after(after, inst);
+            after = inst;
+        }
     }
 }
 
@@ -204,7 +242,7 @@ fn lower_return(
 
     let mut pre = Vec::with_capacity(values.len());
     for (&src, assignment) in values.iter().zip(plan.returns.iter()) {
-        pre.push(build_store_to_assignment(
+        pre.extend(build_store_to_assignment(
             target,
             mfunc,
             src,

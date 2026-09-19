@@ -18,7 +18,7 @@ rule ret_0(inst: lir::Ret) {
     action = legal;
 }
 
-rule unreachable_0(inst: lir::Unreachable) {
+rule trap_0(inst: lir::Trap) {
     action = legal;
 }
 
@@ -95,49 +95,25 @@ rule select_1<T: WordValue>(inst: lir::Select<T>) {
     action = legal;
 }
 
-rule load_0<T: Scalar | Type::PTR>(inst: lir::Load<T>) {
-    action = legal;
-}
-
-rule stackload_0<T: Scalar | Type::PTR>(inst: lir::StackLoad<T>) {
-    action = legal;
-}
-
 rule stackaddr_0(inst: lir::StackAddr) {
     action = legal;
 }
 
-rule stackstore_0<T: Scalar | Type::PTR>(inst: lir::StackStore<T>) {
-    action = legal;
-}
-
-rule store_0<T: Scalar | Type::PTR>(inst: lir::Store<T>) {
-    action = legal;
-}
-
-rule offsetload_0_large<T: Scalar | Type::PTR>(inst: lir::OffsetLoad<T>, query: &Query) {
+rule load_0_large<T: Scalar | Type::PTR>(inst: lir::Load<T>, query: &Query) {
     when = !query.signed_offset(32);
     action = expand(load_displacement, inst);
 }
 
-rule offsetload_0<T: Scalar | Type::PTR>(inst: lir::OffsetLoad<T>) {
+rule load_0<T: Scalar | Type::PTR>(inst: lir::Load<T>) {
     action = legal;
 }
 
-rule offsetstore_0_large<T: Scalar | Type::PTR>(inst: lir::OffsetStore<T>, query: &Query) {
+rule store_0_large<T: Scalar | Type::PTR>(inst: lir::Store<T>, query: &Query) {
     when = !query.signed_offset(32);
     action = expand(store_displacement, inst);
 }
 
-rule offsetstore_0<T: Scalar | Type::PTR>(inst: lir::OffsetStore<T>) {
-    action = legal;
-}
-
-rule indexedload_0<T: Word | ScalarFloat>(inst: lir::IndexedLoad<T>) {
-    action = legal;
-}
-
-rule indexedstore_0<T: Word | ScalarFloat>(inst: lir::IndexedStore<T>) {
+rule store_0<T: Scalar | Type::PTR>(inst: lir::Store<T>) {
     action = legal;
 }
 
@@ -298,7 +274,7 @@ rule cttz<T: Word>(inst: lir::Cttz<T>) {
     action = expand(trailing_zeros, inst);
 }
 
-rewrite load_displacement<T: Scalar | Type::PTR>(inst: lir::OffsetLoad<T>)
+rewrite load_displacement<T: Scalar | Type::PTR>(inst: lir::Load<T>)
     = rust("crate::target::x86_64::lowering::legalize::displacement");
-rewrite store_displacement<T: Scalar | Type::PTR>(inst: lir::OffsetStore<T>)
+rewrite store_displacement<T: Scalar | Type::PTR>(inst: lir::Store<T>)
     = rust("crate::target::x86_64::lowering::legalize::displacement");

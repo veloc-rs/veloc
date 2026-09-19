@@ -25,6 +25,8 @@ pub struct Contract {
     pub inputs: Vec<Operand>,
     pub results: Vec<String>,
     pub signature: ValueSignature,
+    /// Generic parameter order, shared by typed operation references.
+    pub generics: Vec<String>,
     pub fields: BTreeMap<String, crate::syntax::Node>,
 }
 
@@ -124,6 +126,11 @@ impl crate::Source {
                     inputs,
                     results,
                     signature: checked.types,
+                    generics: signature
+                        .generics
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect(),
                     fields: record.fields.clone(),
                 });
             }

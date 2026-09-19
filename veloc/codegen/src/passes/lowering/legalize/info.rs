@@ -1,35 +1,43 @@
 use crate::error::{Error, Result};
+use cranelift_entity::PrimaryMap;
 use smallvec::SmallVec;
-use veloc_lir::{GenericOpcode, InstField, InstId, InstRef, MachineFunction, MemoryAccess};
+use veloc_lir::{GenericOpcode, InstField, InstId, InstRef, MachineFunction, Reg, VReg, VRegData};
 use veloc_mir::Type;
 
-/// Instruction-local facts, also constructible for prospective instructions.
-/// No graph access or mutation is available to the legality query.
-#[derive(Debug, Clone)]
-pub struct Query {
-    pub opcode: GenericOpcode,
-    pub results: SmallVec<[Type; 2]>,
-    pub inputs: SmallVec<[Type; 3]>,
-    pub fields: SmallVec<[InstField; 2]>,
-    pub memory: Option<MemoryAccess>,
+/// Borrowed instruction-local facts. Types are read on demand; queries have
+/// no access to CFG, users, or mutation. The borrow ends before rewriting.
+#[derive(Debug, Clone, Copy)]
+pub struct Query<'a> {
+    inst: InstRef<'a>,
+    vregs: &'a PrimaryMap<VReg, VRegData>,
 }
 
-impl Query {
-    pub fn from_inst(inst: &InstRef<'_>, f: &MachineFunction) -> Result<Self> {
-        let ty = |r: &veloc_lir::Reg| {
-            r.as_vreg()
-                .map(|v| f.vregs()[v].ty)
-                .ok_or_else(|| Error::codegen("legalization requires typed virtual operands"))
-        };
-        Ok(Self {
-            opcode: inst
-                .generic_opcode()
-                .ok_or_else(|| Error::codegen("expected generic instruction"))?,
-            results: inst.results().iter().map(ty).collect::<Result<_>>()?,
-            inputs: inst.inputs().iter().map(ty).collect::<Result<_>>()?,
-            fields: inst.fields().iter().cloned().collect(),
-            memory: inst.memory(),
-        })
+impl<'a> Query<'a> {
+    pub fn from_inst(inst: InstRef<'a>, vregs: &'a PrimaryMap<VReg, VRegData>) -> Result<Self> {
+        if inst.generic_opcode().is_none() {
+            return Err(Error::codegen("expected generic instruction"));
+        }
+        if !inst
+            .results()
+            .iter()
+            .chain(inst.inputs())
+            .all(|reg| reg.as_vreg().is_some_and(|reg| vregs.get(reg).is_some()))
+        {
+            return Err(Error::codegen(
+                "legalization requires typed virtual operands",
+            ));
+        }
+        Ok(Self { inst, vregs })
+    }
+
+    pub fn opcode(&self) -> GenericOpcode {
+        self.inst
+            .generic_opcode()
+            .expect("query requires a generic instruction")
+    }
+
+    fn ty(&self, reg: Reg) -> Type {
+        self.vregs[reg.as_vreg().expect("query requires virtual operands")].ty
     }
 }
 
@@ -37,35 +45,51 @@ pub mod contracts {
     include!(concat!(env!("OUT_DIR"), "/legalize_contract.rs"));
 }
 
-impl contracts::Query for Query {
+impl contracts::Query for Query<'_> {
     fn value_type(&self, result: bool, index: u32) -> Type {
-        if result {
-            self.results[index as usize]
+        let regs = if result {
+            self.inst.results()
         } else {
-            self.inputs[index as usize]
-        }
+            self.inst.inputs()
+        };
+        self.ty(regs[index as usize])
     }
 
     fn signature(&self, results: &[&[Type]], inputs: &[&[Type]]) -> bool {
-        fn matches(actual: &[Type], sets: &[&[Type]]) -> bool {
-            actual.len() == sets.len() && actual.iter().zip(sets).all(|(ty, set)| set.contains(ty))
-        }
-        matches(&self.results, results) && matches(&self.inputs, inputs)
+        let matches = |regs: &[Reg], sets: &[&[Type]]| {
+            regs.len() == sets.len()
+                && regs
+                    .iter()
+                    .zip(sets)
+                    .all(|(&reg, set)| set.contains(&self.ty(reg)))
+        };
+        matches(self.inst.results(), results) && matches(self.inst.inputs(), inputs)
     }
 
     fn same(&self, indices: &[u32]) -> bool {
-        let ty = |i: u32| self.results.iter().chain(&self.inputs).nth(i as usize);
+        let ty = |i: u32| {
+            self.inst
+                .results()
+                .iter()
+                .chain(self.inst.inputs())
+                .nth(i as usize)
+                .map(|&reg| self.ty(reg))
+        };
         indices.split_first().is_none_or(|(&first, rest)| {
             ty(first).is_some_and(|first| rest.iter().all(|&i| ty(i) == Some(first)))
         })
     }
 
     fn input_is(&self, index: u32, ty: Type) -> bool {
-        self.inputs.get(index as usize) == Some(&ty)
+        self.inst
+            .inputs()
+            .get(index as usize)
+            .is_some_and(|&reg| self.ty(reg) == ty)
     }
 
     fn signed_offset(&self, bits: u32) -> bool {
-        self.fields
+        self.inst
+            .fields()
             .iter()
             .find_map(|field| match field {
                 InstField::Imm(offset) => Some(*offset),

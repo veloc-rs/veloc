@@ -1001,3 +1001,29 @@ template Popcount(Opcode: ident, Wide: expr) {
 }
 expand Popcount(X86Popcnt32, false);
 expand Popcount(X86Popcnt64, true);
+
+fn indexed_memory(base: Reg, index: Reg, offset: i64) -> Rm {
+    value = Rm::Memory(Address::BaseIndex(Memory {
+        base: some(base), index: some(Index { reg: index, scale: Scale::One }), displacement: offset,
+    }));
+}
+
+op X86Load64Index(base: Value<Any>, index: Value<Any>, off: i64) -> (dst: Value<Any>) {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: true },
+        Form::ModRm(RegField::Register(dst), indexed_memory(base, index, off)),
+        Immediate::None,
+    );
+    registers = { dst: GPR64, base: GPR64, index: GPR64 };
+    memory = { kind: Read, bytes: 8 };
+}
+
+op X86Store64Index(src: Value<Any>, base: Value<Any>, index: Value<Any>, off: i64) -> () {
+    encoding = Emission::legacy(
+        Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: true },
+        Form::ModRm(RegField::Register(src), indexed_memory(base, index, off)),
+        Immediate::None,
+    );
+    registers = { src: GPR64, base: GPR64, index: GPR64 };
+    memory = { kind: Write, bytes: 8 };
+}

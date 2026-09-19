@@ -41,15 +41,6 @@ pub struct BrTableInfo<A = SmallVec<[Reg; 2]>> {
     pub targets: Vec<BrTableTarget<A>>,
 }
 
-/// 寻址更新模式
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AMode {
-    /// 前索引模式：ptr = ptr + offset, addr = ptr (LLVM Pre-Indexed)
-    PreIndex,
-    /// 后索引模式：addr = ptr, ptr = ptr + offset (LLVM Post-Indexed)
-    PostIndex,
-}
-
 /// 少数复杂 LIR 指令的附加 payload。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstExtra<A = SmallVec<[Reg; 2]>> {
@@ -57,14 +48,12 @@ pub enum InstExtra<A = SmallVec<[Reg; 2]>> {
     Branch(BranchInfo<A>),
     BranchCond(BranchCondInfo<A>),
     BrTable(BrTableInfo<A>),
-    AMode(AMode),
 }
 
 impl<A> InstExtra<A> {
     pub(crate) fn map_args<B>(self, mut f: impl FnMut(A) -> B) -> InstExtra<B> {
         match self {
             Self::Call(info) => InstExtra::Call(info),
-            Self::AMode(mode) => InstExtra::AMode(mode),
             Self::Branch(info) => InstExtra::Branch(BranchInfo { args: f(info.args) }),
             Self::BranchCond(info) => InstExtra::BranchCond(BranchCondInfo {
                 then_args: f(info.then_args),
@@ -103,7 +92,6 @@ pub enum InstExtraRef<'a> {
     Branch(BranchInfo<&'a [Reg]>),
     BranchCond(BranchCondInfo<&'a [Reg]>),
     BrTable(BrTableRef<'a>),
-    AMode(AMode),
 }
 #[derive(Debug)]
 pub struct BrTableRef<'a> {
@@ -125,7 +113,6 @@ impl InstExtraRef<'_> {
     pub fn to_owned(&self) -> InstExtra {
         match self {
             Self::Call(info) => InstExtra::Call((*info).clone()),
-            Self::AMode(mode) => InstExtra::AMode(*mode),
             Self::Branch(info) => InstExtra::Branch(BranchInfo {
                 args: info.args.into(),
             }),

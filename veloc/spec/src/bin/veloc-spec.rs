@@ -139,6 +139,15 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     };
     let target = if let Some(arch) = args.arch.as_deref() {
         Some(Target {
+            input: source_definitions
+                .as_ref()
+                .map(|source| {
+                    Ok((
+                        required(args.source_dialect.as_deref(), "source-dialect")?,
+                        source,
+                    ))
+                })
+                .transpose()?,
             arch,
             context: required(args.context.as_deref(), "context")?,
             definitions: definitions

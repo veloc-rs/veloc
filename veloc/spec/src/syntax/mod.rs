@@ -118,6 +118,8 @@ pub enum DeclKind {
     },
     Op(Signature),
     Rule(Signature),
+    /// Anonymous selection group with an explicit root parameter.
+    Select(Signature),
     /// Callable IR rewrite; never participates in instruction matching implicitly.
     Rewrite(Signature),
     /// Declarations whose body is entirely described by a field schema.
@@ -135,6 +137,7 @@ impl Decl {
             DeclKind::Constant { .. } => "const",
             DeclKind::Op(_) => "op",
             DeclKind::Rule(_) => "rule",
+            DeclKind::Select(_) => "select",
             DeclKind::Rewrite(_) => "rewrite",
             DeclKind::Fields(name) => name,
         }
@@ -145,6 +148,7 @@ impl Decl {
             DeclKind::Function { signature, .. }
             | DeclKind::Op(signature)
             | DeclKind::Rule(signature)
+            | DeclKind::Select(signature)
             | DeclKind::Rewrite(signature) => Some(signature),
             _ => None,
         }
@@ -205,9 +209,10 @@ impl Decl {
                     FunctionBody::Rust { offset, .. } => *offset += base,
                 }
             }
-            DeclKind::Op(signature) | DeclKind::Rule(signature) | DeclKind::Rewrite(signature) => {
-                signature.relocate(base)
-            }
+            DeclKind::Op(signature)
+            | DeclKind::Rule(signature)
+            | DeclKind::Select(signature)
+            | DeclKind::Rewrite(signature) => signature.relocate(base),
             DeclKind::Fields(_) => {}
         }
     }

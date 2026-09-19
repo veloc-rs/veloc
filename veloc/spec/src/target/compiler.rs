@@ -4,6 +4,7 @@ mod cpu;
 mod encoding;
 mod generate;
 mod select;
+mod selection;
 
 use crate::target::ast::Def;
 use crate::target::{ExtractorDef, OperandConstraint, parser};
@@ -57,6 +58,7 @@ impl Plan {
         arch: &str,
         context: &str,
         definitions: &crate::Source,
+        input_definitions: Option<(&str, &crate::Source)>,
     ) -> Result<Self, crate::SourceError> {
         let input_error =
             |message: String| input.locate(crate::Error::at(input.text(), 0, message));
@@ -75,15 +77,37 @@ impl Plan {
         module
             .defs
             .extend(contracts::registers(definitions.declarations()).map_err(&definition_error)?);
-        for def in &module.defs {
-            if let Def::SelectRule(rule) = def {
-                select::check_temps(rule).map_err(&input_error)?;
+        let input_contracts = input_definitions
+            .map(|(_, source)| source.contracts())
+            .transpose()?;
+        if let Some((dialect, source)) = input_definitions {
+            let types = crate::types::Types::compile(source.declarations(), source.text())
+                .map_err(|e| source.locate(e))?;
+            for def in &mut module.defs {
+                if let Def::SelectRule(rule) = def {
+                    selection::resolve(rule, dialect, input_contracts.as_ref().unwrap(), &types)
+                        .map_err(&input_error)?;
+                    select::check_temps(rule).map_err(&input_error)?;
+                }
             }
+        } else if module
+            .defs
+            .iter()
+            .any(|def| matches!(def, Def::SelectRule(_)))
+        {
+            return Err(input_error(
+                "selection requires input operation definitions".into(),
+            ));
         }
         let extractors = collect_extractors(&module).map_err(&input_error)?;
         select::check_predicates(&module).map_err(&input_error)?;
         let mut final_inst_defs =
             contracts::compile(contracts, &module).map_err(&definition_error)?;
+        for def in &module.defs {
+            if let Def::SelectRule(rule) = def {
+                select::check_construction(rule, &final_inst_defs).map_err(&input_error)?;
+            }
+        }
         encoding::compile(definitions, &mut final_inst_defs).map_err(&definition_error)?;
         assembly::compile(definitions.declarations(), &mut final_inst_defs)
             .map_err(&definition_error)?;
@@ -144,10 +168,9 @@ impl Plan {
         if kind != crate::Emit::Target {
             return fragment;
         }
-        let needs_positional_helpers = select::module_has_positional_rules(&module);
 
         let mut output = String::new();
-        generate::generate_header(&mut output, arch, needs_positional_helpers);
+        generate::generate_header(&mut output, arch);
         generate::generate_register_descriptors(&mut output, &module);
         self.cpu.generate(&mut output);
         generate::generate_abi_descriptors(&mut output, &module);

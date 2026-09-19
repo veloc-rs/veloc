@@ -29,16 +29,17 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
             memory.alignment = 8;
             memory.volatile = true;
             let inst = match kind {
-                MemoryKind::Read => f.editor().writer().with_memory(memory).offset_load(
-                    Writable(value),
-                    base,
-                    offset,
-                ),
+                MemoryKind::Read => {
+                    f.editor()
+                        .writer()
+                        .with_memory(memory)
+                        .load(Writable(value), base, offset)
+                }
                 MemoryKind::Write => f
                     .editor()
                     .writer()
                     .with_memory(memory)
-                    .offset_store(value, base, offset),
+                    .store(value, base, offset),
             };
             let id = {
                 let id = inst;
@@ -54,8 +55,8 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
             assert_eq!(ids.last(), Some(&id));
             assert_eq!(f.inst(id).memory(), Some(memory));
             let actual_offset = match f.inst(id).view() {
-                veloc_lir::InstView::LoadOffset(load) => load.offset,
-                veloc_lir::InstView::StoreOffset(store) => store.offset,
+                veloc_lir::InstView::Load(load) => load.offset,
+                veloc_lir::InstView::Store(store) => store.offset,
                 _ => panic!("expected offset access"),
             };
             assert_eq!(actual_offset, if expanded { 0 } else { offset });
@@ -81,7 +82,7 @@ enum Mode {
 
 impl TargetLegalizer for Mode {
     fn legalize_action(&self, query: &Query) -> Result<Option<LegalizeAction>> {
-        let opcode = query.opcode;
+        let opcode = query.opcode();
         let apply = match self {
             Self::Loop => |f: &mut RewriteContext<'_>| Mode::Loop.rewrite(f),
             Self::NewBlock => |f: &mut RewriteContext<'_>| Mode::NewBlock.rewrite(f),
@@ -223,7 +224,7 @@ fn edits_to_previously_visited_instructions_are_revisited() {
     struct CrossEdit;
     impl TargetLegalizer for CrossEdit {
         fn legalize_action(&self, query: &Query) -> Result<Option<LegalizeAction>> {
-            Ok(Some(match query.opcode {
+            Ok(Some(match query.opcode() {
                 GenericOpcode::Ret => LegalizeAction::rewrite("cross_edit", |ctx| {
                     let first = ctx
                         .blocks()

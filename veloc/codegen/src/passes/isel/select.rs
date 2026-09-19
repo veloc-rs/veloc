@@ -143,11 +143,24 @@ impl<'a> InstructionSelector<'a> {
     pub fn select(&self, mfunc: &mut MachineFunction) -> Result<(), crate::error::Error> {
         // 复用的临时缓冲区，避免每条指令分配
         let mut selected: Vec<InstId> = Vec::with_capacity(4);
-        for i in mfunc.blocks().collect::<Vec<_>>() {
+        for i in mfunc.blocks().rev().collect::<Vec<_>>() {
             let original: Vec<_> = mfunc.block_insts(i).collect();
-            for inst_id in original {
+            for inst_id in original.into_iter().rev() {
                 // 如果指令在之前的融合中已被标记为无效，则跳过
                 if mfunc.inst(inst_id).is_invalid() {
+                    continue;
+                }
+                // Consumers are selected first so their generic producers remain
+                // available to graph patterns. Only unused pure values disappear;
+                // matching a producer does not imply ownership of all its uses.
+                let inst = mfunc.inst(inst_id);
+                if inst.is_pure_value()
+                    && inst
+                        .results()
+                        .iter()
+                        .all(|reg| mfunc.uses(*reg).next().is_none())
+                {
+                    mfunc.editor().invalidate_inst(inst_id);
                     continue;
                 }
 

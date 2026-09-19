@@ -200,6 +200,30 @@ impl<'a> crate::InstRead<'a> for crate::InstRef<'a> {
 }
 
 impl<'a> InstRef<'a> {
+    /// Conservative, nontrapping value computation. This deliberately excludes
+    /// loads, allocation, physical-register dependencies and auxiliary effects.
+    pub fn is_pure_value(self) -> bool {
+        let Some(opcode) = self.generic_opcode() else {
+            return false;
+        };
+        let meta = opcode.meta();
+        opcode.control() == crate::ControlFlow::Next
+            && meta.memory.is_none()
+            && !meta
+                .traits
+                .intersects(OpTraits::MAY_TRAP | OpTraits::ABORT | OpTraits::TERMINATOR)
+            && self.memory().is_none()
+            && self.implicit_uses().is_empty()
+            && self.implicit_defs().is_empty()
+            && !self.results().is_empty()
+            && self
+                .results()
+                .iter()
+                .chain(self.inputs())
+                .all(|reg| reg.is_vreg())
+            && self.store.extra(self.id).is_none()
+    }
+
     pub fn opcode(self) -> MachineOpcode {
         self.store.opcode(self.id)
     }

@@ -4,7 +4,7 @@ mod check;
 mod decision;
 mod functions;
 mod rust;
-mod typed;
+pub(crate) mod typed;
 pub use decision::{DecisionRust, decisions};
 
 use crate::schema::Operation;

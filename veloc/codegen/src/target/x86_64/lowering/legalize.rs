@@ -26,9 +26,9 @@ impl host::Target for generated::FeatureSet {
 impl TargetLegalizer for X86_64Legalizer {
     fn legalize_action(
         &self,
-        query: &Query,
+        query: &Query<'_>,
     ) -> Result<Option<LegalizeAction>, crate::error::Error> {
-        Ok(host::decide(query.opcode, query, &self.features))
+        Ok(host::decide(query.opcode(), query, &self.features))
     }
 }
 fn displacement(mfunc: &mut RewriteContext<'_>) -> Result<(), crate::error::Error> {
@@ -37,8 +37,8 @@ fn displacement(mfunc: &mut RewriteContext<'_>) -> Result<(), crate::error::Erro
 
     let inst = mfunc.inst(inst_id);
     let (base, offset, value) = match inst.view() {
-        veloc_lir::InstView::LoadOffset(load) => (load.base, load.offset, load.dst),
-        veloc_lir::InstView::StoreOffset(store) => (store.base, store.offset, store.src),
+        veloc_lir::InstView::Load(load) => (load.base, load.offset, load.dst),
+        veloc_lir::InstView::Store(store) => (store.base, store.offset, store.src),
         _ => unreachable!("offset memory opcode"),
     };
     let memory = inst.memory();
@@ -54,13 +54,10 @@ fn displacement(mfunc: &mut RewriteContext<'_>) -> Result<(), crate::error::Erro
         .editor()
         .writer()
         .ptr_add(Writable(address), base, displacement);
-    let access = if opcode == GenericOpcode::OffsetLoad {
-        mfunc
-            .editor()
-            .writer()
-            .offset_load(Writable(value), address, 0)
+    let access = if opcode == GenericOpcode::Load {
+        mfunc.editor().writer().load(Writable(value), address, 0)
     } else {
-        mfunc.editor().writer().offset_store(value, address, 0)
+        mfunc.editor().writer().store(value, address, 0)
     };
     mfunc.editor().set_inst_memory(access, memory);
     mfunc.editor().replace_inst(inst_id, access);

@@ -124,6 +124,8 @@ pub struct Decisions<'a> {
     pub rust: crate::rules::DecisionRust<'a>,
 }
 pub struct Target<'a> {
+    /// Logical input dialect and its operation definitions for selection.
+    pub input: Option<(&'a str, &'a Source)>,
     pub arch: &'a str,
     /// Runtime trait implementing the declared selector predicates.
     pub context: &'a str,
@@ -227,6 +229,7 @@ impl Source {
                             config.arch,
                             config.context,
                             config.definitions,
+                            config.input,
                         )?);
                     }
                     target.as_ref().unwrap().emit(kind)

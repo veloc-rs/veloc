@@ -1,17 +1,19 @@
 //! Production target definitions from OpSpec expansion through machine emission.
-use veloc_spec::target::{Def, Pattern, parse};
+use veloc_spec::target::{Def, parse};
 
 #[test]
 fn production_target_contracts_generate_all_consumers() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../codegen/defs/x86_64");
     let definitions = veloc_spec::Source::load(root.join("instructions.spec")).unwrap();
     let input = veloc_spec::Source::load(root.join("module.spec")).unwrap();
+    let lir = veloc_spec::Source::load(root.join("../../../lir/defs/module.spec")).unwrap();
     let compile = || {
         input
             .generate(
                 &[veloc_spec::Emit::Target],
                 veloc_spec::Options {
                     target: Some(veloc_spec::Target {
+                        input: Some(("lir", &lir)),
                         arch: "x86_64",
                         context: "crate::target::x86_64::lowering::X86LoweringContext",
                         definitions: &definitions,
@@ -84,13 +86,14 @@ fn typed_constants_and_templates_share_rust_style_syntax() {
 }
 
 #[test]
-fn parse_select_rule_with_node_bind_and_covers() {
+fn parse_typed_selection_cases() {
     let input = r#"
-        select add {
-            match = [bind(n, Add(GPR64(x), GPR64(y)))];
-            emit = X86Add64(x, y);
-            covers = [n];
-            cost = 1;
+        select(n: lir::Add) {
+            choose {
+                case {
+                    replace(n, build(X86Add64(n.lhs, n.rhs)));
+                }
+            }
         }
     "#;
 
@@ -101,10 +104,12 @@ fn parse_select_rule_with_node_bind_and_covers() {
         panic!("expected select-rule");
     };
 
-    assert_eq!(rule.covers, vec!["n"]);
-    assert_eq!(rule.cost, 1);
-    assert_eq!(rule.patterns.len(), 1);
-    assert!(matches!(rule.patterns[0], Pattern::NodeBind { .. }));
+    assert_eq!(rule.opcode, "lir::Add");
+    assert_eq!(rule.fields.len(), 2);
+    assert_eq!(rule.builds.len(), 1);
+    assert!(parse("select named(n: lir::Add) { choose {} }").is_err());
+    assert!(parse("select() { choose {} }").is_err());
+    assert!(parse("select(n: lir::Add) { choose {} }").is_err());
 }
 
 #[test]

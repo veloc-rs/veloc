@@ -69,9 +69,103 @@ The unified CLI selects consumers with `--emit rules`, `--emit decisions`,
 or `--emit target`. See [the driver reference](README.md#artifact-selection).
 Build scripts supply explicit Rust bindings through `Options`; both paths call
 `Source::generate`. Definitions and imported rule modules are loaded only once.
-Selection currently supports one root; unsupported multi-root or non-root
-`covers` declarations are diagnosed. Static `cost` orders candidates; ties
-retain declaration order.
+Selection has one explicit, typed root and anonymous entry declarations.
+`choose` tries cases in declaration order; the first successful case wins.
+The input dialect and its OpSpec definitions are supplied by the caller through
+`Target::input` (CLI: `--source-definitions` and `--source-dialect`).
+Root opcodes and logical fields are checked against operation signatures.
+Storage mappings are applied only when generating their concrete reads. Hidden
+storage fields are not exposed to rules; a used logical field without an
+invertible direct projection is diagnosed rather than guessed.
+
+## Selection operations
+
+Selection cases use ordinary statement syntax and explicit operations:
+
+```text
+typeset SmallInt = Type::I8 | Type::I16 | Type::I32;
+select(n: lir::Copy<Type::I32>) {
+    choose {
+        case {
+            replace(n, build(X86Mov32(n.src)));
+        }
+    }
+}
+```
+
+Import the shared type declarations before using these patterns. Type domains
+use the same named-set and union resolver as legalization signatures. Generated
+guards query the host's `get_type` directly; they do not imply a register bank
+or generate one host predicate per type. Physical registers do not match these
+typed virtual-value patterns. General predicate extractors remain available.
+The operations are:
+
+- `root.field`: read a source field, optionally named with `let value = root.field;`.
+- `require(type_is<T>(value))`: constrain a source value's logical type.
+- `require(matches(root.field, literal))`: match an integer or condition code.
+- `temp(value)`: declare a fresh register using a bound value as exemplar.
+- `build(TargetInst(...))`: describe a target instruction.
+- `replace(root, build(...))` or `replace(root, [instructions...])`: commit builds in order.
+
+Bindings are candidate-local. Field reads are interned; requirements precede construction;
+`replace` is mandatory and terminal. The compiler rejects duplicate names,
+unbound construction inputs and unused/repeated/reordered build handles.
+Build handles denote instructions, not their SSA results; explicit result
+registers still appear in multi-instruction constructors.
+
+Candidates directly store their root, field checks, temporary declarations and
+ordered deferred builds. There is no legacy node-bind/covers wrapper or synthetic
+sequence constructor. Identical pure checks within a root's candidates are shared
+by the Rust emitter; candidate-local mutation stays behind matching.
+
+This is not yet a general typed matcher SSA IR: reusable statement functions and arbitrary result-value composition remain
+future work. Definition-level templates use the existing common Spec expansion.
+
+Operation type arguments follow the generic declaration order and may use a
+finite type set. Omitting arguments leaves them unconstrained. Explicit arguments
+are checked against the OpSpec bounds and generate one guard on each generic's
+defining value. Equal-type checks on other values of that same generic are
+combined. This relies on valid input LIR; instruction validation remains a
+separate pipeline responsibility. Derived shapes are not treated as equal types.
+
+## Definition matching
+
+A candidate can follow a virtual SSA value to its defining instruction:
+
+```text
+select(n: lir::Load) {
+    choose {
+        case {
+            let addr = def<lir::Add<Type::I64>>(n.base);
+            require(type_is<Type::I64>(n.dst));
+            replace(n, build(X86Load64Index(addr.lhs, addr.rhs, n.offset)));
+        }
+        // Other cases handle roots without a matching producer.
+    }
+}
+```
+
+Lookup/opcode failure tries the next case. Definition bindings may reference fields
+of earlier definition bindings. Their opcodes and fields use the input OpSpec
+contracts, just like the root. Attribute fields cannot be `def` inputs.
+
+`def` is a read-only lookup of a virtual value's unique defining instruction;
+it does not imply permission to fuse or erase it. Before committing a graph
+rewrite, a separate conservative safety check currently requires pure,
+nontrapping, single-result generic instructions with virtual operands and no
+extra effects. Thus the current selector does not fold loads, calls or trapping
+computations. The memory access stays at the original root;
+its access metadata is transferred by the target selector.
+
+Selection visits consumers before producers within each block. A producer with
+other uses remains; an unused pure producer is erased when visited. Block order
+is reversed too, but is not a global reverse-topological scheduling algorithm:
+an already-selected producer simply fails the generic match. No unconditional
+"matched means erased" rule is used.
+
+Current x86 rules fold zero-offset StackAddr accesses (scalar loads/stores) and
+64-bit Add/PtrAdd addresses into 64-bit integer/pointer indexed accesses.
+Scaled indexing and memory-operation folding are not implemented.
 
 ## Legalization decisions
 
@@ -118,7 +212,7 @@ rewrite trailing_zeros<T: Word>(inst: lir::Cttz<T>) {
         lir::Ctpop<T>(lir::Sub<T>(low, lir::Constant<T>(1)));
     }
 }
-rewrite load_displacement<T: Scalar>(inst: lir::OffsetLoad<T>)
+rewrite load_displacement<T: Scalar>(inst: lir::Load<T>)
     = rust("crate::target::x86_64::lowering::legalize::displacement");
 ```
 

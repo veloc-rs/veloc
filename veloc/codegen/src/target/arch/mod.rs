@@ -13,7 +13,7 @@ use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 pub use veloc_lir::{InstId, MachineFunction, Reg, VReg};
-use veloc_mir::{Type, TypeInfo};
+use veloc_mir::Type;
 
 pub use abi::{
     AbiAssignment, AbiClassifierEntry, AbiClassifierFn, AbiDescriptor, AbiLocation, AbiPart,
@@ -39,83 +39,6 @@ pub trait LoweringContext {
     /// 获取值的类型
     fn get_type(&self, val: VReg) -> Type;
 
-    /// 谓词：检查是否为 i32
-    fn is_i32(&self, val: VReg) -> bool {
-        self.get_type(val).is_integer()
-            && self
-                .get_type(val)
-                .bit_size()
-                .and_then(|size| size.fixed_bits())
-                == Some(32)
-    }
-
-    /// 谓词：检查是否为 i16
-    fn is_i16(&self, val: VReg) -> bool {
-        self.get_type(val).is_integer()
-            && self
-                .get_type(val)
-                .bit_size()
-                .and_then(|size| size.fixed_bits())
-                == Some(16)
-    }
-
-    /// 谓词：检查是否为 i8
-    fn is_i8(&self, val: VReg) -> bool {
-        self.get_type(val).is_integer()
-            && self
-                .get_type(val)
-                .bit_size()
-                .and_then(|size| size.fixed_bits())
-                == Some(8)
-    }
-
-    /// 谓词：检查是否为 i64
-    fn is_i64(&self, val: VReg) -> bool {
-        self.get_type(val).is_integer()
-            && self
-                .get_type(val)
-                .bit_size()
-                .and_then(|size| size.fixed_bits())
-                == Some(64)
-    }
-
-    /// 谓词：检查是否为 32 位整数宽度的值
-    fn is_int32like(&self, val: VReg) -> bool {
-        let ty = self.get_type(val);
-        ty.is_integer()
-            && ty
-                .bit_size()
-                .and_then(|size| size.fixed_bits())
-                .is_some_and(|bits| bits <= 32)
-    }
-
-    /// 谓词：检查是否为 64 位整数或指针宽度的值
-    fn is_64like(&self, val: VReg) -> bool {
-        let ty = self.get_type(val);
-        (ty.is_integer() && ty.bit_size().and_then(|size| size.fixed_bits()) == Some(64))
-            || ty.is_ptr()
-    }
-
-    /// 谓词：检查是否为 bool
-    fn is_bool(&self, val: VReg) -> bool {
-        self.get_type(val) == Type::BOOL
-    }
-
-    /// 谓词：检查是否为 f32
-    fn is_f32(&self, val: VReg) -> bool {
-        self.get_type(val) == Type::F32
-    }
-
-    /// 谓词：检查是否为 f64
-    fn is_f64(&self, val: VReg) -> bool {
-        self.get_type(val) == Type::F64
-    }
-
-    /// 谓词：检查是否为指针
-    fn is_ptr(&self, val: VReg) -> bool {
-        self.get_type(val).is_ptr()
-    }
-
     /// 获取指定的寄存器操作数
     fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<VReg>;
 }
@@ -127,7 +50,13 @@ pub trait AssemblyWriter: core::fmt::Write {
     fn immediate(&mut self, value: i64) -> core::fmt::Result;
     fn block(&mut self, block: veloc_lir::BlockId) -> core::fmt::Result;
     fn symbol(&mut self, symbol: veloc_lir::SymbolId) -> core::fmt::Result;
-    fn memory(&mut self, base: Reg, offset: i64, bits: u32) -> core::fmt::Result;
+    fn memory(
+        &mut self,
+        base: Reg,
+        index: Option<Reg>,
+        offset: i64,
+        bits: u32,
+    ) -> core::fmt::Result;
     fn stack_slot(&mut self, slot: veloc_lir::StackSlot, bits: u32) -> core::fmt::Result;
 }
 
@@ -399,7 +328,7 @@ pub trait TargetLegalizer: Send + Sync {
     /// never an implicit declaration of legality.
     fn legalize_action(
         &self,
-        query: &crate::passes::lowering::legalize::Query,
+        query: &crate::passes::lowering::legalize::Query<'_>,
     ) -> Result<Option<LegalizeAction>, crate::error::Error>;
 }
 

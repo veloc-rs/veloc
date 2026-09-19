@@ -1,6 +1,7 @@
 //! Checked target projections from the shared Spec declaration AST.
 //! Lexing, imports, templates and source diagnostics belong to the common frontend.
 use super::ast::*;
+mod selection;
 use crate::{
     Error,
     syntax::{Decl, DeclKind, Kind, Node},
@@ -9,6 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 struct Reader<'a> {
     source: &'a str,
+    aliases: BTreeMap<String, Node>,
+    types: crate::types::Types,
+    bindings: crate::interfaces::Bindings,
 }
 impl Reader<'_> {
     fn error(&self, node: &Node, message: &str) -> Error {
@@ -75,6 +79,19 @@ impl Reader<'_> {
                 _ => return Err(self.error(n, "unknown condition code")),
             }),
             Kind::Name(v) => Pattern::Variable(v.clone()),
+            Kind::TypedCall(name, types, args) if name == "Value" => {
+                let ([ty], [value]) = (types.as_slice(), args.as_slice()) else {
+                    return Err(
+                        self.error(n, "Value requires one type domain and one value binding")
+                    );
+                };
+                let name = match &value.kind {
+                    Kind::Name(name) => name.clone(),
+                    _ => return Err(self.error(value, "expected a value binding")),
+                };
+                let types = self.selection_domain(ty)?;
+                Pattern::Typed { name, types }
+            }
             Kind::Number(_) | Kind::Integer(_) => Pattern::IntConst(self.number(n)?),
             Kind::Object(path, fields) => {
                 let (schema, opcode) = path
@@ -156,6 +173,77 @@ impl Reader<'_> {
             })
             .collect()
     }
+    fn selection_domain(&self, node: &Node) -> Result<Vec<String>, Error> {
+        let domain =
+            crate::rules::typed::domain(self.source, node, &self.aliases, &mut BTreeSet::new())?;
+        domain
+            .iter()
+            .map(|ty| {
+                let Some(("Type", member)) = ty.split_once("::") else {
+                    return Err(self.error(node, "expected a logical Type constant"));
+                };
+                if !self.types.exact.contains_key(member) {
+                    return Err(self.error(node, &format!("unknown logical type {ty}")));
+                }
+                let binding =
+                    self.bindings.0.get("Type").ok_or_else(|| {
+                        self.error(node, "Type requires an imported Rust binding")
+                    })?;
+                Ok(format!("{}::{member}", binding.path))
+            })
+            .collect()
+    }
+
+    fn selection_type(&self, node: &Node) -> Result<(String, Vec<Vec<String>>), Error> {
+        let (name, args) = match &node.kind {
+            Kind::Name(name) => (name, &[][..]),
+            Kind::Call(name, args) => (name, args.as_slice()),
+            _ => return Err(self.error(node, "expected a qualified operation type")),
+        };
+        if !name.contains("::") {
+            return Err(self.error(node, "expected a qualified operation type"));
+        }
+        Ok((
+            name.clone(),
+            args.iter()
+                .map(|arg| self.selection_domain(arg))
+                .collect::<Result<_, _>>()?,
+        ))
+    }
+
+    fn selection(&self, d: &Decl, signature: &crate::syntax::Signature) -> Result<Vec<Def>, Error> {
+        let [root] = signature.params.as_slice() else {
+            return Err(Error::at(
+                self.source,
+                d.offset,
+                "selection requires one root parameter",
+            ));
+        };
+        if root.moves
+            || !signature.generics.is_empty()
+            || !matches!(&signature.results, crate::syntax::Results::Fixed(values) if values.is_empty())
+        {
+            return Err(Error::at(
+                self.source,
+                d.offset,
+                "selection requires a plain root parameter and no results",
+            ));
+        }
+        let (opcode, type_args) = self.selection_type(&root.ty)?;
+        let cases = self.list(self.required(d, "cases")?)?;
+        if cases.is_empty() {
+            return Err(Error::at(
+                self.source,
+                d.offset,
+                "selection requires at least one case",
+            ));
+        }
+        cases
+            .iter()
+            .map(|case| self.selection_case(case, &root.name, &opcode, &type_args))
+            .collect()
+    }
+
     fn declaration(&self, d: &Decl) -> Result<Option<Def>, Error> {
         let DeclKind::Fields(kind) = &d.kind else {
             return Ok(None);
@@ -204,52 +292,6 @@ impl Reader<'_> {
                         .transpose()?
                         .unwrap_or_else(|| d.name.clone()),
                     features: self.names(self.required(d, "features")?)?,
-                })
-            }
-            "select" => {
-                self.fields(d, &["match", "emit", "temps", "covers", "cost"])?;
-                let patterns = self
-                    .list(self.required(d, "match")?)?
-                    .iter()
-                    .map(|n| self.pattern(n))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if patterns.len() != 1 {
-                    return Err(Error::at(
-                        self.source,
-                        d.offset,
-                        "selection requires exactly one root pattern",
-                    ));
-                }
-                let temps = d
-                    .fields
-                    .get("temps")
-                    .map(|n| {
-                        self.record(n)?
-                            .iter()
-                            .map(|(name, ty)| Ok((name.clone(), self.name(ty)?)))
-                            .collect::<Result<Vec<_>, Error>>()
-                    })
-                    .transpose()?
-                    .unwrap_or_default();
-                Def::SelectRule(SelectRuleDef {
-                    covers: d
-                        .fields
-                        .get("covers")
-                        .map(|n| self.names(n))
-                        .transpose()?
-                        .unwrap_or_default(),
-                    cost: d
-                        .fields
-                        .get("cost")
-                        .map(|n| {
-                            u32::try_from(self.number(n)?)
-                                .map_err(|_| self.error(n, "cost must be a nonnegative u32"))
-                        })
-                        .transpose()?
-                        .unwrap_or(1),
-                    patterns,
-                    temps,
-                    emit: self.constructor(self.required(d, "emit")?)?,
                 })
             }
             "abi" => {
@@ -339,10 +381,25 @@ impl Reader<'_> {
 }
 
 pub(crate) fn declarations(source: &str, decls: &[Decl]) -> Result<Module, Error> {
-    let reader = Reader { source };
+    let reader = Reader {
+        source,
+        aliases: decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::TypeSet(node) => Some((d.name.clone(), node.clone())),
+                _ => None,
+            })
+            .collect(),
+        types: crate::types::Types::compile(decls, source)?,
+        bindings: crate::interfaces::Bindings::compile(decls, source)?,
+    };
     let mut defs = Vec::new();
     let mut names = BTreeSet::new();
     for d in decls {
+        if let DeclKind::Select(signature) = &d.kind {
+            defs.extend(reader.selection(d, signature)?);
+            continue;
+        }
         if let Some(def) = reader.declaration(d)? {
             if !names.insert((d.tag(), d.name.clone())) {
                 return Err(Error::at(source, d.offset, "duplicate target declaration"));

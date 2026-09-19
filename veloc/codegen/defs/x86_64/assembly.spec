@@ -137,3 +137,6 @@ expand Asm(X86SqrtF64, "sqrtsd", [reg(dst, 128), reg(src, 128)]);
 
 expand Asm(X86Popcnt32, "popcnt", [reg(dst, 32), reg(src, 32)]);
 expand Asm(X86Popcnt64, "popcnt", [reg(dst, 64), reg(src, 64)]);
+
+expand Asm(X86Load64Index, "mov", [reg(dst, 64), mem(base, index, off, 64)]);
+expand Asm(X86Store64Index, "mov", [mem(base, index, off, 64), reg(src, 64)]);

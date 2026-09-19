@@ -332,7 +332,7 @@ impl<'a> IRTranslator<'a> {
             InstView::Load { ptr, offset, .. } => {
                 let base = ctx.value_map[*ptr];
                 let access = self.memory_access(ctx.func, inst_id)?;
-                Ok(ctx.mfunc.editor().writer().with_memory(access).offset_load(
+                Ok(ctx.mfunc.editor().writer().with_memory(access).load(
                     result(),
                     base,
                     *offset as i64,
@@ -350,7 +350,7 @@ impl<'a> IRTranslator<'a> {
                     .editor()
                     .writer()
                     .with_memory(access)
-                    .offset_store(val, base, *offset as i64))
+                    .store(val, base, *offset as i64))
             }
 
             InstView::Iconst { value: imm } => {
@@ -642,7 +642,7 @@ impl<'a> IRTranslator<'a> {
                     .writer()
                     .ptr_add(result(), base_ptr, base_idx))
             }
-            InstView::Unreachable => Ok(ctx.mfunc.editor().writer().unreachable()),
+            InstView::Unreachable => Ok(ctx.mfunc.editor().writer().trap()),
 
             _ => Err(Error::translate(format!(
                 "InstView variant not implemented for translation: {:?}",

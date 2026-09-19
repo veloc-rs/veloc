@@ -45,7 +45,7 @@ impl<F: FnMut(SymbolId, &mut dyn Write) -> fmt::Result> AssemblyWriter for Intel
     fn symbol(&mut self, symbol: SymbolId) -> fmt::Result {
         (self.symbol)(symbol, self.out)
     }
-    fn memory(&mut self, base: Reg, offset: i64, bits: u32) -> fmt::Result {
+    fn memory(&mut self, base: Reg, index: Option<Reg>, offset: i64, bits: u32) -> fmt::Result {
         let size = match bits {
             8 => "byte",
             16 => "word",
@@ -58,6 +58,10 @@ impl<F: FnMut(SymbolId, &mut dyn Write) -> fmt::Result> AssemblyWriter for Intel
         };
         write!(self.out, "{size} ptr [")?;
         self.register(base, 64)?;
+        if let Some(index) = index {
+            self.out.write_str(" + ")?;
+            self.register(index, 64)?;
+        }
         if offset > 0 {
             write!(self.out, " + {offset}")?;
         }
@@ -70,6 +74,7 @@ impl<F: FnMut(SymbolId, &mut dyn Write) -> fmt::Result> AssemblyWriter for Intel
         let slot = &self.frame.slots[slot];
         self.memory(
             slot.base.resolve(inst::SPECIAL_REG_FRAME_POINTER),
+            None,
             i64::from(slot.offset),
             bits,
         )
