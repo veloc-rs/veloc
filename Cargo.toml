@@ -44,12 +44,9 @@ veloc-spec = { path = "veloc/spec" }
 veloc-semantics = { path = "veloc/semantics" }
 
 # --- WebAssembly ---
-wasmparser = "0.244.0"
+wasmparser = { version = "0.244.0", default-features = false, features = ["std", "validate", "simd"] }
 wat = "1.244.0"
 wast = "229.0.0"
-wiggle = "17.0.3"
-wasi_common = { package = "wasi-common", version = "17.0.3" }
-wasi_cap_std_sync = { package = "wasi-cap-std-sync", version = "17.0.3" }
 
 # --- System / Low-level ---
 libc = "0.2.180"
@@ -61,9 +58,6 @@ bitvec = "1.0"
 bitflags = { version = "2.11", default-features = false }
 smallvec = { version = "1.13", default-features = false }
 cranelift-entity = { version = "0.128.3", default-features = false }
-
-# --- Async ---
-futures = "0.3"
 
 # --- Logging ---
 log = "0.4"
@@ -89,4 +83,4 @@ default = ["std"]
 std = []
 
 [profile.release]
-debug = true
+debug = "line-tables-only"

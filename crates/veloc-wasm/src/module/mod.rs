@@ -260,12 +260,14 @@ impl Module {
             }
         }
 
-        if let Err(e) = ir.validate() {
-            println!("IR Validation error: {}", e);
-            return Err(crate::error::Error::Message(format!(
-                "IR validation failed: {}",
-                e
-            )));
+        if engine.config().verify_ir {
+            if let Err(e) = ir.validate() {
+                println!("IR Validation error: {}", e);
+                return Err(crate::error::Error::Message(format!(
+                    "IR validation failed: {}",
+                    e
+                )));
+            }
         }
 
         let mut ir_data = ir.build_data();

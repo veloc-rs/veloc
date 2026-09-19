@@ -12,17 +12,18 @@ cranelift-entity = { workspace = true }
 libc = { workspace = true }
 mmap-rs = { workspace = true }
 wasmparser = { workspace = true }
-wat = { workspace = true }
+wat = { workspace = true, optional = true }
 hashbrown = { workspace = true }
 elf_loader = { workspace = true }
-wasi_common = { workspace = true }
-wasi_cap_std_sync = { workspace = true }
-wiggle = { workspace = true }
-futures = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
-env_logger = { workspace = true }
+env_logger = { workspace = true, optional = true }
 
 [features]
 default = ["std"]
 std = ["veloc/std"]
+logging = ["dep:env_logger"]
+wat = ["dep:wat"]
+
+[dev-dependencies]
+wat = { workspace = true }

@@ -3,11 +3,11 @@ use super::allocation::{Allocation, InstAllocation};
 use crate::analysis::FunctionAnalysisCtx;
 use crate::target::{CallConv, RegClass, SpillKind, TargetRegalloc};
 use crate::{Error, Result};
-use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
-use veloc_lir::{InstId, MachineFunction, Reg, StackFrame, StackSlot};
+use hashbrown::HashMap;
+use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackFrame, StackSlot, VReg};
 
 #[derive(Clone)]
 struct Interval {
@@ -20,17 +20,33 @@ struct Interval {
 
 pub struct RegisterAllocator<'a> {
     pub(super) target: &'a dyn TargetRegalloc,
-    pub(super) allocation: BTreeMap<Reg, Reg>,
-    pub(super) spilled: BTreeMap<Reg, StackSlot>,
+    allocation: SecondaryMap<VReg, Option<PReg>>,
+    spilled: SecondaryMap<VReg, Option<StackSlot>>,
 }
 
 impl<'a> RegisterAllocator<'a> {
     pub fn new(target: &'a dyn TargetRegalloc) -> Self {
         Self {
             target,
-            allocation: BTreeMap::new(),
-            spilled: BTreeMap::new(),
+            allocation: SecondaryMap::new(),
+            spilled: SecondaryMap::new(),
         }
+    }
+
+    pub(super) fn assigned(&self, reg: Reg) -> Option<PReg> {
+        self.allocation.get(reg.as_vreg()?).copied().flatten()
+    }
+
+    fn assign(&mut self, reg: Reg, location: Reg) {
+        self.allocation[reg.as_vreg().expect("allocation key must be virtual")] = Some(
+            location
+                .as_preg()
+                .expect("allocation location must be physical"),
+        );
+    }
+
+    pub(super) fn spill_slot(&self, reg: Reg) -> Option<StackSlot> {
+        self.spilled.get(reg.as_vreg()?).copied().flatten()
     }
 
     pub fn allocate(
@@ -42,17 +58,18 @@ impl<'a> RegisterAllocator<'a> {
         let f = &source;
         let mut frame = f.stack_frame.clone();
         let live = analyses.liveness(f, self.target);
-        let mut ranges: BTreeMap<Reg, (u32, u32)> = BTreeMap::new();
-        let mut fixed: BTreeMap<Reg, Vec<(u32, u32)>> = BTreeMap::new();
+        let mut ranges = SecondaryMap::<VReg, Option<(u32, u32)>>::with_capacity(f.vregs().len());
+        let mut fixed = Vec::<Vec<(u32, u32)>>::new();
         let mut calls = Vec::new();
-        let mut constraints: BTreeMap<Reg, Vec<Reg>> = BTreeMap::new();
+        let mut constraints =
+            SecondaryMap::<VReg, Option<Vec<Reg>>>::with_capacity(f.vregs().len());
+        let mut local_fixed = Vec::<Option<(u32, u32)>>::new();
         let mut pos = 0u32;
         for block in f.blocks() {
             let start = pos * 2;
-            let end = (pos + f.block_insts(block).count() as u32) * 2;
-            let mut local = BTreeMap::new();
+            local_fixed.fill(None);
             for &param in f.block_params(block).unwrap() {
-                extend(&mut local, param, start);
+                extend_range(&mut ranges, &mut local_fixed, param, start);
             }
             for id in f.block_insts(block) {
                 let inst = &f.inst(id);
@@ -67,9 +84,8 @@ impl<'a> RegisterAllocator<'a> {
                             Error::codegen("missing constrained register operand")
                         })?;
                         if reg.is_vreg() {
-                            let allowed = constraints
-                                .entry(reg)
-                                .or_insert_with(|| constraint.registers.to_vec());
+                            let allowed = constraints[reg.as_vreg().unwrap()]
+                                .get_or_insert_with(|| constraint.registers.to_vec());
                             allowed.retain(|reg| constraint.registers.contains(reg));
                             if allowed.is_empty() {
                                 return Err(Error::codegen(format!(
@@ -86,10 +102,10 @@ impl<'a> RegisterAllocator<'a> {
                 // All current machine schemas read inputs before writing defs.
                 // Separate positions let a dying input share an output register.
                 for reg in inst.uses() {
-                    extend(&mut local, reg, pos * 2);
+                    extend_range(&mut ranges, &mut local_fixed, reg, pos * 2);
                 }
                 for reg in inst.defs() {
-                    extend(&mut local, reg, pos * 2 + 1);
+                    extend_range(&mut ranges, &mut local_fixed, reg, pos * 2 + 1);
                 }
                 if self.target.is_call(inst)
                     || matches!(f.inst_extra(id), Some(veloc_lir::InstExtraRef::Call(_)))
@@ -98,42 +114,54 @@ impl<'a> RegisterAllocator<'a> {
                 }
                 pos += 1;
             }
-            for &reg in live.live_in(block).into_iter().flatten() {
-                extend(&mut local, reg, start);
+            let end = pos * 2;
+            for reg in live.live_in(block).into_iter().flat_map(|set| set.iter()) {
+                extend_range(&mut ranges, &mut local_fixed, reg, start);
             }
-            for &reg in live.live_out(block).into_iter().flatten() {
-                extend(&mut local, reg, end);
+            for reg in live.live_out(block).into_iter().flat_map(|set| set.iter()) {
+                extend_range(&mut ranges, &mut local_fixed, reg, end);
             }
-            for (reg, (start, end)) in local {
-                if reg.is_vreg() {
-                    extend(&mut ranges, reg, start);
-                    extend(&mut ranges, reg, end);
-                } else {
-                    fixed.entry(reg).or_default().push((start, end));
+            for (index, range) in local_fixed.iter().copied().enumerate() {
+                if let Some(range) = range {
+                    if fixed.len() <= index {
+                        fixed.resize_with(index + 1, Vec::new);
+                    }
+                    fixed[index].push(range);
                 }
             }
         }
+        calls.sort_unstable();
+        for ranges in &mut fixed {
+            ranges.sort_unstable_by_key(|range| range.0);
+        }
         let mut intervals: Vec<_> = ranges
-            .into_iter()
-            .map(|(reg, (start, end))| {
+            .iter()
+            .filter_map(|(vreg, range)| range.map(|range| (vreg, range)))
+            .map(|(vreg, (start, end))| {
+                let reg = Reg::new_vreg(vreg.as_u32());
                 let data = f.vreg_data(reg);
                 Interval {
                     reg,
                     start,
                     end,
                     class: self.target.desc().reg_class_for_vreg(&data.ty, data.bank),
-                    allowed: constraints.remove(&reg),
+                    allowed: constraints[vreg].take(),
                 }
             })
             .collect();
         intervals.sort_by_key(|i| (i.start, i.reg));
         let preserved = CallConv::from(cc).preserved_regs(self.target.desc().arch);
-        let mut active: BTreeMap<Reg, Interval> = BTreeMap::new();
+        let mut active = Vec::<Option<Interval>>::new();
         for interval in intervals {
-            active.retain(|_, old| old.end >= interval.start);
+            for old in &mut active {
+                if old.as_ref().is_some_and(|old| old.end < interval.start) {
+                    *old = None;
+                }
+            }
+            let next_call = calls.partition_point(|&point| point <= interval.start);
             let crosses_call = calls
-                .iter()
-                .any(|&p| interval.start < p && p < interval.end);
+                .get(next_call)
+                .is_some_and(|&point| point < interval.end);
             let available = |&reg: &Reg| {
                 interval
                     .allowed
@@ -141,16 +169,18 @@ impl<'a> RegisterAllocator<'a> {
                     .is_none_or(|allowed| allowed.contains(&reg))
                     && (!crosses_call || preserved.contains(&reg))
                     && !self.target.spill_scratch(interval.class).contains(&reg)
-                    && !fixed.get(&reg).is_some_and(|rs| {
-                        rs.iter()
-                            .any(|&(s, e)| s <= interval.end && interval.start <= e)
+                    && !fixed.get(reg.index() as usize).is_some_and(|ranges| {
+                        let next = ranges.partition_point(|&(_, end)| end < interval.start);
+                        ranges
+                            .get(next)
+                            .is_some_and(|&(start, _)| start <= interval.end)
                     })
             };
             let candidates = self.target.desc().allocatable_regs_in_class(interval.class);
             let free = candidates
                 .iter()
                 .filter(|r| available(r))
-                .find(|r| !active.contains_key(r))
+                .find(|r| active.get(r.index() as usize).is_none_or(Option::is_none))
                 .copied();
             let chosen = free.or_else(|| {
                 // Evict the furthest-ending range only when the current one ends sooner.
@@ -159,7 +189,8 @@ impl<'a> RegisterAllocator<'a> {
                     .filter(|r| available(r))
                     .filter_map(|&r| {
                         active
-                            .get(&r)
+                            .get(r.index() as usize)
+                            .and_then(Option::as_ref)
                             .filter(|old| old.end > interval.end)
                             .map(|old| (r, old.end))
                     })
@@ -167,12 +198,16 @@ impl<'a> RegisterAllocator<'a> {
                     .map(|(reg, _)| reg)
             });
             if let Some(reg) = chosen {
-                if let Some(old) = active.remove(&reg) {
-                    self.allocation.remove(&old.reg);
+                let index = reg.index() as usize;
+                if active.len() <= index {
+                    active.resize_with(index + 1, || None);
+                }
+                if let Some(old) = active[index].take() {
+                    self.allocation[old.reg.as_vreg().unwrap()] = None;
                     self.spill(old.reg, f, &mut frame)?;
                 }
-                self.allocation.insert(interval.reg, reg);
-                active.insert(reg, interval);
+                self.assign(interval.reg, reg);
+                active[index] = Some(interval);
             } else {
                 self.spill(interval.reg, f, &mut frame)?;
             }
@@ -204,7 +239,7 @@ impl<'a> RegisterAllocator<'a> {
         })?;
         let align = layout.align;
         let slot = frame.alloc_slot(size, align);
-        self.spilled.insert(reg, slot);
+        self.spilled[reg.as_vreg().expect("spill key must be virtual")] = Some(slot);
         Ok(())
     }
 
@@ -214,77 +249,85 @@ impl<'a> RegisterAllocator<'a> {
         frame: &StackFrame,
     ) -> Result<SecondaryMap<InstId, InstAllocation>> {
         let mut instructions = SecondaryMap::new();
-        let layout: Vec<_> = f.blocks().flat_map(|b| f.block_insts(b)).collect();
-        for id in layout {
-            {
-                let inst = &f.inst(id);
-                let ties = match inst.opcode() {
-                    veloc_lir::MachineOpcode::Target(op) => {
-                        self.target.instruction_metadata(op).tied_operands
-                    }
-                    _ => &[],
-                };
-                let register_constraints = match inst.opcode() {
-                    veloc_lir::MachineOpcode::Target(op) => {
-                        self.target.instruction_metadata(op).register_constraints
-                    }
-                    _ => &[],
-                };
-                let accepts = |result: bool, operand: usize, reg: Reg| {
-                    register_constraints
-                        .iter()
-                        .filter(|constraint| {
-                            constraint.result == result && constraint.operand == operand
-                        })
-                        .all(|constraint| constraint.registers.contains(&reg))
-                };
-                if ties.len() > 1 {
-                    return Err(Error::codegen(
-                        "multiple output reuse constraints require parallel allocation edits",
-                    ));
-                }
-                let mut plan = InstAllocation::default();
-                let mut occupied: Vec<_> = inst.uses().filter(|r| r.is_preg()).collect();
-                if !self.target.is_call(inst) {
-                    occupied.extend(inst.defs().filter(|r| r.is_preg()));
-                }
-                let mut bindings = BTreeMap::new();
-                let mut loads = Vec::new();
-                let mut stores = Vec::new();
-                let result_count = inst.results().len();
-                let fields = inst
-                    .results()
-                    .iter()
-                    .copied()
-                    .map(|r| (r, true))
-                    .chain(inst.inputs().iter().copied().map(|r| (r, false)));
-                for (index, (reg, write)) in fields.enumerate() {
-                    let read = !write;
-                    if reg.is_preg() {
-                        plan.locations.push(reg.as_preg().unwrap());
-                        continue;
-                    }
-                    let preg = if let Some(&preg) = self.allocation.get(&reg) {
-                        preg
-                    } else {
-                        let slot = *self
-                            .spilled
-                            .get(&reg)
-                            .ok_or_else(|| Error::codegen("unallocated virtual register"))?;
-                        let data = f.vreg_data(reg);
-                        let ty = data.ty;
-                        let class = self.target.desc().reg_class_for_vreg(&ty, data.bank);
-                        let tied_spill = ties
+        let mut block = f.blocks().next();
+        while let Some(current_block) = block {
+            let next_block = f.layout().next_block(current_block);
+            let mut cursor = f.layout().first_inst(current_block);
+            while let Some(id) = cursor {
+                let next_id = f.layout().next_inst(id);
+                {
+                    let inst = &f.inst(id);
+                    let ties = match inst.opcode() {
+                        veloc_lir::MachineOpcode::Target(op) => {
+                            self.target.instruction_metadata(op).tied_operands
+                        }
+                        _ => &[],
+                    };
+                    let register_constraints = match inst.opcode() {
+                        veloc_lir::MachineOpcode::Target(op) => {
+                            self.target.instruction_metadata(op).register_constraints
+                        }
+                        _ => &[],
+                    };
+                    let accepts = |result: bool, operand: usize, reg: Reg| {
+                        register_constraints
                             .iter()
-                            .find(|tie| tie.use_operand + result_count == index)
-                            .map(|tie| inst.results()[tie.result])
-                            .filter(|dst| self.spilled.contains_key(dst))
-                            .and_then(|dst| bindings.get(&dst).copied());
-                        let preg = if let Some(preg) = bindings.get(&reg).copied().or(tied_spill) {
-                            bindings.insert(reg, preg);
-                            preg
+                            .filter(|constraint| {
+                                constraint.result == result && constraint.operand == operand
+                            })
+                            .all(|constraint| constraint.registers.contains(&reg))
+                    };
+                    if ties.len() > 1 {
+                        return Err(Error::codegen(
+                            "multiple output reuse constraints require parallel allocation edits",
+                        ));
+                    }
+                    let mut plan = InstAllocation::default();
+                    let mut occupied: Vec<_> = inst.uses().filter(|r| r.is_preg()).collect();
+                    if !self.target.is_call(inst) {
+                        occupied.extend(inst.defs().filter(|r| r.is_preg()));
+                    }
+                    let mut bindings = HashMap::new();
+                    let mut loads = Vec::new();
+                    let mut stores = Vec::new();
+                    let result_count = inst.results().len();
+                    let fields = inst
+                        .results()
+                        .iter()
+                        .copied()
+                        .map(|r| (r, true))
+                        .chain(inst.inputs().iter().copied().map(|r| (r, false)));
+                    for (index, (reg, write)) in fields.enumerate() {
+                        let read = !write;
+                        if reg.is_preg() {
+                            if write {
+                                plan.results.push(reg.as_preg().unwrap());
+                            } else {
+                                plan.locations.push(reg.as_preg().unwrap());
+                            }
+                            continue;
+                        }
+                        let preg = if let Some(preg) = self.assigned(reg) {
+                            preg.into()
                         } else {
-                            let preg = self
+                            let slot = self
+                                .spill_slot(reg)
+                                .ok_or_else(|| Error::codegen("unallocated virtual register"))?;
+                            let data = f.vreg_data(reg);
+                            let ty = data.ty;
+                            let class = self.target.desc().reg_class_for_vreg(&ty, data.bank);
+                            let tied_spill = ties
+                                .iter()
+                                .find(|tie| tie.use_operand + result_count == index)
+                                .map(|tie| inst.results()[tie.result])
+                                .filter(|dst| self.spill_slot(*dst).is_some())
+                                .and_then(|dst| bindings.get(&dst).copied());
+                            let preg =
+                                if let Some(preg) = bindings.get(&reg).copied().or(tied_spill) {
+                                    bindings.insert(reg, preg);
+                                    preg
+                                } else {
+                                    let preg = self
                                 .target
                                 .spill_scratch(class)
                                 .iter()
@@ -302,128 +345,137 @@ impl<'a> RegisterAllocator<'a> {
                                         "insufficient dedicated spill temporaries for instruction",
                                     )
                                 })?;
-                            bindings.insert(reg, preg);
+                                    bindings.insert(reg, preg);
+                                    preg
+                                };
+                            if read && !loads.iter().any(|&(s, _, _)| s == slot) {
+                                loads.push((slot, preg, ty));
+                            }
+                            if write && !stores.iter().any(|&(s, _, _)| s == slot) {
+                                stores.push((slot, preg, ty));
+                            }
                             preg
                         };
-                        if read && !loads.iter().any(|&(s, _, _)| s == slot) {
-                            loads.push((slot, preg, ty));
-                        }
-                        if write && !stores.iter().any(|&(s, _, _)| s == slot) {
-                            stores.push((slot, preg, ty));
-                        }
-                        preg
-                    };
-                    plan.locations.push(
-                        preg.as_preg()
-                            .expect("allocator must assign physical registers"),
-                    );
-                }
-                plan.results = plan.locations.drain(..result_count).collect();
-                // Resolve tied locations without changing virtual identities.
-                // A dying unrelated input may share the output's assigned register;
-                // use a scratch in that case, so the pre-copy cannot destroy it.
-                let mut copies_before = Vec::new();
-                let mut copies_after = Vec::new();
-                for tie in ties {
-                    let dst = inst
-                        .results()
-                        .get(tie.result)
-                        .copied()
-                        .ok_or_else(|| Error::codegen("missing tied definition"))?;
-                    let input_index = tie.use_operand;
-                    let input = inst.inputs()[input_index];
-                    let output_location = plan.results[tie.result];
-                    let input_location = plan.locations[input_index];
-                    if output_location == input_location {
-                        continue;
-                    }
-                    let ty = if dst.is_vreg() {
-                        f.vreg_data(dst).ty
-                    } else if input.is_vreg() {
-                        f.vreg_data(input).ty
-                    } else {
-                        return Err(Error::codegen("physical tied operands must already agree"));
-                    };
-                    let conflicts = plan.locations.iter().enumerate().any(|(index, &location)| {
-                        index != input_index && location == output_location
-                    });
-                    let work = if conflicts {
-                        let data = f.vreg_data(if dst.is_vreg() { dst } else { input });
-                        let class = self.target.desc().reg_class_for_vreg(&ty, data.bank);
-                        self.target
-                            .spill_scratch(class)
-                            .iter()
-                            .filter_map(|r| r.as_preg())
-                            .find(|r| {
-                                accepts(true, tie.result, (*r).into())
-                                    && accepts(false, input_index, (*r).into())
-                                    && !plan.locations.contains(r)
-                                    && !plan.results.contains(r)
-                            })
-                            .ok_or_else(|| {
-                                Error::codegen("insufficient temporary for tied output")
-                            })?
-                    } else {
-                        output_location
-                    };
-                    copies_before.push((work.into(), input_location.into(), ty));
-                    if work != output_location {
-                        copies_after.push((output_location.into(), work.into(), ty));
-                    }
-                    plan.results[tie.result] = work;
-                    plan.locations[input_index] = work;
-                }
-                // Reloads precede input copies; output copies precede spill stores.
-                for (dst, src, ty) in copies_after {
-                    plan.after.push(self.target.copy_instruction(
-                        f.editor().writer(),
-                        dst,
-                        src,
-                        ty,
-                    )?);
-                }
-                for (load, accesses) in [(true, loads), (false, stores)] {
-                    for (slot, reg, ty) in accesses {
-                        let slot = &frame.slots[slot];
-                        let base = slot.base.resolve(
-                            self.target
-                                .desc()
-                                .registers
-                                .special_regs
-                                .frame_pointer
-                                .ok_or_else(|| {
-                                    Error::codegen("spilling requires a frame pointer")
-                                })?,
-                        );
-                        let inst = self.target.spill_instruction(
-                            f.editor().writer(),
-                            if load {
-                                SpillKind::Load
-                            } else {
-                                SpillKind::Store
-                            },
-                            reg,
-                            base,
-                            slot.offset as i64,
-                            ty,
-                        )?;
-                        if load {
-                            plan.before.push(inst);
+                        let preg = preg
+                            .as_preg()
+                            .expect("allocator must assign physical registers");
+                        if write {
+                            plan.results.push(preg);
                         } else {
-                            plan.after.push(inst);
+                            plan.locations.push(preg);
                         }
                     }
+                    // Resolve tied locations without changing virtual identities.
+                    // A dying unrelated input may share the output's assigned register;
+                    // use a scratch in that case, so the pre-copy cannot destroy it.
+                    let mut copies_before = Vec::new();
+                    let mut copies_after = Vec::new();
+                    for tie in ties {
+                        let dst = inst
+                            .results()
+                            .get(tie.result)
+                            .copied()
+                            .ok_or_else(|| Error::codegen("missing tied definition"))?;
+                        let input_index = tie.use_operand;
+                        let input = inst.inputs()[input_index];
+                        let output_location = plan.results[tie.result];
+                        let input_location = plan.locations[input_index];
+                        if output_location == input_location {
+                            continue;
+                        }
+                        let ty = if dst.is_vreg() {
+                            f.vreg_data(dst).ty
+                        } else if input.is_vreg() {
+                            f.vreg_data(input).ty
+                        } else {
+                            return Err(Error::codegen(
+                                "physical tied operands must already agree",
+                            ));
+                        };
+                        let conflicts =
+                            plan.locations.iter().enumerate().any(|(index, &location)| {
+                                index != input_index && location == output_location
+                            });
+                        let work = if conflicts {
+                            let data = f.vreg_data(if dst.is_vreg() { dst } else { input });
+                            let class = self.target.desc().reg_class_for_vreg(&ty, data.bank);
+                            self.target
+                                .spill_scratch(class)
+                                .iter()
+                                .filter_map(|r| r.as_preg())
+                                .find(|r| {
+                                    accepts(true, tie.result, (*r).into())
+                                        && accepts(false, input_index, (*r).into())
+                                        && !plan.locations.contains(r)
+                                        && !plan.results.contains(r)
+                                })
+                                .ok_or_else(|| {
+                                    Error::codegen("insufficient temporary for tied output")
+                                })?
+                        } else {
+                            output_location
+                        };
+                        copies_before.push((work.into(), input_location.into(), ty));
+                        if work != output_location {
+                            copies_after.push((output_location.into(), work.into(), ty));
+                        }
+                        plan.results[tie.result] = work;
+                        plan.locations[input_index] = work;
+                    }
+                    // Reloads precede input copies; output copies precede spill stores.
+                    for (dst, src, ty) in copies_after {
+                        plan.after.push(self.target.copy_instruction(
+                            f.editor().writer(),
+                            dst,
+                            src,
+                            ty,
+                        )?);
+                    }
+                    for (load, accesses) in [(true, loads), (false, stores)] {
+                        for (slot, reg, ty) in accesses {
+                            let slot = &frame.slots[slot];
+                            let base = slot.base.resolve(
+                                self.target
+                                    .desc()
+                                    .registers
+                                    .special_regs
+                                    .frame_pointer
+                                    .ok_or_else(|| {
+                                        Error::codegen("spilling requires a frame pointer")
+                                    })?,
+                            );
+                            let inst = self.target.spill_instruction(
+                                f.editor().writer(),
+                                if load {
+                                    SpillKind::Load
+                                } else {
+                                    SpillKind::Store
+                                },
+                                reg,
+                                base,
+                                slot.offset as i64,
+                                ty,
+                            )?;
+                            if load {
+                                plan.before.push(inst);
+                            } else {
+                                plan.after.push(inst);
+                            }
+                        }
+                    }
+                    for (dst, src, ty) in copies_before {
+                        plan.before.push(self.target.copy_instruction(
+                            f.editor().writer(),
+                            dst,
+                            src,
+                            ty,
+                        )?);
+                    }
+                    instructions[id] = plan;
                 }
-                for (dst, src, ty) in copies_before {
-                    plan.before.push(self.target.copy_instruction(
-                        f.editor().writer(),
-                        dst,
-                        src,
-                        ty,
-                    )?);
-                }
-                instructions[id] = plan;
+                cursor = next_id;
             }
+            block = next_block;
         }
         Ok(instructions)
     }
@@ -456,11 +508,9 @@ mod tests {
                     allocator.spill(reg, &f, &mut frame).unwrap();
                 }
             } else {
-                allocator.allocation.extend([
-                    (lhs, REG_RAX),
-                    (rhs, REG_RCX),
-                    (dst, if mode == 0 { REG_RDX } else { REG_RCX }),
-                ]);
+                allocator.assign(lhs, REG_RAX);
+                allocator.assign(rhs, REG_RCX);
+                allocator.assign(dst, if mode == 0 { REG_RDX } else { REG_RCX });
             }
             let instructions = allocator.plan(&mut f, &frame).unwrap();
             let plan = &instructions[id];
@@ -492,8 +542,22 @@ mod tests {
     }
 }
 
-fn extend(ranges: &mut BTreeMap<Reg, (u32, u32)>, reg: Reg, pos: u32) {
-    let range = ranges.entry(reg).or_insert((pos, pos));
+fn extend_range(
+    virtual_: &mut SecondaryMap<VReg, Option<(u32, u32)>>,
+    physical: &mut Vec<Option<(u32, u32)>>,
+    reg: Reg,
+    pos: u32,
+) {
+    let range = if let Some(reg) = reg.as_vreg() {
+        &mut virtual_[reg]
+    } else {
+        let index = reg.index() as usize;
+        if physical.len() <= index {
+            physical.resize(index + 1, None);
+        }
+        &mut physical[index]
+    };
+    let range = range.get_or_insert((pos, pos));
     range.0 = range.0.min(pos);
     range.1 = range.1.max(pos);
 }

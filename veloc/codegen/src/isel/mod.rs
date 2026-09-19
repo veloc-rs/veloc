@@ -28,7 +28,12 @@ impl<'a> FunctionPass for InstructionSelectionPass<'a> {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         select::InstructionSelector::new(self.selector).select(mfunc)?;
-        ctx.stats.selected_inst_count = mfunc.blocks().map(|b| mfunc.block_insts(b).count()).sum();
+        if ctx.options.collect_stats {
+            ctx.stats.selected_inst_count += mfunc
+                .blocks()
+                .map(|b| mfunc.block_insts(b).count())
+                .sum::<usize>();
+        }
         Ok(PassEffect::new(
             ChangeSet::SELECTED_OPCODES | ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS,
         ))

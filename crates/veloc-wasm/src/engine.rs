@@ -18,6 +18,8 @@ pub struct Config {
     pub strategy: Strategy,
     pub dump_ir: bool,
     pub ir_names: bool,
+    /// Validate translated MIR before optimization and code generation.
+    pub verify_ir: bool,
     /// 优化等级
     pub opt_level: u8,
     /// 输出 IR 到文件路径
@@ -36,6 +38,7 @@ impl Default for Config {
             strategy: Strategy::Auto,
             dump_ir: false,
             ir_names: false,
+            verify_ir: cfg!(debug_assertions),
             opt_level: 0,
             output_ir: None,
             trace_file: None,

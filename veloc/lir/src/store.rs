@@ -7,6 +7,7 @@ use crate::{OperandId, RefRole, Reg, RegRefs, VReg};
 use alloc::vec::Vec;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 use hashbrown::HashMap;
+use smallvec::SmallVec;
 use veloc_collections::LinkId;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -281,6 +282,18 @@ impl crate::InstBuild for InstWriter<'_> {
 }
 
 impl InstStore {
+    pub(crate) fn with_capacity(insts: usize) -> Self {
+        Self {
+            instructions: PrimaryMap::with_capacity(insts),
+            registers: Operands::default(),
+            fields: Operands::default(),
+            memory: SecondaryMap::with_capacity(insts),
+            extras: HashMap::new(),
+            edges: PrimaryMap::new(),
+            references: References::default(),
+        }
+    }
+
     pub fn writer(&mut self) -> crate::InstWriter<'_> {
         crate::InstWriter {
             store: self,
@@ -672,7 +685,7 @@ impl InstStore {
         owner
     }
     pub fn clear_successor_args(&mut self, id: InstId) {
-        let ids: Vec<_> = self.edge_ids(id).collect();
+        let ids: SmallVec<[_; 2]> = self.edge_ids(id).collect();
         for edge_id in ids {
             let edge = self.edges[edge_id].as_mut().unwrap();
             let args = core::mem::take(&mut edge.args);

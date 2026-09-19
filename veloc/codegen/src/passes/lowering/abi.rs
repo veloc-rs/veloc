@@ -1,5 +1,5 @@
 use crate::analysis::{ChangeSet, PassEffect};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
 use crate::target::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
 use alloc::vec::Vec;
@@ -22,6 +22,51 @@ fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Res
 
 fn plan_callsite(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<CallConvPlan> {
     CallConv::from(sig.call_conv).plan_callsite(target.desc().arch, sig.params(), sig.returns())
+}
+
+// Plan all boundaries before editing: unsupported ABIs must not leave a
+// partially lowered function. Validation of input IR remains the validator's job.
+fn check_plan(plan: &CallConvPlan) -> Result<()> {
+    for assignment in plan.args.iter().chain(&plan.returns) {
+        if assignment.parts.len() != 1 {
+            return Err(Error::codegen(
+                "multi-part ABI lowering is not supported yet",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn registers(assignments: &[AbiAssignment]) -> Vec<Reg> {
+    assignments
+        .iter()
+        .flat_map(|a| &a.parts)
+        .filter_map(|p| match p.loc {
+            AbiLocation::Reg(reg) => Some(reg),
+            AbiLocation::Stack { .. } => None,
+        })
+        .collect()
+}
+
+fn call_effects(target: &dyn TargetMachine, plan: &CallConvPlan) -> veloc_lir::RegEffects {
+    let file = &target.desc().registers;
+    let preserved = plan.call_conv.preserved_regs(plan.arch);
+    let mut defs: Vec<_> = file
+        .regs
+        .iter()
+        .map(|info| info.preg)
+        .filter(|reg| {
+            !preserved.contains(reg)
+                && *reg != file.special_regs.stack_pointer
+                && Some(*reg) != file.special_regs.frame_pointer
+        })
+        .collect();
+    defs.sort_unstable();
+    defs.dedup();
+    veloc_lir::RegEffects {
+        uses: registers(&plan.args),
+        defs,
+    }
 }
 
 fn single_part_assignment<'a>(
@@ -110,10 +155,13 @@ fn build_store_to_assignment(
     src: Reg,
     assignment: &AbiAssignment,
     kind: &'static str,
-) -> SmallVec<[InstId; 2]> {
+) -> (SmallVec<[InstId; 2]>, Option<StackSlot>) {
     let part = single_part_assignment(assignment, kind);
     match part.loc {
-        AbiLocation::Reg(reg) => smallvec![mfunc.editor().writer().copy(Writable(reg), src)],
+        AbiLocation::Reg(reg) => (
+            smallvec![mfunc.editor().writer().copy(Writable(reg), src)],
+            None,
+        ),
         AbiLocation::Stack { align, .. } => {
             let slot = stack_slot_for_assignment(target, mfunc, part);
             let address = mfunc.editor().alloc_vreg(veloc_lir::Type::PTR);
@@ -124,7 +172,7 @@ fn build_store_to_assignment(
                 .writer()
                 .with_memory(access)
                 .store(src, address, 0);
-            smallvec![addr, store]
+            (smallvec![addr, store], Some(slot))
         }
     }
 }
@@ -185,26 +233,44 @@ fn lower_callsite(
         );
     }
 
-    let args: Vec<_> = args.to_vec();
-    let defs: Vec<_> = results.iter().copied().collect();
-    let returns: Vec<_> = plan
-        .returns
-        .iter()
-        .flat_map(|a| &a.parts)
-        .filter_map(|p| {
-            if let AbiLocation::Reg(reg) = p.loc {
-                Some(reg)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let args: SmallVec<[Reg; 8]> = args.iter().copied().collect();
+    let defs: SmallVec<[Reg; 4]> = results.iter().copied().collect();
+    let returns = registers(&plan.returns);
     mfunc.editor().set_inst_results(id, &returns);
+    let mut info = mfunc.call_info(id).clone();
+    info.stack_args.clear();
     for (src, assignment) in args.into_iter().zip(plan.args.iter()) {
-        for inst in build_store_to_assignment(target, mfunc, src, assignment, "call argument") {
+        let (insts, slot) =
+            build_store_to_assignment(target, mfunc, src, assignment, "call argument");
+        info.stack_args.extend(slot);
+        for inst in insts {
             mfunc.editor().insert_before(id, inst);
         }
     }
+
+    mfunc
+        .editor()
+        .set_inst_extra(id, veloc_lir::InstExtra::Call(info));
+    // The call now uses ABI locations, not the original logical argument list.
+    // Keep the indirect callee as its own explicit input.
+    let callee = match mfunc.inst(id).view() {
+        veloc_lir::InstView::CallIndirect(call) => Some(call.callee),
+        _ => None,
+    };
+    let mut inputs = SmallVec::<[Reg; 8]>::new();
+    inputs.extend(callee);
+    inputs.extend(registers(&plan.args));
+    mfunc.editor().set_inst_inputs(id, &inputs);
+    let mut effects = call_effects(target, plan);
+    if let Some(existing) = mfunc.inst(id).effects() {
+        effects.uses.extend_from_slice(existing.uses);
+        effects.defs.extend_from_slice(existing.defs);
+    }
+    effects.uses.sort_unstable();
+    effects.uses.dedup();
+    effects.defs.sort_unstable();
+    effects.defs.dedup();
+    mfunc.editor().set_inst_effects(id, effects);
 
     mfunc.stack_frame.arg_size = mfunc.stack_frame.arg_size.max(plan.stack_arg_bytes);
     let mut after = id;
@@ -241,13 +307,7 @@ fn lower_return(
 
     let mut pre = Vec::with_capacity(values.len());
     for (&src, assignment) in values.iter().zip(plan.returns.iter()) {
-        pre.extend(build_store_to_assignment(
-            target,
-            mfunc,
-            src,
-            assignment,
-            "return value",
-        ));
+        pre.extend(build_store_to_assignment(target, mfunc, src, assignment, "return value").0);
     }
 
     pre
@@ -264,15 +324,34 @@ impl FunctionPass for AbiLoweringPass {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
+        check_plan(&plan)?;
+        let ids: Vec<_> = mfunc.blocks().flat_map(|b| mfunc.block_insts(b)).collect();
+        let calls = ids
+            .iter()
+            .copied()
+            .filter(|&id| {
+                matches!(
+                    mfunc.inst(id).opcode(),
+                    MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind)
+                )
+            })
+            .map(|id| {
+                let plan = plan_callsite(ctx.target, &mfunc.call_info(id).sig)?;
+                check_plan(&plan)?;
+                Ok((id, plan))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut calls = calls.into_iter();
+        let return_regs = registers(&plan.returns);
         mfunc.stack_frame.arg_size = 0;
         lower_formal_arguments(ctx.target, mfunc, &plan);
 
-        let ids: Vec<_> = mfunc.blocks().flat_map(|b| mfunc.block_insts(b)).collect();
         for inst_id in ids {
             let inst = mfunc.inst(inst_id);
             match inst.opcode() {
                 MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind) => {
-                    let call_plan = plan_callsite(ctx.target, &mfunc.call_info(inst_id).sig)?;
+                    let (call_id, call_plan) = calls.next().expect("planned callsite");
+                    debug_assert_eq!(call_id, inst_id);
                     lower_callsite(ctx.target, mfunc, inst_id, &call_plan);
                 }
                 MachineOpcode::Generic(GenericOpcode::Ret) => {
@@ -284,17 +363,7 @@ impl FunctionPass for AbiLoweringPass {
                     for inst in pre {
                         mfunc.editor().insert_before(inst_id, inst);
                     }
-                    let regs: Vec<_> = plan
-                        .returns
-                        .iter()
-                        .flat_map(|assignment| {
-                            assignment.parts.iter().filter_map(|part| match part.loc {
-                                AbiLocation::Reg(reg) => Some(reg),
-                                _ => None,
-                            })
-                        })
-                        .collect();
-                    let replacement = mfunc.editor().writer().ret(&regs);
+                    let replacement = mfunc.editor().writer().ret(&return_regs);
                     mfunc.editor().replace_inst(inst_id, replacement);
                 }
                 _ => {}

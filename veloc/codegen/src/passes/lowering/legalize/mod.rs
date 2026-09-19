@@ -53,6 +53,19 @@ impl<'a> Legalizer<'a> {
             let LegalizeAction::Rewrite(rewrite) = action else {
                 continue;
             };
+            // General SSA rewrites cannot change an ABI location or its transfer
+            // width. Such changes must be expressed by ABI lowering before this
+            // boundary, not by pretending a physical register is a typed value.
+            if inst
+                .results()
+                .iter()
+                .chain(inst.inputs())
+                .any(|reg| reg.is_preg())
+            {
+                return Err(Error::codegen(
+                    "ABI boundary requires unsupported legalization; lower its value conversion before the boundary",
+                ));
+            }
             let rule = rewrite.name;
             if rewrites == budget {
                 return Err(Error::codegen(alloc::format!(

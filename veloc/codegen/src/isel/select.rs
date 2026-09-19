@@ -126,24 +126,32 @@ impl<'a> InstructionSelector<'a> {
         // 复用的临时缓冲区，避免每条指令分配
         let mut selected: Vec<InstId> = Vec::with_capacity(4);
         let mut edge_transfers = Vec::new();
-        for i in mfunc.blocks().rev().collect::<Vec<_>>() {
-            let original: Vec<_> = mfunc.block_insts(i).collect();
-            for inst_id in original.into_iter().rev() {
+        let mut block = mfunc.blocks().next_back();
+        while let Some(current_block) = block {
+            let previous_block = mfunc.layout().prev_block(current_block);
+            let mut inst = mfunc.layout().last_inst(current_block);
+            while let Some(inst_id) = inst {
+                // Selection may detach this instruction or insert replacements
+                // before it. Capture the original predecessor first so selected
+                // instructions are not selected a second time.
+                let previous_inst = mfunc.layout().prev_inst(inst_id);
                 // 如果指令在之前的融合中已被标记为无效，则跳过
                 if mfunc.inst(inst_id).is_invalid() {
+                    inst = previous_inst;
                     continue;
                 }
                 // Consumers are selected first so their generic producers remain
                 // available to graph patterns. Only unused pure values disappear;
                 // matching a producer does not imply ownership of all its uses.
-                let inst = mfunc.inst(inst_id);
-                if inst.is_pure_value()
-                    && inst
+                let inst_ref = mfunc.inst(inst_id);
+                if inst_ref.is_pure_value()
+                    && inst_ref
                         .results()
                         .iter()
                         .all(|reg| mfunc.uses(*reg).next().is_none())
                 {
                     mfunc.editor().invalidate_inst(inst_id);
+                    inst = previous_inst;
                     continue;
                 }
 
@@ -174,7 +182,9 @@ impl<'a> InstructionSelector<'a> {
                 };
 
                 apply_select_result(mfunc, inst_id, &mut selected, result, &mut edge_transfers)?;
+                inst = previous_inst;
             }
+            block = previous_block;
         }
 
         Ok(())

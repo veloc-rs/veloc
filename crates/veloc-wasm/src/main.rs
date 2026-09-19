@@ -49,6 +49,10 @@ struct Args {
     /// Enable debug tags for optimization passes (e.g., --opt-debug=dce)
     #[arg(long, value_delimiter = ',')]
     opt_debug: Vec<String>,
+
+    /// Compile and load the module without instantiating or executing it
+    #[arg(long)]
+    compile_only: bool,
 }
 
 /// Print all compiled bytecode for interpreter
@@ -76,6 +80,7 @@ fn print_interpreter_bytecode(store: &veloc_wasm::Store) {
 }
 
 fn main() -> Result<()> {
+    #[cfg(feature = "logging")]
     env_logger::init();
     let args = Args::parse();
     // Check if we only need to output IR
@@ -87,6 +92,7 @@ fn main() -> Result<()> {
         strategy: args.strategy,
         dump_ir: args.dump_ir,
         ir_names: output_only,
+        verify_ir: cfg!(debug_assertions),
         opt_level: args.opt_level,
         output_ir: args.output_ir,
         trace_file: args.trace_file,
@@ -96,13 +102,7 @@ fn main() -> Result<()> {
     let engine = Arc::new(Engine::with_config(config));
 
     // 2. 读取并解析 Wasm 字节码
-    let wasm_bin = if args.file.extension().and_then(|s| s.to_str()) == Some("wat") {
-        wat::parse_file(&args.file)
-            .with_context(|| format!("Failed to parse WAT file: {:?}", args.file))?
-    } else {
-        std::fs::read(&args.file)
-            .with_context(|| format!("Failed to read Wasm file: {:?}", args.file))?
-    };
+    let wasm_bin = read_wasm(&args.file)?;
 
     // 3. 编译模块
     let module =
@@ -110,6 +110,9 @@ fn main() -> Result<()> {
 
     // If only outputting IR, we're done
     if output_only {
+        return Ok(());
+    }
+    if args.compile_only {
         return Ok(());
     }
 
@@ -152,4 +155,21 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn read_wasm(path: &PathBuf) -> Result<Vec<u8>> {
+    if path.extension().and_then(|extension| extension.to_str()) != Some("wat") {
+        return std::fs::read(path).with_context(|| format!("Failed to read Wasm file: {path:?}"));
+    }
+
+    #[cfg(feature = "wat")]
+    {
+        wat::parse_file(path).with_context(|| format!("Failed to parse WAT file: {path:?}"))
+    }
+    #[cfg(not(feature = "wat"))]
+    {
+        Err(anyhow!(
+            "WAT input requires rebuilding veloc-wasm with `--features wat`"
+        ))
+    }
 }

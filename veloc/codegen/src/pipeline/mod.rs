@@ -29,6 +29,10 @@ impl FunctionPassPipeline {
         self.passes.push(pass);
     }
 
+    pub fn from_passes(passes: Vec<Box<dyn FunctionPass>>) -> Self {
+        Self { passes }
+    }
+
     pub fn run(
         &self,
         mfunc: &mut MachineFunction,

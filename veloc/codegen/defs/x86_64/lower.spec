@@ -1008,6 +1008,69 @@ select(n: lir::Br) {
     }
 }
 
+template IntBranch(InputType: expr, Compare: ident, Condition: expr, Jump: ident) {
+    select(n: lir::Brcond) {
+        choose {
+            case {
+                let cmp = def<lir::Icmp<InputType>>(n.cond);
+                require(matches(cmp.cc, Condition));
+                replace(n, [build(Compare(cmp.lhs, cmp.rhs)), build(Jump(n.then_blk)), build(X86Jmp(n.else_blk))]);
+            }
+        }
+    }
+}
+
+expand IntBranch(Type::I8, X86Cmp32, CC::E, X86Je);
+expand IntBranch(Type::I8, X86Cmp32, CC::NE, X86Jne);
+expand IntBranch(Type::I8, X86Cmp32, CC::L, X86Jl);
+expand IntBranch(Type::I8, X86Cmp32, CC::LE, X86Jle);
+expand IntBranch(Type::I8, X86Cmp32, CC::G, X86Jg);
+expand IntBranch(Type::I8, X86Cmp32, CC::GE, X86Jge);
+expand IntBranch(Type::I8, X86Cmp32, CC::B, X86Jb);
+expand IntBranch(Type::I8, X86Cmp32, CC::BE, X86Jbe);
+expand IntBranch(Type::I8, X86Cmp32, CC::A, X86Ja);
+expand IntBranch(Type::I8, X86Cmp32, CC::AE, X86Jae);
+expand IntBranch(Type::I16, X86Cmp32, CC::E, X86Je);
+expand IntBranch(Type::I16, X86Cmp32, CC::NE, X86Jne);
+expand IntBranch(Type::I16, X86Cmp32, CC::L, X86Jl);
+expand IntBranch(Type::I16, X86Cmp32, CC::LE, X86Jle);
+expand IntBranch(Type::I16, X86Cmp32, CC::G, X86Jg);
+expand IntBranch(Type::I16, X86Cmp32, CC::GE, X86Jge);
+expand IntBranch(Type::I16, X86Cmp32, CC::B, X86Jb);
+expand IntBranch(Type::I16, X86Cmp32, CC::BE, X86Jbe);
+expand IntBranch(Type::I16, X86Cmp32, CC::A, X86Ja);
+expand IntBranch(Type::I16, X86Cmp32, CC::AE, X86Jae);
+expand IntBranch(Type::I32, X86Cmp32, CC::E, X86Je);
+expand IntBranch(Type::I32, X86Cmp32, CC::NE, X86Jne);
+expand IntBranch(Type::I32, X86Cmp32, CC::L, X86Jl);
+expand IntBranch(Type::I32, X86Cmp32, CC::LE, X86Jle);
+expand IntBranch(Type::I32, X86Cmp32, CC::G, X86Jg);
+expand IntBranch(Type::I32, X86Cmp32, CC::GE, X86Jge);
+expand IntBranch(Type::I32, X86Cmp32, CC::B, X86Jb);
+expand IntBranch(Type::I32, X86Cmp32, CC::BE, X86Jbe);
+expand IntBranch(Type::I32, X86Cmp32, CC::A, X86Ja);
+expand IntBranch(Type::I32, X86Cmp32, CC::AE, X86Jae);
+expand IntBranch(Type::I64, X86Cmp64, CC::E, X86Je);
+expand IntBranch(Type::I64, X86Cmp64, CC::NE, X86Jne);
+expand IntBranch(Type::I64, X86Cmp64, CC::L, X86Jl);
+expand IntBranch(Type::I64, X86Cmp64, CC::LE, X86Jle);
+expand IntBranch(Type::I64, X86Cmp64, CC::G, X86Jg);
+expand IntBranch(Type::I64, X86Cmp64, CC::GE, X86Jge);
+expand IntBranch(Type::I64, X86Cmp64, CC::B, X86Jb);
+expand IntBranch(Type::I64, X86Cmp64, CC::BE, X86Jbe);
+expand IntBranch(Type::I64, X86Cmp64, CC::A, X86Ja);
+expand IntBranch(Type::I64, X86Cmp64, CC::AE, X86Jae);
+expand IntBranch(Type::PTR, X86Cmp64, CC::E, X86Je);
+expand IntBranch(Type::PTR, X86Cmp64, CC::NE, X86Jne);
+expand IntBranch(Type::PTR, X86Cmp64, CC::L, X86Jl);
+expand IntBranch(Type::PTR, X86Cmp64, CC::LE, X86Jle);
+expand IntBranch(Type::PTR, X86Cmp64, CC::G, X86Jg);
+expand IntBranch(Type::PTR, X86Cmp64, CC::GE, X86Jge);
+expand IntBranch(Type::PTR, X86Cmp64, CC::B, X86Jb);
+expand IntBranch(Type::PTR, X86Cmp64, CC::BE, X86Jbe);
+expand IntBranch(Type::PTR, X86Cmp64, CC::A, X86Ja);
+expand IntBranch(Type::PTR, X86Cmp64, CC::AE, X86Jae);
+
 select(n: lir::Brcond) {
     choose {
         case {

@@ -134,12 +134,23 @@ impl<'a> IRTranslator<'a> {
         if func.body().is_none() {
             return Ok(MachineFunction::new(func.name.clone()));
         }
+        let block_count = func.layout().block_order().count();
+        let inst_count = func.dfg().instructions().len();
+        // Selection appends stable target instruction IDs before invalidating
+        // their generic roots, so the final ID space is normally near 2x MIR.
+        let lir_inst_capacity = inst_count.saturating_mul(2);
+        let value_count = func.dfg().values().len();
         let mut ctx = TranslationContext {
             func,
             mmodule,
-            mfunc: MachineFunction::new(func.name.clone()),
-            value_map: PrimaryMap::with_capacity(func.dfg().values().len()),
-            block_map: cranelift_entity::SecondaryMap::new(),
+            mfunc: MachineFunction::with_capacity(
+                func.name.clone(),
+                block_count + 1,
+                lir_inst_capacity,
+                value_count + func.params().len(),
+            ),
+            value_map: PrimaryMap::with_capacity(value_count),
+            block_map: cranelift_entity::SecondaryMap::with_capacity(block_count),
         };
 
         // 1. 预分配所有 Value 对应的 VReg
@@ -473,6 +484,7 @@ impl<'a> IRTranslator<'a> {
                 );
                 let sig_id = callee.signature;
                 let call_info = CallInfo {
+                    stack_args: Default::default(),
                     sig: self.module.get_signature(sig_id).clone(),
                 };
 
@@ -499,6 +511,7 @@ impl<'a> IRTranslator<'a> {
                         .collect::<SmallVec<[Reg; 4]>>(),
                 );
                 let call_info = CallInfo {
+                    stack_args: Default::default(),
                     sig: self.module.get_signature(*sig_id).clone(),
                 };
 

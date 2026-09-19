@@ -761,27 +761,29 @@ op X86Jmp(target: Successor) -> () {
     flow = Jump;
 }
 
-op X86Jne(target: Successor) -> () {
-    encoding = Emission::branch(
-        target,
-        Branch { map: OpcodeMap::Map0F, near: 0x85, short: 0x75 },
-    );
-    implicit = {
-        reads: [EFLAGS],
-    };
-    flow = Branch;
+template ConditionalBranch(Opcode: ident, Near: expr, Short: expr) {
+    op Opcode(target: Successor) -> () {
+        encoding = Emission::branch(
+            target,
+            Branch { map: OpcodeMap::Map0F, near: Near, short: Short },
+        );
+        implicit = {
+            reads: [EFLAGS],
+        };
+        flow = Branch;
+    }
 }
 
-op X86Je(target: Successor) -> () {
-    encoding = Emission::branch(
-        target,
-        Branch { map: OpcodeMap::Map0F, near: 0x84, short: 0x74 },
-    );
-    implicit = {
-        reads: [EFLAGS],
-    };
-    flow = Branch;
-}
+expand ConditionalBranch(X86Je, 0x84, 0x74);
+expand ConditionalBranch(X86Jne, 0x85, 0x75);
+expand ConditionalBranch(X86Jb, 0x82, 0x72);
+expand ConditionalBranch(X86Jae, 0x83, 0x73);
+expand ConditionalBranch(X86Jbe, 0x86, 0x76);
+expand ConditionalBranch(X86Ja, 0x87, 0x77);
+expand ConditionalBranch(X86Jl, 0x8C, 0x7C);
+expand ConditionalBranch(X86Jge, 0x8D, 0x7D);
+expand ConditionalBranch(X86Jle, 0x8E, 0x7E);
+expand ConditionalBranch(X86Jg, 0x8F, 0x7F);
 
 op X86PushRbp(rbp: Value<GprValue>) -> () {
     encoding = Emission::legacy(

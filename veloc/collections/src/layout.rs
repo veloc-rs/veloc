@@ -75,6 +75,15 @@ impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> EntityLa
     pub fn new() -> Self {
         Self::default()
     }
+    pub fn with_capacity(blocks: usize, insts: usize) -> Self {
+        Self {
+            blocks: SecondaryMap::with_capacity(blocks),
+            first: None.into(),
+            last: None.into(),
+            insts: SecondaryMap::with_capacity(insts),
+            len: 0,
+        }
+    }
     pub fn prepend_inst(&mut self, block: Block, inst: Inst) {
         self.link_inst(block, inst, None, self.first_inst(block));
     }

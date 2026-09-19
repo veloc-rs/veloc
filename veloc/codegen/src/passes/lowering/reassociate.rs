@@ -183,7 +183,7 @@ pub(crate) fn reassociate(f: &mut MachineFunction, analyses: &mut FunctionAnalys
     }
     if changes != 0 {
         analyses
-            .apply(ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS | ChangeSet::BLOCK_LAYOUT);
+            .apply(ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS | ChangeSet::INST_LAYOUT);
     }
     changes
 }

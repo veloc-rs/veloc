@@ -2,14 +2,13 @@
 //!
 //! Only operations explicitly declared movable by the target enter a region.
 //! Memory, traps and control effects remain barriers; this needs no alias guesses.
-use crate::analysis::FunctionAnalysisCtx;
-use crate::analysis::{ChangeSet, PassEffect};
+use crate::analysis::{ChangeSet, FunctionAnalysisCtx, PassEffect, RegSet};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
 use crate::target::{RegClass, ScheduleInfo, TargetDescription, TargetSchedule};
-use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
-use hashbrown::HashSet;
+use hashbrown::HashMap;
+use smallvec::SmallVec;
 use veloc_lir::{InstId, MachineFunction, Reg};
 
 #[cfg(test)]
@@ -32,11 +31,13 @@ impl FunctionPass for SchedulePass {
             return Ok(PassEffect::NONE);
         }
         let changed = schedule(f, ctx.target, ctx.function_analyses);
-        ctx.stats.scheduled_regions += changed;
+        if ctx.options.collect_stats {
+            ctx.stats.scheduled_regions += changed;
+        }
         Ok(if changed == 0 {
             PassEffect::NONE
         } else {
-            PassEffect::new(ChangeSet::BLOCK_LAYOUT)
+            PassEffect::new(ChangeSet::INST_LAYOUT)
         })
     }
 }
@@ -50,16 +51,19 @@ pub(crate) fn schedule(
     const WINDOW: usize = 256;
     let liveness = analyses.liveness(f, target);
     let mut changed = 0;
-    for b in f.blocks().collect::<Vec<_>>() {
+    let mut block = f.blocks().next();
+    while let Some(b) = block {
+        let next_block = f.layout().next_block(b);
         let ids = f.block_insts(b).collect::<Vec<_>>();
-        let mut live = liveness.live_out(b).cloned().unwrap_or_default();
+        let mut live: RegSet = liveness.live_out(b).cloned().unwrap_or_default();
         let mut output = Vec::with_capacity(ids.len());
+        let mut info = Vec::new();
         let mut end = ids.len();
         // Walk regions backward so live-out is available without storing a live
         // set for every instruction. The actual list scheduler runs forward.
         while end > 0 {
             let mut start = end;
-            let mut info = Vec::new();
+            info.clear();
             while start > 0 && end - start < WINDOW {
                 let id = ids[start - 1];
                 if f.inst_extra(id).is_some() || f.inst(id).memory().is_some() {
@@ -85,6 +89,13 @@ pub(crate) fn schedule(
                 end -= 1;
                 continue;
             }
+            if end - start == 1 {
+                let id = ids[start];
+                before(f, id, &mut live);
+                output.push(id);
+                end = start;
+                continue;
+            }
             info.reverse();
             let order = region(f, &ids[start..end], &info, target.desc(), &live);
             if order != ids[start..end] {
@@ -97,16 +108,21 @@ pub(crate) fn schedule(
             end = start;
         }
         output.reverse();
-        f.editor().reorder_block(b, &output);
+        if output != ids {
+            f.editor().reorder_block(b, &output);
+        }
+        block = next_block;
     }
     changed
 }
 
-fn before(f: &MachineFunction, id: InstId, live: &mut HashSet<Reg>) {
+fn before(f: &MachineFunction, id: InstId, live: &mut RegSet) {
     for reg in f.inst(id).defs() {
         live.remove(&reg);
     }
-    live.extend(f.inst(id).uses());
+    for reg in f.inst(id).uses() {
+        live.insert(reg);
+    }
 }
 
 fn bank(class: RegClass) -> usize {
@@ -124,17 +140,17 @@ fn region(
     ids: &[InstId],
     info: &[ScheduleInfo],
     target: &TargetDescription,
-    live_out: &HashSet<Reg>,
+    live_out: &RegSet,
 ) -> Vec<InstId> {
     let n = ids.len();
     if n < 2 {
         return ids.to_vec();
     }
-    let mut edges = vec![Vec::new(); n];
+    let mut edges = vec![SmallVec::<[usize; 4]>::new(); n];
     let mut indegree = vec![0; n];
-    let mut writers = BTreeMap::new();
-    let mut readers: BTreeMap<Reg, Vec<usize>> = BTreeMap::new();
-    let mut remaining: BTreeMap<Reg, usize> = BTreeMap::new();
+    let mut writers = HashMap::new();
+    let mut readers: HashMap<Reg, SmallVec<[usize; 4]>> = HashMap::new();
+    let mut remaining = HashMap::<Reg, usize>::new();
     let mut uses = Vec::with_capacity(n);
     let mut defs = Vec::with_capacity(n);
     let mut edge = |a: usize, b: usize| {
@@ -144,10 +160,10 @@ fn region(
         }
     };
     for (i, &id) in ids.iter().enumerate() {
-        let mut read: Vec<_> = f.inst(id).uses().collect();
+        let mut read: SmallVec<[_; 4]> = f.inst(id).uses().collect();
         read.sort();
         read.dedup();
-        let mut write: Vec<_> = f.inst(id).defs().collect();
+        let mut write: SmallVec<[_; 2]> = f.inst(id).defs().collect();
         write.sort();
         write.dedup();
         for &r in &read {
@@ -200,7 +216,7 @@ fn region(
         bank(target.reg_class_for_vreg(&data.ty, data.bank))
     };
     let mut pressure = [0isize; 5];
-    for &reg in &live {
+    for reg in live.iter() {
         if reg.is_vreg() {
             pressure[reg_bank(reg)] += 1;
         }
@@ -244,7 +260,7 @@ fn region(
             .unwrap();
         let i = ready.swap_remove(best);
         pressure = next_pressure(i);
-        let changes: Vec<_> = uses[i]
+        let changes: SmallVec<[_; 8]> = uses[i]
             .iter()
             .chain(&defs[i])
             .map(|&r| (r, needed_after(i, &r)))

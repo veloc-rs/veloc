@@ -2,11 +2,11 @@ use crate::instance::InstanceHandle;
 use crate::vm::{VMGlobal, VMMemory, VMTable};
 use alloc::sync::Arc;
 use cranelift_entity::{PrimaryMap, entity_impl};
-use std::sync::Mutex;
 use veloc::interpreter::{InterpreterValue, Program, host::HostFunction};
 use veloc::mir::{CallConv, Signature, Type};
-use wasi_common::WasiCtx;
 use wasmparser::ValType;
+
+use crate::wasi::WasiCtx;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Memory(u32);
@@ -35,7 +35,7 @@ pub struct Store {
     globals: PrimaryMap<Global, Box<VMGlobal>>,
     instances: PrimaryMap<Instance, InstanceHandle>,
     pub(crate) program: veloc::interpreter::Program,
-    pub(crate) wasi_ctx: Option<Arc<Mutex<WasiCtx>>>,
+    pub(crate) wasi_ctx: Option<Arc<WasiCtx>>,
 }
 
 impl Store {
@@ -53,7 +53,7 @@ impl Store {
     }
 
     pub fn set_wasi(&mut self, wasi: WasiCtx) {
-        self.wasi_ctx = Some(Arc::new(Mutex::new(wasi)));
+        self.wasi_ctx = Some(Arc::new(wasi));
     }
 
     pub fn alloc_memory(

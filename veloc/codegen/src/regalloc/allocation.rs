@@ -68,26 +68,32 @@ impl Allocation {
             edges,
         } = self;
         source.stack_frame = frame;
-        let ids: Vec<_> = source
-            .blocks()
-            .flat_map(|b| source.block_insts(b))
-            .collect();
-        for id in ids {
-            let plan = core::mem::take(&mut instructions[id]);
-            let mut edit = source.editor();
-            for inst in plan.before {
-                edit.insert_before(id, inst);
+        let mut block = source.blocks().next();
+        while let Some(current_block) = block {
+            let next_block = source.layout().next_block(current_block);
+            let mut cursor = source.layout().first_inst(current_block);
+            while let Some(id) = cursor {
+                let next_id = source.layout().next_inst(id);
+                let plan = core::mem::take(&mut instructions[id]);
+                let mut edit = source.editor();
+                for inst in plan.before {
+                    edit.insert_before(id, inst);
+                }
+                let results: SmallVec<[_; 2]> =
+                    plan.results.iter().copied().map(Into::into).collect();
+                assert_eq!(results.len(), edit.inst(id).results().len());
+                edit.set_inst_results(id, &results);
+                let inputs: SmallVec<[_; 4]> =
+                    plan.locations.iter().copied().map(Into::into).collect();
+                edit.set_inst_inputs(id, &inputs);
+                let mut after = id;
+                for inst in plan.after {
+                    edit.insert_after(after, inst);
+                    after = inst;
+                }
+                cursor = next_id;
             }
-            let results: SmallVec<[_; 2]> = plan.results.iter().copied().map(Into::into).collect();
-            assert_eq!(results.len(), edit.inst(id).results().len());
-            edit.set_inst_results(id, &results);
-            let inputs: SmallVec<[_; 4]> = plan.locations.iter().copied().map(Into::into).collect();
-            edit.set_inst_inputs(id, &inputs);
-            let mut after = id;
-            for inst in plan.after {
-                edit.insert_after(after, inst);
-                after = inst;
-            }
+            block = next_block;
         }
         // Layout changes happen only now: each nonempty edge plan gets a block,
         // so conditional branches and critical edges execute only their own moves.
@@ -104,12 +110,16 @@ impl Allocation {
             source.editor().redirect_edge(successor, block);
             source.editor().set_edge_args(successor, &[]);
         }
-        let ids: Vec<_> = source
-            .blocks()
-            .flat_map(|b| source.block_insts(b))
-            .collect();
-        for id in ids {
-            source.editor().clear_successor_args(id);
+        let mut block = source.blocks().next();
+        while let Some(current_block) = block {
+            let next_block = source.layout().next_block(current_block);
+            let mut cursor = source.layout().first_inst(current_block);
+            while let Some(id) = cursor {
+                let next_id = source.layout().next_inst(id);
+                source.editor().clear_successor_args(id);
+                cursor = next_id;
+            }
+            block = next_block;
         }
         source.editor().clear_block_params();
         source.params.clear();

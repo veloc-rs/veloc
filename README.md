@@ -46,7 +46,7 @@ The CLI accepts `.wasm` and `.wat` files, invokes `_start` by default, and suppo
 
 ```bash
 # Print Veloc IR without executing the module
-cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wat --dump-ir
+cargo run -p veloc-wasm --features wat --bin veloc-wasm -- path/to/module.wat --dump-ir
 
 # Write Veloc IR to a file
 cargo run -p veloc-wasm --bin veloc-wasm -- path/to/module.wasm \

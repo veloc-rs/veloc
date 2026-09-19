@@ -8,7 +8,7 @@ use std::fmt::Write;
 use veloc_semantics::{BvOp, ComparisonRef, Conversion, IntPredicate, Sort, Step, TypeRef};
 
 use crate::Error;
-use crate::model::{Binding, Definitions, Semantic};
+use crate::model::{Binding, Definitions, Semantic, expr::Emitter};
 use crate::semantic::Instance;
 use crate::types::{Primitive, Scalar};
 
@@ -23,7 +23,6 @@ struct Operation {
 }
 
 struct Case {
-    index: usize,
     instance: Instance,
     scalars: Vec<usize>,
     variants: Vec<String>,
@@ -35,7 +34,7 @@ impl Plan {
         for (opcode, op) in defs.ops.iter().enumerate() {
             let Some(sem) = &op.semantics else { continue };
             let mut cases = Vec::new();
-            for (index, instance) in sem.instances.iter().enumerate() {
+            for instance in &sem.instances {
                 if !instance.scalar || instance.error.is_some() {
                     continue;
                 }
@@ -58,7 +57,6 @@ impl Plan {
                     continue;
                 };
                 cases.push(Case {
-                    index,
                     instance: instance.clone(),
                     scalars,
                     variants,
@@ -135,37 +133,24 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
                 .map(|(i, s)| format!("a{i}.ty() == Type::{}", s.exact()))
                 .collect::<Vec<_>>()
                 .join(" && ");
-            let enabled = format!(
-                "veloc_mir::inst::semantic_cases::{}[{}]",
-                op.name, case.index
-            );
             let guard = if guard.is_empty() {
-                format!(" if {enabled}")
+                String::new()
             } else {
-                format!(" if {enabled} && {guard}")
+                format!(" if {guard}")
             };
             writeln!(arms, "([{args}], [{results}], [{properties}]){guard} => {{").unwrap();
             emit(sem, instance, &variants[inputs..], &mut arms);
             arms.push_str("},\n");
         }
         if !arms.is_empty() {
-            supported.push(format!(
-                "Opcode::{} => {},",
-                op.name,
-                prepared
-                    .cases
-                    .iter()
-                    .map(|case| format!(
-                        "veloc_mir::inst::semantic_cases::{}[{}]",
-                        op.name, case.index
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(" || ")
-            ));
+            supported.push(format!("Opcode::{} => true,", op.name));
+            let inputs = sem.inputs as usize;
+            let results = prepared.cases[0].instance.kinds.len() - inputs;
+            let constraints = applicability(op);
             writeln!(
                 code,
-                "Opcode::{} => match (args, results, properties) {{\n{arms}_ => None,\n}},",
-                op.name
+                "Opcode::{} if args.len() == {inputs} && results.len() == {results} => {{\n{constraints}match (args, results, properties) {{\n{arms}_ => None,\n}}\n}},",
+                op.name,
             )
             .unwrap();
         }
@@ -180,6 +165,30 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
     code.push_str(&properties(defs, plan));
     code.push_str(&algebraic_rules(defs));
     code
+}
+
+/// Emit type-only applicability checks once per opcode. Previously these were
+/// expanded over every scalar/vector combination as const assertions in the MIR
+/// crate. Constant folding only sees concrete argument/result types, so checking
+/// the same contract here is both smaller and keeps invalid input fallible.
+fn applicability(op: &crate::model::Op) -> String {
+    let constraints = op
+        .constraints
+        .iter()
+        .filter(|constraint| constraint.type_only && !constraint.redundant())
+        .collect::<Vec<_>>();
+    if constraints.is_empty() {
+        return String::new();
+    }
+
+    let mut emitter = Emitter::types(op, std::collections::BTreeMap::new(), "args", "results");
+    for ty in emitter.operand_types.values_mut() {
+        *ty = format!("({ty}).ty()");
+    }
+    constraints
+        .into_iter()
+        .map(|constraint| constraint.emit(&emitter, "return None"))
+        .collect()
 }
 
 fn properties(defs: &Definitions, plan: &Plan) -> String {

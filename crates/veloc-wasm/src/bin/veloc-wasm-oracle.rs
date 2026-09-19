@@ -41,6 +41,7 @@ struct RunOutcome {
 }
 
 fn main() -> Result<()> {
+    #[cfg(feature = "logging")]
     env_logger::init();
     let args = Args::parse();
     let wasm = read_wasm_or_wat(&args.file)?;
@@ -98,6 +99,7 @@ fn run_once(
             strategy,
             dump_ir,
             ir_names: false,
+            verify_ir: true,
             opt_level,
             output_ir: None,
             trace_file: None,
@@ -132,11 +134,21 @@ fn run_once(
 }
 
 fn read_wasm_or_wat(path: &PathBuf) -> Result<Vec<u8>> {
-    if path.extension().and_then(|ext| ext.to_str()) == Some("wat") {
+    if path.extension().and_then(|ext| ext.to_str()) != Some("wat") {
+        return std::fs::read(path)
+            .with_context(|| format!("failed to read Wasm file: {}", path.display()));
+    }
+
+    #[cfg(feature = "wat")]
+    {
         wat::parse_file(path)
             .with_context(|| format!("failed to parse WAT file: {}", path.display()))
-    } else {
-        std::fs::read(path).with_context(|| format!("failed to read Wasm file: {}", path.display()))
+    }
+    #[cfg(not(feature = "wat"))]
+    {
+        Err(anyhow!(
+            "WAT input requires rebuilding veloc-wasm with `--features wat`"
+        ))
     }
 }
 

@@ -40,7 +40,6 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                     + &storage.generate(defs)
                     + &crate::model::metadata::generate(&defs.ops, &storage.opcode, "")
                     + &crate::model::metadata::value_contract(&defs.ops, &storage.opcode, "")
-                    + &checks::generate(defs)
             }
             Emit::TypeRules => {
                 let sets = crate::types::generate::Sets::new(defs);
@@ -102,10 +101,8 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
             instructions
         }
         Emit::Opcodes => {
-            let checks = checks::generate(defs);
             let sets = crate::types::generate::Sets::new(defs);
             let mut ops = String::from(HEADER);
-            ops.push_str(&checks);
             ops.push_str(&defs.storage.format_code());
             ops.push_str(&sets.generate());
             ops.push_str(&crate::model::encoding::generate(&defs.encodings));

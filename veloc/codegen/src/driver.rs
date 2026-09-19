@@ -6,7 +6,7 @@ use crate::analysis::{FunctionAnalysisCtx, ModuleAnalysisCtx};
 use crate::error::{Error, Result};
 use crate::isel::InstructionSelectionPass;
 use crate::object::ObjectFileBuilder;
-use crate::passes::{FrameFinalizePass, LegalizePass, PostIselOptimizePass, PreIselPass};
+use crate::passes::{FrameFinalizePass, LegalizePass, PostIselOptimizePass};
 use crate::pipeline::{
     CompiledFunction, CompiledModule, FunctionPass, FunctionPassContext, FunctionPassPipeline,
     ModulePassContext, ModulePassPipeline,
@@ -53,6 +53,9 @@ pub struct CodegenOptions {
     pub optimize: bool,
     /// 是否打印中间结果（调试用）
     pub dump_lir: bool,
+    /// Collect aggregate pipeline counters. Disabled by default so production
+    /// JIT compilation does not repeatedly scan every function for diagnostics.
+    pub collect_stats: bool,
     /// 目标优化级别
     pub opt_level: u8,
 }
@@ -63,6 +66,7 @@ impl Default for CodegenOptions {
             verify: cfg!(debug_assertions),
             optimize: true,
             dump_lir: false,
+            collect_stats: false,
             opt_level: 2,
         }
     }
@@ -86,6 +90,24 @@ impl Default for CodegenOptions {
 pub struct CodegenPipeline<'a> {
     target: &'a dyn TargetMachine,
     options: CodegenOptions,
+}
+
+struct TargetFunctionPipelines {
+    post_legalize: FunctionPassPipeline,
+    pre_isel: FunctionPassPipeline,
+    post_isel: FunctionPassPipeline,
+    post_regalloc: FunctionPassPipeline,
+}
+
+impl TargetFunctionPipelines {
+    fn new(config: &dyn crate::target::TargetPassConfig) -> Self {
+        Self {
+            post_legalize: FunctionPassPipeline::from_passes(config.post_legalize_passes()),
+            pre_isel: FunctionPassPipeline::from_passes(config.pre_isel_passes()),
+            post_isel: FunctionPassPipeline::from_passes(config.post_isel_passes()),
+            post_regalloc: FunctionPassPipeline::from_passes(config.post_regalloc_passes()),
+        }
+    }
 }
 
 impl<'a> CodegenPipeline<'a> {
@@ -182,26 +204,30 @@ impl<'a> CodegenPipeline<'a> {
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<CompiledModule> {
         let mmodule = self.translate_module(module)?;
+        let veloc_lir::MachineModule {
+            name,
+            symbols,
+            functions,
+        } = mmodule;
         let mut compiled_functions = Vec::new();
+        let function_pipelines = TargetFunctionPipelines::new(self.target.pass_config());
 
-        for (func_id, func) in &module.functions {
+        for ((func_id, func), (_, mfunc)) in module.functions.iter().zip(functions.into_iter()) {
+            debug_assert_eq!(func.name, mfunc.name);
             if func.is_defined() {
                 compiled_functions.push(self.compile_defined_function(
                     func_id,
-                    module,
-                    &mmodule,
                     func,
+                    module.get_signature(func.signature),
+                    mfunc,
                     stats,
                     module_analyses,
+                    &function_pipelines,
                 )?);
             }
         }
 
-        let mut compiled = CompiledModule::new(
-            mmodule.name.clone(),
-            mmodule.symbols.clone(),
-            compiled_functions,
-        );
+        let mut compiled = CompiledModule::new(name, symbols, compiled_functions);
         self.run_module_pre_emit_passes(&mut compiled, stats, module_analyses)?;
         self.emit_compiled_functions(&mut compiled, stats)?;
         self.run_module_post_emit_passes(&mut compiled, stats, module_analyses)?;
@@ -215,25 +241,32 @@ impl<'a> CodegenPipeline<'a> {
     fn compile_defined_function(
         &self,
         func_id: FuncId,
-        module: &Module,
-        mmodule: &MachineModule,
         func: &Function,
+        sig: &veloc_mir::Signature,
+        mfunc: MachineFunction,
         stats: &mut CodegenStats,
         module_analyses: &mut ModuleAnalysisCtx,
+        target_pipelines: &TargetFunctionPipelines,
     ) -> Result<CompiledFunction> {
-        let mfunc_id = mmodule
-            .find_function_by_name(&func.name)
-            .ok_or_else(|| Error::translated_function_not_found(func.name.clone()))?;
-        let mfunc = mmodule.functions[mfunc_id].clone();
-        let sig = module.get_signature(func.signature);
         let mut function_analyses = FunctionAnalysisCtx::default();
 
-        stats.initial_inst_count = mfunc.blocks().map(|b| mfunc.block_insts(b).count()).sum();
-        stats.vreg_count = mfunc.vregs().len();
+        if self.options.collect_stats {
+            stats.initial_inst_count += mfunc
+                .blocks()
+                .map(|b| mfunc.block_insts(b).count())
+                .sum::<usize>();
+            stats.vreg_count += mfunc.vregs().len();
+        }
         self.maybe_dump_mfunc("translated", &mfunc);
 
-        let final_mfunc =
-            self.run_function_pipeline(mfunc, sig, stats, &mut function_analyses, module_analyses)?;
+        let final_mfunc = self.run_function_pipeline(
+            mfunc,
+            sig,
+            stats,
+            &mut function_analyses,
+            module_analyses,
+            target_pipelines,
+        )?;
         self.maybe_dump_mfunc("final", &final_mfunc);
 
         Ok(CompiledFunction {
@@ -251,10 +284,10 @@ impl<'a> CodegenPipeline<'a> {
         stats: &mut CodegenStats,
         function_analyses: &mut FunctionAnalysisCtx,
         module_analyses: &mut ModuleAnalysisCtx,
+        target_pipelines: &TargetFunctionPipelines,
     ) -> Result<MachineFunction> {
         use crate::verify::{verify, verify_allocated, verify_selected};
         self.verify_function("translated", &mfunc, verify)?;
-        let pass_config = self.target.pass_config();
         let mut ctx = FunctionPassContext::new(
             self.target,
             func_sig,
@@ -265,32 +298,37 @@ impl<'a> CodegenPipeline<'a> {
         );
 
         self.run_pass(
-            &LegalizePass::new(self.target.legalizer()),
-            &mut mfunc,
-            &mut ctx,
-        )?;
-        self.verify_function("legalized", &mfunc, verify)?;
-        let mut post_legalize = FunctionPassPipeline::new();
-        for pass in pass_config.post_legalize_passes() {
-            post_legalize.add_boxed_pass(pass);
-        }
-        post_legalize.run(&mut mfunc, &mut ctx)?;
-        crate::passes::lowering::reassociate::reassociate(&mut mfunc, ctx.function_analyses);
-        // Target hooks can introduce generic operations. Recheck them while
-        // operands still have semantic types, before ABI physical-register copies.
-        self.run_pass(
-            &LegalizePass::new(self.target.legalizer()),
-            &mut mfunc,
-            &mut ctx,
-        )?;
-        self.run_pass(
             &crate::passes::lowering::AbiLoweringPass::new(),
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("abi-lowered", &mfunc, verify)?;
         self.run_pass(
-            &PreIselPass::new(self.target.operand_lowering(), pass_config),
+            &LegalizePass::new(self.target.legalizer()),
+            &mut mfunc,
+            &mut ctx,
+        )?;
+        self.verify_function("legalized", &mfunc, verify)?;
+        let post_legalize_effect = target_pipelines.post_legalize.run(&mut mfunc, &mut ctx)?;
+        crate::passes::lowering::reassociate::reassociate(&mut mfunc, ctx.function_analyses);
+        // Reassociation only rewrites already-legal operations. Target hooks,
+        // however, may introduce new generic instructions and explicitly report
+        // that fact through their effect contract.
+        if post_legalize_effect
+            .change_set
+            .intersects(crate::analysis::ChangeSet::INST_SEMANTICS)
+        {
+            self.run_pass(
+                &LegalizePass::new(self.target.legalizer()),
+                &mut mfunc,
+                &mut ctx,
+            )?;
+        }
+        target_pipelines.pre_isel.run(&mut mfunc, &mut ctx)?;
+        self.run_pass(
+            &crate::passes::constraints::PreSelectOperandConstraintPass::new(
+                self.target.operand_lowering(),
+            ),
             &mut mfunc,
             &mut ctx,
         )?;
@@ -302,11 +340,7 @@ impl<'a> CodegenPipeline<'a> {
         )?;
         self.verify_function("selected", &mfunc, verify_selected)?;
 
-        let mut post_isel = FunctionPassPipeline::new();
-        for pass in pass_config.post_isel_passes() {
-            post_isel.add_boxed_pass(pass);
-        }
-        post_isel.run(&mut mfunc, &mut ctx)?;
+        target_pipelines.post_isel.run(&mut mfunc, &mut ctx)?;
         self.verify_function("post-isel-target", &mfunc, verify_selected)?;
         self.run_pass(
             &PostIselOptimizePass::new(self.target.post_isel(), self.target.operand_lowering()),
@@ -324,8 +358,13 @@ impl<'a> CodegenPipeline<'a> {
             ctx.function_analyses,
         )?;
         let mut mfunc = allocation.materialize();
-        ctx.stats.final_inst_count = mfunc.blocks().map(|b| mfunc.block_insts(b).count()).sum();
-        ctx.stats.stack_slot_count = mfunc.stack_frame.slots.len();
+        if ctx.options.collect_stats {
+            ctx.stats.final_inst_count += mfunc
+                .blocks()
+                .map(|b| mfunc.block_insts(b).count())
+                .sum::<usize>();
+            ctx.stats.stack_slot_count += mfunc.stack_frame.slots.len();
+        }
         use crate::analysis::ChangeSet;
         ctx.function_analyses.apply(
             ChangeSet::REGALLOC
@@ -337,11 +376,7 @@ impl<'a> CodegenPipeline<'a> {
         );
         self.verify_function("regalloc", &mfunc, verify_allocated)?;
 
-        let mut post_regalloc = FunctionPassPipeline::new();
-        for pass in pass_config.post_regalloc_passes() {
-            post_regalloc.add_boxed_pass(pass);
-        }
-        post_regalloc.run(&mut mfunc, &mut ctx)?;
+        target_pipelines.post_regalloc.run(&mut mfunc, &mut ctx)?;
         self.verify_function("post-regalloc", &mfunc, verify_allocated)?;
         self.run_pass(
             &FrameFinalizePass::new(self.target.frame_lowering()),
@@ -450,7 +485,9 @@ impl<'a> CodegenPipeline<'a> {
         }
 
         emitter.finish_function(&mut output, mfunc)?;
-        stats.stack_frame_size = mfunc.stack_frame.total_size;
+        if self.options.collect_stats {
+            stats.stack_frame_size += mfunc.stack_frame.total_size;
+        }
         output.finish()
     }
 
@@ -489,6 +526,7 @@ block0(v0: ptr):
         let translated = pipeline.translate_module(&module).unwrap();
         let func = module.functions.iter().next().unwrap().1;
         let sig = module.get_signature(func.signature);
+        let target_pipelines = TargetFunctionPipelines::new(target.pass_config());
         for wrong_direction in [false, true] {
             let mut f = translated.functions.iter().next().unwrap().1.clone();
             let id = f
@@ -510,6 +548,7 @@ block0(v0: ptr):
                     &mut CodegenStats::default(),
                     &mut FunctionAnalysisCtx::default(),
                     &mut ModuleAnalysisCtx::default(),
+                    &target_pipelines,
                 )
                 .unwrap_err();
             assert!(

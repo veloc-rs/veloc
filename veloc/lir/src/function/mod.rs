@@ -27,6 +27,16 @@ pub struct FuncBody {
 }
 
 impl FuncBody {
+    fn with_capacity(blocks: usize, insts: usize, vregs: usize) -> Self {
+        Self {
+            blocks: PrimaryMap::with_capacity(blocks),
+            entry: None,
+            layout: crate::layout::Layout::with_capacity(blocks, insts),
+            store: crate::store::InstStore::with_capacity(insts),
+            vregs: PrimaryMap::with_capacity(vregs),
+        }
+    }
+
     pub fn entry_block(&self) -> Option<Block> {
         self.entry
     }
@@ -134,9 +144,15 @@ pub use edit::{EditChanges, FuncEditor};
 
 impl MachineFunction {
     pub fn new(name: String) -> Self {
+        Self::with_capacity(name, 0, 0, 0)
+    }
+
+    /// Create an empty function while reserving its known source-level shape.
+    /// Later legalization and selection may still append stable identities.
+    pub fn with_capacity(name: String, blocks: usize, insts: usize, vregs: usize) -> Self {
         Self {
             name,
-            body: FuncBody::default(),
+            body: FuncBody::with_capacity(blocks, insts, vregs),
             stack_frame: StackFrame {
                 local_size: 0,
                 arg_size: 0,

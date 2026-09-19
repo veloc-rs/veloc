@@ -85,46 +85,39 @@ impl TargetInstructionSelector for X86_64Selector {
             opcode,
             MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind)
         ) {
-            use crate::target::{AbiLocation, CallConv, TargetArch};
-            let sig = &ctx.mfunc.call_info(ctx.inst_id).sig;
-            let cc = CallConv::from(sig.call_conv);
-            let plan = cc.plan_callsite(TargetArch::X86_64, sig.params(), sig.returns())?;
-            let preserved = cc.preserved_regs(TargetArch::X86_64);
-            for &selected in ctx.selected.iter() {
-                if !matches!(ctx.mfunc.inst(selected).opcode(), MachineOpcode::Target(op) if op == TargetInst::X86Call.as_u32() || op == TargetInst::X86CallReg.as_u32())
-                {
-                    continue;
-                }
-                let mut effects = ctx
-                    .mfunc
-                    .inst(selected)
-                    .effects()
-                    .map(|e| veloc_lir::RegEffects {
-                        uses: e.uses.to_vec(),
-                        defs: e.defs.to_vec(),
-                    })
-                    .unwrap_or_default();
-                // Keep ABI register uses/clobbers explicit after Call disappears.
-                for part in plan.args.iter().flat_map(|a| &a.parts) {
-                    if let AbiLocation::Reg(reg) = part.loc {
-                        effects.uses.push(reg);
-                    }
-                }
-                for reg in generated::PHYS_REG_INFOS {
-                    if !preserved.contains(&reg.preg)
-                        && reg.preg != generated::REG_RSP
-                        && reg.preg != generated::REG_RBP
-                    {
-                        effects.defs.push(reg.preg);
-                    }
-                }
-                effects.uses.sort_unstable();
-                effects.uses.dedup();
-                effects.defs.sort_unstable();
-                effects.defs.dedup();
-                ctx.mfunc.editor().set_inst_effects(selected, effects);
+            // ABI lowering owns the dynamic call contract. Selection only
+            // combines it with the selected opcode's static register effects.
+            let source = ctx
+                .mfunc
+                .inst(ctx.inst_id)
+                .effects()
+                .map(|e| veloc_lir::RegEffects {
+                    uses: e.uses.to_vec(),
+                    defs: e.defs.to_vec(),
+                })
+                .expect("call must be ABI lowered before selection");
+            let calls: alloc::vec::Vec<_> = ctx.selected.iter().copied().filter(|&id| {
+                matches!(ctx.mfunc.inst(id).opcode(), MachineOpcode::Target(op)
+                    if generated::target_inst_metadata(TargetInst::from_u32(op)).flow == veloc_lir::ControlFlow::Call)
+            }).collect();
+            assert_eq!(calls.len(), 1, "selection must preserve one call boundary");
+            let selected = calls[0];
+            let info = ctx.mfunc.call_info(ctx.inst_id).clone();
+            ctx.mfunc
+                .editor()
+                .set_inst_extra(selected, veloc_lir::InstExtra::Call(info));
+            let mut effects = source;
+            if let Some(existing) = ctx.mfunc.inst(selected).effects() {
+                effects.uses.extend_from_slice(existing.uses);
+                effects.defs.extend_from_slice(existing.defs);
             }
+            effects.uses.sort_unstable();
+            effects.uses.dedup();
+            effects.defs.sort_unstable();
+            effects.defs.dedup();
+            ctx.mfunc.editor().set_inst_effects(selected, effects);
         }
+
         if let Some(access) = memory {
             let mut memory_inst = None;
             for (index, &selected) in ctx.selected.iter().enumerate() {

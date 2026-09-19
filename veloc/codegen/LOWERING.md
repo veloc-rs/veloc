@@ -11,7 +11,16 @@ The native pipeline keeps three responsibilities separate:
 - Instruction selection chooses target instructions using the existing ISLE rules;
   ABI and register constraints remain separate concerns.
 
-MIR-to-LIR lowering is handwritten Rust in `src/translate`. Arithmetic maps
+ABI lowering precedes legalization. It materializes entry/call/return locations
+with explicit copies and stack accesses, and records call register effects and
+outgoing stack slots. Selection preserves that contract without replanning it.
+Legalization accepts physical registers only in typed boundary copies and ABI
+calls/returns. A copy derives its transfer type from its virtual endpoint;
+physical registers have no semantic type of their own. Generic computation still
+requires typed virtual operands. General SSA rewrites cannot rewrite a physical
+boundary: unsupported transfer types require an explicit ABI conversion.
+
+MIR-to-LIR lowering is handwritten Rust in `src/translate.rs`. Arithmetic maps
 directly to OpSpec-generated LIR builders; comparisons, memory and control flow
 use the same typed instruction interfaces. There is no build-time MIR lowering
 rule inference or generated host adapter. OpSpec owns instruction representation

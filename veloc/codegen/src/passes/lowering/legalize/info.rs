@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use cranelift_entity::PrimaryMap;
 use smallvec::SmallVec;
+use veloc_lir::InstRead;
 use veloc_lir::{GenericOpcode, InstField, InstId, InstRef, MachineFunction, Reg, VReg, VRegData};
 use veloc_mir::Type;
 
@@ -17,15 +18,40 @@ impl<'a> Query<'a> {
         if inst.generic_opcode().is_none() {
             return Err(Error::codegen("expected generic instruction"));
         }
-        if !inst
-            .results()
-            .iter()
-            .chain(inst.inputs())
-            .all(|reg| reg.as_vreg().is_some_and(|reg| vregs.get(reg).is_some()))
-        {
-            return Err(Error::codegen(
-                "legalization requires typed virtual operands",
-            ));
+        let regs = || inst.results().iter().chain(inst.inputs());
+        if regs().any(|reg| reg.as_vreg().is_some_and(|reg| vregs.get(reg).is_none())) {
+            return Err(Error::codegen("unknown virtual operand in legalization"));
+        }
+        if regs().any(|reg| reg.is_preg()) {
+            // Physical locations are permitted only at explicit ABI boundaries.
+            // In particular, a register name never supplies a semantic type.
+            let valid = match inst.view() {
+                veloc_lir::InstView::UnaryReg(copy)
+                    if copy.opcode == veloc_lir::UnaryRegOpcode::Copy =>
+                {
+                    copy.dst.is_vreg() != copy.src.is_vreg()
+                }
+                veloc_lir::InstView::Call(call) => call
+                    .args
+                    .iter()
+                    .chain(call.results)
+                    .all(|reg| reg.is_preg()),
+                veloc_lir::InstView::CallIndirect(call) => {
+                    call.callee.is_vreg()
+                        && call
+                            .args
+                            .iter()
+                            .chain(call.results)
+                            .all(|reg| reg.is_preg())
+                }
+                veloc_lir::InstView::Return(ret) => ret.values.iter().all(|reg| reg.is_preg()),
+                _ => false,
+            };
+            if !valid {
+                return Err(Error::codegen(
+                    "physical operands require a typed copy or ABI call/return boundary",
+                ));
+            }
         }
         Ok(Self { inst, vregs })
     }
@@ -37,7 +63,25 @@ impl<'a> Query<'a> {
     }
 
     fn ty(&self, reg: Reg) -> Type {
-        self.vregs[reg.as_vreg().expect("query requires virtual operands")].ty
+        if let Some(reg) = reg.as_vreg() {
+            return self.vregs[reg].ty;
+        }
+        // A boundary copy's transfer type comes from its SSA endpoint, not
+        // from the physical register. Both endpoints therefore match the same
+        // ordinary Copy legality rule.
+        assert_eq!(
+            self.opcode(),
+            GenericOpcode::Copy,
+            "ABI locations have no standalone value type"
+        );
+        let value = self
+            .inst
+            .results()
+            .iter()
+            .chain(self.inst.inputs())
+            .find_map(|reg| reg.as_vreg())
+            .expect("typed boundary copy");
+        self.vregs[value].ty
     }
 }
 

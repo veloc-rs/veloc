@@ -1,3 +1,3 @@
-#![feature(const_trait_impl, const_cmp)]
+#![feature(const_trait_impl)]
 
 include!("root.rs");
