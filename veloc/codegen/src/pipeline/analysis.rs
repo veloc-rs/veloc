@@ -465,14 +465,7 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
                 flow,
                 veloc_lir::ControlFlow::Branch | veloc_lir::ControlFlow::Jump
             ) {
-                for operand in inst.fields().iter() {
-                    if let veloc_lir::InstField::Block(target) = operand {
-                        block_succs.push(*target);
-                    }
-                }
-                if let Some(veloc_lir::InstExtraRef::BrTable(info)) = mfunc.inst_extra(id) {
-                    block_succs.extend(info.targets().map(|target| target.block));
-                }
+                block_succs.extend(mfunc.successors(id).map(|edge| edge.block));
             }
             if matches!(
                 flow,
@@ -696,16 +689,18 @@ mod tests {
         };
         // Dead instructions cannot introduce successors after a trap.
         {
-            let id = f.editor().writer().br(Block::from_u32(2));
+            let edge = f.editor().create_edge(Block::from_u32(2), &[]);
+            let id = f.editor().writer().br(edge);
             f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             id
         };
         {
-            let id = f.editor().writer().brcond(
-                veloc_lir::Reg::new_vreg(0),
-                Block::from_u32(0),
-                Block::from_u32(3),
-            );
+            let yes = f.editor().create_edge(Block::from_u32(0), &[]);
+            let no = f.editor().create_edge(Block::from_u32(3), &[]);
+            let id = f
+                .editor()
+                .writer()
+                .brcond(veloc_lir::Reg::new_vreg(0), yes, no);
             f.editor().append_inst(veloc_lir::BlockId::from_u32(1), id);
             id
         };
@@ -743,14 +738,15 @@ mod tests {
         }
         let mut emit = |block, op: TargetInst, targets: &[u32]| {
             {
+                let fields: alloc::vec::Vec<_> = targets
+                    .iter()
+                    .map(|&b| InstField::Edge(f.editor().create_edge(Block::from_u32(b), &[])))
+                    .collect();
                 let id = f.editor().writer().write(
                     MachineOpcode::Target(op.as_u32()),
                     &[],
                     &[],
-                    &targets
-                        .iter()
-                        .map(|&b| InstField::Block(Block::from_u32(b)))
-                        .collect::<alloc::vec::Vec<_>>(),
+                    &fields,
                 );
                 f.editor().append_inst(Block::from_u32(block), id);
                 id
@@ -831,7 +827,8 @@ mod tests {
         }
         let value = f.editor().alloc_vreg(Type::I64);
         let jump = {
-            let id = f.editor().writer().br(Block::from_u32(1));
+            let edge = f.editor().create_edge(Block::from_u32(1), &[]);
+            let id = f.editor().writer().br(edge);
             f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             id
         };
@@ -858,7 +855,8 @@ mod tests {
                 .unwrap()
                 .contains(&value)
         );
-        f.editor().rewriter(jump).br(Block::from_u32(2));
+        let edge = f.editor().create_edge(Block::from_u32(2), &[]);
+        f.editor().rewriter(jump).br(edge);
         analyses.apply(ChangeSet::INST_OPERANDS);
         assert_eq!(
             analyses.cfg(&f, &target).succs(Block::from_u32(0)),

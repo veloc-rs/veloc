@@ -1,3 +1,4 @@
+pub(crate) mod matching;
 pub mod select;
 
 pub use self::select::*;

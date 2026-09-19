@@ -103,7 +103,10 @@ The operations are:
 - `root.field`: read a source field, optionally named with `let value = root.field;`.
 - `require(type_is<T>(value))`: constrain a source value's logical type.
 - `require(matches(root.field, literal))`: match an integer or condition code.
-- `temp(value)`: declare a fresh register using a bound value as exemplar.
+- `temp(Type::I32)`: declare a fresh register with an explicit concrete type.
+  The argument currently resolves to one declared type constant (including template
+  substitution). Its bank is determined by target operand constraints, never copied
+  from another value. Dynamic host type expressions are not yet supported.
 - `build(TargetInst(...))`: describe a target instruction.
 - `replace(root, build(...))` or `replace(root, [instructions...])`: commit builds in order.
 
@@ -112,6 +115,21 @@ Bindings are candidate-local. Field reads are interned; requirements precede con
 unbound construction inputs and unused/repeated/reordered build handles.
 Build handles denote instructions, not their SSA results; explicit result
 registers still appear in multi-instruction constructors.
+
+Target `Value<...>` signatures constrain the representations of virtual operands.
+The rule compiler checks domains known from type guards and typed temporaries
+against these signatures. Unknown domains are not assumed valid: the explicit
+target validator checks concrete virtual values using the function's register
+table. Physical operands are checked against register classes and, after
+allocation, ties; they do not retain a logical pointer or floating-point type.
+Builders do not invoke this validation.
+
+Generic memory operations keep pointer-typed addresses. Selected address
+components instead follow the target representation contract (for example,
+64-bit integers or pointers on x86-64). These sets describe neither provenance
+nor the validity of an access. Likewise, a GPR value domain alone is not a proof
+of a low-bit read, extension, or defined upper bits; those are instruction
+semantics, not register-class or type-membership facts.
 
 Candidates directly store their root, field checks, temporary declarations and
 ordered deferred builds. There is no legacy node-bind/covers wrapper or synthetic

@@ -96,19 +96,20 @@ impl Allocation {
             for id in edge.instructions {
                 source.editor().append_inst(block, id);
             }
-            source.editor().redirect_edge(edge.branch, 0, block, &[]);
+            let successor = source
+                .inst(edge.branch)
+                .edge_ids()
+                .next()
+                .expect("branch edge");
+            source.editor().redirect_edge(successor, block);
+            source.editor().set_edge_args(successor, &[]);
         }
         let ids: Vec<_> = source
             .blocks()
             .flat_map(|b| source.block_insts(b))
             .collect();
         for id in ids {
-            if matches!(
-                source.inst_extra(id),
-                Some(veloc_lir::InstExtraRef::Branch(_))
-            ) {
-                source.editor().clear_inst_extra(id);
-            }
+            source.editor().clear_successor_args(id);
         }
         source.editor().clear_block_params();
         source.params.clear();

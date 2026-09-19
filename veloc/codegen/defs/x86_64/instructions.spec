@@ -4,6 +4,7 @@ import "../../../encoder/defs/x86_64.spec";
 import "registers.spec";
 
 type Block = rust("veloc_lir::BlockId");
+type Successor = rust("veloc_lir::EdgeId");
 type Global = rust("veloc_lir::SymbolId");
 type StackSlot = rust("veloc_lir::StackSlot");
 
@@ -29,11 +30,16 @@ fn memory(base: Reg, offset: i64) -> Rm {
     }));
 }
 
+// Representation domains for selected virtual values, not pointer provenance.
+// GPR operations may consume low bits or define a wider zero-extended value.
+typeset GprValue = ScalarInteger | Type::BOOL | Type::PTR;
+typeset AddressValue = Type::I64 | Type::PTR;
+
 // Machine values retain their source type; register classes constrain placement.
 // Each instruction owns its encoding; templates share static family structure.
 
 template GprBinary(Opcode: ident, Byte: expr, Wide: expr) {
-    op Opcode(src2: Value<Any>, src1: Value<Any>) -> (dst: Value<Any>) {
+    op Opcode(src2: Value<GprValue>, src1: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = legacy_rr(Byte, Wide, src2, dst);
         registers = {
             dst: tied(src1, GPR64),
@@ -58,7 +64,7 @@ expand GprBinary(X86Or32, 0x09, false);
 expand GprBinary(X86Xor32, 0x31, false);
 
 template GprCompare(Opcode: ident, Byte: expr, Wide: expr) {
-    op Opcode(lhs: Value<Any>, rhs: Value<Any>) -> () {
+    op Opcode(lhs: Value<GprValue>, rhs: Value<GprValue>) -> () {
         encoding = legacy_rr(Byte, Wide, rhs, lhs);
         registers = {
             lhs: GPR64,
@@ -73,7 +79,7 @@ template GprCompare(Opcode: ident, Byte: expr, Wide: expr) {
 
 expand GprCompare(X86Cmp32, 0x39, false);
 
-op X86Cmp32ri(src: Value<Any>, imm: i64) -> () {
+op X86Cmp32ri(src: Value<GprValue>, imm: i64) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x81, wide: false },
         Form::ModRm(RegField::Extension(7), Rm::Register(src)),
@@ -90,8 +96,8 @@ op X86Cmp32ri(src: Value<Any>, imm: i64) -> () {
 
 expand GprCompare(X86Test32, 0x85, false);
 
-template FloatCompare(Opcode: ident, Prefix: expr) {
-    op Opcode(lhs: Value<Any>, rhs: Value<Any>) -> () {
+template FloatCompare(Opcode: ident, Prefix: expr, Ty: expr) {
+    op Opcode(lhs: Value<Ty>, rhs: Value<Ty>) -> () {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2E, wide: false },
             Form::ModRm(RegField::Register(lhs), Rm::Register(rhs)),
@@ -107,14 +113,14 @@ template FloatCompare(Opcode: ident, Prefix: expr) {
     }
 }
 
-expand FloatCompare(X86Ucomiss, Prefix::None);
+expand FloatCompare(X86Ucomiss, Prefix::None, Type::F32);
 
 expand GprBinary(X86Add64, 0x01, true);
 
 expand GprBinary(X86Sub64, 0x29, true);
 
 template GprBinaryImm(Opcode: ident, Wide: expr, Extension: expr, Imm: ident) {
-    op Opcode(imm: i64, src: Value<Any>) -> (dst: Value<Any>) {
+    op Opcode(imm: i64, src: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x81, wide: Wide },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
@@ -149,10 +155,10 @@ expand GprCompare(X86Cmp64, 0x39, true);
 
 expand GprCompare(X86Test64, 0x85, true);
 
-expand FloatCompare(X86Ucomisd, Prefix::P66);
+expand FloatCompare(X86Ucomisd, Prefix::P66, Type::F64);
 
 template GprMultiply(Opcode: ident, Wide: expr) {
-    op Opcode(src2: Value<Any>, src1: Value<Any>) -> (dst: Value<Any>) {
+    op Opcode(src2: Value<GprValue>, src1: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xAF, wide: Wide },
             Form::ModRm(RegField::Register(dst), Rm::Register(src2)),
@@ -175,7 +181,7 @@ expand GprMultiply(X86IMul32, false);
 expand GprMultiply(X86IMul64, true);
 
 template GprShiftCl(Opcode: ident, Wide: expr, Extension: expr) {
-    op Opcode(count: Value<Any>, src1: Value<Any>) -> (dst: Value<Any>) {
+    op Opcode(count: Value<GprValue>, src1: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xD3, wide: Wide },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
@@ -213,7 +219,7 @@ expand GprShiftCl(X86Sar32Cl, false, 7);
 expand GprShiftCl(X86Sar64Cl, true, 7);
 
 template GprShiftImm(Opcode: ident, Wide: expr, Extension: expr) {
-    op Opcode(imm: i64, src: Value<Any>) -> (dst: Value<Any>) {
+    op Opcode(imm: i64, src: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xC1, wide: Wide },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(dst)),
@@ -238,7 +244,7 @@ expand GprShiftImm(X86Sar32ri, false, 7);
 expand GprShiftImm(X86Sar64ri, true, 7);
 
 template GprExtend(Opcode: ident, Map: expr, Byte: expr, Wide: expr, RmKind: ident) {
-    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+    op Opcode(src: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: Map, opcode: Byte, wide: Wide },
             Form::ModRm(RegField::Register(dst), RmKind(src)),
@@ -253,7 +259,7 @@ template GprExtend(Opcode: ident, Map: expr, Byte: expr, Wide: expr, RmKind: ide
 }
 
 template GprMove(Opcode: ident, Bits: expr, Wide: expr) {
-    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+    op Opcode(src: Value<GprValue>) -> (dst: Value<GprValue>) {
         encoding = legacy_rr(0x89, Wide, src, dst);
         registers = {
             dst: GPR64,
@@ -267,8 +273,8 @@ expand GprMove(X86Mov32, 32, false);
 
 expand GprMove(X86Mov64, 64, true);
 
-template FloatMove(Opcode: ident, Bits: expr, Prefix: expr) {
-    op Opcode(src2: Value<Any>) -> (dst: Value<Any>) {
+template FloatMove(Opcode: ident, Bits: expr, Prefix: expr, Ty: expr) {
+    op Opcode(src2: Value<Ty>) -> (dst: Value<Ty>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
             Form::ModRm(RegField::Register(dst), Rm::Register(src2)),
@@ -282,12 +288,12 @@ template FloatMove(Opcode: ident, Bits: expr, Prefix: expr) {
     }
 }
 
-expand FloatMove(X86Movss, 32, Prefix::F3);
+expand FloatMove(X86Movss, 32, Prefix::F3, Type::F32);
 
-expand FloatMove(X86Movsd, 64, Prefix::F2);
+expand FloatMove(X86Movsd, 64, Prefix::F2, Type::F64);
 
-template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr) {
-    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr) {
+    op Opcode(src: Value<GprValue>) -> (dst: Value<FloatType>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::P66, map: OpcodeMap::Map0F, opcode: 0x6E, wide: Wide },
             Form::ModRm(RegField::Register(dst), Rm::Register(src)),
@@ -301,10 +307,10 @@ template GprToXmmMove(Opcode: ident, Bits: expr, Wide: expr) {
     }
 }
 
-expand GprToXmmMove(X86MovdToXmm, 32, false);
+expand GprToXmmMove(X86MovdToXmm, 32, false, Type::F32);
 
-template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr) {
-    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr, FloatType: expr) {
+    op Opcode(src: Value<FloatType>) -> (dst: Value<GprValue>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::P66, map: OpcodeMap::Map0F, opcode: 0x7E, wide: Wide },
             Form::ModRm(RegField::Register(src), Rm::Register(dst)),
@@ -318,11 +324,11 @@ template XmmToGprMove(Opcode: ident, Bits: expr, Wide: expr) {
     }
 }
 
-expand XmmToGprMove(X86MovdFromXmm, 32, false);
+expand XmmToGprMove(X86MovdFromXmm, 32, false, Type::F32);
 
-expand GprToXmmMove(X86MovqToXmm, 64, true);
+expand GprToXmmMove(X86MovqToXmm, 64, true, Type::F64);
 
-expand XmmToGprMove(X86MovqFromXmm, 64, true);
+expand XmmToGprMove(X86MovqFromXmm, 64, true, Type::F64);
 
 expand GprExtend(X86Movzx8to32, OpcodeMap::Map0F, 0xB6, false, Rm::ByteRegister);
 
@@ -338,7 +344,7 @@ expand GprExtend(X86Movsx16to64, OpcodeMap::Map0F, 0xBF, true, Rm::Register);
 
 expand GprExtend(X86Movsxd32to64, OpcodeMap::Primary, 0x63, true, Rm::Register);
 
-op X86Mov32Imm(imm: i64) -> (dst: Value<Any>) {
+op X86Mov32Imm(imm: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xB8, wide: false },
         Form::OpcodeReg(dst),
@@ -350,7 +356,7 @@ op X86Mov32Imm(imm: i64) -> (dst: Value<Any>) {
     schedule = { latency: 1 };
 }
 
-op X86Mov64Imm32(imm: i64) -> (dst: Value<Any>) {
+op X86Mov64Imm32(imm: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xC7, wide: true },
         Form::ModRm(RegField::Extension(0), Rm::Register(dst)),
@@ -362,7 +368,7 @@ op X86Mov64Imm32(imm: i64) -> (dst: Value<Any>) {
     schedule = { latency: 1 };
 }
 
-op X86Mov64Imm64(imm: i64) -> (dst: Value<Any>) {
+op X86Mov64Imm64(imm: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xB8, wide: true },
         Form::OpcodeReg(dst),
@@ -374,7 +380,7 @@ op X86Mov64Imm64(imm: i64) -> (dst: Value<Any>) {
     schedule = { latency: 1 };
 }
 
-op X86Load8U32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+op X86Load8U32(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB6, wide: false },
         Form::ModRm(RegField::Register(dst), memory(base, off)),
@@ -387,7 +393,7 @@ op X86Load8U32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 1 };
 }
 
-op X86Load16U32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+op X86Load16U32(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB7, wide: false },
         Form::ModRm(RegField::Register(dst), memory(base, off)),
@@ -400,7 +406,7 @@ op X86Load16U32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 2 };
 }
 
-op X86Load32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+op X86Load32(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: false },
         Form::ModRm(RegField::Register(dst), memory(base, off)),
@@ -413,7 +419,7 @@ op X86Load32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 4 };
 }
 
-op X86Load64(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+op X86Load64(base: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: true },
         Form::ModRm(RegField::Register(dst), memory(base, off)),
@@ -426,7 +432,7 @@ op X86Load64(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 8 };
 }
 
-op X86LoadF32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+op X86LoadF32(base: Value<AddressValue>, off: i64) -> (dst: Value<Type::F32>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
         Form::ModRm(RegField::Register(dst), memory(base, off)),
@@ -439,7 +445,7 @@ op X86LoadF32(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 4 };
 }
 
-op X86LoadF64(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
+op X86LoadF64(base: Value<AddressValue>, off: i64) -> (dst: Value<Type::F64>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::F2, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
         Form::ModRm(RegField::Register(dst), memory(base, off)),
@@ -452,7 +458,7 @@ op X86LoadF64(base: Value<Any>, off: i64) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 8 };
 }
 
-op X86Store8(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+op X86Store8(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x88, wide: false },
         Form::ModRm(RegField::ByteRegister(src), memory(base, off)),
@@ -465,7 +471,7 @@ op X86Store8(src: Value<Any>, base: Value<Any>, off: i64) -> () {
     memory = { kind: Write, bytes: 1 };
 }
 
-op X86Store16(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+op X86Store16(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::P66, map: OpcodeMap::Primary, opcode: 0x89, wide: false },
         Form::ModRm(RegField::Register(src), memory(base, off)),
@@ -478,7 +484,7 @@ op X86Store16(src: Value<Any>, base: Value<Any>, off: i64) -> () {
     memory = { kind: Write, bytes: 2 };
 }
 
-op X86Store32(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+op X86Store32(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: false },
         Form::ModRm(RegField::Register(src), memory(base, off)),
@@ -491,7 +497,7 @@ op X86Store32(src: Value<Any>, base: Value<Any>, off: i64) -> () {
     memory = { kind: Write, bytes: 4 };
 }
 
-op X86Store64(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+op X86Store64(src: Value<GprValue>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: true },
         Form::ModRm(RegField::Register(src), memory(base, off)),
@@ -504,7 +510,7 @@ op X86Store64(src: Value<Any>, base: Value<Any>, off: i64) -> () {
     memory = { kind: Write, bytes: 8 };
 }
 
-op X86StoreF32(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+op X86StoreF32(src: Value<Type::F32>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0x11, wide: false },
         Form::ModRm(RegField::Register(src), memory(base, off)),
@@ -517,7 +523,7 @@ op X86StoreF32(src: Value<Any>, base: Value<Any>, off: i64) -> () {
     memory = { kind: Write, bytes: 4 };
 }
 
-op X86StoreF64(src: Value<Any>, base: Value<Any>, off: i64) -> () {
+op X86StoreF64(src: Value<Type::F64>, base: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::F2, map: OpcodeMap::Map0F, opcode: 0x11, wide: false },
         Form::ModRm(RegField::Register(src), memory(base, off)),
@@ -531,7 +537,7 @@ op X86StoreF64(src: Value<Any>, base: Value<Any>, off: i64) -> () {
 }
 
 template SetCondition(Opcode: ident, Byte: expr) {
-    op Opcode() -> (dst: Value<Any>) {
+    op Opcode() -> (dst: Value<GprValue>) {
         implicit = { reads: [EFLAGS] };
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
@@ -568,7 +574,7 @@ expand SetCondition(X86Setp, 0x9A);
 
 expand SetCondition(X86Setnp, 0x9B);
 
-op X86Load8U32Stack(slot: StackSlot) -> (dst: Value<Any>) {
+op X86Load8U32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB6, wide: false },
         Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
@@ -580,7 +586,7 @@ op X86Load8U32Stack(slot: StackSlot) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 1 };
 }
 
-op X86Load16U32Stack(slot: StackSlot) -> (dst: Value<Any>) {
+op X86Load16U32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Map0F, opcode: 0xB7, wide: false },
         Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
@@ -592,7 +598,7 @@ op X86Load16U32Stack(slot: StackSlot) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 2 };
 }
 
-op X86Load32Stack(slot: StackSlot) -> (dst: Value<Any>) {
+op X86Load32Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: false },
         Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
@@ -604,7 +610,7 @@ op X86Load32Stack(slot: StackSlot) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 4 };
 }
 
-op X86Load64Stack(slot: StackSlot) -> (dst: Value<Any>) {
+op X86Load64Stack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: true },
         Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
@@ -616,7 +622,7 @@ op X86Load64Stack(slot: StackSlot) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 8 };
 }
 
-op X86LoadF32Stack(slot: StackSlot) -> (dst: Value<Any>) {
+op X86LoadF32Stack(slot: StackSlot) -> (dst: Value<Type::F32>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
         Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
@@ -628,7 +634,7 @@ op X86LoadF32Stack(slot: StackSlot) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 4 };
 }
 
-op X86LoadF64Stack(slot: StackSlot) -> (dst: Value<Any>) {
+op X86LoadF64Stack(slot: StackSlot) -> (dst: Value<Type::F64>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::F2, map: OpcodeMap::Map0F, opcode: 0x10, wide: false },
         Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
@@ -640,7 +646,7 @@ op X86LoadF64Stack(slot: StackSlot) -> (dst: Value<Any>) {
     memory = { kind: Read, bytes: 8 };
 }
 
-op X86Store8Stack(src: Value<Any>, slot: StackSlot) -> () {
+op X86Store8Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x88, wide: false },
         Form::ModRm(RegField::ByteRegister(src), Rm::Memory(slot)),
@@ -652,7 +658,7 @@ op X86Store8Stack(src: Value<Any>, slot: StackSlot) -> () {
     memory = { kind: Write, bytes: 1 };
 }
 
-op X86Store16Stack(src: Value<Any>, slot: StackSlot) -> () {
+op X86Store16Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::P66, map: OpcodeMap::Primary, opcode: 0x89, wide: false },
         Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
@@ -664,7 +670,7 @@ op X86Store16Stack(src: Value<Any>, slot: StackSlot) -> () {
     memory = { kind: Write, bytes: 2 };
 }
 
-op X86Store32Stack(src: Value<Any>, slot: StackSlot) -> () {
+op X86Store32Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: false },
         Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
@@ -676,7 +682,7 @@ op X86Store32Stack(src: Value<Any>, slot: StackSlot) -> () {
     memory = { kind: Write, bytes: 4 };
 }
 
-op X86Store64Stack(src: Value<Any>, slot: StackSlot) -> () {
+op X86Store64Stack(src: Value<GprValue>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: true },
         Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
@@ -688,7 +694,7 @@ op X86Store64Stack(src: Value<Any>, slot: StackSlot) -> () {
     memory = { kind: Write, bytes: 8 };
 }
 
-op X86StoreF32Stack(src: Value<Any>, slot: StackSlot) -> () {
+op X86StoreF32Stack(src: Value<Type::F32>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0x11, wide: false },
         Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
@@ -700,7 +706,7 @@ op X86StoreF32Stack(src: Value<Any>, slot: StackSlot) -> () {
     memory = { kind: Write, bytes: 4 };
 }
 
-op X86StoreF64Stack(src: Value<Any>, slot: StackSlot) -> () {
+op X86StoreF64Stack(src: Value<Type::F64>, slot: StackSlot) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::F2, map: OpcodeMap::Map0F, opcode: 0x11, wide: false },
         Form::ModRm(RegField::Register(src), Rm::Memory(slot)),
@@ -717,7 +723,7 @@ op X86Call(target: Global) -> () {
     flow = Call;
 }
 
-op X86CallReg(target: Value<Any>) -> () {
+op X86CallReg(target: Value<AddressValue>) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xFF, wide: false },
         Form::ModRm(RegField::Extension(2), Rm::Register(target)),
@@ -747,7 +753,7 @@ op X86Ud2() -> () {
     flow = Trap;
 }
 
-op X86Jmp(target: Block) -> () {
+op X86Jmp(target: Successor) -> () {
     encoding = Emission::branch(
         target,
         Branch { map: OpcodeMap::Primary, near: 0xE9, short: 0xEB },
@@ -755,7 +761,7 @@ op X86Jmp(target: Block) -> () {
     flow = Jump;
 }
 
-op X86Jne(target: Block) -> () {
+op X86Jne(target: Successor) -> () {
     encoding = Emission::branch(
         target,
         Branch { map: OpcodeMap::Map0F, near: 0x85, short: 0x75 },
@@ -766,7 +772,7 @@ op X86Jne(target: Block) -> () {
     flow = Branch;
 }
 
-op X86Je(target: Block) -> () {
+op X86Je(target: Successor) -> () {
     encoding = Emission::branch(
         target,
         Branch { map: OpcodeMap::Map0F, near: 0x84, short: 0x74 },
@@ -777,7 +783,7 @@ op X86Je(target: Block) -> () {
     flow = Branch;
 }
 
-op X86PushRbp(rbp: Value<Any>) -> () {
+op X86PushRbp(rbp: Value<GprValue>) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x50, wide: false },
         Form::OpcodeReg(rbp),
@@ -788,7 +794,7 @@ op X86PushRbp(rbp: Value<Any>) -> () {
     };
 }
 
-op X86PopRbp() -> (rbp: Value<Any>) {
+op X86PopRbp() -> (rbp: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x58, wide: false },
         Form::OpcodeReg(rbp),
@@ -799,7 +805,7 @@ op X86PopRbp() -> (rbp: Value<Any>) {
     };
 }
 
-op X86MovRbpRsp(rsp: Value<Any>) -> (rbp: Value<Any>) {
+op X86MovRbpRsp(rsp: Value<GprValue>) -> (rbp: Value<GprValue>) {
     encoding = legacy_rr(0x89, true, rsp, rbp);
     registers = {
         rbp: fixed(RBP, GPR64),
@@ -808,7 +814,7 @@ op X86MovRbpRsp(rsp: Value<Any>) -> (rbp: Value<Any>) {
 }
 
 template Divide32(Opcode: ident, Extension: expr) {
-    op Opcode(src: Value<Any>) -> () {
+    op Opcode(src: Value<GprValue>) -> () {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xF7, wide: false },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(src)),
@@ -828,7 +834,7 @@ template Divide32(Opcode: ident, Extension: expr) {
 expand Divide32(X86IDiv32, 7);
 
 template Divide64(Opcode: ident, Extension: expr) {
-    op Opcode(src: Value<Any>) -> () {
+    op Opcode(src: Value<GprValue>) -> () {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xF7, wide: true },
             Form::ModRm(RegField::Extension(Extension), Rm::Register(src)),
@@ -875,8 +881,8 @@ op X86Cdq() -> () {
     };
 }
 
-template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr) {
-    op Opcode(rhs: Value<Any>, lhs: Value<Any>) -> (dst: Value<Any>) {
+template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr, Ty: expr) {
+    op Opcode(rhs: Value<Ty>, lhs: Value<Ty>) -> (dst: Value<Ty>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
             Form::ModRm(RegField::Register(dst), Rm::Register(rhs)),
@@ -890,23 +896,23 @@ template FloatBinary(Opcode: ident, Prefix: expr, Byte: expr) {
     }
 }
 
-expand FloatBinary(X86FAdd32, Prefix::F3, 0x58);
+expand FloatBinary(X86FAdd32, Prefix::F3, 0x58, Type::F32);
 
-expand FloatBinary(X86FAdd64, Prefix::F2, 0x58);
+expand FloatBinary(X86FAdd64, Prefix::F2, 0x58, Type::F64);
 
-expand FloatBinary(X86FSub32, Prefix::F3, 0x5C);
+expand FloatBinary(X86FSub32, Prefix::F3, 0x5C, Type::F32);
 
-expand FloatBinary(X86FSub64, Prefix::F2, 0x5C);
+expand FloatBinary(X86FSub64, Prefix::F2, 0x5C, Type::F64);
 
-expand FloatBinary(X86FMul32, Prefix::F3, 0x59);
+expand FloatBinary(X86FMul32, Prefix::F3, 0x59, Type::F32);
 
-expand FloatBinary(X86FMul64, Prefix::F2, 0x59);
+expand FloatBinary(X86FMul64, Prefix::F2, 0x59, Type::F64);
 
-expand FloatBinary(X86FDiv32, Prefix::F3, 0x5E);
+expand FloatBinary(X86FDiv32, Prefix::F3, 0x5E, Type::F32);
 
-expand FloatBinary(X86FDiv64, Prefix::F2, 0x5E);
+expand FloatBinary(X86FDiv64, Prefix::F2, 0x5E, Type::F64);
 
-op X86LeaStack(slot: StackSlot) -> (dst: Value<Any>) {
+op X86LeaStack(slot: StackSlot) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8D, wide: true },
         Form::ModRm(RegField::Register(dst), Rm::Memory(slot)),
@@ -917,8 +923,8 @@ op X86LeaStack(slot: StackSlot) -> (dst: Value<Any>) {
     };
 }
 
-template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr) {
-    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: expr) {
+    op Opcode(src: Value<Src>) -> (dst: Value<Dst>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2A, wide: Wide },
             Form::ModRm(RegField::Register(dst), Rm::Register(src)),
@@ -932,16 +938,16 @@ template IntToFloat(Opcode: ident, Prefix: expr, Wide: expr) {
     }
 }
 
-expand IntToFloat(X86I32ToF32, Prefix::F3, false);
+expand IntToFloat(X86I32ToF32, Prefix::F3, false, Type::I32, Type::F32);
 
-expand IntToFloat(X86I64ToF32, Prefix::F3, true);
+expand IntToFloat(X86I64ToF32, Prefix::F3, true, Type::I64, Type::F32);
 
-expand IntToFloat(X86I32ToF64, Prefix::F2, false);
+expand IntToFloat(X86I32ToF64, Prefix::F2, false, Type::I32, Type::F64);
 
-expand IntToFloat(X86I64ToF64, Prefix::F2, true);
+expand IntToFloat(X86I64ToF64, Prefix::F2, true, Type::I64, Type::F64);
 
-template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr) {
-    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr, Src: expr, Dst: expr) {
+    op Opcode(src: Value<Src>) -> (dst: Value<Dst>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: 0x2C, wide: Wide },
             Form::ModRm(RegField::Register(dst), Rm::Register(src)),
@@ -955,16 +961,16 @@ template FloatToInt(Opcode: ident, Prefix: expr, Wide: expr) {
     }
 }
 
-expand FloatToInt(X86F32ToI32, Prefix::F3, false);
+expand FloatToInt(X86F32ToI32, Prefix::F3, false, Type::F32, Type::I32);
 
-expand FloatToInt(X86F32ToI64, Prefix::F3, true);
+expand FloatToInt(X86F32ToI64, Prefix::F3, true, Type::F32, Type::I64);
 
-expand FloatToInt(X86F64ToI32, Prefix::F2, false);
+expand FloatToInt(X86F64ToI32, Prefix::F2, false, Type::F64, Type::I32);
 
-expand FloatToInt(X86F64ToI64, Prefix::F2, true);
+expand FloatToInt(X86F64ToI64, Prefix::F2, true, Type::F64, Type::I64);
 
-template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr) {
-    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr, Src: expr, Dst: expr) {
+    op Opcode(src: Value<Src>) -> (dst: Value<Dst>) {
         encoding = Emission::legacy(
             Legacy { prefix: Prefix, map: OpcodeMap::Map0F, opcode: Byte, wide: false },
             Form::ModRm(RegField::Register(dst), Rm::Register(src)),
@@ -978,16 +984,16 @@ template FloatUnary(Opcode: ident, Prefix: expr, Byte: expr) {
     }
 }
 
-expand FloatUnary(X86F32ToF64, Prefix::F3, 0x5A);
+expand FloatUnary(X86F32ToF64, Prefix::F3, 0x5A, Type::F32, Type::F64);
 
-expand FloatUnary(X86F64ToF32, Prefix::F2, 0x5A);
+expand FloatUnary(X86F64ToF32, Prefix::F2, 0x5A, Type::F64, Type::F32);
 
-expand FloatUnary(X86SqrtF32, Prefix::F3, 0x51);
+expand FloatUnary(X86SqrtF32, Prefix::F3, 0x51, Type::F32, Type::F32);
 
-expand FloatUnary(X86SqrtF64, Prefix::F2, 0x51);
+expand FloatUnary(X86SqrtF64, Prefix::F2, 0x51, Type::F64, Type::F64);
 
 template Popcount(Opcode: ident, Wide: expr) {
-    op Opcode(src: Value<Any>) -> (dst: Value<Any>) {
+    op Opcode(src: Value<GprValue>) -> (dst: Value<GprValue>) {
         requires = ["POPCNT"];
         encoding = Emission::legacy(
             Legacy { prefix: Prefix::F3, map: OpcodeMap::Map0F, opcode: 0xB8, wide: Wide },
@@ -1008,7 +1014,7 @@ fn indexed_memory(base: Reg, index: Reg, offset: i64) -> Rm {
     }));
 }
 
-op X86Load64Index(base: Value<Any>, index: Value<Any>, off: i64) -> (dst: Value<Any>) {
+op X86Load64Index(base: Value<AddressValue>, index: Value<AddressValue>, off: i64) -> (dst: Value<GprValue>) {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x8B, wide: true },
         Form::ModRm(RegField::Register(dst), indexed_memory(base, index, off)),
@@ -1018,7 +1024,7 @@ op X86Load64Index(base: Value<Any>, index: Value<Any>, off: i64) -> (dst: Value<
     memory = { kind: Read, bytes: 8 };
 }
 
-op X86Store64Index(src: Value<Any>, base: Value<Any>, index: Value<Any>, off: i64) -> () {
+op X86Store64Index(src: Value<GprValue>, base: Value<AddressValue>, index: Value<AddressValue>, off: i64) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0x89, wide: true },
         Form::ModRm(RegField::Register(src), indexed_memory(base, index, off)),

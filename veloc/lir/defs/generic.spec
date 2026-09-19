@@ -2,11 +2,11 @@ import "../../defs/prelude.spec";
 
 // Operand-array storage is independent of operation semantics and type contracts.
 type StackSlot = rust("crate::StackSlot");
-type Block = rust("crate::BlockId");
+type Successor = rust("crate::EdgeId");
 
 type Reg = rust("crate::Reg");
 enum InstField {
-    variants = [Imm(i64), FImm(f64), Block(Block), StackSlot(StackSlot), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId)];
+    variants = [Imm(i64), FImm(f64), Edge(Successor), StackSlot(StackSlot), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId)];
 }
 enum ControlFlow {
     variants = [Next, Branch, Jump, Return, Call, Trap];
@@ -68,17 +68,18 @@ struct FloatConstant {
 }
 
 struct Branch {
-    target: Block,
+    target: Successor,
 }
 
 struct BranchCond {
     cond: Reg,
-    then_blk: Block,
-    else_blk: Block,
+    then_blk: Successor,
+    else_blk: Successor,
 }
 
 struct BranchTable {
     index: Reg,
+    targets: sequence(Successor),
 }
 
 struct Select {
@@ -490,21 +491,21 @@ op Ptrtoint<T: ScalarInteger>(src: Value<Type::PTR>) -> (dst: Value<T>) {
     storage = UnaryReg { dst, src };
 }
 
-op Br(target: Block) -> () {
+op Br(target: Successor) -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
     storage = Branch { target };
     flow = Jump;
 }
 
-op Brcond(cond: Value<Type::BOOL>, then_blk: Block, else_blk: Block) -> () {
+op Brcond(cond: Value<Type::BOOL>, then_blk: Successor, else_blk: Successor) -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
     storage = BranchCond { cond, then_blk, else_blk };
     flow = Jump;
 }
 
-op Brjt<T: ScalarInteger>(index: Value<T>) -> () {
+op Brjt<T: ScalarInteger>(index: Value<T>, targets: sequence(Successor)) -> () {
     meta = OpInfo { traits: OpTraits::TERMINATOR, memory: MemoryEffect::NONE };
-    storage = BranchTable { index };
+    storage = BranchTable { index, targets };
     flow = Jump;
 }
 

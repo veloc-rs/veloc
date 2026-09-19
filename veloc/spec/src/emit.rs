@@ -112,6 +112,7 @@ pub struct Options<'a> {
     pub rules: Option<ValueRules<'a>>,
     pub decisions: Option<Decisions<'a>>,
 }
+
 /// Bind a checked rule module to two explicitly named IR dialects.
 pub struct ValueRules<'a> {
     pub source: &'a Source,

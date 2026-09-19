@@ -56,7 +56,6 @@ pub(crate) fn generate_header(output: &mut String, arch: &str) {
     writeln!(
         output,
         r#"use veloc_lir::{{InstField, Reg}};
-use smallvec::SmallVec;
 use crate::target::arch::{{
     AbiDescriptor, AbiPreservedSet, AbiRegisterPool, AbiStackDescriptor, AbiValueClass,
     FixedUseConstraint, GenericInstMetadata, LoweringContext, RegInfo,
@@ -84,11 +83,6 @@ fn reg_value<R: IntoOptReg>(value: R) -> Option<Reg> {{
     value.into_opt_reg()
 }}
 
-fn reg_value_to_vreg<R: IntoOptReg>(value: R) -> Option<veloc_lir::VReg> {{
-    value
-        .into_opt_reg()
-        .and_then(|reg| reg.is_vreg().then(|| veloc_lir::VReg::from_u32(reg.index())))
-}}
 
 "#
     )
@@ -139,7 +133,7 @@ impl TargetInst {{
         }}
     }}
 
-    pub fn as_u32(&self) -> u32 {{
+    pub const fn as_u32(&self) -> u32 {{
         match self {{"#
     )
     .unwrap();
@@ -445,7 +439,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
         }
     }
     out.push_str("_ => FeatureSet::empty(),\n} } }\n");
-    out.push_str("impl TargetInst { pub fn validate(&self, inst: &veloc_lir::InstRef<'_>, mode: crate::target::arch::ValidationMode) -> crate::Result<()> {\nlet invalid = || crate::Error::codegen(alloc::format!(\"invalid operands for {:?}\", self));\nmatch self {\n");
+    out.push_str("impl TargetInst { pub fn validate(&self, function: &veloc_lir::MachineFunction, inst: &veloc_lir::InstRef<'_>, mode: crate::target::arch::ValidationMode) -> crate::Result<()> {\nlet invalid = || crate::Error::codegen(alloc::format!(\"invalid operands for {:?}\", self));\nmatch self {\n");
     let mut instructions: Vec<_> = instructions.iter().collect();
     instructions.sort_by_key(|(name, _)| *name);
     for (name, instruction) in instructions {
@@ -469,13 +463,23 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
         for op in &instruction.operands {
             let (field_name, variant) = match op {
                 OperandConstraint::Imm(name) => (name, "Imm"),
-                OperandConstraint::Block(name) => (name, "Block"),
+                OperandConstraint::Block(name) => (name, "Edge"),
                 OperandConstraint::Global(name) => (name, "Global"),
                 OperandConstraint::StackSlot(name) => (name, "StackSlot"),
                 _ => continue,
             };
             let (index, _) = find_operand_info(field_name, &instruction.operands).unwrap();
             writeln!(out, "if !matches!(inst.fields()[{index}], InstField::{variant}(_)) {{ return Err(invalid()); }}").unwrap();
+        }
+        for (name, set) in &instruction.value_types {
+            let (index, op) = find_operand_info(name, &instruction.operands).unwrap();
+            let storage = if matches!(op, OperandConstraint::Def(_)) {
+                "results"
+            } else {
+                "inputs"
+            };
+            let accepts = crate::types::generate::accepts(set, "data.ty");
+            writeln!(out, "if let Some(value) = inst.{storage}()[{index}].as_vreg() {{ let data = function.vregs().get(value).ok_or_else(invalid)?; if !({accepts}) {{ return Err(crate::Error::codegen(alloc::format!(\"invalid representation for {{:?}}.{name}: {{:?}}\", self, data.ty))); }} }}").unwrap();
         }
         for (name, registers) in &instruction.reg_classes {
             let (index, op) = find_operand_info(name, &instruction.operands).unwrap();

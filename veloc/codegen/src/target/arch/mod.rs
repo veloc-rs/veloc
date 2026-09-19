@@ -34,8 +34,8 @@ pub trait TargetFeatures {
 }
 
 pub trait LoweringContext {
-    /// Create a fresh machine SSA temporary with the exemplar's type and bank.
-    fn alloc_tmp(&mut self, like: Reg) -> Reg;
+    /// Create a typed SSA temporary; target operand constraints select its bank.
+    fn alloc_tmp(&mut self, ty: Type) -> Reg;
     /// 获取值的类型
     fn get_type(&self, val: VReg) -> Type;
 
@@ -84,6 +84,7 @@ pub trait TargetInfo {
 pub trait TargetInstructions {
     fn validate_instruction(
         &self,
+        function: &MachineFunction,
         inst: &veloc_lir::InstRef<'_>,
         mode: ValidationMode,
     ) -> crate::Result<()>;

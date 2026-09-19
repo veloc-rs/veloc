@@ -50,6 +50,9 @@ fn production_target_contracts_generate_all_consumers() {
         );
     }
     assert_eq!(output, &compile()[veloc_spec::Emit::Target]);
+    assert!(output.contains("Op::BuildInst as u8"));
+    assert!(output.contains("Op::GetDef as u8"));
+    assert!(!output.contains("match candidate"));
 }
 
 #[test]

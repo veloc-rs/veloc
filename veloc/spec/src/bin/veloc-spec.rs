@@ -141,7 +141,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         Some(Target {
             input: source_definitions
                 .as_ref()
-                .map(|source| {
+                .map(|source| -> Result<_, Box<dyn std::error::Error>> {
                     Ok((
                         required(args.source_dialect.as_deref(), "source-dialect")?,
                         source,

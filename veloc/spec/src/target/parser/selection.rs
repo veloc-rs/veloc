@@ -64,9 +64,12 @@ impl Reader<'_> {
                         });
                     }
                     Kind::Call(op, args) if op == "temp" && args.len() == 1 => {
-                        let exemplar = self.selection_value(&args[0], root, &mut state)?;
+                        let domain = self.selection_domain(&args[0])?;
+                        let [ty] = domain.as_slice() else {
+                            return Err(self.error(value, "temporary requires one concrete type"));
+                        };
                         state.constructing = true;
-                        state.temps.push((name.clone(), exemplar));
+                        state.temps.push((name.clone(), ty.clone()));
                     }
                     Kind::Call(op, args) if op == "build" && args.len() == 1 => {
                         let index = self.selection_build(&args[0], root, &mut state)?;

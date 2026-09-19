@@ -3,8 +3,7 @@ use crate::error::{Error, Result};
 use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
 use alloc::vec::Vec;
 use veloc_lir::{
-    BranchCondInfo, BranchInfo, GenericOpcode, InstBuild, InstExtra, InstRead, InstView,
-    MachineFunction, Writable,
+    GenericOpcode, InstBuild, InstRead, InstView, MachineFunction, Successor, Writable,
 };
 use veloc_mir::{IntCC, Type};
 
@@ -29,10 +28,14 @@ impl FunctionPass for BranchTableLowering {
                 unreachable!()
             };
             let index = table.index;
-            let Some(InstExtra::BrTable(info)) = f.inst_extra(id).map(|e| e.to_owned()) else {
-                return Err(Error::codegen("branch table has no targets"));
-            };
-            let Some((default, cases)) = info.targets.split_last() else {
+            let targets: Vec<Successor> = f
+                .successors(id)
+                .map(|edge| Successor {
+                    block: edge.block,
+                    args: edge.args.into(),
+                })
+                .collect();
+            let Some((default, cases)) = targets.split_last() else {
                 return Err(Error::codegen("branch table has no default target"));
             };
             let block = f.inst_block(id).expect("placed branch table");
@@ -40,13 +43,8 @@ impl FunctionPass for BranchTableLowering {
                 return Err(Error::codegen("branch table must terminate its block"));
             }
             if cases.is_empty() {
-                let branch = f.editor().writer().br(default.block);
-                f.editor().set_inst_extra(
-                    branch,
-                    InstExtra::Branch(BranchInfo {
-                        args: default.args.clone(),
-                    }),
-                );
+                let edge = f.editor().create_edge(default.block, &default.args);
+                let branch = f.editor().writer().br(edge);
                 f.editor().replace_with(id, &[branch]);
                 continue;
             }
@@ -66,18 +64,11 @@ impl FunctionPass for BranchTableLowering {
                     .editor()
                     .writer()
                     .icmp(Writable(equal), index, value, IntCC::Eq);
-                let branch = f.editor().writer().brcond(equal, target.block, next);
-                f.editor().set_inst_extra(
-                    branch,
-                    InstExtra::BranchCond(BranchCondInfo {
-                        then_args: target.args.clone(),
-                        else_args: if last {
-                            default.args.clone()
-                        } else {
-                            Default::default()
-                        },
-                    }),
-                );
+                let yes = f.editor().create_edge(target.block, &target.args);
+                let no = f
+                    .editor()
+                    .create_edge(next, if last { &default.args } else { &[] });
+                let branch = f.editor().writer().brcond(equal, yes, no);
                 let output = [constant, compare, branch];
                 if case == 0 {
                     f.editor().replace_with(id, &output);

@@ -130,6 +130,13 @@ struct StoredInst {
     results: RegRange,
 }
 
+#[derive(Debug, Clone)]
+struct StoredEdge {
+    owner: Option<InstId>,
+    block: crate::BlockId,
+    args: Range,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct InstStore {
     instructions: PrimaryMap<InstId, StoredInst>,
@@ -138,17 +145,38 @@ pub struct InstStore {
     // Frequently queried access facts use direct indexing; larger optional
     // payloads use sparse tables so ordinary instructions allocate no entries.
     memory: SecondaryMap<InstId, Option<MemoryAccess>>,
-    extras: HashMap<InstId, InstExtra<Range>>,
+    extras: HashMap<InstId, InstExtra>,
+    edges: PrimaryMap<crate::EdgeId, Option<StoredEdge>>,
     pub(crate) references: References,
 }
 
-/// Append-only instruction construction for selection rules. Existing instructions
-/// can be read, but replacement/erasure must go through the function editor.
+/// Instruction construction for selection rules. Replacement/erasure must go
+/// through the function editor. Replacement edges are copied during construction;
+/// the selector transfers their identities only when committing the replacement.
 pub struct InstBuilder<'a> {
+    pub(crate) edge_transfers: Vec<(crate::EdgeId, crate::EdgeId)>,
     pub(crate) store: &'a mut InstStore,
     pub(crate) changes: Option<&'a mut crate::EditChanges>,
 }
 impl InstBuilder<'_> {
+    pub fn into_edge_transfers(self) -> Vec<(crate::EdgeId, crate::EdgeId)> {
+        self.edge_transfers
+    }
+    /// Prepare an independent edge for a replacement; ownership of the source
+    /// is unchanged until the selector commits its explicit transfer list.
+    pub fn replacement_edge(&mut self, source: InstId, id: crate::EdgeId) -> crate::EdgeId {
+        assert_eq!(
+            self.store.edges[id].as_ref().expect("deleted edge").owner,
+            Some(source)
+        );
+        assert!(
+            !self.edge_transfers.iter().any(|&(old, _)| old == id),
+            "edge transferred twice"
+        );
+        let copy = self.store.clone_edge(id);
+        self.edge_transfers.push((id, copy));
+        copy
+    }
     /// Find a virtual value's unique defining instruction. This is a read-only
     /// SSA query, not permission to move, fold or erase the definition.
     pub fn def(&self, reg: Reg) -> Option<InstId> {
@@ -177,6 +205,9 @@ pub struct InstWriter<'a> {
 }
 
 impl<'a> InstWriter<'a> {
+    pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
+        self.store.create_edge(block, args)
+    }
     pub(crate) fn tracking(mut self, changes: Option<&'a mut crate::EditChanges>) -> Self {
         self.changes = changes;
         self
@@ -246,25 +277,6 @@ impl crate::InstBuild for InstWriter<'_> {
         fields: &[InstField],
     ) -> InstId {
         self.write(MachineOpcode::Generic(opcode), results, inputs, fields)
-    }
-}
-
-impl StoredInst {
-    fn operand_ranges<'a>(
-        &'a self,
-        extra: Option<&'a InstExtra<Range>>,
-    ) -> impl Iterator<Item = (Range, RefRole)> + 'a {
-        [
-            (self.inputs.all, RefRole::Use),
-            (self.results.all, RefRole::Def),
-        ]
-        .into_iter()
-        .chain(
-            extra
-                .into_iter()
-                .flat_map(|e| e.arg_ranges())
-                .map(|&r| (r, RefRole::Use)),
-        )
     }
 }
 
@@ -393,6 +405,7 @@ impl InstStore {
     ) -> InstId {
         let id = self.instructions.next_key();
         let inputs = self.alloc_group(id, RefRole::Use, inputs, implicit.uses);
+        self.attach_edges(id, fields);
         let fields = self.fields.insert(fields);
         let results = self.alloc_group(id, RefRole::Def, results, implicit.defs);
         let id = self.instructions.push(StoredInst {
@@ -426,10 +439,15 @@ impl InstStore {
         if let Some(extra) = self.extras.remove(&source) {
             self.extras.insert(id, extra);
         }
-        for link in self.instructions[id]
-            .operand_ranges(self.extras.get(&id))
+        let edge_ids: Vec<_> = self.edge_ids(id).collect();
+        for edge in edge_ids {
+            self.edges[edge].as_mut().unwrap().owner = Some(id);
+        }
+        let links: Vec<_> = self
+            .operand_ranges(id)
             .flat_map(|(range, _)| range.ids())
-        {
+            .collect();
+        for link in links {
             let mut site = self.references.links.owner(link);
             site.inst = id;
             self.references.links.set_owner(link, site);
@@ -467,23 +485,28 @@ impl InstStore {
         memory: Option<MemoryAccess>,
         implicit: RegEffects<&[Reg]>,
     ) {
+        self.check_edges(id, fields);
         self.clear_extra(id);
+        let removed: Vec<_> = self
+            .edge_ids(id)
+            .filter(|edge| {
+                !fields
+                    .iter()
+                    .any(|field| matches!(field, InstField::Edge(id) if id == edge))
+            })
+            .collect();
+        for edge in removed {
+            self.delete_edge(edge);
+        }
+        self.attach_edges(id, fields);
         self.release_registers(self.instructions[id].inputs.all);
         self.release_registers(self.instructions[id].results.all);
         self.fields.release(self.instructions[id].fields);
         self.instructions[id].inputs = self.alloc_group(id, RefRole::Use, inputs, implicit.uses);
         self.instructions[id].results = self.alloc_group(id, RefRole::Def, results, implicit.defs);
-        self.instructions[id].fields = self.fields.insert(fields);
+        self.instructions[id].fields = self.fields.insert(&fields);
         self.set_memory(id, memory);
         self.instructions[id].opcode = opcode;
-    }
-    pub fn set_fields(&mut self, id: InstId, fields: &[InstField]) {
-        self.fields.release(self.instructions[id].fields);
-        self.instructions[id].fields = self.fields.insert(fields);
-    }
-    pub fn set_field(&mut self, id: InstId, index: usize, field: InstField) {
-        assert!(index < self.fields(id).len(), "field index out of bounds");
-        self.fields.data[self.instructions[id].fields.start as usize + index] = field;
     }
     pub fn set_memory(&mut self, id: InstId, access: Option<MemoryAccess>) {
         if access.is_some() || self.memory[id].is_some() {
@@ -511,37 +534,160 @@ impl InstStore {
         self.instructions[id].results = self.alloc_group(id, RefRole::Def, &results, &effects.defs);
     }
     pub fn extra(&self, id: InstId) -> Option<crate::InstExtraRef<'_>> {
-        use crate::{BrTableRef, BranchCondInfo, BranchInfo, InstExtraRef as View};
         self.extras.get(&id).map(|extra| match extra {
-            InstExtra::Call(info) => View::Call(info),
-            InstExtra::Branch(info) => View::Branch(BranchInfo {
-                args: self.registers(info.args),
-            }),
-            InstExtra::BranchCond(info) => View::BranchCond(BranchCondInfo {
-                then_args: self.registers(info.then_args),
-                else_args: self.registers(info.else_args),
-            }),
-            InstExtra::BrTable(info) => View::BrTable(BrTableRef { store: self, info }),
+            InstExtra::Call(info) => crate::InstExtraRef::Call(info),
         })
     }
+    pub fn edge_ids(&self, id: InstId) -> impl Iterator<Item = crate::EdgeId> + '_ {
+        self.fields(id).iter().filter_map(|field| match field {
+            InstField::Edge(edge) => Some(*edge),
+            _ => None,
+        })
+    }
+    pub fn edge(&self, id: crate::EdgeId) -> crate::Successor<&[Reg]> {
+        let edge = self.edges[id].as_ref().expect("deleted edge");
+        crate::Successor {
+            block: edge.block,
+            args: self.registers(edge.args),
+        }
+    }
+    pub fn create_edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
+        let args = self.registers.insert(args);
+        self.edges.push(Some(StoredEdge {
+            owner: None,
+            block,
+            args,
+        }))
+    }
+    /// Explicit duplication: a copy has a fresh identity and independent arguments.
+    pub fn clone_edge(&mut self, id: crate::EdgeId) -> crate::EdgeId {
+        let edge = self.edge(id);
+        let (block, args) = (edge.block, edge.args.to_vec());
+        self.create_edge(block, &args)
+    }
+
+    fn check_edges(&self, owner: InstId, fields: &[InstField]) {
+        // Ordinary branches need no allocation; tables use a set to avoid
+        // quadratic duplicate detection.
+        let mut seen = hashbrown::HashSet::new();
+        for (index, field) in fields.iter().enumerate() {
+            let InstField::Edge(id) = *field else {
+                continue;
+            };
+            let unique = if fields.len() > 2 {
+                seen.insert(id)
+            } else {
+                !fields[..index]
+                    .iter()
+                    .any(|field| matches!(field, InstField::Edge(previous) if *previous == id))
+            };
+            assert!(unique, "duplicate edge");
+            let edge = self.edges[id].as_ref().expect("deleted edge");
+            assert!(
+                edge.owner.is_none() || edge.owner == Some(owner),
+                "edge already belongs to another instruction; clone it explicitly"
+            );
+        }
+    }
+
+    fn attach_edges(&mut self, owner: InstId, fields: &[InstField]) {
+        self.check_edges(owner, fields);
+        for field in fields {
+            let InstField::Edge(id) = *field else {
+                continue;
+            };
+            let edge = self.edges[id].as_mut().unwrap();
+            if edge.owner == Some(owner) {
+                continue;
+            }
+            edge.owner = Some(owner);
+            let args = edge.args;
+            self.attach_range(owner, RefRole::Use, args);
+        }
+    }
+
+    /// Exchange identities at replacement commit. Both instructions remain
+    /// internally consistent; deleting the old instruction deletes the copy.
+    pub(crate) fn transfer_edge(
+        &mut self,
+        original: crate::EdgeId,
+        replacement: crate::EdgeId,
+    ) -> (InstId, InstId) {
+        assert_ne!(original, replacement);
+        let from = self.edges[original]
+            .as_ref()
+            .expect("deleted edge")
+            .owner
+            .expect("unattached edge");
+        let to = self.edges[replacement]
+            .as_ref()
+            .expect("deleted edge")
+            .owner
+            .expect("unattached edge");
+        assert_ne!(from, to);
+        let a = self
+            .fields(from)
+            .iter()
+            .position(|f| matches!(f, InstField::Edge(id) if *id == original))
+            .unwrap();
+        let b = self
+            .fields(to)
+            .iter()
+            .position(|f| matches!(f, InstField::Edge(id) if *id == replacement))
+            .unwrap();
+        self.fields.data[self.instructions[from].fields.start as usize + a] =
+            InstField::Edge(replacement);
+        self.fields.data[self.instructions[to].fields.start as usize + b] =
+            InstField::Edge(original);
+        let old = self.edges[original].take();
+        self.edges[original] = self.edges[replacement].take();
+        self.edges[replacement] = old;
+        (from, to)
+    }
+
+    pub fn successors(&self, id: InstId) -> impl Iterator<Item = crate::Successor<&[Reg]>> {
+        self.edge_ids(id).map(|edge| self.edge(edge))
+    }
     pub fn edge_args(&self, id: InstId) -> impl Iterator<Item = Reg> + '_ {
-        self.extras
-            .get(&id)
-            .into_iter()
-            .flat_map(|e| e.arg_ranges())
-            .flat_map(|&range| self.registers(range).iter().copied())
+        self.successors(id)
+            .flat_map(|edge| edge.args.iter().copied())
+    }
+    pub(crate) fn redirect_edge(&mut self, id: crate::EdgeId, target: crate::BlockId) -> InstId {
+        let edge = self.edges[id].as_mut().expect("deleted edge");
+        let owner = edge.owner.expect("edge is not attached to an instruction");
+        edge.block = target;
+        owner
+    }
+
+    pub(crate) fn set_edge_args(&mut self, id: crate::EdgeId, args: &[Reg]) -> InstId {
+        let edge = self.edges[id].as_ref().expect("deleted edge");
+        let owner = edge.owner.expect("edge is not attached to an instruction");
+        if self.registers(edge.args) == args {
+            return owner;
+        }
+        let old = edge.args;
+        self.release_registers(old);
+        let range = self.alloc_registers(owner, RefRole::Use, args);
+        self.edges[id].as_mut().unwrap().args = range;
+        owner
+    }
+    pub fn clear_successor_args(&mut self, id: InstId) {
+        let ids: Vec<_> = self.edge_ids(id).collect();
+        for edge_id in ids {
+            let edge = self.edges[edge_id].as_mut().unwrap();
+            let args = core::mem::take(&mut edge.args);
+            self.release_registers(args);
+        }
+    }
+    fn delete_edge(&mut self, id: crate::EdgeId) {
+        let edge = self.edges[id].take().expect("deleted edge");
+        self.release_registers(edge.args);
     }
     pub fn set_extra(&mut self, id: InstId, extra: InstExtra) {
-        self.clear_extra(id);
-        let extra = extra.map_args(|regs| self.alloc_registers(id, RefRole::Use, &regs));
         self.extras.insert(id, extra);
     }
     pub fn clear_extra(&mut self, id: InstId) {
-        if let Some(extra) = self.extras.remove(&id) {
-            for &range in extra.arg_ranges() {
-                self.release_registers(range);
-            }
-        }
+        self.extras.remove(&id);
     }
     pub fn uses(&self, reg: Reg) -> RegRefs<'_> {
         RegRefs {
@@ -592,7 +738,16 @@ impl InstStore {
         self.registers.release(range);
     }
     fn operand_ranges(&self, id: InstId) -> impl Iterator<Item = (Range, RefRole)> + '_ {
-        self.instructions[id].operand_ranges(self.extras.get(&id))
+        let inst = &self.instructions[id];
+        [
+            (inst.inputs.all, RefRole::Use),
+            (inst.results.all, RefRole::Def),
+        ]
+        .into_iter()
+        .chain(
+            self.edge_ids(id)
+                .map(|edge| (self.edges[edge].as_ref().unwrap().args, RefRole::Use)),
+        )
     }
 
     /// Replace virtual uses directly by slot identity, including edge arguments.
@@ -610,6 +765,7 @@ impl InstStore {
     pub fn check_refs(&self) -> Result<(), &'static str> {
         let mut allocated = alloc::vec![false; self.registers.data.len()];
         let mut expected = hashbrown::HashMap::new();
+        let mut seen_edges = hashbrown::HashSet::new();
         let mut mark = |start: usize, len: usize| -> Result<(), &'static str> {
             let end = start.checked_add(len).ok_or("operand range overflow")?;
             for slot in allocated
@@ -623,6 +779,19 @@ impl InstStore {
             Ok(())
         };
         for (inst, data) in self.instructions.iter() {
+            for edge in self.edge_ids(inst) {
+                if !seen_edges.insert(edge) {
+                    return Err("successor referenced more than once");
+                }
+                if self
+                    .edges
+                    .get(edge)
+                    .and_then(Option::as_ref)
+                    .is_none_or(|edge| edge.owner != Some(inst))
+                {
+                    return Err("incorrect successor owner or deleted edge");
+                }
+            }
             for group in [data.inputs, data.results] {
                 if group.explicit > group.all.len {
                     return Err("invalid explicit operand boundary");
@@ -650,6 +819,11 @@ impl InstStore {
                         (self.registers.data[link.as_u32() as usize], role),
                     );
                 }
+            }
+        }
+        for (id, edge) in self.edges.iter() {
+            if edge.is_some() && !seen_edges.contains(&id) {
+                return Err("successor is not attached to an instruction");
             }
         }
         for (class, ranges) in self.registers.free.iter().enumerate() {
@@ -684,7 +858,7 @@ impl InstStore {
 mod tests {
     use super::*;
     use crate::InstBuild;
-    use crate::{BranchInfo, MachineFunction, MemoryKind, Reg, Writable};
+    use crate::{MachineFunction, MemoryKind, Reg, Writable};
 
     #[test]
     fn storage_preserves_views_and_transfers_instruction_properties() {
@@ -705,14 +879,7 @@ mod tests {
                     .load(Writable(reg), reg, 16),
                 id
             );
-            f.editor().set_inst_extra(
-                id,
-                InstExtra::Branch(BranchInfo {
-                    args: Default::default(),
-                }),
-            );
             assert_eq!(f.inst(id).memory(), Some(access));
-            assert!(f.inst_extra(id).is_some());
             assert_eq!(f.editor().rewriter(id).constant(Writable(reg), 42), id);
             assert!(f.inst(id).memory().is_none());
             assert!(f.inst_extra(id).is_none());
@@ -731,15 +898,10 @@ mod tests {
             .writer()
             .with_memory(access)
             .load(Writable(reg), reg, 0);
-        let extra = InstExtra::Branch(BranchInfo {
-            args: Default::default(),
-        });
-        f.editor().set_inst_extra(replacement, extra.clone());
         let operands = f.inst(replacement).inputs().as_ptr();
         f.editor().replace_inst(id, replacement);
         assert_eq!(f.inst(id).inputs().as_ptr(), operands);
         assert_eq!(f.inst(id).memory(), Some(access));
-        assert_eq!(f.inst_extra(id).map(|e| e.to_owned()), Some(extra));
         assert!(f.inst(replacement).is_invalid());
         assert!(f.inst(replacement).memory().is_none());
         assert!(f.inst_extra(replacement).is_none());
@@ -777,7 +939,6 @@ mod tests {
         let mut store = InstStore::default();
         let id = store.write(MachineOpcode::Target(1), &[], &[], &[], None);
         for n in 0..100 {
-            store.set_fields(id, &[]);
             store.write_at(
                 id,
                 MachineOpcode::Target(1),
@@ -787,12 +948,6 @@ mod tests {
                 None,
             );
             store.set_memory(id, Some(MemoryAccess::new(MemoryKind::Read, 8)));
-            store.set_extra(
-                id,
-                InstExtra::Branch(BranchInfo {
-                    args: Default::default(),
-                }),
-            );
             store.write_at(id, MachineOpcode::Invalid, &[], &[], &[], None);
         }
         assert_eq!(store.fields.data.len(), 1);

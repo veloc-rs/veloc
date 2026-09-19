@@ -218,6 +218,7 @@ fn finish(fields: &BTreeMap<String, Node>) -> Result<(), String> {
 pub(super) fn compile(
     contracts: Vec<Contract>,
     module: &Module,
+    types: &crate::types::Types,
 ) -> Result<HashMap<String, FinalInstDef>, String> {
     let regs: BTreeSet<_> = module
         .defs
@@ -280,7 +281,7 @@ pub(super) fn compile(
                     Operand::Value(n) => OperandConstraint::Use(n),
                     Operand::Attribute { name, ty } => match ty.as_str() {
                         "i64" => OperandConstraint::Imm(name),
-                        "Block" => OperandConstraint::Block(name),
+                        "Successor" => OperandConstraint::Block(name),
                         "Global" => OperandConstraint::Global(name),
                         "StackSlot" => OperandConstraint::StackSlot(name),
                         _ => return Err(format!("unsupported machine attribute type `{ty}`")),
@@ -288,6 +289,36 @@ pub(super) fn compile(
                     _ => return Err("machine instructions require fixed operands".into()),
                 });
             }
+            let names = operands
+                .iter()
+                .filter_map(|operand| match operand {
+                    OperandConstraint::Use(name) => Some(name.clone()),
+                    _ => None,
+                })
+                .chain(contract.results.iter().cloned());
+            let patterns = contract
+                .signature
+                .operands
+                .patterns()
+                .unwrap()
+                .iter()
+                .chain(contract.signature.results.patterns().unwrap());
+            let value_types = names
+                .zip(patterns)
+                .map(|(name, pattern)| {
+                    let set = match pattern {
+                        crate::model::Pattern::Set(set) => set.clone(),
+                        crate::model::Pattern::Exact(ty) => types.exact[ty].clone(),
+                        _ => {
+                            return Err(
+                                "machine operand representations must be explicit type sets"
+                                    .to_owned(),
+                            );
+                        }
+                    };
+                    Ok((name, set))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             let mut fields = contract.fields;
             let requires = match fields.remove("requires") {
                 None => Vec::new(),
@@ -440,6 +471,7 @@ pub(super) fn compile(
             Ok(FinalInstDef {
                 operands,
                 reg_classes,
+                value_types,
                 ties,
                 implicit_uses,
                 implicit_defs,

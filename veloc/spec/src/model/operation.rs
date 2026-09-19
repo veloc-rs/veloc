@@ -291,15 +291,19 @@ pub(crate) fn signature(
                 ));
             };
             // Reference behavior belongs to the element declaration, not its name.
-            if !data.rust.policy(element).references.is_operand() {
+            if data.rust.policy(element).references.is_operand() {
+                variadic = true;
+                ParamKind::Values
+            } else if data.names.contains(element) && data.rust.policy(element).references.is_data()
+            {
+                ParamKind::Property(format!("sequence({element})"))
+            } else {
                 return Err(Error::at(
                     source,
                     param.ty.offset,
-                    "operand sequence element must be a declared SSA reference type",
+                    "unknown sequence element type",
                 ));
             }
-            variadic = true;
-            ParamKind::Values
         } else if let Kind::Name(kind) = &param.ty.kind
             && matches!(kind.as_str(), "successor" | "successors")
         {

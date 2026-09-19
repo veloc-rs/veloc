@@ -215,15 +215,14 @@ impl MachineFunction {
     pub fn inst_extra(&self, inst_id: InstId) -> Option<crate::InstExtraRef<'_>> {
         self.body.store.extra(inst_id)
     }
+    pub fn successors(&self, inst: InstId) -> impl Iterator<Item = crate::Successor<&[Reg]>> {
+        self.body.store.successors(inst)
+    }
 
     /// 获取调用指令的签名信息。
     pub fn call_info(&self, inst_id: InstId) -> &CallInfo {
         match self.inst_extra(inst_id) {
             Some(crate::InstExtraRef::Call(info)) => info,
-            Some(_) => panic!(
-                "instruction {:?} in `{}` does not carry call info payload",
-                inst_id, self.name
-            ),
             None => panic!(
                 "call instruction {:?} in `{}` is missing call info payload",
                 inst_id, self.name

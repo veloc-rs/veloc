@@ -58,17 +58,6 @@ impl TargetInstructionSelector for X86_64Selector {
                     .push(build_x86_copy_inst(ctx.mfunc, copy.dst, copy.src)?);
                 return Ok(SelectResult::InPlace);
             }
-            veloc_lir::InstView::FCmp(fcmp)
-                if matches!(
-                    fcmp.cc,
-                    FloatCC::Eq | FloatCC::Ne | FloatCC::Lt | FloatCC::Le
-                ) =>
-            {
-                return self.lowering.select_fcmp(ctx, fcmp);
-            }
-            veloc_lir::InstView::Select(select) => {
-                return self.lowering.select_select(ctx, select);
-            }
             _ => {}
         }
 
@@ -76,7 +65,14 @@ impl TargetInstructionSelector for X86_64Selector {
             let mut edit = ctx.mfunc.editor();
             let (vregs, mut store) = edit.instruction_parts();
             let mut x86_ctx = X86SelectionContext { vregs, features };
-            generated::select_instructions(&mut x86_ctx, &mut store, ctx.inst_id, ctx.selected)?
+            let result = generated::select_instructions(
+                &mut x86_ctx,
+                &mut store,
+                ctx.inst_id,
+                ctx.selected,
+            )?;
+            ctx.edge_transfers.extend(store.into_edge_transfers());
+            result
         };
 
         if matches!(
@@ -121,46 +117,6 @@ impl TargetInstructionSelector for X86_64Selector {
                 effects.defs.sort_unstable();
                 effects.defs.dedup();
                 ctx.mfunc.editor().set_inst_effects(selected, effects);
-            }
-        }
-        // A selected conditional is a branch followed by a jump. Each keeps
-        // its own edge arguments, including duplicate targets with different args.
-        let edge_args = match ctx.mfunc.inst_extra(ctx.inst_id) {
-            Some(veloc_lir::InstExtraRef::Branch(info)) => {
-                alloc::vec![smallvec::SmallVec::<[Reg; 2]>::from_slice(info.args)]
-            }
-            Some(veloc_lir::InstExtraRef::BranchCond(info)) => {
-                alloc::vec![
-                    smallvec::SmallVec::from_slice(info.then_args),
-                    smallvec::SmallVec::from_slice(info.else_args)
-                ]
-            }
-            _ => Vec::new(),
-        };
-        if !edge_args.is_empty() {
-            let branches: Vec<_> = ctx
-                .selected
-                .iter()
-                .copied()
-                .filter(|&id| {
-                    let MachineOpcode::Target(op) = ctx.mfunc.inst(id).opcode() else {
-                        return false;
-                    };
-                    matches!(
-                        generated::target_inst_metadata(TargetInst::from_u32(op)).flow,
-                        veloc_lir::ControlFlow::Branch | veloc_lir::ControlFlow::Jump
-                    )
-                })
-                .collect();
-            if branches.len() != edge_args.len() {
-                return Err(crate::Error::codegen(
-                    "selection changed the number of outgoing edges",
-                ));
-            }
-            for (id, args) in branches.into_iter().zip(edge_args) {
-                ctx.mfunc
-                    .editor()
-                    .set_inst_extra(id, InstExtra::Branch(veloc_lir::BranchInfo { args }));
             }
         }
         if let Some(access) = memory {

@@ -4,7 +4,7 @@ use crate::target::arch::SpillKind;
 use crate::{Error, Result};
 use alloc::format;
 use alloc::vec::Vec;
-use veloc_lir::{InstField, InstId, MachineFunction, Reg, StackFrame, StackSlot};
+use veloc_lir::{InstId, MachineFunction, Reg, StackFrame, StackSlot};
 use veloc_mir::Type;
 
 /// A physical move sequence for one selected branch, detached until materialization.
@@ -52,33 +52,18 @@ impl RegisterAllocator<'_> {
         let mut cycle_slots = alloc::collections::BTreeMap::new();
         let ids: Vec<_> = f.blocks().flat_map(|b| f.block_insts(b)).collect();
         for id in ids {
-            let args = match f.inst_extra(id) {
-                Some(veloc_lir::InstExtraRef::Branch(info)) => info.args.to_vec(),
-                Some(
-                    veloc_lir::InstExtraRef::BranchCond(_) | veloc_lir::InstExtraRef::BrTable(_),
-                ) => {
-                    return Err(Error::codegen(
-                        "selected branches must carry one explicit edge each",
-                    ));
-                }
-                _ => continue,
+            let successors: Vec<_> = f.successors(id).collect();
+            if successors.is_empty() {
+                continue;
+            }
+            let [edge] = successors.as_slice() else {
+                return Err(Error::codegen(
+                    "selected branches must carry one explicit edge each",
+                ));
             };
-            let targets: Vec<_> = f
-                .inst(id)
-                .fields()
-                .iter()
-                .enumerate()
-                .filter_map(|(i, op)| {
-                    if let InstField::Block(target) = op {
-                        Some((i, *target))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let [(_, target)] = targets.as_slice() else {
-                return Err(Error::codegen("selected edge requires exactly one target"));
-            };
+            let args = edge.args.to_vec();
+            let target_block = edge.block;
+            let target = &target_block;
             let params = f
                 .block_params(*target)
                 .ok_or_else(|| Error::codegen("unknown edge target"))?;

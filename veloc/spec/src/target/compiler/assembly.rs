@@ -220,7 +220,12 @@ fn emit(out: &mut String, op: &Operand) {
             bits,
         } => writeln!(out, "out.register({}, {bits})?;", register(*result, *index)).unwrap(),
         Operand::Imm(index) => writeln!(out, "out.immediate({})?;", field(*index, "Imm")).unwrap(),
-        Operand::Block(index) => writeln!(out, "out.block({})?;", field(*index, "Block")).unwrap(),
+        Operand::Block(index) => writeln!(
+            out,
+            "out.block(inst.edge({}).block)?;",
+            field(*index, "Edge")
+        )
+        .unwrap(),
         Operand::Symbol(index) => {
             writeln!(out, "out.symbol({})?;", field(*index, "Global")).unwrap()
         }

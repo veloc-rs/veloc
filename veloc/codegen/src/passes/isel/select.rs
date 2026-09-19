@@ -53,12 +53,14 @@ pub struct SelectionContext<'a> {
     pub mfunc: &'a mut MachineFunction,
     pub inst_id: InstId,
     pub selected: &'a mut Vec<InstId>,
+    pub edge_transfers: &'a mut Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>,
 }
 
 impl crate::target::arch::LoweringContext for SelectionContext<'_> {
-    fn alloc_tmp(&mut self, like: veloc_lir::Reg) -> veloc_lir::Reg {
-        let data = self.mfunc.vreg_data(like).clone();
-        self.mfunc.editor().alloc_vreg_data(data)
+    fn alloc_tmp(&mut self, ty: veloc_mir::Type) -> veloc_lir::Reg {
+        self.mfunc
+            .editor()
+            .alloc_vreg_data(veloc_lir::VRegData { ty, bank: None })
     }
     fn get_type(&self, vreg: veloc_lir::VReg) -> veloc_mir::Type {
         self.mfunc.vregs()[vreg].ty
@@ -94,19 +96,34 @@ fn apply_select_result(
     id: InstId,
     selected: &mut Vec<InstId>,
     result: SelectResult,
+    edge_transfers: &mut Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>,
 ) -> Result<(), crate::error::Error> {
     let mut edit = mfunc.editor();
+    if matches!(result, SelectResult::Keep | SelectResult::Remove) {
+        assert!(edge_transfers.is_empty());
+    }
+    if result == SelectResult::InPlace && selected.len() != 1 {
+        return Err(crate::error::Error::select(
+            edit.inst(id).opcode(),
+            "InPlace expects one selected instruction",
+        ));
+    }
+    for &(original, replacement) in edge_transfers.iter() {
+        assert!(edit.inst(id).edge_ids().any(|edge| edge == original));
+        assert!(
+            selected
+                .iter()
+                .any(|&inst| edit.inst(inst).edge_ids().any(|edge| edge == replacement))
+        );
+    }
+    for (original, replacement) in edge_transfers.drain(..) {
+        edit.transfer_edge(original, replacement);
+    }
     match result {
         SelectResult::Keep => {
             assert!(selected.is_empty());
         }
         SelectResult::InPlace => {
-            if selected.len() != 1 {
-                return Err(crate::error::Error::select(
-                    edit.inst(id).opcode(),
-                    "InPlace expects one selected instruction",
-                ));
-            }
             edit.replace_inst(id, selected.pop().unwrap());
         }
         SelectResult::Replace => {
@@ -143,6 +160,7 @@ impl<'a> InstructionSelector<'a> {
     pub fn select(&self, mfunc: &mut MachineFunction) -> Result<(), crate::error::Error> {
         // 复用的临时缓冲区，避免每条指令分配
         let mut selected: Vec<InstId> = Vec::with_capacity(4);
+        let mut edge_transfers = Vec::new();
         for i in mfunc.blocks().rev().collect::<Vec<_>>() {
             let original: Vec<_> = mfunc.block_insts(i).collect();
             for inst_id in original.into_iter().rev() {
@@ -171,6 +189,7 @@ impl<'a> InstructionSelector<'a> {
                         mfunc,
                         inst_id,
                         selected: &mut selected,
+                        edge_transfers: &mut edge_transfers,
                     };
                     match self.target.select_instruction(&mut ctx) {
                         Ok(result) => result,
@@ -189,7 +208,7 @@ impl<'a> InstructionSelector<'a> {
                     }
                 };
 
-                apply_select_result(mfunc, inst_id, &mut selected, result)?;
+                apply_select_result(mfunc, inst_id, &mut selected, result, &mut edge_transfers)?;
             }
         }
 

@@ -109,6 +109,7 @@ impl Operands {
             String::new()
         };
         let mut out = String::from("// @generated from storage definitions.\n");
+        out.push_str("#[derive(Debug, Clone, Copy)] pub struct AttributeList<'a, A, T> { fields: &'a [A], decode: fn(&A) -> T }\nimpl<'a, A, T> AttributeList<'a, A, T> { pub fn iter(&self) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator + '_ { self.fields.iter().map(self.decode) } pub fn len(&self) -> usize { self.fields.len() } pub fn is_empty(&self) -> bool { self.fields.is_empty() } }\n");
         out.push_str(&crate::generate::opcode_enum(defs, &self.opcode));
         if let Some((control, _, _)) = &self.control {
             writeln!(
@@ -204,6 +205,10 @@ impl Operands {
             for m in &plan.members {
                 if m.binding.is_some() {
                     if let Some(codec) = &m.field.codec {
+                        if m.field.shape == Shape::Sequence {
+                            writeln!(out, "if self.fields()[{}..].iter().any(|field| !matches!(field, {codec}(_))) {{ return Err(self.error(\"invalid {} field\")); }}", m.index, m.field.name).unwrap();
+                            continue;
+                        }
                         writeln!(out, "if !matches!(self.fields()[{}], {codec}(_)) {{ return Err(self.error(\"invalid {} field\")); }}", m.index, m.field.name).unwrap();
                     }
                 }

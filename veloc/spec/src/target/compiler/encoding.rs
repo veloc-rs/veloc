@@ -61,7 +61,10 @@ pub(super) fn compile(
                         field(index, "StackSlot")
                     ),
                 ),
-                OperandConstraint::Block(_) => ("Block", field(index, "Block")),
+                OperandConstraint::Block(_) => (
+                    "Block",
+                    format!("inst.edge({}).block", field(index, "Edge")),
+                ),
                 OperandConstraint::Global(_) => ("Global", field(index, "Global")),
             };
             bindings.insert(

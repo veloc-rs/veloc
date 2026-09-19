@@ -147,6 +147,7 @@ impl X86_64TargetMachine {
 impl TargetInstructions for X86_64TargetMachine {
     fn validate_instruction(
         &self,
+        function: &veloc_lir::MachineFunction,
         inst: &veloc_lir::InstRef<'_>,
         mode: ValidationMode,
     ) -> crate::Result<()> {
@@ -162,7 +163,7 @@ impl TargetInstructions for X86_64TargetMachine {
                 )));
             }
         }
-        opcode.validate(inst, mode)
+        opcode.validate(function, inst, mode)
     }
     fn write_assembly(
         &self,
@@ -195,14 +196,15 @@ impl TargetRegalloc for X86_64TargetMachine {
 
     fn jump_instruction(
         &self,
-        writer: veloc_lir::InstWriter<'_>,
+        mut writer: veloc_lir::InstWriter<'_>,
         target: veloc_lir::BlockId,
     ) -> crate::Result<veloc_lir::InstId> {
+        let edge = writer.edge(target, &[]);
         Ok(writer.write(
             veloc_lir::MachineOpcode::Target(inst::TargetInst::X86Jmp.as_u32()),
             &[],
             &[],
-            &[veloc_lir::InstField::Block(target)],
+            &[veloc_lir::InstField::Edge(edge)],
         ))
     }
 

@@ -242,11 +242,6 @@ impl FuncEditor<'_> {
             .tracking(self.changes.as_deref_mut())
     }
 
-    pub fn set_inst_fields(&mut self, id: InstId, fields: &[crate::InstField]) {
-        self.function.body.store.set_fields(id, fields);
-        self.changed_inst(id);
-    }
-
     pub fn alloc_vreg_data(&mut self, data: VRegData) -> Reg {
         Reg::new_vreg(self.function.body.vregs.push(data).as_u32())
     }
@@ -269,6 +264,7 @@ impl FuncEditor<'_> {
         (
             VRegBuilder(&mut self.function.body.vregs),
             crate::InstBuilder {
+                edge_transfers: Vec::new(),
                 store: &mut self.function.body.store,
                 changes: self.changes.as_deref_mut(),
             },
@@ -293,10 +289,6 @@ impl FuncEditor<'_> {
     }
     pub fn set_inst_result(&mut self, id: InstId, index: usize, reg: Reg) {
         self.function.body.store.set_result(id, index, reg);
-        self.changed_inst(id);
-    }
-    pub fn set_inst_field(&mut self, id: InstId, index: usize, field: crate::InstField) {
-        self.function.body.store.set_field(id, index, field);
         self.changed_inst(id);
     }
     pub fn replace_uses(&mut self, old: VReg, new: VReg) {
@@ -367,69 +359,48 @@ impl FuncEditor<'_> {
         );
     }
 
-    /// Change an explicit successor and its arguments as one edit. The index
-    /// counts block operands (or jump-table entries), not raw field positions.
-    pub fn redirect_edge(&mut self, inst: InstId, edge: usize, target: Block, args: &[Reg]) {
+    /// Retarget one edge without changing its identity or argument use slots.
+    pub fn redirect_edge(&mut self, edge: crate::EdgeId, target: Block) {
         assert!(
             self.function.body.layout.contains_block(target),
             "unknown successor"
         );
-        let mut extra = self.inst_extra(inst).map(|e| e.to_owned());
-        if let Some(InstExtra::BrTable(table)) = &mut extra {
-            let dest = table.targets.get_mut(edge).expect("unknown edge");
-            dest.block = target;
-            dest.args = args.iter().copied().collect();
-            self.set_inst_extra(inst, extra.unwrap());
-            return;
-        }
-        let fields = self.inst(inst).fields();
-        let targets: Vec<_> = fields
-            .iter()
-            .enumerate()
-            .filter_map(|(index, field)| {
-                matches!(field, crate::InstField::Block(_)).then_some(index)
-            })
-            .collect();
-        let index = *targets.get(edge).expect("unknown edge");
-        match &mut extra {
-            Some(InstExtra::Branch(info)) => {
-                assert_eq!(targets.len(), 1, "invalid branch shape");
-                info.args = args.iter().copied().collect();
-            }
-            Some(InstExtra::BranchCond(info)) => {
-                assert_eq!(targets.len(), 2, "invalid conditional branch shape");
-                if edge == 0 {
-                    info.then_args = args.iter().copied().collect();
-                } else {
-                    info.else_args = args.iter().copied().collect();
-                }
-            }
-            None if !args.is_empty() => {
-                extra = Some(match targets.len() {
-                    1 => InstExtra::Branch(crate::BranchInfo {
-                        args: args.iter().copied().collect(),
-                    }),
-                    2 => InstExtra::BranchCond(crate::BranchCondInfo {
-                        then_args: if edge == 0 {
-                            args.iter().copied().collect()
-                        } else {
-                            Default::default()
-                        },
-                        else_args: if edge == 1 {
-                            args.iter().copied().collect()
-                        } else {
-                            Default::default()
-                        },
-                    }),
-                    _ => panic!("edge arguments require a branch payload"),
-                });
-            }
-            _ => assert!(args.is_empty(), "payload cannot carry edge arguments"),
-        }
-        self.set_inst_field(inst, index, crate::InstField::Block(target));
-        if let Some(extra) = extra {
-            self.set_inst_extra(inst, extra);
-        }
+        let owner = self.function.body.store.redirect_edge(edge, target);
+        self.changed_inst(owner);
+    }
+
+    /// Replace one edge's arguments and update their use-def links.
+    pub fn set_edge_args(&mut self, edge: crate::EdgeId, args: &[Reg]) {
+        let owner = self.function.body.store.set_edge_args(edge, args);
+        self.changed_inst(owner);
+    }
+
+    pub fn create_edge(&mut self, block: Block, args: &[Reg]) -> crate::EdgeId {
+        assert!(
+            self.function.body.layout.contains_block(block),
+            "unknown successor"
+        );
+        self.function.body.store.create_edge(block, args)
+    }
+
+    pub fn clone_edge(&mut self, edge: crate::EdgeId) -> crate::EdgeId {
+        self.function.body.store.clone_edge(edge)
+    }
+
+    /// Preserve an original edge's identity on its replacement at commit.
+    pub fn transfer_edge(&mut self, original: crate::EdgeId, replacement: crate::EdgeId) {
+        let (from, to) = self
+            .function
+            .body
+            .store
+            .transfer_edge(original, replacement);
+        self.changed_inst(from);
+        self.changed_inst(to);
+    }
+
+    pub fn clear_successor_args(&mut self, inst: InstId) {
+        self.function.body.store.clear_successor_args(inst);
+        self.changed_inst(inst);
     }
 
     /// 为指令挂载额外 payload。

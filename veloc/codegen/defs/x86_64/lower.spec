@@ -644,144 +644,177 @@ select(n: lir::Icmp) {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::E));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Sete(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::NE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Setne(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::L));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Setl(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::LE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Setle(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::G));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Setg(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::GE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Setge(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::B));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Setb(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::BE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Setbe(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::A));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Seta(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.lhs));
             require(matches(n.cc, CC::AE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp32(n.lhs, n.rhs)), build(X86Setae(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::E));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Sete(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::NE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Setne(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::L));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Setl(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::LE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Setle(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::G));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Setg(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::GE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Setge(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::B));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Setb(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::BE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Setbe(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::A));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Seta(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.lhs));
             require(matches(n.cc, CC::AE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Cmp64(n.lhs, n.rhs)), build(X86Setae(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
     }
 }
+
+// Ordered comparisons exclude NaN; inequality includes unordered inputs.
+template FloatCompare(InputType: expr, Compare: ident, Condition: expr, Set: ident, Order: ident, Combine: ident) {
+    select(n: lir::Fcmp) {
+        choose {
+        case {
+            require(type_is<Type::BOOL>(n.dst));
+            require(type_is<InputType>(n.lhs));
+            require(matches(n.cc, Condition));
+            let bit = temp(Type::I8);
+            let ordered_bit = temp(Type::I8);
+            let predicate = temp(Type::I32);
+            let ordered = temp(Type::I32);
+            replace(n, [
+                build(Compare(n.lhs, n.rhs)),
+                build(Set(bit)),
+                build(X86Movzx8to32(predicate, bit)),
+                build(Order(ordered_bit)),
+                build(X86Movzx8to32(ordered, ordered_bit)),
+                build(Combine(n.dst, ordered, predicate)),
+            ]);
+        }
+        }
+    }
+}
+expand FloatCompare(Type::F32, X86Ucomiss, CC::E, X86Sete, X86Setnp, X86And32);
+expand FloatCompare(Type::F32, X86Ucomiss, CC::NE, X86Setne, X86Setp, X86Or32);
+expand FloatCompare(Type::F32, X86Ucomiss, CC::B, X86Setb, X86Setnp, X86And32);
+expand FloatCompare(Type::F32, X86Ucomiss, CC::BE, X86Setbe, X86Setnp, X86And32);
+expand FloatCompare(Type::F64, X86Ucomisd, CC::E, X86Sete, X86Setnp, X86And32);
+expand FloatCompare(Type::F64, X86Ucomisd, CC::NE, X86Setne, X86Setp, X86Or32);
+expand FloatCompare(Type::F64, X86Ucomisd, CC::B, X86Setb, X86Setnp, X86And32);
+expand FloatCompare(Type::F64, X86Ucomisd, CC::BE, X86Setbe, X86Setnp, X86And32);
 
 select(n: lir::Fcmp) {
     choose {
@@ -789,45 +822,179 @@ select(n: lir::Fcmp) {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<Type::F32>(n.lhs));
             require(matches(n.cc, CC::A));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Ucomiss(n.lhs, n.rhs)), build(X86Seta(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<Type::F32>(n.lhs));
             require(matches(n.cc, CC::AE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Ucomiss(n.lhs, n.rhs)), build(X86Setae(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<Type::F64>(n.lhs));
             require(matches(n.cc, CC::A));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Ucomisd(n.lhs, n.rhs)), build(X86Seta(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<Type::F64>(n.lhs));
             require(matches(n.cc, CC::AE));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Ucomisd(n.lhs, n.rhs)), build(X86Setae(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
     }
 }
+
+// Select a value using false ^ ((true ^ false) & -bool(cond)).
+template Select32(ResultType: expr, CondType: expr, Test: ident) {
+    select(n: lir::Select) {
+        choose {
+        case {
+            require(type_is<ResultType>(n.dst));
+            require(type_is<CondType>(n.cond));
+            let cond_byte = temp(Type::I8);
+            let cond32 = temp(Type::I32);
+            let zero = temp(Type::I32);
+            let mask = temp(Type::I32);
+            let diff = temp(Type::I32);
+            let masked = temp(Type::I32);
+            replace(n, [
+                build(Test(n.cond, n.cond)),
+                build(X86Setne(cond_byte)),
+                build(X86Movzx8to32(cond32, cond_byte)),
+                build(X86Mov32Imm(zero, 0)),
+                build(X86Sub32(mask, cond32, zero)),
+                build(X86Xor32(diff, n.v1, n.v2)),
+                build(X86And32(masked, diff, mask)),
+                build(X86Xor32(n.dst, n.v2, masked)),
+            ]);
+        }
+        }
+    }
+}
+
+template Select64(ResultType: expr, CondType: expr, Test: ident) {
+    select(n: lir::Select) {
+        choose {
+        case {
+            require(type_is<ResultType>(n.dst));
+            require(type_is<CondType>(n.cond));
+            let cond_byte = temp(Type::I8);
+            let cond32 = temp(Type::I32);
+            let zero = temp(Type::I64);
+            let mask = temp(Type::I64);
+            let diff = temp(Type::I64);
+            let masked = temp(Type::I64);
+            let wide = temp(Type::I64);
+            replace(n, [
+                build(Test(n.cond, n.cond)),
+                build(X86Setne(cond_byte)),
+                build(X86Movzx8to32(cond32, cond_byte)),
+                build(X86Mov32(wide, cond32)),
+                build(X86Mov64Imm32(zero, 0)),
+                build(X86Sub64(mask, wide, zero)),
+                build(X86Xor64(diff, n.v1, n.v2)),
+                build(X86And64(masked, diff, mask)),
+                build(X86Xor64(n.dst, n.v2, masked)),
+            ]);
+        }
+        }
+    }
+}
+
+template SelectF32(ResultType: expr, CondType: expr, Test: ident) {
+    select(n: lir::Select) {
+        choose {
+        case {
+            require(type_is<ResultType>(n.dst));
+            require(type_is<CondType>(n.cond));
+            let cond_byte = temp(Type::I8);
+            let cond32 = temp(Type::I32);
+            let zero = temp(Type::I32);
+            let mask = temp(Type::I32);
+            let diff = temp(Type::I32);
+            let masked = temp(Type::I32);
+            let true_bits = temp(Type::I32);
+            let false_bits = temp(Type::I32);
+            let result_bits = temp(Type::I32);
+            replace(n, [
+                build(Test(n.cond, n.cond)),
+                build(X86Setne(cond_byte)),
+                build(X86Movzx8to32(cond32, cond_byte)),
+                build(X86MovdFromXmm(true_bits, n.v1)),
+                build(X86MovdFromXmm(false_bits, n.v2)),
+                build(X86Mov32Imm(zero, 0)),
+                build(X86Sub32(mask, cond32, zero)),
+                build(X86Xor32(diff, true_bits, false_bits)),
+                build(X86And32(masked, diff, mask)),
+                build(X86Xor32(result_bits, false_bits, masked)),
+                build(X86MovdToXmm(n.dst, result_bits)),
+            ]);
+        }
+        }
+    }
+}
+
+template SelectF64(ResultType: expr, CondType: expr, Test: ident) {
+    select(n: lir::Select) {
+        choose {
+        case {
+            require(type_is<ResultType>(n.dst));
+            require(type_is<CondType>(n.cond));
+            let cond_byte = temp(Type::I8);
+            let cond32 = temp(Type::I32);
+            let zero = temp(Type::I64);
+            let mask = temp(Type::I64);
+            let diff = temp(Type::I64);
+            let masked = temp(Type::I64);
+            let wide = temp(Type::I64);
+            let true_bits = temp(Type::I64);
+            let false_bits = temp(Type::I64);
+            let result_bits = temp(Type::I64);
+            replace(n, [
+                build(Test(n.cond, n.cond)),
+                build(X86Setne(cond_byte)),
+                build(X86Movzx8to32(cond32, cond_byte)),
+                build(X86Mov32(wide, cond32)),
+                build(X86MovqFromXmm(true_bits, n.v1)),
+                build(X86MovqFromXmm(false_bits, n.v2)),
+                build(X86Mov64Imm32(zero, 0)),
+                build(X86Sub64(mask, wide, zero)),
+                build(X86Xor64(diff, true_bits, false_bits)),
+                build(X86And64(masked, diff, mask)),
+                build(X86Xor64(result_bits, false_bits, masked)),
+                build(X86MovqToXmm(n.dst, result_bits)),
+            ]);
+        }
+        }
+    }
+}
+
+expand Select32(SmallInt | Type::BOOL, SmallInt | Type::BOOL, X86Test32);
+expand Select32(SmallInt | Type::BOOL, WordOrPtr, X86Test64);
+expand Select64(WordOrPtr, SmallInt | Type::BOOL, X86Test32);
+expand Select64(WordOrPtr, WordOrPtr, X86Test64);
+expand SelectF32(Type::F32, SmallInt | Type::BOOL, X86Test32);
+expand SelectF32(Type::F32, WordOrPtr, X86Test64);
+expand SelectF64(Type::F64, SmallInt | Type::BOOL, X86Test32);
+expand SelectF64(Type::F64, WordOrPtr, X86Test64);
 
 select(n: lir::Ieqz) {
     choose {
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<SmallInt>(n.src));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Test32(n.src, n.src)), build(X86Sete(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
         case {
             require(type_is<Type::BOOL>(n.dst));
             require(type_is<WordOrPtr>(n.src));
-            let bit = temp(n.dst);
+            let bit = temp(Type::I8);
             replace(n, [build(X86Test64(n.src, n.src)), build(X86Sete(bit)), build(X86Movzx8to32(n.dst, bit))]);
         }
     }

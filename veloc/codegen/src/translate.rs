@@ -7,10 +7,7 @@ use crate::error::{Error, Result};
 use alloc::{format, vec::Vec};
 use cranelift_entity::PrimaryMap;
 use veloc_lir::InstBuild;
-use veloc_lir::{
-    BlockId, BrTableInfo, BrTableTarget, BranchCondInfo, BranchInfo, CallInfo, InstExtra,
-    MachineFunction, MachineModule, Reg,
-};
+use veloc_lir::{BlockId, CallInfo, InstExtra, MachineFunction, MachineModule, Reg, Successor};
 use veloc_mir::{Function, InstView, Module, Opcode, TypeInfo, Value};
 
 /// IR 到 LIR 的翻译器
@@ -180,13 +177,8 @@ impl<'a> IRTranslator<'a> {
             if Some(block_id) == entry {
                 if let Some(incoming) = incoming {
                     let args = self.lower_arguments(&mut ctx, incoming, true);
-                    let jump = ctx.mfunc.editor().writer().br(mblock);
-                    ctx.mfunc.editor().set_inst_extra(
-                        jump,
-                        InstExtra::Branch(BranchInfo {
-                            args: args.into_iter().collect(),
-                        }),
-                    );
+                    let edge = ctx.mfunc.editor().create_edge(mblock, &args);
+                    let jump = ctx.mfunc.editor().writer().br(edge);
                     ctx.mfunc.editor().append_inst(incoming, jump);
                 } else {
                     self.lower_arguments(&mut ctx, mblock, false);
@@ -396,18 +388,8 @@ impl<'a> IRTranslator<'a> {
                     .iter()
                     .map(|value| ctx.value_map[*value])
                     .collect::<SmallVec<[Reg; 2]>>();
-                let inst = ctx.mfunc.editor().writer().br(target);
-                if args.is_empty() {
-                    Ok(inst)
-                } else {
-                    Ok({
-                        let id = inst;
-                        ctx.mfunc
-                            .editor()
-                            .set_inst_extra(id, InstExtra::Branch(BranchInfo { args }));
-                        id
-                    })
-                }
+                let edge = ctx.mfunc.editor().create_edge(target, &args);
+                Ok(ctx.mfunc.editor().writer().br(edge))
             }
 
             InstView::Br {
@@ -427,33 +409,22 @@ impl<'a> IRTranslator<'a> {
                     .map(|value| ctx.value_map[*value])
                     .collect::<SmallVec<[Reg; 2]>>();
 
-                let inst = ctx.mfunc.editor().writer().brcond(
-                    cond_vreg,
-                    ctx.block_map[then_dest.block].unwrap(),
-                    ctx.block_map[else_dest.block].unwrap(),
-                );
-                if then_args.is_empty() && else_args.is_empty() {
-                    Ok(inst)
-                } else {
-                    Ok({
-                        let id = inst;
-                        ctx.mfunc.editor().set_inst_extra(
-                            id,
-                            InstExtra::BranchCond(BranchCondInfo {
-                                then_args,
-                                else_args,
-                            }),
-                        );
-                        id
-                    })
-                }
+                let yes = ctx
+                    .mfunc
+                    .editor()
+                    .create_edge(ctx.block_map[then_dest.block].unwrap(), &then_args);
+                let no = ctx
+                    .mfunc
+                    .editor()
+                    .create_edge(ctx.block_map[else_dest.block].unwrap(), &else_args);
+                Ok(ctx.mfunc.editor().writer().brcond(cond_vreg, yes, no))
             }
 
             InstView::BrTable { index, table } => {
                 let idx_vreg = ctx.value_map[*index];
-                let targets = table
+                let targets: Vec<Successor> = table
                     .iter()
-                    .map(|call| BrTableTarget {
+                    .map(|call| Successor {
                         block: ctx.block_map[call.block].unwrap(),
                         args: call
                             .args
@@ -464,11 +435,11 @@ impl<'a> IRTranslator<'a> {
                     .collect();
 
                 Ok({
-                    let id = ctx.mfunc.editor().writer().brjt(idx_vreg);
-                    ctx.mfunc
-                        .editor()
-                        .set_inst_extra(id, InstExtra::BrTable(BrTableInfo { targets }));
-                    id
+                    let blocks: Vec<_> = targets
+                        .iter()
+                        .map(|edge| ctx.mfunc.editor().create_edge(edge.block, &edge.args))
+                        .collect();
+                    ctx.mfunc.editor().writer().brjt(idx_vreg, &blocks)
                 })
             }
 

@@ -78,16 +78,39 @@ fn function_editor_preserves_layout_and_references() {
 
     let x = f.editor().alloc_vreg(Type::I64);
     let y = f.editor().alloc_vreg(Type::I64);
-    let branch = f.editor().writer().br(entry);
+    let edge = f.editor().create_edge(entry, &[]);
+    let branch = f.editor().writer().br(edge);
     f.editor().append_inst(exit, branch);
-    let (_, changes) = f
-        .editor()
-        .track(|f| f.editor().redirect_edge(branch, 0, new, &[x]));
+    let (_, changes) = f.editor().track(|f| {
+        f.editor().redirect_edge(edge, new);
+        f.editor().set_edge_args(edge, &[x]);
+    });
     assert!(changes.insts.contains(&branch));
     assert_eq!(f.uses(x).count(), 1);
-    f.editor().redirect_edge(branch, 0, entry, &[y]);
+    let args = f.inst(branch).edge(edge).args.as_ptr();
+    f.editor().redirect_edge(edge, entry);
+    assert_eq!(f.inst(branch).edge_ids().collect::<Vec<_>>(), [edge]);
+    assert_eq!(f.inst(branch).edge(edge).args.as_ptr(), args);
+    assert_eq!(f.inst(branch).edge(edge).block, entry);
+    f.check_refs().unwrap();
+    f.editor().set_edge_args(edge, &[y]);
     assert_eq!(f.uses(x).count(), 0);
     assert_eq!(f.uses(y).count(), 1);
+    // Rewriting retains an explicitly reused edge; copying requires a fresh ID.
+    f.editor().rewriter(branch).br(edge);
+    assert_eq!(f.inst(branch).edge_ids().collect::<Vec<_>>(), [edge]);
+    let copy = f.editor().clone_edge(edge);
+    let replacement = f.editor().writer().br(copy);
+    assert_ne!(copy, edge);
+    assert_eq!(f.uses(y).count(), 2);
+    f.check_refs().unwrap();
+    // Commit exchanges identities without leaving either instruction dangling.
+    f.editor().transfer_edge(edge, copy);
+    f.check_refs().unwrap();
+    f.editor().replace_inst(branch, replacement);
+    assert_eq!(f.inst(branch).edge_ids().collect::<Vec<_>>(), [edge]);
+    assert_eq!(f.uses(y).count(), 1);
+    f.check_refs().unwrap();
     let cloned = f.clone();
     f.editor().invalidate_inst(branch);
     assert_eq!(f.inst_block(branch), None);
@@ -174,21 +197,16 @@ fn function_editor_preserves_layout_and_references() {
 
 #[test]
 fn references_follow_all_store_edits_and_edge_arguments() {
-    use veloc_lir::{BranchCondInfo, InstExtra, RefRole, VReg};
+    use veloc_lir::{RefRole, VReg};
     let mut f = MachineFunction::new("references".into());
     let a = f.editor().alloc_vreg(Type::I64);
     let b = f.editor().alloc_vreg(Type::I64);
     let dst = f.editor().alloc_vreg(Type::I64);
     let block = f.editor().create_block();
     let add = f.editor().writer().add(Writable(dst), a, a);
-    let branch = f.editor().writer().brcond(a, block, block);
-    f.editor().set_inst_extra(
-        branch,
-        InstExtra::BranchCond(BranchCondInfo {
-            then_args: smallvec::smallvec![a, b],
-            else_args: smallvec::smallvec![a],
-        }),
-    );
+    let yes = f.editor().create_edge(block, &[a, b]);
+    let no = f.editor().create_edge(block, &[a]);
+    let branch = f.editor().writer().brcond(a, yes, no);
     assert_eq!(f.uses(a).count(), 5);
     assert!(f.uses(a).single().is_none());
     assert_eq!(f.defs(dst).single().unwrap().inst(), add);
@@ -217,7 +235,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     }
     f.check_refs().unwrap();
     let clone = f.clone();
-    f.editor().clear_inst_extra(branch);
+    f.editor().clear_successor_args(branch);
     assert_eq!(f.uses(b).count(), 3);
     assert_eq!(clone.uses(b).count(), 6);
     clone.check_refs().unwrap();
@@ -264,11 +282,6 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     f.editor()
         .replace_uses(a.as_vreg().unwrap(), b.as_vreg().unwrap());
     assert_eq!(f.inst(mixed).inputs(), &[b, b]);
-    // Attribute edits do not touch register references or input storage.
-    let inputs = f.inst(mixed).inputs().as_ptr();
-    f.editor().set_inst_field(mixed, 0, InstField::Imm(11));
-    assert_eq!(f.inst(mixed).inputs().as_ptr(), inputs);
-    assert_eq!(f.inst(mixed).inputs(), &[b, b]);
     f.check_refs().unwrap();
     f.editor().invalidate_inst(mixed);
     // Result edits and implicit physical effects have independent locations.
@@ -296,29 +309,16 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     assert_eq!(f.defs(dst).count(), 0);
     f.check_refs().unwrap();
     // Jump-table edges and implicit effects use the same pool as explicit operands.
-    let source = f
-        .editor()
-        .writer()
-        .write(veloc_lir::MachineOpcode::Target(42), &[dst], &[a], &[]);
-    f.editor().set_inst_extra(
-        source,
-        InstExtra::BrTable(veloc_lir::BrTableInfo {
-            targets: vec![
-                veloc_lir::BrTableTarget {
-                    block,
-                    args: smallvec::smallvec![a, a, b],
-                },
-                veloc_lir::BrTableTarget {
-                    block,
-                    args: smallvec::smallvec![],
-                },
-                veloc_lir::BrTableTarget {
-                    block,
-                    args: smallvec::smallvec![a],
-                },
-            ],
-        }),
-    );
+    let edges = [
+        f.editor().create_edge(block, &[a, a, b]),
+        f.editor().create_edge(block, &[]),
+        f.editor().create_edge(block, &[a]),
+    ];
+    let fields = edges.map(veloc_lir::InstField::Edge);
+    let source =
+        f.editor()
+            .writer()
+            .write(veloc_lir::MachineOpcode::Target(42), &[dst], &[a], &fields);
     f.editor().set_inst_effects(
         source,
         veloc_lir::RegEffects {
@@ -331,11 +331,10 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     f.editor()
         .replace_uses(a.as_vreg().unwrap(), b.as_vreg().unwrap());
     assert!(source_slots.iter().all(|&slot| f.operand(slot) == b));
-    let Some(veloc_lir::InstExtraRef::BrTable(table)) = f.inst_extra(source) else {
-        panic!("missing table");
-    };
     assert_eq!(
-        table.targets().map(|t| t.args.to_vec()).collect::<Vec<_>>(),
+        f.successors(source)
+            .map(|t| t.args.to_vec())
+            .collect::<Vec<_>>(),
         [vec![b, b, b], vec![], vec![b]]
     );
     f.editor().replace_inst(branch, source);
@@ -380,21 +379,15 @@ fn standalone_module_supports_instruction_and_stage_apis() {
 
 #[test]
 fn operand_edits_preserve_payload_but_replacement_discards_it() {
-    use veloc_lir::{BranchInfo, InstExtra};
     let mut function = MachineFunction::new("edit".into());
     let block = function.editor().create_block();
-    let id = function.editor().writer().br(block);
-    let extra = InstExtra::Branch(BranchInfo {
-        args: Default::default(),
-    });
-    function.editor().set_inst_extra(id, extra.clone());
-
-    let operands = function.inst(id).fields().to_vec();
-    function.editor().set_inst_fields(id, &operands);
-    assert_eq!(function.inst_extra(id).map(|e| e.to_owned()), Some(extra));
+    let edge = function.editor().create_edge(block, &[]);
+    let id = function.editor().writer().br(edge);
+    function.editor().redirect_edge(edge, block);
+    assert_eq!(function.successors(id).next().unwrap().block, block);
 
     function.editor().invalidate_inst(id);
-    assert!(function.inst_extra(id).is_none());
+    assert!(function.successors(id).next().is_none());
 }
 
 #[test]
@@ -420,9 +413,13 @@ fn validation_errors_are_owned_by_lir() {
         .writer()
         .constant(Writable(veloc_lir::Reg::new_vreg(0)), 42);
     {
-        let mut operands = function.inst(inst).fields().to_vec();
-        operands.pop();
-        function.editor().set_inst_fields(inst, &operands);
+        let results = function.inst(inst).results().to_vec();
+        function.editor().rewriter(inst).write(
+            veloc_lir::MachineOpcode::Generic(GenericOpcode::Constant),
+            &results,
+            &[],
+            &[],
+        );
     }
     let error: veloc_lir::ValidationError = function.inst(inst).validate().unwrap_err();
     assert!(matches!(
@@ -617,13 +614,16 @@ fn optional_validation_is_separate_from_direct_views() {
         veloc_lir::InstView::Arg(_)
     ));
     assert!(function.inst(arg).validate().is_err());
-    function.editor().set_inst_field(arg, 0, InstField::Imm(0));
+    function.editor().rewriter(arg).arg(dst, 0);
     function.inst(arg).validate().unwrap();
 
     let cmp = function.editor().writer().icmp(dst, src, src, IntCC::Eq);
-    function
-        .editor()
-        .set_inst_field(cmp, 0, InstField::FloatCC(FloatCC::Eq));
+    function.editor().rewriter(cmp).write(
+        MachineOpcode::Generic(GenericOpcode::Icmp),
+        &[dst.to_reg()],
+        &[src, src],
+        &[InstField::FloatCC(FloatCC::Eq)],
+    );
     assert!(function.inst(cmp).validate().is_err());
     let call = function
         .editor()
@@ -632,7 +632,12 @@ fn optional_validation_is_separate_from_direct_views() {
     {
         let mut operands = function.inst(call).fields().to_vec();
         operands.push(InstField::Imm(0));
-        function.editor().set_inst_fields(call, &operands);
+        function.editor().rewriter(call).write(
+            MachineOpcode::Generic(GenericOpcode::Call),
+            &[dst.to_reg()],
+            &[src],
+            &operands,
+        );
     }
     assert!(function.inst(call).validate().is_err());
     let missing_callee = function
@@ -665,7 +670,12 @@ fn optional_validation_is_separate_from_direct_views() {
     // Access does not run the optional full shape check: unrelated extra
     // attributes are rejected by validation, not by reading an add's registers.
     let add = function.editor().writer().add(dst, src, src);
-    function.editor().set_inst_fields(add, &[InstField::Imm(7)]);
+    function.editor().rewriter(add).write(
+        MachineOpcode::Generic(GenericOpcode::Add),
+        &[dst.to_reg()],
+        &[src, src],
+        &[InstField::Imm(7)],
+    );
     assert!(function.inst(add).validate().is_err());
     assert!(matches!(
         function.inst(add).view(),

@@ -1049,6 +1049,7 @@ int main(void) {
                 has_popcnt
             );
             let validation = target.validate_instruction(
+                &function,
                 &function.inst(id),
                 veloc_codegen::target::arch::ValidationMode::Allocated,
             );

@@ -162,6 +162,13 @@ fn describe(set: &TypeSet, types: &Types) -> String {
 }
 
 /// Emit type-set membership directly from element and shape masks.
+pub(crate) fn accepts(set: &TypeSet, value: &str) -> String {
+    let masks = shape_match(set, "code");
+    format!(
+        "{{ let ty = {value}; if let Some(code) = ty.element() {{ let shape = ty.lane_count().trailing_zeros() + if ty.is_scalable() {{ 16 }} else {{ 0 }}; let shapes: u32 = {masks}; shapes & (1u32 << shape) != 0 }} else {{ false }} }}"
+    )
+}
+
 fn shape_match(set: &TypeSet, code: &str) -> String {
     let mut out = format!("match {code} {{\n");
     let mut masks = BTreeMap::<u32, Vec<crate::types::Primitive>>::new();

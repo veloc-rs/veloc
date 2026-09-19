@@ -10,7 +10,7 @@ use veloc_lir::BlockId as Block;
 #[cfg(test)]
 use veloc_lir::InstBuild;
 use veloc_lir::InstRead;
-use veloc_lir::{ControlFlow, InstField, MachineFunction, Reg};
+use veloc_lir::{ControlFlow, MachineFunction, Reg};
 
 /// Selected code must still be SSA and contain no generic instructions.
 pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
@@ -48,7 +48,7 @@ pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) ->
                     "virtual register remains in {id:?}"
                 )));
             }
-            target.validate_instruction(&inst, ValidationMode::Allocated)?;
+            target.validate_instruction(f, &inst, ValidationMode::Allocated)?;
         }
     }
     Ok(())
@@ -94,7 +94,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
             if inst.is_generic() {
                 inst.validate()?;
             } else {
-                target.validate_instruction(&inst, ValidationMode::Virtual)?;
+                target.validate_instruction(f, &inst, ValidationMode::Virtual)?;
             }
             for reg in inst.defs() {
                 if transferred && reg.is_vreg() {
@@ -158,17 +158,6 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
                     )));
                 }
             }
-            let targets: Vec<_> = inst
-                .fields()
-                .iter()
-                .filter_map(|op| {
-                    if let InstField::Block(block) = op {
-                        Some(*block)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
             let check_edge = |block: Block, args: &[Reg]| -> Result<()> {
                 let params = f
                     .block_params(block)
@@ -187,30 +176,8 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
                 }
                 Ok(())
             };
-            match f.inst_extra(id) {
-                Some(veloc_lir::InstExtraRef::Branch(info)) => {
-                    let [target] = targets.as_slice() else {
-                        return Err(fail("invalid single-edge shape".into()));
-                    };
-                    check_edge(*target, &info.args)?;
-                }
-                Some(veloc_lir::InstExtraRef::BranchCond(info)) => {
-                    let [yes, no] = targets.as_slice() else {
-                        return Err(fail("invalid conditional-edge shape".into()));
-                    };
-                    check_edge(*yes, &info.then_args)?;
-                    check_edge(*no, &info.else_args)?;
-                }
-                Some(veloc_lir::InstExtraRef::BrTable(info)) => {
-                    for edge in info.targets() {
-                        check_edge(edge.block, &edge.args)?;
-                    }
-                }
-                _ => {
-                    for block in targets {
-                        check_edge(block, &[])?;
-                    }
-                }
+            for edge in f.successors(id) {
+                check_edge(edge.block, edge.args)?;
             }
         }
     }
@@ -221,7 +188,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
 mod tests {
     use super::*;
     use alloc::string::ToString;
-    use veloc_lir::{BranchCondInfo, BranchInfo, InstExtra, Type, Writable};
+    use veloc_lir::{Type, Writable};
 
     #[test]
     fn checks_representation_invariants_without_phase_tags() {
@@ -287,35 +254,22 @@ mod tests {
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), a);
         let b = f.editor().writer().constant(Writable(c), 1);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), b);
-        let branch = f.editor().writer().brcond(c, blocks[1], blocks[2]);
-        f.editor().set_inst_extra(
-            branch,
-            InstExtra::BranchCond(BranchCondInfo {
-                then_args: Default::default(),
-                else_args: Default::default(),
-            }),
-        );
+        let yes = f.editor().create_edge(blocks[1], &[]);
+        let no = f.editor().create_edge(blocks[2], &[]);
+        let branch = f.editor().writer().brcond(c, yes, no);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(0), branch);
-        let left = f.editor().writer().br(blocks[3]);
-        f.editor().set_inst_extra(
-            left,
-            InstExtra::Branch(BranchInfo {
-                args: smallvec::smallvec![x],
-            }),
-        );
+        let edge = f.editor().create_edge(blocks[3], &[]);
+        let left = f.editor().writer().br(edge);
+        f.editor().set_edge_args(edge, &[x]);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(1), left);
         let def_y = f.editor().writer().constant(Writable(y), 2);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(2), def_y);
-        let right = f.editor().writer().br(blocks[3]);
-        f.editor().set_inst_extra(
-            right,
-            InstExtra::Branch(BranchInfo {
-                args: smallvec::smallvec![y],
-            }),
-        );
+        let edge = f.editor().create_edge(blocks[3], &[]);
+        let right = f.editor().writer().br(edge);
+        f.editor().set_edge_args(edge, &[y]);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(2), right);
         let copy = f.editor().writer().copy(Writable(r), p);
@@ -334,12 +288,8 @@ mod tests {
                 .contains("multiple definitions")
         );
         let mut broken = f.clone();
-        broken.editor().set_inst_extra(
-            left,
-            InstExtra::Branch(BranchInfo {
-                args: smallvec::smallvec![y],
-            }),
-        );
+        let edge = broken.inst(left).edge_ids().next().unwrap();
+        broken.editor().set_edge_args(edge, &[y]);
         assert!(
             verify(&broken, &target)
                 .unwrap_err()
@@ -347,7 +297,7 @@ mod tests {
                 .contains("does not dominate")
         );
         let mut broken = f.clone();
-        broken.editor().clear_inst_extra(left);
+        broken.editor().clear_successor_args(left);
         assert!(
             verify(&broken, &target)
                 .unwrap_err()
@@ -355,12 +305,8 @@ mod tests {
                 .contains("arguments for")
         );
         let mut broken = f.clone();
-        broken.editor().set_inst_extra(
-            left,
-            InstExtra::Branch(BranchInfo {
-                args: smallvec::smallvec![c],
-            }),
-        );
+        let edge = broken.inst(left).edge_ids().next().unwrap();
+        broken.editor().set_edge_args(edge, &[c]);
         assert!(
             verify(&broken, &target)
                 .unwrap_err()

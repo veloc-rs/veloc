@@ -200,6 +200,18 @@ impl<'a> crate::InstRead<'a> for crate::InstRef<'a> {
 }
 
 impl<'a> InstRef<'a> {
+    /// Successor identities in instruction operand order, including repeated targets.
+    pub fn edge_ids(self) -> impl Iterator<Item = crate::EdgeId> + 'a {
+        self.store.edge_ids(self.id)
+    }
+
+    pub fn edge(self, id: crate::EdgeId) -> crate::Successor<&'a [Reg]> {
+        assert!(
+            self.store.edge_ids(self.id).any(|edge| edge == id),
+            "edge belongs to another instruction"
+        );
+        self.store.edge(id)
+    }
     /// Conservative, nontrapping value computation. This deliberately excludes
     /// loads, allocation, physical-register dependencies and auxiliary effects.
     pub fn is_pure_value(self) -> bool {

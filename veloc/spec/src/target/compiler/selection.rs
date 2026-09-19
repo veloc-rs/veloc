@@ -173,17 +173,6 @@ pub(super) fn resolve(
             ));
         }
     }
-    let mut values = fields
-        .iter()
-        .filter(|(_, field)| field.value)
-        .map(|(name, _)| variable(name))
-        .collect::<std::collections::BTreeSet<_>>();
-    for (temp, exemplar) in &rule.temps {
-        if !values.contains(exemplar) {
-            return Err(format!("temporary {temp} requires a logical SSA exemplar"));
-        }
-        values.insert(temp.clone());
-    }
     let mut groups = BTreeMap::<(String, u8), Vec<(usize, Vec<String>)>>::new();
     for (index, arg) in rule.fields.iter().enumerate() {
         let PatternArg::Named { name, pattern } = arg else {

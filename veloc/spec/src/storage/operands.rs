@@ -198,13 +198,6 @@ pub(crate) fn compile(
                         .clone(),
                 )
             };
-            if cardinality == Shape::Sequence && codec.is_some() {
-                return Err(Error::at(
-                    source,
-                    0,
-                    "attribute sequences require a typed attribute pool; this storage supports register sequences",
-                ));
-            }
             fields.push(Field {
                 name: field.name.clone(),
                 ty: ty.clone(),
@@ -238,7 +231,14 @@ impl Field {
         match self.shape {
             Shape::One => self.rust.clone(),
             Shape::Optional => format!("Option<{}>", self.rust),
-            Shape::Sequence => format!("&'a [{}]", self.rust),
+            Shape::Sequence => match &self.codec {
+                Some(codec) => format!(
+                    "AttributeList<'a, {}, {}>",
+                    codec.rsplit_once("::").unwrap().0,
+                    self.rust
+                ),
+                None => format!("&'a [{}]", self.rust),
+            },
         }
     }
 }
@@ -249,6 +249,12 @@ impl Member {
         }
         let access = self.domain.accessor();
         let value = if let Some(codec) = &self.field.codec {
+            if self.field.shape == Shape::Sequence {
+                return format!(
+                    "AttributeList {{ fields: &{receiver}.fields()[{}..], decode: |field| match field {{ {codec}(value) => *value, _ => panic!(\"invalid instruction field\") }} }}",
+                    self.index
+                );
+            }
             format!(
                 "match {receiver}.fields()[{}] {{ {codec}(value) => value, _ => panic!(\"invalid instruction field\") }}",
                 self.index
@@ -326,7 +332,14 @@ impl Operands {
                 .last()
                 .is_some_and(|m| m.field.shape == Shape::Sequence)
             {
-                Some(local(members.pop().unwrap().binding.as_ref().unwrap()))
+                let member = members.pop().unwrap();
+                let value = local(member.binding.as_ref().unwrap());
+                Some(match &member.field.codec {
+                    Some(codec) => format!(
+                        "&{value}.iter().copied().map({codec}).collect::<alloc::vec::Vec<_>>()"
+                    ),
+                    None => value,
+                })
             } else {
                 None
             };
@@ -500,7 +513,12 @@ impl Operands {
                             ParamKind::Value
                         }
                 } else {
-                    param.kind == ParamKind::Property(field.ty.clone())
+                    param.kind
+                        == ParamKind::Property(if field.shape == Shape::Sequence {
+                            format!("sequence({})", field.ty)
+                        } else {
+                            field.ty.clone()
+                        })
                 };
                 if !compatible {
                     return Err(fail(&format!(

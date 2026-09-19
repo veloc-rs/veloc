@@ -14,6 +14,7 @@ use std::collections::HashMap;
 pub(crate) struct FinalInstDef {
     operands: Vec<OperandConstraint>,
     reg_classes: Vec<(String, Vec<String>)>,
+    value_types: Vec<(String, crate::types::TypeSet)>,
     ties: Vec<(usize, usize)>,
     implicit_uses: Vec<String>,
     implicit_defs: Vec<String>,
@@ -101,11 +102,13 @@ impl Plan {
         }
         let extractors = collect_extractors(&module).map_err(&input_error)?;
         select::check_predicates(&module).map_err(&input_error)?;
+        let types = crate::types::Types::compile(definitions.declarations(), definitions.text())
+            .map_err(|e| definitions.locate(e))?;
         let mut final_inst_defs =
-            contracts::compile(contracts, &module).map_err(&definition_error)?;
+            contracts::compile(contracts, &module, &types).map_err(&definition_error)?;
         for def in &module.defs {
             if let Def::SelectRule(rule) = def {
-                select::check_construction(rule, &final_inst_defs).map_err(&input_error)?;
+                select::check_construction(rule, &final_inst_defs, &types).map_err(&input_error)?;
             }
         }
         encoding::compile(definitions, &mut final_inst_defs).map_err(&definition_error)?;
@@ -171,15 +174,19 @@ impl Plan {
 
         let mut output = String::new();
         generate::generate_header(&mut output, arch);
+        output.push_str("\n// Registers, CPU features and ABI descriptors.\n");
         generate::generate_register_descriptors(&mut output, &module);
         self.cpu.generate(&mut output);
         generate::generate_abi_descriptors(&mut output, &module);
+        output.push_str("\n// Target opcodes, metadata and validation.\n");
         generate::generate_enum(&mut output, &final_inst_defs);
         generate::generate_enum_conversions(&mut output, &final_inst_defs);
         generate::generate_target_inst_metadata(&mut output, &module, &final_inst_defs);
         generate::generate_validation(&mut output, &final_inst_defs);
         select::generate_generic_inst_metadata(&mut output, &module, &final_inst_defs);
+        output.push_str("\n// Machine-code emission.\n");
         encoding::generate(&mut output, &final_inst_defs);
+        output.push_str("\n// Assembly rendering.\n");
         assembly::generate(&mut output, &final_inst_defs);
         select::generate_select_instruction(
             &mut output,
