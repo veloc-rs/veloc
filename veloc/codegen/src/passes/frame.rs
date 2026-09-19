@@ -1,6 +1,7 @@
+use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
-use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{CallConv, TargetFrameLowering};
+use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::target::{CallConv, TargetFrameLowering};
 
 pub struct FrameFinalizePass<'a> {
     frame_lowering: &'a dyn TargetFrameLowering,

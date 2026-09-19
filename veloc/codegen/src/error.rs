@@ -1,7 +1,7 @@
 use alloc::string::String;
 use core::fmt;
 
-use crate::target::arch::TargetArch;
+use crate::target::TargetArch;
 use veloc_lir::MachineOpcode;
 
 pub type Result<T> = core::result::Result<T, Error>;

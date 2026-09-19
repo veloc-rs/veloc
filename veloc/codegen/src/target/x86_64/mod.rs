@@ -4,17 +4,23 @@
 
 pub mod assembly;
 pub mod emitter;
+mod frame;
 pub mod inst;
+mod legalize;
 pub mod lowering;
 mod machine;
+mod operand;
+mod pass_config;
+mod select;
 
 pub use emitter::X86_64CodeEmitter;
-pub use lowering::{
-    X86_64FrameLowering, X86_64Legalizer, X86_64OperandLowering, X86_64PassConfig, X86_64PostIsel,
-    X86_64Selector,
-};
+pub use frame::X86_64FrameLowering;
+pub use legalize::X86_64Legalizer;
+pub use operand::X86_64OperandLowering;
+pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
+pub use select::X86_64Selector;
 
-use crate::target::arch::{
+use crate::target::{
     RegClass, RegClassInfo, RegisterFile, SpecialRegs, SpillKind, TargetConfig, TargetDescription,
     TargetEmitter, TargetFrameLowering, TargetInfo, TargetInstructionSelector, TargetInstructions,
     TargetLegalizer, TargetMachine, TargetOperandLowering, TargetPassConfig, TargetPostIsel,
@@ -124,7 +130,7 @@ impl X86_64TargetMachine {
             .resolve(&config.features)
             .map_err(crate::Error::codegen)?;
         let desc = TargetDescription {
-            arch: crate::target::arch::TargetArch::X86_64,
+            arch: crate::target::TargetArch::X86_64,
             registers: X86_64_REGISTER_FILE,
             data_layout: DATA_LAYOUT,
         };
@@ -168,17 +174,14 @@ impl TargetInstructions for X86_64TargetMachine {
     fn write_assembly(
         &self,
         inst: &veloc_lir::InstRef<'_>,
-        out: &mut dyn crate::target::arch::AssemblyWriter,
+        out: &mut dyn crate::target::AssemblyWriter,
     ) -> core::fmt::Result {
         let veloc_lir::MachineOpcode::Target(op) = inst.opcode() else {
             return Err(core::fmt::Error);
         };
         inst::TargetInst::from_u32(op).write_assembly(inst, out)
     }
-    fn instruction_metadata(
-        &self,
-        opcode: u32,
-    ) -> &'static crate::target::arch::TargetInstMetadata {
+    fn instruction_metadata(&self, opcode: u32) -> &'static crate::target::TargetInstMetadata {
         inst::target_inst_metadata(inst::TargetInst::from_u32(opcode))
     }
 }

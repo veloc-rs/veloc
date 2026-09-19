@@ -94,8 +94,8 @@ select(n: lir::Copy<Type::I32>) {
 ```
 
 Import the shared type declarations before using these patterns. Type domains
-use the same named-set and union resolver as legalization signatures. Generated
-guards query the host's `get_type` directly; they do not imply a register bank
+use the same named-set and union resolver as legalization signatures. Bytecode
+guards query the virtual-register table directly; they do not imply a register bank
 or generate one host predicate per type. Physical registers do not match these
 typed virtual-value patterns. General predicate extractors remain available.
 The operations are:
@@ -231,7 +231,7 @@ rewrite trailing_zeros<T: Word>(inst: lir::Cttz<T>) {
     }
 }
 rewrite load_displacement<T: Scalar>(inst: lir::Load<T>)
-    = rust("crate::target::x86_64::lowering::legalize::displacement");
+    = rust("crate::target::x86_64::legalize::displacement");
 ```
 
 Value construction is independently composable. A function receives values, not

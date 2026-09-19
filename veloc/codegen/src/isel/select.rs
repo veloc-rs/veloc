@@ -5,7 +5,7 @@
 //! 这是一个通用的指令选择驱动器，实际的架构特定选择逻辑
 //! 通过 TargetInstructionSelector trait 委托给具体的目标后端实现。
 
-use crate::target::arch::TargetInstructionSelector;
+use crate::target::TargetInstructionSelector;
 use alloc::vec::Vec;
 use veloc_lir::{InstId, MachineFunction};
 
@@ -54,41 +54,6 @@ pub struct SelectionContext<'a> {
     pub inst_id: InstId,
     pub selected: &'a mut Vec<InstId>,
     pub edge_transfers: &'a mut Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>,
-}
-
-impl crate::target::arch::LoweringContext for SelectionContext<'_> {
-    fn alloc_tmp(&mut self, ty: veloc_mir::Type) -> veloc_lir::Reg {
-        self.mfunc
-            .editor()
-            .alloc_vreg_data(veloc_lir::VRegData { ty, bank: None })
-    }
-    fn get_type(&self, vreg: veloc_lir::VReg) -> veloc_mir::Type {
-        self.mfunc.vregs()[vreg].ty
-    }
-
-    fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<veloc_lir::VReg> {
-        let mut current = 0;
-        for reg in inst
-            .results()
-            .iter()
-            .copied()
-            .chain(inst.inputs().iter().copied())
-            .map(Some)
-        {
-            if let Some(r) = reg {
-                if current == index {
-                    if r.is_vreg() {
-                        use cranelift_entity::EntityRef;
-                        return Some(veloc_lir::VReg::new(r.index() as usize));
-                    } else {
-                        return None;
-                    }
-                }
-                current += 1;
-            }
-        }
-        None
-    }
 }
 
 fn apply_select_result(

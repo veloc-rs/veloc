@@ -2,9 +2,10 @@
 //!
 //! Only operations explicitly declared movable by the target enter a region.
 //! Memory, traps and control effects remain barriers; this needs no alias guesses.
-use crate::pipeline::FunctionAnalysisCtx;
-use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{RegClass, ScheduleInfo, TargetDescription, TargetSchedule};
+use crate::analysis::FunctionAnalysisCtx;
+use crate::analysis::{ChangeSet, PassEffect};
+use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::target::{RegClass, ScheduleInfo, TargetDescription, TargetSchedule};
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;

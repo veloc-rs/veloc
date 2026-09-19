@@ -1051,7 +1051,7 @@ int main(void) {
             let validation = target.validate_instruction(
                 &function,
                 &function.inst(id),
-                veloc_codegen::target::arch::ValidationMode::Allocated,
+                veloc_codegen::target::ValidationMode::Allocated,
             );
             assert_eq!(validation.is_ok(), has_popcnt);
             if !has_popcnt {

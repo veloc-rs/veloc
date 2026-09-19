@@ -1,6 +1,7 @@
+use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
-use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{TargetOperandLowering, TargetPostIsel};
+use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::target::{TargetOperandLowering, TargetPostIsel};
 
 pub struct PostIselOptimizePass<'a> {
     post_isel: &'a dyn TargetPostIsel,

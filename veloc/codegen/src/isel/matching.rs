@@ -3,7 +3,10 @@
 use super::select::SelectResult;
 use alloc::vec::Vec;
 use smallvec::SmallVec;
-use veloc_lir::{GenericOpcode, InstBuilder, InstField, InstId, InstRef, InstWriter, Reg};
+use veloc_lir::{
+    GenericOpcode, InstBuilder, InstField, InstId, InstRef, MachineOpcode, Reg, VRegBuilder,
+    VRegData,
+};
 use veloc_mir::Type;
 
 // Like interpreter::define_opcodes, keep decoding and diagnostics beside the
@@ -59,28 +62,48 @@ pub(crate) struct Program {
     pub types: &'static [&'static [Type]],
     pub integers: &'static [i64],
     pub opcodes: &'static [GenericOpcode],
-    pub targets: &'static [u32],
+    pub targets: &'static [Target],
+    pub accesses: &'static [Option<Field>],
+    pub features: &'static [&'static [u64]],
     pub registers: &'static [Reg],
 }
 
-/// Generated per target/schema, not per rule. Queries and predicates are pure.
-/// Field IDs are resolved and checked by Spec; no runtime string lookup.
-pub(crate) trait Host {
-    fn read_reg(&self, inst: InstRef<'_>, field: u32) -> Option<Reg>;
-    fn read_int(&self, inst: InstRef<'_>, field: u32) -> i64;
-    fn read_field(&self, inst: InstRef<'_>, field: u32) -> InstField;
-    fn ty(&self, reg: Reg) -> Option<Type>;
-    fn features(&self, set: u32) -> bool;
-    fn predicate(&self, id: u32, reg: Reg) -> bool;
-    fn temporary(&mut self, ty: Type) -> Reg;
-    fn build(
-        &self,
-        target: u32,
-        writer: InstWriter<'_>,
-        results: &[Reg],
-        inputs: &[Reg],
-        fields: &[InstField],
-    ) -> InstId;
+/// Physical field positions come from the same checked storage projections as
+/// InstView. Optional fields bound to none occupy no slot; sequences are not
+/// scalar accesses and are rejected by the selection compiler.
+pub(crate) enum Field {
+    Input(usize),
+    Result(usize),
+    Attribute(usize),
+}
+impl Field {
+    fn reg(&self, inst: InstRef<'_>) -> Reg {
+        match *self {
+            Self::Input(index) => inst.inputs()[index],
+            Self::Result(index) => inst.results()[index],
+            Self::Attribute(_) => panic!("attribute used as a register"),
+        }
+    }
+    fn attribute(&self, inst: InstRef<'_>) -> InstField {
+        match *self {
+            Self::Attribute(index) => inst.fields()[index],
+            _ => panic!("register used as an attribute"),
+        }
+    }
+    fn integer(&self, inst: InstRef<'_>) -> i64 {
+        match self.attribute(inst) {
+            InstField::Imm(value) => value,
+            InstField::IntCC(value) => value as i64,
+            InstField::FloatCC(value) => value as i64,
+            _ => panic!("non-integer selection field"),
+        }
+    }
+}
+
+/// Data only: construction uses the common writer, not a target callback.
+pub(crate) struct Target {
+    pub opcode: u32,
+    pub metadata: &'static crate::target::TargetInstMetadata,
 }
 
 struct Reader<'a> {
@@ -159,7 +182,9 @@ pub(crate) fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> 
 #[inline(never)]
 pub(crate) fn execute(
     program: &Program,
-    host: &mut dyn Host,
+    vregs: &mut VRegBuilder<'_>,
+    features: &[u64],
+    predicate: &dyn Fn(u32, Reg) -> bool,
     store: &mut InstBuilder<'_>,
     source: InstId,
     out: &mut Vec<InstId>,
@@ -188,10 +213,9 @@ pub(crate) fn execute(
                 let dst = reader.index();
                 let node = reader.index();
                 let field = reader.index();
-                values[dst] = host.read_reg(
-                    store.get(insts[node].expect("dominating definition")),
-                    field as u32,
-                );
+                values[dst] = program.accesses[field]
+                    .as_ref()
+                    .map(|field| field.reg(store.get(insts[node].expect("dominating definition"))));
             }
             Op::GetDef => {
                 assert!(!accepted);
@@ -215,7 +239,7 @@ pub(crate) fn execute(
                 let set = reader.index();
                 reader.branch(
                     values[value]
-                        .and_then(|reg| host.ty(reg))
+                        .and_then(|reg| reg.as_vreg().map(|reg| vregs.get(reg).ty))
                         .is_some_and(|ty| program.types[set].contains(&ty)),
                 );
             }
@@ -225,21 +249,29 @@ pub(crate) fn execute(
                 let field = reader.index();
                 let constant = reader.index();
                 reader.branch(
-                    host.read_int(store.get(insts[node].unwrap()), field as u32)
-                        == program.integers[constant],
+                    program.accesses[field]
+                        .as_ref()
+                        .map(|field| field.integer(store.get(insts[node].unwrap())))
+                        == Some(program.integers[constant]),
                 );
             }
             Op::CheckFeatures => {
                 assert!(!accepted);
                 let set = reader.index();
-                reader.branch(host.features(set as u32));
+                reader.branch(
+                    program.features[set]
+                        .iter()
+                        .enumerate()
+                        .all(|(i, required)| {
+                            features.get(i).copied().unwrap_or(0) & required == *required
+                        }),
+                );
             }
             Op::CallPredicate => {
                 assert!(!accepted);
                 let value = reader.index();
-                let predicate = reader.index();
-                reader
-                    .branch(values[value].is_some_and(|reg| host.predicate(predicate as u32, reg)));
+                let id = reader.index();
+                reader.branch(values[value].is_some_and(|reg| predicate(id as u32, reg)));
             }
             Op::CheckFoldable => {
                 assert!(!accepted);
@@ -263,7 +295,10 @@ pub(crate) fn execute(
                 let [ty] = program.types[ty] else {
                     panic!("temporary requires one type")
                 };
-                values[dst] = Some(host.temporary(*ty));
+                values[dst] = Some(vregs.alloc(VRegData {
+                    ty: *ty,
+                    bank: None,
+                }));
             }
             Op::ReadResult => {
                 assert!(accepted);
@@ -282,7 +317,9 @@ pub(crate) fn execute(
                 let dst = reader.index();
                 let node = reader.index();
                 let field = reader.index();
-                fields[dst] = Some(host.read_field(store.get(insts[node].unwrap()), field as u32));
+                fields[dst] = program.accesses[field]
+                    .as_ref()
+                    .map(|field| field.attribute(store.get(insts[node].unwrap())));
             }
             Op::ConstImm => {
                 assert!(accepted);
@@ -309,13 +346,18 @@ pub(crate) fn execute(
                     }
                     operands.push(field);
                 }
-                out.push(host.build(
-                    program.targets[target],
-                    store.writer(),
-                    &results,
-                    &inputs,
-                    &operands,
-                ));
+                let target = &program.targets[target];
+                out.push(
+                    store
+                        .writer()
+                        .with_effects(target.metadata.implicit_uses, target.metadata.implicit_defs)
+                        .write(
+                            MachineOpcode::Target(target.opcode),
+                            &results,
+                            &inputs,
+                            &operands,
+                        ),
+                );
             }
             Op::Finish => {
                 assert!(accepted);

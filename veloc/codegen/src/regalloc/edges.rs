@@ -1,6 +1,6 @@
 //! SSA edge arguments become physical parallel copies only after allocation.
 use super::linear_scan::RegisterAllocator;
-use crate::target::arch::SpillKind;
+use crate::target::SpillKind;
 use crate::{Error, Result};
 use alloc::format;
 use alloc::vec::Vec;

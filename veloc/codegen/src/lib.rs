@@ -18,11 +18,13 @@ pub mod regalloc;
 pub mod target;
 pub mod translate;
 
-pub use crate::passes::isel;
+pub mod analysis;
+pub mod isel;
+pub mod verify;
 
 pub use backend::Backend;
 pub use driver::{CodegenOptions, CodegenPipeline, CodegenStats};
-pub use target::arch::{
+pub use target::{
     CallConv, RewriteResult, SelectResult, TargetArch, TargetConfig, TargetEmitter,
     TargetFrameLowering, TargetInstructionSelector, TargetLegalizer, TargetMachine,
     TargetOperandLowering, TargetPassConfig, TargetPostIsel,
@@ -30,7 +32,7 @@ pub use target::arch::{
 
 /// 根据目标配置创建对应的目标机器
 pub fn create_target_machine(config: TargetConfig) -> Result<alloc::boxed::Box<dyn TargetMachine>> {
-    use target::arch::TargetArch;
+    use target::TargetArch;
     match config.arch {
         TargetArch::X86_64 => Ok(alloc::boxed::Box::new(
             target::x86_64::X86_64TargetMachine::new(config)?,

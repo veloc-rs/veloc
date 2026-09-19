@@ -1,4 +1,4 @@
-use crate::target::arch::TargetInstructions;
+use crate::target::TargetInstructions;
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use hashbrown::{HashMap, HashSet};
@@ -669,7 +669,7 @@ fn compute_register_pressure(mfunc: &MachineFunction, liveness: &LivenessInfo) -
 #[cfg(test)]
 mod tests {
     use super::{ChangeSet, FunctionAnalysisCtx};
-    use crate::target::arch::TargetConfig;
+    use crate::target::TargetConfig;
     use crate::target::x86_64::X86_64TargetMachine;
     use veloc_lir::BlockId as Block;
     use veloc_lir::InstBuild;

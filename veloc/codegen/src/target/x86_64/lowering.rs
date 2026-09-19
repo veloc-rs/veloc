@@ -1,35 +1,10 @@
-//! x86_64 Target Lowering
-//!
-//! 使用 Spec 生成的代码
-//! 进行指令选择。
-
-mod frame;
-mod legalize;
-mod operand;
-mod pass_config;
-mod select;
-
-pub use crate::isel::SelectResult;
-use crate::passes::lowering::{LegalizeAction, RewriteContext};
-use crate::target::arch::{
-    CallConv as TargetCallConv, LoweringContext, OperandConstraintSet, SelectionContext,
-    TargetArch, TargetFrameLowering, TargetInstructionSelector, TargetLegalizer,
-    TargetOperandLowering, TargetPassConfig, TargetPostIsel,
-};
-use crate::target::x86_64::inst::{self as generated, TargetInst};
-use alloc::vec::Vec;
-pub use frame::X86_64FrameLowering;
-pub use legalize::X86_64Legalizer;
-pub use operand::X86_64OperandLowering;
-pub use pass_config::{X86_64PassConfig, X86_64PostIsel};
-pub use select::X86_64Selector;
-use veloc_lir::{
-    GenericOpcode, InstField, InstId, MachineFunction, MachineOpcode, Reg, VReg, Writable,
-};
+//! Shared x86 copy construction and selection predicates.
+use super::inst::{self as generated, TargetInst};
+use veloc_lir::{InstField, InstId, MachineFunction, Reg};
 use veloc_mir::{Type, TypeInfo};
 
 /// x86_64 专属的 Context 扩展 (架构私有)
-pub trait X86LoweringContext: LoweringContext {
+pub trait X86LoweringContext {
     fn has_bmi2(&self) -> bool;
 
     fn has_avx2(&self) -> bool;
@@ -75,7 +50,7 @@ fn x86_copy_type_for_regs(
     )
 }
 
-fn build_x86_copy_inst(
+pub(super) fn build_x86_copy_inst(
     mfunc: &mut MachineFunction,
     dst: Reg,
     src: Reg,
@@ -85,7 +60,7 @@ fn build_x86_copy_inst(
     Ok(opcode.write(mfunc.editor().writer(), &[dst], &[src], &[]))
 }
 
-fn build_target_inst(
+pub(super) fn build_target_inst(
     writer: veloc_lir::InstWriter<'_>,
     opcode: TargetInst,
     results: &[Reg],
@@ -108,35 +83,11 @@ impl X86_64Lowering {
     }
 }
 
-/// x86_64 专属的 Context 扩展实现
-pub struct X86SelectionContext<'a> {
-    pub vregs: veloc_lir::VRegBuilder<'a>,
-    pub features: generated::FeatureSet,
-}
-impl LoweringContext for X86SelectionContext<'_> {
-    fn alloc_tmp(&mut self, ty: Type) -> Reg {
-        self.vregs.alloc(veloc_lir::VRegData { ty, bank: None })
-    }
-    fn get_type(&self, vreg: VReg) -> Type {
-        self.vregs.get(vreg).ty
-    }
-    fn get_vreg(&self, inst: &veloc_lir::InstRef<'_>, index: usize) -> Option<VReg> {
-        let reg = inst.inputs().get(index)?;
-        reg.is_vreg().then(|| VReg::from_u32(reg.index()))
-    }
-}
-impl X86LoweringContext for X86SelectionContext<'_> {
+impl X86LoweringContext for X86_64Lowering {
     fn has_bmi2(&self) -> bool {
         self.features.contains(generated::Feature::BMI2)
     }
     fn has_avx2(&self) -> bool {
         self.features.contains(generated::Feature::AVX2)
-    }
-}
-
-impl crate::target::arch::TargetFeatures for X86SelectionContext<'_> {
-    type Features = generated::FeatureSet;
-    fn supports_features(&self, required: Self::Features) -> bool {
-        self.features.contains_all(required)
     }
 }

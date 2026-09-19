@@ -400,7 +400,7 @@ fn aarch64_aapcs_descriptor() -> &'static AbiDescriptor {
 #[cfg(test)]
 mod tests {
     use super::{CallConv, Reg, TargetArch, x86_64_rax, x86_64_rdx};
-    use crate::target::arch::{AbiLocation, AbiStackBase};
+    use crate::target::{AbiLocation, AbiStackBase};
     use alloc::vec;
     use veloc_mir::Type;
 

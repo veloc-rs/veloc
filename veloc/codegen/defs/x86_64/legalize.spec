@@ -275,6 +275,6 @@ rule cttz<T: Word>(inst: lir::Cttz<T>) {
 }
 
 rewrite load_displacement<T: Scalar | Type::PTR>(inst: lir::Load<T>)
-    = rust("crate::target::x86_64::lowering::legalize::displacement");
+    = rust("crate::target::x86_64::legalize::displacement");
 rewrite store_displacement<T: Scalar | Type::PTR>(inst: lir::Store<T>)
-    = rust("crate::target::x86_64::lowering::legalize::displacement");
+    = rust("crate::target::x86_64::legalize::displacement");

@@ -125,6 +125,7 @@ impl Plan {
         )
         .unwrap();
         out.push_str(r#"
+    pub const fn as_words(&self) -> &[u64] { &self.0 }
     pub const fn contains(self, feature: Feature) -> bool {
         let index = feature as usize;
         self.0[index / 64] & (1u64 << (index % 64)) != 0

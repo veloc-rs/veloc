@@ -5,7 +5,7 @@
 
 use crate::driver::CodegenPipeline;
 use crate::error::Result;
-use crate::target::arch::{TargetConfig, TargetMachine};
+use crate::target::{TargetConfig, TargetMachine};
 use alloc::boxed::Box;
 use veloc_mir::Module;
 

@@ -1,6 +1,10 @@
-use super::*;
+use super::inst as generated;
 use crate::passes::lowering::legalize::Query;
+use crate::passes::lowering::{LegalizeAction, RewriteContext};
+use crate::target::TargetLegalizer;
+use veloc_lir::{GenericOpcode, Writable};
 use veloc_lir::{InstBuild, InstRead};
+use veloc_mir::Type;
 
 // Declared contracts are checked even if a particular target rule does not use
 // every method yet.

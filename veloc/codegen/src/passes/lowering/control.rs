@@ -1,6 +1,7 @@
 //! Explicit control-flow lowering, independent of instruction legalization.
+use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::{Error, Result};
-use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
+use crate::pipeline::{FunctionPass, FunctionPassContext};
 use alloc::vec::Vec;
 use veloc_lir::{
     GenericOpcode, InstBuild, InstRead, InstView, MachineFunction, Successor, Writable,

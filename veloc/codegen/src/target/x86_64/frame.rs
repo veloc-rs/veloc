@@ -1,4 +1,7 @@
-use super::*;
+use super::inst as generated;
+use crate::target::{CallConv as TargetCallConv, TargetArch, TargetFrameLowering};
+use alloc::vec::Vec;
+use veloc_lir::MachineFunction;
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64FrameLowering;

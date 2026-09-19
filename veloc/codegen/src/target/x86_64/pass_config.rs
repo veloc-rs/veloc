@@ -1,4 +1,5 @@
-use super::*;
+use crate::target::{TargetPassConfig, TargetPostIsel};
+use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64PostIsel;

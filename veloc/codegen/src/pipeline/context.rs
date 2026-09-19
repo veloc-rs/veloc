@@ -1,6 +1,7 @@
+use crate::analysis::{FunctionAnalysisCtx, ModuleAnalysisCtx};
 use crate::driver::{CodegenOptions, CodegenStats};
-use crate::pipeline::{FunctionAnalysisCtx, ModuleAnalysisCtx};
-use crate::target::arch::TargetMachine;
+
+use crate::target::TargetMachine;
 
 pub struct FunctionPassContext<'a> {
     pub target: &'a dyn TargetMachine,

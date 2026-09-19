@@ -1,7 +1,7 @@
 //! Intel assembly rendering. Instruction spelling and operand order are
 //! generated; this host only renders registers, addresses and external names.
 use super::inst;
-use crate::target::arch::AssemblyWriter;
+use crate::target::AssemblyWriter;
 use core::fmt::{self, Write};
 use veloc_lir::BlockId as Block;
 use veloc_lir::SymbolId;

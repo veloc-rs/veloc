@@ -1,22 +1,15 @@
 //! Compile the shared matching graph and construction recipes to bytecode.
-//! Rust is emitted only for schema accessors and declared host predicates.
+//! Storage positions and target metadata are data; only custom predicates call Rust.
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Access {
     Reg,
-    Integer,
-    Condition,
-    Imm,
-    Edge,
-    Global,
-    StackSlot,
+    Attribute,
 }
 
-#[derive(Default)]
-pub(in super::super) struct Adapters {
-    fields: Vec<(String, String, Access)>,
-    features: Vec<Vec<String>>,
+pub(in super::super) struct Adapters<'a> {
+    layouts: &'a BTreeMap<String, crate::storage::operands::Projection>,
     predicates: Vec<String>,
     encodings: BTreeMap<&'static str, (usize, bool)>,
 }
@@ -30,9 +23,44 @@ fn intern<T: PartialEq>(items: &mut Vec<T>, item: T) -> usize {
     }
 }
 
-impl Adapters {
-    fn field(&mut self, schema: &str, field: &str, access: Access) -> usize {
-        intern(&mut self.fields, (schema.into(), field.into(), access))
+impl<'a> Adapters<'a> {
+    pub(in super::super) fn new(
+        layouts: &'a BTreeMap<String, crate::storage::operands::Projection>,
+    ) -> Self {
+        Self {
+            layouts,
+            predicates: Vec::new(),
+            encodings: BTreeMap::new(),
+        }
+    }
+    fn field(&self, opcode: &str, field: &str, access: Access) -> String {
+        use crate::storage::operands::{Domain, Shape};
+        let member = self.layouts[opcode]
+            .members
+            .iter()
+            .find(|m| m.field.name == field)
+            .expect("checked storage field");
+        assert!(
+            member.field.shape != Shape::Sequence,
+            "scalar selector access cannot read sequence {opcode}.{field}"
+        );
+        assert_eq!(
+            member.field.codec.is_none(),
+            access == Access::Reg,
+            "selector field domain mismatch"
+        );
+        if member.binding.is_none() {
+            return "None".into();
+        }
+        let domain = match member.domain {
+            Domain::Input => "Input",
+            Domain::Result => "Result",
+            Domain::Attribute => "Attribute",
+        };
+        format!(
+            "Some(crate::isel::matching::Field::{domain}({}))",
+            member.index
+        )
     }
     pub(in super::super) fn emit(
         &self,
@@ -41,76 +69,18 @@ impl Adapters {
         extractors: &HashMap<String, ExtractorDef>,
         decls: &HashMap<String, DeclDef>,
     ) {
-        // Symbolic opcodes avoid a second numeric opcode registry. Check the
-        // operand encoding contract as well, when rustc compiles the output.
         writeln!(out, "const _: () = {{").unwrap();
         for (op, (arity, branch)) in &self.encodings {
-            writeln!(out, "let (arity, branch) = crate::passes::isel::matching::Op::{op}.format(); assert!(arity == {arity} && branch == {branch});").unwrap();
+            writeln!(out, "let (arity, branch) = crate::isel::matching::Op::{op}.format(); assert!(arity == {arity} && branch == {branch});").unwrap();
         }
         writeln!(out, "}};").unwrap();
-        writeln!(out, "struct SelectorHost<'a, C>(&'a mut C);").unwrap();
-        writeln!(out, "impl<C: LoweringContext + crate::target::arch::TargetFeatures<Features = FeatureSet> + {context}> crate::passes::isel::matching::Host for SelectorHost<'_, C> {{").unwrap();
-        for (method, ty, category) in [
-            ("read_reg", "Option<Reg>", 0),
-            ("read_int", "i64", 1),
-            ("read_field", "InstField", 2),
-        ] {
-            writeln!(out, "fn {method}(&self, inst: veloc_lir::InstRef<'_>, field: u32) -> {ty} {{ use veloc_lir::InstRead; match field {{").unwrap();
-            for (id, (schema, field, access)) in self.fields.iter().enumerate() {
-                let group = match access {
-                    Access::Reg => 0,
-                    Access::Integer | Access::Condition => 1,
-                    _ => 2,
-                };
-                if group != category {
-                    continue;
-                }
-                let expr = match access {
-                    Access::Reg => format!("reg_value(n.{field})"),
-                    Access::Integer => format!("n.{field}.into()"),
-                    Access::Condition => format!("n.{field} as i64"),
-                    Access::Imm => format!("InstField::Imm(n.{field}.into())"),
-                    Access::Edge => format!("InstField::Edge(n.{field})"),
-                    Access::Global => format!("InstField::Global(n.{field})"),
-                    Access::StackSlot => format!("InstField::StackSlot(n.{field})"),
-                };
-                writeln!(out, "{id} => {{ let veloc_lir::InstView::{schema}(n) = inst.view() else {{ panic!(\"selection field schema mismatch\") }}; {expr} }},").unwrap();
-            }
-            writeln!(out, "_ => unreachable!(\"selection field ID\"), }} }}").unwrap();
-        }
-        writeln!(
-            out,
-            "fn ty(&self, reg: Reg) -> Option<Type> {{ reg.as_vreg().map(|v| self.0.get_type(v)) }}"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "fn features(&self, id: u32) -> bool {{ const SETS: &[FeatureSet] = &["
-        )
-        .unwrap();
-        for features in &self.features {
-            let expr = features
-                .iter()
-                .fold("FeatureSet::empty()".to_owned(), |s, f| {
-                    format!("{s}.with(Feature::{f})")
-                });
-            writeln!(out, "{expr},").unwrap();
-        }
-        writeln!(out, "]; self.0.supports_features(SETS[id as usize]) }}").unwrap();
-        writeln!(out, "fn predicate(&self, id: u32, reg: Reg) -> bool {{ let _ctx = &*self.0; let Some(_v) = reg.as_vreg() else {{ return false }}; match id {{").unwrap();
+        writeln!(out, "fn selection_predicate<C: {context}>(_ctx: &C, id: u32, reg: Reg) -> bool {{ let Some(_v) = reg.as_vreg() else {{ return false }}; match id {{").unwrap();
         for (id, name) in self.predicates.iter().enumerate() {
             let condition = generate_pattern_condition(&extractors[name].body, "_v", decls)
                 .replace("ctx.", "_ctx.");
             writeln!(out, "{id} => {condition},").unwrap();
         }
         writeln!(out, "_ => unreachable!(\"selection predicate ID\"), }} }}").unwrap();
-        writeln!(
-            out,
-            "fn temporary(&mut self, ty: Type) -> Reg {{ self.0.alloc_tmp(ty) }}"
-        )
-        .unwrap();
-        writeln!(out, "fn build(&self, target: u32, writer: veloc_lir::InstWriter<'_>, results: &[Reg], inputs: &[Reg], fields: &[InstField]) -> veloc_lir::InstId {{ TargetInst::from_u32(target).write(writer, results, inputs, fields) }}").unwrap();
-        writeln!(out, "}}").unwrap();
     }
 }
 
@@ -128,6 +98,8 @@ struct Code {
     opcodes: Vec<String>,
     targets: Vec<String>,
     registers: Vec<u32>,
+    accesses: Vec<(String, String, Access)>,
+    features: Vec<Vec<String>>,
     values: usize,
     fields: usize,
 }
@@ -144,6 +116,16 @@ fn uleb(value: usize) -> Vec<u8> {
     }
 }
 impl Code {
+    fn field(
+        &mut self,
+        adapters: &Adapters<'_>,
+        opcode: &str,
+        field: &str,
+        access: Access,
+    ) -> usize {
+        let _ = adapters.field(opcode, field, access);
+        intern(&mut self.accesses, (opcode.into(), field.into(), access))
+    }
     fn op(&mut self, op: &'static str, args: &[usize]) {
         self.instructions.push(Instruction {
             op,
@@ -167,7 +149,7 @@ impl Code {
         dst: usize,
     ) {
         let (node, schema, field) = resolve_field(plan, root, path);
-        let field = adapters.field(schema, field, Access::Reg);
+        let field = self.field(adapters, schema, field, Access::Reg);
         self.op("ReadReg", &[dst, node, field]);
         self.values = self.values.max(dst + 1);
     }
@@ -204,9 +186,9 @@ impl Code {
                 }
                 Guard::Integer(_) | Guard::Condition(_) => {
                     let (access, constant) = match guard {
-                        Guard::Integer(value) => (Access::Integer, value.to_string()),
+                        Guard::Integer(value) => (Access::Attribute, value.to_string()),
                         Guard::Condition(cc) => (
-                            Access::Condition,
+                            Access::Attribute,
                             format!(
                                 "{} as i64",
                                 render_cond_code_match(schema, *cc).expect("checked condition")
@@ -215,13 +197,13 @@ impl Code {
                         _ => unreachable!(),
                     };
                     let (node, schema, field) = resolve_field(plan, root, field);
-                    let field = adapters.field(schema, field, access);
+                    let field = self.field(adapters, schema, field, access);
                     let constant = intern(&mut self.integers, constant);
                     self.branch("CheckInt", &[node, field, constant], failure);
                 }
             },
             Test::Features(features) => {
-                let set = intern(&mut adapters.features, features.clone());
+                let set = intern(&mut self.features, features.clone());
                 self.branch("CheckFeatures", &[set], failure);
             }
             Test::Foldable(slot) => self.branch("CheckFoldable", &[slot + 1, 0], failure),
@@ -283,7 +265,7 @@ impl Code {
                             values += 1;
                             match arg {
                                 Constructor::Variable(name) => {
-                                    self.read_reg(plan, adapters, &rule.schema, &fields[name], dst)
+                                    self.read_reg(plan, adapters, &rule.opcode, &fields[name], dst)
                                 }
                                 Constructor::Reg(name) => {
                                     let reg = intern(&mut self.registers, regs[name]);
@@ -304,15 +286,9 @@ impl Code {
                         }
                         Constructor::Variable(name) => {
                             let (node, schema, field) =
-                                resolve_field(plan, &rule.schema, &fields[name]);
-                            let access = match operand {
-                                OperandConstraint::Imm(_) => Access::Imm,
-                                OperandConstraint::Block(_) => Access::Edge,
-                                OperandConstraint::Global(_) => Access::Global,
-                                OperandConstraint::StackSlot(_) => Access::StackSlot,
-                                _ => unreachable!(),
-                            };
-                            let field = adapters.field(schema, field, access);
+                                resolve_field(plan, &rule.opcode, &fields[name]);
+                            let access = Access::Attribute;
+                            let field = self.field(adapters, schema, field, access);
                             self.op("ReadField", &[dst, node, field]);
                         }
                         _ => panic!("invalid target payload"),
@@ -340,7 +316,7 @@ impl Code {
     fn describe(&self, inst: &Instruction, adapters: &Adapters) -> String {
         let args = &inst.args;
         let field = |id: usize| {
-            let (schema, name, _) = &adapters.fields[id];
+            let (schema, name, _) = &self.accesses[id];
             format!("{schema}.{name}")
         };
         match inst.op {
@@ -355,7 +331,7 @@ impl Code {
                 field(args[1]),
                 self.integers[args[2]]
             ),
-            "CheckFeatures" => adapters.features[args[0]].join(" + "),
+            "CheckFeatures" => self.features[args[0]].join(" + "),
             "CallPredicate" => format!("{}(v{})", adapters.predicates[args[1]], args[0]),
             "CheckFoldable" => format!("n{} into n{}", args[0], args[1]),
             "MakeTemp" => format!("v{}: {}", args[0], self.types[args[1]].join(", ")),
@@ -470,7 +446,34 @@ impl Code {
             "targets: &[{}],",
             self.targets
                 .iter()
-                .map(|op| format!("TargetInst::{op}.as_u32()"))
+                .map(|op| format!("crate::isel::matching::Target {{ opcode: TargetInst::{op}.as_u32(), metadata: target_inst_metadata(TargetInst::{op}) }}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "accesses: &[{}],",
+            self.accesses
+                .iter()
+                .map(|(opcode, field, access)| adapters.field(opcode, field, *access))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "features: &[{}],",
+            self.features
+                .iter()
+                .map(|features| {
+                    let set = features
+                        .iter()
+                        .fold("FeatureSet::empty()".to_owned(), |s, f| {
+                            format!("{s}.with(Feature::{f})")
+                        });
+                    format!("{set}.as_words()")
+                })
                 .collect::<Vec<_>>()
                 .join(",")
         )
@@ -496,7 +499,7 @@ fn resolve_field<'a>(plan: &'a Plan, root: &'a str, path: &'a str) -> (usize, &'
                 .iter()
                 .position(|def| def.name == owner)
                 .expect("checked definition binding");
-            (index + 1, &plan.definitions[index].schema, field)
+            (index + 1, &plan.definitions[index].opcode, field)
         }
         None => (0, root, path),
     }
@@ -523,7 +526,7 @@ pub(in super::super) fn emit(
                 code.recipe(&plan, &plan.rules[*rule], adapters, instructions, regs)
             }
             Node::Check { test, yes, no } => {
-                code.test(&plan, adapters, &rules[0].schema, &plan.tests[*test], *no);
+                code.test(&plan, adapters, &rules[0].opcode, &plan.tests[*test], *no);
                 code.branch("Jump", &[], *yes);
             }
         }

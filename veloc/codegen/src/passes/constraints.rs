@@ -1,6 +1,7 @@
+use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
-use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::TargetOperandLowering;
+use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::target::TargetOperandLowering;
 use core::marker::PhantomData;
 use veloc_lir::InstBuild;
 use veloc_lir::{InstId, MachineFunction, Reg, Writable};
@@ -16,7 +17,7 @@ trait ConstraintPolicy {
         lowering: &dyn TargetOperandLowering,
         inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction,
-    ) -> crate::target::arch::OperandConstraintSet;
+    ) -> crate::target::OperandConstraintSet;
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
@@ -34,7 +35,7 @@ impl ConstraintPolicy for PreSelectConstraints {
         lowering: &dyn TargetOperandLowering,
         inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction,
-    ) -> crate::target::arch::OperandConstraintSet {
+    ) -> crate::target::OperandConstraintSet {
         lowering.preselect_operand_constraints(inst, mfunc)
     }
 
@@ -64,7 +65,7 @@ impl ConstraintPolicy for PostSelectConstraints {
         lowering: &dyn TargetOperandLowering,
         inst: &veloc_lir::InstRef<'_>,
         mfunc: &MachineFunction,
-    ) -> crate::target::arch::OperandConstraintSet {
+    ) -> crate::target::OperandConstraintSet {
         lowering.postselect_operand_constraints(inst, mfunc)
     }
 
@@ -201,7 +202,7 @@ impl<'a> FunctionPass for PostSelectOperandConstraintPass<'a> {
 #[cfg(test)]
 mod tests {
     use super::PreSelectOperandConstraintPass;
-    use crate::target::arch::{FixedUseConstraint, OperandConstraintSet, TargetOperandLowering};
+    use crate::target::{FixedUseConstraint, OperandConstraintSet, TargetOperandLowering};
     use alloc::vec;
     use veloc_lir::{InstBuild, InstRead};
     use veloc_lir::{InstId, MachineFunction, Reg, Writable};

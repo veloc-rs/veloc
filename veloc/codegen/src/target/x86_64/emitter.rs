@@ -3,7 +3,7 @@
 //! Adapts allocated LIR to the standalone encoder. Frame and symbol knowledge
 //! stays here; architecture encoding algorithms live in veloc-encoder.
 
-use crate::target::arch::TargetEmitter;
+use crate::target::TargetEmitter;
 use veloc_lir::{MachineFunction, MachineOpcode};
 
 /// x86_64 机器码发射器实现

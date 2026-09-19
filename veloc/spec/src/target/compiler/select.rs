@@ -513,6 +513,34 @@ pub(super) fn check_temps(rule: &crate::target::ast::SelectRuleDef) -> Result<()
     Ok(())
 }
 
+pub(super) fn check_storage(
+    rule: &SelectRuleDef,
+    layouts: &BTreeMap<String, crate::storage::operands::Projection>,
+) -> Result<(), String> {
+    for (path, _) in named_args(&rule.fields) {
+        let (opcode, field) = if let Some((owner, field)) = path.split_once('.') {
+            let def = rule
+                .definitions
+                .iter()
+                .find(|def| def.name == owner)
+                .ok_or_else(|| format!("unknown definition {owner}"))?;
+            (&def.opcode, field)
+        } else {
+            (&rule.opcode, path)
+        };
+        let member = layouts
+            .get(opcode)
+            .and_then(|layout| layout.members.iter().find(|m| m.field.name == field))
+            .ok_or_else(|| format!("{opcode}.{field} has no operand storage projection"))?;
+        if member.field.shape == crate::storage::operands::Shape::Sequence {
+            return Err(format!(
+                "{opcode}.{field}: sequence fields require a sequence selection operation, not a scalar access"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn generate_select_instruction(
     output: &mut String,
     module: &crate::target::ast::Module,
@@ -520,11 +548,12 @@ pub(crate) fn generate_select_instruction(
     final_inst_defs: &HashMap<String, FinalInstDef>,
     _arch: &str,
     context: &str,
+    layouts: &BTreeMap<String, crate::storage::operands::Projection>,
 ) {
     let regs = collect_reg_ids(module);
     let decls = collect_decl_map(module);
     let rules = collect_select_rules_by_opcode(module);
-    let mut adapters = matcher::Adapters::default();
+    let mut adapters = matcher::Adapters::new(layouts);
     let mut opcodes: Vec<_> = rules.keys().collect();
     opcodes.sort();
     writeln!(
@@ -532,7 +561,11 @@ pub(crate) fn generate_select_instruction(
         "// Instruction selection programs: byte offsets and decoded operands accompany each row."
     )
     .unwrap();
-    writeln!(output, "mod selection_programs {{ use super::*; use crate::passes::isel::matching::{{Op, Program}};").unwrap();
+    writeln!(
+        output,
+        "mod selection_programs {{ use super::*; use crate::isel::matching::{{Op, Program}};"
+    )
+    .unwrap();
     for opcode in &opcodes {
         matcher::emit(
             output,
@@ -549,8 +582,8 @@ pub(crate) fn generate_select_instruction(
         "// Selection entry point; programs and host adapters are defined separately."
     )
     .unwrap();
-    writeln!(output, "pub fn select_instructions<C: LoweringContext + crate::target::arch::TargetFeatures<Features = FeatureSet> + {context}>(ctx: &mut C, store: &mut veloc_lir::InstBuilder<'_>, source: veloc_lir::InstId, out: &mut alloc::vec::Vec<veloc_lir::InstId>) -> Result<SelectResult, crate::error::Error> {{").unwrap();
-    writeln!(output, "use crate::passes::isel::matching::Program;").unwrap();
+    writeln!(output, "pub fn select_instructions<C: {context}>(ctx: &C, vregs: &mut veloc_lir::VRegBuilder<'_>, features: FeatureSet, store: &mut veloc_lir::InstBuilder<'_>, source: veloc_lir::InstId, out: &mut alloc::vec::Vec<veloc_lir::InstId>) -> Result<SelectResult, crate::error::Error> {{").unwrap();
+    writeln!(output, "use crate::isel::matching::Program;").unwrap();
     writeln!(output, "let opcode = store.get(source).opcode(); let veloc_lir::MachineOpcode::Generic(generic) = opcode else {{ return Ok(SelectResult::Keep) }};").unwrap();
     writeln!(output, "let program: &'static Program = match generic {{").unwrap();
     for opcode in opcodes {
@@ -566,6 +599,6 @@ pub(crate) fn generate_select_instruction(
         "_ => return Err(crate::error::Error::select(opcode, \"No selection program\")), }};"
     )
     .unwrap();
-    writeln!(output, "crate::passes::isel::matching::execute(program, &mut SelectorHost(ctx), store, source, out).ok_or_else(|| crate::error::Error::select(opcode, \"No matching selection rule\")) }}").unwrap();
+    writeln!(output, "let predicate = |id, reg| selection_predicate(ctx, id, reg); crate::isel::matching::execute(program, vregs, features.as_words(), &predicate, store, source, out).ok_or_else(|| crate::error::Error::select(opcode, \"No matching selection rule\")) }}").unwrap();
     adapters.emit(output, context, extractors, &decls);
 }

@@ -1,8 +1,8 @@
 //! Validation at pass boundaries, independent of instruction construction.
-use super::FunctionAnalysisCtx;
+use crate::analysis::FunctionAnalysisCtx;
 use crate::{
     Error, Result,
-    target::arch::{TargetInstructions, ValidationMode},
+    target::{TargetInstructions, ValidationMode},
 };
 use alloc::{format, vec::Vec};
 use hashbrown::{HashMap, HashSet};

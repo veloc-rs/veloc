@@ -53,6 +53,9 @@ fn production_target_contracts_generate_all_consumers() {
     assert!(output.contains("Op::BuildInst as u8"));
     assert!(output.contains("Op::GetDef as u8"));
     assert!(!output.contains("match candidate"));
+    assert!(!output.contains("SelectorHost"));
+    assert!(output.contains("matching::Field::Input("));
+    assert!(output.contains("matching::Target {"));
 }
 
 #[test]

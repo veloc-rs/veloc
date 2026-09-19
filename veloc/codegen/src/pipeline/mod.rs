@@ -1,15 +1,93 @@
-pub mod analysis;
 pub mod compiled;
 pub mod context;
 pub mod pass;
-pub mod pipeline;
-pub mod ssa;
 
-pub use analysis::{
-    AnalysisCache, CfgInfo, ChangeSet, DominatorTree, FunctionAnalysisCtx, LivenessInfo, LoopInfo,
-    ModuleAnalysisCtx, PassEffect, PostDominatorTree, RegisterPressure, StackFrameSummary,
-};
 pub use compiled::{CompiledFunction, CompiledModule};
 pub use context::{FunctionPassContext, ModulePassContext};
 pub use pass::{FunctionPass, ModuleCodegenPass};
-pub use pipeline::{FunctionPassPipeline, ModulePassPipeline};
+
+use crate::analysis::{ChangeSet, PassEffect};
+use crate::error::Result;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use veloc_lir::MachineFunction;
+
+pub struct FunctionPassPipeline {
+    passes: Vec<Box<dyn FunctionPass>>,
+}
+
+impl FunctionPassPipeline {
+    pub fn new() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    pub fn add_pass<P: FunctionPass + 'static>(&mut self, pass: P) {
+        self.passes.push(Box::new(pass));
+    }
+
+    pub fn add_boxed_pass(&mut self, pass: Box<dyn FunctionPass>) {
+        self.passes.push(pass);
+    }
+
+    pub fn run(
+        &self,
+        mfunc: &mut MachineFunction,
+        ctx: &mut FunctionPassContext<'_>,
+    ) -> Result<PassEffect> {
+        let mut combined = PassEffect::NONE;
+        for pass in &self.passes {
+            let effect = pass.run(mfunc, ctx)?;
+            if !effect.change_set.is_empty() {
+                ctx.function_analyses.apply(effect.change_set);
+                combined.change_set |= effect.change_set;
+            }
+        }
+        Ok(combined)
+    }
+}
+
+impl Default for FunctionPassPipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct ModulePassPipeline {
+    passes: Vec<Box<dyn ModuleCodegenPass>>,
+}
+
+impl ModulePassPipeline {
+    pub fn new() -> Self {
+        Self { passes: Vec::new() }
+    }
+
+    pub fn add_pass<P: ModuleCodegenPass + 'static>(&mut self, pass: P) {
+        self.passes.push(Box::new(pass));
+    }
+
+    pub fn add_boxed_pass(&mut self, pass: Box<dyn ModuleCodegenPass>) {
+        self.passes.push(pass);
+    }
+
+    pub fn run(
+        &self,
+        module: &mut CompiledModule,
+        ctx: &mut ModulePassContext<'_>,
+    ) -> Result<PassEffect> {
+        let mut combined = PassEffect::new(ChangeSet::NONE);
+        for pass in &self.passes {
+            let effect = pass.run(module, ctx)?;
+            if !effect.change_set.is_empty() {
+                ctx.module_analyses.apply(effect.change_set);
+                combined.change_set |= effect.change_set;
+            }
+        }
+        Ok(combined)
+    }
+}
+
+impl Default for ModulePassPipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}

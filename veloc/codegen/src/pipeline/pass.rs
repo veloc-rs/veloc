@@ -1,5 +1,6 @@
+use crate::analysis::PassEffect;
 use crate::error::Result;
-use crate::pipeline::{CompiledModule, FunctionPassContext, ModulePassContext, PassEffect};
+use crate::pipeline::{CompiledModule, FunctionPassContext, ModulePassContext};
 use veloc_lir::MachineFunction;
 
 pub trait FunctionPass {

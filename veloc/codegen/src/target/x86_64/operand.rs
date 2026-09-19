@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    inst::{self as generated, TargetInst},
+    lowering::build_x86_copy_inst,
+};
+use crate::target::{OperandConstraintSet, TargetOperandLowering};
+use veloc_lir::{InstId, MachineFunction, MachineOpcode, Reg};
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64OperandLowering;

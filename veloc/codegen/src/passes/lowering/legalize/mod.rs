@@ -6,7 +6,7 @@ pub use info::*;
 mod tests;
 
 use crate::error::{Error, Result};
-use crate::target::arch::TargetLegalizer;
+use crate::target::TargetLegalizer;
 use veloc_lir::MachineFunction;
 
 pub struct Legalizer<'a> {

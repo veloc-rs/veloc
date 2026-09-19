@@ -1,6 +1,7 @@
+use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
-use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
+use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::target::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
 use alloc::vec::Vec;
 use smallvec::{SmallVec, smallvec};
 use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot, Writable};
@@ -26,7 +27,7 @@ fn plan_callsite(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Resu
 fn single_part_assignment<'a>(
     assignment: &'a AbiAssignment,
     kind: &'static str,
-) -> &'a crate::target::arch::AbiPart {
+) -> &'a crate::target::AbiPart {
     match assignment.parts.as_slice() {
         [part] => part,
         _ => panic!("multi-part ABI {} lowering is not supported yet", kind),
@@ -36,7 +37,7 @@ fn single_part_assignment<'a>(
 fn stack_slot_for_assignment(
     target: &dyn TargetMachine,
     mfunc: &mut MachineFunction,
-    part: &crate::target::arch::AbiPart,
+    part: &crate::target::AbiPart,
 ) -> StackSlot {
     let stack_pointer = target.desc().registers.special_regs.stack_pointer;
     match part.loc {
@@ -49,10 +50,8 @@ fn stack_slot_for_assignment(
             ..
         } => {
             let base_reg = match base {
-                crate::target::arch::AbiStackBase::IncomingArgs => {
-                    base_reg.unwrap_or(stack_pointer)
-                }
-                crate::target::arch::AbiStackBase::OutgoingArgs => stack_pointer,
+                crate::target::AbiStackBase::IncomingArgs => base_reg.unwrap_or(stack_pointer),
+                crate::target::AbiStackBase::OutgoingArgs => stack_pointer,
             };
             mfunc
                 .editor()

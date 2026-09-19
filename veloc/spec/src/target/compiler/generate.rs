@@ -56,32 +56,12 @@ pub(crate) fn generate_header(output: &mut String, arch: &str) {
     writeln!(
         output,
         r#"use veloc_lir::{{InstField, Reg}};
-use crate::target::arch::{{
+use crate::target::{{
     AbiDescriptor, AbiPreservedSet, AbiRegisterPool, AbiStackDescriptor, AbiValueClass,
-    FixedUseConstraint, GenericInstMetadata, LoweringContext, RegInfo,
+    FixedUseConstraint, GenericInstMetadata, RegInfo,
     SelectResult, TargetArch, TargetInstMetadata, TiedOperandConstraint,
 }};
 pub use veloc_mir::Type;
-
-trait IntoOptReg {{
-    fn into_opt_reg(self) -> Option<Reg>;
-}}
-
-impl IntoOptReg for Reg {{
-    fn into_opt_reg(self) -> Option<Reg> {{
-        Some(self)
-    }}
-}}
-
-impl IntoOptReg for Option<Reg> {{
-    fn into_opt_reg(self) -> Option<Reg> {{
-        self
-    }}
-}}
-
-fn reg_value<R: IntoOptReg>(value: R) -> Option<Reg> {{
-    value.into_opt_reg()
-}}
 
 
 "#
@@ -260,7 +240,7 @@ pub(crate) fn generate_target_inst_metadata(
         );
         let schedule = match inst_def.schedule_latency {
             Some(latency) => format!(
-                "Some(crate::target::arch::ScheduleInfo {{ latency: {latency}, writes_flags: {} }})",
+                "Some(crate::target::ScheduleInfo {{ latency: {latency}, writes_flags: {} }})",
                 inst_def.clobbers.iter().any(|r| r == "EFLAGS")
             ),
             None => "None".into(),
@@ -298,7 +278,7 @@ pub(crate) fn generate_target_inst_metadata(
                 .expect("checked register constraint")
                 .1;
             let registers = format_slice(registers.iter().map(|r| reg_const_name(r)).collect());
-            entries.push(format!("crate::target::arch::RegisterConstraint {{ result: {result}, operand: {index}, registers: {registers} }}"));
+            entries.push(format!("crate::target::RegisterConstraint {{ result: {result}, operand: {index}, registers: {registers} }}"));
         }
         writeln!(
             output,
@@ -370,7 +350,7 @@ pub(crate) fn generate_target_inst_metadata(
 
     writeln!(
         output,
-        "\npub fn target_inst_metadata(opcode: TargetInst) -> &'static TargetInstMetadata {{"
+        "\npub const fn target_inst_metadata(opcode: TargetInst) -> &'static TargetInstMetadata {{"
     )
     .unwrap();
     writeln!(output, "    match opcode {{").unwrap();
@@ -439,7 +419,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
         }
     }
     out.push_str("_ => FeatureSet::empty(),\n} } }\n");
-    out.push_str("impl TargetInst { pub fn validate(&self, function: &veloc_lir::MachineFunction, inst: &veloc_lir::InstRef<'_>, mode: crate::target::arch::ValidationMode) -> crate::Result<()> {\nlet invalid = || crate::Error::codegen(alloc::format!(\"invalid operands for {:?}\", self));\nmatch self {\n");
+    out.push_str("impl TargetInst { pub fn validate(&self, function: &veloc_lir::MachineFunction, inst: &veloc_lir::InstRef<'_>, mode: crate::target::ValidationMode) -> crate::Result<()> {\nlet invalid = || crate::Error::codegen(alloc::format!(\"invalid operands for {:?}\", self));\nmatch self {\n");
     let mut instructions: Vec<_> = instructions.iter().collect();
     instructions.sort_by_key(|(name, _)| *name);
     for (name, instruction) in instructions {
@@ -489,7 +469,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
                 "inputs"
             };
             let allowed = format_slice(registers.iter().map(|name| reg_const_name(name)).collect());
-            writeln!(out, "let reg = inst.{storage}()[{index}];\nif reg.is_preg() {{ if !({allowed}).contains(&reg) {{ return Err(invalid()); }} }} else if mode == crate::target::arch::ValidationMode::Allocated {{ return Err(invalid()); }}").unwrap();
+            writeln!(out, "let reg = inst.{storage}()[{index}];\nif reg.is_preg() {{ if !({allowed}).contains(&reg) {{ return Err(invalid()); }} }} else if mode == crate::target::ValidationMode::Allocated {{ return Err(invalid()); }}").unwrap();
         }
         for &(result, input) in &instruction.ties {
             let OperandConstraint::Def(ref result) = instruction.operands[result] else {
@@ -503,7 +483,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
             };
             let (result, _) = find_operand_info(result, &instruction.operands).unwrap();
             let (input, _) = find_operand_info(input, &instruction.operands).unwrap();
-            writeln!(out, "if mode == crate::target::arch::ValidationMode::Allocated && inst.results()[{result}] != inst.inputs()[{input}] {{ return Err(invalid()); }}").unwrap();
+            writeln!(out, "if mode == crate::target::ValidationMode::Allocated && inst.results()[{result}] != inst.inputs()[{input}] {{ return Err(invalid()); }}").unwrap();
         }
         out.push_str("Ok(())\n},\n");
     }
@@ -618,13 +598,13 @@ pub(crate) fn generate_register_descriptors(
     let reg_encs = collect_reg_ids(module);
     writeln!(
         output,
-        "pub const REGISTER_VIEWS: &[crate::target::arch::RegisterView] = &["
+        "pub const REGISTER_VIEWS: &[crate::target::RegisterView] = &["
     )
     .unwrap();
     for reg in &regs {
         if let Some(alias) = &reg.alias {
             let root = reg_const_name(&alias.base);
-            writeln!(output, "crate::target::arch::RegisterView {{ root: {root}, offset: {}, bits: {}, write: crate::target::arch::RegisterWrite::{:?} }},", alias.offset, reg.size, alias.write).unwrap();
+            writeln!(output, "crate::target::RegisterView {{ root: {root}, offset: {}, bits: {}, write: crate::target::RegisterWrite::{:?} }},", alias.offset, reg.size, alias.write).unwrap();
         }
     }
     writeln!(output, "];").unwrap();

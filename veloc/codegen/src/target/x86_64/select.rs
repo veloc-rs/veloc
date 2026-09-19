@@ -1,5 +1,10 @@
-use super::*;
+use super::{
+    inst::{self as generated, TargetInst},
+    lowering::{X86_64Lowering, build_target_inst, build_x86_copy_inst},
+};
+use crate::target::{SelectResult, SelectionContext, TargetInstructionSelector};
 use veloc_lir::InstRead;
+use veloc_lir::{GenericOpcode, MachineOpcode};
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64Selector {
@@ -63,10 +68,11 @@ impl TargetInstructionSelector for X86_64Selector {
 
         let result = {
             let mut edit = ctx.mfunc.editor();
-            let (vregs, mut store) = edit.instruction_parts();
-            let mut x86_ctx = X86SelectionContext { vregs, features };
+            let (mut vregs, mut store) = edit.instruction_parts();
             let result = generated::select_instructions(
-                &mut x86_ctx,
+                &self.lowering,
+                &mut vregs,
+                features,
                 &mut store,
                 ctx.inst_id,
                 ctx.selected,
@@ -79,7 +85,7 @@ impl TargetInstructionSelector for X86_64Selector {
             opcode,
             MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind)
         ) {
-            use crate::target::arch::{AbiLocation, CallConv, TargetArch};
+            use crate::target::{AbiLocation, CallConv, TargetArch};
             let sig = &ctx.mfunc.call_info(ctx.inst_id).sig;
             let cc = CallConv::from(sig.call_conv);
             let plan = cc.plan_callsite(TargetArch::X86_64, sig.params(), sig.returns())?;

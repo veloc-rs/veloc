@@ -3,9 +3,10 @@ pub(crate) mod control;
 pub mod legalize;
 pub(crate) mod reassociate;
 
+use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
-use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::TargetLegalizer;
+use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::target::TargetLegalizer;
 use veloc_lir::MachineFunction;
 
 pub use abi::AbiLoweringPass;

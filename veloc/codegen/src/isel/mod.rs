@@ -2,9 +2,10 @@ pub(crate) mod matching;
 pub mod select;
 
 pub use self::select::*;
+use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
-use crate::pipeline::{ChangeSet, FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::TargetInstructionSelector;
+use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::target::TargetInstructionSelector;
 
 pub struct InstructionSelectionPass<'a> {
     selector: &'a dyn TargetInstructionSelector,

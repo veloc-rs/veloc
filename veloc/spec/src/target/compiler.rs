@@ -52,6 +52,7 @@ pub(crate) struct Plan {
     arch: String,
     context: String,
     cpu: cpu::Plan,
+    input_layouts: std::collections::BTreeMap<String, crate::storage::operands::Projection>,
 }
 impl Plan {
     pub(crate) fn prepare(
@@ -81,7 +82,13 @@ impl Plan {
         let input_contracts = input_definitions
             .map(|(_, source)| source.contracts())
             .transpose()?;
+        let mut input_layouts = std::collections::BTreeMap::new();
         if let Some((dialect, source)) = input_definitions {
+            for op in source.parse()?.ops {
+                if let crate::model::Projection::Operands(projection) = op.projection {
+                    input_layouts.insert(op.name, projection);
+                }
+            }
             let types = crate::types::Types::compile(source.declarations(), source.text())
                 .map_err(|e| source.locate(e))?;
             for def in &mut module.defs {
@@ -89,6 +96,7 @@ impl Plan {
                     selection::resolve(rule, dialect, input_contracts.as_ref().unwrap(), &types)
                         .map_err(&input_error)?;
                     select::check_temps(rule).map_err(&input_error)?;
+                    select::check_storage(rule, &input_layouts).map_err(&input_error)?;
                 }
             }
         } else if module
@@ -146,6 +154,7 @@ impl Plan {
             arch: arch.into(),
             context: context.into(),
             cpu,
+            input_layouts,
         })
     }
     pub(crate) fn emit(&self, kind: crate::Emit) -> String {
@@ -164,6 +173,7 @@ impl Plan {
                 final_inst_defs,
                 arch,
                 &self.context,
+                &self.input_layouts,
             ),
             crate::Emit::Target => {}
             _ => unreachable!("not a target artifact"),
@@ -195,6 +205,7 @@ impl Plan {
             &final_inst_defs,
             arch,
             &self.context,
+            &self.input_layouts,
         );
 
         output

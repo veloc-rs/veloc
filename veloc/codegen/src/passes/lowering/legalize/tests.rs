@@ -5,7 +5,7 @@ use veloc_lir::{InstBuild, InstRead};
 
 #[test]
 fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
-    use crate::target::arch::TargetMachine;
+    use crate::target::TargetMachine;
     use crate::target::x86_64::X86_64TargetMachine;
     use veloc_lir::{MemoryAccess, MemoryKind, Writable};
     use veloc_mir::Type;

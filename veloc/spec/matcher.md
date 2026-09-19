@@ -5,8 +5,17 @@
 The target selector uses one bytecode VM for matching and construction.
 Each root opcode selects a static program. Ordinary guards, definition lookup,
 temporary creation and target construction are bytecode operations, not a
-per-rule Rust callback or constructor branch. Schema accessors and explicitly
-declared predicates are shared generated host adapters.
+per-rule Rust callback or constructor branch. Field descriptors come from the
+checked operand-storage projections for each input opcode, including absent
+optional fields. The VM directly reads inputs, results and attribute slots;
+there is no field-ID callback or InstView dispatch. Sequence fields cannot be
+used as scalar accesses and are diagnosed by the selection compiler.
+
+Type queries and temporary allocation use VRegBuilder directly. Feature guards
+compare word slices; target descriptors reference the existing opcode metadata
+and construct through the common writer, including implicit registers. Only
+explicit custom predicates call a Rust callback. The former Host trait and its
+LoweringContext/TargetFeatures forwarding layers have been removed.
 
 The earlier `[test, yes, no]` callback table has been removed. The measurements
 below refer to that earlier experiment, **not the current bytecode VM**.

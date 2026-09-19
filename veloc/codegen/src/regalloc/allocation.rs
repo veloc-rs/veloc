@@ -121,7 +121,7 @@ impl Allocation {
 mod tests {
     use super::*;
     use crate::TargetConfig;
-    use crate::pipeline::FunctionAnalysisCtx;
+    use crate::analysis::FunctionAnalysisCtx;
     use crate::regalloc::RegisterAllocator;
     use crate::target::x86_64::{
         X86_64TargetMachine,

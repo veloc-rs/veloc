@@ -1,6 +1,7 @@
+use crate::analysis::PassEffect;
 use crate::error::Result;
-use crate::pipeline::{FunctionPass, FunctionPassContext, PassEffect};
-use crate::target::arch::{TargetOperandLowering, TargetPassConfig};
+use crate::pipeline::{FunctionPass, FunctionPassContext};
+use crate::target::{TargetOperandLowering, TargetPassConfig};
 
 pub struct PreIselPass<'a> {
     operand_lowering: &'a dyn TargetOperandLowering,

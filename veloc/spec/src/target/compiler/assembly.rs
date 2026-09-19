@@ -257,7 +257,7 @@ fn emit(out: &mut String, op: &Operand) {
 }
 
 pub(super) fn generate(out: &mut String, instructions: &HashMap<String, FinalInstDef>) {
-    out.push_str("impl TargetInst { pub fn write_assembly(&self, inst: &veloc_lir::InstRef<'_>, out: &mut dyn crate::target::arch::AssemblyWriter) -> core::fmt::Result { match self {\n");
+    out.push_str("impl TargetInst { pub fn write_assembly(&self, inst: &veloc_lir::InstRef<'_>, out: &mut dyn crate::target::AssemblyWriter) -> core::fmt::Result { match self {\n");
     let mut instructions: Vec<_> = instructions.iter().collect();
     instructions.sort_by_key(|(name, _)| *name);
     for (name, inst) in instructions {

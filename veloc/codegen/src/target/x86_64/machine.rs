@@ -5,13 +5,13 @@ use veloc_mir::{Type, TypeInfo};
 
 pub(super) fn spill_instruction(
     writer: veloc_lir::InstWriter<'_>,
-    kind: crate::target::arch::SpillKind,
+    kind: crate::target::SpillKind,
     reg: Reg,
     base: Reg,
     offset: i64,
     ty: Type,
 ) -> crate::Result<InstId> {
-    use crate::target::arch::SpillKind::{Load, Store};
+    use crate::target::SpillKind::{Load, Store};
     use TargetInst::*;
     let op = match (kind, ty) {
         (Load, Type::F32) => X86LoadF32,

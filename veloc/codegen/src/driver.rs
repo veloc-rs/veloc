@@ -2,16 +2,16 @@
 //!
 //! 提供从 SSA IR 到机器码/目标文件的编译驱动。
 
+use crate::analysis::{FunctionAnalysisCtx, ModuleAnalysisCtx};
 use crate::error::{Error, Result};
+use crate::isel::InstructionSelectionPass;
 use crate::object::ObjectFileBuilder;
-use crate::passes::{
-    FrameFinalizePass, InstructionSelectionPass, LegalizePass, PostIselOptimizePass, PreIselPass,
-};
+use crate::passes::{FrameFinalizePass, LegalizePass, PostIselOptimizePass, PreIselPass};
 use crate::pipeline::{
-    CompiledFunction, CompiledModule, FunctionAnalysisCtx, FunctionPass, FunctionPassContext,
-    FunctionPassPipeline, ModuleAnalysisCtx, ModulePassContext, ModulePassPipeline,
+    CompiledFunction, CompiledModule, FunctionPass, FunctionPassContext, FunctionPassPipeline,
+    ModulePassContext, ModulePassPipeline,
 };
-use crate::target::arch::TargetMachine;
+use crate::target::TargetMachine;
 use crate::translate::IRTranslator;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -252,7 +252,7 @@ impl<'a> CodegenPipeline<'a> {
         function_analyses: &mut FunctionAnalysisCtx,
         module_analyses: &mut ModuleAnalysisCtx,
     ) -> Result<MachineFunction> {
-        use crate::pipeline::ssa::{verify, verify_allocated, verify_selected};
+        use crate::verify::{verify, verify_allocated, verify_selected};
         self.verify_function("translated", &mfunc, verify)?;
         let pass_config = self.target.pass_config();
         let mut ctx = FunctionPassContext::new(
@@ -326,7 +326,7 @@ impl<'a> CodegenPipeline<'a> {
         let mut mfunc = allocation.materialize();
         ctx.stats.final_inst_count = mfunc.blocks().map(|b| mfunc.block_insts(b).count()).sum();
         ctx.stats.stack_slot_count = mfunc.stack_frame.slots.len();
-        use crate::pipeline::ChangeSet;
+        use crate::analysis::ChangeSet;
         ctx.function_analyses.apply(
             ChangeSet::REGALLOC
                 | ChangeSet::PHYSICAL_REGS
@@ -413,7 +413,7 @@ impl<'a> CodegenPipeline<'a> {
         &self,
         name: &str,
         mfunc: &MachineFunction,
-        verify: fn(&MachineFunction, &dyn crate::target::arch::TargetInstructions) -> Result<()>,
+        verify: fn(&MachineFunction, &dyn crate::target::TargetInstructions) -> Result<()>,
     ) -> Result<()> {
         if self.options.verify {
             verify(mfunc, self.target)

@@ -1,7 +1,7 @@
 //! Global linear scan with CFG liveness, fixed registers and whole-range spills.
 use super::allocation::{Allocation, InstAllocation};
-use crate::pipeline::FunctionAnalysisCtx;
-use crate::target::arch::{CallConv, RegClass, SpillKind, TargetRegalloc};
+use crate::analysis::FunctionAnalysisCtx;
+use crate::target::{CallConv, RegClass, SpillKind, TargetRegalloc};
 use crate::{Error, Result};
 use alloc::collections::BTreeMap;
 use alloc::format;

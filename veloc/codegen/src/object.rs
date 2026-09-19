@@ -3,7 +3,7 @@
 //! 将后端生成的裸机器码封装为可重定位的 object 文件。
 
 use crate::error::{Error, Result};
-use crate::target::arch::{TargetArch, TargetMachine};
+use crate::target::{TargetArch, TargetMachine};
 use alloc::format;
 use alloc::string::String;
 use hashbrown::HashMap;

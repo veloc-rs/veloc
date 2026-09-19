@@ -4,7 +4,8 @@
 //! leaves by register identity, and rebuild. Searching an e-graph for that form
 //! adds no target choices. Costed target patterns belong in instruction selection.
 
-use crate::pipeline::{ChangeSet, FunctionAnalysisCtx};
+use crate::analysis::{ChangeSet, FunctionAnalysisCtx};
+
 use alloc::vec;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
