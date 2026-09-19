@@ -208,7 +208,7 @@ fn register(result: bool, index: usize) -> String {
 
 fn field(index: usize, variant: &str) -> String {
     format!(
-        "match inst.fields()[{index}] {{ InstField::{variant}(value) => value, _ => return Err(core::fmt::Error) }}"
+        "match inst.fields().read({index}) {{ veloc_lir::FieldValueRef::{variant}(value) => *value, _ => return Err(core::fmt::Error) }}"
     )
 }
 

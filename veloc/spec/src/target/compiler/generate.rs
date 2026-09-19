@@ -29,7 +29,8 @@ pub(super) fn find_operand_info<'a>(
             | OperandConstraint::Imm(name)
             | OperandConstraint::Block(name)
             | OperandConstraint::Global(name)
-            | OperandConstraint::StackSlot(name) => name == var_name,
+            | OperandConstraint::StackSlot(name)
+            | OperandConstraint::Call(name) => name == var_name,
         })
         .map(|(index, op)| {
             let class = |op: &OperandConstraint| match op {
@@ -55,9 +56,9 @@ pub(crate) fn generate_header(output: &mut String, arch: &str) {
     writeln!(output).unwrap();
     writeln!(
         output,
-        r#"use veloc_lir::{{InstField, Reg}};
+        r#"use veloc_lir::{{FieldValue, Reg}};
 use crate::target::{{
-    AbiDescriptor, AbiPreservedSet, AbiRegisterPool, AbiStackDescriptor, AbiValueClass,
+    AbiDescriptor, StackArea, AbiState, AbiLocation,
     FixedUseConstraint, GenericInstMetadata, RegInfo,
     SelectResult, TargetArch, TargetInstMetadata, TiedOperandConstraint,
 }};
@@ -372,7 +373,7 @@ pub(crate) fn generate_target_inst_metadata(
     output.push_str(r#"
 impl TargetInst {
     /// Construct explicit and fixed implicit operands together from the schema.
-    pub fn write(self, writer: veloc_lir::InstWriter<'_>, results: &[Reg], inputs: &[Reg], fields: &[InstField]) -> veloc_lir::InstId {
+    pub fn write(self, writer: veloc_lir::InstWriter<'_>, results: &[Reg], inputs: &[Reg], fields: impl IntoIterator<Item = FieldValue>) -> veloc_lir::InstId {
         let metadata = target_inst_metadata(self);
         writer.with_effects(metadata.implicit_uses, metadata.implicit_defs)
             .write(veloc_lir::MachineOpcode::Target(self.as_u32()), results, inputs, fields)
@@ -446,10 +447,11 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
                 OperandConstraint::Block(name) => (name, "Edge"),
                 OperandConstraint::Global(name) => (name, "Global"),
                 OperandConstraint::StackSlot(name) => (name, "StackSlot"),
+                OperandConstraint::Call(name) => (name, "Call"),
                 _ => continue,
             };
             let (index, _) = find_operand_info(field_name, &instruction.operands).unwrap();
-            writeln!(out, "if !matches!(inst.fields()[{index}], InstField::{variant}(_)) {{ return Err(invalid()); }}").unwrap();
+            writeln!(out, "if !matches!(inst.fields().read({index}), veloc_lir::FieldValueRef::{variant}(_)) {{ return Err(invalid()); }}").unwrap();
         }
         for (name, set) in &instruction.value_types {
             let (index, op) = find_operand_info(name, &instruction.operands).unwrap();
@@ -711,21 +713,37 @@ pub(crate) fn check_abi_descriptors(module: &crate::target::ast::Module) -> Resu
             return Err(format!("duplicate ABI {}", abi.name));
         }
         abi_arch_expr(&abi.arch)?;
-        for class in abi.args.iter().chain(&abi.returns) {
-            if !matches!(
-                class.class.as_str(),
-                "Integer" | "Int" | "Float" | "Vector" | "Memory"
-            ) {
-                return Err(format!("unknown ABI value class {}", class.class));
+        for rule in abi.args.iter().chain(&abi.returns) {
+            if rule.types.is_empty() {
+                return Err(format!("ABI {} has an empty type domain", abi.name));
+            }
+            match &rule.action {
+                crate::target::ast::AbiActionDef::Reg { regs, shadows } => {
+                    if regs.is_empty() || (!shadows.is_empty() && shadows.len() != regs.len()) {
+                        return Err(format!(
+                            "ABI {} has invalid register/shadow lists",
+                            abi.name
+                        ));
+                    }
+                }
+                crate::target::ast::AbiActionDef::Stack { size, align } => {
+                    if *size == 0 || !align.is_power_of_two() {
+                        return Err(format!("ABI {} has invalid stack allocation", abi.name));
+                    }
+                }
             }
         }
         for reg in abi
             .args
             .iter()
             .chain(&abi.returns)
-            .flat_map(|c| &c.regs)
-            .chain(abi.preserved.iter().flat_map(|s| &s.regs))
-            .chain(abi.stack.incoming_base.iter().map(|(reg, _)| reg))
+            .flat_map(|rule| match &rule.action {
+                crate::target::ast::AbiActionDef::Reg { regs, shadows } => {
+                    regs.iter().chain(shadows).collect::<Vec<_>>()
+                }
+                crate::target::ast::AbiActionDef::Stack { .. } => Vec::new(),
+            })
+            .chain(abi.preserved.iter())
         {
             if !registers.contains_key(reg) {
                 return Err(format!(
@@ -734,12 +752,7 @@ pub(crate) fn check_abi_descriptors(module: &crate::target::ast::Module) -> Resu
                 ));
             }
         }
-        if abi.stack.align.is_some_and(|a| !a.is_power_of_two())
-            || abi
-                .stack
-                .outgoing_slot
-                .is_some_and(|(size, align)| size == 0 || !align.is_power_of_two())
-        {
+        if abi.stack.align.is_some_and(|a| !a.is_power_of_two()) {
             return Err(format!("ABI {} has invalid stack size/alignment", abi.name));
         }
     }
@@ -761,7 +774,11 @@ pub(crate) fn generate_abi_descriptors(output: &mut String, module: &crate::targ
         return;
     }
 
-    writeln!(output, "\n/// ABI descriptors generated from `def-abi`.").unwrap();
+    writeln!(
+        output,
+        "\n/// ABI allocation functions and descriptors generated from Spec."
+    )
+    .unwrap();
 
     for abi in abis {
         let prefix = sanitize_ident(&format!("ABI_{}", abi.name)).to_ascii_uppercase();
@@ -769,29 +786,13 @@ pub(crate) fn generate_abi_descriptors(output: &mut String, module: &crate::targ
         let returns_name = format!("{}_RETURNS", prefix);
         let preserved_name = format!("{}_PRESERVED", prefix);
 
-        generate_abi_pool_array(output, &args_name, &abi.args, &reg_map);
-        generate_abi_pool_array(output, &returns_name, &abi.returns, &reg_map);
+        generate_abi_assignment(output, &args_name, &abi.args, &reg_map);
+        generate_abi_assignment(output, &returns_name, &abi.returns, &reg_map);
         generate_abi_preserved_array(output, &preserved_name, &abi.preserved, &reg_map);
 
         let arch = abi_arch_expr(&abi.arch).expect("checked ABI architecture");
         let align = abi.stack.align.unwrap_or(16);
-        let (incoming_base_reg, incoming_base_offset) = abi
-            .stack
-            .incoming_base
-            .as_ref()
-            .map(|(reg, off)| {
-                (
-                    format!("Some({})", reg_expr(reg_map.get(reg).copied())),
-                    *off,
-                )
-            })
-            .unwrap_or(("None".to_string(), 0));
-        let (outgoing_slot_size, outgoing_slot_align) = abi.stack.outgoing_slot.unwrap_or((8, 8));
-        let classifier = abi
-            .classifier
-            .as_ref()
-            .map(|name| format!("Some(\"{}\")", name))
-            .unwrap_or_else(|| "None".to_string());
+        let reserved = abi.stack.reserved;
 
         writeln!(
             output,
@@ -799,13 +800,9 @@ pub(crate) fn generate_abi_descriptors(output: &mut String, module: &crate::targ
 pub static {prefix}: AbiDescriptor = AbiDescriptor {{
     name: "{name}",
     arch: {arch},
-    classifier: {classifier},
-    stack: AbiStackDescriptor {{
+    stack: StackArea {{
         align: {align},
-        incoming_base_reg: {incoming_base_reg},
-        incoming_base_offset: {incoming_base_offset},
-        outgoing_slot_size: {outgoing_slot_size},
-        outgoing_slot_align: {outgoing_slot_align},
+        size: {reserved},
     }},
     args: {args_name},
     returns: {returns_name},
@@ -815,12 +812,8 @@ pub static {prefix}: AbiDescriptor = AbiDescriptor {{
             prefix = prefix,
             name = abi.name,
             arch = arch,
-            classifier = classifier,
             align = align,
-            incoming_base_reg = incoming_base_reg,
-            incoming_base_offset = incoming_base_offset,
-            outgoing_slot_size = outgoing_slot_size,
-            outgoing_slot_align = outgoing_slot_align,
+            reserved = reserved,
             args_name = args_name,
             returns_name = returns_name,
             preserved_name = preserved_name,
@@ -829,63 +822,53 @@ pub static {prefix}: AbiDescriptor = AbiDescriptor {{
     }
 }
 
-fn generate_abi_pool_array(
+fn generate_abi_assignment(
     output: &mut String,
-    const_name: &str,
-    classes: &[crate::target::ast::AbiClassRegsDef],
+    name: &str,
+    rules: &[crate::target::ast::AbiRuleDef],
     reg_map: &HashMap<String, u32>,
 ) {
-    writeln!(output, "pub const {}: &[AbiRegisterPool] = &[", const_name).unwrap();
-    for class in classes {
-        let regs = class
-            .regs
-            .iter()
-            .map(|reg| reg_expr(reg_map.get(reg).copied()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(
-            output,
-            "    AbiRegisterPool {{ class: {}, regs: &[{}] }},",
-            abi_value_class_expr(&class.class),
-            regs
-        )
-        .unwrap();
+    writeln!(output, "#[allow(non_snake_case)]\nfn {name}(ty: veloc_mir::Type, state: &mut AbiState) -> Result<AbiLocation, crate::error::Error> {{").unwrap();
+    for rule in rules {
+        writeln!(output, "    if matches!(ty, {}) {{", rule.types.join(" | ")).unwrap();
+        match &rule.action {
+            crate::target::ast::AbiActionDef::Reg { regs, shadows } => {
+                let render = |regs: &[String]| {
+                    regs.iter()
+                        .map(|reg| reg_expr(reg_map.get(reg).copied()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                writeln!(
+                    output,
+                    "        if let Some(loc) = state.assign(&[{}], &[{}]) {{ return Ok(loc); }}",
+                    render(regs),
+                    render(shadows)
+                )
+                .unwrap();
+            }
+            crate::target::ast::AbiActionDef::Stack { size, align } => {
+                writeln!(output, "        return state.stack({size}, {align});").unwrap();
+            }
+        }
+        writeln!(output, "    }}").unwrap();
     }
-    writeln!(output, "];").unwrap();
+    writeln!(output, "    Err(crate::error::Error::codegen(alloc::format!(\"ABI has no available location for {{ty:?}}\")))\n}}").unwrap();
 }
 
 fn generate_abi_preserved_array(
     output: &mut String,
     const_name: &str,
-    preserved: &[crate::target::ast::AbiPreservedSetDef],
+    preserved: &[String],
     reg_map: &HashMap<String, u32>,
 ) {
-    writeln!(output, "pub const {}: &[AbiPreservedSet] = &[", const_name).unwrap();
-    for set in preserved {
-        let regs = set
-            .regs
-            .iter()
-            .map(|reg| reg_expr(reg_map.get(reg).copied()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(
-            output,
-            "    AbiPreservedSet {{ bank: \"{}\", regs: &[{}] }},",
-            set.bank, regs
-        )
-        .unwrap();
-    }
-    writeln!(output, "];").unwrap();
-}
-
-fn abi_value_class_expr(class: &str) -> &'static str {
-    match class {
-        "Integer" | "Int" => "AbiValueClass::Integer",
-        "Float" => "AbiValueClass::Float",
-        "Vector" => "AbiValueClass::Vector",
-        "Memory" => "AbiValueClass::Memory",
-        _ => unreachable!("checked ABI value class"),
-    }
+    let regs: BTreeSet<_> = preserved.iter().map(|reg| reg_map[reg]).collect();
+    let regs = regs
+        .into_iter()
+        .map(|id| reg_expr(Some(id)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(output, "pub const {const_name}: &[Reg] = &[{regs}];").unwrap();
 }
 
 fn abi_arch_expr(arch: &str) -> Result<&'static str, String> {

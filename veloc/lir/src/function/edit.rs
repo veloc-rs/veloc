@@ -49,7 +49,6 @@ impl FuncEditor<'_> {
         let block = self.function.body.blocks.push(BlockData::default());
         self.function.body.layout.append_block(block);
         self.changed_block(block);
-        self.function.body.entry.get_or_insert(block);
         block
     }
     pub fn set_entry_block(&mut self, block: Block) {
@@ -57,10 +56,8 @@ impl FuncEditor<'_> {
             self.function.body.layout.contains_block(block),
             "unknown entry block"
         );
-        if let Some(old) = self.function.body.entry {
-            self.changed_block(old);
-        }
-        self.function.body.entry = Some(block);
+        self.changed_block(self.function.body.entry);
+        self.function.body.entry = block;
         self.changed_block(block);
     }
     pub fn append_block_param(&mut self, block: Block, param: Reg) {
@@ -204,7 +201,7 @@ impl FuncEditor<'_> {
     /// Erase a non-entry block and its instructions. Incoming edges must be
     /// redirected by the caller; full CFG/SSA validation remains explicit.
     pub fn erase_block(&mut self, block: Block) {
-        assert_ne!(self.entry_block(), Some(block), "cannot erase entry block");
+        assert_ne!(self.entry_block(), block, "cannot erase entry block");
         assert!(
             self.function.body.layout.contains_block(block),
             "unknown block"
@@ -271,6 +268,16 @@ impl FuncEditor<'_> {
         )
     }
 
+    pub fn set_call_stack(
+        &mut self,
+        id: InstId,
+        slots: smallvec::SmallVec<[StackSlot; 2]>,
+        stack: crate::StackArea,
+    ) {
+        self.function.body.store.set_call_stack(id, slots, stack);
+        self.changed_inst(id);
+    }
+
     pub fn set_inst_effects(&mut self, id: InstId, effects: crate::RegEffects) {
         self.function.body.store.set_effects(id, effects);
         self.changed_inst(id);
@@ -312,25 +319,8 @@ impl FuncEditor<'_> {
         self.changed_inst(id);
     }
 
-    /// 分配栈槽
-    pub fn alloc_stack_slot(&mut self, size: u32, align: u32) -> StackSlot {
-        self.function.stack_frame.alloc_slot(size, align)
-    }
-
-    /// 分配一个具有显式基址寄存器/偏移的栈槽。
-    pub fn alloc_stack_slot_with_base(
-        &mut self,
-        base_reg: Reg,
-        offset: i32,
-        size: u32,
-        align: u32,
-    ) -> StackSlot {
-        self.function.stack_frame.slots.push(StackSlotData {
-            base: StackBase::Reg(base_reg),
-            size,
-            align,
-            offset,
-        })
+    pub fn alloc_stack_object(&mut self, object: StackObject, size: u32, align: u32) -> StackSlot {
+        self.function.stack_frame.alloc_object(object, size, align)
     }
 
     /// Transfer a detached source into a stable destination ID without copying.
@@ -349,14 +339,7 @@ impl FuncEditor<'_> {
     /// 将指令标记为无效。
     pub fn invalidate_inst(&mut self, inst_id: InstId) {
         self.detach_inst(inst_id);
-        self.function.body.store.write_at(
-            inst_id,
-            crate::MachineOpcode::Invalid,
-            &[],
-            &[],
-            &[],
-            None,
-        );
+        self.function.body.store.clear(inst_id);
     }
 
     /// Retarget one edge without changing its identity or argument use slots.
@@ -401,18 +384,6 @@ impl FuncEditor<'_> {
     pub fn clear_successor_args(&mut self, inst: InstId) {
         self.function.body.store.clear_successor_args(inst);
         self.changed_inst(inst);
-    }
-
-    /// 为指令挂载额外 payload。
-    pub fn set_inst_extra(&mut self, inst_id: InstId, extra: InstExtra) {
-        self.function.body.store.set_extra(inst_id, extra);
-        self.changed_inst(inst_id);
-    }
-
-    /// 清理指令的额外 payload。
-    pub fn clear_inst_extra(&mut self, inst_id: InstId) {
-        self.function.body.store.clear_extra(inst_id);
-        self.changed_inst(inst_id);
     }
 
     /// Run an edit session and report changed instructions and blocks. Edits

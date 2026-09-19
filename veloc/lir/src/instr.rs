@@ -1,5 +1,6 @@
 //! Low-level IR (LIR) 指令和操作数定义
 
+use crate::FieldView;
 use cranelift_entity::entity_impl;
 use veloc_mir::Type;
 pub use veloc_types::{MemFlags, MemoryEffect, MemoryEffects, OpTraits};
@@ -188,7 +189,7 @@ impl<'a> crate::InstRead<'a> for crate::InstRef<'a> {
     fn inputs(self) -> &'a [crate::Reg] {
         self.inputs()
     }
-    fn fields(self) -> &'a [crate::InstField] {
+    fn fields(self) -> crate::FieldView<'a> {
         self.fields()
     }
     fn error(self, message: &str) -> crate::ValidationError {
@@ -233,7 +234,7 @@ impl<'a> InstRef<'a> {
                 .iter()
                 .chain(self.inputs())
                 .all(|reg| reg.is_vreg())
-            && self.store.extra(self.id).is_none()
+            && self.store.call_info(self.id).is_none()
     }
 
     pub fn opcode(self) -> MachineOpcode {
@@ -245,7 +246,7 @@ impl<'a> InstRef<'a> {
     pub fn inputs(self) -> &'a [Reg] {
         self.store.inputs(self.id)
     }
-    pub fn fields(self) -> &'a [crate::InstField] {
+    pub fn fields(self) -> crate::FieldView<'a> {
         self.store.fields(self.id)
     }
     pub fn implicit_uses(self) -> &'a [Reg] {

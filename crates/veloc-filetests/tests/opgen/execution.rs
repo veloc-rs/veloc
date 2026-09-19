@@ -360,13 +360,24 @@ op Invoke(sig: SigId, args: sequence(Value)) -> signature {
     use super::*;
     #[derive(Debug, Clone, Copy)] pub enum SigCode { Invoke }
     #[derive(Debug, Clone, Copy)] pub enum SigField { Sig(SigId), Number(i64) }
+    #[derive(Clone, Copy)] pub enum SigFieldRef<'a> { Sig(&'a SigId), Number(&'a i64) }
+    #[derive(Clone, Copy)] pub struct FieldView<'a>(&'a [SigField]);
+    impl<'a> FieldView<'a> {
+        fn len(self) -> usize { self.0.len() }
+        fn read(self, i: usize) -> SigFieldRef<'a> {
+            match &self.0[i] {
+                SigField::Sig(v) => SigFieldRef::Sig(v),
+                SigField::Number(v) => SigFieldRef::Number(v),
+            }
+        }
+    }
     #[derive(Clone, Copy)] struct Call<'a> { inputs: &'a [Cell], results: &'a [Cell], fields: &'a [SigField] }
     impl<'a> SigRead<'a> for Call<'a> {
         type Error = String;
         fn opcode(self) -> Option<SigCode> { Some(SigCode::Invoke) }
         fn inputs(self) -> &'a [Cell] { self.inputs }
         fn results(self) -> &'a [Cell] { self.results }
-        fn fields(self) -> &'a [SigField] { self.fields }
+        fn fields(self) -> FieldView<'a> { FieldView(self.fields) }
         fn error(self, message: &str) -> String { message.into() }
         fn value_type(self, value: Cell) -> Type { value }
         fn signature(self, id: SigId) -> Option<(&'a [Type], &'a [Type])> {
@@ -451,7 +462,7 @@ mod atom {
     }
     pub struct OperandParser<'a>(pub &'a mut Vec<(Vec<Cell>, Vec<Cell>, Vec<Payload>)>);
     impl OperandParser<'_> {
-        fn write(&mut self, op: Code, results: &[Cell], inputs: &[Cell], fields: &[Payload]) -> InstId {
+        fn write(&mut self, op: Code, results: &[Cell], inputs: &[Cell], fields: impl IntoIterator<Item = Payload>) -> InstId {
             Sink { store: self.0 }.write(op, results, inputs, fields)
         }
     }
@@ -497,6 +508,19 @@ pub trait LimitsInfo {{ fn max(&self) -> u32; }}
 impl LimitsInfo for Limits {{ fn max(&self) -> u32 {{ self.0 }} }}
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Payload {{ Tag(Tag), Number(i64) }}
+#[derive(Clone, Copy)]
+pub enum PayloadRef<'a> {{ Tag(&'a Tag), Number(&'a i64) }}
+#[derive(Clone, Copy)]
+pub struct FieldView<'a>(&'a [Payload]);
+impl<'a> FieldView<'a> {{
+    fn len(self) -> usize {{ self.0.len() }}
+    fn read(self, i: usize) -> PayloadRef<'a> {{
+        match &self.0[i] {{
+            Payload::Tag(v) => PayloadRef::Tag(v),
+            Payload::Number(v) => PayloadRef::Number(v),
+        }}
+    }}
+}}
 #[derive(Debug, Clone, Copy)]
 pub enum Code {{ Pair }}
 type InstId = usize;
@@ -505,9 +529,9 @@ impl Build for Sink<'_> {{
     type Inst = usize;
     type Def = Cell;
     fn reg(value: Cell) -> Cell {{ value }}
-    fn write(self, _: Code, results: &[Cell], inputs: &[Cell], fields: &[Payload]) -> InstId {{
+    fn write(self, _: Code, results: &[Cell], inputs: &[Cell], fields: impl IntoIterator<Item = Payload>) -> InstId {{
         let id = self.store.len();
-        self.store.push((results.to_vec(), inputs.to_vec(), fields.to_vec()));
+        self.store.push((results.to_vec(), inputs.to_vec(), fields.into_iter().collect()));
         id
     }}
 }}
@@ -531,7 +555,7 @@ impl<'a> Read<'a> for Handle<'a> {{
     fn opcode(self) -> Option<Code> {{ Some(Code::Pair) }}
     fn results(self) -> &'a [Cell] {{ &self.0.0 }}
     fn inputs(self) -> &'a [Cell] {{ &self.0.1 }}
-    fn fields(self) -> &'a [Payload] {{ &self.0.2 }}
+    fn fields(self) -> FieldView<'a> {{ FieldView(&self.0.2) }}
     fn error(self, message: &str) -> String {{ message.to_owned() }}
 }}
 fn main() {{

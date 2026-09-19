@@ -53,7 +53,7 @@ fn workload(ty: Type, comparisons: bool) -> MachineFunction {
     // This selector-only fixture is never encoded as an executable function.
     let sink = e
         .writer()
-        .write(MachineOpcode::Target(0), &[], &[value], &[]);
+        .write(MachineOpcode::Target(0), &[], &[value], []);
     e.append_inst(block, sink);
     f
 }
@@ -72,7 +72,7 @@ fn memory_workload(stack: bool) -> MachineFunction {
     let index = e.alloc_vreg(Type::I64);
     e.append_block_param(block, base);
     e.append_block_param(block, index);
-    let slot = e.alloc_stack_slot(16, 8);
+    let slot = e.alloc_stack_object(veloc_lir::StackObject::Local, 16, 8);
     let mut live = Vec::new();
     for _ in 0..96 {
         let address = e.alloc_vreg(Type::PTR);
@@ -90,7 +90,7 @@ fn memory_workload(stack: bool) -> MachineFunction {
         e.append_inst(block, load);
         live.push(value);
     }
-    let sink = e.writer().write(MachineOpcode::Target(0), &[], &live, &[]);
+    let sink = e.writer().write(MachineOpcode::Target(0), &[], &live, []);
     e.append_inst(block, sink);
     f
 }

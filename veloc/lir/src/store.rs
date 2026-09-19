@@ -1,12 +1,11 @@
 //! Function-owned instruction storage. IDs are stable; operand ranges and cold
 //! payloads belong directly to InstId. Operand ranges are recycled on replacement.
-use crate::InstField;
+use crate::FieldValue;
 use crate::use_def::{Owner, References};
-use crate::{InstExtra, InstId, InstRef, MachineOpcode, MemoryAccess};
+use crate::{InstId, InstRef, MachineOpcode, MemoryAccess};
 use crate::{OperandId, RefRole, Reg, RegRefs, VReg};
 use alloc::vec::Vec;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
-use hashbrown::HashMap;
 use smallvec::SmallVec;
 use veloc_collections::LinkId;
 
@@ -127,7 +126,7 @@ impl RegRange {
 struct StoredInst {
     opcode: MachineOpcode,
     inputs: RegRange,
-    fields: Range,
+    fields: crate::Fields,
     results: RegRange,
 }
 
@@ -142,11 +141,9 @@ struct StoredEdge {
 pub struct InstStore {
     instructions: PrimaryMap<InstId, StoredInst>,
     registers: Operands<Reg>,
-    fields: Operands<InstField>,
-    // Frequently queried access facts use direct indexing; larger optional
-    // payloads use sparse tables so ordinary instructions allocate no entries.
+    fields: crate::FieldPools,
+    // Access facts are directly indexed; call contracts live in common fields.
     memory: SecondaryMap<InstId, Option<MemoryAccess>>,
-    extras: HashMap<InstId, InstExtra>,
     edges: PrimaryMap<crate::EdgeId, Option<StoredEdge>>,
     pub(crate) references: References,
 }
@@ -227,13 +224,15 @@ impl<'a> InstWriter<'a> {
         self
     }
 
+    /// Convert transient positional fields at a low-level adapter boundary.
     pub fn write(
         self,
         opcode: crate::MachineOpcode,
         results: &[Reg],
         inputs: &[Reg],
-        fields: &[InstField],
+        fields: impl IntoIterator<Item = FieldValue>,
     ) -> InstId {
+        let fields = self.store.fields.pack(fields);
         let implicit = RegEffects {
             uses: self.effects.uses,
             defs: self.effects.defs,
@@ -275,7 +274,7 @@ impl crate::InstBuild for InstWriter<'_> {
         opcode: crate::GenericOpcode,
         results: &[Reg],
         inputs: &[Reg],
-        fields: &[InstField],
+        fields: impl IntoIterator<Item = FieldValue>,
     ) -> InstId {
         self.write(MachineOpcode::Generic(opcode), results, inputs, fields)
     }
@@ -286,9 +285,8 @@ impl InstStore {
         Self {
             instructions: PrimaryMap::with_capacity(insts),
             registers: Operands::default(),
-            fields: Operands::default(),
+            fields: crate::FieldPools::default(),
             memory: SecondaryMap::with_capacity(insts),
-            extras: HashMap::new(),
             edges: PrimaryMap::new(),
             references: References::default(),
         }
@@ -343,8 +341,8 @@ impl InstStore {
     pub fn inputs(&self, id: InstId) -> &[Reg] {
         self.registers(self.instructions[id].inputs.explicit())
     }
-    pub fn fields(&self, id: InstId) -> &[InstField] {
-        &self.fields.data[self.instructions[id].fields.indices()]
+    pub fn fields(&self, id: InstId) -> crate::FieldView<'_> {
+        self.fields.view(&self.instructions[id].fields)
     }
     fn set_operand(&mut self, id: OperandId, reg: Reg) {
         let link = id.link();
@@ -387,39 +385,19 @@ impl InstStore {
     pub fn memory(&self, id: InstId) -> Option<MemoryAccess> {
         self.memory[id]
     }
-    pub fn write(
-        &mut self,
-        opcode: MachineOpcode,
-        results: &[Reg],
-        inputs: &[Reg],
-        fields: &[InstField],
-        memory: Option<MemoryAccess>,
-    ) -> InstId {
-        self.write_full(
-            opcode,
-            results,
-            inputs,
-            fields,
-            memory,
-            RegEffects {
-                uses: &[],
-                defs: &[],
-            },
-        )
-    }
     fn write_full(
         &mut self,
         opcode: MachineOpcode,
         results: &[Reg],
         inputs: &[Reg],
-        fields: &[InstField],
+        fields: crate::Fields,
         memory: Option<MemoryAccess>,
         implicit: RegEffects<&[Reg]>,
     ) -> InstId {
         let id = self.instructions.next_key();
+        self.check_edges(id, &fields);
         let inputs = self.alloc_group(id, RefRole::Use, inputs, implicit.uses);
-        self.attach_edges(id, fields);
-        let fields = self.fields.insert(fields);
+        self.attach_edges(id, &fields);
         let results = self.alloc_group(id, RefRole::Def, results, implicit.defs);
         let id = self.instructions.push(StoredInst {
             opcode,
@@ -437,20 +415,17 @@ impl InstStore {
         if id == source {
             return;
         }
-        self.write_at(id, MachineOpcode::Invalid, &[], &[], &[], None);
+        self.clear(id);
         let empty = StoredInst {
             opcode: MachineOpcode::Invalid,
             inputs: RegRange::default(),
-            fields: Range::default(),
+            fields: crate::Fields::None,
             results: RegRange::default(),
         };
         self.instructions[id] = core::mem::replace(&mut self.instructions[source], empty);
         if let Some(access) = self.memory[source] {
             self.memory[source] = None;
             self.memory[id] = Some(access);
-        }
-        if let Some(extra) = self.extras.remove(&source) {
-            self.extras.insert(id, extra);
         }
         let edge_ids: Vec<_> = self.edge_ids(id).collect();
         for edge in edge_ids {
@@ -466,22 +441,14 @@ impl InstStore {
             self.references.links.set_owner(link, site);
         }
     }
-    pub fn write_at(
-        &mut self,
-        id: InstId,
-        opcode: MachineOpcode,
-        results: &[Reg],
-        inputs: &[Reg],
-        fields: &[InstField],
-        memory: Option<MemoryAccess>,
-    ) {
+    pub(crate) fn clear(&mut self, id: InstId) {
         self.write_full_at(
             id,
-            opcode,
-            results,
-            inputs,
-            fields,
-            memory,
+            MachineOpcode::Invalid,
+            &[],
+            &[],
+            crate::Fields::None,
+            None,
             RegEffects {
                 uses: &[],
                 defs: &[],
@@ -494,30 +461,26 @@ impl InstStore {
         opcode: MachineOpcode,
         results: &[Reg],
         inputs: &[Reg],
-        fields: &[InstField],
+        fields: crate::Fields,
         memory: Option<MemoryAccess>,
         implicit: RegEffects<&[Reg]>,
     ) {
-        self.check_edges(id, fields);
-        self.clear_extra(id);
+        self.check_edges(id, &fields);
         let removed: Vec<_> = self
             .edge_ids(id)
-            .filter(|edge| {
-                !fields
-                    .iter()
-                    .any(|field| matches!(field, InstField::Edge(id) if id == edge))
-            })
+            .filter(|edge| !self.fields.view(&fields).successors().contains(edge))
             .collect();
         for edge in removed {
             self.delete_edge(edge);
         }
-        self.attach_edges(id, fields);
+        self.attach_edges(id, &fields);
         self.release_registers(self.instructions[id].inputs.all);
         self.release_registers(self.instructions[id].results.all);
-        self.fields.release(self.instructions[id].fields);
+        self.fields
+            .remove(core::mem::take(&mut self.instructions[id].fields));
         self.instructions[id].inputs = self.alloc_group(id, RefRole::Use, inputs, implicit.uses);
         self.instructions[id].results = self.alloc_group(id, RefRole::Def, results, implicit.defs);
-        self.instructions[id].fields = self.fields.insert(&fields);
+        self.instructions[id].fields = fields;
         self.set_memory(id, memory);
         self.instructions[id].opcode = opcode;
     }
@@ -546,16 +509,11 @@ impl InstStore {
         self.instructions[id].inputs = self.alloc_group(id, RefRole::Use, &inputs, &effects.uses);
         self.instructions[id].results = self.alloc_group(id, RefRole::Def, &results, &effects.defs);
     }
-    pub fn extra(&self, id: InstId) -> Option<crate::InstExtraRef<'_>> {
-        self.extras.get(&id).map(|extra| match extra {
-            InstExtra::Call(info) => crate::InstExtraRef::Call(info),
-        })
+    pub fn call_info(&self, id: InstId) -> Option<&crate::CallInfo> {
+        self.fields(id).call_info()
     }
     pub fn edge_ids(&self, id: InstId) -> impl Iterator<Item = crate::EdgeId> + '_ {
-        self.fields(id).iter().filter_map(|field| match field {
-            InstField::Edge(edge) => Some(*edge),
-            _ => None,
-        })
+        self.fields(id).successors().iter().copied()
     }
     pub fn edge(&self, id: crate::EdgeId) -> crate::Successor<&[Reg]> {
         let edge = self.edges[id].as_ref().expect("deleted edge");
@@ -579,20 +537,16 @@ impl InstStore {
         self.create_edge(block, &args)
     }
 
-    fn check_edges(&self, owner: InstId, fields: &[InstField]) {
+    fn check_edges(&self, owner: InstId, fields: &crate::Fields) {
         // Ordinary branches need no allocation; tables use a set to avoid
         // quadratic duplicate detection.
         let mut seen = hashbrown::HashSet::new();
-        for (index, field) in fields.iter().enumerate() {
-            let InstField::Edge(id) = *field else {
-                continue;
-            };
-            let unique = if fields.len() > 2 {
+        let successors = self.fields.view(fields).successors();
+        for (index, &id) in successors.iter().enumerate() {
+            let unique = if successors.len() > 2 {
                 seen.insert(id)
             } else {
-                !fields[..index]
-                    .iter()
-                    .any(|field| matches!(field, InstField::Edge(previous) if *previous == id))
+                !successors[..index].contains(&id)
             };
             assert!(unique, "duplicate edge");
             let edge = self.edges[id].as_ref().expect("deleted edge");
@@ -603,12 +557,9 @@ impl InstStore {
         }
     }
 
-    fn attach_edges(&mut self, owner: InstId, fields: &[InstField]) {
-        self.check_edges(owner, fields);
-        for field in fields {
-            let InstField::Edge(id) = *field else {
-                continue;
-            };
+    fn attach_edges(&mut self, owner: InstId, fields: &crate::Fields) {
+        for index in 0..self.fields.view(fields).successors().len() {
+            let id = self.fields.view(fields).successors()[index];
             let edge = self.edges[id].as_mut().unwrap();
             if edge.owner == Some(owner) {
                 continue;
@@ -638,20 +589,12 @@ impl InstStore {
             .owner
             .expect("unattached edge");
         assert_ne!(from, to);
-        let a = self
-            .fields(from)
-            .iter()
-            .position(|f| matches!(f, InstField::Edge(id) if *id == original))
-            .unwrap();
-        let b = self
-            .fields(to)
-            .iter()
-            .position(|f| matches!(f, InstField::Edge(id) if *id == replacement))
-            .unwrap();
-        self.fields.data[self.instructions[from].fields.start as usize + a] =
-            InstField::Edge(replacement);
-        self.fields.data[self.instructions[to].fields.start as usize + b] =
-            InstField::Edge(original);
+        let a = self.edge_ids(from).position(|id| id == original).unwrap();
+        let b = self.edge_ids(to).position(|id| id == replacement).unwrap();
+        self.fields
+            .successors_mut(&mut self.instructions[from].fields)[a] = replacement;
+        self.fields
+            .successors_mut(&mut self.instructions[to].fields)[b] = original;
         let old = self.edges[original].take();
         self.edges[original] = self.edges[replacement].take();
         self.edges[replacement] = old;
@@ -696,12 +639,21 @@ impl InstStore {
         let edge = self.edges[id].take().expect("deleted edge");
         self.release_registers(edge.args);
     }
-    pub fn set_extra(&mut self, id: InstId, extra: InstExtra) {
-        self.extras.insert(id, extra);
+    pub(crate) fn set_call_stack(
+        &mut self,
+        id: InstId,
+        slots: smallvec::SmallVec<[crate::StackSlot; 2]>,
+        stack: crate::StackArea,
+    ) {
+        let info = self.fields.call_info_mut(&self.instructions[id].fields);
+        assert!(
+            stack.align.is_power_of_two(),
+            "invalid call stack alignment"
+        );
+        info.stack_args = slots;
+        info.stack = Some(stack);
     }
-    pub fn clear_extra(&mut self, id: InstId) {
-        self.extras.remove(&id);
-    }
+
     pub fn uses(&self, reg: Reg) -> RegRefs<'_> {
         RegRefs {
             store: self,
@@ -895,13 +847,13 @@ mod tests {
             assert_eq!(f.inst(id).memory(), Some(access));
             assert_eq!(f.editor().rewriter(id).constant(Writable(reg), 42), id);
             assert!(f.inst(id).memory().is_none());
-            assert!(f.inst_extra(id).is_none());
+            assert!(f.try_call_info(id).is_none());
         }
         // The generic and target namespaces use the exact same store.
         let target = f
             .editor()
             .writer()
-            .write(MachineOpcode::Target(7), &[], &[reg], &[]);
+            .write(MachineOpcode::Target(7), &[], &[reg], []);
         f.editor().append_inst(crate::BlockId::from_u32(0), target);
         assert!(f.inst(id).is_generic());
         assert!(f.inst(target).is_target());
@@ -917,7 +869,7 @@ mod tests {
         assert_eq!(f.inst(id).memory(), Some(access));
         assert!(f.inst(replacement).is_invalid());
         assert!(f.inst(replacement).memory().is_none());
-        assert!(f.inst_extra(replacement).is_none());
+        assert!(f.try_call_info(replacement).is_none());
         // Worklist rewrites detach and reinsert IDs without erasing their data.
         for id in f.block_insts(block).collect::<Vec<_>>() {
             let mut edit = f.editor();
@@ -950,24 +902,18 @@ mod tests {
         assert_eq!(f.blocks().nth(0).unwrap(), block);
 
         let mut store = InstStore::default();
-        let id = store.write(MachineOpcode::Target(1), &[], &[], &[], None);
+        let id = store.writer().write(MachineOpcode::Target(1), &[], &[], []);
         for n in 0..100 {
-            store.write_at(
-                id,
-                MachineOpcode::Target(1),
-                &[],
-                &[reg],
-                &[InstField::Imm(n)],
-                None,
-            );
+            store
+                .rewriter(id)
+                .write(MachineOpcode::Target(1), &[], &[reg], [FieldValue::Imm(n)]);
             store.set_memory(id, Some(MemoryAccess::new(MemoryKind::Read, 8)));
-            store.write_at(id, MachineOpcode::Invalid, &[], &[], &[], None);
+            store.clear(id);
         }
-        assert_eq!(store.fields.data.len(), 1);
+        assert!(store.fields(id).is_empty());
         assert!(store.memory(id).is_none());
-        assert!(store.extras.is_empty());
         assert!(store.effects(id).is_none());
-        let source = store.write(MachineOpcode::Target(2), &[], &[], &[], None);
+        let source = store.writer().write(MachineOpcode::Target(2), &[], &[], []);
         store.set_effects(
             source,
             RegEffects {
@@ -980,7 +926,7 @@ mod tests {
         assert_eq!(store.effects(id).unwrap().defs, [Reg::new_preg(2)]);
         assert!(store.effects(source).is_none());
         store.check_refs().unwrap();
-        store.write_at(id, MachineOpcode::Invalid, &[], &[], &[], None);
+        store.clear(id);
         assert!(store.effects(id).is_none());
         store.check_refs().unwrap();
 
@@ -992,7 +938,7 @@ mod tests {
             MachineOpcode::Target(3),
             &[output],
             &[input],
-            &[],
+            [],
         );
         assert_eq!(store.inputs(combined), &[input]);
         assert_eq!(store.results(combined), &[output]);
@@ -1024,11 +970,11 @@ mod tests {
         store
             .rewriter(combined)
             .with_effects(&[physical], &[physical])
-            .write(MachineOpcode::Target(4), &[], &[], &[]);
+            .write(MachineOpcode::Target(4), &[], &[], []);
         assert!(store.inputs(combined).is_empty());
         assert!(store.results(combined).is_empty());
         assert_eq!(store.get(combined).uses().collect::<Vec<_>>(), [physical]);
-        store.write_at(combined, MachineOpcode::Invalid, &[], &[], &[], None);
+        store.clear(combined);
         assert_eq!(store.uses(physical).count(), 0);
         assert_eq!(store.defs(physical).count(), 0);
         store.check_refs().unwrap();

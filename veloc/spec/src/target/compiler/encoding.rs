@@ -11,7 +11,7 @@ use std::fmt::Write;
 
 fn field(index: usize, variant: &str) -> String {
     format!(
-        "{{ let InstField::{variant}(value) = inst.fields()[{index}] else {{ unreachable!(\"validated instruction field\") }}; value }}"
+        "{{ let veloc_lir::FieldValueRef::{variant}(value) = inst.fields().read({index}) else {{ unreachable!(\"validated instruction field\") }}; *value }}"
     )
 }
 
@@ -45,7 +45,8 @@ pub(super) fn compile(
                 | OperandConstraint::Imm(n)
                 | OperandConstraint::StackSlot(n)
                 | OperandConstraint::Block(n)
-                | OperandConstraint::Global(n) => n,
+                | OperandConstraint::Global(n)
+                | OperandConstraint::Call(n) => n,
             };
             let (index, _) = find_operand_info(name, &inst.operands).unwrap();
             let (ty, rust) = match operand {
@@ -66,6 +67,7 @@ pub(super) fn compile(
                     format!("inst.edge({}).block", field(index, "Edge")),
                 ),
                 OperandConstraint::Global(_) => ("Global", field(index, "Global")),
+                OperandConstraint::Call(_) => ("CallInfo", field(index, "Call")),
             };
             bindings.insert(
                 name.clone(),

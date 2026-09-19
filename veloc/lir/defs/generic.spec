@@ -1,12 +1,13 @@
 import "../../defs/prelude.spec";
 
 // Operand-array storage is independent of operation semantics and type contracts.
+type CallInfo = rust("crate::CallInfo") { view = borrowed; }
 type StackSlot = rust("crate::StackSlot");
 type Successor = rust("crate::EdgeId");
 
 type Reg = rust("crate::Reg");
-enum InstField {
-    variants = [Imm(i64), FImm(f64), Edge(Successor), StackSlot(StackSlot), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId)];
+enum FieldValue {
+    variants = [Imm(i64), FImm(f64), Edge(Successor), StackSlot(StackSlot), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId), Call(CallInfo)];
 }
 enum ControlFlow {
     variants = [Next, Branch, Jump, Return, Call, Trap];
@@ -17,7 +18,7 @@ storage Operands {
     reader = InstRead;
     writer = InstBuild;
     register = Reg;
-    attributes = InstField;
+    attributes = FieldValue;
     control = ControlFlow::Next;
 }
 
@@ -120,11 +121,13 @@ struct Call {
     results: sequence(Reg),
     callee: SymbolId,
     args: sequence(Reg),
+    info: CallInfo,
 }
 struct CallIndirect {
     results: sequence(Reg),
     callee: Reg,
     args: sequence(Reg),
+    info: CallInfo,
 }
 
 // Logical signatures use the same operation model and type checker as every IR.
@@ -515,15 +518,15 @@ op Ret(values: sequence(Value)) -> () {
     flow = Return;
 }
 
-op Call(callee: SymbolId, args: sequence(Value)) -> signature {
+op Call(callee: SymbolId, args: sequence(Value), info: CallInfo) -> signature {
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
-    storage = Call { results: results(), callee, args };
+    storage = Call { results: results(), callee, args, info };
     flow = Call;
 }
 
-op Callind(callee: Value<Type::PTR>, args: sequence(Value)) -> signature {
+op Callind(callee: Value<Type::PTR>, args: sequence(Value), info: CallInfo) -> signature {
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
-    storage = CallIndirect { results: results(), callee, args };
+    storage = CallIndirect { results: results(), callee, args, info };
     flow = Call;
 }
 

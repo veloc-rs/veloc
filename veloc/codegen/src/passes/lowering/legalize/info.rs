@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use cranelift_entity::PrimaryMap;
 use smallvec::SmallVec;
 use veloc_lir::InstRead;
-use veloc_lir::{GenericOpcode, InstField, InstId, InstRef, MachineFunction, Reg, VReg, VRegData};
+use veloc_lir::{FieldValue, GenericOpcode, InstId, InstRef, MachineFunction, Reg, VReg, VRegData};
 use veloc_mir::Type;
 
 /// Borrowed instruction-local facts. Types are read on demand; queries have
@@ -132,19 +132,16 @@ impl contracts::Query for Query<'_> {
     }
 
     fn signed_offset(&self, bits: u32) -> bool {
-        self.inst
-            .fields()
-            .iter()
-            .find_map(|field| match field {
-                InstField::Imm(offset) => Some(*offset),
-                _ => None,
-            })
-            .is_some_and(|offset| {
-                bits != 0
-                    && bits <= 64
-                    && (bits == 64
-                        || (offset >= -(1i64 << (bits - 1)) && offset < (1i64 << (bits - 1))))
-            })
+        let fields = self.inst.fields();
+        if fields.is_empty() {
+            return false;
+        }
+        let veloc_lir::FieldValueRef::Imm(&offset) = fields.read(0) else {
+            return false;
+        };
+        bits != 0
+            && bits <= 64
+            && (bits == 64 || (offset >= -(1i64 << (bits - 1)) && offset < (1i64 << (bits - 1))))
     }
 }
 
@@ -279,7 +276,7 @@ impl ValueRewrite for RewriteContext<'_> {
         opcode: GenericOpcode,
         ty: Type,
         inputs: &[veloc_lir::Reg],
-        fields: &[InstField],
+        fields: &[FieldValue],
         result: Option<veloc_lir::Reg>,
     ) -> veloc_lir::Reg {
         let dst = match result {
@@ -290,7 +287,7 @@ impl ValueRewrite for RewriteContext<'_> {
             veloc_lir::MachineOpcode::Generic(opcode),
             &[dst],
             inputs,
-            fields,
+            fields.iter().cloned(),
         );
         self.function.insert_before(self.root, inst);
         dst

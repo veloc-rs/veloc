@@ -115,8 +115,8 @@ where
 
     fn apply(&self, mfunc: &mut MachineFunction) -> Result<usize> {
         let mut changed = 0usize;
-        let ids: alloc::vec::Vec<_> = mfunc.blocks().flat_map(|b| mfunc.block_insts(b)).collect();
-        for id in ids {
+        let mut cursor = veloc_lir::InstCursor::new(mfunc);
+        while let Some(id) = cursor.next(mfunc) {
             if mfunc.inst(id).is_invalid() {
                 continue;
             }
@@ -240,7 +240,6 @@ mod tests {
         build: impl FnOnce(veloc_lir::InstWriter<'_>) -> InstId,
     ) -> (MachineFunction, veloc_lir::InstId) {
         let mut mfunc = MachineFunction::new("test".into());
-        mfunc.editor().create_block();
         let inst_id = build(mfunc.editor().writer());
         mfunc
             .editor()

@@ -284,6 +284,7 @@ pub(super) fn compile(
                         "Successor" => OperandConstraint::Block(name),
                         "Global" => OperandConstraint::Global(name),
                         "StackSlot" => OperandConstraint::StackSlot(name),
+                        "CallInfo" => OperandConstraint::Call(name),
                         _ => return Err(format!("unsupported machine attribute type `{ty}`")),
                     },
                     _ => return Err("machine instructions require fixed operands".into()),
@@ -500,7 +501,8 @@ fn operand_name(op: &OperandConstraint) -> &str {
         | OperandConstraint::Imm(n)
         | OperandConstraint::Block(n)
         | OperandConstraint::Global(n)
-        | OperandConstraint::StackSlot(n) => n,
+        | OperandConstraint::StackSlot(n)
+        | OperandConstraint::Call(n) => n,
         OperandConstraint::FixedUse { src, .. } => src,
     }
 }

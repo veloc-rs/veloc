@@ -24,7 +24,7 @@ impl<'a> FunctionPass for FrameFinalizePass<'a> {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         self.frame_lowering
-            .finalize_stack_frame(mfunc, CallConv::from(ctx.func_sig.call_conv));
+            .finalize_stack_frame(mfunc, CallConv::from(ctx.func_sig.call_conv))?;
         self.frame_lowering.insert_prologue_epilogue(mfunc);
         Ok(PassEffect::new(
             ChangeSet::INST_LAYOUT | ChangeSet::STACK_FRAME,

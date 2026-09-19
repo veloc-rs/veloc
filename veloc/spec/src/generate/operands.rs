@@ -76,7 +76,10 @@ impl Operands {
                     Variant {
                         name: format.name.clone(),
                         fields,
-                        borrowed: format.fields.iter().any(|f| f.shape == Shape::Sequence),
+                        borrowed: format
+                            .fields
+                            .iter()
+                            .any(|f| f.shape == Shape::Sequence || f.borrowed),
                         opcodes,
                     }
                 })
@@ -109,7 +112,7 @@ impl Operands {
             String::new()
         };
         let mut out = String::from("// @generated from storage definitions.\n");
-        out.push_str("#[derive(Debug, Clone, Copy)] pub struct AttributeList<'a, A, T> { fields: &'a [A], decode: fn(&A) -> T }\nimpl<'a, A, T> AttributeList<'a, A, T> { pub fn iter(&self) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator + '_ { self.fields.iter().map(self.decode) } pub fn len(&self) -> usize { self.fields.len() } pub fn is_empty(&self) -> bool { self.fields.is_empty() } }\n");
+        out.push_str(&"#[derive(Debug, Clone, Copy)] pub struct AttributeList<'a, T> { fields: FieldView<'a>, start: usize, decode: fn($ATTRSRef<'a>) -> T }\nimpl<'a, T> AttributeList<'a, T> { pub fn iter(&self) -> impl DoubleEndedIterator<Item = T> + ExactSizeIterator + '_ { (self.start..self.fields.len()).map(|i| (self.decode)(self.fields.read(i))) } pub fn len(&self) -> usize { self.fields.len() - self.start } pub fn is_empty(&self) -> bool { self.len() == 0 } }\n".replace("$ATTRS", attrs));
         out.push_str(&crate::generate::opcode_enum(defs, &self.opcode));
         if let Some((control, _, _)) = &self.control {
             writeln!(
@@ -139,7 +142,7 @@ impl Operands {
             fn opcode(self) -> Option<{opcode}>;
             fn results(self) -> &'a [{reg}];
             fn inputs(self) -> &'a [{reg}];
-            fn fields(self) -> &'a [{attrs}];
+            fn fields(self) -> FieldView<'a>;
             fn error(self, message: &str) -> Self::Error;
             fn view(self) -> {view}{lifetime} {{ match self.opcode() {{"
         )
@@ -173,7 +176,7 @@ impl Operands {
             type Inst;
             type Def;
             fn reg(value: Self::Def) -> {reg};
-            fn write(self, opcode: {opcode}, results: &[{reg}], inputs: &[{reg}], fields: &[{attrs}]) -> Self::Inst;").unwrap();
+            fn write(self, opcode: {opcode}, results: &[{reg}], inputs: &[{reg}], fields: impl IntoIterator<Item = {attrs}>) -> Self::Inst;").unwrap();
         for op in &defs.ops {
             self.emit_builder(&mut out, op);
         }
@@ -205,11 +208,13 @@ impl Operands {
             for m in &plan.members {
                 if m.binding.is_some() {
                     if let Some(codec) = &m.field.codec {
+                        let (name, variant) = codec.rsplit_once("::").unwrap();
+                        let codec = format!("{name}Ref::{variant}");
                         if m.field.shape == Shape::Sequence {
-                            writeln!(out, "if self.fields()[{}..].iter().any(|field| !matches!(field, {codec}(_))) {{ return Err(self.error(\"invalid {} field\")); }}", m.index, m.field.name).unwrap();
+                            writeln!(out, "if ({}..self.fields().len()).any(|i| !matches!(self.fields().read(i), {codec}(_))) {{ return Err(self.error(\"invalid {} field\")); }}", m.index, m.field.name).unwrap();
                             continue;
                         }
-                        writeln!(out, "if !matches!(self.fields()[{}], {codec}(_)) {{ return Err(self.error(\"invalid {} field\")); }}", m.index, m.field.name).unwrap();
+                        writeln!(out, "if !matches!(self.fields().read({}), {codec}(_)) {{ return Err(self.error(\"invalid {} field\")); }}", m.index, m.field.name).unwrap();
                     }
                 }
             }

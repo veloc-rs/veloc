@@ -114,6 +114,7 @@ pub(crate) enum Placement {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Policy {
+    pub borrowed: bool,
     pub references: References,
     pub storage: Placement,
 }
@@ -123,6 +124,14 @@ impl Policy {
         let mut fields = model::Fields::new(source, record.clone());
         fields.optional("trait");
         fields.optional("analysis");
+        let borrowed = match fields.optional("view") {
+            None => false,
+            Some(node) => match model::name(source, node)?.as_str() {
+                "borrowed" => true,
+                "copied" => false,
+                _ => return Err(fields.error("expected borrowed or copied view")),
+            },
+        };
         let references = match fields.optional("field") {
             None => References::Data,
             Some(node) => References::parse(source, &node, records, &mut BTreeSet::new())?,
@@ -147,6 +156,7 @@ impl Policy {
         };
         fields.finish()?;
         Ok(Self {
+            borrowed,
             references,
             storage,
         })
@@ -373,6 +383,7 @@ pub(crate) fn compile(
                             rust.policy(name)
                         }
                         PropertyType::Values(_) => Policy {
+                            borrowed: false,
                             references: References::Operand,
                             storage: Placement::Auto,
                         },

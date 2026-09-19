@@ -212,19 +212,22 @@ impl<'a> CodegenPipeline<'a> {
         let mut compiled_functions = Vec::new();
         let function_pipelines = TargetFunctionPipelines::new(self.target.pass_config());
 
-        for ((func_id, func), (_, mfunc)) in module.functions.iter().zip(functions.into_iter()) {
+        for ((func_id, func), (_, mfunc)) in module
+            .functions
+            .iter()
+            .filter(|(_, f)| f.body().is_some())
+            .zip(functions.into_iter())
+        {
             debug_assert_eq!(func.name, mfunc.name);
-            if func.is_defined() {
-                compiled_functions.push(self.compile_defined_function(
-                    func_id,
-                    func,
-                    module.get_signature(func.signature),
-                    mfunc,
-                    stats,
-                    module_analyses,
-                    &function_pipelines,
-                )?);
-            }
+            compiled_functions.push(self.compile_defined_function(
+                func_id,
+                func,
+                module.get_signature(func.signature),
+                mfunc,
+                stats,
+                module_analyses,
+                &function_pipelines,
+            )?);
         }
 
         let mut compiled = CompiledModule::new(name, symbols, compiled_functions);
@@ -363,7 +366,7 @@ impl<'a> CodegenPipeline<'a> {
                 .blocks()
                 .map(|b| mfunc.block_insts(b).count())
                 .sum::<usize>();
-            ctx.stats.stack_slot_count += mfunc.stack_frame.slots.len();
+            ctx.stats.stack_slot_count += mfunc.stack_frame.slots().len();
         }
         use crate::analysis::ChangeSet;
         ctx.function_analyses.apply(
@@ -463,7 +466,7 @@ impl<'a> CodegenPipeline<'a> {
         mfunc: &MachineFunction,
         stats: &mut CodegenStats,
     ) -> Result<crate::EmittedCode> {
-        if mfunc.entry_block() != mfunc.blocks().next() {
+        if Some(mfunc.entry_block()) != mfunc.blocks().next() {
             return Err(Error::codegen("function entry must be first at emission"));
         }
         let emitter = self.target.emitter();
@@ -486,7 +489,11 @@ impl<'a> CodegenPipeline<'a> {
 
         emitter.finish_function(&mut output, mfunc)?;
         if self.options.collect_stats {
-            stats.stack_frame_size += mfunc.stack_frame.total_size;
+            stats.stack_frame_size += mfunc
+                .stack_frame
+                .layout()
+                .expect("finalized frame")
+                .total_size;
         }
         output.finish()
     }

@@ -1,6 +1,6 @@
 //! LIR 机器函数与基本块定义
 
-use super::{CallInfo, InstExtra, InstId, InstRef, Reg, StackSlot, VReg, VRegData};
+use super::{CallInfo, InstId, InstRef, Reg, StackSlot, VReg, VRegData};
 use crate::BlockId as Block;
 use crate::InstWriter;
 use crate::RegisterBank;
@@ -17,10 +17,10 @@ struct BlockData {
 }
 
 /// All function-local identities and their editable body.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FuncBody {
     blocks: PrimaryMap<Block, BlockData>,
-    entry: Option<Block>,
+    entry: Block,
     layout: crate::layout::Layout,
     store: crate::store::InstStore,
     vregs: PrimaryMap<VReg, VRegData>,
@@ -28,16 +28,20 @@ pub struct FuncBody {
 
 impl FuncBody {
     fn with_capacity(blocks: usize, insts: usize, vregs: usize) -> Self {
+        let mut data = PrimaryMap::with_capacity(blocks.max(1));
+        let entry = data.push(BlockData::default());
+        let mut layout = crate::layout::Layout::with_capacity(blocks.max(1), insts);
+        layout.append_block(entry);
         Self {
-            blocks: PrimaryMap::with_capacity(blocks),
-            entry: None,
-            layout: crate::layout::Layout::with_capacity(blocks, insts),
+            blocks: data,
+            entry,
+            layout,
             store: crate::store::InstStore::with_capacity(insts),
             vregs: PrimaryMap::with_capacity(vregs),
         }
     }
 
-    pub fn entry_block(&self) -> Option<Block> {
+    pub fn entry_block(&self) -> Block {
         self.entry
     }
     pub fn layout(&self) -> &crate::layout::Layout {
@@ -67,67 +71,8 @@ impl VRegBuilder<'_> {
     }
 }
 
-/// 栈槽数据
-#[derive(Debug, Clone, Copy)]
-pub enum StackBase {
-    /// Symbolic local frame base, resolved by the target at emission.
-    Frame,
-    Reg(Reg),
-}
-
-impl StackBase {
-    pub fn resolve(self, frame: Reg) -> Reg {
-        match self {
-            Self::Frame => frame,
-            Self::Reg(reg) => reg,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StackSlotData {
-    pub base: StackBase,
-    pub size: u32,
-    pub align: u32,
-    pub offset: i32,
-}
-
-/// 栈帧信息
-#[derive(Debug, Clone)]
-pub struct StackFrame {
-    /// 局部变量占用的栈空间
-    pub local_size: u32,
-    /// 调用其他函数所需的最大传出参数区。
-    pub arg_size: u32,
-    /// 被调用者保存寄存器占用的空间
-    pub callee_saved_size: u32,
-    /// 当前函数实际使用到、需要保存恢复的 callee-saved 物理寄存器
-    pub used_callee_saved: Vec<Reg>,
-    /// 对齐后的总栈大小
-    pub total_size: u32,
-    /// 已分配的栈槽
-    pub slots: cranelift_entity::PrimaryMap<StackSlot, StackSlotData>,
-}
-
-impl StackFrame {
-    /// Allocate frame-relative storage without modifying instructions.
-    pub fn alloc_slot(&mut self, size: u32, align: u32) -> StackSlot {
-        assert!(align.is_power_of_two(), "invalid stack alignment");
-        let end = self
-            .local_size
-            .checked_add(size)
-            .expect("stack frame overflow");
-        let end = end.checked_add(align - 1).expect("stack frame overflow") & !(align - 1);
-        let offset = -i32::try_from(end).expect("stack frame exceeds signed offsets");
-        self.local_size = end;
-        self.slots.push(StackSlotData {
-            base: StackBase::Frame,
-            size,
-            align,
-            offset,
-        })
-    }
-}
+mod frame;
+pub use frame::*;
 
 /// 机器函数主体数据。
 #[derive(Debug, Clone)]
@@ -139,6 +84,9 @@ pub struct MachineFunction {
     pub params: Vec<Reg>,
 }
 
+mod cursor;
+pub use cursor::InstCursor;
+
 mod edit;
 pub use edit::{EditChanges, FuncEditor};
 
@@ -147,20 +95,13 @@ impl MachineFunction {
         Self::with_capacity(name, 0, 0, 0)
     }
 
-    /// Create an empty function while reserving its known source-level shape.
+    /// Create a function with an entry block, reserving its known source-level shape.
     /// Later legalization and selection may still append stable identities.
     pub fn with_capacity(name: String, blocks: usize, insts: usize, vregs: usize) -> Self {
         Self {
             name,
             body: FuncBody::with_capacity(blocks, insts, vregs),
-            stack_frame: StackFrame {
-                local_size: 0,
-                arg_size: 0,
-                callee_saved_size: 0,
-                used_callee_saved: Vec::new(),
-                total_size: 0,
-                slots: PrimaryMap::new(),
-            },
+            stack_frame: StackFrame::default(),
             params: Vec::new(),
         }
     }
@@ -186,7 +127,7 @@ impl MachineFunction {
     pub fn blocks(&self) -> impl DoubleEndedIterator<Item = Block> + '_ {
         self.body.layout.block_order()
     }
-    pub fn entry_block(&self) -> Option<Block> {
+    pub fn entry_block(&self) -> Block {
         self.body.entry_block()
     }
     pub fn inst_block(&self, inst: InstId) -> Option<Block> {
@@ -227,9 +168,8 @@ impl MachineFunction {
         &self.body.vregs[VReg::from_u32(reg.index())]
     }
 
-    /// 获取指令的额外 payload。
-    pub fn inst_extra(&self, inst_id: InstId) -> Option<crate::InstExtraRef<'_>> {
-        self.body.store.extra(inst_id)
+    pub fn try_call_info(&self, inst_id: InstId) -> Option<&CallInfo> {
+        self.body.store.call_info(inst_id)
     }
     pub fn successors(&self, inst: InstId) -> impl Iterator<Item = crate::Successor<&[Reg]>> {
         self.body.store.successors(inst)
@@ -237,13 +177,8 @@ impl MachineFunction {
 
     /// 获取调用指令的签名信息。
     pub fn call_info(&self, inst_id: InstId) -> &CallInfo {
-        match self.inst_extra(inst_id) {
-            Some(crate::InstExtraRef::Call(info)) => info,
-            None => panic!(
-                "call instruction {:?} in `{}` is missing call info payload",
-                inst_id, self.name
-            ),
-        }
+        self.try_call_info(inst_id)
+            .expect("instruction has no call information")
     }
 
     /// 生成便于调试的文本格式 LIR。
@@ -276,8 +211,8 @@ impl MachineFunction {
             for inst_id in self.block_insts(block) {
                 let inst = self.inst(inst_id);
                 let _ = write!(out, "    {:?}: {:?}", inst_id, inst);
-                if let Some(extra) = self.inst_extra(inst_id) {
-                    let _ = write!(out, " extra={:?}", extra);
+                if let Some(info) = self.try_call_info(inst_id) {
+                    let _ = write!(out, " call={:?}", info);
                 }
                 let _ = writeln!(out);
             }

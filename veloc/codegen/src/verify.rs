@@ -118,7 +118,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
     let mut analyses = FunctionAnalysisCtx::default();
     let cfg = analyses.cfg(f, target).clone();
     let mut reachable = HashSet::new();
-    let mut pending: Vec<_> = f.entry_block().into_iter().collect();
+    let mut pending: Vec<_> = alloc::vec![f.entry_block()];
     while let Some(block) = pending.pop() {
         if reachable.insert(block) {
             pending.extend_from_slice(cfg.succs(block));
@@ -193,12 +193,11 @@ mod tests {
     #[test]
     fn checks_representation_invariants_without_phase_tags() {
         use crate::target::x86_64::inst::{REG_RAX, TargetInst};
-        use veloc_lir::{InstField, MachineOpcode};
+        use veloc_lir::{FieldValue, MachineOpcode};
         let target =
             crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default())
                 .unwrap();
         let mut f = MachineFunction::new("boundaries".into());
-        f.editor().create_block();
         let value = f.editor().alloc_vreg(Type::I64);
         let constant = f.editor().writer().constant(Writable(value), 42);
         f.editor()
@@ -212,13 +211,13 @@ mod tests {
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
             &[value],
             &[],
-            &[InstField::Imm(42)],
+            [FieldValue::Imm(42)],
         );
         f.editor().rewriter(ret).write(
             MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
             &[],
             &[],
-            &[],
+            [],
         );
         verify_selected(&f, &target).unwrap();
         assert!(verify_allocated(&f, &target).is_err());
@@ -227,7 +226,7 @@ mod tests {
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
             &[REG_RAX],
             &[],
-            &[InstField::Imm(42)],
+            [FieldValue::Imm(42)],
         );
         verify_allocated(&f, &target).unwrap();
         f.params.push(value);
@@ -243,7 +242,15 @@ mod tests {
             crate::target::x86_64::X86_64TargetMachine::new(crate::TargetConfig::default())
                 .unwrap();
         let mut f = MachineFunction::new("diamond".into());
-        let blocks: Vec<_> = (0..4).map(|_| f.editor().create_block()).collect();
+        let blocks: Vec<_> = (0..4)
+            .map(|i| {
+                if i == 0 {
+                    f.entry_block()
+                } else {
+                    f.editor().create_block()
+                }
+            })
+            .collect();
         let x = f.editor().alloc_vreg(Type::I64);
         let y = f.editor().alloc_vreg(Type::I64);
         let p = f.editor().alloc_vreg(Type::I64);

@@ -1,6 +1,6 @@
 //! Shared x86 copy construction and selection predicates.
 use super::inst::{self as generated, TargetInst};
-use veloc_lir::{InstField, InstId, MachineFunction, Reg};
+use veloc_lir::{InstId, MachineFunction, Reg};
 use veloc_mir::{Type, TypeInfo};
 
 /// x86_64 专属的 Context 扩展 (架构私有)
@@ -57,17 +57,7 @@ pub(super) fn build_x86_copy_inst(
 ) -> Result<InstId, crate::error::Error> {
     let ty = x86_copy_type_for_regs(mfunc, dst, src)?;
     let opcode = x86_mov_opcode_for_type(ty)?;
-    Ok(opcode.write(mfunc.editor().writer(), &[dst], &[src], &[]))
-}
-
-pub(super) fn build_target_inst(
-    writer: veloc_lir::InstWriter<'_>,
-    opcode: TargetInst,
-    results: &[Reg],
-    inputs: &[Reg],
-    fields: &[InstField],
-) -> InstId {
-    opcode.write(writer, results, inputs, fields)
+    Ok(opcode.write(mfunc.editor().writer(), &[dst], &[src], []))
 }
 
 /// x86_64 后端共享 lowering helper。

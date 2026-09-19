@@ -17,11 +17,7 @@ use alloc::vec::Vec;
 pub use veloc_lir::{InstId, MachineFunction, Reg, VReg};
 use veloc_mir::Type;
 
-pub use abi::{
-    AbiAssignment, AbiClassifierEntry, AbiClassifierFn, AbiDescriptor, AbiLocation, AbiPart,
-    AbiPreservedSet, AbiRegisterPool, AbiStackBase, AbiStackDescriptor, AbiValueClass,
-    CallConvPlan,
-};
+pub use abi::{AbiAssignment, AbiDescriptor, AbiLocation, AbiPlan, AbiState, StackArea};
 pub use callconv::CallConv;
 pub use types::{
     RegClass, RegClassInfo, RegInfo, RegisterFile, RegisterView, RegisterWrite, SpecialRegs,
@@ -124,8 +120,7 @@ pub trait TargetRegalloc: TargetInfo + TargetInstructions {
         writer: veloc_lir::InstWriter<'_>,
         kind: SpillKind,
         reg: Reg,
-        base: Reg,
-        offset: i64,
+        slot: veloc_lir::StackSlot,
         ty: Type,
     ) -> crate::Result<InstId>;
 }
@@ -385,11 +380,19 @@ pub trait TargetPostIsel: Send + Sync {
 }
 
 pub trait TargetFrameLowering: Send + Sync {
+    /// Alignment guaranteed by the current prologue; larger ABI requirements
+    /// must be rejected until the frame strategy supports realignment.
+    fn stack_alignment(&self) -> u32;
+
     /// 完成目标相关的栈帧布局。
     ///
     /// 在寄存器分配之后、插入序言/尾声之前调用，用于计算 callee-saved 保存区、
     /// 最终栈大小和 ABI 对齐等目标相关信息。
-    fn finalize_stack_frame(&self, _mfunc: &mut MachineFunction, _call_conv: CallConv) {}
+    fn finalize_stack_frame(
+        &self,
+        mfunc: &mut MachineFunction,
+        call_conv: CallConv,
+    ) -> crate::Result<()>;
 
     /// 插入函数序言和尾声 (Prologue/Epilogue Insertion)
     /// 在寄存器分配之后调用，将序言/尾声指令插入到 LIR 中。

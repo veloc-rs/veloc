@@ -380,7 +380,14 @@ impl Types {
     pub fn generate(&self, layouts: &[String], metadata: Option<&str>) -> String {
         let mut out = crate::model::records::generate(&self.emitted_records(layouts, metadata));
         for en in &self.enums {
-            let traits = if layouts.contains(&en.name) {
+            let borrowed = en
+                .variants
+                .iter()
+                .flat_map(|(_, args)| args)
+                .any(|ty| matches!(ty, PropertyType::Named(n) if self.rust.policy(n).borrowed));
+            let traits = if layouts.contains(&en.name) && borrowed {
+                "Debug, Clone"
+            } else if layouts.contains(&en.name) {
                 "Debug, Clone, Copy"
             } else {
                 "Debug, Clone, Copy, PartialEq, Eq, Hash"
@@ -402,6 +409,27 @@ impl Types {
                 }
             }
             out.push_str("}\n");
+            if layouts.contains(&en.name) {
+                writeln!(
+                    out,
+                    "#[derive(Debug, Clone, Copy)] pub enum {}Ref<'a> {{",
+                    en.name
+                )
+                .unwrap();
+                for (name, args) in &en.variants {
+                    if args.is_empty() {
+                        writeln!(out, "{name},").unwrap();
+                    } else {
+                        let args = args
+                            .iter()
+                            .map(|ty| format!("&'a {}", ty.rust(&self.rust)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        writeln!(out, "{name}({args}),").unwrap();
+                    }
+                }
+                out.push_str("}\n");
+            }
         }
         out
     }

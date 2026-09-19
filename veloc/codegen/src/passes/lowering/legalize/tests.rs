@@ -22,7 +22,6 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
     ] {
         for kind in [MemoryKind::Read, MemoryKind::Write] {
             let mut f = MachineFunction::new("offset".into());
-            f.editor().create_block();
             let base = f.editor().alloc_vreg(Type::PTR);
             let value = f.editor().alloc_vreg(Type::I64);
             let mut memory = MemoryAccess::new(kind, 8);
@@ -107,18 +106,15 @@ impl Mode {
             return Ok(());
         }
         if f.inst(id).generic_opcode() == Some(GenericOpcode::Sub) {
-            f.editor().rewriter(id).write(
-                MachineOpcode::Generic(GenericOpcode::Add),
-                &[],
-                &[],
-                &[],
-            );
+            f.editor()
+                .rewriter(id)
+                .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], []);
             return Ok(());
         }
         let first =
             f.editor()
                 .writer()
-                .write(MachineOpcode::Generic(GenericOpcode::Sub), &[], &[], &[]);
+                .write(MachineOpcode::Generic(GenericOpcode::Sub), &[], &[], []);
         if matches!(self, Self::NewBlock) {
             let block = f.editor().create_block();
             f.editor().append_inst(block, first);
@@ -129,7 +125,7 @@ impl Mode {
             MachineOpcode::Generic(GenericOpcode::Constant),
             &[],
             &[],
-            &[],
+            [veloc_lir::FieldValue::Imm(0)],
         );
         f.replace(&[first, second]);
         Ok(())
@@ -138,12 +134,11 @@ impl Mode {
 
 fn function() -> MachineFunction {
     let mut f = MachineFunction::new("legalize".into());
-    f.editor().create_block();
     {
         let id =
             f.editor()
                 .writer()
-                .write(MachineOpcode::Generic(GenericOpcode::Neg), &[], &[], &[]);
+                .write(MachineOpcode::Generic(GenericOpcode::Neg), &[], &[], []);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
@@ -151,7 +146,7 @@ fn function() -> MachineFunction {
         let id =
             f.editor()
                 .writer()
-                .write(MachineOpcode::Generic(GenericOpcode::Ret), &[], &[], &[]);
+                .write(MachineOpcode::Generic(GenericOpcode::Ret), &[], &[], []);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
         id
     };
@@ -168,7 +163,7 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
         if target_node {
             f.editor()
                 .rewriter(old)
-                .write(MachineOpcode::Target(0), &[], &[], &[]);
+                .write(MachineOpcode::Target(0), &[], &[], []);
             assert!(!Legalizer::new(&Mode::Missing).legalize(&mut f).unwrap());
             assert_eq!(f.inst(old).opcode(), MachineOpcode::Target(0));
             continue;
@@ -235,7 +230,7 @@ fn edits_to_previously_visited_instructions_are_revisited() {
                         MachineOpcode::Generic(GenericOpcode::Sub),
                         &[],
                         &[],
-                        &[],
+                        [],
                     );
                     ctx.replace(&[]);
                     Ok(())
@@ -246,7 +241,7 @@ fn edits_to_previously_visited_instructions_are_revisited() {
                         MachineOpcode::Generic(GenericOpcode::Add),
                         &[],
                         &[],
-                        &[],
+                        [],
                     );
                     Ok(())
                 }),
@@ -266,7 +261,7 @@ fn placement_of_an_existing_detached_instruction_is_reported() {
     let detached =
         f.editor()
             .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], &[]);
+            .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], []);
     let block = f.blocks().next().unwrap();
     let (_, changes) = f
         .editor()
@@ -299,7 +294,7 @@ fn existing_value_replacement_updates_users_without_a_copy() {
     use veloc_lir::{Type, Writable};
     for generated in [false, true] {
         let mut f = MachineFunction::new("replace".into());
-        let block = f.editor().create_block();
+        let block = f.entry_block();
         let input = f.editor().alloc_vreg(Type::I64);
         let result = f.editor().alloc_vreg(Type::I64);
         let output = f.editor().alloc_vreg(Type::I64);

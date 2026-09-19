@@ -540,10 +540,13 @@ impl FunctionAnalysisCtx {
             self.stack_frame_summary = Some(AnalysisCache::new(
                 self.revision,
                 StackFrameSummary {
-                    local_size: mfunc.stack_frame.local_size,
-                    callee_saved_size: mfunc.stack_frame.callee_saved_size,
-                    total_size: mfunc.stack_frame.total_size,
-                    slot_count: mfunc.stack_frame.slots.len(),
+                    local_size: mfunc.stack_frame.layout().map_or(0, |l| l.local_size),
+                    callee_saved_size: mfunc
+                        .stack_frame
+                        .layout()
+                        .map_or(0, |l| l.callee_saved_size),
+                    total_size: mfunc.stack_frame.layout().map_or(0, |l| l.total_size),
+                    slot_count: mfunc.stack_frame.slots().len(),
                 },
             ));
         }
@@ -618,9 +621,7 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
 
 fn compute_dominators(mfunc: &MachineFunction, cfg: &CfgInfo) -> DominatorTree {
     let blocks: Vec<Block> = mfunc.blocks().collect();
-    let Some(entry) = mfunc.entry_block() else {
-        return DominatorTree::default();
-    };
+    let entry = mfunc.entry_block();
 
     let mut doms: HashMap<Block, HashSet<Block>> = HashMap::new();
     let all_blocks: HashSet<Block> = blocks.iter().copied().collect();
@@ -805,7 +806,7 @@ mod tests {
     #[test]
     fn generic_control_comes_from_definitions_not_layout_or_last_instruction() {
         let mut f = MachineFunction::new("control".into());
-        for _id in 0..4 {
+        for _id in 1..4 {
             f.editor().create_block();
         }
         {
@@ -856,24 +857,22 @@ mod tests {
     #[test]
     fn selected_control_distinguishes_branch_fallthrough_and_terminal_transfer() {
         use crate::target::x86_64::inst::TargetInst;
-        use veloc_lir::{InstField, MachineOpcode};
+        use veloc_lir::{FieldValue, MachineOpcode};
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut f = MachineFunction::new("selected".into());
-        for _id in 0..8 {
+        for _id in 1..8 {
             f.editor().create_block();
         }
         let mut emit = |block, op: TargetInst, targets: &[u32]| {
             {
                 let fields: alloc::vec::Vec<_> = targets
                     .iter()
-                    .map(|&b| InstField::Edge(f.editor().create_edge(Block::from_u32(b), &[])))
+                    .map(|&b| FieldValue::Edge(f.editor().create_edge(Block::from_u32(b), &[])))
                     .collect();
-                let id = f.editor().writer().write(
-                    MachineOpcode::Target(op.as_u32()),
-                    &[],
-                    &[],
-                    &fields,
-                );
+                let id =
+                    f.editor()
+                        .writer()
+                        .write(MachineOpcode::Target(op.as_u32()), &[], &[], fields);
                 f.editor().append_inst(Block::from_u32(block), id);
                 id
             };
@@ -911,7 +910,7 @@ mod tests {
         use veloc_lir::MachineOpcode;
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut f = MachineFunction::new("layout".into());
-        for _id in 0..3 {
+        for _id in 1..3 {
             f.editor().create_block();
         }
         let mut analyses = FunctionAnalysisCtx::default();
@@ -931,7 +930,7 @@ mod tests {
                 MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
                 &[],
                 &[],
-                &[],
+                [],
             );
             f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             id
@@ -948,7 +947,7 @@ mod tests {
     #[test]
     fn branch_operand_change_invalidates_cfg_and_liveness() {
         let mut f = MachineFunction::new("control".into());
-        for _id in 0..3 {
+        for _id in 1..3 {
             f.editor().create_block();
         }
         let value = f.editor().alloc_vreg(Type::I64);
@@ -1002,7 +1001,6 @@ mod tests {
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut mfunc = MachineFunction::new("test".into());
         mfunc.editor().create_block();
-        mfunc.editor().create_block();
         let mut analyses = FunctionAnalysisCtx::default();
         let succs_before = analyses
             .cfg(&mfunc, &target)
@@ -1023,8 +1021,7 @@ mod tests {
     #[test]
     fn stack_frame_change_does_not_invalidate_cfg() {
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
-        let mut mfunc = MachineFunction::new("test".into());
-        mfunc.editor().create_block();
+        let mfunc = MachineFunction::new("test".into());
         let mut analyses = FunctionAnalysisCtx::default();
         let cfg_before = analyses.cfg(&mfunc, &target) as *const _;
         analyses.apply(ChangeSet::STACK_FRAME);

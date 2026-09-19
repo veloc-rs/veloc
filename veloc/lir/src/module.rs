@@ -17,7 +17,7 @@ pub struct MachineModule {
     pub name: alloc::string::String,
     /// 模块级符号表（跨函数共享）
     pub symbols: SymbolTable,
-    /// 包含的机器函数
+    /// Defined machine functions only. External declarations are represented by symbols.
     pub functions: PrimaryMap<MachineFuncId, MachineFunction>,
 }
 

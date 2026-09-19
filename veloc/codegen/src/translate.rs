@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use alloc::{format, vec::Vec};
 use cranelift_entity::PrimaryMap;
 use veloc_lir::InstBuild;
-use veloc_lir::{BlockId, CallInfo, InstExtra, MachineFunction, MachineModule, Reg, Successor};
+use veloc_lir::{BlockId, CallInfo, MachineFunction, MachineModule, Reg, Successor};
 use veloc_mir::{Function, InstView, Module, Opcode, TypeInfo, Value};
 
 /// IR 到 LIR 的翻译器
@@ -117,7 +117,12 @@ impl<'a> IRTranslator<'a> {
         }
         let mut mmodule = MachineModule::new(alloc::string::String::from("default"));
 
-        for (_, func) in self.module.functions.iter() {
+        for (_, func) in self
+            .module
+            .functions
+            .iter()
+            .filter(|(_, f)| f.body().is_some())
+        {
             let mfunc = self.translate_function(func, &mut mmodule)?;
             mmodule.add_function(mfunc);
         }
@@ -131,9 +136,6 @@ impl<'a> IRTranslator<'a> {
         func: &Function,
         mmodule: &mut MachineModule,
     ) -> Result<MachineFunction> {
-        if func.body().is_none() {
-            return Ok(MachineFunction::new(func.name.clone()));
-        }
         let block_count = func.layout().block_order().count();
         let inst_count = func.dfg().instructions().len();
         // Selection appends stable target instruction IDs before invalidating
@@ -161,31 +163,29 @@ impl<'a> IRTranslator<'a> {
         }
 
         // Allocate LIR identities independently; all edges use this explicit map.
-        let entry = func.entry_block();
-        let order: Vec<_> = entry
-            .into_iter()
-            .chain(
-                func.layout()
-                    .block_order()
-                    .filter(|&block| Some(block) != entry),
-            )
+        let entry = func.body().expect("translating a definition").entry_block();
+        let order: Vec<_> = core::iter::once(entry)
+            .chain(func.layout().block_order().filter(|&block| block != entry))
             .collect();
-        let incoming = entry
-            .filter(|&block| !func.cfg().blocks()[block].preds.is_empty())
-            .map(|_| ctx.mfunc.editor().create_block());
+        let incoming =
+            (!func.cfg().blocks()[entry].preds.is_empty()).then_some(ctx.mfunc.entry_block());
         for &block in &order {
-            ctx.block_map[block] = Some(ctx.mfunc.editor().create_block());
+            ctx.block_map[block] = Some(if block == entry && incoming.is_none() {
+                ctx.mfunc.entry_block()
+            } else {
+                ctx.mfunc.editor().create_block()
+            });
         }
         for block_id in order {
             let mblock = ctx.block_map[block_id].unwrap();
             for &value in &func.dfg().blocks()[block_id].params {
-                if Some(block_id) != entry || incoming.is_some() {
+                if block_id != entry || incoming.is_some() {
                     ctx.mfunc
                         .editor()
                         .append_block_param(mblock, ctx.value_map[value]);
                 }
             }
-            if Some(block_id) == entry {
+            if block_id == entry {
                 if let Some(incoming) = incoming {
                     let args = self.lower_arguments(&mut ctx, incoming, true);
                     let edge = ctx.mfunc.editor().create_edge(mblock, &args);
@@ -295,19 +295,11 @@ impl<'a> IRTranslator<'a> {
                         "native alloca requires positive size and power-of-two alignment at most 16",
                     ));
                 }
-                if ctx
-                    .mfunc
-                    .stack_frame
-                    .local_size
-                    .checked_add(*size)
-                    .and_then(|n| n.checked_add(*align - 1))
-                    .is_none_or(|n| n > i32::MAX as u32)
-                {
-                    return Err(Error::translate(
-                        "native alloca frame exceeds target displacement range",
-                    ));
-                }
-                let slot = ctx.mfunc.editor().alloc_stack_slot(*size, *align);
+                let slot = ctx.mfunc.editor().alloc_stack_object(
+                    veloc_lir::StackObject::Local,
+                    *size,
+                    *align,
+                );
                 Ok(ctx.mfunc.editor().writer().stack_addr(result(), slot))
             }
             InstView::IntCompare { kind, args } => {
@@ -471,7 +463,15 @@ impl<'a> IRTranslator<'a> {
                     self.module.get_function_name(*func_id),
                     callee.linkage,
                 );
-                let call_inst = ctx.mfunc.editor().writer().call(
+                let sig_id = callee.signature;
+                let call_info = CallInfo {
+                    stack: None,
+                    stack_args: Default::default(),
+                    sig: self.module.get_signature(sig_id).clone(),
+                };
+                let mut editor = ctx.mfunc.editor();
+                let writer = editor.writer();
+                let call_inst = writer.call(
                     &results
                         .iter()
                         .map(|value| ctx.value_map[*value])
@@ -481,25 +481,22 @@ impl<'a> IRTranslator<'a> {
                         .iter()
                         .map(|value| ctx.value_map[*value])
                         .collect::<SmallVec<[Reg; 4]>>(),
+                    call_info,
                 );
-                let sig_id = callee.signature;
-                let call_info = CallInfo {
-                    stack_args: Default::default(),
-                    sig: self.module.get_signature(sig_id).clone(),
-                };
 
-                Ok({
-                    let id = call_inst;
-                    ctx.mfunc
-                        .editor()
-                        .set_inst_extra(id, InstExtra::Call(call_info));
-                    id
-                })
+                Ok(call_inst)
             }
 
             InstView::CallIndirect { ptr, args, sig_id } => {
                 let call_args = *args;
-                let call_inst = ctx.mfunc.editor().writer().callind(
+                let call_info = CallInfo {
+                    stack: None,
+                    stack_args: Default::default(),
+                    sig: self.module.get_signature(*sig_id).clone(),
+                };
+                let mut editor = ctx.mfunc.editor();
+                let writer = editor.writer();
+                let call_inst = writer.callind(
                     &results
                         .iter()
                         .map(|value| ctx.value_map[*value])
@@ -509,19 +506,10 @@ impl<'a> IRTranslator<'a> {
                         .iter()
                         .map(|value| ctx.value_map[*value])
                         .collect::<SmallVec<[Reg; 4]>>(),
+                    call_info,
                 );
-                let call_info = CallInfo {
-                    stack_args: Default::default(),
-                    sig: self.module.get_signature(*sig_id).clone(),
-                };
 
-                Ok({
-                    let id = call_inst;
-                    ctx.mfunc
-                        .editor()
-                        .set_inst_extra(id, InstExtra::Call(call_info));
-                    id
-                })
+                Ok(call_inst)
             }
 
             InstView::PtrOffset { ptr, offset } => {

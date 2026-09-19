@@ -88,11 +88,32 @@ and cold payloads live in recyclable pools. `InstRef` is a borrowed handle, not
 an owning instruction or copy-on-write wrapper. Generic and target opcodes use
 the same storage and no independent instruction drafts exist.
 
+Each instruction stores one 16-byte `Fields` enum inline. Immediates, condition
+codes, symbols, stack slots and one/two successor IDs need no payload allocation.
+Variable-length successor tables and call records use private, recyclable pool
+handles. A call record combines its optional direct target with its `CallInfo`;
+there is no generic field-record pool or per-format allocation.
+Memory accesses remain directly indexed side data.
+
+The writer consumes owned field values (arrays or iterators), moving large
+payloads into pools without an extra clone. Selection caches source locations
+and materializes a payload only when building a target instruction.
+`FieldValue` and `FieldView` are transient construction/selection adapters, not
+additional stored fields. Generated views borrow call contracts without cloning
+them. Unsupported payload combinations fail at the construction boundary;
+opcode-specific structural and semantic validation remain opt-in.
+MIR and LIR share the recyclable pools in `veloc-collections`.
+
 `function.writer().add(dst, lhs, rhs)` creates a detached instruction and returns
 its ID; adding that ID to a block is a separate layout operation.
 `function.rewriter(id).add(...)` replaces contents while preserving the ID.
-Replacement resets old memory and extra payloads; operand-only edits preserve
-them. Sequences used by selection, ABI lowering and allocation contain IDs,
+Replacement resets old memory and releases removed field-owned payloads;
+operand-only edits preserve them. Call construction allocates a fresh owned
+record from the supplied data, never accepts an external pool handle and never
+guesses whether to adopt or clone a payload. Moving a detached instruction
+transfers its enum without copying; deletion releases its pooled payload.
+Whole-function cloning copies both instructions and their pools together.
+Sequences used by selection, ABI lowering and allocation contain IDs,
 not copies of instructions. The block cursor's `emit`, `keep_current`,
 `detach_current` and `remove_current` distinguish layout edits from deletion.
 `replace_current(source)` transfers a detached source into the current ID and
@@ -100,7 +121,7 @@ invalidates the source ID without copying its operands or payloads.
 
 Register occurrences are maintained by the store, not a cached analysis.
 `uses(reg)` and `defs(reg)` return borrowed occurrence iterators, including
-branch arguments. Writers, replacements and controlled operand/extra setters
+branch arguments. Writers, replacements and controlled operand setters
 update the links automatically; mutable operand slices are not exposed.
 Detached live instructions remain indexed until explicitly removed.
 MIR and LIR share the reverse-link primitive in `veloc-collections`, while each
@@ -133,11 +154,11 @@ type validation. Construction does not run validation.
 
 ```text
 type Reg = rust("crate::Reg");
-enum InstField { variants: [Imm(i64)] }
+enum FieldValue { variants: [Imm(i64)] }
 storage Operands {
     opcode: GenericOpcode, view: InstView,
     reader: InstRead, writer: InstBuild,
-    register: Reg, attributes: InstField,
+    register: Reg, attributes: FieldValue,
 }
 struct BinaryReg { dst: Reg, lhs: Reg, rhs: Reg }
 op Add<T: Integer>(lhs: T, rhs: T) -> (dst: T) {

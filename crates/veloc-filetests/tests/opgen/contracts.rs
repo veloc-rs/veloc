@@ -119,8 +119,8 @@ fn the_actual_mir_definitions_compile_deterministically() {
 }
 
 const BINARY: &str = "type Reg = rust(\"crate::Reg\");
-enum InstField { variants = [Imm(i64)]; }
-storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField; }\nstruct Binary { dst: Reg, lhs: Reg, rhs: Reg }";
+enum FieldValue { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue; }\nstruct Binary { dst: Reg, lhs: Reg, rhs: Reg }";
 const ADD: &str = "op Sum<T: Integer>(lhs: Value<T>, rhs: Value<T>) -> (dst: Value<T>) { meta = OpInfo {}; storage = Binary { dst, lhs, rhs }; semantics = bv.add(lhs, rhs); }";
 
 #[test]
@@ -406,29 +406,29 @@ fn output_plan_diagnostics() {
             (format!("{} {ADD}", BINARY.replace("opcode = GenericOpcode", "opcode = Type")), "conflicts with a declaration"),
             (
                 "type Reg = rust(\"crate::Reg\");
-enum InstField { variants = [Imm(i64)]; }
-storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField;  } struct Bad { dst: Reg, dst: Reg }"
+enum FieldValue { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  } struct Bad { dst: Reg, dst: Reg }"
                     .into(),
                 "duplicate field",
             ),
             (
                 "type Reg = rust(\"crate::Reg\");
-enum InstField { variants = [Imm(i64)]; }
-storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField;  } struct Bad { values: sequence(Reg), dst: Reg } op Bad(dst: Value<Type::I32>, values: sequence(Value)) -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Bad { values, dst }; }"
+enum FieldValue { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  } struct Bad { values: sequence(Reg), dst: Reg } op Bad(dst: Value<Type::I32>, values: sequence(Value)) -> () { meta = OpInfo { memory: MemoryEffect::NONE }; storage = Bad { values, dst }; }"
                     .into(),
                 "only one trailing sequence",
             ),
             (
                 "type Reg = rust(\"crate::Reg\");
-enum InstField { variants = [Imm(i64)]; }
-storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField;  } struct Bad { dst: Reg } layout Bad { lengths = [0]; }"
+enum FieldValue { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  } struct Bad { dst: Reg } layout Bad { lengths = [0]; }"
                     .into(),
                 "operand layouts",
             ),
             (
                 "type Reg = rust(\"crate::Reg\");
-enum InstField { variants = [Imm(i64)]; }
-storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField;  } struct Bad { dst: Reg } layout Bad { lengths = [1, 1]; }"
+enum FieldValue { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue;  } struct Bad { dst: Reg } layout Bad { lengths = [1, 1]; }"
                     .into(),
                 "operand layouts",
             ),

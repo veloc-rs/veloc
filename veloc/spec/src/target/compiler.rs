@@ -136,6 +136,7 @@ impl Plan {
                             OperandConstraint::Block(_)
                                 | OperandConstraint::Global(_)
                                 | OperandConstraint::StackSlot(_)
+                                | OperandConstraint::Call(_)
                         )
                     }))
             {

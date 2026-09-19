@@ -71,12 +71,10 @@ impl<F: FnMut(SymbolId, &mut dyn Write) -> fmt::Result> AssemblyWriter for Intel
         self.out.write_str("]")
     }
     fn stack_slot(&mut self, slot: StackSlot, bits: u32) -> fmt::Result {
-        let slot = &self.frame.slots[slot];
-        self.memory(
-            slot.base.resolve(inst::SPECIAL_REG_FRAME_POINTER),
-            None,
-            i64::from(slot.offset),
-            bits,
-        )
+        if self.frame.layout().is_none() {
+            return write!(self.out, "[{slot}]");
+        }
+        let slot = self.frame.address(slot);
+        self.memory(slot.base, None, i64::from(slot.offset), bits)
     }
 }

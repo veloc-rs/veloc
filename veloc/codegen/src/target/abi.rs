@@ -1,154 +1,96 @@
 use super::Reg;
-use super::callconv::CallConv;
 use super::types::TargetArch;
 use alloc::vec::Vec;
+use smallvec::SmallVec;
 use veloc_mir::Type;
 
-/// ABI 值分类
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AbiValueClass {
-    Integer,
-    Float,
-    Vector,
-    Memory,
-}
-
-/// ABI 栈位置的基准
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AbiStackBase {
-    /// 被调用者视角的传入参数区域，例如 x86_64 System V 下的 `[rbp + 16]`
-    IncomingArgs,
-    /// 调用点视角的传出参数区域
-    OutgoingArgs,
-}
-
-/// ABI 位置
+/// Locations are relative to the ABI argument area, not a concrete frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbiLocation {
     Reg(Reg),
-    Stack {
-        base: AbiStackBase,
-        base_reg: Option<Reg>,
-        offset: i32,
-        size: u32,
-        align: u32,
-    },
+    Stack { offset: u32, size: u32, align: u32 },
 }
 
-/// 单个值的一部分（为未来的多寄存器/聚合拆分预留）
+/// One directly transferred value. Split/indirect passing needs an explicit
+/// conversion model, not a vector whose consumers only accept one element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AbiPart {
+pub struct AbiAssignment {
     pub ty: Type,
-    pub class: AbiValueClass,
     pub loc: AbiLocation,
 }
 
-/// 参数或返回值的 ABI 分配结果
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AbiAssignment {
-    pub index: usize,
-    pub ty: Type,
-    pub parts: Vec<AbiPart>,
-}
-
-impl AbiAssignment {
-    pub fn single_reg(&self) -> Option<Reg> {
-        match self.parts.as_slice() {
-            [
-                AbiPart {
-                    loc: AbiLocation::Reg(reg),
-                    ..
-                },
-            ] => Some(*reg),
-            _ => None,
-        }
-    }
-
-    pub fn single_stack_slot(&self) -> Option<(AbiStackBase, Option<Reg>, i32, u32, u32)> {
-        match self.parts.as_slice() {
-            [
-                AbiPart {
-                    loc:
-                        AbiLocation::Stack {
-                            base,
-                            base_reg,
-                            offset,
-                            size,
-                            align,
-                        },
-                    ..
-                },
-            ] => Some((*base, *base_reg, *offset, *size, *align)),
-            _ => None,
-        }
-    }
-}
-
-/// 调用约定计划
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallConvPlan {
-    pub call_conv: CallConv,
-    pub arch: TargetArch,
+/// Immutable signature-specific protocol, linked to its static ABI definition.
+#[derive(Debug, Clone)]
+pub struct AbiPlan {
+    pub abi: &'static AbiDescriptor,
     pub args: Vec<AbiAssignment>,
     pub returns: Vec<AbiAssignment>,
-    pub stack_alignment: u32,
-    /// 仅统计真实的参数区大小，不包含调用者/被调用者额外的帧头。
-    pub stack_arg_bytes: u32,
+    pub stack: StackArea,
 }
 
-/// ABI 描述中的寄存器池
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AbiRegisterPool {
-    pub class: AbiValueClass,
-    pub regs: &'static [Reg],
-}
-
-/// ABI 描述中的 preserved 集合
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AbiPreservedSet {
-    pub bank: &'static str,
-    pub regs: &'static [Reg],
-}
-
-/// ABI 描述中的栈规则
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AbiStackDescriptor {
-    pub align: u32,
-    pub incoming_base_reg: Option<Reg>,
-    pub incoming_base_offset: i32,
-    pub outgoing_slot_size: u32,
-    pub outgoing_slot_align: u32,
-}
+pub use veloc_lir::StackArea;
 
 /// 由 DSL 生成或手工定义的 ABI 描述
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct AbiDescriptor {
     pub name: &'static str,
     pub arch: TargetArch,
-    pub classifier: Option<&'static str>,
-    pub stack: AbiStackDescriptor,
-    pub args: &'static [AbiRegisterPool],
-    pub returns: &'static [AbiRegisterPool],
-    pub preserved: &'static [AbiPreservedSet],
+    pub stack: StackArea,
+    pub args: AbiAssignFn,
+    pub returns: AbiAssignFn,
+    pub preserved: &'static [Reg],
 }
 
-impl AbiDescriptor {
-    pub fn regs_for_class(&self, class: AbiValueClass, returns: bool) -> &'static [Reg] {
-        let pools = if returns { self.returns } else { self.args };
-        pools
-            .iter()
-            .find(|pool| pool.class == class)
-            .map(|pool| pool.regs)
-            .unwrap_or(&[])
+/// Generated argument/return rules share this interface; neither edits LIR.
+pub type AbiAssignFn = fn(Type, &mut AbiState) -> Result<AbiLocation, crate::error::Error>;
+
+/// Occupancy is shared across all type domains. Register IDs identify root
+/// storage (register views must resolve to their root before allocation).
+pub struct AbiState {
+    used: SmallVec<[Reg; 16]>,
+    pub(crate) stack: StackArea,
+}
+
+impl AbiState {
+    pub fn new(stack: StackArea) -> Self {
+        assert!(stack.align.is_power_of_two(), "invalid ABI stack alignment");
+        Self {
+            used: SmallVec::new(),
+            stack,
+        }
     }
-}
 
-/// ABI 分类器函数
-pub type AbiClassifierFn = fn(Type) -> Result<AbiValueClass, crate::error::Error>;
+    /// A failed attempt leaves state unchanged. Shadow registers couple
+    /// positional slots from otherwise disjoint register lists.
+    pub fn assign(&mut self, regs: &[Reg], shadows: &[Reg]) -> Option<AbiLocation> {
+        assert!(shadows.is_empty() || shadows.len() == regs.len());
+        let (index, &reg) = regs.iter().enumerate().find(|(index, reg)| {
+            !self.used.contains(reg)
+                && (shadows.is_empty() || !self.used.contains(&shadows[*index]))
+        })?;
+        self.used.push(reg);
+        if let Some(&shadow) = shadows.get(index) {
+            self.used.push(shadow);
+        }
+        Some(AbiLocation::Reg(reg))
+    }
 
-/// ABI 分类器注册项
-#[derive(Clone, Copy)]
-pub struct AbiClassifierEntry {
-    pub name: &'static str,
-    pub func: AbiClassifierFn,
+    pub fn stack(&mut self, size: u32, align: u32) -> Result<AbiLocation, crate::error::Error> {
+        assert!(size != 0 && align.is_power_of_two());
+        let overflow = || crate::error::Error::codegen("ABI stack area exceeds supported size");
+        let offset = self
+            .stack
+            .size
+            .checked_add(align - 1)
+            .ok_or_else(overflow)?
+            & !(align - 1);
+        let end = offset.checked_add(size).ok_or_else(overflow)?;
+        self.stack.size = end;
+        self.stack.align = self.stack.align.max(align);
+        Ok(AbiLocation::Stack {
+            offset,
+            size,
+            align,
+        })
+    }
 }

@@ -50,29 +50,33 @@ pub struct AbiDef {
     pub name: String,
     pub arch: String,
     pub stack: AbiStackDef,
-    pub args: Vec<AbiClassRegsDef>,
-    pub returns: Vec<AbiClassRegsDef>,
-    pub preserved: Vec<AbiPreservedSetDef>,
-    pub classifier: Option<String>,
+    pub args: Vec<AbiRuleDef>,
+    pub returns: Vec<AbiRuleDef>,
+    pub preserved: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AbiStackDef {
     pub align: Option<u32>,
-    pub incoming_base: Option<(String, i32)>,
-    pub outgoing_slot: Option<(u32, u32)>,
+    pub reserved: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AbiClassRegsDef {
-    pub class: String,
-    pub regs: Vec<String>,
+pub struct AbiRuleDef {
+    pub types: Vec<String>,
+    pub action: AbiActionDef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AbiPreservedSetDef {
-    pub bank: String,
-    pub regs: Vec<String>,
+pub enum AbiActionDef {
+    Reg {
+        regs: Vec<String>,
+        shadows: Vec<String>,
+    },
+    Stack {
+        size: u32,
+        align: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,7 +145,10 @@ pub enum OperandConstraint {
     /// 普通使用: (use $name)
     Use(String),
     /// 固定寄存器使用: (use (fixed REG $name))
-    FixedUse { reg: String, src: String },
+    FixedUse {
+        reg: String,
+        src: String,
+    },
     /// 普通定义: (def $name)
     Def(String),
     /// 立即数使用: (imm $name)
@@ -152,6 +159,7 @@ pub enum OperandConstraint {
     Global(String),
     /// 栈槽目标: (stackslot $name)
     StackSlot(String),
+    Call(String),
 }
 
 /// 操作码模式参数

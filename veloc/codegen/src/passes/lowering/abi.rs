@@ -1,9 +1,9 @@
 use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
-use crate::target::{AbiAssignment, AbiLocation, CallConv, CallConvPlan, TargetMachine};
+use crate::target::{AbiAssignment, AbiLocation, AbiPlan, CallConv, TargetMachine};
 use alloc::vec::Vec;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot, Writable};
 use veloc_lir::{InstBuild, InstRead};
 use veloc_lir::{MemoryAccess, MemoryKind};
@@ -16,42 +16,58 @@ impl AbiLoweringPass {
     }
 }
 
-fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<CallConvPlan> {
-    CallConv::from(sig.call_conv).plan_signature(target.desc().arch, sig)
-}
-
-fn plan_callsite(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<CallConvPlan> {
-    CallConv::from(sig.call_conv).plan_callsite(target.desc().arch, sig.params(), sig.returns())
-}
-
-// Plan all boundaries before editing: unsupported ABIs must not leave a
-// partially lowered function. Validation of input IR remains the validator's job.
-fn check_plan(plan: &CallConvPlan) -> Result<()> {
+// Check every boundary before editing the function. The ABI plan itself
+// is independent of which side of the call is being lowered.
+fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<AbiPlan> {
+    let plan =
+        CallConv::from(sig.call_conv).plan(target.desc().arch, sig.params(), sig.returns())?;
+    let frame = target.frame_lowering();
+    if plan.stack.align > frame.stack_alignment() {
+        return Err(Error::codegen("ABI requires unsupported stack realignment"));
+    }
     for assignment in plan.args.iter().chain(&plan.returns) {
-        if assignment.parts.len() != 1 {
-            return Err(Error::codegen(
-                "multi-part ABI lowering is not supported yet",
-            ));
+        if let AbiLocation::Stack { offset, size, .. } = assignment.loc {
+            let fits = offset
+                .checked_add(size)
+                .and_then(|end| i32::try_from(end).ok());
+            if fits.is_none() {
+                return Err(Error::codegen(
+                    "ABI stack area exceeds frame addressing range",
+                ));
+            }
+            let bytes = target
+                .desc()
+                .data_layout
+                .layout_of(assignment.ty)
+                .and_then(|layout| layout.store_size.fixed_bytes());
+            if bytes.is_none_or(|bytes| bytes > size) {
+                return Err(Error::codegen(
+                    "ABI stack slot cannot hold the transferred type",
+                ));
+            }
         }
     }
-    Ok(())
-}
-
-fn registers(assignments: &[AbiAssignment]) -> Vec<Reg> {
-    assignments
+    if plan
+        .returns
         .iter()
-        .flat_map(|a| &a.parts)
-        .filter_map(|p| match p.loc {
-            AbiLocation::Reg(reg) => Some(reg),
-            AbiLocation::Stack { .. } => None,
-        })
-        .collect()
+        .any(|a| matches!(a.loc, AbiLocation::Stack { .. }))
+    {
+        return Err(Error::codegen("stack return lowering is not implemented"));
+    }
+    Ok(plan)
 }
 
-fn call_effects(target: &dyn TargetMachine, plan: &CallConvPlan) -> veloc_lir::RegEffects {
+fn registers(assignments: &[AbiAssignment]) -> impl Iterator<Item = Reg> + '_ {
+    assignments.iter().filter_map(|p| match p.loc {
+        AbiLocation::Reg(reg) => Some(reg),
+        AbiLocation::Stack { .. } => None,
+    })
+}
+
+fn call_effects(target: &dyn TargetMachine, plan: &AbiPlan) -> veloc_lir::RegEffects {
     let file = &target.desc().registers;
-    let preserved = plan.call_conv.preserved_regs(plan.arch);
-    let mut defs: Vec<_> = file
+    let preserved = plan.abi.preserved;
+    let defs: Vec<_> = file
         .regs
         .iter()
         .map(|info| info.preg)
@@ -61,134 +77,131 @@ fn call_effects(target: &dyn TargetMachine, plan: &CallConvPlan) -> veloc_lir::R
                 && Some(*reg) != file.special_regs.frame_pointer
         })
         .collect();
-    defs.sort_unstable();
-    defs.dedup();
     veloc_lir::RegEffects {
-        uses: registers(&plan.args),
+        uses: registers(&plan.args).collect(),
         defs,
     }
 }
 
-fn single_part_assignment<'a>(
-    assignment: &'a AbiAssignment,
-    kind: &'static str,
-) -> &'a crate::target::AbiPart {
-    match assignment.parts.as_slice() {
-        [part] => part,
-        _ => panic!("multi-part ABI {} lowering is not supported yet", kind),
-    }
+/// Directly emits moves at a boundary. The insertion point advances after a
+/// call, while before an instruction successive inserts naturally keep order.
+struct Transfer<'a> {
+    target: &'a dyn TargetMachine,
+    func: &'a mut MachineFunction,
+    point: Insert,
+    incoming: bool,
 }
 
-fn stack_slot_for_assignment(
-    target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction,
-    part: &crate::target::AbiPart,
-) -> StackSlot {
-    let stack_pointer = target.desc().registers.special_regs.stack_pointer;
-    match part.loc {
-        AbiLocation::Stack {
-            base,
-            base_reg,
-            offset,
-            size,
-            align,
-            ..
-        } => {
-            let base_reg = match base {
-                crate::target::AbiStackBase::IncomingArgs => base_reg.unwrap_or(stack_pointer),
-                crate::target::AbiStackBase::OutgoingArgs => stack_pointer,
-            };
-            mfunc
-                .editor()
-                .alloc_stack_slot_with_base(base_reg, offset, size, align)
-        }
-        AbiLocation::Reg(_) => unreachable!("stack slot requested for register assignment"),
-    }
+enum Insert {
+    Before(InstId),
+    After(InstId),
 }
 
-fn stack_access(
-    target: &dyn TargetMachine,
-    ty: veloc_lir::Type,
-    align: u32,
-    kind: MemoryKind,
-) -> MemoryAccess {
-    let bytes = target
-        .desc()
-        .data_layout
-        .layout_of(ty)
-        .and_then(|layout| layout.store_size.fixed_bytes())
-        .expect("ABI stack value requires a fixed storage layout");
-    let mut access = MemoryAccess::new(kind, bytes);
-    access.alignment = align;
-    access.may_trap = false;
-    access
-}
-
-fn build_load_from_assignment(
-    target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction,
-    assignment: &AbiAssignment,
-    dst: Reg,
-    kind: &'static str,
-) -> SmallVec<[InstId; 2]> {
-    let part = single_part_assignment(assignment, kind);
-    match part.loc {
-        AbiLocation::Reg(reg) => smallvec![mfunc.editor().writer().copy(Writable(dst), reg)],
-        AbiLocation::Stack { align, .. } => {
-            let slot = stack_slot_for_assignment(target, mfunc, part);
-            let address = mfunc.editor().alloc_vreg(veloc_lir::Type::PTR);
-            let addr = mfunc.editor().writer().stack_addr(Writable(address), slot);
-            let access = stack_access(target, part.ty, align, MemoryKind::Read);
-            let load = mfunc
-                .editor()
-                .writer()
-                .with_memory(access)
-                .load(Writable(dst), address, 0);
-            smallvec![addr, load]
+impl<'a> Transfer<'a> {
+    fn new(target: &'a dyn TargetMachine, func: &'a mut MachineFunction, point: Insert) -> Self {
+        Self {
+            target,
+            func,
+            point,
+            incoming: false,
         }
     }
-}
 
-fn build_store_to_assignment(
-    target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction,
-    src: Reg,
-    assignment: &AbiAssignment,
-    kind: &'static str,
-) -> (SmallVec<[InstId; 2]>, Option<StackSlot>) {
-    let part = single_part_assignment(assignment, kind);
-    match part.loc {
-        AbiLocation::Reg(reg) => (
-            smallvec![mfunc.editor().writer().copy(Writable(reg), src)],
-            None,
-        ),
-        AbiLocation::Stack { align, .. } => {
-            let slot = stack_slot_for_assignment(target, mfunc, part);
-            let address = mfunc.editor().alloc_vreg(veloc_lir::Type::PTR);
-            let addr = mfunc.editor().writer().stack_addr(Writable(address), slot);
-            let access = stack_access(target, part.ty, align, MemoryKind::Write);
-            let store = mfunc
-                .editor()
-                .writer()
-                .with_memory(access)
-                .store(src, address, 0);
-            (smallvec![addr, store], Some(slot))
+    fn incoming(mut self) -> Self {
+        self.incoming = true;
+        self
+    }
+
+    fn emit(&mut self, inst: InstId) {
+        match self.point {
+            Insert::Before(at) => self.func.editor().insert_before(at, inst),
+            Insert::After(at) => {
+                self.func.editor().insert_after(at, inst);
+                self.point = Insert::After(inst);
+            }
         }
     }
-}
 
-fn lower_formal_arguments(
-    target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction,
-    plan: &CallConvPlan,
-) {
-    if mfunc.num_blocks() == 0 {
-        return;
+    fn address(&mut self, offset: u32, size: u32, align: u32) -> (Reg, StackSlot) {
+        let object = if self.incoming {
+            veloc_lir::StackObject::Incoming { offset }
+        } else {
+            veloc_lir::StackObject::Outgoing { offset }
+        };
+        let slot = self.func.editor().alloc_stack_object(object, size, align);
+        let address = self.func.editor().alloc_vreg(veloc_lir::Type::PTR);
+        let inst = self
+            .func
+            .editor()
+            .writer()
+            .stack_addr(Writable(address), slot);
+        self.emit(inst);
+        (address, slot)
     }
 
-    let entry = mfunc.entry_block().unwrap();
-    let ids: Vec<_> = mfunc.block_insts(entry).collect();
-    for id in ids {
+    fn access(&self, assignment: &AbiAssignment, align: u32, kind: MemoryKind) -> MemoryAccess {
+        let bytes = self
+            .target
+            .desc()
+            .data_layout
+            .layout_of(assignment.ty)
+            .and_then(|layout| layout.store_size.fixed_bytes())
+            .expect("checked ABI storage layout");
+        let mut access = MemoryAccess::new(kind, bytes);
+        access.alignment = align;
+        access.may_trap = false;
+        access
+    }
+
+    fn read(&mut self, dst: Reg, assignment: &AbiAssignment) {
+        let inst = match assignment.loc {
+            AbiLocation::Reg(reg) => self.func.editor().writer().copy(Writable(dst), reg),
+            AbiLocation::Stack {
+                offset,
+                size,
+                align,
+            } => {
+                let (address, _) = self.address(offset, size, align);
+                let access = self.access(assignment, align, MemoryKind::Read);
+                self.func
+                    .editor()
+                    .writer()
+                    .with_memory(access)
+                    .load(Writable(dst), address, 0)
+            }
+        };
+        self.emit(inst);
+    }
+
+    fn write(&mut self, src: Reg, assignment: &AbiAssignment) -> Option<StackSlot> {
+        let (inst, slot) = match assignment.loc {
+            AbiLocation::Reg(reg) => (self.func.editor().writer().copy(Writable(reg), src), None),
+            AbiLocation::Stack {
+                offset,
+                size,
+                align,
+            } => {
+                let (address, slot) = self.address(offset, size, align);
+                let access = self.access(assignment, align, MemoryKind::Write);
+                (
+                    self.func
+                        .editor()
+                        .writer()
+                        .with_memory(access)
+                        .store(src, address, 0),
+                    Some(slot),
+                )
+            }
+        };
+        self.emit(inst);
+        slot
+    }
+}
+
+fn lower_formal_arguments(target: &dyn TargetMachine, mfunc: &mut MachineFunction, plan: &AbiPlan) {
+    let entry = mfunc.entry_block();
+    let mut cursor = veloc_lir::InstCursor::block(mfunc, entry);
+    while let Some(id) = cursor.next(mfunc) {
         let inst = mfunc.inst(id);
         if !inst.is_generic() {
             continue;
@@ -199,9 +212,10 @@ fn lower_formal_arguments(
                 .get(usize::try_from(decoded.index).expect("negative argument index"))
                 .expect("missing ABI argument assignment");
             let dst = decoded.dst;
-            let replacement =
-                build_load_from_assignment(target, mfunc, assignment, dst, "argument");
-            mfunc.editor().replace_with(id, &replacement);
+            Transfer::new(target, mfunc, Insert::Before(id))
+                .incoming()
+                .read(dst, assignment);
+            mfunc.editor().replace_with(id, &[]);
         }
     }
 }
@@ -210,57 +224,60 @@ fn lower_callsite(
     target: &dyn TargetMachine,
     mfunc: &mut MachineFunction,
     id: InstId,
-    plan: &CallConvPlan,
+    plan: &AbiPlan,
 ) {
     let inst = mfunc.inst(id);
-    let (results, args) = match inst.view() {
-        veloc_lir::InstView::Call(call) => (call.results, call.args),
-        veloc_lir::InstView::CallIndirect(call) => (call.results, call.args),
+    let (results, args, callee) = match inst.view() {
+        veloc_lir::InstView::Call(call) => (call.results, call.args, None),
+        veloc_lir::InstView::CallIndirect(call) => (call.results, call.args, Some(call.callee)),
         _ => unreachable!("callsite lowering"),
     };
-    if args.len() != plan.args.len() {
-        panic!(
-            "call argument count mismatch: LIR has {}, ABI plan has {}",
-            args.len(),
-            plan.args.len()
-        );
-    }
-    if results.len() != plan.returns.len() {
-        panic!(
-            "call result count mismatch: LIR has {}, ABI plan has {}",
-            results.len(),
-            plan.returns.len()
-        );
-    }
+    assert_eq!(args.len(), plan.args.len(), "call argument count mismatch");
+    assert_eq!(
+        results.len(),
+        plan.returns.len(),
+        "call result count mismatch"
+    );
 
-    let args: SmallVec<[Reg; 8]> = args.iter().copied().collect();
-    let defs: SmallVec<[Reg; 4]> = results.iter().copied().collect();
-    let returns = registers(&plan.returns);
-    mfunc.editor().set_inst_results(id, &returns);
-    let mut info = mfunc.call_info(id).clone();
-    info.stack_args.clear();
-    for (src, assignment) in args.into_iter().zip(plan.args.iter()) {
-        let (insts, slot) =
-            build_store_to_assignment(target, mfunc, src, assignment, "call argument");
-        info.stack_args.extend(slot);
-        for inst in insts {
-            mfunc.editor().insert_before(id, inst);
+    // Place logical arguments in their ABI locations before the call.
+    let mut stack_args = SmallVec::new();
+    {
+        let mut transfer = Transfer::new(target, mfunc, Insert::Before(id));
+        for (index, assignment) in plan.args.iter().enumerate() {
+            // Borrow only long enough to copy one ID; insertion may grow the store.
+            let src = transfer.func.inst(id).inputs()[index + usize::from(callee.is_some())];
+            stack_args.extend(transfer.write(src, assignment));
         }
     }
 
-    mfunc
-        .editor()
-        .set_inst_extra(id, veloc_lir::InstExtra::Call(info));
+    rewrite_call(target, mfunc, id, plan, callee, stack_args);
+
+    // Read the ABI results back into the original SSA result registers.
+    let mut transfer = Transfer::new(target, mfunc, Insert::After(id));
+    for (index, assignment) in plan.returns.iter().enumerate() {
+        let dst = transfer.func.inst(id).results()[index];
+        let AbiLocation::Reg(reg) = assignment.loc else {
+            unreachable!("checked register return");
+        };
+        // Release the old definition before creating its replacement copy.
+        transfer.func.editor().set_inst_result(id, index, reg);
+        transfer.read(dst, assignment);
+    }
+}
+
+fn rewrite_call(
+    target: &dyn TargetMachine,
+    mfunc: &mut MachineFunction,
+    id: InstId,
+    plan: &AbiPlan,
+    callee: Option<Reg>,
+    stack_args: SmallVec<[StackSlot; 2]>,
+) {
     // The call now uses ABI locations, not the original logical argument list.
     // Keep the indirect callee as its own explicit input.
-    let callee = match mfunc.inst(id).view() {
-        veloc_lir::InstView::CallIndirect(call) => Some(call.callee),
-        _ => None,
-    };
     let mut inputs = SmallVec::<[Reg; 8]>::new();
     inputs.extend(callee);
     inputs.extend(registers(&plan.args));
-    mfunc.editor().set_inst_inputs(id, &inputs);
     let mut effects = call_effects(target, plan);
     if let Some(existing) = mfunc.inst(id).effects() {
         effects.uses.extend_from_slice(existing.uses);
@@ -270,47 +287,60 @@ fn lower_callsite(
     effects.uses.dedup();
     effects.defs.sort_unstable();
     effects.defs.dedup();
-    mfunc.editor().set_inst_effects(id, effects);
-
-    mfunc.stack_frame.arg_size = mfunc.stack_frame.arg_size.max(plan.stack_arg_bytes);
-    let mut after = id;
-
-    for (dst, assignment) in defs.into_iter().zip(plan.returns.iter()) {
-        for inst in build_load_from_assignment(target, mfunc, assignment, dst, "call return") {
-            mfunc.editor().insert_after(after, inst);
-            after = inst;
-        }
-    }
+    let mut editor = mfunc.editor();
+    editor.set_inst_inputs(id, &inputs);
+    editor.set_call_stack(id, stack_args, plan.stack);
+    editor.set_inst_effects(id, effects);
 }
 
 fn lower_return(
     target: &dyn TargetMachine,
     mfunc: &mut MachineFunction,
-    sig: &veloc_mir::Signature,
-    plan: &CallConvPlan,
-    values: &[Reg],
-) -> Vec<InstId> {
-    if values.len() != plan.returns.len() {
-        panic!(
-            "return value count mismatch: LIR has {}, ABI plan has {}",
-            values.len(),
-            plan.returns.len()
-        );
-    }
-    if values.len() != sig.returns().len() {
-        panic!(
-            "return value count mismatch: LIR has {}, signature expects {}",
-            values.len(),
-            sig.returns().len()
-        );
-    }
+    id: InstId,
+    plan: &AbiPlan,
+    return_regs: &[Reg],
+) {
+    let veloc_lir::InstView::Return(ret) = mfunc.inst(id).view() else {
+        unreachable!("planned return")
+    };
+    let value_count = ret.values.len();
+    assert_eq!(
+        value_count,
+        plan.returns.len(),
+        "return value count mismatch"
+    );
 
-    let mut pre = Vec::with_capacity(values.len());
-    for (&src, assignment) in values.iter().zip(plan.returns.iter()) {
-        pre.extend(build_store_to_assignment(target, mfunc, src, assignment, "return value").0);
+    {
+        let mut transfer = Transfer::new(target, mfunc, Insert::Before(id));
+        for (index, assignment) in plan.returns.iter().enumerate() {
+            let src = transfer.func.inst(id).inputs()[index];
+            transfer.write(src, assignment);
+        }
     }
+    let replacement = mfunc.editor().writer().ret(return_regs);
+    mfunc.editor().replace_inst(id, replacement);
+}
 
-    pre
+// Keep each plan attached to its instruction, rather than synchronizing
+// a second iterator with a later full-function scan.
+enum Boundary {
+    Call(InstId, AbiPlan),
+    Return(InstId),
+}
+
+fn plan_boundaries(target: &dyn TargetMachine, mfunc: &MachineFunction) -> Result<Vec<Boundary>> {
+    let mut boundaries = Vec::new();
+    for id in mfunc.blocks().flat_map(|block| mfunc.block_insts(block)) {
+        match mfunc.inst(id).opcode() {
+            MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind) => {
+                let plan = plan_signature(target, &mfunc.call_info(id).sig)?;
+                boundaries.push(Boundary::Call(id, plan));
+            }
+            MachineOpcode::Generic(GenericOpcode::Ret) => boundaries.push(Boundary::Return(id)),
+            _ => {}
+        }
+    }
+    Ok(boundaries)
 }
 
 impl FunctionPass for AbiLoweringPass {
@@ -324,49 +354,18 @@ impl FunctionPass for AbiLoweringPass {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
-        check_plan(&plan)?;
-        let ids: Vec<_> = mfunc.blocks().flat_map(|b| mfunc.block_insts(b)).collect();
-        let calls = ids
-            .iter()
-            .copied()
-            .filter(|&id| {
-                matches!(
-                    mfunc.inst(id).opcode(),
-                    MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind)
-                )
-            })
-            .map(|id| {
-                let plan = plan_callsite(ctx.target, &mfunc.call_info(id).sig)?;
-                check_plan(&plan)?;
-                Ok((id, plan))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mut calls = calls.into_iter();
-        let return_regs = registers(&plan.returns);
-        mfunc.stack_frame.arg_size = 0;
-        lower_formal_arguments(ctx.target, mfunc, &plan);
+        let boundaries = plan_boundaries(ctx.target, mfunc)?;
+        let return_regs: SmallVec<[Reg; 4]> = registers(&plan.returns).collect();
 
-        for inst_id in ids {
-            let inst = mfunc.inst(inst_id);
-            match inst.opcode() {
-                MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind) => {
-                    let (call_id, call_plan) = calls.next().expect("planned callsite");
-                    debug_assert_eq!(call_id, inst_id);
-                    lower_callsite(ctx.target, mfunc, inst_id, &call_plan);
+        lower_formal_arguments(ctx.target, mfunc, &plan);
+        for boundary in boundaries {
+            match boundary {
+                Boundary::Call(id, call_plan) => {
+                    lower_callsite(ctx.target, mfunc, id, &call_plan);
                 }
-                MachineOpcode::Generic(GenericOpcode::Ret) => {
-                    let veloc_lir::InstView::Return(ret) = inst.view() else {
-                        unreachable!()
-                    };
-                    let values = ret.values.to_vec();
-                    let pre = lower_return(ctx.target, mfunc, ctx.func_sig, &plan, &values);
-                    for inst in pre {
-                        mfunc.editor().insert_before(inst_id, inst);
-                    }
-                    let replacement = mfunc.editor().writer().ret(&return_regs);
-                    mfunc.editor().replace_inst(inst_id, replacement);
+                Boundary::Return(id) => {
+                    lower_return(ctx.target, mfunc, id, &plan, &return_regs);
                 }
-                _ => {}
             }
         }
 

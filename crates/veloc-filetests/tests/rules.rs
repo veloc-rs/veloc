@@ -113,7 +113,7 @@ rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
                 dialect: "lir",
                 function: "decide",
                 opcode: "veloc_lir::GenericOpcode",
-                field: "veloc_lir::InstField",
+                field: "veloc_lir::FieldValue",
                 result: "Action",
                 value_interface: "ValueRules",
                 value_adapter: "crate::passes::lowering::RewriteContext::replace_values",

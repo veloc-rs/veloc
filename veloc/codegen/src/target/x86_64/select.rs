@@ -1,6 +1,6 @@
 use super::{
     inst::{self as generated, TargetInst},
-    lowering::{X86_64Lowering, build_target_inst, build_x86_copy_inst},
+    lowering::{X86_64Lowering, build_x86_copy_inst},
 };
 use crate::target::{SelectResult, SelectionContext, TargetInstructionSelector};
 use veloc_lir::InstRead;
@@ -39,13 +39,7 @@ impl TargetInstructionSelector for X86_64Selector {
                 // ABI result registers stay live through RET, including across
                 // otherwise dead instructions moved by the scheduler.
                 let inputs = inst.inputs().to_vec();
-                let ret = build_target_inst(
-                    ctx.mfunc.editor().writer(),
-                    TargetInst::X86Ret,
-                    &[],
-                    &[],
-                    &[],
-                );
+                let ret = TargetInst::X86Ret.write(ctx.mfunc.editor().writer(), &[], &[], []);
                 ctx.mfunc.editor().set_inst_effects(
                     ret,
                     veloc_lir::RegEffects {
@@ -102,10 +96,6 @@ impl TargetInstructionSelector for X86_64Selector {
             }).collect();
             assert_eq!(calls.len(), 1, "selection must preserve one call boundary");
             let selected = calls[0];
-            let info = ctx.mfunc.call_info(ctx.inst_id).clone();
-            ctx.mfunc
-                .editor()
-                .set_inst_extra(selected, veloc_lir::InstExtra::Call(info));
             let mut effects = source;
             if let Some(existing) = ctx.mfunc.inst(selected).effects() {
                 effects.uses.extend_from_slice(existing.uses);

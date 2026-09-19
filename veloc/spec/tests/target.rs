@@ -42,7 +42,10 @@ fn production_target_contracts_generate_all_consumers() {
         "pub fn write_assembly",
         "pub fn emit",
         "GenericOpcode::",
-        "ABI_",
+        "ABI_X86_64SYSTEMV_ARGS",
+        "state.assign(",
+        "state.stack(16, 16)",
+        "size: 32",
     ] {
         assert!(
             output.contains(contract),
@@ -116,34 +119,4 @@ fn parse_typed_selection_cases() {
     assert!(parse("select named(n: lir::Add) { choose {} }").is_err());
     assert!(parse("select() { choose {} }").is_err());
     assert!(parse("select(n: lir::Add) { choose {} }").is_err());
-}
-
-#[test]
-fn parse_def_abi_descriptor() {
-    let input = r#"
-        abi X86_64SystemV {
-            arch = X86_64;
-            stack = { align: 16, incoming: base(RBP, 16), outgoing: slot(8, 8) };
-            args = { Integer: [RDI, RSI, RDX, RCX, R8, R9] };
-            returns = { Integer: [RAX, RDX] };
-            preserved = { gpr: [RBX, RBP, R12, R13, R14, R15] };
-            classifier = x86_64_sysv_classifier;
-        }
-    "#;
-
-    let module = parse(input).expect("parse should succeed");
-    let Def::Abi(abi) = &module.defs[0] else {
-        panic!("expected def-abi");
-    };
-
-    assert_eq!(abi.name, "X86_64SystemV");
-    assert_eq!(abi.arch, "X86_64");
-    assert_eq!(abi.stack.align, Some(16));
-    assert_eq!(abi.stack.incoming_base, Some(("RBP".to_string(), 16)));
-    assert_eq!(
-        abi.args[0].regs,
-        vec!["RDI", "RSI", "RDX", "RCX", "R8", "R9"]
-    );
-    assert_eq!(abi.returns[0].regs, vec!["RAX", "RDX"]);
-    assert_eq!(abi.classifier.as_deref(), Some("x86_64_sysv_classifier"));
 }

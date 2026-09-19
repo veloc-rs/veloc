@@ -5,8 +5,9 @@
 #![feature(const_trait_impl)]
 extern crate alloc;
 
+pub mod control;
 pub mod error;
-pub mod extra;
+mod fields;
 pub mod function;
 pub mod instr;
 pub mod layout;
@@ -17,8 +18,10 @@ pub mod symbol;
 pub mod use_def;
 mod validation;
 
+pub use control::*;
 pub use error::{Result, ValidationError};
-pub use extra::*;
+pub use fields::FieldView;
+pub(crate) use fields::{FieldPools, Fields};
 pub use function::*;
 pub use instr::*;
 pub use memory::*;

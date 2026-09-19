@@ -1547,7 +1547,7 @@ combinations are errors, not empty compatibility outputs.
 cargo run -p veloc-spec --features cli -- veloc/codegen/defs/x86_64/legalize.spec \
   --emit decisions --definitions veloc/lir/defs/module.spec \
   --source-dialect lir --source-opcode veloc_lir::GenericOpcode \
-  --field veloc_lir::InstField \
+  --field veloc_lir::FieldValue \
   --function decide --result Action \
   --value-interface ValueRules \
   --value-adapter crate::passes::lowering::RewriteContext::replace_values \

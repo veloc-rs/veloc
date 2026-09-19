@@ -282,7 +282,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
                 let line = format!("{mnemonic} %{}, %{}\n", sources[src], destinations[dst]);
                 cases.push((emitter.position(), line.clone()));
                 assembly.push_str(&line);
-                let inst = opcode.write(f.editor().writer(), &[regs[dst]], &[regs[src]], &[]);
+                let inst = opcode.write(f.editor().writer(), &[regs[dst]], &[regs[src]], []);
                 opcode.emit(&mut emitter, &f.inst(inst), &f).unwrap();
             }
         }
@@ -1035,7 +1035,7 @@ int main(void) {
                 veloc_lir::MachineOpcode::Target(TargetInst::X86Popcnt64 as u32),
                 &[REG_RAX],
                 &[REG_RDI],
-                &[],
+                [],
             );
             assert_eq!(
                 target

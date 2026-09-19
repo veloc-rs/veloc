@@ -4,7 +4,7 @@ use super::select::SelectResult;
 use alloc::vec::Vec;
 use smallvec::SmallVec;
 use veloc_lir::{
-    GenericOpcode, InstBuilder, InstField, InstId, InstRef, MachineOpcode, Reg, VRegBuilder,
+    FieldValue, GenericOpcode, InstBuilder, InstId, InstRef, MachineOpcode, Reg, VRegBuilder,
     VRegData,
 };
 use veloc_mir::Type;
@@ -68,6 +68,13 @@ pub(crate) struct Program {
     pub registers: &'static [Reg],
 }
 
+// Source instructions stay alive until selection commits. Cache locations,
+// not owned payloads, so repeated candidates do not clone call signatures.
+#[derive(Clone, Copy)]
+enum FieldSource {
+    Attribute(InstId, usize),
+    Imm(i64),
+}
 /// Physical field positions come from the same checked storage projections as
 /// InstView. Optional fields bound to none occupy no slot; sequences are not
 /// scalar accesses and are rejected by the selection compiler.
@@ -84,17 +91,14 @@ impl Field {
             Self::Attribute(_) => panic!("attribute used as a register"),
         }
     }
-    fn attribute(&self, inst: InstRef<'_>) -> InstField {
-        match *self {
-            Self::Attribute(index) => inst.fields()[index],
-            _ => panic!("register used as an attribute"),
-        }
-    }
     fn integer(&self, inst: InstRef<'_>) -> i64 {
-        match self.attribute(inst) {
-            InstField::Imm(value) => value,
-            InstField::IntCC(value) => value as i64,
-            InstField::FloatCC(value) => value as i64,
+        let Self::Attribute(index) = *self else {
+            panic!("register used as an attribute")
+        };
+        match inst.fields().read(index) {
+            veloc_lir::FieldValueRef::Imm(value) => *value,
+            veloc_lir::FieldValueRef::IntCC(value) => *value as i64,
+            veloc_lir::FieldValueRef::FloatCC(value) => *value as i64,
             _ => panic!("non-integer selection field"),
         }
     }
@@ -195,7 +199,7 @@ pub(crate) fn execute(
     };
     let mut insts = SmallVec::<[Option<InstId>; 4]>::from_elem(None, program.insts);
     let mut values = SmallVec::<[Option<Reg>; 16]>::from_elem(None, program.values);
-    let mut fields = SmallVec::<[Option<InstField>; 8]>::from_elem(None, program.fields);
+    let mut fields = SmallVec::<[Option<FieldSource>; 8]>::from_elem(None, program.fields);
     insts[0] = Some(source);
     let start = out.len();
     let mut accepted = false;
@@ -317,22 +321,25 @@ pub(crate) fn execute(
                 let dst = reader.index();
                 let node = reader.index();
                 let field = reader.index();
-                fields[dst] = program.accesses[field]
-                    .as_ref()
-                    .map(|field| field.attribute(store.get(insts[node].unwrap())));
+                fields[dst] = program.accesses[field].as_ref().map(|field| {
+                    let Field::Attribute(index) = *field else {
+                        panic!("register used as an attribute")
+                    };
+                    FieldSource::Attribute(insts[node].unwrap(), index)
+                });
             }
             Op::ConstImm => {
                 assert!(accepted);
                 let dst = reader.index();
                 let imm = reader.index();
-                fields[dst] = Some(InstField::Imm(program.integers[imm]));
+                fields[dst] = Some(FieldSource::Imm(program.integers[imm]));
             }
             Op::BuildInst => {
                 assert!(accepted);
                 let target = reader.index();
                 let mut results = SmallVec::<[Reg; 2]>::new();
                 let mut inputs = SmallVec::<[Reg; 4]>::new();
-                let mut operands = SmallVec::<[InstField; 4]>::new();
+                let mut operands = SmallVec::<[FieldValue; 4]>::new();
                 for _ in 0..reader.index() {
                     results.push(values[reader.index()].expect("initialized result"));
                 }
@@ -340,8 +347,11 @@ pub(crate) fn execute(
                     inputs.push(values[reader.index()].expect("initialized input"));
                 }
                 for _ in 0..reader.index() {
-                    let mut field = fields[reader.index()].expect("initialized field");
-                    if let InstField::Edge(edge) = &mut field {
+                    let mut field = match fields[reader.index()].expect("initialized field") {
+                        FieldSource::Attribute(inst, index) => store.get(inst).fields().at(index),
+                        FieldSource::Imm(value) => FieldValue::Imm(value),
+                    };
+                    if let FieldValue::Edge(edge) = &mut field {
                         *edge = store.replacement_edge(source, *edge);
                     }
                     operands.push(field);
@@ -355,7 +365,7 @@ pub(crate) fn execute(
                             MachineOpcode::Target(target.opcode),
                             &results,
                             &inputs,
-                            &operands,
+                            operands,
                         ),
                 );
             }

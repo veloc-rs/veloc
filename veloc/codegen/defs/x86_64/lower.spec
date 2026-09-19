@@ -238,7 +238,7 @@ select(n: lir::Sext) {
 select(n: lir::Call) {
     choose {
         case {
-            replace(n, build(X86Call(n.callee)));
+            replace(n, build(X86Call(n.callee, n.info)));
         }
     }
 }
@@ -246,7 +246,7 @@ select(n: lir::Call) {
 select(n: lir::Callind) {
     choose {
         case {
-            replace(n, build(X86CallReg(n.callee)));
+            replace(n, build(X86CallReg(n.callee, n.info)));
         }
     }
 }

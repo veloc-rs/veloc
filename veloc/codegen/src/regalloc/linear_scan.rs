@@ -7,7 +7,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use hashbrown::HashMap;
-use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackFrame, StackSlot, VReg};
+use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackBatch, StackSlot, VReg};
 
 #[derive(Clone)]
 struct Interval {
@@ -56,7 +56,7 @@ impl<'a> RegisterAllocator<'a> {
         analyses: &mut FunctionAnalysisCtx,
     ) -> Result<Allocation> {
         let f = &source;
-        let mut frame = f.stack_frame.clone();
+        let mut frame = f.stack_frame.batch();
         let live = analyses.liveness(f, self.target);
         let mut ranges = SecondaryMap::<VReg, Option<(u32, u32)>>::with_capacity(f.vregs().len());
         let mut fixed = Vec::<Vec<(u32, u32)>>::new();
@@ -107,9 +107,7 @@ impl<'a> RegisterAllocator<'a> {
                 for reg in inst.defs() {
                     extend_range(&mut ranges, &mut local_fixed, reg, pos * 2 + 1);
                 }
-                if self.target.is_call(inst)
-                    || matches!(f.inst_extra(id), Some(veloc_lir::InstExtraRef::Call(_)))
-                {
+                if self.target.is_call(inst) || f.try_call_info(id).is_some() {
                     calls.push(pos * 2 + 1);
                 }
                 pos += 1;
@@ -212,7 +210,7 @@ impl<'a> RegisterAllocator<'a> {
                 self.spill(interval.reg, f, &mut frame)?;
             }
         }
-        let instructions = self.plan(&mut source, &frame)?;
+        let instructions = self.plan(&mut source)?;
         let edges = self.plan_edges(&mut source, &mut frame)?;
         Ok(Allocation {
             source,
@@ -222,7 +220,7 @@ impl<'a> RegisterAllocator<'a> {
         })
     }
 
-    fn spill(&mut self, reg: Reg, f: &MachineFunction, frame: &mut StackFrame) -> Result<()> {
+    fn spill(&mut self, reg: Reg, f: &MachineFunction, frame: &mut StackBatch) -> Result<()> {
         let ty = f.vreg_data(reg).ty;
         let layout = &self.target.desc().data_layout;
         self.target
@@ -238,16 +236,12 @@ impl<'a> RegisterAllocator<'a> {
             Error::codegen(format!("stack allocation requires fixed size: {ty:?}"))
         })?;
         let align = layout.align;
-        let slot = frame.alloc_slot(size, align);
+        let slot = frame.alloc_object(veloc_lir::StackObject::Local, size, align);
         self.spilled[reg.as_vreg().expect("spill key must be virtual")] = Some(slot);
         Ok(())
     }
 
-    fn plan(
-        &self,
-        f: &mut MachineFunction,
-        frame: &StackFrame,
-    ) -> Result<SecondaryMap<InstId, InstAllocation>> {
+    fn plan(&self, f: &mut MachineFunction) -> Result<SecondaryMap<InstId, InstAllocation>> {
         let mut instructions = SecondaryMap::new();
         let mut block = f.blocks().next();
         while let Some(current_block) = block {
@@ -433,17 +427,6 @@ impl<'a> RegisterAllocator<'a> {
                     }
                     for (load, accesses) in [(true, loads), (false, stores)] {
                         for (slot, reg, ty) in accesses {
-                            let slot = &frame.slots[slot];
-                            let base = slot.base.resolve(
-                                self.target
-                                    .desc()
-                                    .registers
-                                    .special_regs
-                                    .frame_pointer
-                                    .ok_or_else(|| {
-                                        Error::codegen("spilling requires a frame pointer")
-                                    })?,
-                            );
                             let inst = self.target.spill_instruction(
                                 f.editor().writer(),
                                 if load {
@@ -452,8 +435,7 @@ impl<'a> RegisterAllocator<'a> {
                                     SpillKind::Store
                                 },
                                 reg,
-                                base,
-                                slot.offset as i64,
+                                slot,
                                 ty,
                             )?;
                             if load {
@@ -495,14 +477,13 @@ mod tests {
         let target = X86_64TargetMachine::new(crate::TargetConfig::default()).unwrap();
         for mode in 0..3 {
             let mut f = MachineFunction::new("reuse".into());
-            f.editor().create_block();
             let lhs = f.editor().alloc_vreg(Type::I64);
             let rhs = f.editor().alloc_vreg(Type::I64);
             let dst = f.editor().alloc_vreg(Type::I64);
-            let id = TargetInst::X86Sub64.write(f.editor().writer(), &[dst], &[rhs, lhs], &[]);
+            let id = TargetInst::X86Sub64.write(f.editor().writer(), &[dst], &[rhs, lhs], []);
             f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
             let mut allocator = RegisterAllocator::new(&target);
-            let mut frame = f.stack_frame.clone();
+            let mut frame = f.stack_frame.batch();
             if mode == 2 {
                 for reg in [lhs, rhs, dst] {
                     allocator.spill(reg, &f, &mut frame).unwrap();
@@ -512,7 +493,7 @@ mod tests {
                 allocator.assign(rhs, REG_RCX);
                 allocator.assign(dst, if mode == 0 { REG_RDX } else { REG_RCX });
             }
-            let instructions = allocator.plan(&mut f, &frame).unwrap();
+            let instructions = allocator.plan(&mut f).unwrap();
             let plan = &instructions[id];
             assert_eq!(plan.results[0], plan.locations[1]);
             assert_ne!(plan.results[0], plan.locations[0]);

@@ -207,7 +207,7 @@ impl TargetRegalloc for X86_64TargetMachine {
             veloc_lir::MachineOpcode::Target(inst::TargetInst::X86Jmp.as_u32()),
             &[],
             &[],
-            &[veloc_lir::InstField::Edge(edge)],
+            [veloc_lir::FieldValue::Edge(edge)],
         ))
     }
 
@@ -219,7 +219,7 @@ impl TargetRegalloc for X86_64TargetMachine {
         ty: veloc_mir::Type,
     ) -> crate::Result<veloc_lir::InstId> {
         let opcode = lowering::x86_mov_opcode_for_type(ty)?;
-        Ok(opcode.write(writer, &[dst], &[src], &[]))
+        Ok(opcode.write(writer, &[dst], &[src], []))
     }
 
     fn spill_instruction(
@@ -227,11 +227,10 @@ impl TargetRegalloc for X86_64TargetMachine {
         writer: veloc_lir::InstWriter<'_>,
         kind: SpillKind,
         reg: veloc_lir::Reg,
-        base: veloc_lir::Reg,
-        offset: i64,
+        slot: veloc_lir::StackSlot,
         ty: veloc_mir::Type,
     ) -> crate::error::Result<veloc_lir::InstId> {
-        machine::spill_instruction(writer, kind, reg, base, offset, ty)
+        machine::spill_instruction(writer, kind, reg, slot, ty)
     }
 }
 

@@ -162,16 +162,28 @@ impl Reader<'_> {
             _ => return Err(self.error(n, "expected an instruction constructor")),
         })
     }
-    fn abi_regs(&self, n: &Node) -> Result<Vec<AbiClassRegsDef>, Error> {
-        self.record(n)?
-            .iter()
-            .map(|(class, regs)| {
-                Ok(AbiClassRegsDef {
-                    class: class.clone(),
-                    regs: self.names(regs)?,
-                })
-            })
-            .collect()
+    fn abi_rules(&self, n: &Node) -> Result<Vec<AbiRuleDef>, Error> {
+        self.list(n)?.iter().map(|node| {
+            let Kind::Call(name, args) = &node.kind else {
+                return Err(self.error(node, "expected an ABI allocation action"));
+            };
+            let action = match (name.as_str(), args.as_slice()) {
+                ("assign", [_, regs]) => AbiActionDef::Reg {
+                    regs: self.names(regs)?, shadows: Vec::new(),
+                },
+                ("shadow", [_, regs, shadows]) => AbiActionDef::Reg {
+                    regs: self.names(regs)?, shadows: self.names(shadows)?,
+                },
+                ("stack", [_, size, align]) => AbiActionDef::Stack {
+                    size: u32::try_from(self.number(size)?)
+                        .map_err(|_| self.error(size, "invalid ABI stack size"))?,
+                    align: u32::try_from(self.number(align)?)
+                        .map_err(|_| self.error(align, "invalid ABI stack alignment"))?,
+                },
+                _ => return Err(self.error(node, "expected assign(types, regs), shadow(types, regs, shadows), or stack(types, size, align)")),
+            };
+            Ok(AbiRuleDef { types: self.selection_domain(&args[0])?, action })
+        }).collect()
     }
     fn selection_domain(&self, node: &Node) -> Result<Vec<String>, Error> {
         let domain =
@@ -295,17 +307,7 @@ impl Reader<'_> {
                 })
             }
             "abi" => {
-                self.fields(
-                    d,
-                    &[
-                        "arch",
-                        "stack",
-                        "args",
-                        "returns",
-                        "preserved",
-                        "classifier",
-                    ],
-                )?;
+                self.fields(d, &["arch", "stack", "args", "returns", "preserved"])?;
                 let mut stack = AbiStackDef::default();
                 for (field, n) in self.record(self.required(d, "stack")?)? {
                     match field.as_str() {
@@ -315,31 +317,9 @@ impl Reader<'_> {
                                     .map_err(|_| self.error(n, "alignment exceeds u32"))?,
                             )
                         }
-                        "incoming" | "outgoing" => {
-                            let Kind::Call(name, args) = &n.kind else {
-                                return Err(self.error(n, "expected base or slot"));
-                            };
-                            let [a, b] = args.as_slice() else {
-                                return Err(self.error(n, "expected two arguments"));
-                            };
-                            if field == "incoming" && name == "base" {
-                                stack.incoming_base = Some((
-                                    self.name(a)?,
-                                    i32::try_from(self.number(b)?)
-                                        .map_err(|_| self.error(b, "offset exceeds i32"))?,
-                                ));
-                            } else if field == "outgoing" && name == "slot" {
-                                stack.outgoing_slot = Some((
-                                    u32::try_from(self.number(a)?)
-                                        .map_err(|_| self.error(a, "size exceeds u32"))?,
-                                    u32::try_from(self.number(b)?)
-                                        .map_err(|_| self.error(b, "alignment exceeds u32"))?,
-                                ));
-                            } else {
-                                return Err(
-                                    self.error(n, "expected incoming base or outgoing slot")
-                                );
-                            }
+                        "reserved" => {
+                            stack.reserved = u32::try_from(self.number(n)?)
+                                .map_err(|_| self.error(n, "invalid reserved stack size"))?;
                         }
                         _ => return Err(self.error(n, "unknown ABI stack field")),
                     }
@@ -348,23 +328,9 @@ impl Reader<'_> {
                     name: d.name.clone(),
                     arch: self.name(self.required(d, "arch")?)?,
                     stack,
-                    args: self.abi_regs(self.required(d, "args")?)?,
-                    returns: self.abi_regs(self.required(d, "returns")?)?,
-                    preserved: self
-                        .record(self.required(d, "preserved")?)?
-                        .iter()
-                        .map(|(bank, n)| {
-                            Ok(AbiPreservedSetDef {
-                                bank: bank.clone(),
-                                regs: self.names(n)?,
-                            })
-                        })
-                        .collect::<Result<_, Error>>()?,
-                    classifier: d
-                        .fields
-                        .get("classifier")
-                        .map(|n| self.name(n))
-                        .transpose()?,
+                    args: self.abi_rules(self.required(d, "args")?)?,
+                    returns: self.abi_rules(self.required(d, "returns")?)?,
+                    preserved: self.names(self.required(d, "preserved")?)?,
                 })
             }
             // These declarations are checked by the other Spec consumers.

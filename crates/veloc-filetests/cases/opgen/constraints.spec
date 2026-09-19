@@ -294,8 +294,8 @@ op Example<T: Integer>(input: Value<T>) -> Value<T> {
 // check: TypeError::Constraint("double width")
 // check: checked_mul
 type Reg = rust("crate::Reg");
-enum InstField { variants = [Imm(i64)]; }
-storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = InstField; }
+enum FieldValue { variants = [Imm(i64)]; }
+storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue; }
 struct Unary { dst: Reg, src: Reg }
 fn double_bits(from: Type, to: Type) -> bool {
     value = to.element_bits()? == from.element_bits()? * 2

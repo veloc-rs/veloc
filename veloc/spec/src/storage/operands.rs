@@ -24,6 +24,7 @@ pub(crate) struct Format {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Field {
+    pub(crate) borrowed: bool,
     pub(crate) name: String,
     pub(crate) ty: String,
     pub(crate) rust: String,
@@ -199,6 +200,7 @@ pub(crate) fn compile(
                 )
             };
             fields.push(Field {
+                borrowed: data.rust.policy(ty).borrowed,
                 name: field.name.clone(),
                 ty: ty.clone(),
                 rust: data.rust.rust(ty),
@@ -228,15 +230,16 @@ pub(crate) fn compile(
 }
 impl Field {
     pub(crate) fn view_type(&self) -> String {
+        let ty = if self.borrowed {
+            format!("&'a {}", self.rust)
+        } else {
+            self.rust.clone()
+        };
         match self.shape {
-            Shape::One => self.rust.clone(),
-            Shape::Optional => format!("Option<{}>", self.rust),
+            Shape::One => ty,
+            Shape::Optional => format!("Option<{ty}>"),
             Shape::Sequence => match &self.codec {
-                Some(codec) => format!(
-                    "AttributeList<'a, {}, {}>",
-                    codec.rsplit_once("::").unwrap().0,
-                    self.rust
-                ),
+                Some(_) => format!("AttributeList<'a, {ty}>"),
                 None => format!("&'a [{}]", self.rust),
             },
         }
@@ -249,14 +252,21 @@ impl Member {
         }
         let access = self.domain.accessor();
         let value = if let Some(codec) = &self.field.codec {
+            let (enum_name, variant) = codec.rsplit_once("::").unwrap();
+            let codec = format!("{enum_name}Ref::{variant}");
+            let value = if self.field.borrowed {
+                "value"
+            } else {
+                "*value"
+            };
             if self.field.shape == Shape::Sequence {
                 return format!(
-                    "AttributeList {{ fields: &{receiver}.fields()[{}..], decode: |field| match field {{ {codec}(value) => *value, _ => panic!(\"invalid instruction field\") }} }}",
+                    "AttributeList {{ fields: {receiver}.fields(), start: {}, decode: |field| match field {{ {codec}(value) => {value}, _ => panic!(\"invalid instruction field\") }} }}",
                     self.index
                 );
             }
             format!(
-                "match {receiver}.fields()[{}] {{ {codec}(value) => value, _ => panic!(\"invalid instruction field\") }}",
+                "match {receiver}.fields().read({}) {{ {codec}(value) => {value}, _ => panic!(\"invalid instruction field\") }}",
                 self.index
             )
         } else if self.field.shape == Shape::Sequence {
@@ -335,9 +345,7 @@ impl Operands {
                 let member = members.pop().unwrap();
                 let value = local(member.binding.as_ref().unwrap());
                 Some(match &member.field.codec {
-                    Some(codec) => format!(
-                        "&{value}.iter().copied().map({codec}).collect::<alloc::vec::Vec<_>>()"
-                    ),
+                    Some(codec) => format!("{value}.iter().cloned().map({codec})"),
                     None => value,
                 })
             } else {
@@ -356,15 +364,16 @@ impl Operands {
                     }
                 })
                 .collect();
-            args.push(slice(
-                if domain == Domain::Attribute {
-                    &self.attributes
-                } else {
-                    &self.register_rust
-                },
-                &items,
-                tail,
-            ));
+            args.push(if domain == Domain::Attribute {
+                let head = format!("[{}]", items.join(", "));
+                match tail {
+                    None => head,
+                    Some(tail) if items.is_empty() => tail,
+                    Some(tail) => format!("{head}.into_iter().chain({tail})"),
+                }
+            } else {
+                slice(&self.register_rust, &items, tail)
+            });
         }
         Write {
             callee: format!("{receiver}.write"),

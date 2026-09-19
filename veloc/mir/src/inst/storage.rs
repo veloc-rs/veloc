@@ -66,74 +66,7 @@ pub(crate) struct StoredInst {
 
 pub(crate) use crate::constant::{ScalarBits, VectorBits};
 
-/// Private, type-indexed handles. A handle belongs to its DFG; replacement
-/// releases it before reuse. Handles never escape through public IR views.
-pub(crate) struct Id<T>(u32, core::marker::PhantomData<fn() -> T>);
-impl<T> Copy for Id<T> {}
-impl<T> Clone for Id<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T> core::fmt::Debug for Id<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Pool<T> {
-    slots: alloc::vec::Vec<Slot<T>>,
-    free: Option<u32>,
-}
-impl<T> Default for Pool<T> {
-    fn default() -> Self {
-        Self {
-            slots: alloc::vec::Vec::new(),
-            free: None,
-        }
-    }
-}
-#[derive(Debug, Clone)]
-enum Slot<T> {
-    Live(T),
-    Free(Option<u32>),
-}
-impl<T> Pool<T> {
-    pub fn push(&mut self, value: T) -> Id<T> {
-        let index = if let Some(index) = self.free {
-            let Slot::Free(next) = self.slots[index as usize] else {
-                unreachable!("free pool slot")
-            };
-            self.free = next;
-            self.slots[index as usize] = Slot::Live(value);
-            index
-        } else {
-            let index = self.slots.len().try_into().expect("too many pooled fields");
-            self.slots.push(Slot::Live(value));
-            index
-        };
-        Id(index, core::marker::PhantomData)
-    }
-    pub fn get(&self, id: Id<T>) -> &T {
-        let Slot::Live(value) = &self.slots[id.0 as usize] else {
-            unreachable!("live pool slot")
-        };
-        value
-    }
-    #[allow(dead_code)] // Used when a generated pooled payload contains remappable IDs.
-    pub fn get_mut(&mut self, id: Id<T>) -> &mut T {
-        let Slot::Live(value) = &mut self.slots[id.0 as usize] else {
-            unreachable!("live pool slot")
-        };
-        value
-    }
-    pub fn remove(&mut self, id: Id<T>) {
-        assert!(matches!(self.slots[id.0 as usize], Slot::Live(_)));
-        self.slots[id.0 as usize] = Slot::Free(self.free);
-        self.free = Some(id.0);
-    }
-}
+pub(crate) use veloc_collections::{Pool, PoolId as Id};
 
 /// Implemented by generated out-of-line payloads, not arbitrary runtime types.
 pub(crate) trait Pooled: Sized {
@@ -189,20 +122,10 @@ impl Edges {
 mod tests {
     use super::*;
     #[test]
-    fn compact_storage_and_typed_pool_recycling() {
+    fn compact_storage() {
         assert_eq!(size_of::<InstFields>(), 16);
         assert_eq!(size_of::<StoredInst>(), 24);
         assert_eq!(size_of::<Id<u64>>(), 4);
-        let mut pool = Pool::<u64>::default();
-        let id = pool.push(7);
-        assert_eq!(*pool.get(id), 7);
-        let cloned = pool.clone();
-        pool.remove(id);
-        let next = pool.push(9);
-        assert_eq!(id.0, next.0);
-        assert_eq!(*pool.get(next), 9);
-        assert_eq!(*cloned.get(id), 7);
-        assert_eq!(pool.slots.len(), 1);
     }
 }
 

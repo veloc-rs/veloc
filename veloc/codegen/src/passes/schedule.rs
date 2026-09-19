@@ -51,13 +51,17 @@ pub(crate) fn schedule(
     const WINDOW: usize = 256;
     let liveness = analyses.liveness(f, target);
     let mut changed = 0;
+    let mut ids = Vec::new();
+    let mut output = Vec::new();
+    let mut info = Vec::new();
     let mut block = f.blocks().next();
     while let Some(b) = block {
         let next_block = f.layout().next_block(b);
-        let ids = f.block_insts(b).collect::<Vec<_>>();
+        ids.clear();
+        ids.extend(f.block_insts(b));
         let mut live: RegSet = liveness.live_out(b).cloned().unwrap_or_default();
-        let mut output = Vec::with_capacity(ids.len());
-        let mut info = Vec::new();
+        output.clear();
+        output.reserve(ids.len());
         let mut end = ids.len();
         // Walk regions backward so live-out is available without storing a live
         // set for every instruction. The actual list scheduler runs forward.
@@ -66,7 +70,7 @@ pub(crate) fn schedule(
             info.clear();
             while start > 0 && end - start < WINDOW {
                 let id = ids[start - 1];
-                if f.inst_extra(id).is_some() || f.inst(id).memory().is_some() {
+                if f.try_call_info(id).is_some() || f.inst(id).memory().is_some() {
                     break;
                 }
                 let veloc_lir::MachineOpcode::Target(opcode) = f.inst(id).opcode() else {

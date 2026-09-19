@@ -3,6 +3,7 @@ import "assembly.spec";
 import "../../../encoder/defs/x86_64.spec";
 import "registers.spec";
 
+type CallInfo = rust("veloc_lir::CallInfo") { view = borrowed; }
 type Block = rust("veloc_lir::BlockId");
 type Successor = rust("veloc_lir::EdgeId");
 type Global = rust("veloc_lir::SymbolId");
@@ -718,12 +719,12 @@ op X86StoreF64Stack(src: Value<Type::F64>, slot: StackSlot) -> () {
     memory = { kind: Write, bytes: 8 };
 }
 
-op X86Call(target: Global) -> () {
+op X86Call(target: Global, info: CallInfo) -> () {
     encoding = Emission::relative(target, Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xE8, wide: false }, Form::None, 0);
     flow = Call;
 }
 
-op X86CallReg(target: Value<AddressValue>) -> () {
+op X86CallReg(target: Value<AddressValue>, info: CallInfo) -> () {
     encoding = Emission::legacy(
         Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xFF, wide: false },
         Form::ModRm(RegField::Extension(2), Rm::Register(target)),

@@ -2,6 +2,9 @@
 #![no_std]
 extern crate alloc;
 
+mod pool;
+pub use pool::{Pool, PoolId};
+
 mod layout;
 pub use layout::EntityLayout;
 

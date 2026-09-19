@@ -5,7 +5,7 @@ use crate::{Error, Result};
 use alloc::format;
 use alloc::vec::Vec;
 use smallvec::SmallVec;
-use veloc_lir::{InstId, MachineFunction, Reg, StackFrame, StackSlot};
+use veloc_lir::{InstId, MachineFunction, Reg, StackBatch, StackSlot};
 use veloc_mir::Type;
 
 /// A physical move sequence for one selected branch, detached until materialization.
@@ -45,7 +45,7 @@ impl RegisterAllocator<'_> {
     pub(super) fn plan_edges(
         &self,
         f: &mut MachineFunction,
-        frame: &mut StackFrame,
+        frame: &mut StackBatch,
     ) -> Result<Vec<EdgeAllocation>> {
         let mut edges = Vec::new();
         let mut cycle_slots = alloc::collections::BTreeMap::new();
@@ -112,9 +112,9 @@ impl RegisterAllocator<'_> {
                             Error::codegen(format!("stack allocation requires fixed size: {ty:?}"))
                         })?;
                         let align = layout.align;
-                        let slot = *cycle_slots
-                            .entry((size, align))
-                            .or_insert_with(|| frame.alloc_slot(size, align));
+                        let slot = *cycle_slots.entry((size, align)).or_insert_with(|| {
+                            frame.alloc_object(veloc_lir::StackObject::Local, size, align)
+                        });
                         let saved = Location::Stack(slot);
                         self.move_location(f, frame, &mut instructions, saved, src, ty)?;
                         for (_, input, _) in &mut pending {
@@ -141,7 +141,7 @@ impl RegisterAllocator<'_> {
     fn move_location(
         &self,
         f: &mut MachineFunction,
-        frame: &StackFrame,
+        frame: &StackBatch,
         out: &mut Vec<InstId>,
         dst: Location,
         src: Location,
@@ -180,14 +180,6 @@ impl RegisterAllocator<'_> {
             (Location::Reg(reg), Location::Stack(slot))
             | (Location::Stack(slot), Location::Reg(reg)) => {
                 let load = matches!(dst, Location::Reg(_));
-                let slot = &frame.slots[slot];
-                let fp = self
-                    .target
-                    .desc()
-                    .registers
-                    .special_regs
-                    .frame_pointer
-                    .ok_or_else(|| Error::codegen("edge stack copies require a frame pointer"))?;
                 out.push(self.target.spill_instruction(
                     f.editor().writer(),
                     if load {
@@ -196,8 +188,7 @@ impl RegisterAllocator<'_> {
                         SpillKind::Store
                     },
                     reg,
-                    slot.base.resolve(fp),
-                    slot.offset as i64,
+                    slot,
                     ty,
                 )?);
             }

@@ -20,7 +20,7 @@ type Query = rust("crate::passes::lowering::legalize::Query") {
 
 type RewriteValue = rust("veloc_lir::Reg");
 type RewriteOpcode = rust("veloc_lir::GenericOpcode");
-type RewriteField = rust("veloc_lir::InstField");
+type RewriteField = rust("veloc_lir::FieldValue");
 type RewriteContext = rust("crate::passes::lowering::legalize::RewriteContext") {
     trait = rust("crate::passes::lowering::legalize::contracts::ValueRewrite");
     fn emit(&mut self, opcode: RewriteOpcode, ty: Type,

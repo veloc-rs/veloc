@@ -85,11 +85,9 @@ pub(crate) fn stack_address(
     slot: veloc_lir::StackSlot,
 ) -> crate::Result<veloc_encoder::x86_64::Address> {
     use veloc_encoder::x86_64::{Address, Memory};
-    let slot = &frame.slots[slot];
+    let slot = frame.address(slot);
     Ok(Address::BaseIndex(Memory {
-        base: Some(register(
-            slot.base.resolve(super::inst::SPECIAL_REG_FRAME_POINTER),
-        )?),
+        base: Some(register(slot.base)?),
         index: None,
         displacement: i64::from(slot.offset),
     }))

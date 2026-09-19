@@ -2,7 +2,7 @@
 use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
-use veloc_lir::{InstId, MachineFunction, PReg, StackFrame};
+use veloc_lir::{InstId, MachineFunction, PReg, StackBatch};
 
 /// Physical locations and insertions for one instruction. Locations are indexed
 /// separately by result and input occurrence, not by virtual register: split ranges may have different
@@ -37,7 +37,7 @@ impl InstAllocation {
 pub struct Allocation {
     pub(crate) source: MachineFunction,
     pub(crate) instructions: SecondaryMap<InstId, InstAllocation>,
-    pub(crate) frame: StackFrame,
+    pub(crate) frame: StackBatch,
     pub(crate) edges: Vec<super::edges::EdgeAllocation>,
 }
 
@@ -54,7 +54,7 @@ impl Allocation {
         &self.edges
     }
 
-    pub fn frame(&self) -> &StackFrame {
+    pub fn frame(&self) -> &StackBatch {
         &self.frame
     }
 
@@ -67,7 +67,7 @@ impl Allocation {
             frame,
             edges,
         } = self;
-        source.stack_frame = frame;
+        source.stack_frame.append(frame);
         let mut block = source.blocks().next();
         while let Some(current_block) = block {
             let next_block = source.layout().next_block(current_block);
@@ -79,13 +79,14 @@ impl Allocation {
                 for inst in plan.before {
                     edit.insert_before(id, inst);
                 }
-                let results: SmallVec<[_; 2]> =
-                    plan.results.iter().copied().map(Into::into).collect();
-                assert_eq!(results.len(), edit.inst(id).results().len());
-                edit.set_inst_results(id, &results);
-                let inputs: SmallVec<[_; 4]> =
-                    plan.locations.iter().copied().map(Into::into).collect();
-                edit.set_inst_inputs(id, &inputs);
+                assert_eq!(plan.results.len(), edit.inst(id).results().len());
+                for (index, reg) in plan.results.into_iter().enumerate() {
+                    edit.set_inst_result(id, index, reg.into());
+                }
+                assert_eq!(plan.locations.len(), edit.inst(id).inputs().len());
+                for (index, reg) in plan.locations.into_iter().enumerate() {
+                    edit.set_inst_input(id, index, reg.into());
+                }
                 let mut after = id;
                 for inst in plan.after {
                     edit.insert_after(after, inst);
@@ -137,14 +138,13 @@ mod tests {
         X86_64TargetMachine,
         inst::{REG_RAX, TargetInst},
     };
-    use veloc_lir::InstField;
+    use veloc_lir::FieldValue;
     use veloc_lir::{MachineOpcode, Type};
 
     #[test]
     fn allocation_preserves_input_and_materializes_spills_in_order() {
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
         let mut f = MachineFunction::new("pressure".into());
-        f.editor().create_block();
         let mut values = Vec::new();
         // All values are live together, forcing both assigned and spilled ranges.
         for n in 0..40 {
@@ -155,7 +155,7 @@ mod tests {
                     MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
                     &[reg],
                     &[],
-                    &[InstField::Imm(n)],
+                    [FieldValue::Imm(n)],
                 );
                 f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
                 id
@@ -163,7 +163,7 @@ mod tests {
         }
         for &reg in &values {
             {
-                let id = TargetInst::X86Mov64.write(f.editor().writer(), &[REG_RAX], &[reg], &[]);
+                let id = TargetInst::X86Mov64.write(f.editor().writer(), &[REG_RAX], &[reg], []);
                 f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
                 id
             };
@@ -184,8 +184,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             ids
         );
-        assert!(plan.source().stack_frame.slots.is_empty());
-        assert!(!plan.frame().slots.is_empty());
+        assert!(plan.source().stack_frame.slots().is_empty());
+        assert!(!plan.frame().slots().is_empty());
         for (&id, &reg) in ids.iter().zip(&values) {
             assert_eq!(plan.source().inst(id).defs().collect::<Vec<_>>(), [reg]);
         }

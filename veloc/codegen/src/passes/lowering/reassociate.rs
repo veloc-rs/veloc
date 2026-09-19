@@ -28,7 +28,7 @@ struct Tree {
 
 fn binary(f: &MachineFunction, id: InstId, opcode: GenericOpcode) -> Option<Node> {
     let inst = &f.inst(id);
-    if inst.generic_opcode() != Some(opcode) || f.inst_extra(id).is_some() {
+    if inst.generic_opcode() != Some(opcode) || f.try_call_info(id).is_some() {
         return None;
     }
     let [lhs, rhs] = inst.inputs() else {
@@ -131,7 +131,7 @@ impl Tree {
                 MachineOpcode::Generic(self.opcode),
                 &[node.dst],
                 &[acc, rhs],
-                &[],
+                [],
             );
             output.push(node.id);
             acc = node.dst;
@@ -143,12 +143,24 @@ impl Tree {
 /// Existing instruction IDs and virtual registers are reused.
 pub(crate) fn reassociate(f: &mut MachineFunction, analyses: &mut FunctionAnalysisCtx) -> usize {
     let mut changes = 0;
-    for block in f.blocks().collect::<Vec<_>>() {
-        let ids = f.block_insts(block).collect::<Vec<_>>();
-        let positions: HashMap<_, _> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        let mut visited = vec![false; ids.len()];
-        let mut removed = vec![false; ids.len()];
-        let mut plans: HashMap<InstId, Tree> = HashMap::new();
+    let mut ids = Vec::new();
+    let mut positions = HashMap::new();
+    let mut visited = Vec::new();
+    let mut removed = Vec::new();
+    let mut plans: HashMap<InstId, Tree> = HashMap::new();
+    let mut output = Vec::new();
+    let mut next_block = f.blocks().next();
+    while let Some(block) = next_block {
+        next_block = f.layout().next_block(block);
+        ids.clear();
+        ids.extend(f.block_insts(block));
+        positions.clear();
+        positions.extend(ids.iter().enumerate().map(|(i, &id)| (id, i)));
+        visited.clear();
+        visited.resize(ids.len(), false);
+        removed.clear();
+        removed.resize(ids.len(), false);
+        plans.clear();
         for &root in ids.iter().rev() {
             if visited[positions[&root]] {
                 continue;
@@ -171,8 +183,9 @@ pub(crate) fn reassociate(f: &mut MachineFunction, analyses: &mut FunctionAnalys
             continue;
         }
         changes += plans.len();
-        let mut output = Vec::with_capacity(ids.len());
-        for (i, id) in ids.into_iter().enumerate() {
+        output.clear();
+        output.reserve(ids.len());
+        for (i, &id) in ids.iter().enumerate() {
             if let Some(plan) = plans.get(&id) {
                 plan.emit(f, &mut output);
             } else if !removed[i] {
