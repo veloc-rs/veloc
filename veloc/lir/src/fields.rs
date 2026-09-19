@@ -113,12 +113,6 @@ impl FieldPools {
             _ => &mut [],
         }
     }
-    pub(crate) fn call_info_mut(&mut self, fields: &Fields) -> &mut CallInfo {
-        let Fields::Call(id) = fields else {
-            panic!("instruction has no call information")
-        };
-        &mut self.calls.get_mut(*id).info
-    }
     /// Consume the payload ownership. The caller must replace the instruction's
     /// field before releasing its old payload.
     pub(crate) fn remove(&mut self, fields: Fields) {

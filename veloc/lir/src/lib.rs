@@ -6,6 +6,8 @@
 extern crate alloc;
 
 pub mod control;
+mod regmask;
+pub use regmask::RegMask;
 pub mod error;
 mod fields;
 pub mod function;

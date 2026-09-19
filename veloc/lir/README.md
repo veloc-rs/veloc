@@ -75,13 +75,20 @@ compatibility module at `veloc_codegen::lir`.
 
 Each function owns an `InstStore`. `results()` borrows a compact `Reg` slice in logical signature order;
 `inputs()` borrows a compact register slice; `fields()` borrows non-register
-attributes. All three use separate recyclable typed pools.
+attributes. Register ranges use recyclable storage; fields are an inline enum
+with pools only for large payloads.
 Generated builders and encoders address these slices directly: there is no
 mixed operand enum or per-instruction order map. Use-def locations index inputs.
 Register allocation visits only results and inputs, leaving attributes untouched.
-`RegEffects` separately describes
-implicit physical register reads/writes, including call clobbers; dependency
-queries include these effects without treating them as SSA results.
+ABI parameter/result registers remain explicit operands through machine selection.
+`RegEffects` describes only additional implicit physical reads/writes. Calls carry
+a shared static `RegMask`, generated once per target ABI from storage roots,
+preserved registers and stack/frame roles. Register aliases share the same root;
+whole-root masks conservatively destroy all views, not partial lanes.
+Clobbers are not value definitions and do not create use-def occurrences.
+Liveness, scheduling, frame saving and allocation consume `clobbers()` separately
+from `defs()`. Allocation reserves each call's mask at the write position after
+its input reads; it does not infer survival from the enclosing function's ABI.
 
 Instructions have stable IDs; operand ranges
 and cold payloads live in recyclable pools. `InstRef` is a borrowed handle, not

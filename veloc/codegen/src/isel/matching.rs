@@ -4,8 +4,7 @@ use super::select::SelectResult;
 use alloc::vec::Vec;
 use smallvec::SmallVec;
 use veloc_lir::{
-    FieldValue, GenericOpcode, InstBuilder, InstId, InstRef, MachineOpcode, Reg, VRegBuilder,
-    VRegData,
+    FieldValue, GenericOpcode, InstBuilder, InstId, InstRef, Reg, VRegBuilder, VRegData,
 };
 use veloc_mir::Type;
 
@@ -104,11 +103,9 @@ impl Field {
     }
 }
 
-/// Data only: construction uses the common writer, not a target callback.
-pub(crate) struct Target {
-    pub opcode: u32,
-    pub metadata: &'static crate::target::TargetInstMetadata,
-}
+/// Generated construction entry points install complete instructions atomically.
+pub(crate) type Target =
+    fn(&mut InstBuilder<'_>, InstId, &[Reg], &[Reg], SmallVec<[FieldValue; 4]>) -> InstId;
 
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -356,18 +353,9 @@ pub(crate) fn execute(
                     }
                     operands.push(field);
                 }
-                let target = &program.targets[target];
-                out.push(
-                    store
-                        .writer()
-                        .with_effects(target.metadata.implicit_uses, target.metadata.implicit_defs)
-                        .write(
-                            MachineOpcode::Target(target.opcode),
-                            &results,
-                            &inputs,
-                            operands,
-                        ),
-                );
+                out.push(program.targets[target](
+                    store, source, &results, &inputs, operands,
+                ));
             }
             Op::Finish => {
                 assert!(accepted);

@@ -172,11 +172,7 @@ mod tests {
             .block_insts(veloc_lir::BlockId::from_u32(0))
             .collect::<Vec<_>>();
         let plan = RegisterAllocator::new(&target)
-            .allocate(
-                f,
-                veloc_mir::CallConv::SystemV,
-                &mut FunctionAnalysisCtx::default(),
-            )
+            .allocate(f, &mut FunctionAnalysisCtx::default())
             .unwrap();
         assert_eq!(
             plan.source()

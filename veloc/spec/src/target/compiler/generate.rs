@@ -440,7 +440,29 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
             })
             .count();
         let fields = instruction.operands.len() - inputs - results;
-        writeln!(out, "Self::{name} => {{\nif inst.results().len() != {results} || inst.inputs().len() != {inputs} || inst.fields().len() != {fields} {{ return Err(invalid()); }}").unwrap();
+        // A call contract carries ABI register operands in addition to the
+        // fixed, encoded operands declared by the machine opcode.
+        let call = instruction
+            .operands
+            .iter()
+            .any(|op| matches!(op, OperandConstraint::Call(_)));
+        let count = if call { "<" } else { "!=" };
+        let mut checks = vec![format!("inst.fields().len() != {fields}")];
+        for (domain, length) in [("results", results), ("inputs", inputs)] {
+            if !call || length != 0 {
+                checks.push(format!("inst.{domain}().len() {count} {length}"));
+            }
+        }
+        writeln!(
+            out,
+            "Self::{name} => {{\nif {} {{ return Err(invalid()); }}",
+            checks.join(" || ")
+        )
+        .unwrap();
+        if call {
+            writeln!(out, "if inst.results()[{results}..].iter().chain(inst.inputs()[{inputs}..].iter()).any(|reg| !reg.is_preg()) {{ return Err(invalid()); }}").unwrap();
+            out.push_str("if inst.fields().call_info().is_none_or(|info| info.stack.is_none()) { return Err(invalid()); }\n");
+        }
         for op in &instruction.operands {
             let (field_name, variant) = match op {
                 OperandConstraint::Imm(name) => (name, "Imm"),
@@ -752,6 +774,18 @@ pub(crate) fn check_abi_descriptors(module: &crate::target::ast::Module) -> Resu
                 ));
             }
         }
+        for name in &abi.preserved {
+            if module
+                .defs
+                .iter()
+                .any(|def| matches!(def, Def::Reg(reg) if reg.name == *name && reg.alias.is_some()))
+            {
+                return Err(format!(
+                    "ABI {} preserved registers must name storage roots: {name}",
+                    abi.name
+                ));
+            }
+        }
         if abi.stack.align.is_some_and(|a| !a.is_power_of_two()) {
             return Err(format!("ABI {} has invalid stack size/alignment", abi.name));
         }
@@ -790,6 +824,24 @@ pub(crate) fn generate_abi_descriptors(output: &mut String, module: &crate::targ
         generate_abi_assignment(output, &returns_name, &abi.returns, &reg_map);
         generate_abi_preserved_array(output, &preserved_name, &abi.preserved, &reg_map);
 
+        let preserved: BTreeSet<_> = abi.preserved.iter().map(|name| reg_map[name]).collect();
+        let mut words = Vec::<u64>::new();
+        for def in &module.defs {
+            let Def::Reg(reg) = def else { continue };
+            if reg.alias.is_some()
+                || preserved.contains(&reg.id)
+                || reg
+                    .roles
+                    .iter()
+                    .any(|role| role == "stack-pointer" || role == "frame-pointer")
+            {
+                continue;
+            }
+            let index = reg.id as usize;
+            words.resize(words.len().max(index / 64 + 1), 0);
+            words[index / 64] |= 1 << (index % 64);
+        }
+        writeln!(output, "static {prefix}_CLOBBERS: &[u64] = &{words:?};").unwrap();
         let arch = abi_arch_expr(&abi.arch).expect("checked ABI architecture");
         let align = abi.stack.align.unwrap_or(16);
         let reserved = abi.stack.reserved;
@@ -807,6 +859,7 @@ pub static {prefix}: AbiDescriptor = AbiDescriptor {{
     args: {args_name},
     returns: {returns_name},
     preserved: {preserved_name},
+    clobbers: veloc_lir::RegMask::from_static({prefix}_CLOBBERS),
 }};
 "#,
             prefix = prefix,

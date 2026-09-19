@@ -465,6 +465,7 @@ impl<'a> IRTranslator<'a> {
                 );
                 let sig_id = callee.signature;
                 let call_info = CallInfo {
+                    clobbers: Default::default(),
                     stack: None,
                     stack_args: Default::default(),
                     sig: self.module.get_signature(sig_id).clone(),
@@ -490,6 +491,7 @@ impl<'a> IRTranslator<'a> {
             InstView::CallIndirect { ptr, args, sig_id } => {
                 let call_args = *args;
                 let call_info = CallInfo {
+                    clobbers: Default::default(),
                     stack: None,
                     stack_args: Default::default(),
                     sig: self.module.get_signature(*sig_id).clone(),

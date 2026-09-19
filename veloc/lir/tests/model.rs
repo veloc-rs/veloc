@@ -566,6 +566,7 @@ fn variable_views_preserve_call_and_return_operands() {
     let args: Vec<_> = (8..24).map(Reg::new_vreg).collect();
     let symbol = SymbolId::from_u32(3);
     let info = veloc_lir::CallInfo {
+        clobbers: veloc_lir::RegMask::from_static(&[1 << 3, 1]),
         sig: veloc_mir::Signature::new(
             vec![Type::I64; args.len()],
             vec![Type::I64; results.len()],
@@ -599,6 +600,13 @@ fn variable_views_preserve_call_and_return_operands() {
         assert_eq!(actual_args, args);
         function.inst(inst).validate().unwrap();
     }
+    assert_eq!(
+        function.inst(direct).clobbers().collect::<Vec<_>>(),
+        [Reg::new_preg(3), Reg::new_preg(64)]
+    );
+    assert_eq!(function.defs(Reg::new_preg(3)).count(), 0);
+    assert!(info.clobbers.contains(veloc_lir::PReg::new(64)));
+    assert!(!info.clobbers.contains(veloc_lir::PReg::new(63)));
     // Each instruction owns its call contract. Views borrow it directly.
     let direct_info = match function.inst(direct).view() {
         InstView::Call(call) => call.info,
@@ -610,14 +618,16 @@ fn variable_views_preserve_call_and_return_operands() {
     };
     assert!(!core::ptr::eq(direct_info, indirect_info));
     let indirect_info = indirect_info.clone();
-    function.editor().set_call_stack(
-        direct,
-        Default::default(),
-        veloc_lir::StackArea {
-            size: 32,
-            align: 16,
-        },
-    );
+    let mut lowered = info.clone();
+    lowered.stack = Some(veloc_lir::StackArea {
+        size: 32,
+        align: 16,
+    });
+    function
+        .editor()
+        .rewriter(direct)
+        .call(&results, symbol, &args, lowered);
+    function.check_refs().unwrap();
     assert_eq!(function.call_info(direct).stack.unwrap().size, 32);
     assert!(function.call_info(indirect).stack.is_none());
     // Replacing the call with a non-call drops only its own contract.
@@ -631,14 +641,16 @@ fn variable_views_preserve_call_and_return_operands() {
     };
     assert_eq!(moved.info, &indirect_info);
     assert!(function.try_call_info(indirect).is_none());
-    function.editor().set_call_stack(
-        direct,
-        Default::default(),
-        veloc_lir::StackArea {
-            size: 16,
-            align: 16,
-        },
-    );
+    let mut lowered = indirect_info.clone();
+    lowered.stack = Some(veloc_lir::StackArea {
+        size: 16,
+        align: 16,
+    });
+    function
+        .editor()
+        .rewriter(direct)
+        .callind(&results, Reg::new_vreg(25), &args, lowered);
+    function.check_refs().unwrap();
     assert_eq!(function.call_info(direct).stack.unwrap().size, 16);
 
     let ret = function.editor().writer().ret(&args);
@@ -681,6 +693,7 @@ fn optional_validation_is_separate_from_direct_views() {
     );
     assert!(function.inst(cmp).validate().is_err());
     let info = veloc_lir::CallInfo {
+        clobbers: Default::default(),
         sig: veloc_mir::Signature::new([Type::I64], [Type::I64], veloc_mir::CallConv::SystemV),
         stack: None,
         stack_args: Default::default(),

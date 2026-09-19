@@ -268,16 +268,6 @@ impl FuncEditor<'_> {
         )
     }
 
-    pub fn set_call_stack(
-        &mut self,
-        id: InstId,
-        slots: smallvec::SmallVec<[StackSlot; 2]>,
-        stack: crate::StackArea,
-    ) {
-        self.function.body.store.set_call_stack(id, slots, stack);
-        self.changed_inst(id);
-    }
-
     pub fn set_inst_effects(&mut self, id: InstId, effects: crate::RegEffects) {
         self.function.body.store.set_effects(id, effects);
         self.changed_inst(id);

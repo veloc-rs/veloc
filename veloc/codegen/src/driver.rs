@@ -355,11 +355,8 @@ impl<'a> CodegenPipeline<'a> {
         self.verify_function("scheduled", &mfunc, verify_selected)?;
 
         // Allocation owns its exact input until its plan is materialized.
-        let allocation = crate::regalloc::RegisterAllocator::new(self.target).allocate(
-            mfunc,
-            func_sig.call_conv,
-            ctx.function_analyses,
-        )?;
+        let allocation = crate::regalloc::RegisterAllocator::new(self.target)
+            .allocate(mfunc, ctx.function_analyses)?;
         let mut mfunc = allocation.materialize();
         if ctx.options.collect_stats {
             ctx.stats.final_inst_count += mfunc

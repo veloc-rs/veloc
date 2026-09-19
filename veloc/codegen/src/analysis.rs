@@ -732,7 +732,7 @@ fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
                     uses.insert(reg);
                 }
             }
-            for reg in inst.defs() {
+            for reg in inst.defs().chain(inst.clobbers()) {
                 defs.insert(reg);
             }
         }

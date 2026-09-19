@@ -373,14 +373,15 @@ impl InstStore {
         self.set_operand(self.input_id(id, index), reg);
     }
     pub fn set_inputs(&mut self, id: InstId, inputs: &[Reg]) {
-        assert_eq!(
-            inputs.len(),
-            self.inputs(id).len(),
-            "input shape must not change"
-        );
-        for (i, &reg) in inputs.iter().enumerate() {
-            self.set_input(id, i, reg);
+        if self.inputs(id).len() == inputs.len() {
+            for (index, &reg) in inputs.iter().enumerate() {
+                self.set_input(id, index, reg);
+            }
+            return;
         }
+        let implicit = self.implicit_uses(id).to_vec();
+        self.release_registers(self.instructions[id].inputs.all);
+        self.instructions[id].inputs = self.alloc_group(id, RefRole::Use, inputs, &implicit);
     }
     pub fn memory(&self, id: InstId) -> Option<MemoryAccess> {
         self.memory[id]
@@ -638,20 +639,6 @@ impl InstStore {
     fn delete_edge(&mut self, id: crate::EdgeId) {
         let edge = self.edges[id].take().expect("deleted edge");
         self.release_registers(edge.args);
-    }
-    pub(crate) fn set_call_stack(
-        &mut self,
-        id: InstId,
-        slots: smallvec::SmallVec<[crate::StackSlot; 2]>,
-        stack: crate::StackArea,
-    ) {
-        let info = self.fields.call_info_mut(&self.instructions[id].fields);
-        assert!(
-            stack.align.is_power_of_two(),
-            "invalid call stack alignment"
-        );
-        info.stack_args = slots;
-        info.stack = Some(stack);
     }
 
     pub fn uses(&self, reg: Reg) -> RegRefs<'_> {

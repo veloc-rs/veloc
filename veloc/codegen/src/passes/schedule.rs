@@ -121,7 +121,7 @@ pub(crate) fn schedule(
 }
 
 fn before(f: &MachineFunction, id: InstId, live: &mut RegSet) {
-    for reg in f.inst(id).defs() {
+    for reg in f.inst(id).defs().chain(f.inst(id).clobbers()) {
         live.remove(&reg);
     }
     for reg in f.inst(id).uses() {
@@ -167,7 +167,7 @@ fn region(
         let mut read: SmallVec<[_; 4]> = f.inst(id).uses().collect();
         read.sort();
         read.dedup();
-        let mut write: SmallVec<[_; 2]> = f.inst(id).defs().collect();
+        let mut write: SmallVec<[_; 2]> = f.inst(id).defs().chain(f.inst(id).clobbers()).collect();
         write.sort();
         write.dedup();
         for &r in &read {

@@ -38,7 +38,9 @@ fn production_target_contracts_generate_all_consumers() {
         "register_constraints",
         "pub fn validate",
         "pub fn required_features",
-        "TargetInst::X86Popcnt32.required_features()",
+        "Self::X86Popcnt32 => FeatureSet::empty().with(Feature::POPCNT)",
+        "Op::CheckFeatures as u8",
+        "features: &[FeatureSet::empty().with(Feature::POPCNT).as_words()]",
         "pub fn write_assembly",
         "pub fn emit",
         "GenericOpcode::",
@@ -58,7 +60,10 @@ fn production_target_contracts_generate_all_consumers() {
     assert!(!output.contains("match candidate"));
     assert!(!output.contains("SelectorHost"));
     assert!(output.contains("matching::Field::Input("));
-    assert!(output.contains("matching::Target {"));
+    assert!(output.contains("fn build_x86call("));
+    assert!(output.contains("abi_args: &[Reg]"));
+    assert!(output.contains("fn construct_x86callreg_from_callind("));
+    assert!(!output.contains("matching::Target {"));
 }
 
 #[test]

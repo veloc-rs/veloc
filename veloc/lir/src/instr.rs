@@ -267,6 +267,14 @@ impl<'a> InstRef<'a> {
         matches!(self.opcode(), MachineOpcode::Invalid)
     }
 
+    /// ABI clobbers are not value definitions and have no use-def occurrences.
+    pub fn clobbers(self) -> impl Iterator<Item = Reg> + 'a {
+        self.store
+            .call_info(self.id)
+            .into_iter()
+            .flat_map(|info| info.clobbers.iter())
+    }
+
     /// Explicit results and implicit physical register writes.
     pub fn defs(&self) -> impl Iterator<Item = Reg> + 'a {
         self.results()

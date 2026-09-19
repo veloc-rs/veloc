@@ -1,7 +1,7 @@
 //! Global linear scan with CFG liveness, fixed registers and whole-range spills.
 use super::allocation::{Allocation, InstAllocation};
 use crate::analysis::FunctionAnalysisCtx;
-use crate::target::{CallConv, RegClass, SpillKind, TargetRegalloc};
+use crate::target::{RegClass, SpillKind, TargetRegalloc};
 use crate::{Error, Result};
 use alloc::format;
 use alloc::vec::Vec;
@@ -52,7 +52,6 @@ impl<'a> RegisterAllocator<'a> {
     pub fn allocate(
         mut self,
         mut source: MachineFunction,
-        cc: veloc_mir::CallConv,
         analyses: &mut FunctionAnalysisCtx,
     ) -> Result<Allocation> {
         let f = &source;
@@ -60,7 +59,6 @@ impl<'a> RegisterAllocator<'a> {
         let live = analyses.liveness(f, self.target);
         let mut ranges = SecondaryMap::<VReg, Option<(u32, u32)>>::with_capacity(f.vregs().len());
         let mut fixed = Vec::<Vec<(u32, u32)>>::new();
-        let mut calls = Vec::new();
         let mut constraints =
             SecondaryMap::<VReg, Option<Vec<Reg>>>::with_capacity(f.vregs().len());
         let mut local_fixed = Vec::<Option<(u32, u32)>>::new();
@@ -107,8 +105,12 @@ impl<'a> RegisterAllocator<'a> {
                 for reg in inst.defs() {
                     extend_range(&mut ranges, &mut local_fixed, reg, pos * 2 + 1);
                 }
-                if self.target.is_call(inst) || f.try_call_info(id).is_some() {
-                    calls.push(pos * 2 + 1);
+                // Clobbers reserve a write point, not the entire block span
+                // between separate calls. Uses occur one position earlier.
+                for reg in inst.clobbers() {
+                    let index = reg.index() as usize;
+                    fixed.resize_with(fixed.len().max(index + 1), Vec::new);
+                    fixed[index].push((pos * 2 + 1, pos * 2 + 1));
                 }
                 pos += 1;
             }
@@ -128,9 +130,20 @@ impl<'a> RegisterAllocator<'a> {
                 }
             }
         }
-        calls.sort_unstable();
         for ranges in &mut fixed {
             ranges.sort_unstable_by_key(|range| range.0);
+            // Keep ends monotone for the interference binary search below.
+            let mut count = 0;
+            for i in 0..ranges.len() {
+                let range = ranges[i];
+                if count > 0 && range.0 <= ranges[count - 1].1 {
+                    ranges[count - 1].1 = ranges[count - 1].1.max(range.1);
+                } else {
+                    ranges[count] = range;
+                    count += 1;
+                }
+            }
+            ranges.truncate(count);
         }
         let mut intervals: Vec<_> = ranges
             .iter()
@@ -148,7 +161,6 @@ impl<'a> RegisterAllocator<'a> {
             })
             .collect();
         intervals.sort_by_key(|i| (i.start, i.reg));
-        let preserved = CallConv::from(cc).preserved_regs(self.target.desc().arch);
         let mut active = Vec::<Option<Interval>>::new();
         for interval in intervals {
             for old in &mut active {
@@ -156,16 +168,11 @@ impl<'a> RegisterAllocator<'a> {
                     *old = None;
                 }
             }
-            let next_call = calls.partition_point(|&point| point <= interval.start);
-            let crosses_call = calls
-                .get(next_call)
-                .is_some_and(|&point| point < interval.end);
             let available = |&reg: &Reg| {
                 interval
                     .allowed
                     .as_ref()
                     .is_none_or(|allowed| allowed.contains(&reg))
-                    && (!crosses_call || preserved.contains(&reg))
                     && !self.target.spill_scratch(interval.class).contains(&reg)
                     && !fixed.get(reg.index() as usize).is_some_and(|ranges| {
                         let next = ranges.partition_point(|&(_, end)| end < interval.start);
@@ -279,7 +286,7 @@ impl<'a> RegisterAllocator<'a> {
                     let mut plan = InstAllocation::default();
                     let mut occupied: Vec<_> = inst.uses().filter(|r| r.is_preg()).collect();
                     if !self.target.is_call(inst) {
-                        occupied.extend(inst.defs().filter(|r| r.is_preg()));
+                        occupied.extend(inst.defs().chain(inst.clobbers()).filter(|r| r.is_preg()));
                     }
                     let mut bindings = HashMap::new();
                     let mut loads = Vec::new();

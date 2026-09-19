@@ -64,25 +64,6 @@ fn registers(assignments: &[AbiAssignment]) -> impl Iterator<Item = Reg> + '_ {
     })
 }
 
-fn call_effects(target: &dyn TargetMachine, plan: &AbiPlan) -> veloc_lir::RegEffects {
-    let file = &target.desc().registers;
-    let preserved = plan.abi.preserved;
-    let defs: Vec<_> = file
-        .regs
-        .iter()
-        .map(|info| info.preg)
-        .filter(|reg| {
-            !preserved.contains(reg)
-                && *reg != file.special_regs.stack_pointer
-                && Some(*reg) != file.special_regs.frame_pointer
-        })
-        .collect();
-    veloc_lir::RegEffects {
-        uses: registers(&plan.args).collect(),
-        defs,
-    }
-}
-
 /// Directly emits moves at a boundary. The insertion point advances after a
 /// call, while before an instruction successive inserts naturally keep order.
 struct Transfer<'a> {
@@ -239,6 +220,8 @@ fn lower_callsite(
         "call result count mismatch"
     );
 
+    let results = SmallVec::<[Reg; 2]>::from_slice(results);
+
     // Place logical arguments in their ABI locations before the call.
     let mut stack_args = SmallVec::new();
     {
@@ -250,47 +233,46 @@ fn lower_callsite(
         }
     }
 
-    rewrite_call(target, mfunc, id, plan, callee, stack_args);
+    // Commit the full ABI call before defining the original SSA results.
+    let args: SmallVec<[Reg; 8]> = registers(&plan.args).collect();
+    let returns: SmallVec<[Reg; 2]> = registers(&plan.returns).collect();
+    let inst = mfunc.inst(id);
+    let view = inst.view();
+    let mut info = match view {
+        veloc_lir::InstView::Call(call) => call.info.clone(),
+        veloc_lir::InstView::CallIndirect(call) => call.info.clone(),
+        _ => unreachable!("planned call"),
+    };
+    info.stack_args = stack_args;
+    info.stack = Some(plan.stack);
+    info.clobbers = plan.abi.clobbers;
+    let memory = inst.memory();
+    let effects = inst.effects().unwrap_or_default();
+    let uses = SmallVec::<[Reg; 4]>::from_slice(effects.uses);
+    let defs = SmallVec::<[Reg; 4]>::from_slice(effects.defs);
+    // Only the callee is needed after borrowing the old call contract.
+    let direct = match view {
+        veloc_lir::InstView::Call(call) => Some(call.callee),
+        _ => None,
+    };
+    {
+        let mut editor = mfunc.editor();
+        let mut writer = editor.rewriter(id).with_effects(&uses, &defs);
+        if let Some(memory) = memory {
+            writer = writer.with_memory(memory);
+        }
+        if let Some(callee) = direct {
+            writer.call(&returns, callee, &args, info);
+        } else {
+            writer.callind(&returns, callee.expect("indirect callee"), &args, info);
+        }
+    }
 
-    // Read the ABI results back into the original SSA result registers.
+    // The old definitions are now released, so the copies can reuse their IDs.
     let mut transfer = Transfer::new(target, mfunc, Insert::After(id));
-    for (index, assignment) in plan.returns.iter().enumerate() {
-        let dst = transfer.func.inst(id).results()[index];
-        let AbiLocation::Reg(reg) = assignment.loc else {
-            unreachable!("checked register return");
-        };
-        // Release the old definition before creating its replacement copy.
-        transfer.func.editor().set_inst_result(id, index, reg);
+    for (&dst, assignment) in results.iter().zip(&plan.returns) {
         transfer.read(dst, assignment);
     }
-}
-
-fn rewrite_call(
-    target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction,
-    id: InstId,
-    plan: &AbiPlan,
-    callee: Option<Reg>,
-    stack_args: SmallVec<[StackSlot; 2]>,
-) {
-    // The call now uses ABI locations, not the original logical argument list.
-    // Keep the indirect callee as its own explicit input.
-    let mut inputs = SmallVec::<[Reg; 8]>::new();
-    inputs.extend(callee);
-    inputs.extend(registers(&plan.args));
-    let mut effects = call_effects(target, plan);
-    if let Some(existing) = mfunc.inst(id).effects() {
-        effects.uses.extend_from_slice(existing.uses);
-        effects.defs.extend_from_slice(existing.defs);
-    }
-    effects.uses.sort_unstable();
-    effects.uses.dedup();
-    effects.defs.sort_unstable();
-    effects.defs.dedup();
-    let mut editor = mfunc.editor();
-    editor.set_inst_inputs(id, &inputs);
-    editor.set_call_stack(id, stack_args, plan.stack);
-    editor.set_inst_effects(id, effects);
 }
 
 fn lower_return(

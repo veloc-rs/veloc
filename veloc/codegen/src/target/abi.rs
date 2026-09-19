@@ -39,6 +39,7 @@ pub struct AbiDescriptor {
     pub args: AbiAssignFn,
     pub returns: AbiAssignFn,
     pub preserved: &'static [Reg],
+    pub clobbers: veloc_lir::RegMask,
 }
 
 /// Generated argument/return rules share this interface; neither edits LIR.

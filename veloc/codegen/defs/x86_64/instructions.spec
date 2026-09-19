@@ -721,6 +721,7 @@ op X86StoreF64Stack(src: Value<Type::F64>, slot: StackSlot) -> () {
 
 op X86Call(target: Global, info: CallInfo) -> () {
     encoding = Emission::relative(target, Legacy { prefix: Prefix::None, map: OpcodeMap::Primary, opcode: 0xE8, wide: false }, Form::None, 0);
+    implicit = { reads: [RSP] };
     flow = Call;
 }
 
@@ -733,6 +734,7 @@ op X86CallReg(target: Value<AddressValue>, info: CallInfo) -> () {
     registers = {
         target: GPR64,
     };
+    implicit = { reads: [RSP] };
     flow = Call;
 }
 

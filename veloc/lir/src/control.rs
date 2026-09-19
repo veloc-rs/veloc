@@ -20,6 +20,8 @@ pub struct StackArea {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallInfo {
     pub sig: Signature,
+    /// Registers whose pre-call contents cannot survive this call.
+    pub clobbers: crate::RegMask,
     /// None until ABI lowering; Some with size zero is a lowered call.
     pub stack: Option<StackArea>,
     /// Outgoing stack locations read by this call. Calls remain memory barriers;

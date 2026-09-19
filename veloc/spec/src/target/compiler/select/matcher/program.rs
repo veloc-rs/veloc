@@ -1,5 +1,5 @@
 //! Compile the shared matching graph and construction recipes to bytecode.
-//! Storage positions and target metadata are data; only custom predicates call Rust.
+//! Matching uses tables; schema-generated constructors install complete instructions.
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -12,6 +12,7 @@ pub(in super::super) struct Adapters<'a> {
     layouts: &'a BTreeMap<String, crate::storage::operands::Projection>,
     predicates: Vec<String>,
     encodings: BTreeMap<&'static str, (usize, bool)>,
+    builders: BTreeMap<String, String>,
 }
 fn intern<T: PartialEq>(items: &mut Vec<T>, item: T) -> usize {
     if let Some(id) = items.iter().position(|old| *old == item) {
@@ -31,7 +32,141 @@ impl<'a> Adapters<'a> {
             layouts,
             predicates: Vec::new(),
             encodings: BTreeMap::new(),
+            builders: BTreeMap::new(),
         }
+    }
+    fn builder(&mut self, opcode: &str, source: &str, definition: &FinalInstDef) -> String {
+        use crate::storage::operands::{Domain, Shape};
+        let call = definition
+            .operands
+            .iter()
+            .any(|op| matches!(op, OperandConstraint::Call(_)));
+        let build = format!("build_{}", opcode.to_ascii_lowercase());
+        let adapter = if call {
+            format!(
+                "construct_{}_from_{}",
+                opcode.to_ascii_lowercase(),
+                source.to_ascii_lowercase()
+            )
+        } else {
+            format!("construct_{}", opcode.to_ascii_lowercase())
+        };
+        if self.builders.contains_key(&adapter) {
+            return adapter;
+        }
+        let mut params = vec!["writer: veloc_lir::InstWriter<'_>".to_owned()];
+        let mut args = Vec::new();
+        let mut results = Vec::new();
+        let mut inputs = Vec::new();
+        let mut fields = Vec::new();
+        let mut reads = String::new();
+        for op in &definition.operands {
+            let (name, ty, variant) = match op {
+                OperandConstraint::Def(name) | OperandConstraint::Use(name) => (name, "Reg", None),
+                OperandConstraint::FixedUse { src, .. } => (src, "Reg", None),
+                OperandConstraint::Imm(name) => (name, "i64", Some("Imm")),
+                OperandConstraint::Block(name) => (name, "veloc_lir::EdgeId", Some("Edge")),
+                OperandConstraint::Global(name) => (name, "veloc_lir::SymbolId", Some("Global")),
+                OperandConstraint::StackSlot(name) => {
+                    (name, "veloc_lir::StackSlot", Some("StackSlot"))
+                }
+                OperandConstraint::Call(name) => (name, "veloc_lir::CallInfo", Some("Call")),
+            };
+            let name = format!("operand_{}", sanitize_ident(name));
+            params.push(format!("{name}: {ty}"));
+            args.push(name.clone());
+            if let Some(variant) = variant {
+                writeln!(reads, "let FieldValue::{variant}({name}) = fields.next().expect(\"generated field\") else {{ unreachable!(\"generated field type\") }};").unwrap();
+                fields.push(format!("FieldValue::{variant}({name})"));
+            } else {
+                let (domain, list) = if matches!(op, OperandConstraint::Def(_)) {
+                    ("results", &mut results)
+                } else {
+                    ("inputs", &mut inputs)
+                };
+                writeln!(reads, "let {name} = _{domain}[{}];", list.len()).unwrap();
+                list.push(name);
+            }
+        }
+        if !self.builders.contains_key(&build) {
+            let mut body = String::new();
+            if call {
+                params.extend([
+                    "abi_args: &[Reg]".into(),
+                    "abi_results: &[Reg]".into(),
+                    "effects: veloc_lir::RegEffects<&[Reg]>".into(),
+                ]);
+            }
+            writeln!(
+                body,
+                "fn {build}({}) -> veloc_lir::InstId {{",
+                params.join(", ")
+            )
+            .unwrap();
+            if call {
+                writeln!(body, "let mut inputs = smallvec::SmallVec::<[Reg; 8]>::from_slice(&[{}]); inputs.extend_from_slice(abi_args);", inputs.join(", ")).unwrap();
+                writeln!(body, "let mut results = smallvec::SmallVec::<[Reg; 4]>::from_slice(&[{}]); results.extend_from_slice(abi_results);", results.join(", ")).unwrap();
+                writeln!(
+                    body,
+                    "let metadata = target_inst_metadata(TargetInst::{opcode});"
+                )
+                .unwrap();
+                body.push_str(
+                    "let mut uses = smallvec::SmallVec::<[Reg; 4]>::from_slice(metadata.implicit_uses);
+                     let mut defs = smallvec::SmallVec::<[Reg; 4]>::from_slice(metadata.implicit_defs);
+                     for &reg in effects.uses { if !uses.contains(&reg) { uses.push(reg); } }
+                     for &reg in effects.defs { if !defs.contains(&reg) { defs.push(reg); } }
+"
+                );
+                writeln!(body, "writer.with_effects(&uses, &defs).write(veloc_lir::MachineOpcode::Target(TargetInst::{opcode}.as_u32()), &results, &inputs, [{}])", fields.join(", ")).unwrap();
+            } else {
+                writeln!(
+                    body,
+                    "TargetInst::{opcode}.write(writer, &[{}], &[{}], [{}])",
+                    results.join(", "),
+                    inputs.join(", "),
+                    fields.join(", ")
+                )
+                .unwrap();
+            }
+            body.push_str("}\n");
+            self.builders.insert(build.clone(), body);
+        }
+        let mut body = format!(
+            "fn {adapter}(store: &mut veloc_lir::InstBuilder<'_>, _source: veloc_lir::InstId, _results: &[Reg], _inputs: &[Reg], _fields: smallvec::SmallVec<[FieldValue; 4]>) -> veloc_lir::InstId {{\n"
+        );
+        if !fields.is_empty() {
+            body.push_str("let mut fields = _fields.into_iter();\n");
+        }
+        body.push_str(&reads);
+        if call {
+            // Resolve the variadic input position from the source definition,
+            // never from opcode names or runtime instruction matching.
+            let input = self.layouts[source]
+                .members
+                .iter()
+                .find(|m| m.domain == Domain::Input && m.field.shape == Shape::Sequence)
+                .expect("call construction requires source ABI arguments");
+            writeln!(body, "let source = store.get(_source);").unwrap();
+            writeln!(body, "let abi_args = smallvec::SmallVec::<[Reg; 8]>::from_slice(&source.inputs()[{}..]);", input.index).unwrap();
+            body.push_str(
+                "let abi_results = smallvec::SmallVec::<[Reg; 4]>::from_slice(source.results());\n",
+            );
+            body.push_str("let effects = source.effects().unwrap_or_default();\nlet uses = smallvec::SmallVec::<[Reg; 4]>::from_slice(effects.uses);\nlet defs = smallvec::SmallVec::<[Reg; 4]>::from_slice(effects.defs);\n");
+            args.extend([
+                "&abi_args".into(),
+                "&abi_results".into(),
+                "veloc_lir::RegEffects { uses: &uses, defs: &defs }".into(),
+            ]);
+        }
+        let arguments = if args.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", args.join(", "))
+        };
+        writeln!(body, "{build}(store.writer(){arguments})\n}}").unwrap();
+        self.builders.insert(adapter.clone(), body);
+        adapter
     }
     fn field(&self, opcode: &str, field: &str, access: Access) -> String {
         use crate::storage::operands::{Domain, Shape};
@@ -69,6 +204,9 @@ impl<'a> Adapters<'a> {
         extractors: &HashMap<String, ExtractorDef>,
         decls: &HashMap<String, DeclDef>,
     ) {
+        for builder in self.builders.values() {
+            out.push_str(builder);
+        }
         writeln!(out, "const _: () = {{").unwrap();
         for (op, (arity, branch)) in &self.encodings {
             writeln!(out, "let (arity, branch) = crate::isel::matching::Op::{op}.format(); assert!(arity == {arity} && branch == {branch});").unwrap();
@@ -298,7 +436,8 @@ impl Code {
                 lists[category].push(slot);
             }
             assert_eq!(cursor, args.len(), "target operand count");
-            let mut encoded = vec![intern(&mut self.targets, opcode.clone())];
+            let builder = adapters.builder(opcode, &rule.opcode, definition);
+            let mut encoded = vec![intern(&mut self.targets, builder)];
             for list in lists {
                 encoded.push(list.len());
                 encoded.extend(list);
@@ -444,11 +583,7 @@ impl Code {
         writeln!(
             out,
             "targets: &[{}],",
-            self.targets
-                .iter()
-                .map(|op| format!("crate::isel::matching::Target {{ opcode: TargetInst::{op}.as_u32(), metadata: target_inst_metadata(TargetInst::{op}) }}"))
-                .collect::<Vec<_>>()
-                .join(",")
+            self.targets.iter().cloned().collect::<Vec<_>>().join(",")
         )
         .unwrap();
         writeln!(

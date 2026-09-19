@@ -4,7 +4,7 @@ use super::{
 };
 use crate::target::{SelectResult, SelectionContext, TargetInstructionSelector};
 use veloc_lir::InstRead;
-use veloc_lir::{GenericOpcode, MachineOpcode};
+use veloc_lir::MachineOpcode;
 
 #[derive(Debug, Clone, Copy)]
 pub struct X86_64Selector {
@@ -31,7 +31,6 @@ impl TargetInstructionSelector for X86_64Selector {
             return Ok(SelectResult::Keep);
         }
 
-        let opcode = inst.opcode();
         let memory = inst.memory();
         let view = inst.view();
         match view {
@@ -74,39 +73,6 @@ impl TargetInstructionSelector for X86_64Selector {
             ctx.edge_transfers.extend(store.into_edge_transfers());
             result
         };
-
-        if matches!(
-            opcode,
-            MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind)
-        ) {
-            // ABI lowering owns the dynamic call contract. Selection only
-            // combines it with the selected opcode's static register effects.
-            let source = ctx
-                .mfunc
-                .inst(ctx.inst_id)
-                .effects()
-                .map(|e| veloc_lir::RegEffects {
-                    uses: e.uses.to_vec(),
-                    defs: e.defs.to_vec(),
-                })
-                .expect("call must be ABI lowered before selection");
-            let calls: alloc::vec::Vec<_> = ctx.selected.iter().copied().filter(|&id| {
-                matches!(ctx.mfunc.inst(id).opcode(), MachineOpcode::Target(op)
-                    if generated::target_inst_metadata(TargetInst::from_u32(op)).flow == veloc_lir::ControlFlow::Call)
-            }).collect();
-            assert_eq!(calls.len(), 1, "selection must preserve one call boundary");
-            let selected = calls[0];
-            let mut effects = source;
-            if let Some(existing) = ctx.mfunc.inst(selected).effects() {
-                effects.uses.extend_from_slice(existing.uses);
-                effects.defs.extend_from_slice(existing.defs);
-            }
-            effects.uses.sort_unstable();
-            effects.uses.dedup();
-            effects.defs.sort_unstable();
-            effects.defs.dedup();
-            ctx.mfunc.editor().set_inst_effects(selected, effects);
-        }
 
         if let Some(access) = memory {
             let mut memory_inst = None;
