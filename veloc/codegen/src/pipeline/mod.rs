@@ -12,6 +12,44 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use veloc_lir::MachineFunction;
 
+/// Shared execution for built-in and target passes.
+pub(crate) fn run_function_pass(
+    pass: &dyn FunctionPass,
+    function: &mut MachineFunction,
+    ctx: &mut FunctionPassContext<'_>,
+) -> crate::Result<PassEffect> {
+    #[cfg(feature = "std")]
+    let start = ctx.options.collect_stats.then(std::time::Instant::now);
+    let effect = pass
+        .run(function, ctx)
+        .map_err(|e| crate::Error::codegen(alloc::format!("{}: {e}", pass.name())))?;
+    #[cfg(feature = "std")]
+    if let Some(start) = start {
+        *ctx.stats.pass_times.entry(pass.name().into()).or_default() += start.elapsed();
+    }
+    ctx.function_analyses.apply(effect.change_set);
+    dump_after(pass.name(), function, ctx.options);
+    Ok(effect)
+}
+
+pub(crate) fn dump_after(name: &str, function: &MachineFunction, options: &crate::CodegenOptions) {
+    #[cfg(feature = "std")]
+    if options.dump_after.iter().any(|p| p == "*" || p == name)
+        && options
+            .dump_function
+            .as_deref()
+            .is_none_or(|filter| filter == function.name)
+    {
+        std::eprintln!(
+            "===== LIR after {name}: {} =====\n{}",
+            function.name,
+            function.format_for_dump()
+        );
+    }
+    #[cfg(not(feature = "std"))]
+    let _ = (name, function, options);
+}
+
 pub struct FunctionPassPipeline {
     passes: Vec<Box<dyn FunctionPass>>,
 }
@@ -40,9 +78,8 @@ impl FunctionPassPipeline {
     ) -> Result<PassEffect> {
         let mut combined = PassEffect::NONE;
         for pass in &self.passes {
-            let effect = pass.run(mfunc, ctx)?;
+            let effect = run_function_pass(&**pass, mfunc, ctx)?;
             if !effect.change_set.is_empty() {
-                ctx.function_analyses.apply(effect.change_set);
                 combined.change_set |= effect.change_set;
             }
         }

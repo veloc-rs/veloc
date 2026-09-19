@@ -400,12 +400,12 @@ pub trait TargetFrameLowering: Send + Sync {
 }
 
 pub trait TargetPassConfig: Send + Sync {
-    /// 在合法化之后追加 target 自定义 function passes。
-    fn post_legalize_passes(&self) -> Vec<Box<dyn FunctionPass>> {
+    /// Target preparation before legalization; may introduce generic operations.
+    fn prepare_passes(&self) -> Vec<Box<dyn FunctionPass>> {
         Vec::new()
     }
 
-    /// Target preparation before instruction selection, after generic combine.
+    /// Selection preparation. Must preserve ABI lowering and target legality.
     /// Targets needing bank assignment may install it here; it is not a
     /// prerequisite imposed by the common pipeline. Changes to virtual-register
     /// placement constraints invalidate INST_SEMANTICS analyses.

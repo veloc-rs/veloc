@@ -8,8 +8,8 @@ use crate::isel::InstructionSelectionPass;
 use crate::object::ObjectFileBuilder;
 use crate::passes::{FrameFinalizePass, LegalizePass, PostIselOptimizePass};
 use crate::pipeline::{
-    CompiledFunction, CompiledModule, FunctionPass, FunctionPassContext, FunctionPassPipeline,
-    ModulePassContext, ModulePassPipeline,
+    CompiledFunction, CompiledModule, FunctionPassContext, FunctionPassPipeline, ModulePassContext,
+    ModulePassPipeline, run_function_pass,
 };
 use crate::target::TargetMachine;
 use crate::translate::IRTranslator;
@@ -29,18 +29,18 @@ pub struct CodegenStats {
     pub legalized_inst_count: usize,
     /// 指令选择后指令数
     pub selected_inst_count: usize,
-    /// 指令融合后指令数
-    pub combined_inst_count: usize,
-    /// 寄存器分配后指令数
+    /// Instruction count after frame finalization.
     pub final_inst_count: usize,
-    /// 虚拟寄存器数量
+    /// Virtual registers immediately after MIR translation.
     pub vreg_count: usize,
-    /// 物理寄存器使用量
-    pub preg_count: usize,
-    /// 栈槽数量（溢出的虚拟寄存器）
+    /// All stack objects, including locals, ABI areas and spills.
     pub stack_slot_count: usize,
     /// 栈帧大小（字节）
-    pub stack_frame_size: u32,
+    pub stack_frame_size: u64,
+    /// Total emitted code and embedded data bytes, excluding object metadata.
+    pub code_bytes: usize,
+    /// Per-function pass time, aggregated by name. Available with std.
+    pub pass_times: BTreeMap<alloc::string::String, core::time::Duration>,
 }
 
 /// 代码生成选项
@@ -51,13 +51,15 @@ pub struct CodegenOptions {
     pub verify: bool,
     /// 是否启用优化
     pub optimize: bool,
+    /// Pass names whose output should be printed; `*` selects every pass.
+    pub dump_after: Vec<alloc::string::String>,
+    /// Restrict pass dumps to one function (None selects all functions).
+    pub dump_function: Option<alloc::string::String>,
     /// 是否打印中间结果（调试用）
     pub dump_lir: bool,
     /// Collect aggregate pipeline counters. Disabled by default so production
     /// JIT compilation does not repeatedly scan every function for diagnostics.
     pub collect_stats: bool,
-    /// 目标优化级别
-    pub opt_level: u8,
 }
 
 impl Default for CodegenOptions {
@@ -65,9 +67,10 @@ impl Default for CodegenOptions {
         Self {
             verify: cfg!(debug_assertions),
             optimize: true,
+            dump_after: Vec::new(),
+            dump_function: None,
             dump_lir: false,
             collect_stats: false,
-            opt_level: 2,
         }
     }
 }
@@ -93,7 +96,7 @@ pub struct CodegenPipeline<'a> {
 }
 
 struct TargetFunctionPipelines {
-    post_legalize: FunctionPassPipeline,
+    prepare: FunctionPassPipeline,
     pre_isel: FunctionPassPipeline,
     post_isel: FunctionPassPipeline,
     post_regalloc: FunctionPassPipeline,
@@ -102,7 +105,7 @@ struct TargetFunctionPipelines {
 impl TargetFunctionPipelines {
     fn new(config: &dyn crate::target::TargetPassConfig) -> Self {
         Self {
-            post_legalize: FunctionPassPipeline::from_passes(config.post_legalize_passes()),
+            prepare: FunctionPassPipeline::from_passes(config.prepare_passes()),
             pre_isel: FunctionPassPipeline::from_passes(config.pre_isel_passes()),
             post_isel: FunctionPassPipeline::from_passes(config.post_isel_passes()),
             post_regalloc: FunctionPassPipeline::from_passes(config.post_regalloc_passes()),
@@ -150,10 +153,23 @@ impl<'a> CodegenPipeline<'a> {
 
     /// 编译整个模块并生成单个 relocatable object 文件。
     pub fn compile_object(&self, module: &veloc_mir::Module) -> Result<Vec<u8>> {
-        let mut object = ObjectFileBuilder::new(self.target)?;
+        self.compile_object_impl(module, &mut CodegenStats::default())
+    }
+
+    /// Compile and return diagnostics; ordinary compilation keeps them disabled by default.
+    pub fn compile_object_with_stats(&self, module: &Module) -> Result<(Vec<u8>, CodegenStats)> {
+        let mut options = self.options.clone();
+        options.collect_stats = true;
+        let pipeline = Self::with_options(self.target, options);
         let mut stats = CodegenStats::default();
+        let object = pipeline.compile_object_impl(module, &mut stats)?;
+        Ok((object, stats))
+    }
+
+    fn compile_object_impl(&self, module: &Module, stats: &mut CodegenStats) -> Result<Vec<u8>> {
+        let mut object = ObjectFileBuilder::new(self.target)?;
         let mut module_analyses = ModuleAnalysisCtx::default();
-        let compiled = self.compile_module_artifact(module, &mut stats, &mut module_analyses)?;
+        let compiled = self.compile_module_artifact(module, stats, &mut module_analyses)?;
 
         for compiled_func in &compiled.functions {
             let func = module.get_function(compiled_func.func_id);
@@ -261,6 +277,7 @@ impl<'a> CodegenPipeline<'a> {
             stats.vreg_count += mfunc.vregs().len();
         }
         self.maybe_dump_mfunc("translated", &mfunc);
+        crate::pipeline::dump_after("translated", &mfunc, &self.options);
 
         let final_mfunc = self.run_function_pipeline(
             mfunc,
@@ -271,6 +288,7 @@ impl<'a> CodegenPipeline<'a> {
             target_pipelines,
         )?;
         self.maybe_dump_mfunc("final", &final_mfunc);
+        crate::pipeline::dump_after("final", &final_mfunc, &self.options);
 
         Ok(CompiledFunction {
             func_id,
@@ -300,35 +318,30 @@ impl<'a> CodegenPipeline<'a> {
             module_analyses,
         );
 
-        self.run_pass(
+        run_function_pass(
             &crate::passes::lowering::AbiLoweringPass::new(),
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("abi-lowered", &mfunc, verify)?;
-        self.run_pass(
+        target_pipelines.prepare.run(&mut mfunc, &mut ctx)?;
+        run_function_pass(
             &LegalizePass::new(self.target.legalizer()),
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("legalized", &mfunc, verify)?;
-        let post_legalize_effect = target_pipelines.post_legalize.run(&mut mfunc, &mut ctx)?;
-        crate::passes::lowering::reassociate::reassociate(&mut mfunc, ctx.function_analyses);
-        // Reassociation only rewrites already-legal operations. Target hooks,
-        // however, may introduce new generic instructions and explicitly report
-        // that fact through their effect contract.
-        if post_legalize_effect
-            .change_set
-            .intersects(crate::analysis::ChangeSet::INST_SEMANTICS)
-        {
-            self.run_pass(
-                &LegalizePass::new(self.target.legalizer()),
-                &mut mfunc,
-                &mut ctx,
-            )?;
+        if ctx.options.collect_stats {
+            ctx.stats.legalized_inst_count += mfunc
+                .blocks()
+                .map(|b| mfunc.block_insts(b).count())
+                .sum::<usize>();
         }
         target_pipelines.pre_isel.run(&mut mfunc, &mut ctx)?;
-        self.run_pass(
+        if self.options.verify {
+            crate::passes::lowering::Legalizer::new(self.target.legalizer()).verify(&mfunc)?;
+        }
+        run_function_pass(
             &crate::passes::constraints::PreSelectOperandConstraintPass::new(
                 self.target.operand_lowering(),
             ),
@@ -336,34 +349,47 @@ impl<'a> CodegenPipeline<'a> {
             &mut ctx,
         )?;
         self.verify_function("pre-isel", &mfunc, verify)?;
-        self.run_pass(
+        run_function_pass(
             &InstructionSelectionPass::new(self.target.selector()),
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("selected", &mfunc, verify_selected)?;
+        if ctx.options.collect_stats {
+            ctx.stats.selected_inst_count += mfunc
+                .blocks()
+                .map(|b| mfunc.block_insts(b).count())
+                .sum::<usize>();
+        }
 
         target_pipelines.post_isel.run(&mut mfunc, &mut ctx)?;
         self.verify_function("post-isel-target", &mfunc, verify_selected)?;
-        self.run_pass(
-            &PostIselOptimizePass::new(self.target.post_isel(), self.target.operand_lowering()),
+        run_function_pass(
+            &PostIselOptimizePass::new(self.target.post_isel()),
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("post-isel-optimized", &mfunc, verify_selected)?;
-        self.run_pass(&crate::passes::schedule::SchedulePass, &mut mfunc, &mut ctx)?;
+        run_function_pass(
+            &crate::passes::constraints::PostSelectOperandConstraintPass::new(
+                self.target.operand_lowering(),
+            ),
+            &mut mfunc,
+            &mut ctx,
+        )?;
+        self.verify_function("operand-constraints", &mfunc, verify_selected)?;
+        run_function_pass(&crate::passes::schedule::SchedulePass, &mut mfunc, &mut ctx)?;
         self.verify_function("scheduled", &mfunc, verify_selected)?;
 
         // Allocation owns its exact input until its plan is materialized.
+        #[cfg(feature = "std")]
+        let start = self.options.collect_stats.then(std::time::Instant::now);
         let allocation = crate::regalloc::RegisterAllocator::new(self.target)
             .allocate(mfunc, ctx.function_analyses)?;
         let mut mfunc = allocation.materialize();
-        if ctx.options.collect_stats {
-            ctx.stats.final_inst_count += mfunc
-                .blocks()
-                .map(|b| mfunc.block_insts(b).count())
-                .sum::<usize>();
-            ctx.stats.stack_slot_count += mfunc.stack_frame.slots().len();
+        #[cfg(feature = "std")]
+        if let Some(start) = start {
+            *ctx.stats.pass_times.entry("regalloc".into()).or_default() += start.elapsed();
         }
         use crate::analysis::ChangeSet;
         ctx.function_analyses.apply(
@@ -378,12 +404,20 @@ impl<'a> CodegenPipeline<'a> {
 
         target_pipelines.post_regalloc.run(&mut mfunc, &mut ctx)?;
         self.verify_function("post-regalloc", &mfunc, verify_allocated)?;
-        self.run_pass(
+        run_function_pass(
             &FrameFinalizePass::new(self.target.frame_lowering()),
             &mut mfunc,
             &mut ctx,
         )?;
         self.verify_function("frame-finalized", &mfunc, verify_allocated)?;
+        if ctx.options.collect_stats {
+            ctx.stats.final_inst_count += mfunc
+                .blocks()
+                .map(|b| mfunc.block_insts(b).count())
+                .sum::<usize>();
+            ctx.stats.stack_slot_count += mfunc.stack_frame.slots().len();
+        }
+
         Ok(mfunc)
     }
 
@@ -431,19 +465,6 @@ impl<'a> CodegenPipeline<'a> {
         Ok(())
     }
 
-    fn run_pass(
-        &self,
-        pass: &dyn FunctionPass,
-        mfunc: &mut MachineFunction,
-        ctx: &mut FunctionPassContext<'_>,
-    ) -> Result<()> {
-        let effect = pass
-            .run(mfunc, ctx)
-            .map_err(|e| Error::codegen(alloc::format!("{}: {e}", pass.name())))?;
-        ctx.function_analyses.apply(effect.change_set);
-        Ok(())
-    }
-
     fn verify_function(
         &self,
         name: &str,
@@ -467,6 +488,8 @@ impl<'a> CodegenPipeline<'a> {
             return Err(Error::codegen("function entry must be first at emission"));
         }
         let emitter = self.target.emitter();
+        #[cfg(feature = "std")]
+        let start = self.options.collect_stats.then(std::time::Instant::now);
         let mut output = crate::Emitter::new();
 
         for block in mfunc.blocks() {
@@ -490,9 +513,17 @@ impl<'a> CodegenPipeline<'a> {
                 .stack_frame
                 .layout()
                 .expect("finalized frame")
-                .total_size;
+                .total_size as u64;
         }
-        output.finish()
+        let emitted = output.finish()?;
+        #[cfg(feature = "std")]
+        if let Some(start) = start {
+            *stats.pass_times.entry("emit".into()).or_default() += start.elapsed();
+        }
+        if self.options.collect_stats {
+            stats.code_bytes += emitted.data.len();
+        }
+        Ok(emitted)
     }
 
     /// 获取编译选项的可变引用。

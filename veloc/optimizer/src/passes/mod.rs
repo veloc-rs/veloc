@@ -2,4 +2,4 @@
 
 pub mod function;
 
-pub use function::{DcePass, SimplifyPass};
+pub use function::{DcePass, ExpressionPass};

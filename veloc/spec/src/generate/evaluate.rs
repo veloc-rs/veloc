@@ -339,7 +339,7 @@ fn comparison(p: IntPredicate, bits: u16, lhs: u16, rhs: u16) -> String {
 
 fn algebraic_rules(defs: &Definitions) -> String {
     let mut code = String::from(
-        "#[allow(unused_variables, unreachable_patterns)] fn algebraic(op: Opcode, args: &[Value; 2], constants: &[Option<ScalarConst>; 2]) -> Option<Replacement> { match op {\n",
+        "#[allow(unused_variables, unreachable_patterns)] pub(crate) fn algebraic<V: Copy + PartialEq>(op: Opcode, args: &[V; 2], constants: &[Option<ScalarConst>; 2]) -> Option<Replacement<V>> { match op {\n",
     );
     for op in &defs.ops {
         let Some(sem) = &op.semantics else { continue };

@@ -1,5 +1,6 @@
 extern crate alloc;
 
+mod equivalence;
 mod error;
 pub mod manager;
 pub mod metrics;
@@ -12,7 +13,7 @@ pub use error::Error;
 pub use manager::PassManager;
 pub use metrics::Metrics;
 pub use pass::{FunctionPass, ModulePass, OptConfig, Pass, PreservedAnalyses};
-pub use passes::{DcePass, SimplifyPass};
+pub use passes::{DcePass, ExpressionPass};
 pub use stats::{PassStats, PipelineStats, TimingGuard};
 
 /// 获取所有已知的调试标签列表

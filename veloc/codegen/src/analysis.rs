@@ -2,7 +2,7 @@ use crate::target::TargetInstructions;
 use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use cranelift_entity::SecondaryMap;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use smallvec::SmallVec;
 use veloc_lir::BlockId as Block;
 use veloc_lir::{MachineFunction, Reg};
@@ -157,60 +157,12 @@ impl<T> AnalysisCache<T> {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct CfgInfo {
-    blocks: Vec<Block>,
-    preds: SecondaryMap<Block, Vec<Block>>,
-    succs: SecondaryMap<Block, Vec<Block>>,
-}
+pub type CfgInfo = veloc_analyzer::graph::ControlFlowGraph<Block>;
+pub type DominatorTree = veloc_analyzer::graph::DominatorTree<Block>;
+pub type PostDominatorTree = veloc_analyzer::graph::PostDominatorTree<Block>;
+pub type LoopInfo = veloc_analyzer::graph::LoopInfo<Block>;
 
-impl CfgInfo {
-    pub fn preds(&self, block: Block) -> &[Block] {
-        self.preds.get(block).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-
-    pub fn succs(&self, block: Block) -> &[Block] {
-        self.succs.get(block).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DominatorTree {
-    doms: HashMap<Block, HashSet<Block>>,
-}
-
-impl DominatorTree {
-    pub fn dominates(&self, a: Block, b: Block) -> bool {
-        self.doms.get(&b).is_some_and(|set| set.contains(&a))
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PostDominatorTree {
-    post_doms: HashMap<Block, HashSet<Block>>,
-}
-
-impl PostDominatorTree {
-    pub fn post_dominates(&self, a: Block, b: Block) -> bool {
-        self.post_doms.get(&b).is_some_and(|set| set.contains(&a))
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LivenessInfo {
-    live_in: SecondaryMap<Block, RegSet>,
-    live_out: SecondaryMap<Block, RegSet>,
-}
-
-impl LivenessInfo {
-    pub fn live_in(&self, block: Block) -> Option<&RegSet> {
-        self.live_in.get(block)
-    }
-
-    pub fn live_out(&self, block: Block) -> Option<&RegSet> {
-        self.live_out.get(block)
-    }
-}
+pub type LivenessInfo = veloc_analyzer::dataflow::BlockLiveness<Block, RegSet>;
 
 /// Dense register set used by backward data-flow analyses.
 ///
@@ -262,23 +214,6 @@ impl RegSet {
         }
     }
 
-    fn clear(&mut self) {
-        self.physical.clear();
-        self.virtual_.clear();
-    }
-
-    fn union_with(&mut self, other: &Self) {
-        Self::union_words(&mut self.physical, &other.physical);
-        Self::union_words(&mut self.virtual_, &other.virtual_);
-    }
-
-    fn union_difference(&mut self, values: &Self, removed: &Self) {
-        Self::union_difference_words(&mut self.physical, &values.physical, &removed.physical);
-        Self::union_difference_words(&mut self.virtual_, &values.virtual_, &removed.virtual_);
-        Self::trim_words(&mut self.physical);
-        Self::trim_words(&mut self.virtual_);
-    }
-
     fn union_words(dst: &mut SmallVec<[u64; 2]>, src: &[u64]) {
         if dst.len() < src.len() {
             dst.resize(src.len(), 0);
@@ -318,6 +253,25 @@ impl RegSet {
     }
 }
 
+impl veloc_analyzer::dataflow::LiveSet for RegSet {
+    fn clear(&mut self) {
+        self.physical.clear();
+        self.virtual_.clear();
+    }
+
+    fn union_with(&mut self, other: &Self) {
+        Self::union_words(&mut self.physical, &other.physical);
+        Self::union_words(&mut self.virtual_, &other.virtual_);
+    }
+
+    fn union_difference(&mut self, values: &Self, removed: &Self) {
+        Self::union_difference_words(&mut self.physical, &values.physical, &removed.physical);
+        Self::union_difference_words(&mut self.virtual_, &values.virtual_, &removed.virtual_);
+        Self::trim_words(&mut self.physical);
+        Self::trim_words(&mut self.virtual_);
+    }
+}
+
 fn bit_indices(words: &[u64]) -> impl Iterator<Item = usize> + '_ {
     words
         .iter()
@@ -333,17 +287,6 @@ fn bit_indices(words: &[u64]) -> impl Iterator<Item = usize> + '_ {
                 Some(word_index * 64 + bit)
             })
         })
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LoopInfo {
-    backedges: Vec<(Block, Block)>,
-}
-
-impl LoopInfo {
-    pub fn backedges(&self) -> &[(Block, Block)] {
-        &self.backedges
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -430,7 +373,8 @@ impl FunctionAnalysisCtx {
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
             self.cfg(mfunc, target);
-            let value = compute_dominators(mfunc, &self.cfg.as_ref().unwrap().value);
+            let value =
+                DominatorTree::compute(&self.cfg.as_ref().unwrap().value, mfunc.entry_block());
             self.dominators = Some(AnalysisCache::new(self.revision, value));
         }
         &self.dominators.as_ref().unwrap().value
@@ -452,7 +396,7 @@ impl FunctionAnalysisCtx {
             .is_none_or(|cache| self.is_cache_stale(cache.built_revision, deps));
         if stale {
             self.cfg(mfunc, target);
-            let value = compute_post_dominators(mfunc, &self.cfg.as_ref().unwrap().value);
+            let value = PostDominatorTree::compute(&self.cfg.as_ref().unwrap().value);
             self.post_dominators = Some(AnalysisCache::new(self.revision, value));
         }
         &self.post_dominators.as_ref().unwrap().value
@@ -498,7 +442,7 @@ impl FunctionAnalysisCtx {
         if stale {
             self.cfg(mfunc, target);
             self.dominators(mfunc, target);
-            let value = compute_loop_info(
+            let value = LoopInfo::compute(
                 &self.cfg.as_ref().unwrap().value,
                 &self.dominators.as_ref().unwrap().value,
             );
@@ -574,8 +518,7 @@ impl ModuleAnalysisCtx {
 
 fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgInfo {
     let blocks: Vec<_> = mfunc.blocks().collect();
-    let mut preds = SecondaryMap::<Block, Vec<Block>>::new();
-    let mut succs = SecondaryMap::<Block, Vec<Block>>::new();
+    let mut cfg = CfgInfo::new(blocks.iter().copied());
 
     for (index, block) in mfunc.blocks().enumerate() {
         let mut block_succs = Vec::new();
@@ -606,118 +549,18 @@ fn compute_cfg(mfunc: &MachineFunction, target: &dyn TargetInstructions) -> CfgI
         }
         block_succs.sort();
         block_succs.dedup();
-        succs[block] = block_succs.clone();
         for succ in block_succs {
-            preds[succ].push(block);
+            cfg.add_edge(block, succ);
         }
     }
 
-    CfgInfo {
-        blocks,
-        preds,
-        succs,
-    }
-}
-
-fn compute_dominators(mfunc: &MachineFunction, cfg: &CfgInfo) -> DominatorTree {
-    let blocks: Vec<Block> = mfunc.blocks().collect();
-    let entry = mfunc.entry_block();
-
-    let mut doms: HashMap<Block, HashSet<Block>> = HashMap::new();
-    let all_blocks: HashSet<Block> = blocks.iter().copied().collect();
-
-    for &block in &blocks {
-        if block == entry {
-            doms.insert(block, [block].into_iter().collect());
-        } else {
-            doms.insert(block, all_blocks.clone());
-        }
-    }
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &block in blocks.iter().skip(1) {
-            let preds = cfg.preds(block);
-            if preds.is_empty() {
-                continue;
-            }
-            let mut new_set = all_blocks.clone();
-            for pred in preds {
-                if let Some(pred_doms) = doms.get(pred) {
-                    new_set = new_set
-                        .intersection(pred_doms)
-                        .copied()
-                        .collect::<HashSet<_>>();
-                }
-            }
-            new_set.insert(block);
-            if doms.get(&block) != Some(&new_set) {
-                doms.insert(block, new_set);
-                changed = true;
-            }
-        }
-    }
-
-    DominatorTree { doms }
-}
-
-fn compute_post_dominators(mfunc: &MachineFunction, cfg: &CfgInfo) -> PostDominatorTree {
-    let blocks: Vec<Block> = mfunc.blocks().collect();
-    let exits: Vec<Block> = blocks
-        .iter()
-        .copied()
-        .filter(|block| cfg.succs(*block).is_empty())
-        .collect();
-    if blocks.is_empty() {
-        return PostDominatorTree::default();
-    }
-
-    let all_blocks: HashSet<Block> = blocks.iter().copied().collect();
-    let mut post_doms: HashMap<Block, HashSet<Block>> = HashMap::new();
-
-    for &block in &blocks {
-        if exits.contains(&block) {
-            post_doms.insert(block, [block].into_iter().collect());
-        } else {
-            post_doms.insert(block, all_blocks.clone());
-        }
-    }
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &block in &blocks {
-            let succs = cfg.succs(block);
-            if succs.is_empty() {
-                continue;
-            }
-            let mut new_set = all_blocks.clone();
-            for succ in succs {
-                if let Some(succ_post_doms) = post_doms.get(succ) {
-                    new_set = new_set
-                        .intersection(succ_post_doms)
-                        .copied()
-                        .collect::<HashSet<_>>();
-                }
-            }
-            new_set.insert(block);
-            if post_doms.get(&block) != Some(&new_set) {
-                post_doms.insert(block, new_set);
-                changed = true;
-            }
-        }
-    }
-
-    PostDominatorTree { post_doms }
+    cfg
 }
 
 fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
     let empty = RegSet::default();
     let mut block_uses = SecondaryMap::<Block, RegSet>::new();
     let mut block_defs = SecondaryMap::<Block, RegSet>::new();
-    let mut live_in = SecondaryMap::<Block, RegSet>::new();
-    let mut live_out = SecondaryMap::<Block, RegSet>::new();
 
     for block in mfunc.blocks() {
         let mut uses = empty.clone();
@@ -738,51 +581,9 @@ fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
         }
         block_uses[block] = uses;
         block_defs[block] = defs;
-        live_in[block] = empty.clone();
-        live_out[block] = empty.clone();
     }
 
-    // Reuse two buffers through the fixed-point iteration. Swapping a changed
-    // result into its block keeps the old allocation available for the next
-    // block instead of allocating fresh sets on every visit.
-    let mut out = empty.clone();
-    let mut new_in = empty;
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for block in mfunc.blocks().rev() {
-            out.clear();
-            for succ in cfg.succs(block) {
-                if let Some(succ_in) = live_in.get(*succ) {
-                    out.union_with(succ_in);
-                }
-            }
-            new_in.clone_from(&block_uses[block]);
-            new_in.union_difference(&out, &block_defs[block]);
-            if live_out.get(block) != Some(&out) {
-                core::mem::swap(&mut live_out[block], &mut out);
-                changed = true;
-            }
-            if live_in.get(block) != Some(&new_in) {
-                core::mem::swap(&mut live_in[block], &mut new_in);
-                changed = true;
-            }
-        }
-    }
-
-    LivenessInfo { live_in, live_out }
-}
-
-fn compute_loop_info(cfg: &CfgInfo, dom: &DominatorTree) -> LoopInfo {
-    let mut backedges = Vec::new();
-    for &block in &cfg.blocks {
-        for &succ in cfg.succs(block) {
-            if dom.dominates(succ, block) {
-                backedges.push((block, succ));
-            }
-        }
-    }
-    LoopInfo { backedges }
+    LivenessInfo::compute(cfg, &block_uses, &block_defs)
 }
 
 fn compute_register_pressure(mfunc: &MachineFunction, liveness: &LivenessInfo) -> RegisterPressure {

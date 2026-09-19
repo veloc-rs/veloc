@@ -2,7 +2,6 @@ use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
 use crate::target::{AbiAssignment, AbiLocation, AbiPlan, CallConv, TargetMachine};
-use alloc::vec::Vec;
 use smallvec::SmallVec;
 use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot, Writable};
 use veloc_lir::{InstBuild, InstRead};
@@ -16,8 +15,7 @@ impl AbiLoweringPass {
     }
 }
 
-// Check every boundary before editing the function. The ABI plan itself
-// is independent of which side of the call is being lowered.
+// Check each ABI plan before lowering its boundary.
 fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<AbiPlan> {
     let plan =
         CallConv::from(sig.call_conv).plan(target.desc().arch, sig.params(), sig.returns())?;
@@ -68,7 +66,7 @@ fn registers(assignments: &[AbiAssignment]) -> impl Iterator<Item = Reg> + '_ {
 /// call, while before an instruction successive inserts naturally keep order.
 struct Transfer<'a> {
     target: &'a dyn TargetMachine,
-    func: &'a mut MachineFunction,
+    func: veloc_lir::FuncEditor<'a>,
     point: Insert,
     incoming: bool,
 }
@@ -79,7 +77,7 @@ enum Insert {
 }
 
 impl<'a> Transfer<'a> {
-    fn new(target: &'a dyn TargetMachine, func: &'a mut MachineFunction, point: Insert) -> Self {
+    fn new(target: &'a dyn TargetMachine, func: veloc_lir::FuncEditor<'a>, point: Insert) -> Self {
         Self {
             target,
             func,
@@ -179,7 +177,11 @@ impl<'a> Transfer<'a> {
     }
 }
 
-fn lower_formal_arguments(target: &dyn TargetMachine, mfunc: &mut MachineFunction, plan: &AbiPlan) {
+fn lower_formal_arguments(
+    target: &dyn TargetMachine,
+    mfunc: &mut veloc_lir::FuncEditor<'_>,
+    plan: &AbiPlan,
+) {
     let entry = mfunc.entry_block();
     let mut cursor = veloc_lir::InstCursor::block(mfunc, entry);
     while let Some(id) = cursor.next(mfunc) {
@@ -193,7 +195,7 @@ fn lower_formal_arguments(target: &dyn TargetMachine, mfunc: &mut MachineFunctio
                 .get(usize::try_from(decoded.index).expect("negative argument index"))
                 .expect("missing ABI argument assignment");
             let dst = decoded.dst;
-            Transfer::new(target, mfunc, Insert::Before(id))
+            Transfer::new(target, mfunc.editor(), Insert::Before(id))
                 .incoming()
                 .read(dst, assignment);
             mfunc.editor().replace_with(id, &[]);
@@ -201,9 +203,19 @@ fn lower_formal_arguments(target: &dyn TargetMachine, mfunc: &mut MachineFunctio
     }
 }
 
+pub(super) fn lower_call(
+    target: &dyn TargetMachine,
+    mfunc: &mut veloc_lir::FuncEditor<'_>,
+    id: InstId,
+) -> Result<()> {
+    let plan = plan_signature(target, &mfunc.call_info(id).sig)?;
+    lower_callsite(target, mfunc, id, &plan);
+    Ok(())
+}
+
 fn lower_callsite(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction,
+    mfunc: &mut veloc_lir::FuncEditor<'_>,
     id: InstId,
     plan: &AbiPlan,
 ) {
@@ -225,7 +237,7 @@ fn lower_callsite(
     // Place logical arguments in their ABI locations before the call.
     let mut stack_args = SmallVec::new();
     {
-        let mut transfer = Transfer::new(target, mfunc, Insert::Before(id));
+        let mut transfer = Transfer::new(target, mfunc.editor(), Insert::Before(id));
         for (index, assignment) in plan.args.iter().enumerate() {
             // Borrow only long enough to copy one ID; insertion may grow the store.
             let src = transfer.func.inst(id).inputs()[index + usize::from(callee.is_some())];
@@ -269,7 +281,7 @@ fn lower_callsite(
     }
 
     // The old definitions are now released, so the copies can reuse their IDs.
-    let mut transfer = Transfer::new(target, mfunc, Insert::After(id));
+    let mut transfer = Transfer::new(target, mfunc.editor(), Insert::After(id));
     for (&dst, assignment) in results.iter().zip(&plan.returns) {
         transfer.read(dst, assignment);
     }
@@ -277,7 +289,7 @@ fn lower_callsite(
 
 fn lower_return(
     target: &dyn TargetMachine,
-    mfunc: &mut MachineFunction,
+    mfunc: &mut veloc_lir::FuncEditor<'_>,
     id: InstId,
     plan: &AbiPlan,
     return_regs: &[Reg],
@@ -293,7 +305,7 @@ fn lower_return(
     );
 
     {
-        let mut transfer = Transfer::new(target, mfunc, Insert::Before(id));
+        let mut transfer = Transfer::new(target, mfunc.editor(), Insert::Before(id));
         for (index, assignment) in plan.returns.iter().enumerate() {
             let src = transfer.func.inst(id).inputs()[index];
             transfer.write(src, assignment);
@@ -301,28 +313,6 @@ fn lower_return(
     }
     let replacement = mfunc.editor().writer().ret(return_regs);
     mfunc.editor().replace_inst(id, replacement);
-}
-
-// Keep each plan attached to its instruction, rather than synchronizing
-// a second iterator with a later full-function scan.
-enum Boundary {
-    Call(InstId, AbiPlan),
-    Return(InstId),
-}
-
-fn plan_boundaries(target: &dyn TargetMachine, mfunc: &MachineFunction) -> Result<Vec<Boundary>> {
-    let mut boundaries = Vec::new();
-    for id in mfunc.blocks().flat_map(|block| mfunc.block_insts(block)) {
-        match mfunc.inst(id).opcode() {
-            MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind) => {
-                let plan = plan_signature(target, &mfunc.call_info(id).sig)?;
-                boundaries.push(Boundary::Call(id, plan));
-            }
-            MachineOpcode::Generic(GenericOpcode::Ret) => boundaries.push(Boundary::Return(id)),
-            _ => {}
-        }
-    }
-    Ok(boundaries)
 }
 
 impl FunctionPass for AbiLoweringPass {
@@ -336,23 +326,26 @@ impl FunctionPass for AbiLoweringPass {
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
         let plan = plan_signature(ctx.target, ctx.func_sig)?;
-        let boundaries = plan_boundaries(ctx.target, mfunc)?;
         let return_regs: SmallVec<[Reg; 4]> = registers(&plan.returns).collect();
 
-        lower_formal_arguments(ctx.target, mfunc, &plan);
-        for boundary in boundaries {
-            match boundary {
-                Boundary::Call(id, call_plan) => {
-                    lower_callsite(ctx.target, mfunc, id, &call_plan);
+        lower_formal_arguments(ctx.target, &mut mfunc.editor(), &plan);
+        // The cursor saves the next original instruction before each rewrite.
+        // Planning errors abort compilation without rolling back earlier edits.
+        let mut cursor = veloc_lir::InstCursor::new(mfunc);
+        while let Some(id) = cursor.next(mfunc) {
+            match mfunc.inst(id).opcode() {
+                MachineOpcode::Generic(GenericOpcode::Call | GenericOpcode::Callind) => {
+                    lower_call(ctx.target, &mut mfunc.editor(), id)?;
                 }
-                Boundary::Return(id) => {
-                    lower_return(ctx.target, mfunc, id, &plan, &return_regs);
+                MachineOpcode::Generic(GenericOpcode::Ret) => {
+                    lower_return(ctx.target, &mut mfunc.editor(), id, &plan, &return_regs);
                 }
+                _ => {}
             }
         }
 
         Ok(PassEffect::new(
-            ChangeSet::INST_SEMANTICS | ChangeSet::PHYSICAL_REGS,
+            ChangeSet::INST_SEMANTICS | ChangeSet::PHYSICAL_REGS | ChangeSet::STACK_FRAME,
         ))
     }
 }

@@ -287,6 +287,23 @@ impl<'a> Parser<'a> {
                 )]),
             });
         }
+        // Anonymous equality rules share signatures and expression parsing with
+        // named target rules, but do not introduce callable symbols.
+        if declaration_name == "rule" && (self.at(TokenKind::Lt) || self.at(TokenKind::LParen)) {
+            let signature = self.signature(None, false, true)?;
+            self.expect(TokenKind::LBrace)?;
+            let lhs = self.expression(0, Context::Rewrite)?;
+            self.expect(TokenKind::FatArrow)?;
+            let rhs = self.expression(0, Context::Rewrite)?;
+            self.expect(TokenKind::Semi)?;
+            self.expect(TokenKind::RBrace)?;
+            return Ok(Decl {
+                offset,
+                name: String::new(),
+                kind: DeclKind::Rule(signature),
+                fields: BTreeMap::from([("match".into(), lhs), ("emit".into(), rhs)]),
+            });
+        }
         let name = self.name()?;
         let mut fields = BTreeMap::new();
         let kind = match kind {
@@ -861,10 +878,12 @@ impl<'a> Parser<'a> {
                 Kind::Record(self.field_body(depth + 1, context, Fields::Literal)?)
             }
             TokenKind::Text(text) => Kind::Text(text),
-            TokenKind::Minus if context == Context::Rewrite => {
+            TokenKind::Minus if context != Context::Type => {
                 let value = self.atom(depth + 1, context)?;
-                let Kind::Integer(value) = value.kind else {
-                    return Err(self.error(offset, "expected integer after minus"));
+                let value = match value.kind {
+                    Kind::Integer(value) => value,
+                    Kind::Number(value) => i128::from(value),
+                    _ => return Err(self.error(offset, "expected integer after minus")),
                 };
                 Kind::Integer(
                     value
@@ -888,10 +907,10 @@ impl<'a> Parser<'a> {
                 if context.is_expr() || context == Context::Rewrite {
                     Kind::Integer(value)
                 } else {
-                    Kind::Number(
-                        u32::try_from(value)
-                            .map_err(|_| self.error(offset, "integer is out of range"))?,
-                    )
+                    match u32::try_from(value) {
+                        Ok(value) => Kind::Number(value),
+                        Err(_) => Kind::Integer(value),
+                    }
                 }
             }
             word if word.name().is_some() => {

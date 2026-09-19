@@ -15,6 +15,7 @@ pub enum Strategy {
 /// Engine 配置
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub codegen: veloc::codegen::CodegenOptions,
     pub strategy: Strategy,
     pub dump_ir: bool,
     pub ir_names: bool,
@@ -22,6 +23,8 @@ pub struct Config {
     pub verify_ir: bool,
     /// 优化等级
     pub opt_level: u8,
+    /// Use a smaller equality-search budget in MIR expression optimization.
+    pub fast_egraph: bool,
     /// 输出 IR 到文件路径
     pub output_ir: Option<PathBuf>,
     /// Chrome Trace 输出文件路径
@@ -35,11 +38,13 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            codegen: Default::default(),
             strategy: Strategy::Auto,
             dump_ir: false,
             ir_names: false,
             verify_ir: cfg!(debug_assertions),
             opt_level: 0,
+            fast_egraph: false,
             output_ir: None,
             trace_file: None,
             print_stats: false,

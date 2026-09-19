@@ -96,11 +96,13 @@ fn run_once(
 ) -> RunOutcome {
     let outcome = (|| -> Result<Vec<Val>> {
         let config = Config {
+            codegen: Default::default(),
             strategy,
             dump_ir,
             ir_names: false,
             verify_ir: true,
             opt_level,
+            fast_egraph: false,
             output_ir: None,
             trace_file: None,
             print_stats: false,

@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use bitvec::prelude::*;
 use cranelift_entity::{EntityRef, SecondaryMap};
 use veloc_mir::{Block, Function, Inst, Value};

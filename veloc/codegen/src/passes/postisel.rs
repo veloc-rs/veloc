@@ -1,22 +1,15 @@
 use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
 use crate::pipeline::{FunctionPass, FunctionPassContext};
-use crate::target::{TargetOperandLowering, TargetPostIsel};
+use crate::target::TargetPostIsel;
 
 pub struct PostIselOptimizePass<'a> {
     post_isel: &'a dyn TargetPostIsel,
-    operand_lowering: &'a dyn TargetOperandLowering,
 }
 
 impl<'a> PostIselOptimizePass<'a> {
-    pub fn new(
-        post_isel: &'a dyn TargetPostIsel,
-        operand_lowering: &'a dyn TargetOperandLowering,
-    ) -> Self {
-        Self {
-            post_isel,
-            operand_lowering,
-        }
+    pub fn new(post_isel: &'a dyn TargetPostIsel) -> Self {
+        Self { post_isel }
     }
 }
 
@@ -30,15 +23,10 @@ impl<'a> FunctionPass for PostIselOptimizePass<'a> {
         mfunc: &mut veloc_lir::MachineFunction,
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
-        self.post_isel.combine_instructions(mfunc);
-        if ctx.options.collect_stats {
-            ctx.stats.combined_inst_count += mfunc
-                .blocks()
-                .map(|b| mfunc.block_insts(b).count())
-                .sum::<usize>();
+        if !ctx.options.optimize {
+            return Ok(PassEffect::NONE);
         }
-        crate::passes::constraints::PostSelectOperandConstraintPass::new(self.operand_lowering)
-            .run(mfunc)?;
+        self.post_isel.combine_instructions(mfunc);
         Ok(PassEffect::new(
             ChangeSet::INST_SEMANTICS | ChangeSet::INST_OPERANDS,
         ))

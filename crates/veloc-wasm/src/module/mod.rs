@@ -284,7 +284,13 @@ impl Module {
 
             let mut pm = if engine.config().opt_level == 1 {
                 let mut pm = PassManager::new(config);
-                pm.add_function_pass(veloc_optimizer::SimplifyPass);
+                pm.add_function_pass(veloc_optimizer::ExpressionPass {
+                    budget: if engine.config().fast_egraph {
+                        veloc_optimizer::passes::function::expression::Budget::FAST
+                    } else {
+                        veloc_optimizer::passes::function::expression::Budget::DEFAULT
+                    },
+                });
                 pm.add_function_pass(veloc_optimizer::DcePass);
                 pm
             } else {
@@ -319,10 +325,31 @@ impl Module {
         }
 
         let artifact = if strategy == Strategy::Jit {
-            let object_data = engine
-                .backend()
-                .compile_object(&ir)
-                .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {}", e)))?;
+            let pipeline = veloc::codegen::CodegenPipeline::with_options(
+                engine.backend().target(),
+                engine.config().codegen.clone(),
+            );
+            let object_data = if engine.config().print_stats {
+                let (object, stats) = pipeline
+                    .compile_object_with_stats(&ir)
+                    .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?;
+                eprintln!(
+                    "Codegen: {} -> {} -> {} -> {} instructions, {} code bytes",
+                    stats.initial_inst_count,
+                    stats.legalized_inst_count,
+                    stats.selected_inst_count,
+                    stats.final_inst_count,
+                    stats.code_bytes
+                );
+                for (pass, time) in stats.pass_times {
+                    eprintln!("  {pass}: {:.3} ms", time.as_secs_f64() * 1000.0);
+                }
+                object
+            } else {
+                pipeline
+                    .compile_object(&ir)
+                    .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?
+            };
 
             // Load JIT object and relocate
             let mut loader = Loader::new();

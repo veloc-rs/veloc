@@ -28,6 +28,7 @@ pub enum Emit {
     Assembly,
     Rules,
     Decisions,
+    Equivalences,
 }
 impl Emit {
     pub const ALL: &'static [Self] = &[
@@ -50,6 +51,7 @@ impl Emit {
         Self::Assembly,
         Self::Rules,
         Self::Decisions,
+        Self::Equivalences,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -72,6 +74,7 @@ impl Emit {
             Self::Assembly => "assembly",
             Self::Rules => "rules",
             Self::Decisions => "decisions",
+            Self::Equivalences => "equivalences",
         }
     }
     pub fn filename(self) -> String {
@@ -111,6 +114,14 @@ pub struct Options<'a> {
     pub interfaces: Option<&'a str>,
     pub rules: Option<ValueRules<'a>>,
     pub decisions: Option<Decisions<'a>>,
+    pub equivalences: Option<Equivalences<'a>>,
+}
+
+pub struct Equivalences<'a> {
+    pub definitions: &'a Source,
+    pub dialect: &'a str,
+    pub opcode: &'a str,
+    pub types: &'a str,
 }
 
 /// Bind a checked rule module to two explicitly named IR dialects.
@@ -184,6 +195,19 @@ impl Source {
                 continue;
             }
             let text = match kind {
+                Emit::Equivalences => {
+                    let config = options.equivalences.as_ref().ok_or_else(|| {
+                        fail("equivalences require definitions and Rust bindings")
+                    })?;
+                    crate::rules::equivalence::generate(
+                        self,
+                        &config.definitions.parse()?,
+                        config.dialect,
+                        config.opcode,
+                        config.types,
+                    )
+                    .map_err(|e| self.locate(e))?
+                }
                 Emit::Rules => {
                     let config = options.rules.as_ref().ok_or_else(|| {
                         fail("rules require source/target definitions and Rust bindings")

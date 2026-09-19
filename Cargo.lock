@@ -838,6 +838,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "object",
  "smallvec",
+ "veloc-analyzer",
  "veloc-encoder",
  "veloc-lir",
  "veloc-mir",

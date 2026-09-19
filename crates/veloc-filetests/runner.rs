@@ -5,7 +5,7 @@ mod compiler;
 use filecheck::{CheckerBuilder, NO_VARIABLES};
 use libtest_mimic::{Arguments, Trial};
 use veloc_mir::{Module, ModuleParser, TypeInfo};
-use veloc_optimizer::{Metrics, PassManager, passes::function::simplify::run_simplify};
+use veloc_optimizer::{Metrics, PassManager, passes::function::expression};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -371,9 +371,9 @@ fn simplify(module: Module) -> Result<Module> {
             continue;
         }
         let mut metrics = Metrics::default();
-        run_simplify(function, false, &mut metrics);
+        expression::run(function, expression::Budget::DEFAULT, false, &mut metrics);
         let before = format!("{function:?}");
-        if run_simplify(function, false, &mut metrics) || format!("{function:?}") != before {
+        if expression::run(function, expression::Budget::DEFAULT, false, &mut metrics) || format!("{function:?}") != before {
             return Err(format!(
                 "{}: simplify did not reach a fixed point",
                 function.name

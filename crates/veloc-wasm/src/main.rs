@@ -53,6 +53,15 @@ struct Args {
     /// Compile and load the module without instantiating or executing it
     #[arg(long)]
     compile_only: bool,
+    /// Print LIR after named codegen passes (comma-separated, or *) to stderr
+    #[arg(long, value_delimiter = ',')]
+    dump_after: Vec<String>,
+    /// Restrict LIR dumps to this function name
+    #[arg(long)]
+    dump_function: Option<String>,
+    /// Use a smaller MIR equality-search budget at O1
+    #[arg(long)]
+    fast_egraph: bool,
 }
 
 /// Print all compiled bytecode for interpreter
@@ -89,6 +98,12 @@ fn main() -> Result<()> {
 
     // 1. 初始化引擎
     let config = Config {
+        fast_egraph: args.fast_egraph,
+        codegen: veloc_wasm::veloc::codegen::CodegenOptions {
+            dump_after: args.dump_after,
+            dump_function: args.dump_function,
+            ..Default::default()
+        },
         strategy: args.strategy,
         dump_ir: args.dump_ir,
         ir_names: output_only,

@@ -45,7 +45,9 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
                 f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
                 id
             };
-            Legalizer::new(target.legalizer()).legalize(&mut f).unwrap();
+            Legalizer::new(target.legalizer())
+                .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
+                .unwrap();
             let ids = f
                 .block_insts(veloc_lir::BlockId::from_u32(0))
                 .collect::<Vec<_>>();
@@ -164,11 +166,17 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
             f.editor()
                 .rewriter(old)
                 .write(MachineOpcode::Target(0), &[], &[], []);
-            assert!(!Legalizer::new(&Mode::Missing).legalize(&mut f).unwrap());
+            assert!(
+                !Legalizer::new(&Mode::Missing)
+                    .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
+                    .unwrap()
+            );
             assert_eq!(f.inst(old).opcode(), MachineOpcode::Target(0));
             continue;
         }
-        Legalizer::new(&Mode::Chain).legalize(&mut f).unwrap();
+        Legalizer::new(&Mode::Chain)
+            .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
+            .unwrap();
         let ops: alloc::vec::Vec<_> = f
             .block_insts(veloc_lir::BlockId::from_u32(0))
             .collect::<Vec<_>>()
@@ -190,11 +198,15 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
 #[test]
 fn missing_rules_and_nonconvergent_expansions_are_errors() {
     let error = Legalizer::new(&Mode::Missing)
-        .legalize(&mut function())
+        .legalize(&mut function(), |_, _| {
+            unreachable!("test contains no calls")
+        })
         .unwrap_err();
     assert!(alloc::format!("{error}").contains("missing legalization rule for Generic(Sub)"));
     let error = Legalizer::new(&Mode::Loop)
-        .legalize(&mut function())
+        .legalize(&mut function(), |_, _| {
+            unreachable!("test contains no calls")
+        })
         .unwrap_err();
     assert!(alloc::format!("{error}").contains("made no edits"));
 }
@@ -202,7 +214,9 @@ fn missing_rules_and_nonconvergent_expansions_are_errors() {
 #[test]
 fn blocks_created_by_expansion_are_legalized() {
     let mut f = function();
-    Legalizer::new(&Mode::NewBlock).legalize(&mut f).unwrap();
+    Legalizer::new(&Mode::NewBlock)
+        .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
+        .unwrap();
     assert_eq!(f.num_blocks(), 2);
     assert_eq!(
         f.inst(
@@ -250,7 +264,9 @@ fn edits_to_previously_visited_instructions_are_revisited() {
         }
     }
     let mut f = function();
-    Legalizer::new(&CrossEdit).legalize(&mut f).unwrap();
+    Legalizer::new(&CrossEdit)
+        .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
+        .unwrap();
     let first = f.blocks().flat_map(|b| f.block_insts(b)).next().unwrap();
     assert_eq!(f.inst(first).generic_opcode(), Some(GenericOpcode::Add));
 }
@@ -284,7 +300,9 @@ fn cycles_across_new_blocks_share_one_budget() {
         }
     }
     let error = Legalizer::new(&Cycle)
-        .legalize(&mut function())
+        .legalize(&mut function(), |_, _| {
+            unreachable!("test contains no calls")
+        })
         .unwrap_err();
     assert!(alloc::format!("{error}").contains("did not converge"));
 }

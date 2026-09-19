@@ -4,7 +4,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
 };
-use veloc_spec::{Decisions, Emit, Options, Source, Target, ValueRules};
+use veloc_spec::{Decisions, Emit, Equivalences, Options, Source, Target, ValueRules};
 
 /// Compile instruction definitions into selected Rust artifacts.
 #[derive(Parser)]
@@ -39,6 +39,9 @@ struct Args {
     /// Rust source opcode path.
     #[arg(long)]
     source_opcode: Option<String>,
+    /// Rust type enum path for expression equivalences.
+    #[arg(long)]
+    type_path: Option<String>,
     /// Namespace of the destination dialect.
     #[arg(long)]
     target_dialect: Option<String>,
@@ -164,6 +167,18 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             interfaces: args.namespace.as_deref(),
             rules,
             decisions,
+            equivalences: if args.emit.contains(&Emit::Equivalences) {
+                Some(Equivalences {
+                    definitions: definitions
+                        .as_ref()
+                        .ok_or("equivalences require --definitions")?,
+                    dialect: required(args.source_dialect.as_deref(), "source-dialect")?,
+                    opcode: required(args.source_opcode.as_deref(), "source-opcode")?,
+                    types: required(args.type_path.as_deref(), "type-path")?,
+                })
+            } else {
+                None
+            },
         },
     )?;
     if let Some(dir) = args.out_dir {

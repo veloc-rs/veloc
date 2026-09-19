@@ -18,7 +18,37 @@ impl<'a> Legalizer<'a> {
         Self { target }
     }
 
-    pub fn legalize(&self, mfunc: &mut MachineFunction) -> Result<bool> {
+    /// Explicit checkpoint; this never repairs the input or runs during construction.
+    pub fn verify(&self, function: &MachineFunction) -> Result<()> {
+        for id in function.blocks().flat_map(|b| function.block_insts(b)) {
+            let inst = function.inst(id);
+            if function
+                .try_call_info(id)
+                .is_some_and(|info| info.stack.is_none())
+            {
+                return Err(Error::codegen(alloc::format!("unlowered ABI call {id:?}")));
+            }
+            if inst.is_generic() {
+                let query = Query::from_inst(inst, function.vregs())?;
+                if !matches!(
+                    self.target.legalize_action(&query)?,
+                    Some(LegalizeAction::Legal)
+                ) {
+                    return Err(Error::codegen(alloc::format!(
+                        "illegal instruction at selection boundary: {id:?}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// New calls enter ABI lowering before their generated transfers are legalized.
+    pub fn legalize(
+        &self,
+        mfunc: &mut MachineFunction,
+        mut lower_call: impl FnMut(&mut veloc_lir::FuncEditor<'_>, veloc_lir::InstId) -> Result<()>,
+    ) -> Result<bool> {
         use alloc::collections::VecDeque;
         const REWRITES_PER_INST: usize = 1024;
         const TRACE_LENGTH: usize = 16;
@@ -46,6 +76,29 @@ impl<'a> Legalizer<'a> {
                 continue;
             }
             let opcode = inst.opcode();
+            if mfunc
+                .try_call_info(id)
+                .is_some_and(|info| info.stack.is_none())
+            {
+                if rewrites == budget {
+                    return Err(Error::codegen("ABI legalization did not converge"));
+                }
+                let (result, changes) = mfunc.editor().track(|f| lower_call(f, id));
+                result?;
+                if mfunc
+                    .try_call_info(id)
+                    .is_some_and(|info| info.stack.is_none())
+                {
+                    return Err(Error::codegen("ABI lowering left an unresolved call"));
+                }
+                rewrites += 1;
+                for changed in changes.insts.into_iter().chain(core::iter::once(id)) {
+                    if mfunc.inst_block(changed).is_some() && queued.insert(changed) {
+                        pending.push_back(changed);
+                    }
+                }
+                continue;
+            }
             let query = Query::from_inst(inst, mfunc.vregs())?;
             let action = self.target.legalize_action(&query)?.ok_or_else(|| {
                 Error::codegen(alloc::format!("missing legalization rule for {opcode:?}"))
