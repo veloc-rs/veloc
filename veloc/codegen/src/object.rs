@@ -12,7 +12,7 @@ use object::{
     Architecture, BinaryFormat, Endianness, RelocationEncoding, RelocationFlags, RelocationKind,
     SymbolFlags, SymbolKind, SymbolScope,
 };
-use veloc_mir::{Function, Linkage};
+use veloc_mir::{FunctionRef, Linkage};
 
 const TEXT_ALIGN: u64 = 16;
 
@@ -37,7 +37,7 @@ impl ObjectFileBuilder {
 
     pub(crate) fn add_defined_function(
         &mut self,
-        func: &Function,
+        func: &FunctionRef,
         emitted: &crate::EmittedCode,
         symbols: &veloc_lir::SymbolTable,
     ) -> Result<()> {
@@ -65,7 +65,7 @@ impl ObjectFileBuilder {
                 )
                 .map_err(|err| {
                     Error::object_file_relocation_error(
-                        func.name.clone(),
+                        func.decl.name.clone(),
                         sym_name.clone(),
                         format!("{err}"),
                     )
@@ -75,7 +75,7 @@ impl ObjectFileBuilder {
         Ok(())
     }
 
-    pub(crate) fn add_undefined_function(&mut self, func: &Function) {
+    pub(crate) fn add_undefined_function(&mut self, func: &FunctionRef) {
         self.ensure_function_symbol(func);
     }
 
@@ -85,26 +85,26 @@ impl ObjectFileBuilder {
             .map_err(|err| Error::object_file_write_error(format!("{err}")))
     }
 
-    fn ensure_function_symbol(&mut self, func: &Function) -> SymbolId {
-        if let Some(&symbol_id) = self.symbols.get(&func.name) {
+    fn ensure_function_symbol(&mut self, func: &FunctionRef) -> SymbolId {
+        if let Some(&symbol_id) = self.symbols.get(&func.decl.name) {
             let symbol = self.object.symbol_mut(symbol_id);
-            symbol.scope = symbol_scope(func.linkage);
+            symbol.scope = symbol_scope(func.decl.linkage);
             symbol.kind = SymbolKind::Text;
             symbol.flags = SymbolFlags::None;
             return symbol_id;
         }
 
         let symbol_id = self.object.add_symbol(Symbol {
-            name: func.name.as_bytes().to_vec(),
+            name: func.decl.name.as_bytes().to_vec(),
             value: 0,
             size: 0,
             kind: SymbolKind::Text,
-            scope: symbol_scope(func.linkage),
+            scope: symbol_scope(func.decl.linkage),
             weak: false,
             section: SymbolSection::Undefined,
             flags: SymbolFlags::None,
         });
-        self.symbols.insert(func.name.clone(), symbol_id);
+        self.symbols.insert(func.decl.name.clone(), symbol_id);
         symbol_id
     }
 
@@ -177,8 +177,7 @@ mod tests {
         let sig = mb.make_signature(vec![], vec![], CallConv::SystemV);
         let func_id = mb.declare_function("main".into(), sig, Linkage::Export);
         {
-            let mut fb = mb.builder(func_id);
-            fb.init_entry_block();
+            let mut fb = mb.define(func_id);
             fb.ins().ret(&[]);
         }
         let module = mb.build();
@@ -200,18 +199,15 @@ mod tests {
     fn compile_module_to_object_keeps_defined_and_imported_symbols() {
         let mut mb = ModuleBuilder::new();
         let sig = mb.make_signature(vec![], vec![], CallConv::SystemV);
-        let import_id = mb.declare_function("ext_func".into(), sig, Linkage::Import);
+        mb.declare_function("ext_func".into(), sig, Linkage::Import);
         let main_id = mb.declare_function("main".into(), sig, Linkage::Export);
         let local_id = mb.declare_function("helper".into(), sig, Linkage::Local);
         {
-            let mut fb = mb.builder(main_id);
-            fb.init_entry_block();
+            let mut fb = mb.define(main_id);
             fb.ins().ret(&[]);
         }
         {
-            let mut fb = mb.builder(local_id);
-            fb.init_entry_block();
-            let _ = fb.func_signature(import_id);
+            let mut fb = mb.define(local_id);
             fb.ins().ret(&[]);
         }
         let module = mb.build();
@@ -246,8 +242,7 @@ mod tests {
         let ext_id = mb.declare_function("ext_func".into(), sig, Linkage::Import);
         let main_id = mb.declare_function("main".into(), sig, Linkage::Export);
         {
-            let mut fb = mb.builder(main_id);
-            fb.init_entry_block();
+            let mut fb = mb.define(main_id);
             fb.ins().call(ext_id, &[]);
             fb.ins().ret(&[]);
         }

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use bitvec::prelude::*;
 use cranelift_entity::{EntityRef, SecondaryMap};
-use veloc_mir::{Block, Function, Inst, Value};
+use veloc_mir::{Block, FuncBody, Inst, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveRange {
@@ -79,12 +79,12 @@ pub struct Liveness {
     pub inst_pcs: SecondaryMap<Inst, u32>,
 }
 
-pub fn analyze_liveness(func: &Function) -> Liveness {
-    let entry = func.entry_block().expect("Function must have entry block");
+pub fn analyze_liveness(func: &FuncBody) -> Liveness {
+    let entry = func.entry_block();
     let rpo = func.cfg().compute_rpo(entry);
     let num_values = func.dfg().values().len();
-    let num_blocks = func.dfg().blocks().len();
-    let num_insts = func.dfg().instructions().len();
+    let num_blocks = func.dfg().block_count();
+    let num_insts = func.dfg().inst_count();
 
     let mut intervals: SecondaryMap<Value, LiveInterval> = SecondaryMap::with_capacity(num_values);
     let mut block_starts: SecondaryMap<Block, u32> = SecondaryMap::with_capacity(num_blocks);
@@ -102,7 +102,7 @@ pub fn analyze_liveness(func: &Function) -> Liveness {
         block_starts[block] = inst_pc;
 
         // Block parameters are defined at the start of the block
-        for &param in &func.dfg().blocks()[block].params {
+        for &param in func.dfg().block_params(block) {
             def_pc[param] = inst_pc;
             def_block[param] = Some(block);
         }

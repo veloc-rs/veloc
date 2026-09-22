@@ -5,7 +5,7 @@
 //! printed by semantic value so the output can be parsed into a fresh module.
 
 use crate::{
-    FuncId, Function, Inst, MemFlags, Module, SigId, Signature, Successors, Type, Value,
+    FuncId, FunctionRef, Inst, MemFlags, Module, SigId, Signature, Successors, Type, Value,
     dfg::DataFlowGraph,
 };
 use core::fmt::{Display, Formatter, Result, Write};
@@ -92,7 +92,7 @@ impl<'a> InstPrinter<'a> {
 
     pub(super) fn fmt_function_signature(&self, f: &mut dyn Write, callee: FuncId) -> Result {
         let module = self.module.ok_or(core::fmt::Error)?;
-        let function = module.functions.get(callee).ok_or(core::fmt::Error)?;
+        let function = module.decls.get(callee).ok_or(core::fmt::Error)?;
         let signature = module
             .signatures()
             .get(function.signature)
@@ -108,7 +108,7 @@ impl<'a> InstPrinter<'a> {
     }
 
     pub(super) fn fmt_func_ref(&self, f: &mut dyn Write, id: FuncId) -> Result {
-        match self.module.and_then(|module| module.functions.get(id)) {
+        match self.module.and_then(|module| module.decls.get(id)) {
             Some(function) => f.write_str(&function.name),
             None => write!(f, "func{}", id.0),
         }
@@ -210,12 +210,12 @@ impl TypePrinter<'_> {
 }
 
 pub struct FuncPrinter<'a> {
-    pub func: &'a Function,
+    pub func: &'a FunctionRef<'a>,
     pub module: &'a Module,
 }
 
 impl<'a> FuncPrinter<'a> {
-    pub fn new(func: &'a Function, module: &'a Module) -> Self {
+    pub fn new(func: &'a FunctionRef<'a>, module: &'a Module) -> Self {
         Self { func, module }
     }
 
@@ -232,8 +232,12 @@ impl<'a> FuncPrinter<'a> {
     }
 
     fn fmt_signature(&self, f: &mut dyn Write) -> Result {
-        write!(f, "{} function {}(", self.func.linkage, self.func.name)?;
-        let sig = &self.module.signatures()[self.func.signature];
+        write!(
+            f,
+            "{} function {}(",
+            self.func.decl.linkage, self.func.decl.name
+        )?;
+        let sig = &self.module.signatures()[self.func.decl.signature];
         let printer = TypePrinter {
             module: Some(self.module),
         };
@@ -281,11 +285,11 @@ impl<'a> ModulePrinter<'a> {
                 global.name, global.ty, global.linkage
             )?;
         }
-        for (index, (_, func)) in self.module.functions.iter().enumerate() {
+        for (index, (_, func)) in self.module.functions().enumerate() {
             if index != 0 || !self.module.globals.is_empty() {
                 writeln!(f)?;
             }
-            FuncPrinter::new(func, self.module).print(f)?;
+            FuncPrinter::new(&func, self.module).print(f)?;
         }
         Ok(())
     }

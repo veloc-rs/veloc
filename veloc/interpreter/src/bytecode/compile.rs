@@ -3,7 +3,7 @@ use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use veloc_analyzer::{LiveInterval, analyze_liveness};
 use veloc_mir::{
-    Block, FuncId, Function, Inst, InstView, Intrinsic, ModuleId, Opcode as IrOpcode, Successor,
+    Block, FuncBody, FuncId, Inst, InstView, Intrinsic, ModuleId, Opcode as IrOpcode, Successor,
     Type, TypeInfo, Value,
 };
 
@@ -198,7 +198,7 @@ struct ValueMapper<'a> {
 
 impl<'a> ValueMapper<'a> {
     fn new(
-        func: &Function,
+        func: &FuncBody,
         intervals: &SecondaryMap<Value, LiveInterval>,
         fused_values: &'a std::collections::HashSet<Value>,
     ) -> Self {
@@ -291,7 +291,7 @@ fn try_emit_inline_intrinsic(
 }
 
 /// Check if a value is a constant that can be fused into a given user instruction.
-fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
+fn can_fuse_operand(func: &FuncBody, user_inst: Inst, val: Value) -> bool {
     use IrOpcode::*;
     let idata = &func.dfg().inst(user_inst);
     let constant = func.dfg().as_scalar_const(val);
@@ -338,7 +338,7 @@ fn can_fuse_operand(func: &Function, user_inst: Inst, val: Value) -> bool {
 
 /// Check if a value is already zero-extended to at least the given bit width.
 /// Identify constants that can be fully fused into their user instructions and thus do not need a register.
-fn identify_fused_values(func: &Function, rpo: &[Block]) -> std::collections::HashSet<Value> {
+fn identify_fused_values(func: &FuncBody, rpo: &[Block]) -> std::collections::HashSet<Value> {
     let mut fused_values = std::collections::HashSet::new();
     let mut insts_with_fused_op = std::collections::HashSet::new();
 
@@ -376,7 +376,7 @@ struct Compiler<'a> {
     callable_values: Vec<Value>,
     liveness: &'a veloc_analyzer::Liveness,
     roots: alloc::collections::BTreeMap<usize, Vec<Reg>>,
-    func: &'a Function,
+    func: &'a FuncBody,
     mapper: ValueMapper<'a>,
     code: Vec<CodeWord>,
     data_section: DataSection,
@@ -390,7 +390,7 @@ struct Compiler<'a> {
 
 impl<'a> Compiler<'a> {
     fn new(
-        func: &'a Function,
+        func: &'a FuncBody,
         mapper: ValueMapper<'a>,
         liveness: &'a veloc_analyzer::Liveness,
     ) -> Self {
@@ -1200,7 +1200,7 @@ impl<'a> Compiler<'a> {
 pub(crate) fn compile_function(
     module_id: ModuleId,
     func_id: FuncId,
-    func: &Function,
+    func: &FuncBody,
 ) -> CompiledFunction {
     // The register representation and opcode handlers currently support scalar
     // values only. Check before fusion/emission, including block parameters and
@@ -1212,7 +1212,7 @@ pub(crate) fn compile_function(
             "interpreter does not support value type {ty}"
         );
     }
-    let entry = func.entry_block().expect("Function must have entry block");
+    let entry = func.entry_block();
     let rpo = func.cfg().compute_rpo(entry);
 
     let liveness = analyze_liveness(func);
@@ -1227,8 +1227,8 @@ pub(crate) fn compile_function(
 
 impl<'a> Compiler<'a> {
     fn apply_rpo(&mut self, rpo: &[Block]) {
-        let entry_block = self.func.entry_block().unwrap();
-        for &param in &self.func.dfg().blocks()[entry_block].params {
+        let entry_block = self.func.entry_block();
+        for &param in self.func.dfg().block_params(entry_block) {
             self.param_indices.push(self.mapper.reg(param));
         }
 
@@ -1479,7 +1479,7 @@ impl<'a> Compiler<'a> {
 /// Note: This function uses a simple ordering strategy; the interpreter will execute
 /// the moves in the order they are stored.
 fn calculate_moves(
-    func: &Function,
+    func: &FuncBody,
     call: veloc_mir::Successor<'_>,
     mapper: &mut ValueMapper,
 ) -> Vec<(Reg, Reg)> {
@@ -1499,7 +1499,7 @@ fn calculate_moves(
 
     let target_block = call.block;
     let args = call.args;
-    let params = &func.dfg().blocks()[target_block].params;
+    let params = func.dfg().block_params(target_block);
 
     // 1. Collect all move requests with pre-allocated capacity
     let mut pending: Vec<(Reg, Reg)> = Vec::with_capacity(params.len());
@@ -1555,14 +1555,14 @@ mod tests {
         );
         let func = module.declare_function("vector_identity".into(), sig, Linkage::Local);
         {
-            let mut builder = module.builder(func);
-            let entry = builder.init_entry_block();
-            let param = builder.block_params(entry)[0];
+            let mut builder = module.define(func);
+            let entry = builder.func().entry_block();
+            let param = builder.func().dfg().block_params(entry)[0];
             builder.ins().ret(&[param]);
         }
         module.validate().unwrap();
         let module = module.build();
-        compile_function(ModuleId::from_u32(0), func, module.get_function(func));
+        compile_function(ModuleId::from_u32(0), func, &module.get_function(func));
     }
 
     #[test]
@@ -1574,8 +1574,7 @@ mod tests {
         let func = module.declare_function("block_params".into(), sig, Linkage::Local);
 
         {
-            let mut builder = module.builder(func);
-            builder.init_entry_block();
+            let mut builder = module.define(func);
 
             let blocks: Vec<_> = (0..BLOCKS)
                 .map(|_| {
@@ -1591,7 +1590,7 @@ mod tests {
             for (index, &block) in blocks.iter().enumerate() {
                 builder.seal_block(block);
                 builder.switch_to_block(block);
-                let param = builder.block_params(block)[0];
+                let param = builder.func().dfg().block_params(block)[0];
 
                 if let Some(&next_block) = blocks.get(index + 1) {
                     let one = builder.ins().i32const((1) as i32);
@@ -1605,7 +1604,7 @@ mod tests {
 
         module.validate().unwrap();
         let module = module.build();
-        let compiled = compile_function(ModuleId::from_u32(0), func, module.get_function(func));
+        let compiled = compile_function(ModuleId::from_u32(0), func, &module.get_function(func));
 
         assert!(
             compiled.register_count <= 3,

@@ -18,26 +18,23 @@ fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
     let cleanup = module.declare_function("cleanup".into(), empty, Linkage::Local);
     let entry = module.declare_function("entry".into(), sig, Linkage::Local);
     {
-        let mut f = module.builder(body);
-        f.init_entry_block();
-        let arg = f.ins().param(0);
+        let mut f = module.define(body);
+        let arg = f.func().params()[0];
         f.ins().ret(&[arg]);
     }
     {
-        let mut f = module.builder(cleanup);
-        f.init_entry_block();
+        let mut f = module.define(cleanup);
         f.ins().ret(&[]);
     }
     {
-        let mut f = module.builder(entry);
-        f.init_entry_block();
-        let arg = f.ins().param(0);
+        let mut f = module.define(entry);
+        let arg = f.func().params()[0];
         let k = f.ins().closure_new(body, &[], cleanup, ty);
         f.ins().tail_call_value(k, &[arg]);
     }
     let mut module = module.build_data();
     module.validate().unwrap();
-    let function = &mut module.functions[entry];
+    let function = module.bodies[entry].as_deref_mut().unwrap();
     let create = function.layout().first_inst(Block(0)).unwrap();
     function
         .edit()
@@ -114,7 +111,7 @@ fn example() -> veloc_mir::ModuleData {
 fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
     let mut module = example();
     module.validate().unwrap();
-    let func = &mut module.functions[veloc_mir::FuncId(0)];
+    let func = module.bodies[veloc_mir::FuncId(0)].as_deref_mut().unwrap();
     let inst = func.layout().first_inst(Block(0)).unwrap();
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -144,12 +141,12 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
     assert_eq!(func.cfg().blocks()[Block(2)].preds, [Block(0)]);
     module.validate().unwrap();
 
-    let func = &mut module.functions[veloc_mir::FuncId(0)];
+    let func = module.bodies[veloc_mir::FuncId(0)].as_deref_mut().unwrap();
     func.edit()
         .redirect_edge(EdgeRef { inst, index: 0 }, Block(2), &[Value(1)]);
     assert!(func.cfg().blocks()[Block(1)].preds.is_empty());
     assert_eq!(func.cfg().blocks()[Block(2)].preds, [Block(0)]);
-    let dom = Dominators::compute(func.cfg(), Block(0), func.dfg().blocks().len());
+    let dom = Dominators::compute(func.cfg(), Block(0), func.dfg().block_count());
     assert!(dom.dominates(Block(0), Block(2)));
     assert_eq!(dom.immediate_dominator(Block(2)), Some(Block(0)));
     assert!(!dom.is_reachable(Block(1)));
@@ -159,7 +156,7 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
 #[test]
 fn validator_rejects_detached_targets_and_unknown_values_without_panicking() {
     let mut module = example();
-    let func = &mut module.functions[veloc_mir::FuncId(0)];
+    let func = module.bodies[veloc_mir::FuncId(0)].as_deref_mut().unwrap();
     let inst = func.layout().first_inst(Block(1)).unwrap();
     func.edit().set_operand(inst, 0, Value(1000));
     assert!(
@@ -175,8 +172,7 @@ fn validator_rejects_detached_targets_and_unknown_values_without_panicking() {
     let mut builder = veloc_mir::ModuleBuilder::new();
     let sig = builder.make_signature(vec![], vec![], veloc_mir::CallConv::SystemV);
     let id = builder.declare_function("bad".into(), sig, veloc_mir::Linkage::Local);
-    let mut f = builder.builder(id);
-    f.init_entry_block();
+    let mut f = builder.define(id);
     let detached = f.create_block();
     f.ins().jump(detached, &[]);
     drop(f);
@@ -192,19 +188,17 @@ fn validator_rejects_detached_targets_and_unknown_values_without_panicking() {
 #[test]
 fn edge_argument_replacement_preserves_other_edges() {
     let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
-    let inst = dfg.create_inst(|writer| {
-        writer.br(
-            Value(0),
-            veloc_mir::Successor {
-                block: Block(1),
-                args: &[Value(1), Value(2)],
-            },
-            veloc_mir::Successor {
-                block: Block(1),
-                args: &[Value(3)],
-            },
-        )
-    });
+    let inst = dfg.writer().br(
+        Value(0),
+        veloc_mir::Successor {
+            block: Block(1),
+            args: &[Value(1), Value(2)],
+        },
+        veloc_mir::Successor {
+            block: Block(1),
+            args: &[Value(3)],
+        },
+    );
     let mut index = 0;
     dfg.edit_successors(inst, |edge| {
         if index == 0 {
@@ -285,9 +279,8 @@ fn modules_share_types_but_detach_before_extending_them() {
     let mut left = ModuleBuilder::with_types(shared.clone());
     let id = left.declare_function("identity".into(), signature, Linkage::Local);
     {
-        let mut f = left.builder(id);
-        f.init_entry_block();
-        let value = f.func_param(0);
+        let mut f = left.define(id);
+        let value = f.func().params()[0];
         f.ins().ret(&[value]);
     }
     let mut left = left.build_data();
@@ -295,7 +288,7 @@ fn modules_share_types_but_detach_before_extending_them() {
     assert!(Arc::ptr_eq(&left.shared_types(), &right.shared_types()));
     left.validate().unwrap();
     right.validate().unwrap();
-    assert!(right.functions.is_empty());
+    assert!(right.decls.is_empty());
 
     let old = left.clone();
     let added = left.intern_signature(Signature::new([Type::F64], [], CallConv::SystemV));

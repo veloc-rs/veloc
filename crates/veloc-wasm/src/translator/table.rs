@@ -161,8 +161,10 @@ impl<'a> WasmTranslator<'a> {
 
         if self.use_names {
             self.builder
+                .ins()
                 .set_value_name(base, &format!("tab{}_base", index));
             self.builder
+                .ins()
                 .set_value_name(length, &format!("tab{}_len", index));
         }
 

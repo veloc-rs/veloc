@@ -147,7 +147,7 @@ Generated Rust artifacts follow their consumers, not the input file boundaries:
 - `types.rs`: compact type encoding, constants and type helpers.
 - `opcodes.rs`: opcode metadata, formats, type sets, packed encodings.
 - `instructions.rs`: storage, writers, views, accessors and result type inference.
-- `builders.rs`: operation-specific `InstBuilder` methods.
+- `builders.rs`: operation-specific `InstCursor` methods.
 - `type_rules.rs`: type validation dispatch and shared signature checks.
 - `validation.rs`: operation constraints checked in function context.
 - `text_parser.rs` and `text_printer.rs`: their respective text codecs.
@@ -961,7 +961,7 @@ operation-specific parsing/printing and ordinary builders.
 
 Type signatures drive two independent paths: result construction and validation.
 Generated builders compute result types directly from logical arguments and pass
-fixed-size arrays to `InstBuilder::emit`, which inserts and retrieves exactly
+fixed-size arrays to `InstCursor::emit`, which inserts and retrieves exactly
 that many results. Generated methods return a `Value` or a tuple; inferred result
 counts are not limited to two. Zero-result instructions call `insert` with an
 empty type slice instead of invoking dynamic inference. All paths use the same

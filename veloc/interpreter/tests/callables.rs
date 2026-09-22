@@ -27,7 +27,7 @@ impl Fixture {
             .unwrap();
         module.validate().unwrap();
         let functions = module
-            .functions
+            .decls
             .iter()
             .map(|(id, f)| (f.name.clone(), id))
             .collect();
@@ -293,9 +293,7 @@ fn raw_host_imports_cannot_accept_or_produce_callable_handles() {
     ] {
         let module = ModuleParser::new().parse(source).unwrap();
         let import = module.find_function_by_name("host").unwrap();
-        let signature = module
-            .get_signature(module.functions[import].signature)
-            .clone();
+        let signature = module.get_signature(module.decls[import].signature).clone();
         let mut program = Program::new();
         let host = program.register_host(
             "host".into(),

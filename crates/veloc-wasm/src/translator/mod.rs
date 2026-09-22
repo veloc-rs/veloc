@@ -1,7 +1,7 @@
 use crate::module::{RuntimeFunctions, WasmMetadata};
 use crate::vm::VMOffsets;
 use alloc::vec::Vec;
-use veloc::mir::{Block, FunctionBuilder, MemFlags, SigId, Type as VelocType, Value, Variable};
+use veloc::mir::{Block, MemFlags, SigId, SsaBuilder, Type as VelocType, Value, Variable};
 use wasmparser::{BinaryReaderError, Operator, ValType};
 
 mod control;
@@ -11,7 +11,7 @@ mod table;
 mod variable;
 
 pub struct WasmTranslator<'a> {
-    builder: &'a mut FunctionBuilder<'a>,
+    builder: &'a mut SsaBuilder<'a>,
     stack: Vec<Value>,
     locals: Vec<(Variable, VelocType)>,
     next_var_idx: u32,
@@ -50,7 +50,7 @@ struct ControlFrame {
 
 impl<'a> WasmTranslator<'a> {
     pub fn new(
-        builder: &'a mut FunctionBuilder<'a>,
+        builder: &'a mut SsaBuilder<'a>,
         results: Vec<VelocType>,
         metadata: &'a WasmMetadata,
         ir_sig_ids: &'a [SigId],
@@ -92,7 +92,7 @@ impl<'a> WasmTranslator<'a> {
         param_types: &[VelocType],
     ) -> Result<(), BinaryReaderError> {
         let mut reader = code.get_operators_reader()?;
-        let entry = self.builder.init_entry_block();
+        let entry = self.builder.func().entry_block();
         let end_block = self.builder.create_block();
 
         self.control_stack.push(ControlFrame {
@@ -112,13 +112,13 @@ impl<'a> WasmTranslator<'a> {
             self.builder.add_block_param(end_block, ty);
         }
 
-        let params = self.builder.func_params().to_vec();
+        let params = self.builder.func().params().to_vec();
         let mut params_iter = params.into_iter();
 
         let vmctx = params_iter.next().expect("Missing vmctx parameter");
         self.vmctx = Some(vmctx);
         if self.use_names {
-            self.builder.set_value_name(vmctx, "vmctx");
+            self.builder.ins().set_value_name(vmctx, "vmctx");
         }
 
         for (i, &ty) in param_types.iter().enumerate() {
@@ -127,7 +127,9 @@ impl<'a> WasmTranslator<'a> {
             let val = params_iter.next().expect("Missing parameter");
             self.builder.def_var(var, val);
             if self.use_names {
-                self.builder.set_value_name(val, &format!("param{}", i));
+                self.builder
+                    .ins()
+                    .set_value_name(val, &format!("param{}", i));
             }
         }
 
@@ -137,7 +139,9 @@ impl<'a> WasmTranslator<'a> {
                 .expect("Missing hidden multi-result buffer parameter");
             self.results_ptr = Some(results_ptr);
             if self.use_names {
-                self.builder.set_value_name(results_ptr, "results_ptr");
+                self.builder
+                    .ins()
+                    .set_value_name(results_ptr, "results_ptr");
             }
         }
 
@@ -154,6 +158,7 @@ impl<'a> WasmTranslator<'a> {
                 self.builder.def_var(var, zero);
                 if self.use_names {
                     self.builder
+                        .ins()
                         .set_value_name(zero, &format!("local{}", local_idx));
                 }
                 local_idx += 1;
@@ -190,6 +195,7 @@ impl<'a> WasmTranslator<'a> {
                 );
                 if self.use_names {
                     self.builder
+                        .ins()
                         .set_value_name(ptr, &format!("global{}_ptr", i));
                 }
                 self.builder.def_var(var, ptr);
@@ -305,14 +311,14 @@ impl<'a> WasmTranslator<'a> {
             }
             Operator::RefIsNull => {
                 let v = self.pop();
-                let v_ty = self.builder.value_type(v);
+                let v_ty = self.builder.ins().value_type(v);
                 let zero = self.zero_const(v_ty);
                 let res = self.builder.ins().icmp(veloc::mir::IntCC::Eq, v, zero);
                 self.stack.push(res);
             }
             Operator::RefAsNonNull => {
                 let v = self.pop();
-                let v_ty = self.builder.value_type(v);
+                let v_ty = self.builder.ins().value_type(v);
                 let zero = self.zero_const(v_ty);
                 let is_null = self.builder.ins().icmp(veloc::mir::IntCC::Eq, v, zero);
                 self.trap_if(is_null, crate::vm::TrapCode::NullReference);
@@ -325,7 +331,7 @@ impl<'a> WasmTranslator<'a> {
                 let cond = self.pop_cond();
                 let val2 = self.pop();
                 let val1 = self.pop();
-                let ty1 = self.builder.value_type(val1);
+                let ty1 = self.builder.ins().value_type(val1);
                 let val2 = self.ensure_type(val2, ty1);
                 let res = self.builder.ins().select(cond, val1, val2);
                 self.stack.push(res);
@@ -404,7 +410,7 @@ impl<'a> WasmTranslator<'a> {
     }
 
     fn ensure_type(&mut self, v: Value, ty: VelocType) -> Value {
-        let v_ty = self.builder.value_type(v);
+        let v_ty = self.builder.ins().value_type(v);
         if v_ty == ty {
             return v;
         }
@@ -460,7 +466,7 @@ impl<'a> WasmTranslator<'a> {
     }
 
     fn as_cond(&mut self, val: Value) -> Value {
-        let ty = self.builder.value_type(val);
+        let ty = self.builder.ins().value_type(val);
         if ty == VelocType::BOOL {
             val
         } else {

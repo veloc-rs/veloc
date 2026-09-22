@@ -4,15 +4,14 @@ use std::hint::black_box;
 use std::time::Instant;
 use veloc_mir::{CallConv, Linkage, ModuleBuilder, ModuleData, Opcode, Type};
 use veloc_optimizer::Metrics;
-use veloc_optimizer::passes::function::simplify::run_simplify;
+use veloc_optimizer::passes::function::expression::{Budget, run};
 
 fn module() -> ModuleData {
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(vec![], vec![Type::I32], CallConv::SystemV);
     let id = module.declare_function("arithmetic".into(), sig, Linkage::Local);
     {
-        let mut builder = module.builder(id);
-        builder.init_entry_block();
+        let mut builder = module.define(id);
         let mut ins = builder.ins();
         let one = ins.i32const(1);
         let three = ins.i32const(3);
@@ -72,22 +71,6 @@ fn main() {
                 .validate_types(black_box(&[Type::I64]), black_box(&[Type::I32]))
                 .unwrap();
         });
-        let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
-        dfg.create_block();
-        let lhs = dfg.append_block_param(veloc_mir::Block(0), Type::I32);
-        let rhs = dfg.append_block_param(veloc_mir::Block(0), Type::I32);
-        let context = ModuleData::default();
-        let insts = [Opcode::IAdd, Opcode::ISub, Opcode::IMul]
-            .map(|op| dfg.writer().from_values(op, &[lhs, rhs]).unwrap());
-        measure("resolve_results (3 calls)", 100_000 * scale, || {
-            for inst in black_box(insts) {
-                black_box(
-                    black_box(dfg.inst(inst))
-                        .result_types(black_box(&dfg), black_box(&context), &[])
-                        .unwrap(),
-                );
-            }
-        });
     }
     if selected("build") {
         measure("build + drop (1004 instructions)", 100 * scale, || {
@@ -110,8 +93,12 @@ fn main() {
                 let mut data = source.clone();
                 let mut metrics = Metrics::default();
                 let start = Instant::now();
-                for (_, function) in data.functions.iter_mut() {
-                    assert!(run_simplify(function, false, &mut metrics));
+                for function in data
+                    .bodies
+                    .iter_mut()
+                    .filter_map(|(_, body)| body.as_deref_mut())
+                {
+                    assert!(run(function, Budget::DEFAULT, false, &mut metrics));
                 }
                 elapsed += start.elapsed().as_secs_f64();
                 black_box(&data);

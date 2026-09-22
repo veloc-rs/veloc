@@ -232,8 +232,10 @@ impl<'a> WasmTranslator<'a> {
 
         if self.use_names {
             self.builder
+                .ins()
                 .set_value_name(base, &format!("mem{}_base", index));
             self.builder
+                .ins()
                 .set_value_name(length, &format!("mem{}_len", index));
         }
 
@@ -324,7 +326,7 @@ impl<'a> WasmTranslator<'a> {
     }
 
     pub(super) fn addr_to_i64(&mut self, addr: Value) -> Value {
-        let addr_ty = self.builder.value_type(addr);
+        let addr_ty = self.builder.ins().value_type(addr);
         if addr_ty == VelocType::I64 {
             addr
         } else {

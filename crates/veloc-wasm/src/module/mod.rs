@@ -244,7 +244,7 @@ impl Module {
 
                 let func_id = metadata.functions[global_idx].func_id;
 
-                let mut builder = ir.builder(func_id);
+                let mut builder = ir.define(func_id);
                 let mut translator = WasmTranslator::new(
                     &mut builder,
                     returns,
@@ -410,7 +410,7 @@ impl Module {
 }
 
 fn generate_init_expr(
-    ins: &mut veloc::mir::builder::InstBuilder,
+    ins: &mut veloc::mir::InstCursor<'_, '_>,
     expr: &[GlobalInit],
     vmctx: veloc::mir::Value,
     offsets: &VMOffsets,
@@ -508,10 +508,9 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
 
             let sig = &metadata.signatures[ty_idx as usize];
 
-            let mut builder = ir.builder(tramp_id);
-            builder.init_entry_block();
+            let mut builder = ir.define(tramp_id);
+            let params = builder.func().params().to_vec();
             let mut ins = builder.ins();
-            let params = ins.builder().func_params().to_vec();
             let vmctx = params[0];
             let args_ptr = params[1];
             let results_ptr = if sig.results.len() > 1 {
@@ -548,9 +547,9 @@ fn generate_trampolines(ir: &mut veloc::mir::ModuleBuilder, metadata: &mut WasmM
             }
 
             let call_inst = ins.call(func_id, &call_args);
-            let res_vals: Vec<_> = ins.builder().func().dfg().inst_results(call_inst).to_vec();
+            let res_vals: Vec<_> = ins.dfg().inst_results(call_inst).to_vec();
             let ret_bits = if let Some(&res_val) = res_vals.first() {
-                let res_ty = ins.builder().value_type(res_val);
+                let res_ty = ins.value_type(res_val);
                 match res_ty {
                     VelocType::I32 => ins.extendu(res_val, VelocType::I64),
                     VelocType::F32 => {
@@ -580,10 +579,9 @@ fn generate_veloc_init(
     let init_func_id =
         ir.declare_function("__veloc_init".to_string(), init_sig_id, Linkage::Export);
 
-    let mut builder = ir.builder(init_func_id);
-    builder.init_entry_block();
+    let mut builder = ir.define(init_func_id);
+    let vmctx = builder.func().params()[0];
     let mut ins = builder.ins();
-    let vmctx = ins.builder().func_params()[0];
 
     // 1. Initialize local globals (直接内联存储，不需要通过指针)
     for i in metadata.num_imported_globals..metadata.globals.len() {
@@ -610,7 +608,7 @@ fn generate_veloc_init(
             continue;
         }
         let offset = generate_init_expr(&mut ins, &element.offset, vmctx, offsets, metadata);
-        let offset_i32 = if ins.builder().value_type(offset) == VelocType::I64 {
+        let offset_i32 = if ins.value_type(offset) == VelocType::I64 {
             ins.wrap(offset, VelocType::I32)
         } else {
             offset
@@ -630,7 +628,7 @@ fn generate_veloc_init(
             continue;
         }
         let offset = generate_init_expr(&mut ins, &data.offset, vmctx, offsets, metadata);
-        let offset_i32 = if ins.builder().value_type(offset) == VelocType::I64 {
+        let offset_i32 = if ins.value_type(offset) == VelocType::I64 {
             ins.wrap(offset, VelocType::I32)
         } else {
             offset

@@ -274,7 +274,7 @@ fn output_plan_errors_keep_the_imported_source_location() {
     let error = source.plan().err().expect("invalid output plan");
     assert_eq!(error.path, files.0.join("bad.spec"));
     assert_eq!(error.diagnostic.line, 2);
-    assert!(error.diagnostic.message.contains("InstBuilder method"));
+    assert!(error.diagnostic.message.contains("InstCursor method"));
 }
 
 #[test]

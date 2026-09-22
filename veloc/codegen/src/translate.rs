@@ -8,7 +8,7 @@ use alloc::{format, vec::Vec};
 use cranelift_entity::PrimaryMap;
 use veloc_lir::InstBuild;
 use veloc_lir::{BlockId, CallInfo, MachineFunction, MachineModule, Reg, Successor};
-use veloc_mir::{Function, InstView, Module, Opcode, TypeInfo, Value};
+use veloc_mir::{FunctionRef, InstView, Module, Opcode, TypeInfo, Value};
 
 /// IR 到 LIR 的翻译器
 pub struct IRTranslator<'a> {
@@ -18,7 +18,7 @@ pub struct IRTranslator<'a> {
 
 /// 翻译上下文，用于在翻译过程中共享状态
 struct TranslationContext<'a> {
-    func: &'a Function,
+    func: &'a FunctionRef<'a>,
     mmodule: &'a mut MachineModule,
     mfunc: MachineFunction,
     value_map: PrimaryMap<Value, Reg>,
@@ -32,7 +32,7 @@ impl<'a> IRTranslator<'a> {
 
     fn memory_access(
         &self,
-        func: &Function,
+        func: &FunctionRef,
         inst: veloc_mir::Inst,
     ) -> Result<veloc_lir::MemoryAccess> {
         let source = inst
@@ -87,7 +87,7 @@ impl<'a> IRTranslator<'a> {
     /// Unsupported backend features are still diagnosed during lowering.
     /// 将 IR 模块翻译为 MachineModule
     pub fn translate_module(&self) -> Result<MachineModule> {
-        for (_, func) in &self.module.functions {
+        for (_, func) in self.module.functions() {
             if func.body().is_some_and(|body| {
                 body.dfg()
                     .values()
@@ -95,10 +95,10 @@ impl<'a> IRTranslator<'a> {
                     .any(|(_, value)| value.ty.is_callable())
             }) || self
                 .module
-                .get_signature(func.signature)
+                .get_signature(func.decl.signature)
                 .params()
                 .iter()
-                .chain(self.module.get_signature(func.signature).returns())
+                .chain(self.module.get_signature(func.decl.signature).returns())
                 .any(|ty| ty.is_callable())
             {
                 return Err(Error::message(
@@ -117,13 +117,8 @@ impl<'a> IRTranslator<'a> {
         }
         let mut mmodule = MachineModule::new(alloc::string::String::from("default"));
 
-        for (_, func) in self
-            .module
-            .functions
-            .iter()
-            .filter(|(_, f)| f.body().is_some())
-        {
-            let mfunc = self.translate_function(func, &mut mmodule)?;
+        for (_, func) in self.module.functions().filter(|(_, f)| f.body().is_some()) {
+            let mfunc = self.translate_function(&func, &mut mmodule)?;
             mmodule.add_function(mfunc);
         }
 
@@ -133,7 +128,7 @@ impl<'a> IRTranslator<'a> {
     /// 将 IR 函数翻译为 MachineFunction
     fn translate_function(
         &self,
-        func: &Function,
+        func: &FunctionRef,
         mmodule: &mut MachineModule,
     ) -> Result<MachineFunction> {
         let block_count = func.layout().block_order().count();
@@ -146,7 +141,7 @@ impl<'a> IRTranslator<'a> {
             func,
             mmodule,
             mfunc: MachineFunction::with_capacity(
-                func.name.clone(),
+                func.decl.name.clone(),
                 block_count + 1,
                 lir_inst_capacity,
                 value_count + func.params().len(),
@@ -178,7 +173,7 @@ impl<'a> IRTranslator<'a> {
         }
         for block_id in order {
             let mblock = ctx.block_map[block_id].unwrap();
-            for &value in &func.dfg().blocks()[block_id].params {
+            for &value in func.dfg().block_params(block_id) {
                 if block_id != entry || incoming.is_some() {
                     ctx.mfunc
                         .editor()
@@ -461,9 +456,9 @@ impl<'a> IRTranslator<'a> {
                 let callee = self.module.get_function(*func_id);
                 let sym_id = ctx.mmodule.symbols_mut().get_or_create_function(
                     self.module.get_function_name(*func_id),
-                    callee.linkage,
+                    callee.decl.linkage,
                 );
-                let sig_id = callee.signature;
+                let sig_id = callee.decl.signature;
                 let call_info = CallInfo {
                     clobbers: Default::default(),
                     stack: None,

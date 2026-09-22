@@ -15,16 +15,16 @@ pub(super) fn generate(ir: &mut veloc::mir::ModuleBuilder, meta: &WasmMetadata) 
         let sig = &meta.signatures[meta.functions[i].type_index as usize];
         let native_sig = sig.intern_veloc_sig(ir);
         let id = ir.declare_function(format!("__veloc_host_{i}"), native_sig, Linkage::Export);
-        let mut builder = ir.builder(id);
-        builder.init_entry_block();
-        let params = builder.func_params().to_vec();
+        let mut builder = ir.define(id);
+        let params = builder.func().params().to_vec();
         let slots = (sig.params.len() + 1).max(sig.results.len());
-        let buffer = builder.entry_alloca((slots * 8) as u32, 8);
+        let entry = builder.func().entry_block();
+        let buffer = builder.at_start(entry).alloca((slots * 8) as u32, 8);
         let mut ins = builder.ins();
         // Every slot is a complete InterpreterValue, including zeroed high bits
         // for narrow arguments. Slot zero carries the current instance context.
         for (j, &param) in params.iter().take(sig.params.len() + 1).enumerate() {
-            let ty = ins.builder().value_type(param);
+            let ty = ins.value_type(param);
             let bits = match ty {
                 VelocType::PTR => ins.ptrtoint(param, VelocType::I64),
                 VelocType::F64 => ins.reinterpret(param, VelocType::I64),

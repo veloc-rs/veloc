@@ -20,11 +20,12 @@ fn main() {
             "local function main(i32, i32) -> i32\nblock0(v0: i32, v1: i32):\n  return v0\n",
         )?;
         let mut data = (*module).clone();
-        let (_, func) = data.functions.iter_mut().next().unwrap();
-        let ret = func
-            .layout()
-            .last_inst(func.entry_block().unwrap())
+        let func = data
+            .bodies
+            .iter_mut()
+            .find_map(|(_, body)| body.as_deref_mut())
             .unwrap();
+        let ret = func.layout().last_inst(func.entry_block()).unwrap();
         let second = func.params()[1];
         let mut analyses = AnalysisManager::new(func);
         let before = format!("{:?}", analyses.liveness().intervals);
@@ -307,7 +308,7 @@ fn interpret(module: Module) -> Result<String> {
     let main = module
         .find_function_by_name("main")
         .ok_or("execute needs a main function")?;
-    let signature = &module.signatures()[module.functions[main].signature];
+    let signature = &module.signatures()[module.decls[main].signature];
     if !signature.params().is_empty() {
         return Err("execute requires main() with no parameters".into());
     }
@@ -366,17 +367,20 @@ fn roundtrip(module: &Module) -> Result<String> {
 
 fn simplify(module: Module) -> Result<Module> {
     let mut data = (*module).clone();
-    for (_, function) in data.functions.iter_mut() {
-        if function.entry_block().is_none() {
-            continue;
-        }
+    for function in data
+        .bodies
+        .iter_mut()
+        .filter_map(|(_, body)| body.as_deref_mut())
+    {
         let mut metrics = Metrics::default();
         expression::run(function, expression::Budget::DEFAULT, false, &mut metrics);
         let before = format!("{function:?}");
-        if expression::run(function, expression::Budget::DEFAULT, false, &mut metrics) || format!("{function:?}") != before {
+        if expression::run(function, expression::Budget::DEFAULT, false, &mut metrics)
+            || format!("{function:?}") != before
+        {
             return Err(format!(
                 "{}: simplify did not reach a fixed point",
-                function.name
+                "function"
             ));
         }
     }

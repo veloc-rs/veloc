@@ -16,6 +16,21 @@ pub struct FuncEditor<'a> {
     body: &'a mut FuncBody,
 }
 
+/// Insertion cursor for one block.
+///
+/// The cursor owns the structural editor for the function body, so generated
+/// instruction constructors cannot accidentally bypass CFG/use-def updates.
+/// SSA construction state remains on `SsaBuilder`; this type only exposes the
+/// instruction-building surface at the current insertion point.
+pub struct InstCursor<'ctx, 'body> {
+    pub(crate) editor: FuncEditor<'body>,
+    pub(crate) decls: &'ctx cranelift_entity::PrimaryMap<crate::FuncId, crate::FuncDecl>,
+    pub(crate) signatures: &'ctx veloc_types::Signatures,
+    pub(crate) block: Block,
+    // Stable anchor preserves emission order when inserting at block start.
+    before: Option<Inst>,
+}
+
 impl<'a> FuncEditor<'a> {
     pub(super) fn new(body: &'a mut FuncBody) -> Self {
         Self { body }
@@ -25,17 +40,47 @@ impl<'a> FuncEditor<'a> {
         self.body
     }
 
+    pub fn at_end<'ctx>(
+        self,
+        block: Block,
+        decls: &'ctx cranelift_entity::PrimaryMap<crate::FuncId, crate::FuncDecl>,
+        signatures: &'ctx veloc_types::Signatures,
+    ) -> InstCursor<'ctx, 'a> {
+        assert!(self.body.layout.contains_block(block), "block not placed");
+        InstCursor {
+            editor: self,
+            decls,
+            signatures,
+            block,
+            before: None,
+        }
+    }
+
+    /// Insert before the original first instruction, preserving emission order.
+    pub fn at_start<'ctx>(
+        self,
+        block: Block,
+        decls: &'ctx cranelift_entity::PrimaryMap<crate::FuncId, crate::FuncDecl>,
+        signatures: &'ctx veloc_types::Signatures,
+    ) -> InstCursor<'ctx, 'a> {
+        assert!(self.body.layout.contains_block(block), "block not placed");
+        let before = self.body.layout.first_inst(block);
+        InstCursor {
+            editor: self,
+            decls,
+            signatures,
+            block,
+            before,
+        }
+    }
+
     pub fn create_block(&mut self) -> Block {
         self.body.dfg.create_block()
     }
 
     pub fn append_block(&mut self, block: Block) {
         assert!(self.body.dfg.blocks.get(block).is_some(), "unknown block");
-        let first = self.body.layout.block_order().next().is_none();
         self.body.layout.append_block(block);
-        if first {
-            self.body.entry_block = block;
-        }
     }
 
     pub fn set_value_name(&mut self, value: Value, name: &str) {
@@ -49,11 +94,6 @@ impl<'a> FuncEditor<'a> {
 
     pub(crate) fn create_inst(&mut self, build: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {
         self.body.dfg.create_inst(build)
-    }
-
-    pub(crate) fn finish_inst(&mut self, block: Block, inst: Inst, types: &[Type]) {
-        self.body.dfg.append_results(inst, types);
-        self.append_existing(block, inst);
     }
 
     pub(crate) fn finish_parsed_inst(
@@ -87,17 +127,13 @@ impl<'a> FuncEditor<'a> {
         self.body.dfg.remap_functions(map);
     }
 
-    pub(crate) fn edit_successors(
-        &mut self,
-        inst: Inst,
-        mut edit: impl FnMut(&mut SuccessorMut<'_>),
-    ) {
+    pub(crate) fn edit_successors(&mut self, inst: Inst, edit: impl FnMut(&mut SuccessorMut<'_>)) {
         let block = self
             .body
             .layout
             .inst_block(inst)
             .expect("instruction not placed");
-        self.body.dfg.edit_successors(inst, |edge| edit(edge));
+        self.body.dfg.edit_successors(inst, edit);
         self.sync_edges(block);
     }
 
@@ -162,7 +198,6 @@ impl<'a> FuncEditor<'a> {
             }
             index += 1;
         });
-        assert!(edit.is_none(), "successor position out of bounds");
         self.sync_edges(block);
     }
 
@@ -177,12 +212,7 @@ impl<'a> FuncEditor<'a> {
         data: impl FnOnce(InstWriter<'_>) -> Inst,
         types: &[Type],
     ) -> Inst {
-        assert!(self.body.layout.contains_block(block), "block not placed");
-        let inst = self.body.dfg.create_inst(data);
-        self.body.dfg.append_results(inst, types);
-        self.body.layout.append_inst(block, inst);
-        self.sync_edges(block);
-        inst
+        self.insert_at(block, None, data, types)
     }
 
     /// Insert a non-terminator at block entry.
@@ -192,13 +222,13 @@ impl<'a> FuncEditor<'a> {
         data: impl FnOnce(InstWriter<'_>) -> Inst,
         types: &[Type],
     ) -> Inst {
-        let inst = self.body.dfg.create_inst(data);
+        let before = self.body.layout.first_inst(block);
+        let inst = self.create_inst(data);
         assert!(
-            !self.body.dfg().opcode(inst).spec().is_terminator(),
+            !self.body.dfg.opcode(inst).spec().is_terminator(),
             "cannot prepend a terminator"
         );
-        self.body.dfg.append_results(inst, types);
-        self.body.layout.prepend_inst(block, inst);
+        self.finish_inst(block, before, inst, types);
         inst
     }
 
@@ -210,16 +240,11 @@ impl<'a> FuncEditor<'a> {
     ) -> Inst {
         let block = self
             .body
-            .layout()
+            .layout
             .inst_block(after)
             .expect("anchor not in layout");
-        let inst = self.body.dfg.create_inst(data);
-        self.body.dfg.append_results(inst, types);
-        self.body.layout.insert_after(after, inst);
-        if self.body.layout().last_inst(block) == Some(inst) {
-            self.sync_edges(block);
-        }
-        inst
+        let before = self.body.layout.next_inst(after);
+        self.insert_at(block, before, data, types)
     }
 
     /// Insert before a stable anchor without renumbering instructions.
@@ -229,14 +254,56 @@ impl<'a> FuncEditor<'a> {
         data: impl FnOnce(InstWriter<'_>) -> Inst,
         types: &[Type],
     ) -> Inst {
-        self.body
-            .layout()
+        let block = self
+            .body
+            .layout
             .inst_block(before)
             .expect("anchor not in layout");
-        let inst = self.body.dfg.create_inst(data);
-        self.body.dfg.append_results(inst, types);
-        self.body.layout.insert_before(before, inst);
+        self.insert_at(block, Some(before), data, types)
+    }
+
+    fn insert_at(
+        &mut self,
+        block: Block,
+        before: Option<Inst>,
+        data: impl FnOnce(InstWriter<'_>) -> Inst,
+        types: &[Type],
+    ) -> Inst {
+        let inst = self.create_inst(data);
+        self.finish_inst(block, before, inst, types);
         inst
+    }
+
+    /// Shared by explicit insertion and constructors that infer result types.
+    fn finish_inst(&mut self, block: Block, before: Option<Inst>, inst: Inst, types: &[Type]) {
+        assert!(self.body.layout.contains_block(block), "block not placed");
+        if let Some(anchor) = before {
+            assert_eq!(
+                self.body.layout.inst_block(anchor),
+                Some(block),
+                "anchor in another block"
+            );
+            assert!(
+                !self.body.dfg.opcode(inst).spec().is_terminator(),
+                "cannot insert a terminator before another instruction"
+            );
+        } else {
+            assert!(
+                self.body.layout.last_inst(block).is_none_or(|last| !self
+                    .body
+                    .dfg
+                    .opcode(last)
+                    .spec()
+                    .is_terminator()),
+                "cannot append after a terminator"
+            );
+        }
+        self.body.dfg.append_results(inst, types);
+        if let Some(anchor) = before {
+            self.body.layout.insert_before(anchor, inst);
+        } else {
+            self.append_existing(block, inst);
+        }
     }
 
     /// Move placement only. Callers must preserve dominance and terminator rules.
@@ -385,5 +452,48 @@ impl<'a> FuncEditor<'a> {
             }
         }
         self.body.cfg.blocks[block].succs = successors.into_vec();
+    }
+}
+
+impl<'ctx, 'body> InstCursor<'ctx, 'body> {
+    pub fn block(&self) -> Block {
+        self.block
+    }
+
+    pub fn dfg(&self) -> &crate::dfg::DataFlowGraph {
+        self.editor.body().dfg()
+    }
+
+    pub fn value_type(&self, value: Value) -> Type {
+        self.dfg().value_type(value)
+    }
+
+    /// Name a value without changing SSA definitions or control flow.
+    pub fn set_value_name(&mut self, value: Value, name: &str) {
+        self.editor.set_value_name(value, name);
+    }
+
+    /// Insert an instruction with caller-supplied result types.
+    pub fn insert(&mut self, data: impl FnOnce(InstWriter<'_>) -> Inst, types: &[Type]) -> Inst {
+        self.editor.insert_at(self.block, self.before, data, types)
+    }
+
+    pub(crate) fn emit<const N: usize>(
+        &mut self,
+        data: impl FnOnce(InstWriter<'_>) -> Inst,
+        types: [Type; N],
+    ) -> [Value; N] {
+        let inst = self.insert(data, &types);
+        self.dfg()
+            .inst_results(inst)
+            .try_into()
+            .expect("insert must create one result per supplied type")
+    }
+
+    pub fn dense_const(&mut self, bytes: Vec<u8>, ty: Type) -> Value {
+        let value = self
+            .editor
+            .dense_constant(ty.as_vector().expect("vector constant type"), bytes);
+        self.vconst(value)
     }
 }

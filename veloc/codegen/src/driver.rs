@@ -16,7 +16,7 @@ use crate::translate::IRTranslator;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use veloc_lir::{MachineFunction, MachineModule};
-use veloc_mir::{FuncId, Function, Module};
+use veloc_mir::{FuncId, FunctionRef, Module};
 
 /// 代码生成统计信息
 #[derive(Debug, Clone, Default)]
@@ -174,13 +174,13 @@ impl<'a> CodegenPipeline<'a> {
         for compiled_func in &compiled.functions {
             let func = module.get_function(compiled_func.func_id);
             if let Some(emitted) = &compiled_func.emitted {
-                object.add_defined_function(func, emitted, &compiled.symbols)?;
+                object.add_defined_function(&func, emitted, &compiled.symbols)?;
             }
         }
 
-        for (_, func) in &module.functions {
-            if func.linkage == veloc_mir::Linkage::Import {
-                object.add_undefined_function(func);
+        for (_, func) in module.functions() {
+            if func.decl.linkage == veloc_mir::Linkage::Import {
+                object.add_undefined_function(&func);
             }
         }
 
@@ -229,16 +229,15 @@ impl<'a> CodegenPipeline<'a> {
         let function_pipelines = TargetFunctionPipelines::new(self.target.pass_config());
 
         for ((func_id, func), (_, mfunc)) in module
-            .functions
-            .iter()
+            .functions()
             .filter(|(_, f)| f.body().is_some())
             .zip(functions.into_iter())
         {
-            debug_assert_eq!(func.name, mfunc.name);
+            debug_assert_eq!(func.decl.name, mfunc.name);
             compiled_functions.push(self.compile_defined_function(
                 func_id,
-                func,
-                module.get_signature(func.signature),
+                &func,
+                module.get_signature(func.decl.signature),
                 mfunc,
                 stats,
                 module_analyses,
@@ -260,7 +259,7 @@ impl<'a> CodegenPipeline<'a> {
     fn compile_defined_function(
         &self,
         func_id: FuncId,
-        func: &Function,
+        func: &FunctionRef,
         sig: &veloc_mir::Signature,
         mfunc: MachineFunction,
         stats: &mut CodegenStats,
@@ -292,7 +291,7 @@ impl<'a> CodegenPipeline<'a> {
 
         Ok(CompiledFunction {
             func_id,
-            name: func.name.clone(),
+            name: func.decl.name.clone(),
             machine_function: final_mfunc,
             emitted: None,
         })
@@ -559,8 +558,8 @@ block0(v0: ptr):
         let target = crate::create_target_machine(crate::TargetConfig::default()).unwrap();
         let pipeline = CodegenPipeline::new(&*target);
         let translated = pipeline.translate_module(&module).unwrap();
-        let func = module.functions.iter().next().unwrap().1;
-        let sig = module.get_signature(func.signature);
+        let func = module.functions().next().unwrap().1;
+        let sig = module.get_signature(func.decl.signature);
         let target_pipelines = TargetFunctionPipelines::new(target.pass_config());
         for wrong_direction in [false, true] {
             let mut f = translated.functions.iter().next().unwrap().1.clone();

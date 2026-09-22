@@ -1,6 +1,6 @@
 //! Linear resource flow. Ownership follows CFG edges,
 //! not use counts: two mutually exclusive branches can move the same value.
-use crate::{Block, Function, Inst, Result, Successor, Value};
+use crate::{Block, FunctionRef, Inst, Result, Successor, Value};
 use alloc::{collections::BTreeSet, vec::Vec};
 use veloc_types::TypeInfo;
 
@@ -8,13 +8,13 @@ use veloc_types::TypeInfo;
 type Owned = BTreeSet<Value>;
 
 struct Ownership<'a> {
-    func: &'a Function,
+    func: &'a FunctionRef<'a>,
     // None means unreached; Some(empty) means reached with no owned values.
     entries: Vec<Option<Owned>>,
     pending: Vec<Block>,
 }
 
-pub(super) fn validate(func: &Function) -> Result<()> {
+pub(super) fn validate(func: &FunctionRef) -> Result<()> {
     let Some(entry) = func.entry_block() else {
         return Ok(());
     };
@@ -118,7 +118,7 @@ impl Ownership<'_> {
 }
 
 fn consume(
-    func: &Function,
+    func: &FunctionRef,
     inst: Inst,
     available: &mut Owned,
     value: Value,

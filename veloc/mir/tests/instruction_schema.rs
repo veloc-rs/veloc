@@ -129,10 +129,9 @@ fn generated_memory_builders_preserve_field_order() {
     let mut module = ModuleBuilder::new();
     let signature = module.make_signature(vec![Type::PTR, Type::PTR], vec![], CallConv::SystemV);
     let function = module.declare_function("memory_fields".into(), signature, Linkage::Export);
-    let mut builder = module.builder(function);
-    builder.init_entry_block();
-    let ptr = builder.func_param(0);
-    let value = builder.func_param(1);
+    let mut builder = module.define(function);
+    let ptr = builder.func().params()[0];
+    let value = builder.func().params()[1];
     let flags = MemFlags::new().with_volatile(true).with_alignment(8);
 
     // Both operands are pointers: reversing them would still pass type validation.
@@ -163,8 +162,7 @@ fn generated_integer_constant_builder_preserves_bit_patterns() {
     let mut module = ModuleBuilder::new();
     let signature = module.make_signature(vec![], vec![], CallConv::SystemV);
     let function = module.declare_function("constant_bits".into(), signature, Linkage::Export);
-    let mut builder = module.builder(function);
-    builder.init_entry_block();
+    let mut builder = module.define(function);
 
     let bits = 0xfedc_ba98_7654_3210;
     let raw = builder
@@ -218,8 +216,7 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
     let func = module.declare_function("constants".into(), sig, Linkage::Local);
-    let mut builder = module.builder(func);
-    builder.init_entry_block();
+    let mut builder = module.define(func);
     let dfg = &mut DataFlowGraph::new();
     let bytes: Vec<_> = [1i32, -2, 3, 4]
         .into_iter()
@@ -241,10 +238,8 @@ fn constants_share_scalar_storage_and_materialize_vectors() {
     let scalable_splat = VectorConst::splat(ScalarConst::from(-7i32), 4, true).unwrap();
     assert_eq!(splat.ty(), veloc_mir::Type::I32X4);
     assert!(VectorConst::splat(ScalarConst::from(7i32), 3, false).is_none());
-    let dense = builder
-        .func_mut()
-        .edit()
-        .dense_constant(veloc_mir::Type::I32X4.as_vector().unwrap(), bytes);
+    let result = builder.ins().dense_const(bytes, veloc_mir::Type::I32X4);
+    let dense = builder.func().dfg().as_const(result).unwrap();
     for value in [
         Constant::from(nan),
         dense.into(),
@@ -294,13 +289,9 @@ fn vector_constant_construction_defers_data_checks_to_validation() {
         let mut module = ModuleBuilder::new();
         let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
         let func = module.declare_function("constant".into(), sig, Linkage::Local);
-        let mut builder = module.builder(func);
-        builder.init_entry_block();
-        let value = builder
-            .func_mut()
-            .edit()
-            .dense_constant(ty.as_vector().unwrap(), bytes);
-        let result = builder.ins().vconst(value);
+        let mut builder = module.define(func);
+        let result = builder.ins().dense_const(bytes, ty);
+        let value = builder.func().dfg().as_const(result).unwrap();
         assert_eq!(builder.func().dfg().value_type(result), ty);
         assert_eq!(builder.func().dfg().as_const(result), Some(value.into()));
         builder.ins().ret(&[]);

@@ -27,18 +27,37 @@ smaller resource budget for the same optimizer. Build once, then
 alternate runs of `target/release/veloc-wasm` with and without that option. Do not
 run the variants concurrently; check CoreMark's CRC validation as well as scores.
 
-The MIR optimizer handles bounded, same-type single-consumer SSA cones crossing
-instruction and block boundaries. Cones are reconstructed at their root, where
-all leaf values are available in valid SSA; multi-user producers remain boundary
-inputs. Effectful instructions stay outside the graph. Rules come from
+The MIR optimizer imports a whole-function expression graph while retaining the
+MIR CFG. Supported pure scalar computations float in the graph, including
+multi-user producers. Block parameters and results of unsupported or effectful
+instructions are opaque leaves. Supported trapping operations are fixed
+occurrences: their inputs participate in constant propagation, but they remain
+leaves for code placement and cannot participate in algebraic rewriting. Rules come from
 `veloc/optimizer/defs/equivalences.spec` and share constant evaluation with direct
-evaluation. Saturation is bounded by cone size, node count, function-wide matching
-fuel and rounds. Consumer-first partitioning avoids rebuilding overlapping cones.
-Extraction commits only a smaller instruction DAG. The removed LIR pass's
-dominating value-numbering sweep has not been migrated to MIR yet.
+evaluation. Saturation is bounded by additional nodes beyond the original graph,
+function-wide matching fuel and rounds; fast mode does not cut shared expressions
+into independent cones. Trapping instances can fold only when successful constant
+evaluation proves that they do not trap. Pure and fixed computations use the same
+dependency-driven evaluation queue, not separate scanning passes.
+SSA forward references allocate empty e-classes rather than placeholder nodes.
+Operation identity excludes MIR instruction IDs; multi-result projections use
+interned operation IDs. Extraction returns node IDs without copying expressions.
+Congruence repair, constant propagation and extraction cost
+updates follow parent dependencies. Pattern matching backtracks through reusable
+bindings rather than allocating a Cartesian product of environments.
 
-This is an instruction-count heuristic, not a target cost model or globally
-optimal DAG extractor. Smaller IR does not guarantee faster machine code. Compare
+Extraction starts with tree costs, then performs budgeted local improvements using
+the cost of the shared DAG. A separate placement phase reuses dominating values,
+keeps unchanged instructions, and inserts new computations at original instruction
+anchors. Fixed instructions retain their control-flow position and order. Dead
+pure computations are removed by liveness, not by deleting a collected region.
+This is conservative placement, not global code motion or loop-invariant hoisting;
+sharing in the expression graph need not imply one executable instance across
+incomparable branches. Real placement cost is not yet modeled by extraction.
+
+The default cost model counts instructions; callers can supply a target cost
+model. Extraction is not globally optimal, and the local search budget is
+proportional to graph size. Smaller IR does not guarantee faster machine code. Compare
 compilation time, emitted size and repeated runtime measurements separately.
 
 ### Historical LIR CoreMark snapshot (2026-09-19)

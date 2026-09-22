@@ -1,27 +1,27 @@
 use crate::liveness::{Liveness, analyze_liveness};
 use core::any::TypeId;
-use veloc_mir::Function;
+use veloc_mir::FuncBody;
 
 /// Analyses belong to one borrowed function. Exclusive mutation conservatively
 /// invalidates caches, without revision counters or cross-function reuse.
 pub struct AnalysisManager<'f> {
-    func: &'f mut Function,
+    func: &'f mut FuncBody,
     liveness: Option<Liveness>,
 }
 
 impl<'f> AnalysisManager<'f> {
-    pub fn new(func: &'f mut Function) -> Self {
+    pub fn new(func: &'f mut FuncBody) -> Self {
         Self {
             func,
             liveness: None,
         }
     }
 
-    pub fn function(&self) -> &Function {
+    pub fn function(&self) -> &FuncBody {
         self.func
     }
 
-    pub fn function_mut(&mut self) -> &mut Function {
+    pub fn function_mut(&mut self) -> &mut FuncBody {
         self.invalidate();
         self.func
     }

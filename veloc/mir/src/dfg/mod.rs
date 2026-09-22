@@ -74,8 +74,16 @@ impl DataFlowGraph {
         self.inst_results(inst).first().copied()
     }
 
-    pub fn blocks(&self) -> &PrimaryMap<crate::Block, BlockData> {
-        &self.blocks
+    pub fn block_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    pub fn block_params(&self, block: Block) -> &[Value] {
+        &self.blocks[block].params
+    }
+
+    pub fn inst_count(&self) -> usize {
+        self.instructions.len()
     }
 
     pub fn create_block(&mut self) -> crate::Block {
@@ -114,18 +122,9 @@ impl DataFlowGraph {
         }
     }
 
-    /// Construct standalone DFG data with its result definitions in one call.
-    pub fn create_inst_with_results(
-        &mut self,
-        build: impl FnOnce(InstWriter<'_>) -> Inst,
-        types: &[Type],
-    ) -> Inst {
-        let inst = self.create_inst(build);
-        self.append_results(inst, types);
-        inst
-    }
-
-    pub fn create_inst(&mut self, build: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {
+    /// Internal construction primitive. Function-level insertion belongs to
+    /// `FuncEditor`, which also updates layout and CFG state.
+    pub(crate) fn create_inst(&mut self, build: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {
         build(self.writer())
     }
 
@@ -187,7 +186,9 @@ impl DataFlowGraph {
     }
 
     /// Change a declared type without validating the instruction's contract.
-    pub fn set_value_type(&mut self, value: Value, ty: Type) {
+    /// Construction/parser escape hatch. Normal transformations must preserve
+    /// the instruction contract and use a typed editor operation instead.
+    pub(crate) fn set_value_type(&mut self, value: Value, ty: Type) {
         self.values[value].ty = ty;
     }
 
@@ -237,14 +238,6 @@ impl DataFlowGraph {
         }
     }
 
-    pub fn remove_inst(&mut self, inst: Inst) {
-        assert!(
-            self.inst_results(inst).iter().all(|&v| self.use_empty(v)),
-            "cannot erase a used definition"
-        );
-        self.clear_inst(inst);
-    }
-
     fn clear_inst(&mut self, inst: Inst) {
         self.operands
             .release(core::mem::take(&mut self.instructions[inst].operands));
@@ -254,7 +247,7 @@ impl DataFlowGraph {
     }
 
     /// Erase a closed set, including mutually dependent dead instructions.
-    pub fn remove_insts(&mut self, insts: &[Inst]) {
+    pub(crate) fn remove_insts(&mut self, insts: &[Inst]) {
         let dead: hashbrown::HashSet<_> = insts.iter().copied().collect();
         for &inst in insts {
             for &value in self.inst_results(inst) {
@@ -270,7 +263,9 @@ impl DataFlowGraph {
     }
 
     /// Replace operand structure. Positions from the previous instruction expire.
-    pub fn replace_inst(&mut self, inst: Inst, build: impl FnOnce(InstWriter<'_>) -> Inst) {
+    /// Low-level replacement primitive; `FuncEditor::replace_inst` also keeps
+    /// the surrounding CFG synchronized.
+    pub(crate) fn replace_inst(&mut self, inst: Inst, build: impl FnOnce(InstWriter<'_>) -> Inst) {
         let result = build(InstWriter {
             dfg: self,
             target: Some(inst),

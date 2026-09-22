@@ -1,7 +1,7 @@
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::function::Function;
+use veloc_mir::function::FuncBody;
 use veloc_mir::inst::Inst;
 use veloc_mir::text::printer::InstPrinter;
 use veloc_mir::types::ValueDef;
@@ -30,7 +30,7 @@ impl FunctionPass for DcePass {
     }
 }
 
-pub fn run_dce(func: &mut Function, print_removed: bool, metrics: &mut Metrics) -> bool {
+pub fn run_dce(func: &mut FuncBody, print_removed: bool, metrics: &mut Metrics) -> bool {
     let mut live_insts = HashSet::new();
     let mut worklist: Vec<Inst> = Vec::new();
 

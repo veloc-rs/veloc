@@ -1,10 +1,15 @@
 //! One equality-graph pipeline; fast mode changes budgets, not semantics.
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
-use alloc::{vec, vec::Vec};
-use hashbrown::{HashMap, HashSet};
+use alloc::{collections::VecDeque, vec, vec::Vec};
+use core::hash::BuildHasher;
+use cranelift_entity::{PrimaryMap, SecondaryMap};
+use hashbrown::{HashMap, HashSet, HashTable, hash_map::DefaultHashBuilder};
+use smallvec::SmallVec;
 use veloc_analyzer::AnalysisManager;
+use veloc_mir::ValueDef;
 use veloc_mir::constant::ScalarConst;
-use veloc_mir::{Function, Inst, IntCC, Opcode as Op, Type, Value};
+use veloc_mir::function::Dominators;
+use veloc_mir::{FuncBody, Inst, IntCC, Opcode as Op, Type, Value};
 use veloc_types::TypeInfo;
 
 /// Estimates execution cost, not the effort spent searching a rewrite rule.
@@ -54,29 +59,29 @@ impl FunctionPass for ExpressionPass {
     }
 }
 
-pub fn run(func: &mut Function, budget: Budget, debug: bool, metrics: &mut Metrics) -> bool {
+pub fn run(func: &mut FuncBody, budget: Budget, debug: bool, metrics: &mut Metrics) -> bool {
     run_with_cost(func, budget, &GenericCost, debug, metrics)
 }
 
 pub fn run_with_cost(
-    func: &mut Function,
+    func: &mut FuncBody,
     budget: Budget,
     cost: &dyn CostModel,
     debug: bool,
     metrics: &mut Metrics,
 ) -> bool {
-    let changed = optimize_regions(func, budget, cost, metrics);
+    let changed = optimize_function(func, budget, cost, metrics);
     if changed && debug {
-        log::info!("Optimized expression regions in {}", func.name);
+        log::info!("Optimized expression graph");
     }
     changed
 }
 
-/// Deterministic limits shared by all regions in one function. Both profiles
+/// Deterministic search limits for one function. Both profiles
 /// run the same graph optimizer; neither is a separate greedy rewrite engine.
 #[derive(Clone, Copy)]
 pub struct Budget {
-    pub region_nodes: usize,
+    /// Additional nodes allowed beyond the imported function.
     pub graph_nodes: usize,
     pub rounds: usize,
     pub match_steps: usize,
@@ -84,202 +89,452 @@ pub struct Budget {
 
 impl Budget {
     pub const FAST: Self = Self {
-        region_nodes: 32,
         graph_nodes: 160,
         rounds: 2,
         match_steps: 16_384,
     };
     pub const DEFAULT: Self = Self {
-        region_nodes: 96,
         graph_nodes: 512,
         rounds: 6,
         match_steps: 262_144,
     };
 }
 
-type Class = usize;
+/// An equivalence class; use Graph::find to resolve its current representative.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+struct ClassId(u32);
+cranelift_entity::entity_impl!(ClassId, "class");
+
+/// A stable expression node, independent of equivalence-class merges.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+struct NodeId(u32);
+cranelift_entity::entity_impl!(NodeId, "node");
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+struct OpId(u32);
+cranelift_entity::entity_impl!(OpId, "op");
+
+/// Kept separate from class payloads so representative lookups touch only IDs.
+#[derive(Default)]
+struct UnionFind {
+    parents: PrimaryMap<ClassId, ClassId>,
+    sizes: SecondaryMap<ClassId, usize>,
+}
+
+impl UnionFind {
+    fn insert(&mut self) -> ClassId {
+        let id = self.parents.next_key();
+        self.parents.push(id);
+        self.sizes[id] = 1;
+        id
+    }
+
+    fn find(&self, mut id: ClassId) -> ClassId {
+        while self.parents[id] != id {
+            id = self.parents[id];
+        }
+        id
+    }
+
+    fn find_mut(&mut self, mut id: ClassId) -> ClassId {
+        // Path halving needs neither a temporary path nor a second traversal.
+        while self.parents[id] != id {
+            let grandparent = self.parents[self.parents[id]];
+            self.parents[id] = grandparent;
+            id = grandparent;
+        }
+        id
+    }
+
+    /// Returns (winner, loser); sizes count class IDs, not expression nodes.
+    fn union(&mut self, a: ClassId, b: ClassId) -> Option<(ClassId, ClassId)> {
+        let (mut a, mut b) = (self.find_mut(a), self.find_mut(b));
+        if a == b {
+            return None;
+        }
+        if self.sizes[a] < self.sizes[b] {
+            core::mem::swap(&mut a, &mut b);
+        }
+        self.parents[b] = a;
+        self.sizes[a] += self.sizes[b];
+        Some((a, b))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Operation {
     opcode: Op,
-    args: Vec<Class>,
+    args: Vec<ClassId>,
     results: Vec<Type>,
+    // All properties exposed by the supported scalar semantic recipes (e.g.
+    // comparison predicates). A source instruction ID is not a property.
     properties: Vec<IntCC>,
-    // Original instructions preserve arbitrary storage attributes when rebuilt.
-    template: Option<Inst>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Node {
     Input(Value, Type),
     Constant(ScalarConst),
-    Result(Operation, usize),
+    Result(OpId, usize),
+    // A fixed occurrence: evaluate its inputs, but never move or CSE the node.
+    Anchor(OpId, Inst, usize),
 }
 impl Node {
-    fn ty(&self) -> Type {
+    fn ty(&self, graph: &Graph) -> Type {
         match self {
             Self::Input(_, ty) => *ty,
             Self::Constant(c) => c.ty(),
-            Self::Result(op, index) => op.results[*index],
+            Self::Result(op, index) | Self::Anchor(op, _, index) => {
+                graph.operations[*op].results[*index]
+            }
         }
     }
-    fn args(&self) -> &[Class] {
+    /// Inputs needed to materialize this node. Fixed occurrences are leaves.
+    fn args<'a>(&self, graph: &'a Graph) -> &'a [ClassId] {
         match self {
-            Self::Result(op, _) => &op.args,
+            Self::Result(op, _) => &graph.operations[*op].args,
             _ => &[],
         }
     }
-    fn price(&self, model: &dyn CostModel) -> usize {
+    /// Inputs whose facts can change this node, including fixed occurrences.
+    fn dependencies<'a>(&self, graph: &'a Graph) -> &'a [ClassId] {
         match self {
-            Self::Input(..) => 0,
+            Self::Result(op, _) | Self::Anchor(op, _, _) => &graph.operations[*op].args,
+            _ => &[],
+        }
+    }
+    fn price(&self, graph: &Graph, model: &dyn CostModel) -> usize {
+        match self {
+            Self::Input(..) | Self::Anchor(..) => 0,
             Self::Constant(c) => model.constant(*c).max(1),
-            Self::Result(op, _) => model.operation(op.opcode, op.results[0]).max(1),
+            Self::Result(op, _) => {
+                let op = &graph.operations[*op];
+                model.operation(op.opcode, op.results[0]).max(1)
+            }
         }
     }
 }
 
 struct Graph {
-    nodes: Vec<Node>,
-    parents: Vec<Class>,
-    next: Vec<Class>,
-    memo: HashMap<Node, Class>,
+    nodes: PrimaryMap<NodeId, Node>,
+    // Membership is explicit: IDs from these two arenas are not interchangeable.
+    types: PrimaryMap<ClassId, Type>,
+    class_has_node: SecondaryMap<ClassId, bool>,
+    node_classes: SecondaryMap<NodeId, ClassId>,
+    // Union-find is separate from expression-node storage.
+    classes: UnionFind,
+    constants: SecondaryMap<ClassId, Option<ScalarConst>>,
+    users: SecondaryMap<ClassId, Vec<NodeId>>,
+    dirty: Vec<NodeId>,
+    queued: SecondaryMap<NodeId, bool>,
+    rule_work: Vec<NodeId>,
+    rule_queued: SecondaryMap<NodeId, bool>,
+    analysis: Vec<NodeId>,
+    analyze: SecondaryMap<NodeId, bool>,
+    memo: HashMap<Node, NodeId>,
+    operations: PrimaryMap<OpId, Operation>,
+    // Keys live only in the arena; the hash table stores IDs, not cloned keys.
+    op_memo: HashTable<OpId>,
+    op_hasher: DefaultHashBuilder,
+    // Relational fact index: (canonical e-class, opcode) -> matching nodes.
+    // The key is maintained when classes merge, so rule matching never scans
+    // unrelated members of an e-class.
+    nodes_by_class_op: HashMap<(ClassId, Op), Vec<NodeId>>,
+    class_ops: SecondaryMap<ClassId, Vec<Op>>,
+    // Reconstruction provenance is deliberately not part of semantic identity.
+    templates: SecondaryMap<OpId, Option<Inst>>,
     revision: usize,
     limit: usize,
 }
 impl Graph {
     fn new(limit: usize) -> Self {
         Self {
-            nodes: Vec::new(),
-            parents: Vec::new(),
-            next: Vec::new(),
+            nodes: PrimaryMap::new(),
+            types: PrimaryMap::new(),
+            class_has_node: SecondaryMap::new(),
+            node_classes: SecondaryMap::new(),
+            classes: UnionFind::default(),
+            constants: SecondaryMap::new(),
+            users: SecondaryMap::new(),
+            dirty: Vec::new(),
+            queued: SecondaryMap::new(),
+            rule_work: Vec::new(),
+            rule_queued: SecondaryMap::new(),
+            analysis: Vec::new(),
+            analyze: SecondaryMap::new(),
             memo: HashMap::new(),
+            operations: PrimaryMap::new(),
+            op_memo: HashTable::new(),
+            op_hasher: DefaultHashBuilder::default(),
+            nodes_by_class_op: HashMap::new(),
+            class_ops: SecondaryMap::new(),
+            templates: SecondaryMap::new(),
             revision: 0,
             limit,
         }
     }
-    fn find(&self, mut id: Class) -> Class {
-        while self.parents[id] != id {
-            id = self.parents[id];
+    fn find(&self, id: ClassId) -> ClassId {
+        self.classes.find(id)
+    }
+    fn find_mut(&mut self, id: ClassId) -> ClassId {
+        self.classes.find_mut(id)
+    }
+    fn class(&self, node: NodeId) -> ClassId {
+        self.find(self.node_classes[node])
+    }
+    fn ty(&self, id: ClassId) -> Type {
+        self.types[id]
+    }
+    fn queue_rule(&mut self, node: NodeId) {
+        if !self.rule_queued[node] {
+            self.rule_queued[node] = true;
+            self.rule_work.push(node);
+        }
+    }
+    fn operation(&mut self, op: Operation, template: Option<Inst>) -> OpId {
+        let hash = self.op_hasher.hash_one(&op);
+        let id = if let Some(&id) = self.op_memo.find(hash, |&id| self.operations[id] == op) {
+            id
+        } else {
+            let id = self.operations.push(op);
+            self.op_memo.insert_unique(hash, id, |&id| {
+                self.op_hasher.hash_one(&self.operations[id])
+            });
+            id
+        };
+        if self.templates[id].is_none() {
+            self.templates[id] = template;
         }
         id
     }
-    fn ty(&self, id: Class) -> Type {
-        self.nodes[self.find(id)].ty()
-    }
-    fn normalize(&self, mut node: Node) -> Node {
-        if let Node::Result(op, _) = &mut node {
-            for arg in &mut op.args {
-                *arg = self.find(*arg);
-            }
-            if op.opcode.spec().is_commutative() && op.args.len() == 2 && op.args[0] > op.args[1] {
-                op.args.swap(0, 1);
+    fn normalize(&mut self, mut node: Node) -> Node {
+        if let Node::Result(id, _) | Node::Anchor(id, _, _) = &mut node {
+            let op = &self.operations[*id];
+            let canonical = op.args.iter().all(|&arg| self.classes.find_mut(arg) == arg);
+            let commutative = op.opcode.spec().is_commutative() && op.args.len() == 2;
+            if !canonical || (commutative && op.args[0] > op.args[1]) {
+                let template = self.templates[*id];
+                let mut normalized = op.clone();
+                for arg in &mut normalized.args {
+                    *arg = self.find_mut(*arg);
+                }
+                if commutative && normalized.args[0] > normalized.args[1] {
+                    normalized.args.swap(0, 1);
+                }
+                *id = self.operation(normalized, template);
             }
         }
         node
     }
-    fn add(&mut self, node: Node) -> Option<Class> {
+    /// Forward references allocate only a class, not a fake expression node.
+    fn create_class(&mut self, ty: Type) -> ClassId {
+        let class = self.types.push(ty);
+        let id = self.classes.insert();
+        debug_assert_eq!(class, id);
+        class
+    }
+    fn add(&mut self, node: Node) -> Option<ClassId> {
         let node = self.normalize(node);
         if let Some(&id) = self.memo.get(&node) {
-            return Some(self.find(id));
+            return Some(self.class(id));
         }
         if self.nodes.len() >= self.limit {
             return None;
         }
-        let id = self.nodes.len();
-        self.nodes.push(node.clone());
-        self.parents.push(id);
-        self.next.push(id);
+        let class = self.create_class(node.ty(self));
+        self.insert_node(class, node);
+        Some(class)
+    }
+    fn add_to_class(&mut self, class: ClassId, node: Node) -> Option<ClassId> {
+        let class = self.find_mut(class);
+        let node = self.normalize(node);
+        assert_eq!(
+            self.ty(class),
+            node.ty(self),
+            "node type does not match its class"
+        );
+        if let Some(&id) = self.memo.get(&node) {
+            self.union(class, self.class(id));
+            return Some(self.find_mut(class));
+        }
+        if self.nodes.len() >= self.limit {
+            return None;
+        }
+        self.insert_node(class, node);
+        Some(class)
+    }
+    /// Insert a canonical, absent node into a representative class. Callers
+    /// perform type, memo and budget checks before changing graph storage.
+    fn insert_node(&mut self, class: ClassId, node: Node) {
+        let id = self.nodes.push(node);
+        self.node_classes[id] = class;
+        self.class_has_node[class] = true;
+        if let Node::Result(op, 0) = node {
+            let opcode = self.operations[op].opcode;
+            let key = (class, opcode);
+            if !self.nodes_by_class_op.contains_key(&key) {
+                self.class_ops[class].push(opcode);
+            }
+            self.nodes_by_class_op.entry(key).or_default().push(id);
+        }
+        if let Node::Constant(c) = node {
+            if let Some(old) = self.constants[class] {
+                assert_eq!(old, c, "rewrite equated distinct constants");
+            } else {
+                self.constants[class] = Some(c);
+                for &user in &self.users[class] {
+                    if !self.analyze[user] {
+                        self.analyze[user] = true;
+                        self.analysis.push(user);
+                    }
+                }
+            }
+        }
+        self.analyze[id] = true;
+        self.analysis.push(id);
+        self.queue_rule(id);
+        let mut dependencies: SmallVec<[ClassId; 3]> = node
+            .dependencies(self)
+            .iter()
+            .map(|&arg| self.find(arg))
+            .collect();
+        // x + x is one dependent node, not two distinct rebuild obligations.
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        for arg in dependencies {
+            self.users[arg].push(id);
+        }
         self.memo.insert(node, id);
         self.revision += 1;
-        Some(id)
     }
-    fn union(&mut self, a: Class, b: Class) {
-        let (a, b) = (self.find(a), self.find(b));
+    fn union(&mut self, a: ClassId, b: ClassId) {
+        let (a, b) = (self.find_mut(a), self.find_mut(b));
         assert_eq!(self.ty(a), self.ty(b), "cannot equate different types");
-        if a != b {
-            self.next.swap(a, b);
-            self.parents[a.max(b)] = a.min(b);
+        if let Some((a, b)) = self.classes.union(a, b) {
+            if let (Some(x), Some(y)) = (self.constants[a], self.constants[b]) {
+                assert_eq!(x, y, "rewrite equated distinct constants");
+            }
+            let winner_constant = self.constants[a];
+            let loser_constant = self.constants[b];
+            self.constants[a] = winner_constant.or(loser_constant);
+            // Existing winner users need analysis only if their class learned
+            // a new fact. Otherwise only loser users may have learned one.
+            if winner_constant.is_none() && loser_constant.is_some() {
+                for &user in &self.users[a] {
+                    if !self.analyze[user] {
+                        self.analyze[user] = true;
+                        self.analysis.push(user);
+                    }
+                }
+            }
+            // Move the losing class's relation rows to the new representative.
+            // Keeping one row per (class, opcode) makes rule scans proportional
+            // to relevant alternatives instead of all class members.
+            for opcode in core::mem::take(&mut self.class_ops[b]) {
+                let source = self
+                    .nodes_by_class_op
+                    .remove(&(b, opcode))
+                    .unwrap_or_default();
+                let mut target = self
+                    .nodes_by_class_op
+                    .remove(&(a, opcode))
+                    .unwrap_or_default();
+                if target.is_empty() {
+                    self.class_ops[a].push(opcode);
+                }
+                for &node in target.iter().chain(source.iter()) {
+                    self.queue_rule(node);
+                }
+                target.extend(source);
+                self.nodes_by_class_op.insert((a, opcode), target);
+            }
+            self.class_has_node[a] |= self.class_has_node[b];
+            // Only users of the losing representative have non-canonical keys.
+            for user in core::mem::take(&mut self.users[b]) {
+                if !self.queued[user] {
+                    self.queued[user] = true;
+                    self.dirty.push(user);
+                }
+                self.queue_rule(user);
+                if loser_constant.is_none() && winner_constant.is_some() && !self.analyze[user] {
+                    self.analyze[user] = true;
+                    self.analysis.push(user);
+                }
+                self.users[a].push(user);
+            }
+            // A node may have depended on both classes before the merge. Keep
+            // the relation set-like after moving the two adjacency lists.
+            self.users[a].sort_unstable();
+            self.users[a].dedup();
             self.revision += 1;
         }
     }
-    fn members(&self, class: Class) -> impl Iterator<Item = &Node> {
-        let start = self.find(class);
-        let mut cursor = Some(start);
-        core::iter::from_fn(move || {
-            let id = cursor?;
-            cursor = (self.next[id] != start).then_some(self.next[id]);
-            Some(&self.nodes[id])
-        })
+    fn scan(&self, class: ClassId, opcode: Op) -> impl Iterator<Item = &Node> {
+        let class = self.find(class);
+        self.nodes_by_class_op
+            .get(&(class, opcode))
+            .into_iter()
+            .flat_map(|ids| ids.iter().map(|&id| &self.nodes[id]))
     }
-    fn constant(&self, class: Class) -> Option<ScalarConst> {
-        self.members(class).find_map(|n| match n {
-            Node::Constant(c) => Some(*c),
-            _ => None,
-        })
+    fn constant(&self, class: ClassId) -> Option<ScalarConst> {
+        self.constants[self.find(class)]
     }
     fn rebuild(&mut self) {
-        loop {
-            let before = self.revision;
-            for id in 0..self.parents.len() {
-                self.parents[id] = self.find(id);
+        while let Some(id) = self.dirty.pop() {
+            self.queued[id] = false;
+            let old = self.nodes[id];
+            if self.memo.get(&old) == Some(&id) {
+                self.memo.remove(&old);
             }
-            self.memo.clear();
-            for id in 0..self.nodes.len() {
-                let node = self.normalize(self.nodes[id].clone());
-                self.nodes[id] = node.clone();
-                if let Some(other) = self.memo.insert(node, id) {
-                    self.union(id, other);
-                }
-            }
-            if before == self.revision {
-                break;
+            let node = self.normalize(old);
+            self.nodes[id] = node;
+            self.queue_rule(id);
+            if let Some(&other) = self.memo.get(&node) {
+                self.union(self.class(id), self.class(other));
+            } else {
+                self.memo.insert(node, id);
             }
         }
     }
     fn saturate(&mut self, rounds: usize, fuel: &mut usize) {
+        // Once all inputs are constant, their facts cannot change. Cache both
+        // successful evaluation and a refusal (for example, division by zero).
+        let mut evaluated = HashMap::new();
+        let mut matcher = crate::equivalence::RelationalMatcher::new();
         for _ in 0..rounds {
             self.rebuild();
             let before = self.revision;
-            // Evaluate each multi-result operation once per round, not once per projection.
-            let mut evaluated = HashMap::<Operation, Option<Vec<ScalarConst>>>::new();
-            for id in 0..self.nodes.len() {
+            self.fold_constants(fuel, &mut evaluated);
+            while let Some(id) = self.rule_work.pop() {
+                self.rule_queued[id] = false;
                 if *fuel == 0 {
                     break;
                 }
                 *fuel -= 1;
-                let Node::Result(op, index) = self.nodes[id].clone() else {
+                let Node::Result(op, _) = self.nodes[id] else {
                     continue;
                 };
-                let folded = evaluated.entry(op.clone()).or_insert_with(|| {
-                    let args = op
-                        .args
-                        .iter()
-                        .map(|&a| self.constant(a))
-                        .collect::<Option<Vec<_>>>()?;
-                    crate::rewrite::evaluate(op.opcode, &args, &op.results, &op.properties)
-                });
-                if let Some(values) = folded {
-                    if let Some(literal) = self.add(Node::Constant(values[index])) {
-                        self.union(id, literal);
-                    }
-                }
+                let op = &self.operations[op];
                 if op.results.len() != 1 {
                     continue;
                 }
                 let ty = op.results[0];
+                let opcode = op.opcode;
                 if op.args.iter().any(|&a| self.ty(a) != ty) {
                     continue;
                 }
                 if let [a, b] = op.args.as_slice() {
                     let constants = [self.constant(*a), self.constant(*b)];
-                    if let Some(replacement) =
-                        crate::rewrite::algebraic(op.opcode, &[*a, *b], &constants)
+                    let args = [self.find(*a), self.find(*b)];
+                    if let Some(replacement) = crate::rewrite::algebraic(opcode, &args, &constants)
                     {
                         match replacement {
-                            crate::rewrite::Replacement::Value(value) => self.union(id, value),
+                            crate::rewrite::Replacement::Value(value) => {
+                                self.union(self.class(id), value)
+                            }
                             crate::rewrite::Replacement::Constants(values) => {
                                 if let Some(value) = self.add(Node::Constant(values[0])) {
-                                    self.union(id, value);
+                                    self.union(self.class(id), value);
                                 }
                             }
                         }
@@ -290,74 +545,195 @@ impl Graph {
                 }
                 let mask = u64::MAX >> (64 - ty.element_bits().unwrap());
                 let mut context = RuleContext { graph: self, ty };
-                for rule in crate::equivalence::rules(op.opcode) {
+                for rule in crate::equivalence::rules(opcode) {
                     if !rule.types.contains(&ty) {
                         continue;
                     }
-                    for env in crate::equivalence::matches(&context, rule, id, mask, fuel) {
+                    matcher.search(&context, rule, context.graph.class(id), mask, fuel);
+                    for env in matcher.matches() {
                         if let Some(value) =
-                            crate::equivalence::emit(&mut context, &rule.replacement, &env)
+                            crate::equivalence::emit(&mut context, &rule.replacement, env)
                         {
-                            context.graph.union(id, value);
+                            context.graph.union(context.graph.class(id), value);
                             log::trace!("egraph rule {}", rule.name);
                         }
                     }
                 }
             }
+            self.fold_constants(fuel, &mut evaluated);
             if self.revision == before || *fuel == 0 {
                 break;
             }
         }
         self.rebuild();
     }
-    fn extract(&self, roots: &[Class], model: &dyn CostModel) -> Option<Vec<(Class, Node)>> {
-        let mut costs = vec![(usize::MAX, usize::MAX); self.nodes.len()];
-        let mut best = vec![None; self.nodes.len()];
-        for _ in 0..self.nodes.len() {
-            let mut changed = false;
-            for (id, node) in self.nodes.iter().enumerate() {
-                let class = self.find(id);
-                // A proven literal is a canonical result, including when its
-                // operands were zero-cost SSA boundary inputs.
-                if matches!(node, Node::Result(..)) && self.constant(class).is_some() {
-                    continue;
-                }
-                let mut price = node.price(model);
-                let mut depth = 0;
-                for &arg in node.args() {
-                    price = price.saturating_add(costs[arg].0);
-                    depth = depth.max(costs[arg].1);
-                }
-                let depth = depth.saturating_add(usize::from(!matches!(node, Node::Input(..))));
-                if price != usize::MAX && (price, depth) < costs[class] {
-                    costs[class] = (price, depth);
-                    best[class] = Some(id);
-                    changed = true;
+
+    fn fold_constants(
+        &mut self,
+        fuel: &mut usize,
+        evaluated: &mut HashMap<OpId, Option<Vec<ScalarConst>>>,
+    ) {
+        while *fuel > 0 {
+            let Some(id) = self.analysis.pop() else { break };
+            self.analyze[id] = false;
+            *fuel -= 1;
+            let (op_id, index) = match self.nodes[id] {
+                Node::Result(op, index) | Node::Anchor(op, _, index) => (op, index),
+                _ => continue,
+            };
+            let op = &self.operations[op_id];
+            // Unknown inputs are not cached: a later union wakes their users.
+            let Some(args) = op
+                .args
+                .iter()
+                .map(|&arg| self.constant(arg))
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let folded = evaluated.entry(op_id).or_insert_with(|| {
+                crate::rewrite::evaluate(op.opcode, &args, &op.results, &op.properties)
+            });
+            if let Some(values) = folded
+                && let Some(literal) = self.add(Node::Constant(values[index]))
+            {
+                self.union(self.class(id), literal);
+            }
+        }
+    }
+    fn extract(
+        &self,
+        roots: &[ClassId],
+        model: &dyn CostModel,
+    ) -> Option<SecondaryMap<ClassId, Option<NodeId>>> {
+        let mut costs = SecondaryMap::<ClassId, _>::with_default((usize::MAX, usize::MAX));
+        let mut best = SecondaryMap::<ClassId, Option<NodeId>>::new();
+        let mut pending: VecDeque<_> = self.nodes.keys().collect();
+        let mut queued = SecondaryMap::<NodeId, bool>::with_default(true);
+        while let Some(id) = pending.pop_front() {
+            queued[id] = false;
+            let node = &self.nodes[id];
+            let class = self.class(id);
+            // A proven literal is a canonical result, including when its
+            // operands were zero-cost SSA boundary inputs.
+            if !matches!(node, Node::Constant(..)) && self.constant(class).is_some() {
+                continue;
+            }
+            let mut price = node.price(self, model);
+            let mut depth = 0;
+            for &arg in node.args(self) {
+                let arg = self.find(arg);
+                price = price.saturating_add(costs[arg].0);
+                depth = depth.max(costs[arg].1);
+            }
+            let depth = depth.saturating_add(usize::from(!matches!(node, Node::Input(..))));
+            if price != usize::MAX && (price, depth) < costs[class] {
+                costs[class] = (price, depth);
+                best[class] = Some(id);
+                for &user in &self.users[class] {
+                    if !queued[user] {
+                        queued[user] = true;
+                        pending.push_back(user);
+                    }
                 }
             }
-            if !changed {
+        }
+        // Tree costs give an inexpensive, acyclic starting point. Then compare
+        // alternatives using the *whole* reachable DAG, counting an operation
+        // once even if several roots or result projections use it. This bounded
+        // local search is not an optimal DAG extractor.
+        let mut work = usize::MAX;
+        let mut plan = self.plan(roots, &best, &mut work)?;
+        let mut price = self.plan_price(&plan, model);
+        let mut work = self.nodes.len().saturating_mul(16);
+        loop {
+            let mut improved = false;
+            let reachable: HashSet<_> = plan.iter().map(|&(class, _)| class).collect();
+            for (id, node) in self.nodes.iter() {
+                let class = self.class(id);
+                if work == 0 {
+                    break;
+                }
+                work -= 1;
+                if !reachable.contains(&class)
+                    || best[class] == Some(id)
+                    || (!matches!(node, Node::Constant(..)) && self.constant(class).is_some())
+                {
+                    continue;
+                }
+                let old = best[class].replace(id);
+                if let Some(candidate) = self.plan(roots, &best, &mut work) {
+                    let candidate_price = self.plan_price(&candidate, model);
+                    if candidate_price < price {
+                        plan = candidate;
+                        price = candidate_price;
+                        improved = true;
+                        continue;
+                    }
+                }
+                best[class] = old;
+            }
+            if !improved || work == 0 {
                 break;
             }
         }
-        let mut seen = HashSet::new();
+        Some(best)
+    }
+
+    /// A topological materialization plan, or None for a cyclic/unavailable
+    /// choice. The budget also bounds exploration of rejected alternatives.
+    fn plan(
+        &self,
+        roots: &[ClassId],
+        best: &SecondaryMap<ClassId, Option<NodeId>>,
+        work: &mut usize,
+    ) -> Option<Vec<(ClassId, NodeId)>> {
+        let mut state = SecondaryMap::<ClassId, u8>::new();
         let mut output = Vec::new();
         for &root in roots {
             let mut pending = vec![(self.find(root), false)];
             while let Some((class, ready)) = pending.pop() {
-                if seen.contains(&class) {
+                if *work == 0 {
+                    return None;
+                }
+                *work -= 1;
+                if state[class] == 2 {
                     continue;
                 }
-                let node = &self.nodes[best[class]?];
-                if !ready && !node.args().is_empty() {
+                let id = best[class]?;
+                let node = &self.nodes[id];
+                if !ready && !node.args(self).is_empty() {
+                    if state[class] == 1 {
+                        return None;
+                    }
+                    state[class] = 1;
                     pending.push((class, true));
-                    pending.extend(node.args().iter().rev().map(|&arg| (arg, false)));
+                    pending.extend(
+                        node.args(self)
+                            .iter()
+                            .rev()
+                            .map(|&arg| (self.find(arg), false)),
+                    );
                 } else {
-                    seen.insert(class);
-                    output.push((class, node.clone()));
+                    state[class] = 2;
+                    output.push((class, id));
                 }
             }
         }
         Some(output)
+    }
+
+    fn plan_price(&self, plan: &[(ClassId, NodeId)], model: &dyn CostModel) -> usize {
+        let mut operations = HashSet::new();
+        plan.iter().fold(0usize, |price, &(_, id)| {
+            let node = &self.nodes[id];
+            if let Node::Result(op, _) = node
+                && !operations.insert(op)
+            {
+                return price;
+            }
+            price.saturating_add(node.price(self, model))
+        })
     }
 }
 
@@ -366,21 +742,22 @@ struct RuleContext<'a> {
     ty: Type,
 }
 impl crate::equivalence::Context for RuleContext<'_> {
-    type Value = Class;
-    fn canonical(&self, value: Class) -> Class {
+    type Value = ClassId;
+    fn canonical(&self, value: ClassId) -> ClassId {
         self.graph.find(value)
     }
-    fn constant(&self, value: Class) -> Option<u64> {
+    fn constant(&self, value: ClassId) -> Option<u64> {
         self.graph.constant(value).map(|c| c.to_bits())
     }
-    fn alternatives(&self, value: Class, opcode: Op, mut visit: impl FnMut(&[Class])) {
-        for node in self.graph.members(value) {
+    fn scan(&self, value: ClassId, opcode: Op, mut visit: impl FnMut(&[ClassId])) {
+        for node in self.graph.scan(value, opcode) {
             if let Node::Result(op, 0) = node
-                && op.opcode == opcode
+                && let op = &self.graph.operations[*op]
                 && op.results == [self.ty]
                 && op.args.iter().all(|&a| self.graph.ty(a) == self.ty)
             {
-                let args: Vec<_> = op.args.iter().map(|&a| self.graph.find(a)).collect();
+                let args: SmallVec<[ClassId; 3]> =
+                    op.args.iter().map(|&a| self.graph.find(a)).collect();
                 visit(&args);
                 if opcode.spec().is_commutative()
                     && let [a, b] = args.as_slice()
@@ -391,28 +768,31 @@ impl crate::equivalence::Context for RuleContext<'_> {
             }
         }
     }
-    fn literal(&mut self, value: u64) -> Option<Class> {
+    fn literal(&mut self, value: u64) -> Option<ClassId> {
         let mask = u64::MAX >> (64 - self.ty.element_bits()?);
         self.graph.add(Node::Constant(ScalarConst::from_bits(
             self.ty,
             value & mask,
         )?))
     }
-    fn build(&mut self, opcode: Op, args: &[Class]) -> Option<Class> {
-        self.graph.add(Node::Result(
+    fn build(&mut self, opcode: Op, args: &[ClassId]) -> Option<ClassId> {
+        if self.graph.nodes.len() >= self.graph.limit {
+            return None;
+        }
+        let op = self.graph.operation(
             Operation {
                 opcode,
                 args: args.to_vec(),
                 results: vec![self.ty],
                 properties: Vec::new(),
-                template: None,
             },
-            0,
-        ))
+            None,
+        );
+        self.graph.add(Node::Result(op, 0))
     }
 }
 
-fn candidate(f: &Function, id: Inst) -> bool {
+fn candidate(f: &FuncBody, id: Inst) -> bool {
     if f.layout().inst_block(id).is_none() {
         return false;
     }
@@ -429,132 +809,189 @@ fn candidate(f: &Function, id: Inst) -> bool {
         && !inst.opcode().transfers_ownership()
 }
 
-fn collect(f: &Function, id: Inst, ids: &mut Vec<Inst>, fuel: &mut usize, visited: &HashSet<Inst>) {
-    if *fuel == 0 || ids.contains(&id) || visited.contains(&id) {
-        return;
-    }
-    *fuel -= 1;
-    for &input in f.dfg().operands(id) {
-        if let Some(def) = f.dfg().value_inst(input)
-            && candidate(f, def)
-            && f.dfg().inst(def).can_speculate()
-            && f.dfg()
-                .inst_results(def)
-                .iter()
-                .all(|&v| f.dfg().uses(v).all(|site| site.inst() == id))
-        {
-            collect(f, def, ids, fuel, visited);
-        }
-    }
-    ids.push(id);
-}
-
-fn optimize(
-    f: &mut Function,
-    root: Inst,
-    ids: &[Inst],
+/// Allocate SSA classes first, then populate their definitions. Only the
+/// ordered candidate list is needed here; all remaining values become leaves.
+fn import(
+    f: &FuncBody,
+    candidates: &[Inst],
     budget: Budget,
-    fuel: &mut usize,
-    model: &dyn CostModel,
-) -> bool {
-    if ids.len() == 1 && f.dfg().operands(root).is_empty() {
-        return false;
+) -> (Graph, PrimaryMap<Value, ClassId>) {
+    let mut graph = Graph::new(f.dfg().values().len().saturating_add(budget.graph_nodes));
+    let mut values = PrimaryMap::new();
+    for (_, data) in f.dfg().values().iter() {
+        values.push(graph.create_class(data.ty));
     }
-    let reserve: usize = ids
-        .iter()
-        .map(|&id| f.dfg().inst_results(id).len() + f.dfg().operands(id).len() * 2)
-        .sum();
-    let mut graph = Graph::new(budget.graph_nodes.max(reserve));
-    let mut values = HashMap::new();
-    for &id in ids {
+    for &id in candidates {
         let results = f.dfg().inst_results(id);
         if let [dst] = results
             && let Some(c) = f.dfg().as_scalar_const(*dst)
         {
-            values.insert(*dst, graph.add(Node::Constant(c)).unwrap());
+            graph
+                .add_to_class(values[*dst], Node::Constant(c))
+                .expect("reserved definition");
             continue;
         }
-        let args = f
-            .dfg()
-            .operands(id)
-            .iter()
-            .map(|&input| {
-                *values.entry(input).or_insert_with(|| {
-                    let class = graph
-                        .add(Node::Input(input, f.dfg().value_type(input)))
-                        .unwrap();
-                    if let Some(c) = f.dfg().as_scalar_const(input) {
-                        let literal = graph.add(Node::Constant(c)).unwrap();
-                        graph.union(class, literal);
-                    }
-                    class
-                })
-            })
-            .collect();
-        let op = Operation {
-            opcode: f.dfg().inst(id).opcode(),
-            args,
-            results: results.iter().map(|&v| f.dfg().value_type(v)).collect(),
-            properties: crate::rewrite::properties(&f.dfg().inst(id)).into_vec(),
-            template: Some(id),
-        };
+        let op = graph.operation(
+            Operation {
+                opcode: f.dfg().inst(id).opcode(),
+                args: f.dfg().operands(id).iter().map(|v| values[*v]).collect(),
+                results: results.iter().map(|&v| f.dfg().value_type(v)).collect(),
+                properties: crate::rewrite::properties(&f.dfg().inst(id)).into_vec(),
+            },
+            Some(id),
+        );
+        let pure = f.dfg().inst(id).can_speculate();
         for (index, &dst) in results.iter().enumerate() {
-            values.insert(dst, graph.add(Node::Result(op.clone(), index)).unwrap());
+            let node = if pure {
+                Node::Result(op, index)
+            } else {
+                Node::Anchor(op, id, index)
+            };
+            graph
+                .add_to_class(values[dst], node)
+                .expect("reserved definition");
         }
     }
-    let results = f.dfg().inst_results(root).to_vec();
-    let roots: Vec<_> = results.iter().map(|v| values[v]).collect();
-    graph.saturate(budget.rounds, fuel);
-    let Some(plan) = graph.extract(&roots, model) else {
-        return false;
-    };
-    let mut operations = HashSet::new();
-    let after = plan.iter().fold(0usize, |sum, (_, node)| {
-        if let Node::Result(op, _) = node
-            && !operations.insert(op.clone())
-        {
-            return sum;
+    for (value, data) in f.dfg().values().iter() {
+        let class = graph.find(values[value]);
+        if !graph.class_has_node[class] {
+            graph
+                .add_to_class(class, Node::Input(value, data.ty))
+                .expect("reserved input");
         }
-        sum.saturating_add(node.price(model))
-    });
-    let before = ids.iter().fold(0usize, |sum, &id| {
-        let value = f.dfg().first_result(id).unwrap();
-        sum.saturating_add(if let Some(c) = f.dfg().as_scalar_const(value) {
-            model.constant(c).max(1)
-        } else {
-            model
-                .operation(f.dfg().inst(id).opcode(), f.dfg().value_type(value))
-                .max(1)
-        })
-    });
-    // Fully evaluated roots may replace a single operation by one or several
-    // literals even at equal/higher materialization cost: no execution remains.
-    let all_constants = roots.iter().all(|&c| graph.constant(c).is_some());
-    if after >= before && !all_constants {
-        return false;
     }
-    let mut materialized = vec![None; graph.nodes.len()];
-    let mut emitted = HashMap::<Operation, Vec<Value>>::new();
-    let mut edit = f.edit();
-    for (class, node) in plan {
-        let value = match node {
-            Node::Input(value, _) => value,
-            Node::Constant(c) => {
-                let inst = edit.insert_before(root, |w| w.scalar_const(c), &[c.ty()]);
-                edit.body().dfg().first_result(inst).unwrap()
+    graph.rebuild();
+    (graph, values)
+}
+
+/// Places selected pure nodes into the existing CFG. Generated values are
+/// cached per e-class, but a cached value is usable only where it dominates.
+/// There is no speculative hoisting across branches or out of loops.
+struct Placement {
+    dom: Dominators,
+    positions: HashMap<Inst, usize>,
+    available: SecondaryMap<ClassId, Vec<Value>>,
+}
+
+impl Placement {
+    fn new(f: &FuncBody, ids: &[Inst]) -> Self {
+        Self {
+            dom: Dominators::compute(f.cfg(), f.entry_block(), f.dfg().block_count()),
+            // Even positions belong to generated instructions immediately
+            // before the original instruction at the following odd position.
+            positions: ids
+                .iter()
+                .enumerate()
+                .map(|(i, &id)| (id, i * 2 + 1))
+                .collect(),
+            available: SecondaryMap::new(),
+        }
+    }
+
+    fn dominates(&self, f: &FuncBody, value: Value, anchor: Inst) -> bool {
+        let use_block = f.layout().inst_block(anchor).unwrap();
+        match f.dfg().values()[value].def {
+            ValueDef::Param(block) => block == use_block || self.dom.dominates(block, use_block),
+            ValueDef::Inst(def) => {
+                let Some(block) = f.layout().inst_block(def) else {
+                    return false;
+                };
+                if block == use_block {
+                    self.positions[&def] < self.positions[&anchor]
+                } else {
+                    self.dom.dominates(block, use_block)
+                }
             }
-            Node::Result(op, index) => {
-                if !emitted.contains_key(&op) {
-                    let args: Vec<_> = op.args.iter().map(|&a| materialized[a].unwrap()).collect();
-                    let inst = if let Some(template) = op.template {
-                        let inst = edit.insert_before(root, |w| w.copy(template), &op.results);
-                        for (i, &value) in args.iter().enumerate() {
-                            edit.set_operand(inst, i as u32, value);
+        }
+    }
+
+    fn existing(&self, f: &FuncBody, class: ClassId, anchor: Inst) -> Option<Value> {
+        self.available[class]
+            .iter()
+            .rev()
+            .copied()
+            .find(|&v| self.dominates(f, v, anchor))
+    }
+
+    fn materialize(
+        &mut self,
+        f: &mut FuncBody,
+        anchor: Inst,
+        root: ClassId,
+        graph: &Graph,
+        choices: &SecondaryMap<ClassId, Option<NodeId>>,
+    ) -> Option<Value> {
+        // Explicit stack avoids recursive traversal of long SSA expression chains.
+        let mut pending = vec![(root, false)];
+        let mut local = HashMap::new();
+        while let Some((class, ready)) = pending.pop() {
+            if local.contains_key(&class) {
+                continue;
+            }
+            if let Some(value) = self.existing(f, class, anchor) {
+                local.insert(class, value);
+                continue;
+            }
+            let node = &graph.nodes[choices[class]?];
+            if !ready && !node.args(graph).is_empty() {
+                pending.push((class, true));
+                pending.extend(
+                    node.args(graph)
+                        .iter()
+                        .rev()
+                        .map(|&arg| (graph.find(arg), false)),
+                );
+                continue;
+            }
+            let (value, emitted) = match node {
+                Node::Input(value, _) => {
+                    if !self.dominates(f, *value, anchor) {
+                        return None;
+                    }
+                    (*value, None)
+                }
+                Node::Anchor(_, inst, index) => (f.dfg().inst_results(*inst)[*index], None),
+                Node::Constant(c) => {
+                    if let Some(value) = f.dfg().first_result(anchor)
+                        && f.dfg().as_scalar_const(value) == Some(*c)
+                    {
+                        local.insert(class, value);
+                        self.available[class].push(value);
+                        continue;
+                    }
+                    let inst = f
+                        .edit()
+                        .insert_before(anchor, |w| w.scalar_const(*c), &[c.ty()]);
+                    (f.dfg().first_result(inst).unwrap(), Some(inst))
+                }
+                Node::Result(op_id, index) => {
+                    let op = &graph.operations[*op_id];
+                    let args: Vec<_> = op.args.iter().map(|&a| local[&graph.find(a)]).collect();
+                    // Keep an instruction whose selected expression is already
+                    // present. Merely importing and exporting must not clone
+                    // every instruction or report a change on a fixed point.
+                    let reuse = class == root
+                        && f.dfg().inst(anchor).opcode() == op.opcode
+                        && f.dfg().operands(anchor) == args
+                        && f.dfg()
+                            .inst_results(anchor)
+                            .iter()
+                            .map(|&v| f.dfg().value_type(v))
+                            .eq(op.results.iter().copied())
+                        && crate::rewrite::properties(&f.dfg().inst(anchor)).as_slice()
+                            == op.properties;
+                    let mut edit = f.edit();
+                    let inst = if reuse {
+                        anchor
+                    } else if let Some(template) = graph.templates[*op_id] {
+                        let inst = edit.insert_before(anchor, |w| w.copy(template), &op.results);
+                        for (i, &arg) in args.iter().enumerate() {
+                            edit.set_operand(inst, i as u32, arg);
                         }
                         inst
                     } else {
                         edit.insert_before(
-                            root,
+                            anchor,
                             |w| {
                                 w.from_values(op.opcode, &args)
                                     .expect("value-only rule operation")
@@ -562,57 +999,107 @@ fn optimize(
                             &op.results,
                         )
                     };
-                    emitted.insert(op.clone(), edit.body().dfg().inst_results(inst).to_vec());
+                    // An operation is emitted once for all its result projections.
+                    for (i, &value) in edit.body().dfg().inst_results(inst).iter().enumerate() {
+                        if let Some(&result) = graph.memo.get(&Node::Result(*op_id, i)) {
+                            let result = graph.class(result);
+                            local.insert(result, value);
+                            if result != class {
+                                self.available[result].push(value);
+                            }
+                        }
+                    }
+                    (
+                        edit.body().dfg().inst_results(inst)[*index],
+                        (!reuse).then_some(inst),
+                    )
                 }
-                emitted[&op][index]
+            };
+            if let Some(inst) = emitted {
+                self.positions.insert(inst, self.positions[&anchor] - 1);
             }
-        };
-        materialized[class] = Some(value);
+            local.insert(class, value);
+            self.available[class].push(value);
+        }
+        local.get(&root).copied()
     }
-    for (dst, class) in results.into_iter().zip(roots) {
-        edit.replace_all_uses(dst, materialized[graph.find(class)].unwrap());
-    }
-    edit.erase_insts(ids);
-    true
 }
 
-fn optimize_regions(
-    f: &mut Function,
+fn optimize_function(
+    f: &mut FuncBody,
     budget: Budget,
     model: &dyn CostModel,
-    metrics: &mut crate::Metrics,
+    metrics: &mut Metrics,
 ) -> bool {
-    let roots: Vec<_> = f
-        .layout()
-        .block_order()
+    let entry = f.entry_block();
+    // Dominating blocks precede their users. Unreachable blocks are processed
+    // separately; no cross-block reuse is allowed without proven dominance.
+    let mut blocks = f.cfg().compute_rpo(entry);
+    let reachable: HashSet<_> = blocks.iter().copied().collect();
+    blocks.extend(f.layout().block_order().filter(|b| !reachable.contains(b)));
+    let ids: Vec<_> = blocks
+        .into_iter()
         .flat_map(|b| f.layout().block_insts(b))
-        .filter(|&id| candidate(f, id))
         .collect();
-    let mut visited = HashSet::new();
-    let mut ids = Vec::new();
+    let candidates: Vec<_> = ids.iter().copied().filter(|&id| candidate(f, id)).collect();
+    if candidates.is_empty() {
+        return false;
+    }
+    let (mut graph, values) = import(f, &candidates, budget);
     let mut fuel = budget.match_steps;
-    let mut changed = 0;
-    let mut regions = 0;
-    for root in roots.into_iter().rev() {
-        if fuel == 0 {
-            break;
-        }
-        if visited.contains(&root) || !candidate(f, root) {
+    // Pure and pinned computations share dependency-driven constant propagation.
+    // Only pure Result nodes participate in algebraic rewriting and placement.
+    graph.saturate(budget.rounds, &mut fuel);
+    let roots: Vec<_> = candidates
+        .iter()
+        .flat_map(|&id| f.dfg().inst_results(id))
+        .map(|v| values[*v])
+        .collect();
+    let Some(choices) = graph.extract(&roots, model) else {
+        return false;
+    };
+    let mut placement = Placement::new(f, &ids);
+    let mut changed = 0u64;
+    let mut removable = Vec::new();
+    for id in candidates {
+        let results = f.dfg().inst_results(id).to_vec();
+        let pinned = !f.dfg().inst(id).can_speculate();
+        // A fixed occurrence becomes removable only after every result has a
+        // proven literal. Evaluator refusals (including traps) remain pinned.
+        if pinned && !results.iter().all(|&v| graph.constant(values[v]).is_some()) {
             continue;
         }
-        ids.clear();
-        let mut remaining = budget.region_nodes.max(1);
-        collect(f, root, &mut ids, &mut remaining, &visited);
-        visited.extend(ids.iter().copied());
-        regions += 1;
-        if optimize(f, root, &ids, budget, &mut fuel, model) {
-            changed += 1;
+        for old in results {
+            if f.dfg().uses(old).next().is_none() {
+                continue;
+            }
+            let class = graph.find(values[old]);
+            if let Some(new) = placement.materialize(f, id, class, &graph, &choices)
+                && old != new
+            {
+                f.edit().replace_all_uses(old, new);
+                changed += 1;
+            }
+        }
+        if pinned {
+            removable.push(id);
         }
     }
-    metrics.add("egraph.regions", regions);
-    metrics.add("egraph.rewritten_regions", changed);
+    removable.retain(|&id| {
+        f.dfg()
+            .inst_results(id)
+            .iter()
+            .all(|&v| f.dfg().uses(v).next().is_none())
+    });
+    if !removable.is_empty() {
+        f.edit().erase_insts(&removable);
+        changed += removable.len() as u64;
+    }
+    let cleaned = super::dce::run_dce(f, false, metrics);
+    metrics.add("egraph.nodes", graph.nodes.len() as u64);
+    metrics.add("egraph.rewritten_values", changed);
     metrics.add("egraph.match_steps", (budget.match_steps - fuel) as u64);
-    changed != 0
+    changed != 0 || cleaned
 }
 #[cfg(test)]
 mod tests {
@@ -620,7 +1107,7 @@ mod tests {
     use crate::Metrics;
 
     #[test]
-    fn cross_block_cones_preserve_effects_and_ssa() {
+    fn cross_block_graph_preserves_effects_and_ssa() {
         let parsed = veloc_mir::ModuleParser::new()
             .parse(
                 r#"
@@ -640,7 +1127,7 @@ block1():
             .unwrap();
         let mut module = (*parsed).clone();
         module.validate().unwrap();
-        let f = &mut module.functions[veloc_mir::FuncId(0)];
+        let f = module.bodies[veloc_mir::FuncId(0)].as_deref_mut().unwrap();
         let load = f
             .layout()
             .block_order()
@@ -672,22 +1159,22 @@ block1():
     fn generated_rules_combine_with_wrapping_evaluation() {
         for ty in [Type::I8, Type::I16, Type::I32, Type::I64] {
             let mut graph = Graph::new(Budget::DEFAULT.graph_nodes);
-            let binary = |opcode, a, b| {
-                Node::Result(
+            let binary = |graph: &mut Graph, opcode, a, b| {
+                let op = graph.operation(
                     Operation {
                         opcode,
                         args: vec![a, b],
                         results: vec![ty],
                         properties: vec![],
-                        template: None,
                     },
-                    0,
-                )
+                    None,
+                );
+                graph.add(Node::Result(op, 0)).unwrap()
             };
             let x = graph.add(Node::Input(Value(0), ty)).unwrap();
             let y = graph.add(Node::Input(Value(1), ty)).unwrap();
-            let sum = graph.add(binary(Op::IAdd, x, y)).unwrap();
-            let cancel = graph.add(binary(Op::ISub, sum, x)).unwrap();
+            let sum = binary(&mut graph, Op::IAdd, x, y);
+            let cancel = binary(&mut graph, Op::ISub, sum, x);
             let max = graph
                 .add(Node::Constant(
                     ScalarConst::from_bits(ty, u64::MAX >> (64 - ty.element_bits().unwrap()))
@@ -697,15 +1184,15 @@ block1():
             let one = graph
                 .add(Node::Constant(ScalarConst::from_bits(ty, 1).unwrap()))
                 .unwrap();
-            let left = graph.add(binary(Op::IAdd, x, max)).unwrap();
-            let wrapped = graph.add(binary(Op::IAdd, left, one)).unwrap();
+            let left = binary(&mut graph, Op::IAdd, x, max);
+            let wrapped = binary(&mut graph, Op::IAdd, left, one);
             let mut fuel = Budget::DEFAULT.match_steps;
             graph.saturate(Budget::DEFAULT.rounds, &mut fuel);
             assert_eq!(graph.find(cancel), graph.find(y), "{ty:?}");
             assert_eq!(graph.find(wrapped), graph.find(x), "{ty:?}");
             let extracted = graph.extract(&[wrapped], &GenericCost).unwrap();
-            assert_eq!(extracted.len(), 1);
-            assert_eq!(extracted[0].1, Node::Input(Value(0), ty));
+            let selected = extracted[graph.find(wrapped)].unwrap();
+            assert_eq!(graph.nodes[selected], Node::Input(Value(0), ty));
         }
     }
 }

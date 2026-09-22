@@ -103,62 +103,7 @@ impl fmt::Display for InstView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Block, BlockCall, CallConv, Linkage, ModuleBuilder, Type};
-    use crate::{FuncId, SigId};
-
-    #[test]
-    fn call_results_resolve_the_declared_source_without_validating_arguments() {
-        let mut module = ModuleBuilder::new();
-        let signature = module.make_signature(
-            alloc::vec![Type::I32, Type::I64],
-            alloc::vec![Type::I32, Type::I64],
-            CallConv::SystemV,
-        );
-        let func = module.declare_function("callee".into(), signature, Linkage::Import);
-        let module = module.build_data();
-        let mut dfg = DataFlowGraph::new();
-        let callee = dfg.values.push(crate::types::ValueData {
-            ty: Type::callable(signature, crate::CallableKind::Shared),
-            def: crate::ValueDef::Param(Block(0)),
-        });
-        // The nonexistent argument values are deliberately not validated here.
-        for inst in [
-            dfg.writer().call(func, &[Value(7)]),
-            dfg.writer().call_indirect(Value(9), &[Value(7)], signature),
-            dfg.writer()
-                .call_intrinsic(crate::intrinsic_ids::SIN_F32, &[Value(7)], signature),
-            dfg.writer()
-                .call_value(Opcode::CallValue, callee, &[Value(7)]),
-        ] {
-            assert!(dfg.opcode(inst).has_signature());
-            assert_eq!(
-                dfg.inst(inst)
-                    .result_types(&dfg, &module, &[Type::F32])
-                    .unwrap()
-                    .as_slice(),
-                module.signatures()[signature].returns()
-            );
-        }
-        assert!(!Opcode::Return.has_signature());
-        assert!(!Opcode::TailCall.has_signature());
-        let scalar = dfg.values.push(crate::types::ValueData {
-            ty: Type::I32,
-            def: crate::ValueDef::Param(Block(0)),
-        });
-        let unknown = dfg.values.push(crate::types::ValueData {
-            ty: Type::callable(SigId(u32::MAX), crate::CallableKind::Shared),
-            def: crate::ValueDef::Param(Block(0)),
-        });
-        for inst in [
-            dfg.writer().call(FuncId(u32::MAX), &[]),
-            dfg.writer().call_indirect(Value(9), &[], SigId(u32::MAX)),
-            dfg.writer().call_value(Opcode::CallValue, Value(99), &[]),
-            dfg.writer().call_value(Opcode::CallValue, scalar, &[]),
-            dfg.writer().call_value(Opcode::CallValue, unknown, &[]),
-        ] {
-            assert!(dfg.inst(inst).result_types(&dfg, &module, &[]).is_err());
-        }
-    }
+    use crate::{Block, BlockCall};
 
     #[test]
     fn successor_views_preserve_occurrences_and_default_order() {

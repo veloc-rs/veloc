@@ -243,19 +243,14 @@ fn variadic_ranges_grow_recycle_and_remain_independent_after_clone() {
 
 #[test]
 fn function_edits_keep_layout_and_successor_edges_in_sync() {
-    let mut declaration =
-        veloc_mir::Function::new("external".into(), veloc_mir::SigId(0), Linkage::Import);
-    assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            declaration.edit();
-        }))
-        .is_err()
-    );
-    assert!(declaration.body().is_none());
     let module = veloc_mir::ModuleParser::new().parse("local function main() -> void\nblock0():\n  jump block1()\nblock1():\n  return\nblock2():\n  return\n").unwrap();
     let mut data = (*module).clone();
-    let (_, func) = data.functions.iter_mut().next().unwrap();
-    let entry = func.entry_block().unwrap();
+    let func = data
+        .bodies
+        .iter_mut()
+        .find_map(|(_, body)| body.as_deref_mut())
+        .unwrap();
+    let entry = func.entry_block();
     let old = func.layout().block_order().nth(1).unwrap();
     let new = func.layout().block_order().nth(2).unwrap();
     let jump = func.layout().first_inst(entry).unwrap();
@@ -337,7 +332,7 @@ fn function_edits_keep_layout_and_successor_edges_in_sync() {
         func.layout().block_order().rev().collect::<Vec<_>>(),
         [new, old, entry]
     );
-    assert_eq!(func.entry_block(), Some(entry));
+    assert_eq!(func.entry_block(), entry);
     data.validate().unwrap();
 }
 
@@ -603,8 +598,7 @@ fn construction_does_not_validate_type_contracts() {
             CallConv::SystemV,
         );
         let callee = module.declare_function("callee".into(), callee_sig, Linkage::Import);
-        let mut builder = module.builder(id);
-        builder.init_entry_block();
+        let mut builder = module.define(id);
         let mut ins = builder.ins();
         let i = ins.i32const(1);
         let f = ins.f32const(1.0);
@@ -645,14 +639,11 @@ fn construction_does_not_validate_type_contracts() {
                     &[]
                 };
                 let inst = ins.insert(data, types);
-                assert_eq!(
-                    ins.builder().func().dfg().inst_results(inst).len(),
-                    types.len()
-                );
+                assert_eq!(ins.dfg().inst_results(inst).len(), types.len());
             }
             "call" => {
                 let inst = ins.call(callee, &[i]);
-                let dfg = ins.builder().func().dfg();
+                let dfg = ins.dfg();
                 let types = dfg
                     .inst_results(inst)
                     .iter()
@@ -662,17 +653,21 @@ fn construction_does_not_validate_type_contracts() {
             }
             "indirect-call" => {
                 let inst = ins.call_indirect(callee_sig, i, &[f]);
-                assert_eq!(ins.builder().func().dfg().inst_results(inst).len(), 2);
+                assert_eq!(ins.dfg().inst_results(inst).len(), 2);
             }
             "branch" | "table" => {
-                let dest = ins.builder().create_block();
+                drop(ins);
+                let dest = builder.create_block();
+                ins = builder.ins();
                 if case == "branch" {
                     ins.br(i, dest, &[], dest, &[]);
                 } else {
-                    let call = ins.builder().make_block_call(dest, &[]);
+                    let call = veloc_mir::BlockCall::new(dest, &[]);
                     ins.br_table(f, call, &[]);
                 }
-                ins.builder().switch_to_block(dest);
+                drop(ins);
+                builder.switch_to_block(dest);
+                ins = builder.ins();
             }
             _ => unreachable!(),
         }
@@ -700,51 +695,6 @@ fn construction_does_not_validate_type_contracts() {
 }
 
 #[test]
-fn result_resolution_only_requires_construction_inputs() {
-    use veloc_mir::{Block, ModuleData, SigId};
-    let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
-    dfg.create_block();
-    let module = ModuleData::default();
-    let i = dfg.append_block_param(Block(0), Type::I32);
-    let f = dfg.append_block_param(Block(0), Type::F32);
-    let unknown = dfg.append_block_param(Block(0), Type::INVALID);
-    let data = dfg.writer().from_values(Opcode::First, &[i, f]).unwrap();
-    assert_eq!(
-        dfg.inst(data)
-            .result_types(&dfg, &module, &[])
-            .unwrap()
-            .as_slice(),
-        &[Type::I32]
-    );
-    let data = dfg
-        .writer()
-        .from_values(Opcode::First, &[unknown, i])
-        .unwrap();
-    assert!(dfg.inst(data).result_types(&dfg, &module, &[]).is_err());
-    let data = dfg.writer().from_values(Opcode::Sized, &[unknown]).unwrap();
-    assert_eq!(
-        dfg.inst(data)
-            .result_types(&dfg, &module, &[])
-            .unwrap()
-            .as_slice(),
-        &[Type::I8]
-    );
-    let output = dfg.writer().empty();
-    assert!(dfg.inst(output).result_types(&dfg, &module, &[]).is_err());
-    assert_eq!(
-        dfg.inst(output)
-            .result_types(&dfg, &module, &[Type::F32])
-            .unwrap()
-            .as_slice(),
-        &[Type::F32]
-    );
-    let data = dfg.writer().from_values(Opcode::Lane, &[i]).unwrap();
-    assert!(dfg.inst(data).result_types(&dfg, &module, &[]).is_err());
-    let data = dfg.writer().call_indirect(i, &[], SigId(123));
-    assert!(dfg.inst(data).result_types(&dfg, &module, &[]).is_err());
-}
-
-#[test]
 fn builders_preserve_logical_order_independently_of_storage_and_text() {
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(
@@ -753,11 +703,10 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
         CallConv::SystemV,
     );
     let id = module.declare_function("builders".into(), sig, Linkage::Local);
-    let mut builder = module.builder(id);
-    builder.init_entry_block();
-    let a = builder.func_param(0);
-    let b = builder.func_param(1);
-    let ptr = builder.func_param(2);
+    let mut builder = module.define(id);
+    let a = builder.func().params()[0];
+    let b = builder.func().params()[1];
+    let ptr = builder.func().params()[2];
     let difference = builder.ins().difference(a, b);
     let reverse = builder.ins().reverse_text(a, b);
     let selected = builder.ins().select_type(a, b, Type::I64);
@@ -806,10 +755,14 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
     // Inferred text cannot construct mismatched result types, but callers of
     // the in-memory IR can. Check the generated validator independently too.
     let mut malformed = (*module).clone();
-    malformed.functions[id]
+    malformed.bodies[id]
+        .as_deref_mut()
+        .unwrap()
         .edit()
         .set_value_type(last, Type::I32);
-    malformed.functions[id]
+    malformed.bodies[id]
+        .as_deref_mut()
+        .unwrap()
         .edit()
         .set_value_type(first_arg, Type::PTR);
     assert!(

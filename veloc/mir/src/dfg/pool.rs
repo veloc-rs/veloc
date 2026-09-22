@@ -25,7 +25,7 @@ mod tests {
         let a = dfg.create_inst(|writer: crate::InstWriter<'_>| writer.nop());
         let b = dfg.create_inst(|writer: crate::InstWriter<'_>| writer.nop());
         let list = dfg.append_results(a, &[Type::I32, Type::I64]);
-        dfg.remove_inst(a);
+        dfg.remove_insts(&[a]);
         let reused = dfg.append_results(b, &[Type::I32, Type::I64]);
         assert_eq!(
             list, reused,
@@ -54,9 +54,9 @@ mod tests {
         let a = dfg.writer().vconst(crate::VectorConst::dense(ty, id));
         let b = dfg.writer().copy(a);
         let cloned = dfg.clone();
-        dfg.remove_inst(a);
+        dfg.remove_insts(&[a]);
         assert_eq!(id.get(&dfg), Some(&[7; 16][..]));
-        dfg.remove_inst(b);
+        dfg.remove_insts(&[b]);
         assert_eq!(id.get(&dfg), id.get(&cloned));
         assert_eq!(
             id.get(&dfg).unwrap().as_ptr(),

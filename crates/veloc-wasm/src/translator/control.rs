@@ -51,7 +51,7 @@ impl<'a> WasmTranslator<'a> {
                     self.builder.ins().unreachable();
                 }
                 for i in 0..params_ty.len() {
-                    let val = self.builder.block_params(header_block)[i];
+                    let val = self.builder.func().dfg().block_params(header_block)[i];
                     self.stack.push(val);
                 }
                 self.control_stack.push(ControlFrame {
@@ -98,7 +98,7 @@ impl<'a> WasmTranslator<'a> {
                     self.builder.ins().unreachable();
                 }
                 for i in 0..params_ty.len() {
-                    let val = self.builder.block_params(then_block)[i];
+                    let val = self.builder.func().dfg().block_params(then_block)[i];
                     self.stack.push(val);
                 }
                 self.control_stack.push(ControlFrame {
@@ -150,7 +150,7 @@ impl<'a> WasmTranslator<'a> {
                 self.terminated = !reachable_at_start;
                 self.stack.truncate(stack_size);
                 for i in 0..num_params {
-                    let val = self.builder.block_params(else_label)[i];
+                    let val = self.builder.func().dfg().block_params(else_label)[i];
                     self.stack.push(val);
                 }
             }
@@ -175,7 +175,7 @@ impl<'a> WasmTranslator<'a> {
                     self.terminated = !frame.reachable_at_start;
                     let mut args = Vec::new();
                     for i in 0..frame.num_params {
-                        args.push(self.builder.block_params(else_label)[i]);
+                        args.push(self.builder.func().dfg().block_params(else_label)[i]);
                     }
                     // If we reached Else, it means the Params are passed to the Else block.
                     // But if Else is empty or we are at End, we need to pass the Params to End if nothing else happens?
@@ -201,7 +201,7 @@ impl<'a> WasmTranslator<'a> {
                     if !self.terminated {
                         let mut vals = Vec::with_capacity(frame.num_results);
                         for i in 0..frame.num_results {
-                            vals.push(self.builder.block_params(end_target)[i]);
+                            vals.push(self.builder.func().dfg().block_params(end_target)[i]);
                         }
                         self.emit_function_return(&vals);
                         self.terminated = true;
@@ -209,7 +209,7 @@ impl<'a> WasmTranslator<'a> {
                 } else {
                     self.stack.truncate(frame.stack_size);
                     for i in 0..frame.num_results {
-                        let val = self.builder.block_params(end_target)[i];
+                        let val = self.builder.func().dfg().block_params(end_target)[i];
                         self.stack.push(val);
                     }
                 }
@@ -266,7 +266,11 @@ impl<'a> WasmTranslator<'a> {
                 args.reverse();
                 let results = &sig.results;
                 let multi_ret_slot = if results.len() > 1 {
-                    let slot = self.builder.entry_alloca((results.len() * 8) as u32, 8);
+                    let entry = self.builder.func().entry_block();
+                    let slot = self
+                        .builder
+                        .at_start(entry)
+                        .alloca((results.len() * 8) as u32, 8);
                     let result_ptr = slot;
                     args.push(result_ptr);
                     Some(slot)
@@ -289,8 +293,7 @@ impl<'a> WasmTranslator<'a> {
                         VelocType::PTR,
                     );
                     args.insert(0, target_vmctx);
-                    let func_id = self.metadata.functions[function_index as usize].func_id;
-                    let sig_id = self.builder.func_signature(func_id);
+                    let sig_id = self.ir_sig_ids[ty_idx as usize];
                     let call_inst = self.builder.ins().call_indirect(sig_id, func_ptr, &args);
                     if let Some(slot) = multi_ret_slot {
                         for (i, &ty) in results.iter().enumerate() {
@@ -425,7 +428,11 @@ impl<'a> WasmTranslator<'a> {
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
                 let multi_ret_slot = if results.len() > 1 {
-                    let slot = self.builder.entry_alloca((results.len() * 8) as u32, 8);
+                    let entry = self.builder.func().entry_block();
+                    let slot = self
+                        .builder
+                        .at_start(entry)
+                        .alloca((results.len() * 8) as u32, 8);
                     let result_ptr = slot;
                     args.push(result_ptr);
                     Some(slot)
@@ -475,7 +482,11 @@ impl<'a> WasmTranslator<'a> {
                 let results = &sig.results;
                 let sig_id = self.ir_sig_ids[type_index as usize];
                 let multi_ret_slot = if results.len() > 1 {
-                    let slot = self.builder.entry_alloca((results.len() * 8) as u32, 8);
+                    let entry = self.builder.func().entry_block();
+                    let slot = self
+                        .builder
+                        .at_start(entry)
+                        .alloca((results.len() * 8) as u32, 8);
                     let result_ptr = slot;
                     args.push(result_ptr);
                     Some(slot)
@@ -520,7 +531,7 @@ impl<'a> WasmTranslator<'a> {
                 }
                 args.reverse();
 
-                let default_call = self.builder.make_block_call(default_target, &args);
+                let default_call = veloc::mir::BlockCall::new(default_target, &args);
                 let mut table = Vec::new();
                 for t in targets.targets() {
                     let depth = t?;
@@ -532,7 +543,7 @@ impl<'a> WasmTranslator<'a> {
                         frame.end_label.unwrap()
                     };
                     // WASM ensures all targets have same arity and types
-                    table.push(self.builder.make_block_call(target, &args));
+                    table.push(veloc::mir::BlockCall::new(target, &args));
                 }
                 self.builder.ins().br_table(index, default_call, &table);
                 self.terminated = true;

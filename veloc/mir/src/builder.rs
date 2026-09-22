@@ -1,8 +1,8 @@
-use super::function::Function;
-use super::inst::{Inst, InstWriter, VectorExtData};
-use super::types::{Block, BlockCall, FuncId, Signature, Type, Value, Variable};
+use super::function::{FuncBody, FuncEditor, InstCursor};
+use super::inst::{InstWriter, VectorExtData};
+use super::types::{Block, BlockCall, FuncId, Type, Value, Variable};
 use crate::Opcode;
-use crate::{CallConv, Intrinsic, Linkage, Module, ModuleData, Result, SigId};
+use crate::{CallConv, Linkage, Module, ModuleData, Result, SigId};
 use alloc::vec::Vec;
 use hashbrown::{HashMap, HashSet};
 
@@ -44,8 +44,9 @@ impl ModuleBuilder {
         self.data.get_func_id(name)
     }
 
-    pub fn builder(&mut self, func_id: FuncId) -> FunctionBuilder<'_> {
-        FunctionBuilder::new(&mut self.data, func_id)
+    /// Start a new definition. An existing body must be edited instead.
+    pub fn define(&mut self, func_id: FuncId) -> SsaBuilder<'_> {
+        SsaBuilder::new(&mut self.data, func_id)
     }
 
     pub fn add_global(&mut self, name: String, ty: Type, linkage: Linkage) {
@@ -71,9 +72,15 @@ impl Default for ModuleBuilder {
     }
 }
 
-pub struct FunctionBuilder<'a> {
-    module: &'a mut ModuleData,
-    func_id: FuncId,
+/// Incremental SSA construction state for one function.
+///
+/// Structural mutations and instruction insertion are performed by
+/// `FuncEditor`; this type only tracks source variables and the sealing state
+/// needed to materialize their SSA definitions.
+pub struct SsaBuilder<'a> {
+    function: &'a mut FuncBody,
+    decls: &'a cranelift_entity::PrimaryMap<FuncId, crate::FuncDecl>,
+    signatures: &'a veloc_types::Signatures,
     current_block: Option<Block>,
     // 变量的类型映射
     var_types: HashMap<Variable, Type>,
@@ -85,133 +92,75 @@ pub struct FunctionBuilder<'a> {
     sealed: HashSet<Block>,
 }
 
-impl<'a> FunctionBuilder<'a> {
+impl<'a> SsaBuilder<'a> {
     pub(crate) fn new(module: &'a mut ModuleData, func_id: FuncId) -> Self {
-        let sealed = module.functions[func_id]
-            .body()
-            .map(|body| body.layout().block_order().collect())
-            .unwrap_or_default();
-        let mut builder = Self {
-            module,
-            func_id,
-            current_block: None,
+        let (decls, signatures, function) = module.define_body(func_id);
+        let entry = function.entry_block();
+        Self {
+            function,
+            decls,
+            signatures,
+            current_block: Some(entry),
             var_types: HashMap::new(),
             def_map: HashMap::new(),
             incomplete_phis: HashMap::new(),
-            sealed,
-        };
-
-        if let Some(entry) = builder.func().entry_block() {
-            builder.current_block = Some(entry);
+            sealed: HashSet::from([entry]),
         }
-
-        builder
-    }
-
-    pub fn init_entry_block(&mut self) -> Block {
-        let entry = self.create_block();
-        self.switch_to_block(entry);
-        self.seal_block(entry);
-
-        let sig_id = self.func().signature;
-        for index in 0..self.module.signatures()[sig_id].params().len() {
-            let ty = self.module.signatures()[sig_id].params()[index];
-            self.add_block_param(entry, ty);
-        }
-        entry
     }
 
     pub fn current_block(&self) -> Option<Block> {
         self.current_block
     }
 
-    pub fn func(&self) -> &Function {
-        &self.module.functions[self.func_id]
+    pub fn func(&self) -> &FuncBody {
+        self.function
     }
 
-    pub fn func_mut(&mut self) -> &mut Function {
-        &mut self.module.functions[self.func_id]
+    fn edit(&mut self) -> FuncEditor<'_> {
+        self.function.edit()
     }
 
-    pub fn func_signature(&self, func_id: FuncId) -> SigId {
-        self.module.functions[func_id].signature
-    }
-
-    pub fn signature(&self, sig_id: SigId) -> &Signature {
-        &self.module.signatures()[sig_id]
-    }
-
-    pub fn make_block_call(&mut self, block: Block, args: &[Value]) -> BlockCall {
-        BlockCall::new(block, args)
-    }
-
-    /// Allocate a fixed object once per invocation, even when the builder is
-    /// currently in a loop. This is an explicit placement choice, not hoisting.
-    pub fn entry_alloca(&mut self, size: u32, align: u32) -> Value {
-        let entry = self.func().entry_block().expect("entry block initialized");
-        let inst = self.func_mut().edit().prepend_inst(
-            entry,
-            |writer: InstWriter<'_>| writer.alloca(size, align),
-            &[Type::PTR],
-        );
-        self.func().dfg().first_result(inst).unwrap()
+    /// Complete SSA construction before exposing unrestricted body edits.
+    pub fn finish(mut self) -> FuncEditor<'a> {
+        self.seal_all_blocks();
+        self.function.edit()
     }
 
     pub fn create_block(&mut self) -> Block {
-        if self.func().body().is_none() {
-            return self.func_mut().define_body().entry_block();
-        }
-        self.func_mut().edit().create_block()
+        self.edit().create_block()
     }
 
     pub fn switch_to_block(&mut self, block: Block) {
         if !self.func().layout().contains_block(block) {
-            self.func_mut().edit().append_block(block);
+            self.edit().append_block(block);
         }
         self.current_block = Some(block);
     }
 
-    pub fn block_params(&self, block: Block) -> &[Value] {
-        &self.func().dfg().blocks[block].params
-    }
-
-    pub fn value_type(&self, val: Value) -> Type {
-        self.func().dfg().value_type(val)
-    }
-
-    pub fn set_value_name(&mut self, val: Value, name: &str) {
-        self.func_mut().edit().set_value_name(val, name);
-    }
-
+    /// Add an explicit parameter before SSA variable resolution starts in this block.
     pub fn add_block_param(&mut self, block: Block, ty: Type) -> Value {
-        self.func_mut().edit().append_block_param(block, ty)
+        assert!(!self.sealed.contains(&block), "block already sealed");
+        assert!(
+            !self.def_map.contains_key(&block),
+            "SSA variable resolution already started"
+        );
+        self.edit().append_block_param(block, ty)
     }
 
-    pub fn func_params(&self) -> &[Value] {
-        if let Some(entry) = self.func().entry_block() {
-            self.block_params(entry)
-        } else {
-            &[]
-        }
+    pub fn ins(&mut self) -> InstCursor<'_, '_> {
+        let block = self
+            .current_block
+            .expect("cannot create an insertion cursor without a block");
+        self.function
+            .edit()
+            .at_end(block, self.decls, self.signatures)
     }
 
-    pub fn func_param(&self, index: usize) -> Value {
-        self.func_params()[index]
-    }
-
-    pub fn ins(&mut self) -> InstBuilder<'_, 'a> {
-        InstBuilder { builder: self }
-    }
-
-    pub fn in_new_block<F>(&mut self, f: F) -> Block
-    where
-        F: FnOnce(&mut InstBuilder<'_, 'a>),
-    {
-        let block = self.create_block();
-        self.switch_to_block(block);
-        let mut ins = self.ins();
-        f(&mut ins);
-        block
+    /// Temporarily insert at block start without changing the SSA current block.
+    pub fn at_start(&mut self, block: Block) -> InstCursor<'_, '_> {
+        self.function
+            .edit()
+            .at_start(block, self.decls, self.signatures)
     }
 
     pub fn is_current_block_terminated(&self) -> bool {
@@ -225,8 +174,8 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn if_else<T, E>(&mut self, condition: Value, then_body: T, else_body: E)
     where
-        T: FnOnce(&mut FunctionBuilder),
-        E: FnOnce(&mut FunctionBuilder),
+        T: FnOnce(&mut SsaBuilder),
+        E: FnOnce(&mut SsaBuilder),
     {
         let then_block = self.create_block();
         let else_block = self.create_block();
@@ -261,8 +210,8 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn while_loop<C, B>(&mut self, cond_body: C, loop_body: B)
     where
-        C: FnOnce(&mut FunctionBuilder) -> Value,
-        B: FnOnce(&mut FunctionBuilder),
+        C: FnOnce(&mut SsaBuilder) -> Value,
+        B: FnOnce(&mut SsaBuilder),
     {
         let header_block = self.create_block();
         let body_block = self.create_block();
@@ -321,7 +270,7 @@ impl<'a> FunctionBuilder<'a> {
         if !self.sealed.contains(&block) {
             // Incomplete phi
             let ty = self.var_types[&var];
-            val = self.add_block_param(block, ty);
+            val = self.edit().append_block_param(block, ty);
             self.incomplete_phis
                 .entry(block)
                 .or_default()
@@ -332,7 +281,7 @@ impl<'a> FunctionBuilder<'a> {
                 val = self.use_var_on_block(pred, var);
             } else {
                 let ty = self.var_types[&var];
-                val = self.add_block_param(block, ty);
+                val = self.edit().append_block_param(block, ty);
                 // Break recursion
                 self.def_map.entry(block).or_default().insert(var, val);
                 self.add_phi_operands(block, var, val);
@@ -378,7 +327,7 @@ impl<'a> FunctionBuilder<'a> {
         let Some(inst) = self.func().layout().last_inst(pred) else {
             return;
         };
-        self.func_mut().edit().edit_successors(inst, |edge| {
+        self.edit().edit_successors(inst, |edge| {
             if edge.block() == target {
                 edge.set_arg(index, val);
             }
@@ -386,75 +335,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 }
 
-pub struct InstBuilder<'b, 'a> {
-    builder: &'b mut FunctionBuilder<'a>,
-}
-
-impl<'b, 'a> InstBuilder<'b, 'a> {
-    pub fn block(&self) -> Block {
-        self.builder.current_block.expect("No current block")
-    }
-
-    pub fn builder(&mut self) -> &mut FunctionBuilder<'a> {
-        self.builder
-    }
-
-    pub fn param(&self, index: usize) -> Value {
-        self.builder.func_param(index)
-    }
-
-    pub fn params(&self) -> &[Value] {
-        self.builder.func_params()
-    }
-
-    pub fn value_type(&self, val: Value) -> Type {
-        self.builder.value_type(val)
-    }
-
-    /// Insert an instruction with caller-supplied result types, without validation.
-    /// Referenced storage and the current block must exist. Run the validator
-    /// before passing untrusted or potentially invalid IR to later stages.
-    pub fn insert(&mut self, data: impl FnOnce(InstWriter<'_>) -> Inst, types: &[Type]) -> Inst {
-        let block = self.block();
-        self.builder
-            .func_mut()
-            .edit()
-            .append_inst(block, data, types)
-    }
-
-    /// Insert a fixed number of results without checking the type contract.
-    fn emit<const N: usize>(
-        &mut self,
-        data: impl FnOnce(InstWriter<'_>) -> Inst,
-        types: [Type; N],
-    ) -> [Value; N] {
-        let inst = self.insert(data, &types);
-        self.builder
-            .func()
-            .dfg()
-            .inst_results(inst)
-            .try_into()
-            .expect("insert must create one result per supplied type")
-    }
-
-    /// Resolve dynamic result types, such as a call's signature, before insertion.
-    fn insert_inferred(&mut self, data: impl FnOnce(InstWriter<'_>) -> Inst) -> Inst {
-        let block = self.block();
-        let inst = self.builder.func_mut().edit().create_inst(data);
-        let types = self
-            .builder
-            .func()
-            .dfg()
-            .inst(inst)
-            .result_types(&self.builder.func().dfg(), self.builder.module, &[])
-            .unwrap_or_else(|error| panic!("{error}"));
-        self.builder
-            .func_mut()
-            .edit()
-            .finish_inst(block, inst, &types);
-        inst
-    }
-
+impl<'ctx, 'body> InstCursor<'ctx, 'body> {
     pub fn i32const(&mut self, val: i32) -> Value {
         self.iconst(val.into())
     }
@@ -483,15 +364,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
         };
         let [result] = self.emit(data, [ty]);
         result
-    }
-
-    fn dense_const(&mut self, bytes: Vec<u8>, ty: Type) -> Value {
-        let value = self
-            .builder
-            .func_mut()
-            .edit()
-            .dense_constant(ty.as_vector().expect("vector constant type"), bytes);
-        self.vconst(value)
     }
 
     pub fn i8x16const(&mut self, values: [i8; 16]) -> Value {
@@ -537,21 +409,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             data.extend_from_slice(&v.to_bits().to_le_bytes());
         }
         self.dense_const(data, crate::Type::F64X2)
-    }
-
-    pub fn call(&mut self, func_id: FuncId, args: &[Value]) -> Inst {
-        self.insert_inferred(|writer: InstWriter<'_>| writer.call(func_id, args))
-    }
-
-    /// Call a typed value and infer its results from the value's signature.
-    pub fn call_value(&mut self, callee: Value, args: &[Value]) -> Inst {
-        self.insert_inferred(|writer: InstWriter<'_>| {
-            writer.call_value(Opcode::CallValue, callee, args)
-        })
-    }
-
-    pub fn call_indirect(&mut self, sig_id: SigId, ptr: Value, args: &[Value]) -> Inst {
-        self.insert_inferred(|writer: InstWriter<'_>| writer.call_indirect(ptr, args, sig_id))
     }
 
     pub fn jump(&mut self, destination: Block, args: &[Value]) {
@@ -605,14 +462,6 @@ impl<'b, 'a> InstBuilder<'b, 'a> {
             },
             &[],
         );
-    }
-
-    /// Call an intrinsic function.
-    /// Returns the instruction handle, use `dfg.inst_results(inst)` to get return values.
-    pub fn call_intrinsic(&mut self, intrinsic: Intrinsic, sig_id: SigId, args: &[Value]) -> Inst {
-        self.insert_inferred(|writer: InstWriter<'_>| {
-            writer.call_intrinsic(intrinsic, args, sig_id)
-        })
     }
 
     // ======================================

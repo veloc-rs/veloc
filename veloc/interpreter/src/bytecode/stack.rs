@@ -2,7 +2,7 @@
 //! before installing a module; bytecode emission uses this checked layout.
 use alloc::string::String;
 use cranelift_entity::SecondaryMap;
-use veloc_mir::{Function, Inst, InstView};
+use veloc_mir::{FuncBody, Inst, InstView};
 
 pub(crate) struct StackLayout {
     pub offsets: SecondaryMap<Inst, u32>,
@@ -10,7 +10,7 @@ pub(crate) struct StackLayout {
     pub align: usize,
 }
 
-pub(crate) fn stack_layout(func: &Function) -> Result<StackLayout, String> {
+pub(crate) fn stack_layout(func: &FuncBody) -> Result<StackLayout, String> {
     let mut layout = StackLayout {
         offsets: SecondaryMap::new(),
         size: 0,
@@ -19,7 +19,7 @@ pub(crate) fn stack_layout(func: &Function) -> Result<StackLayout, String> {
     for block in func.layout().block_order() {
         for inst in func.layout().block_insts(block) {
             if let InstView::Alloca { size, align } = func.dfg().inst(inst) {
-                if Some(block) != func.entry_block() {
+                if block != func.entry_block() {
                     return Err("non-entry alloca requires dynamic stack support".into());
                 }
                 if size == 0 || !align.is_power_of_two() {

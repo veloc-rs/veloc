@@ -413,28 +413,22 @@ trait Fold {
     where
         Self: Sized;
 }
-fn fold(op: Opcode, args: &[ScalarConst]) -> Option<ScalarConst> {
-    let mut dfg = veloc_mir::dfg::DataFlowGraph::new();
-    dfg.create_block();
-    let values = args
-        .iter()
-        .map(|c| dfg.append_block_param(veloc_mir::Block(0), c.ty()))
-        .collect::<Vec<_>>();
-    let inst = dfg.writer().from_values(op, &values)?;
-    let results = dfg
-        .inst(inst)
-        .result_types(&dfg, &veloc_mir::ModuleData::default(), &[])
-        .ok()?;
-    veloc_optimizer::rewrite::evaluate(op, args, &results, &[])?
+fn fold(op: Opcode, args: &[ScalarConst], result: Type) -> Option<ScalarConst> {
+    veloc_optimizer::rewrite::evaluate(op, args, &[result], &[])?
         .first()
         .copied()
 }
 impl Fold for ScalarConst {
     fn binary_op(self, other: Self, op: Opcode) -> Option<Self> {
-        fold(op, &[self, other])
+        fold(op, &[self, other], self.ty())
     }
     fn unary_op(self, op: Opcode) -> Option<Self> {
-        fold(op, &[self])
+        let result = if op == Opcode::IEqz {
+            Type::BOOL
+        } else {
+            self.ty()
+        };
+        fold(op, &[self], result)
     }
     fn icmp(self, other: Self, cc: IntCC) -> Option<Self> {
         veloc_optimizer::rewrite::evaluate(Opcode::Icmp, &[self, other], &[Type::BOOL], &[cc])?

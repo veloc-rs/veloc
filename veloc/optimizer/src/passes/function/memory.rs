@@ -3,7 +3,7 @@
 use crate::{FunctionPass, Metrics, OptConfig, PreservedAnalyses};
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{Function, Inst, InstView, Opcode, Type, Value};
+use veloc_mir::{FuncBody, Inst, InstView, Opcode, Type, Value};
 
 pub struct MemoryPass;
 
@@ -45,7 +45,7 @@ impl Cell {
 }
 
 pub fn run_memory(
-    func: &mut Function,
+    func: &mut FuncBody,
     layout: &veloc_types::DataLayout,
     metrics: &mut Metrics,
 ) -> bool {

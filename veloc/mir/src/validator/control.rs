@@ -3,7 +3,7 @@
 
 use super::ValidationError;
 use crate::function::Dominators;
-use crate::{Block, Function, ModuleData, Result, Value, ValueDef};
+use crate::{Block, FunctionRef, ModuleData, Result, Value, ValueDef};
 use alloc::vec::Vec;
 
 // Positions are assigned only to instructions attached to a block.
@@ -18,7 +18,7 @@ pub(super) struct Structure {
 
 /// Temporary membership sets are needed only while checking the structure.
 struct Checker<'a> {
-    func: &'a Function,
+    func: &'a FunctionRef<'a>,
     module: &'a ModuleData,
     blocks: Vec<bool>,
     defined: Vec<bool>,
@@ -26,7 +26,7 @@ struct Checker<'a> {
 }
 
 impl Structure {
-    pub(super) fn check(func: &Function, module: &ModuleData) -> Result<Self> {
+    pub(super) fn check(func: &FunctionRef, module: &ModuleData) -> Result<Self> {
         let blocks = func.dfg().blocks.len();
         let mut checker = Checker {
             func,
@@ -49,7 +49,7 @@ impl Structure {
         Ok(checker.structure)
     }
 
-    pub(super) fn check_ssa(mut self, func: &Function) -> Result<()> {
+    pub(super) fn check_ssa(mut self, func: &FunctionRef) -> Result<()> {
         for block in func.layout().block_order() {
             let data = &func.cfg().blocks[block];
             let mut succs = data.succs.clone();
@@ -102,7 +102,7 @@ impl Checker<'_> {
     fn check_blocks(&mut self) -> Result<()> {
         let func = self.func;
         let layout = &func.layout();
-        let Some(signature) = self.module.signatures().get(func.signature) else {
+        let Some(signature) = self.module.signatures().get(func.decl.signature) else {
             return func.fail("unknown function signature".into());
         };
         for block in layout.block_order() {
@@ -237,7 +237,7 @@ impl Checker<'_> {
         let Some(entry) = func.entry_block() else {
             return Ok(());
         };
-        let signature = &self.module.signatures()[func.signature];
+        let signature = &self.module.signatures()[func.decl.signature];
         for (&param, &expected) in func.dfg().blocks[entry]
             .params
             .iter()

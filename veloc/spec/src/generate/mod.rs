@@ -97,7 +97,6 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
                 defs,
                 queries::Host::Packed(&packed.formats),
             ));
-            crate::types::rules::generate_results(defs, &mut instructions);
             instructions
         }
         Emit::Opcodes => {
@@ -182,7 +181,7 @@ fn emit(plan: &Plan, artifact: crate::Emit) -> String {
         }
         Emit::Builders => {
             let mut builders = String::from(HEADER);
-            builders.push_str("impl<'b, 'a> crate::builder::InstBuilder<'b, 'a> {\n");
+            builders.push_str("impl<'edit, 'body> crate::function::InstCursor<'edit, 'body> {\n");
             for ((op, &format), builder) in
                 defs.ops.iter().zip(&packed.formats).zip(&packed.builders)
             {

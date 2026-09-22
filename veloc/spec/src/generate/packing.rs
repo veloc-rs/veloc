@@ -160,10 +160,10 @@ pub(crate) struct Builder {
 pub(crate) fn prepare_builder(op: &Op, source: &str) -> Result<Option<Builder>, Error> {
     let fail = |message| Error::at(source, op.offset, message);
     let ty = &op.signature;
-    let Some(results) = ty.results.patterns() else {
-        // Signature- and context-selected results need the module's help.
+    let results = ty.results.patterns();
+    if results.is_none() && op.signature_source.is_none() {
         return Ok(None);
-    };
+    }
     if op
         .params
         .iter()
@@ -181,19 +181,18 @@ pub(crate) fn prepare_builder(op: &Op, source: &str) -> Result<Option<Builder>, 
             | "params"
             | "value_type"
             | "emit"
-            | "insert_inferred"
             | "insert"
             | "constant"
             | "dense_const"
     ) {
         return Err(fail(format!(
-            "operation `{}` conflicts with an InstBuilder method",
+            "operation `{}` conflicts with an InstCursor method",
             op.mnemonic
         )));
     }
     let inferred = crate::types::rules::result_exprs(ty);
-    let typed = inferred.is_none();
-    if typed && results.len() != 1 {
+    let typed = inferred.is_none() && op.signature_source.is_none();
+    if typed && results.unwrap().len() != 1 {
         return Err(fail(
             "field builder requires exactly one explicit result".into(),
         ));
@@ -220,13 +219,8 @@ pub(crate) fn builder(
     rust: &crate::model::records::RustTypes,
 ) -> String {
     let name = op.method_name();
-    let results = op
-        .signature
-        .results
-        .patterns()
-        .expect("prepared builder results");
     let inferred = &builder.inferred;
-    let typed = inferred.is_none();
+    let typed = inferred.is_none() && op.signature_source.is_none();
     let mut params = String::from("&mut self");
     for param in &op.params {
         let ty = match &param.kind {
@@ -244,6 +238,27 @@ pub(crate) fn builder(
         params.push_str(", ty: crate::Type");
     }
     let constructor = crate::generate::packing::constructor(op, format, &op.name, str::to_owned);
+    if let Some(source) = &op.signature_source {
+        use crate::model::SignatureSource;
+        let signature = match source {
+            SignatureSource::Function(param) => format!("self.decls[{param}].signature"),
+            SignatureSource::Signature(param) => param.clone(),
+            SignatureSource::Value(param) => format!(
+                "self.value_type({param}).as_callable().expect(\"call requires a callable value\").0"
+            ),
+        };
+        // Borrow the external signature table, not the cursor, so insertion can
+        // mutably borrow the editor without copying the return type slice.
+        return format!(
+            "    /// Build `{}` from its declared signature without validating arguments.\n    pub fn {name}({params}) -> crate::Inst {{\n        let signatures = self.signatures;\n        let returns = signatures[{signature}].returns();\n        self.insert({constructor}, returns)\n    }}\n",
+            op.mnemonic
+        );
+    }
+    let results = op
+        .signature
+        .results
+        .patterns()
+        .expect("prepared builder results");
     let result_types = if let Some(inferred) = inferred {
         let operands = op
             .params

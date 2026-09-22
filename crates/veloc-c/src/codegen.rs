@@ -53,8 +53,7 @@ impl CodeGenContext {
         let func_id = builder.declare_function(name, sig_id, Linkage::Export);
 
         let return_type = sig.returns().first().copied();
-        let mut func_builder = builder.builder(func_id);
-        func_builder.init_entry_block();
+        let mut func_builder = builder.define(func_id);
 
         // Generate a zero value for the temporary function body.
         if let Some(ty) = return_type {

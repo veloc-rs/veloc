@@ -54,7 +54,7 @@ impl Program {
         match target {
             CallTarget::Bytecode(module, func) => {
                 let target = &self.modules[module];
-                source == target.signatures[target.ir.functions[func].signature.0 as usize]
+                source == target.signatures[target.ir.decls[func].signature.0 as usize]
             }
             CallTarget::Host(host) => self.host_signatures[host] == Some(source),
         }
@@ -96,7 +96,7 @@ impl Program {
             .ok_or(Error::InvalidModule(module))?;
         let function = loaded
             .ir
-            .functions
+            .decls
             .get(func)
             .ok_or(Error::InvalidFunction { module, func })?;
         Ok(loaded.ir.get_signature(function.signature))
@@ -239,7 +239,7 @@ impl<'a> ProgramBuilder<'a> {
             .map_err(|e| Error::Message(e.to_string()))?;
         let id = program.modules.next_key();
         let mut targets = PrimaryMap::new();
-        for (func, function) in module.functions.iter() {
+        for (func, function) in module.functions() {
             let target = function
                 .is_defined()
                 .then_some(CallTarget::Bytecode(id, func));
@@ -285,20 +285,20 @@ impl<'a> ProgramBuilder<'a> {
                 .ir
         };
         let target_data = target
-            .functions
+            .decls
             .get(target_func)
             .ok_or(Error::InvalidFunction {
                 module: target_module,
                 func: target_func,
             })?;
-        if !target_data.is_defined() {
+        if target.bodies[target_func].is_none() {
             return Err(Error::InvalidFunction {
                 module: target_module,
                 func: target_func,
             });
         }
 
-        let source = &self.module.functions[import];
+        let source = &self.module.decls[import];
         let source_sig = self.signatures[source.signature.0 as usize];
         let target_sig = if target_module == self.id {
             self.signatures[target_data.signature.0 as usize]
@@ -326,7 +326,7 @@ impl<'a> ProgramBuilder<'a> {
             .host_signatures
             .get(host)
             .ok_or(Error::InvalidHostFunction(host))?;
-        let source = &self.module.functions[import];
+        let source = &self.module.decls[import];
         if self
             .module
             .get_signature(source.signature)
@@ -363,12 +363,12 @@ impl<'a> ProgramBuilder<'a> {
 
     /// Compile and publish the module only after all imports are linked.
     pub fn finish(self) -> Result<ModuleId> {
-        for (_, function) in &self.module.functions {
+        for (_, function) in self.module.functions() {
             if function.is_defined() {
-                crate::bytecode::stack_layout(function).map_err(Error::Message)?;
+                crate::bytecode::stack_layout(&function).map_err(Error::Message)?;
             }
         }
-        for (func, function) in self.module.functions.iter() {
+        for (func, function) in self.module.functions() {
             if !function.is_defined() && self.targets[func].is_none() {
                 return Err(Error::UnresolvedImport {
                     module: self.id,
@@ -389,11 +389,11 @@ impl<'a> ProgramBuilder<'a> {
         let mut compiled = PrimaryMap::new();
         let mut call_targets = PrimaryMap::new();
         let mut func_refs = PrimaryMap::new();
-        for (func, function) in module.functions.iter() {
+        for (func, function) in module.functions() {
             let target = targets[func].expect("imports were validated above");
             let compiled_func = function
                 .is_defined()
-                .then(|| Arc::new(compile_function(id, func, function)));
+                .then(|| Arc::new(compile_function(id, func, &function)));
             let reference = function.is_defined().then(|| program.push_func_ref(target));
 
             let compiled_id = compiled.push(compiled_func);
@@ -418,7 +418,7 @@ impl<'a> ProgramBuilder<'a> {
     fn validate_import(&self, import: FuncId) -> Result<()> {
         let func = self
             .module
-            .functions
+            .decls
             .get(import)
             .ok_or(Error::InvalidFunction {
                 module: self.id,
@@ -456,8 +456,7 @@ mod tests {
         let signature = module.make_signature(params, returns, CallConv::SystemV);
         let function = module.declare_function(name.into(), signature, linkage);
         if linkage != Linkage::Import {
-            let mut builder = module.builder(function);
-            builder.init_entry_block();
+            let mut builder = module.define(function);
             builder.ins().ret(&[]);
         }
         (module.build(), function)

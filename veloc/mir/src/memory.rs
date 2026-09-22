@@ -1,6 +1,6 @@
 //! Memory semantics shared by analyses and lowerings. An Access is a query
 //! result, not a second authoritative copy of instruction operands.
-use crate::{Function, Inst, Value};
+use crate::{FuncBody, Inst, Value};
 use veloc_types::DataLayout;
 
 pub use crate::inst::MemoryAccess as Access;
@@ -13,7 +13,7 @@ impl Access {
     }
 }
 
-impl Function {
+impl FuncBody {
     /// Resolve a bounded chain of constant byte offsets to a once-per-invocation
     /// allocation. Unknown provenance and dynamic allocations stay unknown.
     pub fn stack_address(&self, mut ptr: Value) -> Option<(Inst, i64)> {
@@ -22,7 +22,7 @@ impl Function {
             let inst = self.dfg().value_inst(ptr)?;
             match self.dfg().inst(inst) {
                 crate::InstView::Alloca { .. }
-                    if self.layout().inst_block(inst) == self.entry_block() =>
+                    if self.layout().inst_block(inst) == Some(self.entry_block()) =>
                 {
                     return Some((inst, offset));
                 }

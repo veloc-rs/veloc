@@ -349,7 +349,7 @@ fn output_plan_diagnostics() {
     }
     "#;
         for (source, message) in [
-            (base.replace("mnemonic = \"example\"", "mnemonic = \"emit\""), "InstBuilder method"),
+            (base.replace("mnemonic = \"example\"", "mnemonic = \"emit\""), "InstCursor method"),
             (base.replace("storage = Custom { arg: arg };", "storage = Custom { arg: arg }; text = \"{missing}\";"), "missing"),
             (format!("{base}\nstruct Alternate {{ arg: Value, extra: u32 }}\nlayout Alternate {{ format = fixed(Custom); text = \"{{arg}}, extra={{extra}}\"; verify {{unknown > 0;
     }} }}"), "unknown expression name or operation"),

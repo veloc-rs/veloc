@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use std::time::Instant;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{ModuleData, function::Function};
+use veloc_mir::{ModuleData, function::FuncBody};
 
 /// 优化流程管理器。
 pub struct PassManager {
@@ -25,9 +25,13 @@ impl PassManager {
 
     pub fn new_o1() -> Self {
         let mut pm = Self::new(OptConfig::new(true));
-        pm.add_function_pass(crate::ExpressionPass { budget: crate::passes::function::expression::Budget::DEFAULT });
+        pm.add_function_pass(crate::ExpressionPass {
+            budget: crate::passes::function::expression::Budget::DEFAULT,
+        });
         pm.add_function_pass(crate::passes::function::MemoryPass);
-        pm.add_function_pass(crate::ExpressionPass { budget: crate::passes::function::expression::Budget::DEFAULT });
+        pm.add_function_pass(crate::ExpressionPass {
+            budget: crate::passes::function::expression::Budget::DEFAULT,
+        });
         pm.add_function_pass(dce::DcePass);
         pm
     }
@@ -75,10 +79,10 @@ impl PassManager {
                 }
                 Pass::Function(fp) => {
                     let mut fp_changed = false;
-                    for (_, func) in module.functions.iter_mut() {
-                        if !func.is_defined() {
+                    for (_, body) in module.bodies.iter_mut() {
+                        let Some(func) = body.as_deref_mut() else {
                             continue;
-                        }
+                        };
                         let mut analyses = AnalysisManager::new(func);
                         let pa = fp.run(&mut analyses, &self.config, &mut self.stats.metrics);
                         if pa.changed() {
@@ -104,7 +108,7 @@ impl PassManager {
     }
 
     /// 单独在某个函数上运行已注册的操作。
-    pub fn run_on_function(&mut self, func: &mut Function) -> bool {
+    pub fn run_on_function(&mut self, func: &mut FuncBody) -> bool {
         let mut changed = false;
         self.stats.start_session();
         let total_start = Instant::now();

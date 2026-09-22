@@ -5,9 +5,10 @@
 
 use super::lexer::{Cursor, Kind, Location};
 use crate::{
-    Block, BlockCall, CallConv, FuncId, Function, Linkage, MemFlags, Module, ModuleData, Opcode,
+    Block, BlockCall, CallConv, FuncBody, FuncId, Linkage, MemFlags, Module, ModuleData, Opcode,
     Result, SigId, Signature, Type, Value,
 };
+use alloc::boxed::Box;
 use alloc::{
     format,
     string::{String, ToString},
@@ -73,7 +74,7 @@ impl Functions {
         module: &mut ModuleData,
     ) -> ParseResult<FuncId> {
         if let Some(&id) = self.names.get(name) {
-            if module.functions[id].signature != signature {
+            if module.decls[id].signature != signature {
                 return Err(location.error(format!(
                     "call signature does not match declaration of `{name}`"
                 )));
@@ -105,7 +106,7 @@ impl Functions {
         let signature = module.intern_signature(header.signature.clone());
         let id = self.reference(&header.name, signature, location, module)?;
         self.entries[id.0 as usize].defined = true;
-        module.functions[id].linkage = header.linkage;
+        module.decls[id].linkage = header.linkage;
         self.order.push(id);
         Ok(id)
     }
@@ -120,7 +121,7 @@ impl Functions {
                 continue;
             }
             // Names take precedence over the legacy numeric spellings.
-            let function = &module.functions[FuncId(index as u32)];
+            let function = &module.decls[FuncId(index as u32)];
             let name = &function.name;
             let number = name
                 .strip_prefix("func")
@@ -132,10 +133,10 @@ impl Functions {
             let Some(target) = number.and_then(|n| self.order.get(n)).copied() else {
                 return Err(entry.location.error(format!("unknown function `{name}`")));
             };
-            if function.signature != module.functions[target].signature {
+            if function.signature != module.decls[target].signature {
                 return Err(entry.location.error(format!(
                     "call signature does not match declaration of `{}`",
-                    module.functions[target].name
+                    module.decls[target].name
                 )));
             }
             map[index] = map[target.0 as usize];
@@ -147,16 +148,19 @@ impl Functions {
         {
             return Ok(());
         }
-        let old = core::mem::take(&mut module.functions);
+        let old = core::mem::take(&mut module.decls);
+        let mut bodies = core::mem::take(&mut module.bodies);
         let mut functions: Vec<_> = old.into_iter().map(|(_, func)| Some(func)).collect();
         for id in self.order {
-            let mut func = functions[id.0 as usize]
+            let func = functions[id.0 as usize]
                 .take()
                 .expect("unique function declaration");
-            if func.body().is_some() {
-                func.edit().remap_functions(&map);
+            let body = bodies[id].take();
+            let new_id = module.decls.push(func);
+            module.bodies[new_id] = body;
+            if let Some(body) = module.bodies[new_id].as_deref_mut() {
+                body.edit().remap_functions(&map);
             }
-            module.functions.push(func);
         }
         Ok(())
     }
@@ -201,7 +205,7 @@ fn parse_module(source: &str) -> ParseResult<ModuleData> {
             let id = functions.declare(&header, location, &mut module)?;
             current = Some(FunctionParser {
                 id,
-                func: Function::new(header.name, module.functions[id].signature, header.linkage),
+                func: None,
                 symbols: Symbols::default(),
                 block: None,
             });
@@ -230,7 +234,7 @@ fn parse_module(source: &str) -> ParseResult<ModuleData> {
 
 struct FunctionParser {
     id: FuncId,
-    func: Function,
+    func: Option<Box<FuncBody>>,
     symbols: Symbols,
     block: Option<Block>,
 }
@@ -242,20 +246,27 @@ impl FunctionParser {
         functions: &mut Functions,
         module: &mut ModuleData,
     ) -> ParseResult<()> {
+        if self.func.is_none() {
+            let entry = input
+                .text()
+                .strip_prefix("block")
+                .and_then(|s| s.parse::<u32>().ok())
+                .filter(|_| input.peek_kind(1) == Kind::LParen)
+                .ok_or_else(|| input.error("instruction outside a basic block"))?;
+            let params = module.signatures()[module.decls[self.id].signature].params();
+            self.func = Some(Box::new(FuncBody::with_entry(params, Block(entry))));
+            self.symbols.next_value = params.len() as u32;
+        }
+        let func = self.func.as_mut().unwrap();
         let name = input.text();
         if name.starts_with("block") && input.peek_kind(1) == Kind::LParen {
-            self.block = Some(declare_block(
-                input,
-                &mut self.func,
-                &mut self.symbols,
-                module,
-            )?);
+            self.block = Some(declare_block(input, func, &mut self.symbols, module)?);
         } else {
             let block = self
                 .block
                 .ok_or_else(|| input.error("instruction outside a basic block"))?;
             OperandParser {
-                func: &mut self.func,
+                func: func,
                 symbols: &mut self.symbols,
                 functions,
                 module,
@@ -267,7 +278,7 @@ impl FunctionParser {
 
     fn finish(self, module: &mut ModuleData) -> ParseResult<()> {
         self.symbols.finish()?;
-        module.functions[self.id] = self.func;
+        module.bodies[self.id] = self.func;
         Ok(())
     }
 }
@@ -288,7 +299,7 @@ struct Definition {
 }
 
 impl Symbols {
-    fn block(&mut self, name: &str, func: &mut Function, location: Location) -> ParseResult<Block> {
+    fn block(&mut self, name: &str, func: &mut FuncBody, location: Location) -> ParseResult<Block> {
         if let Some(&(block, _)) = self.blocks.get(name) {
             return Ok(block);
         }
@@ -296,7 +307,6 @@ impl Symbols {
             .strip_prefix("block")
             .and_then(|s| s.parse::<u32>().ok())
             .ok_or_else(|| location.error(format!("unknown block `{name}`")))?;
-        func.define_body();
         while func.dfg().blocks.len() <= id as usize {
             func.edit().create_block();
         }
@@ -307,7 +317,7 @@ impl Symbols {
 
     // References reserve the final Value ID. Definitions fill that same slot,
     // so resolving a forward reference never rewrites its uses.
-    fn reference(&mut self, name: &str, func: &mut Function, location: Location) -> Value {
+    fn reference(&mut self, name: &str, func: &mut FuncBody, location: Location) -> Value {
         if let Some(&value) = self.values.get(name) {
             return value;
         }
@@ -317,7 +327,9 @@ impl Symbols {
             } else {
                 // A symbolic spelling may already occupy the preferred number.
                 // The spelling identifies a value, not a preallocated DFG slot.
-                let value = if self.definitions.contains_key(&Value(index)) {
+                let value = if (index as usize) < func.params().len()
+                    || self.definitions.contains_key(&Value(index))
+                {
                     Value(self.next_value)
                 } else {
                     Value(index)
@@ -330,7 +342,6 @@ impl Symbols {
         };
         // Reserved slots are not definitions. Their placeholder def must not be
         // interpreted until parsing succeeds and all symbols are resolved.
-        func.define_body();
         func.edit().reserve_value(value);
         set_value_name(value, name, func);
         self.values.insert(name.to_string(), value);
@@ -346,7 +357,7 @@ impl Symbols {
     fn define(
         &mut self,
         name: &str,
-        func: &mut Function,
+        func: &mut FuncBody,
         location: Location,
     ) -> ParseResult<Value> {
         let value = self.reference(name, func, location);
@@ -379,7 +390,7 @@ impl Symbols {
 
 fn declare_block(
     input: &mut Cursor<'_>,
-    func: &mut Function,
+    func: &mut FuncBody,
     symbols: &mut Symbols,
     module: &mut ModuleData,
 ) -> ParseResult<Block> {
@@ -394,12 +405,47 @@ fn declare_block(
     if !symbols.block_defs.insert(block) {
         return Err(location.error(format!("duplicate block{block_id}")));
     }
-    func.edit().append_block(block);
+    let entry = symbols.block_defs.len() == 1;
+    if !entry {
+        func.edit().append_block(block);
+    }
+    let mut index = 0;
     if !input.eat(Kind::RParen) {
         loop {
             let param = parse_typed_name(input, module)?;
-            let value = symbols.define(param.name, func, param.location)?;
-            func.edit().bind_param(block, value, param.ty);
+            if entry {
+                let value = *func
+                    .params()
+                    .get(index)
+                    .ok_or_else(|| param.location.error("too many entry parameters"))?;
+                if func.dfg().value_type(value) != param.ty {
+                    return Err(param
+                        .location
+                        .error("entry parameter type differs from signature"));
+                }
+                if symbols.values.contains_key(param.name)
+                    || parse_value_idx(param.name)
+                        .is_some_and(|n| symbols.numbered.contains_key(&n))
+                {
+                    return Err(param.location.error("duplicate entry parameter"));
+                }
+                symbols.values.insert(param.name.to_string(), value);
+                if let Some(n) = parse_value_idx(param.name) {
+                    symbols.numbered.insert(n, value);
+                }
+                symbols.definitions.insert(
+                    value,
+                    Definition {
+                        name: Some(param.name.to_string()),
+                        location: param.location,
+                    },
+                );
+                set_value_name(value, param.name, func);
+            } else {
+                let value = symbols.define(param.name, func, param.location)?;
+                func.edit().bind_param(block, value, param.ty);
+            }
+            index += 1;
             if !input.eat(Kind::Comma) {
                 break;
             }
@@ -407,11 +453,14 @@ fn declare_block(
         input.expect(Kind::RParen)?;
     }
     input.expect(Kind::Colon)?;
+    if entry && index != func.params().len() {
+        return Err(location.error("entry parameter count differs from signature"));
+    }
     Ok(block)
 }
 
 pub(super) struct OperandParser<'a> {
-    func: &'a mut Function,
+    func: &'a mut FuncBody,
     symbols: &'a mut Symbols,
     functions: &'a mut Functions,
     module: &'a mut ModuleData,
@@ -768,7 +817,7 @@ fn parse_value_idx(name: &str) -> Option<u32> {
         })
 }
 
-fn set_value_name(value: Value, text: &str, func: &mut Function) {
+fn set_value_name(value: Value, text: &str, func: &mut FuncBody) {
     let name = if text
         .strip_prefix('v')
         .is_some_and(|digits| digits.chars().all(|ch| ch.is_ascii_digit()))
@@ -795,8 +844,7 @@ mod tests {
     use core::{borrow::Borrow, fmt::Debug};
 
     fn with_parser(test: impl FnOnce(&mut OperandParser<'_>)) {
-        let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
-        func.define_body();
+        let mut func = FuncBody::new(&[]);
         let mut symbols = Symbols::default();
         let mut module = ModuleData::default();
         let mut functions = Functions::default();
@@ -907,14 +955,14 @@ mod tests {
                     cx.parse(Opcode::Call, MemFlags::empty(), &mut input, None)
                         .is_err()
                 );
-                assert!(cx.module.functions.is_empty());
+                assert!(cx.module.decls.is_empty());
                 assert!(cx.functions.entries.is_empty());
             }
             let mut input = Cursor::new("later() : () -> i32");
             cx.parse(Opcode::Call, MemFlags::empty(), &mut input, None)
                 .unwrap();
-            assert_eq!(cx.module.functions.len(), 1);
-            let function = &cx.module.functions[FuncId(0)];
+            assert_eq!(cx.module.decls.len(), 1);
+            let function = &cx.module.decls[FuncId(0)];
             assert_eq!(
                 cx.module.signatures()[function.signature].returns(),
                 [Type::I32]
@@ -999,8 +1047,8 @@ mod tests {
 
     #[test]
     fn context_atoms_share_ssa_values_and_intern_signatures() {
-        let mut func = Function::new("test".into(), SigId(0), Linkage::Local);
-        let block = func.define_body().entry_block();
+        let mut func = FuncBody::new(&[]);
+        let block = func.entry_block();
         let mut symbols = Symbols::default();
         symbols
             .blocks

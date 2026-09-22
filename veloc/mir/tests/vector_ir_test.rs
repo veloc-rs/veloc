@@ -14,10 +14,9 @@ fn generated_pool_builders_use_logical_parameters() {
     );
     let func = module.declare_function("pooled".into(), sig, Linkage::Local);
     {
-        let mut builder = module.builder(func);
-        builder.init_entry_block();
-        let ptr = builder.func_param(0);
-        let indices = builder.func_param(1);
+        let mut builder = module.define(func);
+        let ptr = builder.func().params()[0];
+        let indices = builder.func().params()[1];
         let constant = builder.ins().i32x4const([0; 4]);
         let shuffled = builder.ins().shuffle(constant, indices, vec![0, 2, 4, 6]);
         builder.ins().scatter(
@@ -42,8 +41,7 @@ fn test_simple_vector_add_fixed() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
     let func_id = mb.declare_function("test_vadd".to_string(), sig_id, Linkage::Export);
-    let mut builder = mb.builder(func_id);
-    builder.init_entry_block();
+    let mut builder = mb.define(func_id);
 
     let v4i32 = Type::I32
         .as_scalar()
@@ -58,7 +56,7 @@ fn test_simple_vector_add_fixed() {
     let vec_b = builder.ins().splat(scalar_b, v4i32);
     let vec_c = builder.ins().iadd(vec_a, vec_b);
 
-    assert_eq!(builder.value_type(vec_c), v4i32);
+    assert_eq!(builder.ins().value_type(vec_c), v4i32);
 
     builder.ins().ret(&[vec_c]);
     builder.seal_all_blocks();
@@ -69,8 +67,7 @@ fn test_vector_splat() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
     let func_id = mb.declare_function("test_splat".to_string(), sig_id, Linkage::Export);
-    let mut builder = mb.builder(func_id);
-    builder.init_entry_block();
+    let mut builder = mb.define(func_id);
 
     let v8i32 = Type::I32
         .as_scalar()
@@ -91,8 +88,8 @@ fn test_vector_splat() {
     let vec_i = builder.ins().splat(scalar_i, v8i32);
     let vec_f = builder.ins().splat(scalar_f, v4f64);
 
-    assert_eq!(builder.value_type(vec_i), v8i32);
-    assert_eq!(builder.value_type(vec_f), v4f64);
+    assert_eq!(builder.ins().value_type(vec_i), v8i32);
+    assert_eq!(builder.ins().value_type(vec_f), v4f64);
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
@@ -103,8 +100,7 @@ fn test_vector_reduction_ops() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
     let func_id = mb.declare_function("test_reduction".to_string(), sig_id, Linkage::Export);
-    let mut builder = mb.builder(func_id);
-    builder.init_entry_block();
+    let mut builder = mb.define(func_id);
 
     let v4f32 = Type::F32
         .as_scalar()
@@ -120,10 +116,10 @@ fn test_vector_reduction_ops() {
     let min = builder.ins().reduce_min(vec);
     let max = builder.ins().reduce_max(vec);
 
-    assert_eq!(builder.value_type(sum), Type::F32);
-    assert_eq!(builder.value_type(add), Type::F32);
-    assert_eq!(builder.value_type(min), Type::F32);
-    assert_eq!(builder.value_type(max), Type::F32);
+    assert_eq!(builder.ins().value_type(sum), Type::F32);
+    assert_eq!(builder.ins().value_type(add), Type::F32);
+    assert_eq!(builder.ins().value_type(min), Type::F32);
+    assert_eq!(builder.ins().value_type(max), Type::F32);
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
@@ -134,8 +130,7 @@ fn test_vector_extract_insert() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
     let func_id = mb.declare_function("test_extract_insert".to_string(), sig_id, Linkage::Export);
-    let mut builder = mb.builder(func_id);
-    builder.init_entry_block();
+    let mut builder = mb.define(func_id);
 
     let v4i32 = Type::I32
         .as_scalar()
@@ -147,11 +142,11 @@ fn test_vector_extract_insert() {
     let vec = builder.ins().splat(scalar, v4i32);
 
     let extracted = builder.ins().extract_element(vec, 0);
-    assert_eq!(builder.value_type(extracted), Type::I32);
+    assert_eq!(builder.ins().value_type(extracted), Type::I32);
 
     let new_val = builder.ins().i32const(20);
     let inserted = builder.ins().insert_element(vec, new_val, 1);
-    assert_eq!(builder.value_type(inserted), v4i32);
+    assert_eq!(builder.ins().value_type(inserted), v4i32);
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
@@ -162,8 +157,7 @@ fn test_vector_with_mask_evl() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
     let func_id = mb.declare_function("test_masked".to_string(), sig_id, Linkage::Export);
-    let mut builder = mb.builder(func_id);
-    builder.init_entry_block();
+    let mut builder = mb.define(func_id);
 
     let scalable_v4i32 = Type::I32
         .as_scalar()
@@ -190,7 +184,7 @@ fn test_vector_with_mask_evl() {
         scalable_v4i32,
     );
 
-    assert_eq!(builder.value_type(result), scalable_v4i32);
+    assert_eq!(builder.ins().value_type(result), scalable_v4i32);
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
@@ -203,8 +197,7 @@ fn test_gather_load() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
     let func_id = mb.declare_function("test_gather".to_string(), sig_id, Linkage::Export);
-    let mut builder = mb.builder(func_id);
-    builder.init_entry_block();
+    let mut builder = mb.define(func_id);
 
     let v4i32 = Type::I32
         .as_scalar()
@@ -237,7 +230,7 @@ fn test_gather_load() {
         v4i32,
     );
 
-    assert_eq!(builder.value_type(loaded), v4i32);
+    assert_eq!(builder.ins().value_type(loaded), v4i32);
 
     builder.ins().ret(&[]);
     builder.seal_all_blocks();
@@ -248,8 +241,7 @@ fn test_strided_load_store() {
     let mut mb = ModuleBuilder::new();
     let sig_id = mb.make_signature(vec![], vec![], CallConv::SystemV);
     let func_id = mb.declare_function("test_strided".to_string(), sig_id, Linkage::Export);
-    let mut builder = mb.builder(func_id);
-    builder.init_entry_block();
+    let mut builder = mb.define(func_id);
 
     let v8f32 = Type::F32
         .as_scalar()
@@ -275,7 +267,7 @@ fn test_strided_load_store() {
         v8f32,
     );
 
-    assert_eq!(builder.value_type(loaded), v8f32);
+    assert_eq!(builder.ins().value_type(loaded), v8f32);
 
     builder.ins().store_stride(
         base_ptr,

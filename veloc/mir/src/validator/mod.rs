@@ -1,7 +1,7 @@
 //! MIR validation: module types, instruction contracts, SSA and ownership.
 use crate::host::VerifyContext;
 use crate::inst::Inst;
-use crate::{Block, Function, InstView, ModuleData, Opcode, Result, Successor, Type, Value};
+use crate::{Block, FunctionRef, InstView, ModuleData, Opcode, Result, Successor, Type, Value};
 use alloc::string::String;
 use core::fmt;
 use smallvec::SmallVec;
@@ -34,23 +34,27 @@ impl fmt::Display for ValidationError {
 impl ModuleData {
     pub fn validate(&self) -> Result<()> {
         types::validate(self)?;
-        for (_, function) in self.functions.iter() {
+        for (_, function) in self.functions() {
             function.validate_body(self).map_err(|error| {
-                crate::Error::Message(alloc::format!("In function {}: {}", function.name, error))
+                crate::Error::Message(alloc::format!(
+                    "In function {}: {}",
+                    function.decl.name,
+                    error
+                ))
             })?;
         }
         Ok(())
     }
 }
 
-impl Function {
+impl FunctionRef<'_> {
     pub fn validate(&self, module: &ModuleData) -> Result<()> {
         types::validate(module)?;
         self.validate_body(module)
     }
 
     fn validate_body(&self, module: &ModuleData) -> Result<()> {
-        if module.signatures().get(self.signature).is_none() {
+        if module.signatures().get(self.decl.signature).is_none() {
             return self.fail("unknown function signature".into());
         }
         if self.body().is_none() {
@@ -197,16 +201,14 @@ mod tests {
         let sig = module.make_signature(types.to_vec(), types.to_vec(), CallConv::SystemV);
         let callee = module.declare_function("callee".into(), sig, Linkage::Local);
         {
-            let mut builder = module.builder(callee);
-            builder.init_entry_block();
-            let params = builder.func_params().to_vec();
+            let mut builder = module.define(callee);
+            let params = builder.func().params().to_vec();
             builder.ins().ret(&params);
         }
         let caller = module.declare_function("caller".into(), sig, Linkage::Local);
         let (target, last_param) = {
-            let mut builder = module.builder(caller);
-            builder.init_entry_block();
-            let args = builder.func_params().to_vec();
+            let mut builder = module.define(caller);
+            let args = builder.func().params().to_vec();
             let call = builder.ins().call(callee, &args);
             let results = builder.func().dfg().inst_results(call).to_vec();
             let target = builder.create_block();
@@ -224,18 +226,22 @@ mod tests {
         let mut module = module.build_data();
 
         // A mismatch beyond the inline capacity must not be skipped.
-        module.functions[caller]
+        module.bodies[caller]
+            .as_deref_mut()
+            .unwrap()
             .edit()
             .set_value_type(last_param, Type::I32);
         let error = module.validate().unwrap_err().to_string();
         assert!(error.contains("value 6 type mismatch"), "{error}");
-        module.functions[caller]
+        module.bodies[caller]
+            .as_deref_mut()
+            .unwrap()
             .edit()
             .set_value_type(last_param, Type::BOOL);
         module.validate().unwrap();
 
-        let func = &mut module.functions[caller];
-        let entry = func.entry_block().unwrap();
+        let func = module.bodies[caller].as_deref_mut().unwrap();
+        let entry = func.entry_block();
         let jump = func.layout().last_inst(entry).unwrap();
         let args = func.params()[..6].to_vec();
         let edge = crate::BlockCall::new(target, &args);
@@ -254,19 +260,16 @@ mod tests {
         let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
         let func = module.declare_function("empty-table".into(), sig, Linkage::Local);
         {
-            let mut builder = module.builder(func);
-            let entry = builder.init_entry_block();
-            let default = builder.make_block_call(entry, &[]);
+            let mut builder = module.define(func);
+            let entry = builder.func().entry_block();
+            let default = crate::BlockCall::new(entry, &[]);
             let index = builder.ins().i32const(0);
             builder.ins().br_table(index, default, &[]);
         }
         module.validate().unwrap();
         let mut module = module.build_data();
-        let func = &mut module.functions[func];
-        let inst = func
-            .layout()
-            .last_inst(func.entry_block().unwrap())
-            .unwrap();
+        let func = module.bodies[func].as_deref_mut().unwrap();
+        let inst = func.layout().last_inst(func.entry_block()).unwrap();
         let crate::InstView::BrTable { index, .. } = func.dfg().inst(inst) else {
             unreachable!()
         };
@@ -288,9 +291,8 @@ mod tests {
         let mut module = ModuleBuilder::new();
         let signature = module.make_signature(vec![], vec![], CallConv::SystemV);
         let function = module.declare_function("test".to_string(), signature, Linkage::Export);
-        let mut builder = module.builder(function);
+        let mut builder = module.define(function);
 
-        builder.init_entry_block();
         builder.ins().ret(&[]);
         let block = builder.create_block();
         builder.switch_to_block(block);
@@ -306,20 +308,18 @@ mod tests {
         let sig = module.make_signature(vec![], vec![], CallConv::SystemV);
         let id = module.declare_function("missing-pool".into(), sig, Linkage::Local);
         {
-            let mut builder = module.builder(id);
-            builder.init_entry_block();
+            let mut builder = module.define(id);
             let value = builder.ins().i32x4const([0; 4]);
             let inst = builder.func().dfg().value_inst(value).unwrap();
+            builder.ins().ret(&[]);
             builder
-                .func_mut()
-                .edit()
+                .finish()
                 .replace_inst(inst, |writer: crate::InstWriter<'_>| {
                     writer.vconst(crate::VectorConst::dense(
                         crate::Type::I32X4.as_vector().unwrap(),
                         crate::inst::ConstantPoolId(u32::MAX),
                     ))
                 });
-            builder.ins().ret(&[]);
         }
         assert!(
             module

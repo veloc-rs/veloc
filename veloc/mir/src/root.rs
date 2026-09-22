@@ -18,10 +18,10 @@ pub mod text;
 pub mod types;
 pub mod validator;
 
-pub use builder::{FunctionBuilder, InstBuilder, ModuleBuilder};
+pub use builder::{ModuleBuilder, SsaBuilder};
 pub use constant::{ConstData, Constant, Float, Int, ScalarConst, VectorConst};
 pub use error::{Error, Result};
-pub use function::{EdgeRef, FuncBody, Function};
+pub use function::{EdgeRef, FuncBody, FuncDecl, FunctionRef, InstCursor};
 pub use inst::type_methods;
 pub use inst::{
     Arguments, FloatCC, Inst, InstView, InstWriter, IntCC, MemFlags, Opcode, Successor,
