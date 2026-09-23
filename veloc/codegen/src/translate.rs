@@ -18,7 +18,7 @@ pub struct IRTranslator<'a> {
 
 /// 翻译上下文，用于在翻译过程中共享状态
 struct TranslationContext<'a> {
-    func: &'a FunctionRef<'a>,
+    func: &'a veloc_mir::FuncBody,
     mmodule: &'a mut MachineModule,
     mfunc: MachineFunction,
     value_map: PrimaryMap<Value, Reg>,
@@ -32,7 +32,7 @@ impl<'a> IRTranslator<'a> {
 
     fn memory_access(
         &self,
-        func: &FunctionRef,
+        func: &veloc_mir::FuncBody,
         inst: veloc_mir::Inst,
     ) -> Result<veloc_lir::MemoryAccess> {
         let source = inst
@@ -56,16 +56,10 @@ impl<'a> IRTranslator<'a> {
         Ok(access)
     }
 
-    /// 为函数参数生成 Arg 指令
-    fn lower_arguments(
-        &self,
-        ctx: &mut TranslationContext,
-        mblock: BlockId,
-        fresh: bool,
-    ) -> Vec<Reg> {
-        use veloc_lir::Writable;
+    /// Define incoming SSA values independently of the entry block's parameters.
+    fn lower_arguments(&self, ctx: &mut TranslationContext, fresh: bool) -> Vec<Reg> {
         let mut args = Vec::new();
-        for (idx, &param_val) in ctx.func.params().iter().enumerate() {
+        for &param_val in ctx.func.params() {
             let original = ctx.value_map[param_val];
             let vreg = if fresh {
                 {
@@ -76,9 +70,7 @@ impl<'a> IRTranslator<'a> {
                 original
             };
             args.push(vreg);
-            ctx.mfunc.params.push(vreg);
-            let id = ctx.mfunc.editor().writer().arg(Writable(vreg), idx as i64);
-            ctx.mfunc.editor().append_inst(mblock, id);
+            ctx.mfunc.editor().append_param(vreg);
         }
         args
     }
@@ -88,17 +80,15 @@ impl<'a> IRTranslator<'a> {
     /// 将 IR 模块翻译为 MachineModule
     pub fn translate_module(&self) -> Result<MachineModule> {
         for (_, func) in self.module.functions() {
-            if func.body().is_some_and(|body| {
+            if func.body.is_some_and(|body| {
                 body.dfg()
                     .values()
                     .iter()
                     .any(|(_, value)| value.ty.is_callable())
-            }) || self
-                .module
-                .get_signature(func.decl.signature)
+            }) || self.module.signatures()[func.decl.signature]
                 .params()
                 .iter()
-                .chain(self.module.get_signature(func.decl.signature).returns())
+                .chain(self.module.signatures()[func.decl.signature].returns())
                 .any(|ty| ty.is_callable())
             {
                 return Err(Error::message(
@@ -117,7 +107,7 @@ impl<'a> IRTranslator<'a> {
         }
         let mut mmodule = MachineModule::new(alloc::string::String::from("default"));
 
-        for (_, func) in self.module.functions().filter(|(_, f)| f.body().is_some()) {
+        for (_, func) in self.module.functions().filter(|(_, f)| f.body.is_some()) {
             let mfunc = self.translate_function(&func, &mut mmodule)?;
             mmodule.add_function(mfunc);
         }
@@ -131,6 +121,10 @@ impl<'a> IRTranslator<'a> {
         func: &FunctionRef,
         mmodule: &mut MachineModule,
     ) -> Result<MachineFunction> {
+        let decl = func.decl;
+        let func = func
+            .body
+            .ok_or_else(|| Error::translate("cannot translate a declaration"))?;
         let block_count = func.layout().block_order().count();
         let inst_count = func.dfg().instructions().len();
         // Selection appends stable target instruction IDs before invalidating
@@ -141,7 +135,7 @@ impl<'a> IRTranslator<'a> {
             func,
             mmodule,
             mfunc: MachineFunction::with_capacity(
-                func.decl.name.clone(),
+                decl.name.clone(),
                 block_count + 1,
                 lir_inst_capacity,
                 value_count + func.params().len(),
@@ -158,7 +152,7 @@ impl<'a> IRTranslator<'a> {
         }
 
         // Allocate LIR identities independently; all edges use this explicit map.
-        let entry = func.body().expect("translating a definition").entry_block();
+        let entry = func.entry_block();
         let order: Vec<_> = core::iter::once(entry)
             .chain(func.layout().block_order().filter(|&block| block != entry))
             .collect();
@@ -182,12 +176,12 @@ impl<'a> IRTranslator<'a> {
             }
             if block_id == entry {
                 if let Some(incoming) = incoming {
-                    let args = self.lower_arguments(&mut ctx, incoming, true);
+                    let args = self.lower_arguments(&mut ctx, true);
                     let edge = ctx.mfunc.editor().create_edge(mblock, &args);
                     let jump = ctx.mfunc.editor().writer().br(edge);
                     ctx.mfunc.editor().append_inst(incoming, jump);
                 } else {
-                    self.lower_arguments(&mut ctx, mblock, false);
+                    self.lower_arguments(&mut ctx, false);
                 }
             }
             for inst in func.layout().block_insts(block_id) {
@@ -275,12 +269,7 @@ impl<'a> IRTranslator<'a> {
                 "tail calls require tail-call lowering before native code generation",
             )),
             InstView::Alloca { size, align } => {
-                if Some(mblock)
-                    != ctx
-                        .func
-                        .entry_block()
-                        .map(|block| ctx.block_map[block].unwrap())
-                {
+                if mblock != ctx.block_map[ctx.func.entry_block()].unwrap() {
                     return Err(Error::translate(
                         "non-entry alloca requires dynamic stack lowering",
                     ));
@@ -453,17 +442,17 @@ impl<'a> IRTranslator<'a> {
 
             InstView::Call { func_id, args } => {
                 let call_args = *args;
-                let callee = self.module.get_function(*func_id);
-                let sym_id = ctx.mmodule.symbols_mut().get_or_create_function(
-                    self.module.get_function_name(*func_id),
-                    callee.decl.linkage,
-                );
+                let callee = self.module.function(*func_id);
+                let sym_id = ctx
+                    .mmodule
+                    .symbols_mut()
+                    .get_or_create_function(&self.module.decls[*func_id].name, callee.decl.linkage);
                 let sig_id = callee.decl.signature;
                 let call_info = CallInfo {
                     clobbers: Default::default(),
                     stack: None,
                     stack_args: Default::default(),
-                    sig: self.module.get_signature(sig_id).clone(),
+                    sig: self.module.signatures()[sig_id].clone(),
                 };
                 let mut editor = ctx.mfunc.editor();
                 let writer = editor.writer();
@@ -489,7 +478,7 @@ impl<'a> IRTranslator<'a> {
                     clobbers: Default::default(),
                     stack: None,
                     stack_args: Default::default(),
-                    sig: self.module.get_signature(*sig_id).clone(),
+                    sig: self.module.signatures()[*sig_id].clone(),
                 };
                 let mut editor = ctx.mfunc.editor();
                 let writer = editor.writer();

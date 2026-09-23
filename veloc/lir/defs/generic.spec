@@ -104,11 +104,6 @@ struct FCmp {
     cc: FloatCC,
 }
 
-struct Arg {
-    dst: Reg,
-    index: i64,
-}
-
 struct Return {
     values: sequence(Reg),
 }
@@ -528,12 +523,6 @@ op Callind(callee: Value<Type::PTR>, args: sequence(Value), info: CallInfo) -> s
     meta = OpInfo { traits: OpTraits::MAY_TRAP, memory: MemoryEffect::UNKNOWN };
     storage = CallIndirect { results: results(), callee, args, info };
     flow = Call;
-}
-
-op Arg<T: Any>(index: i64) -> (dst: Value<T>) {
-    meta = OpInfo { memory: MemoryEffect::NONE };
-    storage = Arg { dst, index };
-    verify { require(index >= 0, "argument index must be nonnegative"); }
 }
 
 op Select<T: Any>(cond: Value<Type::BOOL>, v1: Value<T>, v2: Value<T>) -> (dst: Value<T>) {

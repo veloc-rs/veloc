@@ -29,7 +29,7 @@ pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> 
 /// This check is explicit: no mutable phase flag can cause it to be skipped.
 pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     f.check_refs().map_err(|e| Error::codegen(e))?;
-    if !f.params.is_empty() {
+    if !f.params().is_empty() {
         return Err(Error::codegen(
             "function parameters remain after allocation",
         ));
@@ -58,6 +58,14 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
     let fail = |message| Error::codegen(format!("machine SSA in {}: {message}", f.name));
     f.check_refs().map_err(|e| fail(e.into()))?;
     let mut defs = HashMap::new();
+    for &param in f.params() {
+        if param.as_vreg().is_none_or(|v| f.vregs().get(v).is_none()) {
+            return Err(fail(format!("invalid function parameter {param:?}")));
+        }
+        if defs.insert(param, (f.entry_block(), 0)).is_some() {
+            return Err(fail(format!("duplicate function parameter {param:?}")));
+        }
+    }
     let mut blocks = HashSet::new();
     let mut instructions = HashSet::new();
     for block in f.blocks() {
@@ -117,6 +125,11 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
     }
     let mut analyses = FunctionAnalysisCtx::default();
     let cfg = analyses.cfg(f, target).clone();
+    if !f.params().is_empty() && !cfg.preds(f.entry_block()).is_empty() {
+        return Err(fail(
+            "function parameters require a dedicated call entry without predecessors".into(),
+        ));
+    }
     let mut reachable = HashSet::new();
     let mut pending: Vec<_> = alloc::vec![f.entry_block()];
     while let Some(block) = pending.pop() {
@@ -229,9 +242,9 @@ mod tests {
             [FieldValue::Imm(42)],
         );
         verify_allocated(&f, &target).unwrap();
-        f.params.push(value);
+        f.editor().append_param(value);
         assert!(verify_allocated(&f, &target).is_err());
-        f.params.clear();
+        f.editor().take_params();
         f.editor().append_block_param(Block::from_u32(0), value);
         assert!(verify_allocated(&f, &target).is_err());
     }

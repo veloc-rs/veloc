@@ -57,13 +57,13 @@ impl FunctionRef<'_> {
         if module.signatures().get(self.decl.signature).is_none() {
             return self.fail("unknown function signature".into());
         }
-        if self.body().is_none() {
+        let Some(body) = self.body else {
             return Ok(());
-        }
+        };
         let structure = control::Structure::check(self, module)?;
         let context = VerifyContext::new(module, self);
-        for block in self.layout().block_order() {
-            for inst in self.layout().block_insts(block) {
+        for block in body.layout().block_order() {
+            for inst in body.layout().block_insts(block) {
                 self.validate_inst(module, inst, &context)?;
             }
         }
@@ -77,7 +77,8 @@ impl FunctionRef<'_> {
         inst: Inst,
         context: &VerifyContext<'_>,
     ) -> Result<()> {
-        let data = &self.dfg().inst(inst);
+        let body = self.body.expect("defined function");
+        let data = &body.dfg().inst(inst);
         let opcode = data.opcode();
         let spec = opcode.spec();
 
@@ -91,13 +92,13 @@ impl FunctionRef<'_> {
 
         let mut operands = SmallVec::<[Type; 4]>::new();
         data.visit_type_operands(|value| {
-            operands.push(self.dfg().value_type(value));
+            operands.push(body.dfg().value_type(value));
         });
-        let results = self
+        let results = body
             .dfg()
             .inst_results(inst)
             .iter()
-            .map(|&value| self.dfg().value_type(value))
+            .map(|&value| body.dfg().value_type(value))
             .collect::<SmallVec<[Type; 2]>>();
         opcode
             .validate_types(&operands, &results)
@@ -111,7 +112,7 @@ impl FunctionRef<'_> {
             })?;
 
         self.validate_constraints(
-            &self.dfg(),
+            &body.dfg(),
             module,
             inst,
             data,
@@ -125,9 +126,10 @@ impl FunctionRef<'_> {
 
     #[cold]
     fn constraint_error(&self, inst: Inst, message: &str) -> crate::Error {
+        let body = self.body.expect("defined function");
         ValidationError::Other(alloc::format!(
             "{} constraint at {:?}: {}",
-            self.dfg().opcode(inst).spec().mnemonic,
+            body.dfg().opcode(inst).spec().mnemonic,
             inst,
             message
         ))
@@ -141,6 +143,7 @@ impl FunctionRef<'_> {
         values: &[Value],
         expected: impl ExactSizeIterator<Item = Type>,
     ) -> Result<()> {
+        let body = self.body.expect("defined function");
         if values.len() != expected.len() {
             return self.fail(alloc::format!(
                 "{} {} count mismatch: expected {}, got {}",
@@ -151,7 +154,7 @@ impl FunctionRef<'_> {
             ));
         }
         for (index, (&value, expected)) in values.iter().zip(expected).enumerate() {
-            let got = self.dfg().value_type(value);
+            let got = body.dfg().value_type(value);
             if got != expected {
                 return self.fail(alloc::format!(
                     "{} {} {} type mismatch: expected {}, got {}",
@@ -167,12 +170,13 @@ impl FunctionRef<'_> {
     }
 
     fn validate_block_call(&self, call: Successor<'_>, kind: &str) -> Result<()> {
-        let params = &self.dfg().blocks[call.block].params;
+        let body = self.body.expect("defined function");
+        let params = &body.dfg().blocks[call.block].params;
         self.validate_values(
             kind,
             "value",
             call.args,
-            params.iter().map(|&value| self.dfg().value_type(value)),
+            params.iter().map(|&value| body.dfg().value_type(value)),
         )
     }
 

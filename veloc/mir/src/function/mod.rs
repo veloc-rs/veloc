@@ -28,24 +28,11 @@ pub struct FunctionRef<'a> {
 }
 
 impl<'a> FunctionRef<'a> {
-    pub fn body(&self) -> Option<&'a FuncBody> {
-        self.body
-    }
     pub fn is_defined(&self) -> bool {
         self.body.is_some()
     }
     pub fn entry_block(&self) -> Option<Block> {
         self.body.map(FuncBody::entry_block)
-    }
-    pub fn name(&self) -> &'a str {
-        &self.decl.name
-    }
-}
-
-impl core::ops::Deref for FunctionRef<'_> {
-    type Target = FuncBody;
-    fn deref(&self) -> &FuncBody {
-        self.body.expect("function has no body")
     }
 }
 

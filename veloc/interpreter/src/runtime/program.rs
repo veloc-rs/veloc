@@ -99,7 +99,7 @@ impl Program {
             .decls
             .get(func)
             .ok_or(Error::InvalidFunction { module, func })?;
-        Ok(loaded.ir.get_signature(function.signature))
+        Ok(&loaded.ir.signatures()[function.signature])
     }
     /// Start building a module without exposing partial state through `Program`.
     /// Validate and canonicalize types before linking. Abandoned builders leave
@@ -327,9 +327,7 @@ impl<'a> ProgramBuilder<'a> {
             .get(host)
             .ok_or(Error::InvalidHostFunction(host))?;
         let source = &self.module.decls[import];
-        if self
-            .module
-            .get_signature(source.signature)
+        if self.module.signatures()[source.signature]
             .types()
             .iter()
             .any(|ty| ty.is_callable())
@@ -364,8 +362,8 @@ impl<'a> ProgramBuilder<'a> {
     /// Compile and publish the module only after all imports are linked.
     pub fn finish(self) -> Result<ModuleId> {
         for (_, function) in self.module.functions() {
-            if function.is_defined() {
-                crate::bytecode::stack_layout(&function).map_err(Error::Message)?;
+            if let Some(body) = function.body {
+                crate::bytecode::stack_layout(body).map_err(Error::Message)?;
             }
         }
         for (func, function) in self.module.functions() {
@@ -392,8 +390,8 @@ impl<'a> ProgramBuilder<'a> {
         for (func, function) in module.functions() {
             let target = targets[func].expect("imports were validated above");
             let compiled_func = function
-                .is_defined()
-                .then(|| Arc::new(compile_function(id, func, &function)));
+                .body
+                .map(|body| Arc::new(compile_function(id, func, body)));
             let reference = function.is_defined().then(|| program.push_func_ref(target));
 
             let compiled_id = compiled.push(compiled_func);

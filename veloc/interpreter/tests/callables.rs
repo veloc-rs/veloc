@@ -31,9 +31,9 @@ impl Fixture {
             .iter()
             .map(|(id, f)| (f.name.clone(), id))
             .collect();
-        let cleanup = module.find_function_by_name("cleanup").unwrap();
-        let cleanup_empty = module.find_function_by_name("cleanup_empty").unwrap();
-        let pair = module.find_function_by_name("host_pair").unwrap();
+        let cleanup = module.find_function("cleanup").unwrap();
+        let cleanup_empty = module.find_function("cleanup_empty").unwrap();
+        let pair = module.find_function("host_pair").unwrap();
         let cleaned = Arc::new(AtomicUsize::new(0));
         let count = cleaned.clone();
         let mut program = Program::new();
@@ -184,10 +184,10 @@ fn guest_links_compare_structural_signatures_and_preserve_environment_origin() {
     let source = ModuleParser::new()
         .parse(include_str!("callables_remote.mir"))
         .unwrap();
-    let import = source.find_function_by_name("make").unwrap();
-    let run = source.find_function_by_name("run").unwrap();
-    let run_tail = source.find_function_by_name("run_tail").unwrap();
-    let drop_remote = source.find_function_by_name("drop_remote").unwrap();
+    let import = source.find_function("make").unwrap();
+    let run = source.find_function("run").unwrap();
+    let run_tail = source.find_function("run_tail").unwrap();
+    let drop_remote = source.find_function("drop_remote").unwrap();
     let target = f
         .functions
         .iter()
@@ -292,8 +292,8 @@ fn raw_host_imports_cannot_accept_or_produce_callable_handles() {
         "import function host() -> shared<() -> void>",
     ] {
         let module = ModuleParser::new().parse(source).unwrap();
-        let import = module.find_function_by_name("host").unwrap();
-        let signature = module.get_signature(module.decls[import].signature).clone();
+        let import = module.find_function("host").unwrap();
+        let signature = (&module.signatures()[module.decls[import].signature]).clone();
         let mut program = Program::new();
         let host = program.register_host(
             "host".into(),

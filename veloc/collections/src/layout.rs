@@ -84,9 +84,6 @@ impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> EntityLa
             len: 0,
         }
     }
-    pub fn prepend_inst(&mut self, block: Block, inst: Inst) {
-        self.link_inst(block, inst, None, self.first_inst(block));
-    }
     pub fn remove_insts(&mut self, insts: &[Inst]) {
         for &inst in insts {
             self.detach_inst(inst);

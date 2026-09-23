@@ -306,7 +306,7 @@ fn interpret(module: Module) -> Result<String> {
         }
     }
     let main = module
-        .find_function_by_name("main")
+        .find_function("main")
         .ok_or("execute needs a main function")?;
     let signature = &module.signatures()[module.decls[main].signature];
     if !signature.params().is_empty() {

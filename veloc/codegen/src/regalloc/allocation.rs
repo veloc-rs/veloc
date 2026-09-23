@@ -123,7 +123,10 @@ impl Allocation {
             block = next_block;
         }
         source.editor().clear_block_params();
-        source.params.clear();
+        assert!(
+            source.params().is_empty(),
+            "ABI lowering must consume function parameters"
+        );
         source
     }
 }

@@ -274,7 +274,10 @@ fn function_edits_keep_layout_and_successor_edges_in_sync() {
     assert_eq!(func.layout().inst_block(replacement), Some(entry));
 
     // Exercise both ends and mixed-direction iteration after in-place edits.
-    let first = func.edit().prepend_inst(entry, |w| w.nop(), &[]);
+    let first = func
+        .edit()
+        .at_start(entry, &module.decls, module.signatures())
+        .insert(|w| w.nop(), &[]);
     let middle = func.edit().insert_after(first, |w| w.nop(), &[]);
     let last = func.edit().insert_before(replacement, |w| w.nop(), &[]);
     assert_eq!(

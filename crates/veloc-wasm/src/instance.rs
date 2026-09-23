@@ -659,7 +659,7 @@ impl VMInstance {
                         "wasm_init_table",
                     ];
                     for name in runtime_names {
-                        if let Some(func) = ir.get_func_id(name) {
+                        if let Some(func) = ir.find_function(name) {
                             if let Some(host) = builder.find_host(name) {
                                 builder.link_host(func, host)?;
                             }

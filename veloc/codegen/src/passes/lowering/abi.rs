@@ -72,6 +72,7 @@ struct Transfer<'a> {
 }
 
 enum Insert {
+    End(veloc_lir::BlockId),
     Before(InstId),
     After(InstId),
 }
@@ -93,6 +94,7 @@ impl<'a> Transfer<'a> {
 
     fn emit(&mut self, inst: InstId) {
         match self.point {
+            Insert::End(block) => self.func.editor().append_inst(block, inst),
             Insert::Before(at) => self.func.editor().insert_before(at, inst),
             Insert::After(at) => {
                 self.func.editor().insert_after(at, inst);
@@ -183,23 +185,19 @@ fn lower_formal_arguments(
     plan: &AbiPlan,
 ) {
     let entry = mfunc.entry_block();
-    let mut cursor = veloc_lir::InstCursor::block(mfunc, entry);
-    while let Some(id) = cursor.next(mfunc) {
-        let inst = mfunc.inst(id);
-        if !inst.is_generic() {
-            continue;
-        }
-        if let veloc_lir::InstView::Arg(decoded) = inst.view() {
-            let assignment = plan
-                .args
-                .get(usize::try_from(decoded.index).expect("negative argument index"))
-                .expect("missing ABI argument assignment");
-            let dst = decoded.dst;
-            Transfer::new(target, mfunc.editor(), Insert::Before(id))
-                .incoming()
-                .read(dst, assignment);
-            mfunc.editor().replace_with(id, &[]);
-        }
+    let point = mfunc
+        .block_insts(entry)
+        .next()
+        .map_or(Insert::End(entry), Insert::Before);
+    assert_eq!(
+        mfunc.params().len(),
+        plan.args.len(),
+        "ABI parameter count mismatch"
+    );
+    let params = mfunc.take_params();
+    let mut transfer = Transfer::new(target, mfunc.editor(), point).incoming();
+    for (dst, assignment) in params.into_iter().zip(&plan.args) {
+        transfer.read(dst, assignment);
     }
 }
 

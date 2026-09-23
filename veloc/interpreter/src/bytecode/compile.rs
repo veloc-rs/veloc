@@ -1562,7 +1562,11 @@ mod tests {
         }
         module.validate().unwrap();
         let module = module.build();
-        compile_function(ModuleId::from_u32(0), func, &module.get_function(func));
+        compile_function(
+            ModuleId::from_u32(0),
+            func,
+            module.function(func).body.unwrap(),
+        );
     }
 
     #[test]
@@ -1604,7 +1608,11 @@ mod tests {
 
         module.validate().unwrap();
         let module = module.build();
-        let compiled = compile_function(ModuleId::from_u32(0), func, &module.get_function(func));
+        let compiled = compile_function(
+            ModuleId::from_u32(0),
+            func,
+            module.function(func).body.unwrap(),
+        );
 
         assert!(
             compiled.register_count <= 3,

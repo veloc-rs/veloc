@@ -172,7 +172,7 @@ impl<'a> CodegenPipeline<'a> {
         let compiled = self.compile_module_artifact(module, stats, &mut module_analyses)?;
 
         for compiled_func in &compiled.functions {
-            let func = module.get_function(compiled_func.func_id);
+            let func = module.function(compiled_func.func_id);
             if let Some(emitted) = &compiled_func.emitted {
                 object.add_defined_function(&func, emitted, &compiled.symbols)?;
             }
@@ -230,14 +230,14 @@ impl<'a> CodegenPipeline<'a> {
 
         for ((func_id, func), (_, mfunc)) in module
             .functions()
-            .filter(|(_, f)| f.body().is_some())
+            .filter(|(_, f)| f.body.is_some())
             .zip(functions.into_iter())
         {
             debug_assert_eq!(func.decl.name, mfunc.name);
             compiled_functions.push(self.compile_defined_function(
                 func_id,
                 &func,
-                module.get_signature(func.decl.signature),
+                &module.signatures()[func.decl.signature],
                 mfunc,
                 stats,
                 module_analyses,
@@ -559,7 +559,7 @@ block0(v0: ptr):
         let pipeline = CodegenPipeline::new(&*target);
         let translated = pipeline.translate_module(&module).unwrap();
         let func = module.functions().next().unwrap().1;
-        let sig = module.get_signature(func.decl.signature);
+        let sig = &module.signatures()[func.decl.signature];
         let target_pipelines = TargetFunctionPipelines::new(target.pass_config());
         for wrong_direction in [false, true] {
             let mut f = translated.functions.iter().next().unwrap().1.clone();

@@ -27,14 +27,15 @@ struct Checker<'a> {
 
 impl Structure {
     pub(super) fn check(func: &FunctionRef, module: &ModuleData) -> Result<Self> {
-        let blocks = func.dfg().blocks.len();
+        let body = func.body.expect("defined function");
+        let blocks = body.dfg().blocks.len();
         let mut checker = Checker {
             func,
             module,
             blocks: vec![false; blocks],
-            defined: vec![false; func.dfg().values().len()],
+            defined: vec![false; body.dfg().values().len()],
             structure: Self {
-                positions: vec![UNSEEN; func.dfg().instructions().len()],
+                positions: vec![UNSEEN; body.dfg().instructions().len()],
                 successors: vec![Vec::new(); blocks],
                 predecessors: vec![Vec::new(); blocks],
             },
@@ -50,8 +51,9 @@ impl Structure {
     }
 
     pub(super) fn check_ssa(mut self, func: &FunctionRef) -> Result<()> {
-        for block in func.layout().block_order() {
-            let data = &func.cfg().blocks[block];
+        let body = func.body.expect("defined function");
+        for block in body.layout().block_order() {
+            let data = &body.cfg().blocks[block];
             let mut succs = data.succs.clone();
             let mut preds = data.preds.clone();
             succs.sort_unstable();
@@ -66,15 +68,15 @@ impl Structure {
         let Some(entry) = func.entry_block() else {
             return Ok(());
         };
-        let dom = Dominators::compute(&func.cfg(), entry, func.dfg().blocks.len());
-        for block in func.layout().block_order() {
-            for inst in func.layout().block_insts(block) {
-                for &value in func.dfg().operands(inst) {
-                    let definition = func.dfg().value_def(value);
+        let dom = Dominators::compute(&body.cfg(), entry, body.dfg().blocks.len());
+        for block in body.layout().block_order() {
+            for inst in body.layout().block_insts(block) {
+                for &value in body.dfg().operands(inst) {
+                    let definition = body.dfg().value_def(value);
                     let (owner, source) = match definition {
                         ValueDef::Param(owner) => (owner, None),
                         ValueDef::Inst(source) => {
-                            (func.layout().inst_block(source).unwrap(), Some(source))
+                            (body.layout().inst_block(source).unwrap(), Some(source))
                         }
                     };
                     if owner == block {
@@ -101,7 +103,8 @@ impl Checker<'_> {
     /// Establish block membership before inspecting any instructions or targets.
     fn check_blocks(&mut self) -> Result<()> {
         let func = self.func;
-        let layout = &func.layout();
+        let body = func.body.expect("defined function");
+        let layout = &body.layout();
         let Some(signature) = self.module.signatures().get(func.decl.signature) else {
             return func.fail("unknown function signature".into());
         };
@@ -118,7 +121,7 @@ impl Checker<'_> {
             if !self.blocks.get(entry.0 as usize).copied().unwrap_or(false) {
                 return func.fail("entry block is not in layout".into());
             }
-            let params = &func.dfg().blocks[entry].params;
+            let params = &body.dfg().blocks[entry].params;
             // Types are checked later, once all parameter handles are valid.
             if params.len() != signature.params().len() {
                 return func.fail(format!(
@@ -136,16 +139,17 @@ impl Checker<'_> {
     /// Check instruction placement and definitions, and reconstruct the CFG.
     fn check_definitions(&mut self) -> Result<()> {
         let func = self.func;
-        let dfg = &func.dfg();
-        for block in func.layout().block_order() {
-            let data = &func.dfg().blocks[block];
+        let body = func.body.expect("defined function");
+        let dfg = &body.dfg();
+        for block in body.layout().block_order() {
+            let data = &body.dfg().blocks[block];
             for &param in &data.params {
                 self.define(param, ValueDef::Param(block))?;
             }
-            let Some(last) = func.layout().last_inst(block) else {
+            let Some(last) = body.layout().last_inst(block) else {
                 return Err(ValidationError::EmptyBlock(block).into());
             };
-            for (position, inst) in func.layout().block_insts(block).enumerate() {
+            for (position, inst) in body.layout().block_insts(block).enumerate() {
                 let Some(slot) = self.structure.positions.get_mut(inst.0 as usize) else {
                     return func.fail(format!("unknown instruction {inst} in {block}"));
                 };
@@ -153,7 +157,7 @@ impl Checker<'_> {
                     return func.fail(format!("instruction {inst} appears more than once"));
                 }
                 *slot = position;
-                if func.layout().inst_block(inst) != Some(block) {
+                if body.layout().inst_block(inst) != Some(block) {
                     return func.fail(format!(
                         "instruction {inst} has inconsistent block ownership"
                     ));
@@ -201,7 +205,8 @@ impl Checker<'_> {
 
     fn define(&mut self, value: Value, owner: ValueDef) -> Result<()> {
         let func = self.func;
-        let Some(data) = func.dfg().values().get(value) else {
+        let body = func.body.expect("defined function");
+        let Some(data) = body.dfg().values().get(value) else {
             return func.fail(format!("unknown definition {value}"));
         };
         if data.def != owner {
@@ -218,9 +223,10 @@ impl Checker<'_> {
 
     fn check_operands(&self) -> Result<()> {
         let func = self.func;
-        for block in func.layout().block_order() {
-            for inst in func.layout().block_insts(block) {
-                for &value in func.dfg().operands(inst) {
+        let body = func.body.expect("defined function");
+        for block in body.layout().block_order() {
+            for inst in body.layout().block_insts(block) {
+                for &value in body.dfg().operands(inst) {
                     if !self.defined.get(value.0 as usize).copied().unwrap_or(false) {
                         return func.fail(format!(
                             "operand {value} of {inst} has no attached definition"
@@ -234,19 +240,20 @@ impl Checker<'_> {
 
     fn check_entry_params(&self) -> Result<()> {
         let func = self.func;
+        let body = func.body.expect("defined function");
         let Some(entry) = func.entry_block() else {
             return Ok(());
         };
         let signature = &self.module.signatures()[func.decl.signature];
-        for (&param, &expected) in func.dfg().blocks[entry]
+        for (&param, &expected) in body.dfg().blocks[entry]
             .params
             .iter()
             .zip(signature.params())
         {
-            if func.dfg().value_type(param) != expected {
+            if body.dfg().value_type(param) != expected {
                 return func.fail(format!(
                     "entry parameter {param} type mismatch: expected {expected}, got {}",
-                    func.dfg().value_type(param)
+                    body.dfg().value_type(param)
                 ));
             }
         }

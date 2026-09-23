@@ -24,6 +24,8 @@ pub struct FuncBody {
     layout: crate::layout::Layout,
     store: crate::store::InstStore,
     vregs: PrimaryMap<VReg, VRegData>,
+    /// SSA definitions supplied by the caller, independent of CFG block parameters.
+    params: Vec<Reg>,
 }
 
 impl FuncBody {
@@ -38,6 +40,7 @@ impl FuncBody {
             layout,
             store: crate::store::InstStore::with_capacity(insts),
             vregs: PrimaryMap::with_capacity(vregs),
+            params: Vec::new(),
         }
     }
 
@@ -80,8 +83,6 @@ pub struct MachineFunction {
     pub name: String,
     body: FuncBody,
     pub stack_frame: StackFrame,
-    /// 函数参数对应的虚拟寄存器
-    pub params: Vec<Reg>,
 }
 
 mod cursor;
@@ -102,12 +103,14 @@ impl MachineFunction {
             name,
             body: FuncBody::with_capacity(blocks, insts, vregs),
             stack_frame: StackFrame::default(),
-            params: Vec::new(),
         }
     }
 
     pub fn body(&self) -> &FuncBody {
         &self.body
+    }
+    pub fn params(&self) -> &[Reg] {
+        &self.body.params
     }
     pub fn layout(&self) -> &crate::layout::Layout {
         self.body.layout()
@@ -155,6 +158,8 @@ impl MachineFunction {
     pub fn uses(&self, reg: Reg) -> crate::RegRefs<'_> {
         self.body.store.uses(reg)
     }
+    /// Instruction definitions only. Function and block parameters have no
+    /// defining operand slot; they are exposed by `params` and `block_params`.
     pub fn defs(&self, reg: Reg) -> crate::RegRefs<'_> {
         self.body.store.defs(reg)
     }
@@ -186,9 +191,9 @@ impl MachineFunction {
         let mut out = String::new();
         let _ = writeln!(out, "function {}", self.name);
 
-        if !self.params.is_empty() {
+        if !self.params().is_empty() {
             let params = self
-                .params
+                .params()
                 .iter()
                 .map(|reg| format!("{:?}:{}", reg, self.vreg_data(*reg).ty))
                 .collect::<Vec<_>>()

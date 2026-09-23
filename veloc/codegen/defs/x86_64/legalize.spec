@@ -10,10 +10,6 @@ type Target = rust("crate::target::x86_64::inst::FeatureSet") {
     fn supports(&self, instruction: Instruction) -> bool;
 }
 
-rule arg_0<T: Scalar | Type::PTR>(inst: lir::Arg<T>) {
-    action = legal;
-}
-
 rule ret_0(inst: lir::Ret) {
     action = legal;
 }

@@ -29,6 +29,21 @@ impl MachineFunction {
     }
 }
 impl FuncEditor<'_> {
+    pub fn append_param(&mut self, param: Reg) {
+        assert!(
+            param.is_vreg(),
+            "function parameters must be virtual registers"
+        );
+        self.function.body.params.push(param);
+        self.changed_block(self.function.body.entry);
+    }
+
+    /// Transfer formal definitions to the ABI entry instructions.
+    pub fn take_params(&mut self) -> Vec<Reg> {
+        self.changed_block(self.function.body.entry);
+        core::mem::take(&mut self.function.body.params)
+    }
+
     /// Reborrow the editor, retaining the current session's notifications.
     pub fn editor(&mut self) -> FuncEditor<'_> {
         FuncEditor {

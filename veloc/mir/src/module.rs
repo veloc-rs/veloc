@@ -80,7 +80,7 @@ impl ModuleData {
         self.types.signatures()
     }
 
-    pub fn get_func_id(&self, name: &str) -> Option<FuncId> {
+    pub fn find_function(&self, name: &str) -> Option<FuncId> {
         self.decls
             .iter()
             .find(|(_, f)| f.name == name)
@@ -130,7 +130,7 @@ impl ModuleData {
         assert!(self.decls.get(id).is_some(), "unknown function");
         assert!(self.bodies[id].is_none(), "function already defined");
         let params = self.types.signatures()[self.decls[id].signature].params();
-        let body = self.bodies[id].get_or_insert_with(|| Box::new(FuncBody::new(params)));
+        let body = self.bodies[id].insert(Box::new(FuncBody::new(params)));
         (&self.decls, self.types.signatures(), body)
     }
 
@@ -149,22 +149,6 @@ impl Module {
         Self {
             inner: Arc::new(data),
         }
-    }
-
-    pub fn find_function_by_name(&self, name: &str) -> Option<FuncId> {
-        self.inner.get_func_id(name)
-    }
-
-    pub fn get_function(&self, func_id: FuncId) -> FunctionRef<'_> {
-        self.inner.function(func_id)
-    }
-
-    pub fn get_function_name(&self, func_id: FuncId) -> &str {
-        &self.inner.decls[func_id].name
-    }
-
-    pub fn get_signature(&self, sig_id: SigId) -> &Signature {
-        &self.inner.signatures()[sig_id]
     }
 }
 

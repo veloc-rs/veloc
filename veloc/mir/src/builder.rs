@@ -40,8 +40,8 @@ impl ModuleBuilder {
             .intern_signature(&params, &ret, call_conv)
     }
 
-    pub fn get_func_id(&self, name: &str) -> Option<FuncId> {
-        self.data.get_func_id(name)
+    pub fn find_function(&self, name: &str) -> Option<FuncId> {
+        self.data.find_function(name)
     }
 
     /// Start a new definition. An existing body must be edited instead.
@@ -81,7 +81,7 @@ pub struct SsaBuilder<'a> {
     function: &'a mut FuncBody,
     decls: &'a cranelift_entity::PrimaryMap<FuncId, crate::FuncDecl>,
     signatures: &'a veloc_types::Signatures,
-    current_block: Option<Block>,
+    current_block: Block,
     // 变量的类型映射
     var_types: HashMap<Variable, Type>,
     // 每个 Block 对变量的最新定义: Block -> Variable -> Value
@@ -100,7 +100,7 @@ impl<'a> SsaBuilder<'a> {
             function,
             decls,
             signatures,
-            current_block: Some(entry),
+            current_block: entry,
             var_types: HashMap::new(),
             def_map: HashMap::new(),
             incomplete_phis: HashMap::new(),
@@ -108,7 +108,7 @@ impl<'a> SsaBuilder<'a> {
         }
     }
 
-    pub fn current_block(&self) -> Option<Block> {
+    pub fn current_block(&self) -> Block {
         self.current_block
     }
 
@@ -134,7 +134,7 @@ impl<'a> SsaBuilder<'a> {
         if !self.func().layout().contains_block(block) {
             self.edit().append_block(block);
         }
-        self.current_block = Some(block);
+        self.current_block = block;
     }
 
     /// Add an explicit parameter before SSA variable resolution starts in this block.
@@ -148,9 +148,7 @@ impl<'a> SsaBuilder<'a> {
     }
 
     pub fn ins(&mut self) -> InstCursor<'_, '_> {
-        let block = self
-            .current_block
-            .expect("cannot create an insertion cursor without a block");
+        let block = self.current_block;
         self.function
             .edit()
             .at_end(block, self.decls, self.signatures)
@@ -164,7 +162,7 @@ impl<'a> SsaBuilder<'a> {
     }
 
     pub fn is_current_block_terminated(&self) -> bool {
-        let block = self.current_block.expect("No current block");
+        let block = self.current_block;
         if let Some(last_inst) = self.func().layout().last_inst(block) {
             self.func().dfg().opcode(last_inst).spec().is_terminator()
         } else {
@@ -248,12 +246,12 @@ impl<'a> SsaBuilder<'a> {
     }
 
     pub fn def_var(&mut self, var: Variable, val: Value) {
-        let block = self.current_block.expect("No current block");
+        let block = self.current_block;
         self.def_map.entry(block).or_default().insert(var, val);
     }
 
     pub fn use_var(&mut self, var: Variable) -> Value {
-        let block = self.current_block.expect("No current block");
+        let block = self.current_block;
         self.use_var_on_block(block, var)
     }
 

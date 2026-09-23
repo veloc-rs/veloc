@@ -137,7 +137,7 @@ rule decision_test<T: Word>(inst: lir::Ctpop<T>, target: &Target) {
         decision(compile(&format!("{shared}\n{target}")).unwrap())
     );
     // Templates alone are checked and generated, but create no matching cases.
-    let declarations = target.split("rule arg_0").next().unwrap();
+    let declarations = target.split("rule ret_0").next().unwrap();
     let templates_only = compile(&format!("{declarations}\n{shared}")).unwrap();
     assert!(!templates_only.contains("GenericOpcode::Ctpop =>"));
     assert!(!templates_only.contains("GenericOpcode::Ctlz =>"));

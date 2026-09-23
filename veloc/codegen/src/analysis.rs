@@ -565,6 +565,11 @@ fn compute_liveness(mfunc: &MachineFunction, cfg: &CfgInfo) -> LivenessInfo {
     for block in mfunc.blocks() {
         let mut uses = empty.clone();
         let mut defs = empty.clone();
+        if block == mfunc.entry_block() {
+            for &reg in mfunc.params() {
+                defs.insert(reg);
+            }
+        }
         for &reg in mfunc.block_params(block).unwrap() {
             defs.insert(reg);
         }

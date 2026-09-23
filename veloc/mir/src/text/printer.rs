@@ -222,11 +222,11 @@ impl<'a> FuncPrinter<'a> {
     pub fn print(&self, f: &mut dyn Write) -> Result {
         self.fmt_signature(f)?;
         writeln!(f)?;
-        let Some(body) = self.func.body() else {
+        let Some(body) = self.func.body else {
             return Ok(());
         };
         for block in body.layout().block_order() {
-            self.fmt_block(f, block)?;
+            self.fmt_block(f, body, block)?;
         }
         Ok(())
     }
@@ -246,23 +246,28 @@ impl<'a> FuncPrinter<'a> {
         printer.fmt_ret_types(f, sig.returns())
     }
 
-    fn fmt_block(&self, f: &mut dyn Write, block: crate::Block) -> Result {
-        self.fmt_block_header(f, block)?;
-        for inst in self.func.layout().block_insts(block) {
+    fn fmt_block(&self, f: &mut dyn Write, body: &crate::FuncBody, block: crate::Block) -> Result {
+        self.fmt_block_header(f, body, block)?;
+        for inst in body.layout().block_insts(block) {
             f.write_str("  ")?;
-            InstPrinter::new(self.func.dfg(), Some(self.module)).fmt_inst_with_results(f, inst)?;
+            InstPrinter::new(body.dfg(), Some(self.module)).fmt_inst_with_results(f, inst)?;
             writeln!(f)?;
         }
         Ok(())
     }
 
-    fn fmt_block_header(&self, f: &mut dyn Write, block: crate::Block) -> Result {
+    fn fmt_block_header(
+        &self,
+        f: &mut dyn Write,
+        body: &crate::FuncBody,
+        block: crate::Block,
+    ) -> Result {
         write!(f, "{block}(")?;
-        for (index, &param) in self.func.dfg().blocks[block].params.iter().enumerate() {
+        for (index, &param) in body.dfg().blocks[block].params.iter().enumerate() {
             if index != 0 {
                 f.write_str(", ")?;
             }
-            InstPrinter::new(self.func.dfg(), Some(self.module)).fmt_definition(f, param)?;
+            InstPrinter::new(body.dfg(), Some(self.module)).fmt_definition(f, param)?;
         }
         writeln!(f, "):")
     }

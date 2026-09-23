@@ -215,23 +215,6 @@ impl<'a> FuncEditor<'a> {
         self.insert_at(block, None, data, types)
     }
 
-    /// Insert a non-terminator at block entry.
-    pub fn prepend_inst(
-        &mut self,
-        block: Block,
-        data: impl FnOnce(InstWriter<'_>) -> Inst,
-        types: &[Type],
-    ) -> Inst {
-        let before = self.body.layout.first_inst(block);
-        let inst = self.create_inst(data);
-        assert!(
-            !self.body.dfg.opcode(inst).spec().is_terminator(),
-            "cannot prepend a terminator"
-        );
-        self.finish_inst(block, before, inst, types);
-        inst
-    }
-
     pub fn insert_after(
         &mut self,
         after: Inst,

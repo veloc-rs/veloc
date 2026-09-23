@@ -673,16 +673,6 @@ fn optional_validation_is_separate_from_direct_views() {
     use veloc_mir::{FloatCC, IntCC};
     let dst = Writable(Reg::new_vreg(0));
     let src = Reg::new_vreg(1);
-    // Property constraints are defs-driven and remain opt-in.
-    let arg = function.editor().writer().arg(dst, -1);
-    assert!(matches!(
-        function.inst(arg).view(),
-        veloc_lir::InstView::Arg(_)
-    ));
-    assert!(function.inst(arg).validate().is_err());
-    function.editor().rewriter(arg).arg(dst, 0);
-    function.inst(arg).validate().unwrap();
-
     let cmp = function.editor().writer().icmp(dst, src, src, IntCC::Eq);
     // Structural validation remains explicit, including low-level writes.
     function.editor().rewriter(cmp).write(
