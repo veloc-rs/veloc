@@ -136,7 +136,7 @@ impl<'a> InstructionSelector<'a> {
                 // instructions are not selected a second time.
                 let previous_inst = mfunc.layout().prev_inst(inst_id);
                 // 如果指令在之前的融合中已被标记为无效，则跳过
-                if mfunc.inst(inst_id).is_invalid() {
+                if mfunc.inst(inst_id).is_invalid() || mfunc.inst(inst_id).is_call_frame() {
                     inst = previous_inst;
                     continue;
                 }

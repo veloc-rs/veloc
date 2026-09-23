@@ -201,6 +201,13 @@ impl<'a> crate::InstRead<'a> for crate::InstRef<'a> {
 }
 
 impl<'a> InstRef<'a> {
+    /// Symbolic stack boundaries survive instruction selection and allocation.
+    pub fn is_call_frame(&self) -> bool {
+        matches!(
+            self.opcode(),
+            MachineOpcode::Generic(GenericOpcode::CallFrameSetup | GenericOpcode::CallFrameDestroy)
+        )
+    }
     /// Successor identities in instruction operand order, including repeated targets.
     pub fn edge_ids(self) -> impl Iterator<Item = crate::EdgeId> + 'a {
         self.store.edge_ids(self.id)

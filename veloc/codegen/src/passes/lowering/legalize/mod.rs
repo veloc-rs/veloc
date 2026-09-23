@@ -24,11 +24,11 @@ impl<'a> Legalizer<'a> {
             let inst = function.inst(id);
             if function
                 .try_call_info(id)
-                .is_some_and(|info| info.stack.is_none())
+                .is_some_and(|info| info.frame.is_none())
             {
                 return Err(Error::codegen(alloc::format!("unlowered ABI call {id:?}")));
             }
-            if inst.is_generic() {
+            if inst.is_generic() && !inst.is_call_frame() {
                 let query = Query::from_inst(inst, function.vregs())?;
                 if !matches!(
                     self.target.legalize_action(&query)?,
@@ -72,13 +72,13 @@ impl<'a> Legalizer<'a> {
             let inst = mfunc.inst(id);
             // Target nodes belong to selection/expansion and final emission,
             // not generic instruction legalization.
-            if !inst.is_generic() || inst.is_invalid() {
+            if !inst.is_generic() || inst.is_invalid() || inst.is_call_frame() {
                 continue;
             }
             let opcode = inst.opcode();
             if mfunc
                 .try_call_info(id)
-                .is_some_and(|info| info.stack.is_none())
+                .is_some_and(|info| info.frame.is_none())
             {
                 if rewrites == budget {
                     return Err(Error::codegen("ABI legalization did not converge"));
@@ -87,7 +87,7 @@ impl<'a> Legalizer<'a> {
                 result?;
                 if mfunc
                     .try_call_info(id)
-                    .is_some_and(|info| info.stack.is_none())
+                    .is_some_and(|info| info.frame.is_none())
                 {
                     return Err(Error::codegen("ABI lowering left an unresolved call"));
                 }

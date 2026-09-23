@@ -62,61 +62,32 @@ fn registers(assignments: &[AbiAssignment]) -> impl Iterator<Item = Reg> + '_ {
     })
 }
 
-/// Directly emits moves at a boundary. The insertion point advances after a
-/// call, while before an instruction successive inserts naturally keep order.
-struct Transfer<'a> {
-    target: &'a dyn TargetMachine,
-    func: veloc_lir::FuncEditor<'a>,
-    point: Insert,
-    incoming: bool,
+/// The semantic argument area is independent of the physical frame strategy.
+#[derive(Clone, Copy)]
+enum ArgArea {
+    Incoming,
+    Outgoing(veloc_lir::CallFrameId),
 }
 
-enum Insert {
-    End(veloc_lir::BlockId),
-    Before(InstId),
-    After(InstId),
+/// Converts ABI locations into transfers; layout insertion is owned by LIR.
+struct Transfer<'a> {
+    target: &'a dyn TargetMachine,
+    func: veloc_lir::InstInserter<'a>,
 }
 
 impl<'a> Transfer<'a> {
-    fn new(target: &'a dyn TargetMachine, func: veloc_lir::FuncEditor<'a>, point: Insert) -> Self {
-        Self {
-            target,
-            func,
-            point,
-            incoming: false,
-        }
+    fn new(target: &'a dyn TargetMachine, func: veloc_lir::InstInserter<'a>) -> Self {
+        Self { target, func }
     }
 
-    fn incoming(mut self) -> Self {
-        self.incoming = true;
-        self
-    }
-
-    fn emit(&mut self, inst: InstId) {
-        match self.point {
-            Insert::End(block) => self.func.editor().append_inst(block, inst),
-            Insert::Before(at) => self.func.editor().insert_before(at, inst),
-            Insert::After(at) => {
-                self.func.editor().insert_after(at, inst);
-                self.point = Insert::After(inst);
-            }
-        }
-    }
-
-    fn address(&mut self, offset: u32, size: u32, align: u32) -> (Reg, StackSlot) {
-        let object = if self.incoming {
-            veloc_lir::StackObject::Incoming { offset }
-        } else {
-            veloc_lir::StackObject::Outgoing { offset }
+    fn address(&mut self, area: ArgArea, offset: u32, size: u32, align: u32) -> (Reg, StackSlot) {
+        let object = match area {
+            ArgArea::Incoming => veloc_lir::StackObject::Incoming { offset },
+            ArgArea::Outgoing(frame) => veloc_lir::StackObject::Outgoing { frame, offset },
         };
-        let slot = self.func.editor().alloc_stack_object(object, size, align);
-        let address = self.func.editor().alloc_vreg(veloc_lir::Type::PTR);
-        let inst = self
-            .func
-            .editor()
-            .writer()
-            .stack_addr(Writable(address), slot);
-        self.emit(inst);
+        let slot = self.func.alloc_stack_object(object, size, align);
+        let address = self.func.alloc_vreg(veloc_lir::Type::PTR);
+        self.func.writer().stack_addr(Writable(address), slot);
         (address, slot)
     }
 
@@ -134,48 +105,44 @@ impl<'a> Transfer<'a> {
         access
     }
 
-    fn read(&mut self, dst: Reg, assignment: &AbiAssignment) {
-        let inst = match assignment.loc {
-            AbiLocation::Reg(reg) => self.func.editor().writer().copy(Writable(dst), reg),
+    fn read(&mut self, dst: Reg, assignment: &AbiAssignment, area: ArgArea) {
+        match assignment.loc {
+            AbiLocation::Reg(reg) => self.func.writer().copy(Writable(dst), reg),
             AbiLocation::Stack {
                 offset,
                 size,
                 align,
             } => {
-                let (address, _) = self.address(offset, size, align);
+                let (address, _) = self.address(area, offset, size, align);
                 let access = self.access(assignment, align, MemoryKind::Read);
                 self.func
-                    .editor()
                     .writer()
                     .with_memory(access)
                     .load(Writable(dst), address, 0)
             }
         };
-        self.emit(inst);
     }
 
-    fn write(&mut self, src: Reg, assignment: &AbiAssignment) -> Option<StackSlot> {
-        let (inst, slot) = match assignment.loc {
-            AbiLocation::Reg(reg) => (self.func.editor().writer().copy(Writable(reg), src), None),
+    fn write(&mut self, src: Reg, assignment: &AbiAssignment, area: ArgArea) -> Option<StackSlot> {
+        match assignment.loc {
+            AbiLocation::Reg(reg) => {
+                self.func.writer().copy(Writable(reg), src);
+                None
+            }
             AbiLocation::Stack {
                 offset,
                 size,
                 align,
             } => {
-                let (address, slot) = self.address(offset, size, align);
+                let (address, slot) = self.address(area, offset, size, align);
                 let access = self.access(assignment, align, MemoryKind::Write);
-                (
-                    self.func
-                        .editor()
-                        .writer()
-                        .with_memory(access)
-                        .store(src, address, 0),
-                    Some(slot),
-                )
+                self.func
+                    .writer()
+                    .with_memory(access)
+                    .store(src, address, 0);
+                Some(slot)
             }
-        };
-        self.emit(inst);
-        slot
+        }
     }
 }
 
@@ -185,19 +152,15 @@ fn lower_formal_arguments(
     plan: &AbiPlan,
 ) {
     let entry = mfunc.entry_block();
-    let point = mfunc
-        .block_insts(entry)
-        .next()
-        .map_or(Insert::End(entry), Insert::Before);
     assert_eq!(
         mfunc.params().len(),
         plan.args.len(),
         "ABI parameter count mismatch"
     );
     let params = mfunc.take_params();
-    let mut transfer = Transfer::new(target, mfunc.editor(), point).incoming();
+    let mut transfer = Transfer::new(target, mfunc.at_start(entry));
     for (dst, assignment) in params.into_iter().zip(&plan.args) {
-        transfer.read(dst, assignment);
+        transfer.read(dst, assignment, ArgArea::Incoming);
     }
 }
 
@@ -231,62 +194,37 @@ fn lower_callsite(
     );
 
     let results = SmallVec::<[Reg; 2]>::from_slice(results);
+    let frame = mfunc.alloc_call_frame(plan.stack);
+    mfunc.before(id).writer().call_frame_setup(frame);
 
     // Place logical arguments in their ABI locations before the call.
     let mut stack_args = SmallVec::new();
     {
-        let mut transfer = Transfer::new(target, mfunc.editor(), Insert::Before(id));
+        let mut transfer = Transfer::new(target, mfunc.before(id));
         for (index, assignment) in plan.args.iter().enumerate() {
             // Borrow only long enough to copy one ID; insertion may grow the store.
             let src = transfer.func.inst(id).inputs()[index + usize::from(callee.is_some())];
-            stack_args.extend(transfer.write(src, assignment));
+            stack_args.extend(transfer.write(src, assignment, ArgArea::Outgoing(frame)));
         }
     }
 
     // Commit the full ABI call before defining the original SSA results.
     let args: SmallVec<[Reg; 8]> = registers(&plan.args).collect();
     let returns: SmallVec<[Reg; 2]> = registers(&plan.returns).collect();
-    let inst = mfunc.inst(id);
-    let view = inst.view();
-    let mut info = match view {
-        veloc_lir::InstView::Call(call) => call.info.clone(),
-        veloc_lir::InstView::CallIndirect(call) => call.info.clone(),
-        _ => unreachable!("planned call"),
-    };
-    info.stack_args = stack_args;
-    info.stack = Some(plan.stack);
-    info.clobbers = plan.abi.clobbers;
-    let memory = inst.memory();
-    let effects = inst.effects().unwrap_or_default();
-    let uses = SmallVec::<[Reg; 4]>::from_slice(effects.uses);
-    let defs = SmallVec::<[Reg; 4]>::from_slice(effects.defs);
-    // Only the callee is needed after borrowing the old call contract.
-    let direct = match view {
-        veloc_lir::InstView::Call(call) => Some(call.callee),
-        _ => None,
-    };
-    {
-        let mut editor = mfunc.editor();
-        let mut writer = editor.rewriter(id).with_effects(&uses, &defs);
-        if let Some(memory) = memory {
-            writer = writer.with_memory(memory);
-        }
-        if let Some(callee) = direct {
-            writer.call(&returns, callee, &args, info);
-        } else {
-            writer.callind(&returns, callee.expect("indirect callee"), &args, info);
-        }
-    }
+    mfunc.set_call_abi(id, &returns, &args, frame, plan.abi.clobbers, stack_args);
 
     // The old definitions are now released, so the copies can reuse their IDs.
-    let mut transfer = Transfer::new(target, mfunc.editor(), Insert::After(id));
+    let mut insert = mfunc.after(id);
     for (&dst, assignment) in results.iter().zip(&plan.returns) {
-        transfer.read(dst, assignment);
+        let AbiLocation::Reg(reg) = assignment.loc else {
+            unreachable!("checked register return")
+        };
+        insert.writer().copy(Writable(dst), reg);
     }
+    insert.writer().call_frame_destroy(frame);
 }
 
 fn lower_return(
-    target: &dyn TargetMachine,
     mfunc: &mut veloc_lir::FuncEditor<'_>,
     id: InstId,
     plan: &AbiPlan,
@@ -303,14 +241,16 @@ fn lower_return(
     );
 
     {
-        let mut transfer = Transfer::new(target, mfunc.editor(), Insert::Before(id));
+        let mut insert = mfunc.before(id);
         for (index, assignment) in plan.returns.iter().enumerate() {
-            let src = transfer.func.inst(id).inputs()[index];
-            transfer.write(src, assignment);
+            let src = insert.inst(id).inputs()[index];
+            let AbiLocation::Reg(reg) = assignment.loc else {
+                unreachable!("checked register return")
+            };
+            insert.writer().copy(Writable(reg), src);
         }
     }
-    let replacement = mfunc.editor().writer().ret(return_regs);
-    mfunc.editor().replace_inst(id, replacement);
+    mfunc.set_inst_inputs(id, return_regs);
 }
 
 impl FunctionPass for AbiLoweringPass {
@@ -336,7 +276,7 @@ impl FunctionPass for AbiLoweringPass {
                     lower_call(ctx.target, &mut mfunc.editor(), id)?;
                 }
                 MachineOpcode::Generic(GenericOpcode::Ret) => {
-                    lower_return(ctx.target, &mut mfunc.editor(), id, &plan, &return_regs);
+                    lower_return(&mut mfunc.editor(), id, &plan, &return_regs);
                 }
                 _ => {}
             }

@@ -17,13 +17,18 @@ pub struct StackArea {
     pub align: u32,
 }
 
+/// A symbolic, function-local outgoing call frame, not an SP displacement.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CallFrameId(u32);
+cranelift_entity::entity_impl!(CallFrameId, "callframe");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallInfo {
     pub sig: Signature,
     /// Registers whose pre-call contents cannot survive this call.
     pub clobbers: crate::RegMask,
-    /// None until ABI lowering; Some with size zero is a lowered call.
-    pub stack: Option<StackArea>,
+    /// None until ABI lowering. Zero-sized frames still identify lowered calls.
+    pub frame: Option<CallFrameId>,
     /// Outgoing stack locations read by this call. Calls remain memory barriers;
     /// these locations refine the boundary rather than replacing other effects.
     pub stack_args: SmallVec<[StackSlot; 2]>,

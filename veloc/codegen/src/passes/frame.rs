@@ -23,6 +23,9 @@ impl<'a> FunctionPass for FrameFinalizePass<'a> {
         mfunc: &mut veloc_lir::MachineFunction,
         ctx: &mut FunctionPassContext<'_>,
     ) -> Result<PassEffect> {
+        // Unsupported frame lifetimes must fail even when optional pass-boundary
+        // verification is disabled, before committing a physical layout.
+        crate::verify::verify_call_frames(mfunc, ctx.target)?;
         self.frame_lowering
             .finalize_stack_frame(mfunc, CallConv::from(ctx.func_sig.call_conv))?;
         self.frame_lowering.insert_prologue_epilogue(mfunc);

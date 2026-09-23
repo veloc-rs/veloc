@@ -461,7 +461,7 @@ pub(crate) fn generate_validation(out: &mut String, instructions: &HashMap<Strin
         .unwrap();
         if call {
             writeln!(out, "if inst.results()[{results}..].iter().chain(inst.inputs()[{inputs}..].iter()).any(|reg| !reg.is_preg()) {{ return Err(invalid()); }}").unwrap();
-            out.push_str("if inst.fields().call_info().is_none_or(|info| info.stack.is_none()) { return Err(invalid()); }\n");
+            out.push_str("if inst.fields().call_info().is_none_or(|info| info.frame.is_none()) { return Err(invalid()); }\n");
         }
         for op in &instruction.operands {
             let (field_name, variant) = match op {

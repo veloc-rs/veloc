@@ -29,6 +29,44 @@ impl MachineFunction {
     }
 }
 impl FuncEditor<'_> {
+    pub fn alloc_call_frame(&mut self, area: crate::StackArea) -> crate::CallFrameId {
+        self.function.stack_frame.alloc_call(area)
+    }
+    /// Build complete instructions directly at the end of a block.
+    pub fn at_end(&mut self, block: Block) -> InstInserter<'_> {
+        assert!(self.layout().contains_block(block), "unknown block");
+        InstInserter {
+            editor: self.editor(),
+            block,
+            before: None,
+        }
+    }
+    pub fn at_start(&mut self, block: Block) -> InstInserter<'_> {
+        assert!(self.layout().contains_block(block), "unknown block");
+        let before = self.layout().first_inst(block);
+        InstInserter {
+            editor: self.editor(),
+            block,
+            before,
+        }
+    }
+    pub fn before(&mut self, inst: InstId) -> InstInserter<'_> {
+        let block = self.inst_block(inst).expect("detached insertion anchor");
+        InstInserter {
+            editor: self.editor(),
+            block,
+            before: Some(inst),
+        }
+    }
+    pub fn after(&mut self, inst: InstId) -> InstInserter<'_> {
+        let block = self.inst_block(inst).expect("detached insertion anchor");
+        let before = self.layout().next_inst(inst);
+        InstInserter {
+            editor: self.editor(),
+            block,
+            before,
+        }
+    }
     pub fn append_param(&mut self, param: Reg) {
         assert!(
             param.is_vreg(),
@@ -84,7 +122,9 @@ impl FuncEditor<'_> {
         self.changed_block(block);
     }
     pub fn clear_block_params(&mut self) {
-        for block in self.blocks().collect::<Vec<_>>() {
+        let mut next = self.blocks().next();
+        while let Some(block) = next {
+            next = self.layout().next_block(block);
             self.function.body.blocks[block].params.clear();
             self.changed_block(block);
         }
@@ -118,7 +158,6 @@ impl FuncEditor<'_> {
         );
         let mut seen = hashbrown::HashSet::new();
         for &inst in insts {
-            let _ = self.inst(inst);
             assert!(seen.insert(inst), "duplicate instruction");
             assert!(
                 self.inst_block(inst) == Some(block),
@@ -144,7 +183,6 @@ impl FuncEditor<'_> {
         let next = self.layout().next_inst(root);
         let mut seen = hashbrown::HashSet::new();
         for &inst in output {
-            let _ = self.inst(inst);
             assert!(seen.insert(inst), "duplicate replacement");
             assert!(
                 inst == root || self.inst_block(inst).is_none(),
@@ -165,19 +203,16 @@ impl FuncEditor<'_> {
     }
 
     pub fn append_inst(&mut self, block: Block, inst: InstId) {
-        let _ = self.inst(inst);
         self.function.body.layout.append_inst(block, inst);
         self.changed_inst(inst);
         self.changed_block(block);
     }
     pub fn insert_before(&mut self, anchor: InstId, inst: InstId) {
-        let _ = self.inst(inst);
         self.function.body.layout.insert_before(anchor, inst);
         self.changed_inst(inst);
         self.changed_block(self.inst_block(anchor).unwrap());
     }
     pub fn insert_after(&mut self, anchor: InstId, inst: InstId) {
-        let _ = self.inst(inst);
         self.function.body.layout.insert_after(anchor, inst);
         self.changed_inst(inst);
         self.changed_block(self.inst_block(anchor).unwrap());
@@ -285,6 +320,23 @@ impl FuncEditor<'_> {
 
     pub fn set_inst_effects(&mut self, id: InstId, effects: crate::RegEffects) {
         self.function.body.store.set_effects(id, effects);
+        self.changed_inst(id);
+    }
+    /// Replace logical call operands with ABI locations without rebuilding its
+    /// callee, signature, memory facts or implicit register effects.
+    pub fn set_call_abi(
+        &mut self,
+        id: InstId,
+        results: &[Reg],
+        args: &[Reg],
+        frame: crate::CallFrameId,
+        clobbers: crate::RegMask,
+        stack_args: smallvec::SmallVec<[StackSlot; 2]>,
+    ) {
+        self.function
+            .body
+            .store
+            .set_call_abi(id, results, args, frame, clobbers, stack_args);
         self.changed_inst(id);
     }
     pub fn set_inst_inputs(&mut self, id: InstId, inputs: &[Reg]) {
@@ -406,5 +458,60 @@ impl FuncEditor<'_> {
         changes.blocks.sort_unstable();
         changes.blocks.dedup();
         (result, changes)
+    }
+}
+
+/// Layout commit supplied by the editor. Storage and instruction construction
+/// do not own the layout; insertion runs only after a complete write.
+pub(crate) struct Insertion<'a> {
+    layout: &'a mut crate::layout::Layout,
+    block: Block,
+    before: Option<InstId>,
+}
+
+impl Insertion<'_> {
+    pub(crate) fn commit(self, inst: InstId) -> Block {
+        if let Some(anchor) = self.before {
+            self.layout.insert_before(anchor, inst);
+        } else {
+            self.layout.append_inst(self.block, inst);
+        }
+        self.block
+    }
+}
+
+/// A stable gap in the layout. Repeated writes preserve emission order, even
+/// when the gap was obtained with `after`. Its restricted construction API
+/// prevents moving or deleting the anchor while this borrow is active.
+pub struct InstInserter<'a> {
+    editor: FuncEditor<'a>,
+    block: Block,
+    before: Option<InstId>,
+}
+
+impl core::ops::Deref for InstInserter<'_> {
+    type Target = MachineFunction;
+    fn deref(&self) -> &Self::Target {
+        &self.editor
+    }
+}
+
+impl InstInserter<'_> {
+    pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
+        self.editor.alloc_vreg(ty)
+    }
+    pub fn alloc_stack_object(&mut self, object: StackObject, size: u32, align: u32) -> StackSlot {
+        self.editor.alloc_stack_object(object, size, align)
+    }
+    pub fn writer(&mut self) -> InstWriter<'_> {
+        let body = &mut self.editor.function.body;
+        body.store
+            .writer()
+            .tracking(self.editor.changes.as_deref_mut())
+            .inserting(Insertion {
+                layout: &mut body.layout,
+                block: self.block,
+                before: self.before,
+            })
     }
 }

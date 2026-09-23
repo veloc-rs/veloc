@@ -73,6 +73,8 @@ pub(crate) fn schedule(
                 if f.try_call_info(id).is_some() || f.inst(id).memory().is_some() {
                     break;
                 }
+                // Generic call-frame boundaries remain hard scheduling barriers
+                // until frame lowering chooses their physical implementation.
                 let veloc_lir::MachineOpcode::Target(opcode) = f.inst(id).opcode() else {
                     break;
                 };

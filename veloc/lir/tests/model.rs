@@ -572,7 +572,7 @@ fn variable_views_preserve_call_and_return_operands() {
             vec![Type::I64; results.len()],
             veloc_mir::CallConv::SystemV,
         ),
-        stack: None,
+        frame: None,
         stack_args: Default::default(),
     };
     let direct = function
@@ -619,21 +619,28 @@ fn variable_views_preserve_call_and_return_operands() {
     assert!(!core::ptr::eq(direct_info, indirect_info));
     let indirect_info = indirect_info.clone();
     let mut lowered = info.clone();
-    lowered.stack = Some(veloc_lir::StackArea {
+    lowered.frame = Some(function.editor().alloc_call_frame(veloc_lir::StackArea {
         size: 32,
         align: 16,
-    });
+    }));
     function
         .editor()
         .rewriter(direct)
         .call(&results, symbol, &args, lowered);
     function.check_refs().unwrap();
-    assert_eq!(function.call_info(direct).stack.unwrap().size, 32);
-    assert!(function.call_info(indirect).stack.is_none());
+    assert_eq!(
+        function
+            .stack_frame
+            .call(function.call_info(direct).frame.unwrap())
+            .unwrap()
+            .size,
+        32
+    );
+    assert!(function.call_info(indirect).frame.is_none());
     // Replacing the call with a non-call drops only its own contract.
     function.editor().rewriter(direct).ret(&[]);
     assert!(function.try_call_info(direct).is_none());
-    assert!(function.call_info(indirect).stack.is_none());
+    assert!(function.call_info(indirect).frame.is_none());
 
     function.editor().replace_inst(direct, indirect);
     let InstView::CallIndirect(moved) = function.inst(direct).view() else {
@@ -642,16 +649,23 @@ fn variable_views_preserve_call_and_return_operands() {
     assert_eq!(moved.info, &indirect_info);
     assert!(function.try_call_info(indirect).is_none());
     let mut lowered = indirect_info.clone();
-    lowered.stack = Some(veloc_lir::StackArea {
+    lowered.frame = Some(function.editor().alloc_call_frame(veloc_lir::StackArea {
         size: 16,
         align: 16,
-    });
+    }));
     function
         .editor()
         .rewriter(direct)
         .callind(&results, Reg::new_vreg(25), &args, lowered);
     function.check_refs().unwrap();
-    assert_eq!(function.call_info(direct).stack.unwrap().size, 16);
+    assert_eq!(
+        function
+            .stack_frame
+            .call(function.call_info(direct).frame.unwrap())
+            .unwrap()
+            .size,
+        16
+    );
 
     let ret = function.editor().writer().ret(&args);
     let InstView::Return(view) = function.inst(ret).view() else {
@@ -685,7 +699,7 @@ fn optional_validation_is_separate_from_direct_views() {
     let info = veloc_lir::CallInfo {
         clobbers: Default::default(),
         sig: veloc_mir::Signature::new([Type::I64], [Type::I64], veloc_mir::CallConv::SystemV),
-        stack: None,
+        frame: None,
         stack_args: Default::default(),
     };
     let call = function.editor().writer().call(

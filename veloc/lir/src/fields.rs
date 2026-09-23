@@ -13,6 +13,7 @@ impl FieldValueRef<'_> {
             Self::FImm(v) => FieldValue::FImm(*v),
             Self::Edge(v) => FieldValue::Edge(*v),
             Self::StackSlot(v) => FieldValue::StackSlot(*v),
+            Self::CallFrame(v) => FieldValue::CallFrame(*v),
             Self::IntCC(v) => FieldValue::IntCC(*v),
             Self::FloatCC(v) => FieldValue::FloatCC(*v),
             Self::Global(v) => FieldValue::Global(*v),
@@ -30,6 +31,7 @@ pub(crate) enum Fields {
     Imm(i64),
     FImm(f64),
     StackSlot(StackSlot),
+    CallFrame(crate::CallFrameId),
     IntCC(IntCC),
     FloatCC(FloatCC),
     Symbol(SymbolId),
@@ -53,6 +55,12 @@ pub(crate) struct FieldPools {
     switches: Pool<Vec<EdgeId>>,
 }
 impl FieldPools {
+    pub(crate) fn call_info_mut(&mut self, fields: &Fields) -> &mut CallInfo {
+        let Fields::Call(id) = fields else {
+            panic!("expected call fields")
+        };
+        &mut self.calls.get_mut(*id).info
+    }
     /// Boundary adapter. Allocate a fresh owned payload, never adopt or repair
     /// an existing call handle. Unsupported shapes fail before changing an inst.
     pub(crate) fn pack(&mut self, values: impl IntoIterator<Item = FieldValue>) -> Fields {
@@ -67,6 +75,7 @@ impl FieldPools {
             (V::Imm(v), None) => Fields::Imm(v),
             (V::FImm(v), None) => Fields::FImm(v),
             (V::StackSlot(v), None) => Fields::StackSlot(v),
+            (V::CallFrame(v), None) => Fields::CallFrame(v),
             (V::IntCC(v), None) => Fields::IntCC(v),
             (V::FloatCC(v), None) => Fields::FloatCC(v),
             (V::Global(v), None) => Fields::Symbol(v),
@@ -172,6 +181,7 @@ impl<'a> FieldView<'a> {
             Fields::Imm(v) => V::Imm(v),
             Fields::FImm(v) => V::FImm(v),
             Fields::StackSlot(v) => V::StackSlot(v),
+            Fields::CallFrame(v) => V::CallFrame(v),
             Fields::IntCC(v) => V::IntCC(v),
             Fields::FloatCC(v) => V::FloatCC(v),
             Fields::Symbol(v) => V::Global(v),

@@ -12,12 +12,14 @@ use veloc_lir::InstBuild;
 use veloc_lir::InstRead;
 use veloc_lir::{ControlFlow, MachineFunction, Reg};
 
-/// Selected code must still be SSA and contain no generic instructions.
+/// Selected code is SSA with target instructions and symbolic call-frame boundaries.
 pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
     verify(f, target)?;
     for block in f.blocks() {
         for id in f.block_insts(block) {
-            if !matches!(f.inst(id).opcode(), veloc_lir::MachineOpcode::Target(_)) {
+            if !matches!(f.inst(id).opcode(), veloc_lir::MachineOpcode::Target(_))
+                && !f.inst(id).is_call_frame()
+            {
                 return Err(Error::codegen(format!("unselected instruction {id:?}")));
             }
         }
@@ -28,6 +30,7 @@ pub fn verify_selected(f: &MachineFunction, target: &dyn TargetInstructions) -> 
 /// Allocation removes SSA block parameters and all executable virtual registers.
 /// This check is explicit: no mutable phase flag can cause it to be skipped.
 pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
+    verify_call_frames(f, target)?;
     f.check_refs().map_err(|e| Error::codegen(e))?;
     if !f.params().is_empty() {
         return Err(Error::codegen(
@@ -40,6 +43,10 @@ pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) ->
         }
         for id in f.block_insts(block) {
             let inst = f.inst(id);
+            if inst.is_call_frame() {
+                inst.validate()?;
+                continue;
+            }
             if !matches!(inst.opcode(), veloc_lir::MachineOpcode::Target(_)) {
                 return Err(Error::codegen(format!("unselected instruction {id:?}")));
             }
@@ -55,6 +62,7 @@ pub fn verify_allocated(f: &MachineFunction, target: &dyn TargetInstructions) ->
 }
 
 pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()> {
+    verify_call_frames(f, target)?;
     let fail = |message| Error::codegen(format!("machine SSA in {}: {message}", f.name));
     f.check_refs().map_err(|e| fail(e.into()))?;
     let mut defs = HashMap::new();
@@ -192,6 +200,108 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
             for edge in f.successors(id) {
                 check_edge(edge.block, edge.args)?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// The reserved-frame implementation supports nonnested, block-local call
+/// sequences. Reject wider lifetimes until stack-state propagation is supported.
+pub(crate) fn verify_call_frames(
+    f: &MachineFunction,
+    target: &dyn TargetInstructions,
+) -> Result<()> {
+    use veloc_lir::{FieldValueRef, GenericOpcode, MachineOpcode, StackObject};
+    let finalized = f.stack_frame.layout().is_some();
+    let fail = |message: &str| Error::codegen(format!("call frame in {}: {message}", f.name));
+    let mut seen = HashSet::new();
+    for block in f.blocks() {
+        let mut active = None;
+        let mut called = false;
+        for id in f.block_insts(block) {
+            let inst = f.inst(id);
+            if inst.is_call_frame() {
+                if finalized {
+                    return Err(fail("boundary remains after frame lowering"));
+                }
+                inst.validate()?;
+                let FieldValueRef::CallFrame(frame) = inst.fields().read(0) else {
+                    return Err(fail("missing frame identity"));
+                };
+                if f.stack_frame.call(*frame).is_none() {
+                    return Err(fail("unknown frame"));
+                }
+                if inst.opcode() == MachineOpcode::Generic(GenericOpcode::CallFrameSetup) {
+                    if active.is_some() || !seen.insert(*frame) {
+                        return Err(fail("nested or repeated frame setup"));
+                    }
+                    active = Some(*frame);
+                    called = false;
+                } else {
+                    if active != Some(*frame) || !called {
+                        return Err(fail("unmatched frame destroy"));
+                    }
+                    active = None;
+                }
+                continue;
+            }
+            if active.is_some()
+                && !matches!(
+                    target.control_flow(&inst),
+                    ControlFlow::Next | ControlFlow::Call
+                )
+            {
+                return Err(fail("control transfer inside a block-local call frame"));
+            }
+            for index in 0..inst.fields().len() {
+                if let FieldValueRef::StackSlot(slot) = inst.fields().read(index) {
+                    let slot = f
+                        .stack_frame
+                        .slots()
+                        .get(*slot)
+                        .ok_or_else(|| fail("unknown stack slot"))?;
+                    if let StackObject::Outgoing { frame, offset } = slot.object {
+                        let area = f
+                            .stack_frame
+                            .call(frame)
+                            .ok_or_else(|| fail("unknown outgoing frame"))?;
+                        if offset
+                            .checked_add(slot.size)
+                            .is_none_or(|end| end > area.size)
+                            || slot.align > area.align
+                            || offset % slot.align != 0
+                        {
+                            return Err(fail("outgoing object exceeds call frame constraints"));
+                        }
+                        if !finalized && (active != Some(frame) || called) {
+                            return Err(fail("outgoing address outside argument preparation"));
+                        }
+                    }
+                }
+            }
+            if let Some(info) = f.try_call_info(id) {
+                if let Some(frame) = info.frame {
+                    if f.stack_frame.call(frame).is_none() {
+                        return Err(fail("unknown call frame"));
+                    }
+                    if !finalized && (active != Some(frame) || called) {
+                        return Err(fail("call outside its frame"));
+                    }
+                    for slot in &info.stack_args {
+                        if !matches!(f.stack_frame.slots().get(*slot).map(|s| s.object),
+                            Some(StackObject::Outgoing { frame: owner, .. }) if owner == frame)
+                        {
+                            return Err(fail("call argument belongs to another frame"));
+                        }
+                    }
+                    called = true;
+                } else if active.is_some() {
+                    return Err(fail("unlowered call inside a call frame"));
+                }
+            }
+        }
+        if active.is_some() {
+            return Err(fail("cross-block call frames are not supported yet"));
         }
     }
     Ok(())

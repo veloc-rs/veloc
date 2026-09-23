@@ -25,8 +25,12 @@ impl TargetFrameLowering for X86_64FrameLowering {
             for inst_id in mfunc.block_insts(block) {
                 if let Some(info) = mfunc.try_call_info(inst_id) {
                     let stack = info
-                        .stack
+                        .frame
                         .ok_or_else(|| crate::Error::codegen("call has not been ABI lowered"))?;
+                    let stack = mfunc
+                        .stack_frame
+                        .call(stack)
+                        .ok_or_else(|| crate::Error::codegen("unknown call frame"))?;
                     if stack.align > align {
                         return Err(crate::Error::codegen("unsupported call stack alignment"));
                     }
@@ -96,7 +100,17 @@ impl TargetFrameLowering for X86_64FrameLowering {
                         offset: i32::try_from(offset).map_err(|_| error())?,
                     }
                 }
-                StackObject::Outgoing { offset } => {
+                StackObject::Outgoing {
+                    frame: call,
+                    offset,
+                } => {
+                    let area = frame.call(call).ok_or_else(error)?;
+                    if offset
+                        .checked_add(slot.size)
+                        .is_none_or(|end| end > area.size)
+                    {
+                        return Err(error());
+                    }
                     outgoing = outgoing.max(offset.checked_add(slot.size).ok_or_else(error)?);
                     StackAddress {
                         base: generated::REG_RSP,
@@ -124,6 +138,14 @@ impl TargetFrameLowering for X86_64FrameLowering {
         };
         mfunc.stack_frame.append(batch);
         mfunc.stack_frame.finish(layout);
+        // This target currently reserves the maximum outgoing area once.
+        // Erase lifetime markers only after all frame constraints succeeded.
+        let mut cursor = veloc_lir::InstCursor::new(mfunc);
+        while let Some(id) = cursor.next(mfunc) {
+            if mfunc.inst(id).is_call_frame() {
+                mfunc.editor().invalidate_inst(id);
+            }
+        }
         Ok(())
     }
 

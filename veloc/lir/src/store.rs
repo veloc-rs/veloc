@@ -197,12 +197,22 @@ impl InstBuilder<'_> {
 pub struct InstWriter<'a> {
     changes: Option<&'a mut crate::EditChanges>,
     store: &'a mut InstStore,
-    target: Option<InstId>,
+    mode: WriteMode<'a>,
     memory: Option<crate::MemoryAccess>,
     effects: RegEffects<&'a [Reg]>,
 }
 
+enum WriteMode<'a> {
+    Detached,
+    Replace(InstId),
+    Insert(crate::function::Insertion<'a>),
+}
+
 impl<'a> InstWriter<'a> {
+    pub(crate) fn inserting(mut self, insertion: crate::function::Insertion<'a>) -> Self {
+        self.mode = WriteMode::Insert(insertion);
+        self
+    }
     pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
         self.store.create_edge(block, args)
     }
@@ -237,8 +247,8 @@ impl<'a> InstWriter<'a> {
             uses: self.effects.uses,
             defs: self.effects.defs,
         };
-        let id = match self.target {
-            Some(id) => {
+        let (id, block) = match self.mode {
+            WriteMode::Replace(id) => {
                 self.store.write_full_at(
                     id,
                     opcode,
@@ -248,14 +258,24 @@ impl<'a> InstWriter<'a> {
                     self.memory,
                     implicit,
                 );
-                id
+                (id, None)
             }
-            None => self
-                .store
-                .write_full(opcode, results, inputs, fields, self.memory, implicit),
+            mode => {
+                let id =
+                    self.store
+                        .write_full(opcode, results, inputs, fields, self.memory, implicit);
+                let block = match mode {
+                    WriteMode::Insert(insertion) => Some(insertion.commit(id)),
+                    _ => None,
+                };
+                (id, block)
+            }
         };
         if let Some(changes) = self.changes {
             changes.insts.push(id);
+            if let Some(block) = block {
+                changes.blocks.push(block);
+            }
         }
         id
     }
@@ -296,7 +316,7 @@ impl InstStore {
         crate::InstWriter {
             store: self,
             changes: None,
-            target: None,
+            mode: WriteMode::Detached,
             memory: None,
             effects: RegEffects::default(),
         }
@@ -306,7 +326,7 @@ impl InstStore {
         InstWriter {
             store: self,
             changes: None,
-            target: Some(id),
+            mode: WriteMode::Replace(id),
             memory: None,
             effects: RegEffects::default(),
         }
@@ -512,6 +532,36 @@ impl InstStore {
     }
     pub fn call_info(&self, id: InstId) -> Option<&crate::CallInfo> {
         self.fields(id).call_info()
+    }
+    pub(crate) fn set_call_abi(
+        &mut self,
+        id: InstId,
+        results: &[Reg],
+        args: &[Reg],
+        frame: crate::CallFrameId,
+        clobbers: crate::RegMask,
+        stack_args: smallvec::SmallVec<[crate::StackSlot; 2]>,
+    ) {
+        let mut inputs = smallvec::SmallVec::<[Reg; 8]>::new();
+        match self.opcode(id) {
+            MachineOpcode::Generic(crate::GenericOpcode::Call) => {}
+            MachineOpcode::Generic(crate::GenericOpcode::Callind) => {
+                inputs.push(self.inputs(id)[0])
+            }
+            _ => panic!("ABI lowering requires a generic call"),
+        }
+        assert!(
+            self.call_info(id).expect("call fields").frame.is_none(),
+            "call already lowered"
+        );
+        inputs.extend_from_slice(args);
+        // These updates preserve implicit register occurrences and memory facts.
+        self.set_inputs(id, &inputs);
+        self.set_results(id, results);
+        let info = self.fields.call_info_mut(&self.instructions[id].fields);
+        info.frame = Some(frame);
+        info.clobbers = clobbers;
+        info.stack_args = stack_args;
     }
     pub fn edge_ids(&self, id: InstId) -> impl Iterator<Item = crate::EdgeId> + '_ {
         self.fields(id).successors().iter().copied()

@@ -3,11 +3,12 @@ import "../../defs/prelude.spec";
 // Operand-array storage is independent of operation semantics and type contracts.
 type CallInfo = rust("crate::CallInfo") { view = borrowed; }
 type StackSlot = rust("crate::StackSlot");
+type CallFrameId = rust("crate::CallFrameId");
 type Successor = rust("crate::EdgeId");
 
 type Reg = rust("crate::Reg");
 enum FieldValue {
-    variants = [Imm(i64), FImm(f64), Edge(Successor), StackSlot(StackSlot), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId), Call(CallInfo)];
+    variants = [Imm(i64), FImm(f64), Edge(Successor), StackSlot(StackSlot), CallFrame(CallFrameId), IntCC(IntCC), FloatCC(FloatCC), Global(SymbolId), Call(CallInfo)];
 }
 enum ControlFlow {
     variants = [Next, Branch, Jump, Return, Call, Trap];
@@ -50,6 +51,21 @@ struct Load {
 struct StackAddr {
     dst: Reg,
     slot: StackSlot,
+}
+
+struct CallFrame {
+    frame: CallFrameId,
+}
+
+// Survive selection and allocation; frame lowering chooses their implementation.
+op CallFrameSetup(frame: CallFrameId) -> () {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    storage = CallFrame { frame };
+}
+
+op CallFrameDestroy(frame: CallFrameId) -> () {
+    meta = OpInfo { memory: MemoryEffect::UNKNOWN };
+    storage = CallFrame { frame };
 }
 
 struct Store {

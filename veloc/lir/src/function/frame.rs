@@ -6,8 +6,13 @@ use cranelift_entity::PrimaryMap;
 #[derive(Debug, Clone, Copy)]
 pub enum StackObject {
     Local,
-    Incoming { offset: u32 },
-    Outgoing { offset: u32 },
+    Incoming {
+        offset: u32,
+    },
+    Outgoing {
+        frame: crate::CallFrameId,
+        offset: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +47,7 @@ pub struct FrameLayout {
 
 #[derive(Debug, Clone, Default)]
 pub struct StackFrame {
+    calls: PrimaryMap<crate::CallFrameId, crate::StackArea>,
     slots: PrimaryMap<StackSlot, StackSlotData>,
     layout: Option<FrameLayout>,
 }
@@ -75,6 +81,16 @@ impl StackBatch {
 }
 
 impl StackFrame {
+    pub fn alloc_call(&mut self, area: crate::StackArea) -> crate::CallFrameId {
+        assert!(self.layout.is_none(), "frame already laid out");
+        assert!(area.align.is_power_of_two(), "invalid call alignment");
+        self.calls.push(area)
+    }
+
+    pub fn call(&self, id: crate::CallFrameId) -> Option<&crate::StackArea> {
+        self.calls.get(id)
+    }
+
     pub fn batch(&self) -> StackBatch {
         assert!(self.layout.is_none(), "frame already laid out");
         StackBatch {

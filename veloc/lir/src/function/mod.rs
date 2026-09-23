@@ -89,7 +89,8 @@ mod cursor;
 pub use cursor::InstCursor;
 
 mod edit;
-pub use edit::{EditChanges, FuncEditor};
+pub(crate) use edit::Insertion;
+pub use edit::{EditChanges, FuncEditor, InstInserter};
 
 impl MachineFunction {
     pub fn new(name: String) -> Self {
