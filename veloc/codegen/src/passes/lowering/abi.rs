@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
 use crate::target::{AbiAssignment, AbiLocation, AbiPlan, CallConv, TargetMachine};
 use smallvec::SmallVec;
-use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot, Writable};
+use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot};
 use veloc_lir::{InstBuild, InstRead};
 use veloc_lir::{MemoryAccess, MemoryKind};
 
@@ -15,36 +15,15 @@ impl AbiLoweringPass {
     }
 }
 
-// Check each ABI plan before lowering its boundary.
+// Reject transfer modes that this lowering does not implement yet.
 fn plan_signature(target: &dyn TargetMachine, sig: &veloc_mir::Signature) -> Result<AbiPlan> {
-    let plan =
-        CallConv::from(sig.call_conv).plan(target.desc().arch, sig.params(), sig.returns())?;
-    let frame = target.frame_lowering();
-    if plan.stack.align > frame.stack_alignment() {
-        return Err(Error::codegen("ABI requires unsupported stack realignment"));
-    }
-    for assignment in plan.args.iter().chain(&plan.returns) {
-        if let AbiLocation::Stack { offset, size, .. } = assignment.loc {
-            let fits = offset
-                .checked_add(size)
-                .and_then(|end| i32::try_from(end).ok());
-            if fits.is_none() {
-                return Err(Error::codegen(
-                    "ABI stack area exceeds frame addressing range",
-                ));
-            }
-            let bytes = target
-                .desc()
-                .data_layout
-                .layout_of(assignment.ty)
-                .and_then(|layout| layout.store_size.fixed_bytes());
-            if bytes.is_none_or(|bytes| bytes > size) {
-                return Err(Error::codegen(
-                    "ABI stack slot cannot hold the transferred type",
-                ));
-            }
-        }
-    }
+    let desc = target.desc();
+    let plan = CallConv::from(sig.call_conv).plan(
+        desc.arch,
+        &desc.data_layout,
+        sig.params(),
+        sig.returns(),
+    )?;
     if plan
         .returns
         .iter()
@@ -87,7 +66,7 @@ impl<'a> Transfer<'a> {
         };
         let slot = self.func.alloc_stack_object(object, size, align);
         let address = self.func.alloc_vreg(veloc_lir::Type::PTR);
-        self.func.writer().stack_addr(Writable(address), slot);
+        self.func.stack_addr(address, slot);
         (address, slot)
     }
 
@@ -107,7 +86,7 @@ impl<'a> Transfer<'a> {
 
     fn read(&mut self, dst: Reg, assignment: &AbiAssignment, area: ArgArea) {
         match assignment.loc {
-            AbiLocation::Reg(reg) => self.func.writer().copy(Writable(dst), reg),
+            AbiLocation::Reg(reg) => self.func.copy(dst, reg),
             AbiLocation::Stack {
                 offset,
                 size,
@@ -115,10 +94,7 @@ impl<'a> Transfer<'a> {
             } => {
                 let (address, _) = self.address(area, offset, size, align);
                 let access = self.access(assignment, align, MemoryKind::Read);
-                self.func
-                    .writer()
-                    .with_memory(access)
-                    .load(Writable(dst), address, 0)
+                self.func.with_memory(access).load(dst, address, 0)
             }
         };
     }
@@ -126,7 +102,7 @@ impl<'a> Transfer<'a> {
     fn write(&mut self, src: Reg, assignment: &AbiAssignment, area: ArgArea) -> Option<StackSlot> {
         match assignment.loc {
             AbiLocation::Reg(reg) => {
-                self.func.writer().copy(Writable(reg), src);
+                self.func.copy(reg, src);
                 None
             }
             AbiLocation::Stack {
@@ -136,10 +112,7 @@ impl<'a> Transfer<'a> {
             } => {
                 let (address, slot) = self.address(area, offset, size, align);
                 let access = self.access(assignment, align, MemoryKind::Write);
-                self.func
-                    .writer()
-                    .with_memory(access)
-                    .store(src, address, 0);
+                self.func.with_memory(access).store(src, address, 0);
                 Some(slot)
             }
         }
@@ -195,7 +168,7 @@ fn lower_callsite(
 
     let results = SmallVec::<[Reg; 2]>::from_slice(results);
     let frame = mfunc.alloc_call_frame(plan.stack);
-    mfunc.before(id).writer().call_frame_setup(frame);
+    mfunc.before(id).call_frame_setup(frame);
 
     // Place logical arguments in their ABI locations before the call.
     let mut stack_args = SmallVec::new();
@@ -219,9 +192,9 @@ fn lower_callsite(
         let AbiLocation::Reg(reg) = assignment.loc else {
             unreachable!("checked register return")
         };
-        insert.writer().copy(Writable(dst), reg);
+        insert.copy(dst, reg);
     }
-    insert.writer().call_frame_destroy(frame);
+    insert.call_frame_destroy(frame);
 }
 
 fn lower_return(
@@ -247,7 +220,7 @@ fn lower_return(
             let AbiLocation::Reg(reg) = assignment.loc else {
                 unreachable!("checked register return")
             };
-            insert.writer().copy(Writable(reg), src);
+            insert.copy(reg, src);
         }
     }
     mfunc.set_inst_inputs(id, return_regs);

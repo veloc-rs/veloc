@@ -145,7 +145,7 @@ impl<'a> FuncTranslator<'a> {
                 .mfunc
                 .editor()
                 .create_edge(self.block_map[entry].unwrap(), &args);
-            self.mfunc.editor().at_end(incoming).writer().br(edge);
+            self.mfunc.editor().at_end(incoming).br(edge);
         } else {
             for &value in func.params() {
                 self.mfunc.editor().append_param(self.value_map[value]);
@@ -212,12 +212,10 @@ impl<'a> FuncTranslator<'a> {
 
     /// Translate one operation, emitting complete LIR instructions in order.
     fn translate_instruction(&mut self, inst_id: veloc_mir::Inst, mblock: BlockId) -> Result<()> {
-        use veloc_lir::Writable;
-
         let inst_data = &self.func.dfg().inst(inst_id);
 
         let results = self.func.dfg().inst_results(inst_id);
-        let result = || Writable(self.value_map[results[0]]);
+        let result = || self.value_map[results[0]];
 
         match inst_data {
             InstView::Unary { .. }
@@ -230,48 +228,47 @@ impl<'a> FuncTranslator<'a> {
                 let dst = result();
                 let mut edit = self.mfunc.editor();
                 let mut insert = edit.at_end(mblock);
-                let writer = insert.writer();
                 match inst_data.opcode() {
-                    Opcode::INeg => Ok(writer.neg(dst, input(0))),
-                    Opcode::IClz => Ok(writer.ctlz(dst, input(0))),
-                    Opcode::ICtz => Ok(writer.cttz(dst, input(0))),
-                    Opcode::IPopcnt => Ok(writer.ctpop(dst, input(0))),
-                    Opcode::FAbs => Ok(writer.fabs(dst, input(0))),
-                    Opcode::FSqrt => Ok(writer.fsqrt(dst, input(0))),
-                    Opcode::FNeg => Ok(writer.fneg(dst, input(0))),
-                    Opcode::IEqz => Ok(writer.ieqz(dst, input(0))),
-                    Opcode::Wrap => Ok(writer.trunc(dst, input(0))),
-                    Opcode::ExtendU => Ok(writer.zext(dst, input(0))),
-                    Opcode::ExtendS => Ok(writer.sext(dst, input(0))),
-                    Opcode::FloatDemote => Ok(writer.fptrunc(dst, input(0))),
-                    Opcode::FloatPromote => Ok(writer.fpext(dst, input(0))),
-                    Opcode::FloatToIntU => Ok(writer.fptoui(dst, input(0))),
-                    Opcode::FloatToIntS => Ok(writer.fptosi(dst, input(0))),
-                    Opcode::IntToFloatU => Ok(writer.uitofp(dst, input(0))),
-                    Opcode::IntToFloatS => Ok(writer.sitofp(dst, input(0))),
-                    Opcode::Reinterpret => Ok(writer.bitcast(dst, input(0))),
-                    Opcode::IntToPtr => Ok(writer.inttoptr(dst, input(0))),
-                    Opcode::PtrToInt => Ok(writer.ptrtoint(dst, input(0))),
-                    Opcode::IAdd => Ok(writer.add(dst, input(0), input(1))),
-                    Opcode::ISub => Ok(writer.sub(dst, input(0), input(1))),
-                    Opcode::IMul => Ok(writer.mul(dst, input(0), input(1))),
-                    Opcode::IAnd => Ok(writer.and(dst, input(0), input(1))),
-                    Opcode::IOr => Ok(writer.or(dst, input(0), input(1))),
-                    Opcode::IXor => Ok(writer.xor(dst, input(0), input(1))),
-                    Opcode::IDivS => Ok(writer.sdiv(dst, input(0), input(1))),
-                    Opcode::IDivU => Ok(writer.udiv(dst, input(0), input(1))),
-                    Opcode::IRemS => Ok(writer.srem(dst, input(0), input(1))),
-                    Opcode::IRemU => Ok(writer.urem(dst, input(0), input(1))),
-                    Opcode::IRotl => Ok(writer.rotl(dst, input(0), input(1))),
-                    Opcode::IRotr => Ok(writer.rotr(dst, input(0), input(1))),
-                    Opcode::IShl => Ok(writer.shl(dst, input(0), input(1))),
-                    Opcode::IShrS => Ok(writer.ashr(dst, input(0), input(1))),
-                    Opcode::IShrU => Ok(writer.lshr(dst, input(0), input(1))),
-                    Opcode::FAdd => Ok(writer.fadd(dst, input(0), input(1))),
-                    Opcode::FSub => Ok(writer.fsub(dst, input(0), input(1))),
-                    Opcode::FMul => Ok(writer.fmul(dst, input(0), input(1))),
-                    Opcode::FDiv => Ok(writer.fdiv(dst, input(0), input(1))),
-                    Opcode::Select => Ok(writer.select(dst, input(0), input(1), input(2))),
+                    Opcode::INeg => Ok(insert.neg(dst, input(0))),
+                    Opcode::IClz => Ok(insert.ctlz(dst, input(0))),
+                    Opcode::ICtz => Ok(insert.cttz(dst, input(0))),
+                    Opcode::IPopcnt => Ok(insert.ctpop(dst, input(0))),
+                    Opcode::FAbs => Ok(insert.fabs(dst, input(0))),
+                    Opcode::FSqrt => Ok(insert.fsqrt(dst, input(0))),
+                    Opcode::FNeg => Ok(insert.fneg(dst, input(0))),
+                    Opcode::IEqz => Ok(insert.ieqz(dst, input(0))),
+                    Opcode::Wrap => Ok(insert.trunc(dst, input(0))),
+                    Opcode::ExtendU => Ok(insert.zext(dst, input(0))),
+                    Opcode::ExtendS => Ok(insert.sext(dst, input(0))),
+                    Opcode::FloatDemote => Ok(insert.fptrunc(dst, input(0))),
+                    Opcode::FloatPromote => Ok(insert.fpext(dst, input(0))),
+                    Opcode::FloatToIntU => Ok(insert.fptoui(dst, input(0))),
+                    Opcode::FloatToIntS => Ok(insert.fptosi(dst, input(0))),
+                    Opcode::IntToFloatU => Ok(insert.uitofp(dst, input(0))),
+                    Opcode::IntToFloatS => Ok(insert.sitofp(dst, input(0))),
+                    Opcode::Reinterpret => Ok(insert.bitcast(dst, input(0))),
+                    Opcode::IntToPtr => Ok(insert.inttoptr(dst, input(0))),
+                    Opcode::PtrToInt => Ok(insert.ptrtoint(dst, input(0))),
+                    Opcode::IAdd => Ok(insert.add(dst, input(0), input(1))),
+                    Opcode::ISub => Ok(insert.sub(dst, input(0), input(1))),
+                    Opcode::IMul => Ok(insert.mul(dst, input(0), input(1))),
+                    Opcode::IAnd => Ok(insert.and(dst, input(0), input(1))),
+                    Opcode::IOr => Ok(insert.or(dst, input(0), input(1))),
+                    Opcode::IXor => Ok(insert.xor(dst, input(0), input(1))),
+                    Opcode::IDivS => Ok(insert.sdiv(dst, input(0), input(1))),
+                    Opcode::IDivU => Ok(insert.udiv(dst, input(0), input(1))),
+                    Opcode::IRemS => Ok(insert.srem(dst, input(0), input(1))),
+                    Opcode::IRemU => Ok(insert.urem(dst, input(0), input(1))),
+                    Opcode::IRotl => Ok(insert.rotl(dst, input(0), input(1))),
+                    Opcode::IRotr => Ok(insert.rotr(dst, input(0), input(1))),
+                    Opcode::IShl => Ok(insert.shl(dst, input(0), input(1))),
+                    Opcode::IShrS => Ok(insert.ashr(dst, input(0), input(1))),
+                    Opcode::IShrU => Ok(insert.lshr(dst, input(0), input(1))),
+                    Opcode::FAdd => Ok(insert.fadd(dst, input(0), input(1))),
+                    Opcode::FSub => Ok(insert.fsub(dst, input(0), input(1))),
+                    Opcode::FMul => Ok(insert.fmul(dst, input(0), input(1))),
+                    Opcode::FDiv => Ok(insert.fdiv(dst, input(0), input(1))),
+                    Opcode::Select => Ok(insert.select(dst, input(0), input(1), input(2))),
                     _ => Err(Error::translate(format!(
                         "unsupported arithmetic opcode: {:?}",
                         inst_data.opcode()
@@ -296,7 +293,6 @@ impl<'a> FuncTranslator<'a> {
                     .mfunc
                     .editor()
                     .at_end(mblock)
-                    .writer()
                     .stack_addr(result(), slot))
             }
             InstView::IntCompare { kind, args } => {
@@ -307,7 +303,6 @@ impl<'a> FuncTranslator<'a> {
                     .mfunc
                     .editor()
                     .at_end(mblock)
-                    .writer()
                     .icmp(result(), src0, src1, *kind))
             }
 
@@ -319,20 +314,17 @@ impl<'a> FuncTranslator<'a> {
                     .mfunc
                     .editor()
                     .at_end(mblock)
-                    .writer()
                     .fcmp(result(), src0, src1, *kind))
             }
 
             InstView::Load { ptr, offset, .. } => {
                 let base = self.value_map[*ptr];
                 let access = self.memory_access(inst_id)?;
-                Ok(self
-                    .mfunc
-                    .editor()
-                    .at_end(mblock)
-                    .writer()
-                    .with_memory(access)
-                    .load(result(), base, *offset as i64))
+                Ok(self.mfunc.editor().at_end(mblock).with_memory(access).load(
+                    result(),
+                    base,
+                    *offset as i64,
+                ))
             }
 
             InstView::Store {
@@ -345,7 +337,6 @@ impl<'a> FuncTranslator<'a> {
                     .mfunc
                     .editor()
                     .at_end(mblock)
-                    .writer()
                     .with_memory(access)
                     .store(val, base, *offset as i64))
             }
@@ -354,19 +345,17 @@ impl<'a> FuncTranslator<'a> {
                 .mfunc
                 .editor()
                 .at_end(mblock)
-                .writer()
                 .constant(result(), imm.signed())),
 
             InstView::Bconst { value } => Ok(self
                 .mfunc
                 .editor()
                 .at_end(mblock)
-                .writer()
                 .constant(result(), i64::from(*value))),
 
             InstView::Fconst { value } => {
                 let dst = result();
-                let dst_ty = self.mfunc.vreg_data(dst.to_reg()).ty;
+                let dst_ty = self.mfunc.vreg_data(dst).ty;
 
                 let (bits_ty, bits_imm) = if dst_ty == veloc_mir::Type::F32 {
                     (veloc_mir::Type::I32, value.to_bits() as u32 as i64)
@@ -383,20 +372,14 @@ impl<'a> FuncTranslator<'a> {
                 self.mfunc
                     .editor()
                     .at_end(mblock)
-                    .writer()
-                    .constant(Writable(bits_reg), bits_imm);
+                    .constant(bits_reg, bits_imm);
 
-                Ok(self
-                    .mfunc
-                    .editor()
-                    .at_end(mblock)
-                    .writer()
-                    .bitcast(dst, bits_reg))
+                Ok(self.mfunc.editor().at_end(mblock).bitcast(dst, bits_reg))
             }
 
             InstView::Jump { dest } => {
                 let edge = self.lower_edge(*dest);
-                Ok(self.mfunc.editor().at_end(mblock).writer().br(edge))
+                Ok(self.mfunc.editor().at_end(mblock).br(edge))
             }
 
             InstView::Br {
@@ -411,7 +394,6 @@ impl<'a> FuncTranslator<'a> {
                     .mfunc
                     .editor()
                     .at_end(mblock)
-                    .writer()
                     .brcond(cond_vreg, yes, no))
             }
 
@@ -419,17 +401,12 @@ impl<'a> FuncTranslator<'a> {
                 let idx_vreg = self.value_map[*index];
                 let edges: SmallVec<[_; 4]> =
                     table.iter().map(|edge| self.lower_edge(edge)).collect();
-                Ok(self
-                    .mfunc
-                    .editor()
-                    .at_end(mblock)
-                    .writer()
-                    .brjt(idx_vreg, &edges))
+                Ok(self.mfunc.editor().at_end(mblock).brjt(idx_vreg, &edges))
             }
 
             InstView::Return { values } => {
                 let rets = self.values(values);
-                Ok(self.mfunc.editor().at_end(mblock).writer().ret(&rets))
+                Ok(self.mfunc.editor().at_end(mblock).ret(&rets))
             }
 
             InstView::Call { func_id, args } => {
@@ -445,7 +422,6 @@ impl<'a> FuncTranslator<'a> {
                     .mfunc
                     .editor()
                     .at_end(mblock)
-                    .writer()
                     .call(&results, symbol, &args, info))
             }
 
@@ -458,7 +434,6 @@ impl<'a> FuncTranslator<'a> {
                     .mfunc
                     .editor()
                     .at_end(mblock)
-                    .writer()
                     .callind(&results, ptr, &args, info))
             }
 
@@ -470,25 +445,18 @@ impl<'a> FuncTranslator<'a> {
                     veloc_mir::Type::I64
                 };
                 if *offset == 0 {
-                    Ok(self
-                        .mfunc
-                        .editor()
-                        .at_end(mblock)
-                        .writer()
-                        .copy(result(), addr))
+                    Ok(self.mfunc.editor().at_end(mblock).copy(result(), addr))
                 } else {
                     let off_reg = self.mfunc.editor().alloc_vreg(addr_ty);
                     self.mfunc
                         .editor()
                         .at_end(mblock)
-                        .writer()
-                        .constant(Writable(off_reg), *offset as i64);
+                        .constant(off_reg, *offset as i64);
 
                     Ok(self
                         .mfunc
                         .editor()
                         .at_end(mblock)
-                        .writer()
                         .ptr_add(result(), addr, off_reg))
                 }
             }
@@ -511,17 +479,9 @@ impl<'a> FuncTranslator<'a> {
                     let from = index_ty.element_bits().expect("integer index width");
                     let to = u32::from(self.layout.pointer_size) * 8;
                     if from < to {
-                        self.mfunc
-                            .editor()
-                            .at_end(mblock)
-                            .writer()
-                            .zext(Writable(normalized), idx)
+                        self.mfunc.editor().at_end(mblock).zext(normalized, idx)
                     } else {
-                        self.mfunc
-                            .editor()
-                            .at_end(mblock)
-                            .writer()
-                            .trunc(Writable(normalized), idx)
+                        self.mfunc.editor().at_end(mblock).trunc(normalized, idx)
                     };
 
                     normalized
@@ -534,15 +494,13 @@ impl<'a> FuncTranslator<'a> {
                     self.mfunc
                         .editor()
                         .at_end(mblock)
-                        .writer()
-                        .constant(Writable(scale_reg), imm.scale as i64);
+                        .constant(scale_reg, imm.scale as i64);
 
                     let res_reg = self.mfunc.editor().alloc_vreg(addr_ty);
-                    self.mfunc.editor().at_end(mblock).writer().mul(
-                        Writable(res_reg),
-                        idx,
-                        scale_reg,
-                    );
+                    self.mfunc
+                        .editor()
+                        .at_end(mblock)
+                        .mul(res_reg, idx, scale_reg);
 
                     res_reg
                 } else {
@@ -555,15 +513,13 @@ impl<'a> FuncTranslator<'a> {
                     self.mfunc
                         .editor()
                         .at_end(mblock)
-                        .writer()
-                        .constant(Writable(off_reg), imm.offset as i64);
+                        .constant(off_reg, imm.offset as i64);
 
                     let res_reg = self.mfunc.editor().alloc_vreg(addr_ty);
-                    self.mfunc.editor().at_end(mblock).writer().add(
-                        Writable(res_reg),
-                        scaled_idx,
-                        off_reg,
-                    );
+                    self.mfunc
+                        .editor()
+                        .at_end(mblock)
+                        .add(res_reg, scaled_idx, off_reg);
 
                     res_reg
                 } else {
@@ -571,13 +527,13 @@ impl<'a> FuncTranslator<'a> {
                 };
 
                 // 3. ptr_add: ptr + base_idx
-                Ok(self.mfunc.editor().at_end(mblock).writer().ptr_add(
-                    result(),
-                    base_ptr,
-                    base_idx,
-                ))
+                Ok(self
+                    .mfunc
+                    .editor()
+                    .at_end(mblock)
+                    .ptr_add(result(), base_ptr, base_idx))
             }
-            InstView::Unreachable => Ok(self.mfunc.editor().at_end(mblock).writer().trap()),
+            InstView::Unreachable => Ok(self.mfunc.editor().at_end(mblock).trap()),
 
             _ => Err(Error::translate(format!(
                 "InstView variant not implemented for translation: {:?}",

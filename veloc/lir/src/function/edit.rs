@@ -37,8 +37,10 @@ impl FuncEditor<'_> {
         assert!(self.layout().contains_block(block), "unknown block");
         InstInserter {
             editor: self.editor(),
-            block,
-            before: None,
+            position: Position::Insert {
+                block,
+                before: None,
+            },
         }
     }
     pub fn at_start(&mut self, block: Block) -> InstInserter<'_> {
@@ -46,16 +48,17 @@ impl FuncEditor<'_> {
         let before = self.layout().first_inst(block);
         InstInserter {
             editor: self.editor(),
-            block,
-            before,
+            position: Position::Insert { block, before },
         }
     }
     pub fn before(&mut self, inst: InstId) -> InstInserter<'_> {
         let block = self.inst_block(inst).expect("detached insertion anchor");
         InstInserter {
             editor: self.editor(),
-            block,
-            before: Some(inst),
+            position: Position::Insert {
+                block,
+                before: Some(inst),
+            },
         }
     }
     pub fn after(&mut self, inst: InstId) -> InstInserter<'_> {
@@ -63,8 +66,7 @@ impl FuncEditor<'_> {
         let before = self.layout().next_inst(inst);
         InstInserter {
             editor: self.editor(),
-            block,
-            before,
+            position: Position::Insert { block, before },
         }
     }
     pub fn append_param(&mut self, param: Reg) {
@@ -281,12 +283,17 @@ impl FuncEditor<'_> {
         }
     }
 
-    pub fn rewriter(&mut self, id: InstId) -> InstWriter<'_> {
-        self.function
-            .body
-            .store
-            .rewriter(id)
-            .tracking(self.changes.as_deref_mut())
+    /// Rebuild one instruction in place, retaining its ID and layout position.
+    /// Unspecified memory facts and implicit register effects are cleared.
+    pub fn replace(&mut self, id: InstId) -> InstInserter<'_> {
+        assert_ne!(self.inst(id).opcode(), crate::MachineOpcode::Invalid);
+        InstInserter {
+            editor: self.editor(),
+            position: Position::Replace {
+                id,
+                committed: false,
+            },
+        }
     }
 
     pub fn alloc_vreg_data(&mut self, data: VRegData) -> Reg {
@@ -307,11 +314,10 @@ impl FuncEditor<'_> {
     }
 
     /// Split register allocation from append-only instruction construction.
-    pub fn instruction_parts(&mut self) -> (VRegBuilder<'_>, crate::InstBuilder<'_>) {
+    pub fn instruction_parts(&mut self) -> (VRegBuilder<'_>, crate::InstEditor<'_>) {
         (
             VRegBuilder(&mut self.function.body.vregs),
-            crate::InstBuilder {
-                edge_transfers: Vec::new(),
+            crate::InstEditor {
                 store: &mut self.function.body.store,
                 changes: self.changes.as_deref_mut(),
             },
@@ -480,13 +486,23 @@ impl Insertion<'_> {
     }
 }
 
-/// A stable gap in the layout. Repeated writes preserve emission order, even
-/// when the gap was obtained with `after`. Its restricted construction API
-/// prevents moving or deleting the anchor while this borrow is active.
+/// A construction destination: a stable insertion gap or a single replacement.
+/// Gap writes preserve emission order; replacement permits exactly one commit.
+/// The restricted API prevents moving or deleting the anchor during construction.
 pub struct InstInserter<'a> {
     editor: FuncEditor<'a>,
-    block: Block,
-    before: Option<InstId>,
+    position: Position,
+}
+
+enum Position {
+    Insert {
+        block: Block,
+        before: Option<InstId>,
+    },
+    Replace {
+        id: InstId,
+        committed: bool,
+    },
 }
 
 impl core::ops::Deref for InstInserter<'_> {
@@ -497,21 +513,68 @@ impl core::ops::Deref for InstInserter<'_> {
 }
 
 impl InstInserter<'_> {
+    /// Configure one complete instruction before committing it at this gap.
+    pub fn with_memory(&mut self, access: crate::MemoryAccess) -> InstWriter<'_> {
+        self.writer().with_memory(access)
+    }
+
+    pub fn with_effects<'a>(&'a mut self, uses: &'a [Reg], defs: &'a [Reg]) -> InstWriter<'a> {
+        self.writer().with_effects(uses, defs)
+    }
+
+    pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
+        self.editor.function.body.store.create_edge(block, args)
+    }
     pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
         self.editor.alloc_vreg(ty)
     }
     pub fn alloc_stack_object(&mut self, object: StackObject, size: u32, align: u32) -> StackSlot {
         self.editor.alloc_stack_object(object, size, align)
     }
-    pub fn writer(&mut self) -> InstWriter<'_> {
+    fn writer(&mut self) -> InstWriter<'_> {
         let body = &mut self.editor.function.body;
-        body.store
+        let writer = body
+            .store
             .writer()
-            .tracking(self.editor.changes.as_deref_mut())
-            .inserting(Insertion {
+            .tracking(self.editor.changes.as_deref_mut());
+        match &mut self.position {
+            Position::Insert { block, before } => writer.inserting(Insertion {
                 layout: &mut body.layout,
-                block: self.block,
-                before: self.before,
-            })
+                block: *block,
+                before: *before,
+            }),
+            Position::Replace { id, committed } => writer.replacing(*id, committed),
+        }
+    }
+
+    /// Low-level adapter for target instructions; ordinary passes use InstBuild.
+    pub fn write(
+        &mut self,
+        opcode: crate::MachineOpcode,
+        results: &[Reg],
+        inputs: &[Reg],
+        fields: impl IntoIterator<Item = crate::FieldValue>,
+    ) -> InstId {
+        self.writer().write(opcode, results, inputs, fields)
+    }
+}
+
+// Reborrow the cursor for each instruction so repeated emission keeps its gap.
+impl crate::InstBuild for &mut InstInserter<'_> {
+    type Inst = InstId;
+
+    fn write(
+        self,
+        opcode: crate::GenericOpcode,
+        results: &[Reg],
+        inputs: &[Reg],
+        fields: impl IntoIterator<Item = crate::FieldValue>,
+    ) -> InstId {
+        self.writer().write(
+            crate::MachineOpcode::Generic(opcode),
+            results,
+            inputs,
+            fields,
+        )
     }
 }

@@ -109,28 +109,6 @@ impl core::fmt::Debug for Reg {
     }
 }
 
-/// 保证只有标记为可写的寄存器才能被修改的类型级 Wrapper
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(transparent)]
-pub struct Writable<T>(pub T);
-
-impl<T> Writable<T> {
-    /// 获取只读引用
-    #[inline(always)]
-    pub fn to_reg(&self) -> T
-    where
-        T: Copy,
-    {
-        self.0
-    }
-}
-
-impl<T: core::fmt::Debug> core::fmt::Debug for Writable<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "def({:?})", self.0)
-    }
-}
-
 /// 栈槽标识符
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StackSlot(pub u32);

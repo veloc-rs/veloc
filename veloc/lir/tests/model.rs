@@ -1,7 +1,7 @@
 //! Construct, decode, validate, and interpret the standalone LIR model.
 use veloc_lir::{
     ControlFlow, FieldValue, GenericOpcode, MachineFunction, MachineModule, Reg, RegisterBank,
-    SymbolTable, Type, TypeError, Writable,
+    SymbolTable, Type, TypeError,
 };
 use veloc_lir::{InstBuild, InstRead};
 use veloc_mir::Linkage;
@@ -97,7 +97,7 @@ fn function_editor_preserves_layout_and_references() {
     assert_eq!(f.uses(x).count(), 0);
     assert_eq!(f.uses(y).count(), 1);
     // Rewriting retains an explicitly reused edge; copying requires a fresh ID.
-    f.editor().rewriter(branch).br(edge);
+    f.editor().replace(branch).br(edge);
     assert_eq!(f.inst(branch).edge_ids().collect::<Vec<_>>(), [edge]);
     let copy = f.editor().clone_edge(edge);
     let replacement = f.editor().writer().br(copy);
@@ -126,7 +126,7 @@ fn function_editor_preserves_layout_and_references() {
             ty: Type::I64,
             bank: None,
         });
-        let created = insts.writer().copy(Writable(dst), x);
+        let created = insts.writer().copy(dst, x);
         edit.append_inst(entry, created);
         edit.replace_uses(x.as_vreg().unwrap(), y.as_vreg().unwrap());
         (created, MachineFunction::clone(edit))
@@ -142,7 +142,7 @@ fn function_editor_preserves_layout_and_references() {
     f.editor().invalidate_inst(created);
 
     // RAUW reports every existing owner, not only newly built instructions.
-    let user = f.editor().writer().copy(Writable(x), y);
+    let user = f.editor().writer().copy(x, y);
     let (_, changes) = f.editor().track(|edit| {
         edit.replace_uses(y.as_vreg().unwrap(), x.as_vreg().unwrap());
     });
@@ -203,7 +203,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     let b = f.editor().alloc_vreg(Type::I64);
     let dst = f.editor().alloc_vreg(Type::I64);
     let block = f.entry_block();
-    let add = f.editor().writer().add(Writable(dst), a, a);
+    let add = f.editor().writer().add(dst, a, a);
     let yes = f.editor().create_edge(block, &[a, b]);
     let no = f.editor().create_edge(block, &[a]);
     let branch = f.editor().writer().brcond(a, yes, no);
@@ -252,7 +252,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     f.editor().invalidate_inst(rw);
     f.check_refs().unwrap();
 
-    let replacement = f.editor().writer().copy(Writable(dst), a);
+    let replacement = f.editor().writer().copy(dst, a);
     f.editor().replace_inst(add, replacement);
     assert!(f.inst(replacement).is_invalid());
     assert_eq!(f.uses(a).single().unwrap().inst(), add);
@@ -261,9 +261,9 @@ fn references_follow_all_store_edits_and_edge_arguments() {
 
     // Both role changes and pooled-range reuse must unlink obsolete entries.
     for index in 0..128 {
-        f.editor().rewriter(add).constant(Writable(dst), index);
+        f.editor().replace(add).constant(dst, index);
         assert_eq!(f.uses(a).count(), 0);
-        f.editor().rewriter(add).add(Writable(dst), a, a);
+        f.editor().replace(add).add(dst, a, a);
         assert_eq!(f.uses(a).count(), 2);
         f.check_refs().unwrap();
     }
@@ -354,7 +354,7 @@ fn standalone_module_supports_instruction_and_stage_apis() {
     let mut function = MachineFunction::new("example".into());
     let block = function.entry_block();
     let reg = function.editor().alloc_vreg(Type::I64);
-    let inst = function.editor().writer().constant(Writable(reg), 42);
+    let inst = function.editor().writer().constant(reg, 42);
     function.editor().append_inst(block, inst);
     let veloc_lir::InstView::Constant(constant) = function.inst(inst).view() else {
         panic!("expected constant");
@@ -411,9 +411,9 @@ fn validation_errors_are_owned_by_lir() {
     let inst = function
         .editor()
         .writer()
-        .constant(Writable(veloc_lir::Reg::new_vreg(0)), 42);
+        .constant(veloc_lir::Reg::new_vreg(0), 42);
     {
-        function.editor().rewriter(inst).write(
+        function.editor().replace(inst).write(
             veloc_lir::MachineOpcode::Generic(GenericOpcode::Constant),
             &[],
             &[],
@@ -484,11 +484,10 @@ fn logical_type_validation_is_separate_from_construction() {
             .is_err()
     );
     // Physical construction deliberately cannot inspect register types.
-    let inst = function.editor().writer().add(
-        Writable(Reg::new_vreg(0)),
-        Reg::new_vreg(1),
-        Reg::new_vreg(2),
-    );
+    let inst = function
+        .editor()
+        .writer()
+        .add(Reg::new_vreg(0), Reg::new_vreg(1), Reg::new_vreg(2));
     assert!(matches!(
         function.inst(inst).view(),
         veloc_lir::InstView::BinaryReg(_)
@@ -498,7 +497,7 @@ fn logical_type_validation_is_separate_from_construction() {
 #[test]
 fn generated_builders_and_views_agree() {
     let mut function = MachineFunction::new("test".into());
-    let dst = Writable(Reg::new_vreg(0));
+    let dst = Reg::new_vreg(0);
     let lhs = Reg::new_vreg(1);
     let rhs = Reg::new_vreg(2);
     let veloc_lir::InstView::BinaryReg(decoded) = ({
@@ -507,10 +506,7 @@ fn generated_builders_and_views_agree() {
     }) else {
         panic!("expected BinaryReg");
     };
-    assert_eq!(
-        (decoded.dst, decoded.lhs, decoded.rhs),
-        (dst.to_reg(), lhs, rhs)
-    );
+    assert_eq!((decoded.dst, decoded.lhs, decoded.rhs), (dst, lhs, rhs));
     assert_eq!(decoded.opcode, veloc_lir::BinaryRegOpcode::Add);
     assert_eq!(GenericOpcode::Add.control(), ControlFlow::Next);
     assert_eq!(GenericOpcode::Brcond.control(), ControlFlow::Jump);
@@ -520,8 +516,8 @@ fn generated_builders_and_views_agree() {
 #[test]
 fn carry_input_is_required_exactly_for_carry_instructions() {
     let mut function = MachineFunction::new("test".into());
-    let dst = Writable(Reg::new_vreg(0));
-    let flag = Writable(Reg::new_vreg(1));
+    let dst = Reg::new_vreg(0);
+    let flag = Reg::new_vreg(1);
     let lhs = Reg::new_vreg(2);
     let rhs = Reg::new_vreg(3);
     let carry = Reg::new_vreg(4);
@@ -539,17 +535,17 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
     assert_eq!(adc_view.opcode, veloc_lir::BinaryRegWithFlagsOpcode::Uadde);
     {
         let regs = [lhs, rhs, lhs];
-        function.editor().rewriter(add).write(
+        function.editor().replace(add).write(
             veloc_lir::MachineOpcode::Generic(GenericOpcode::Uaddo),
-            &[dst.to_reg(), flag.to_reg()],
+            &[dst, flag],
             &regs,
             [],
         );
     }
     {
-        function.editor().rewriter(adc).write(
+        function.editor().replace(adc).write(
             veloc_lir::MachineOpcode::Generic(GenericOpcode::Uadde),
-            &[dst.to_reg(), flag.to_reg()],
+            &[dst, flag],
             &[lhs, rhs],
             [],
         );
@@ -625,7 +621,7 @@ fn variable_views_preserve_call_and_return_operands() {
     }));
     function
         .editor()
-        .rewriter(direct)
+        .replace(direct)
         .call(&results, symbol, &args, lowered);
     function.check_refs().unwrap();
     assert_eq!(
@@ -638,7 +634,7 @@ fn variable_views_preserve_call_and_return_operands() {
     );
     assert!(function.call_info(indirect).frame.is_none());
     // Replacing the call with a non-call drops only its own contract.
-    function.editor().rewriter(direct).ret(&[]);
+    function.editor().replace(direct).ret(&[]);
     assert!(function.try_call_info(direct).is_none());
     assert!(function.call_info(indirect).frame.is_none());
 
@@ -655,7 +651,7 @@ fn variable_views_preserve_call_and_return_operands() {
     }));
     function
         .editor()
-        .rewriter(direct)
+        .replace(direct)
         .callind(&results, Reg::new_vreg(25), &args, lowered);
     function.check_refs().unwrap();
     assert_eq!(
@@ -685,13 +681,13 @@ fn optional_validation_is_separate_from_direct_views() {
     let mut function = MachineFunction::new("test".into());
     use veloc_lir::{MachineOpcode, SymbolId};
     use veloc_mir::{FloatCC, IntCC};
-    let dst = Writable(Reg::new_vreg(0));
+    let dst = Reg::new_vreg(0);
     let src = Reg::new_vreg(1);
     let cmp = function.editor().writer().icmp(dst, src, src, IntCC::Eq);
     // Structural validation remains explicit, including low-level writes.
-    function.editor().rewriter(cmp).write(
+    function.editor().replace(cmp).write(
         MachineOpcode::Generic(GenericOpcode::Icmp),
-        &[dst.to_reg()],
+        &[dst],
         &[src, src],
         [FieldValue::FloatCC(FloatCC::Eq)],
     );
@@ -702,12 +698,10 @@ fn optional_validation_is_separate_from_direct_views() {
         frame: None,
         stack_args: Default::default(),
     };
-    let call = function.editor().writer().call(
-        &[dst.to_reg()],
-        SymbolId::from_u32(0),
-        &[src],
-        info.clone(),
-    );
+    let call = function
+        .editor()
+        .writer()
+        .call(&[dst], SymbolId::from_u32(0), &[src], info.clone());
     function.inst(call).validate().unwrap();
     // A second, unrelated payload is not representable. Reject it before
     // changing the instruction or its owned call contract.
@@ -718,9 +712,9 @@ fn optional_validation_is_separate_from_direct_views() {
     fields.push(FieldValue::Imm(0));
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            function.editor().rewriter(call).write(
+            function.editor().replace(call).write(
                 MachineOpcode::Generic(GenericOpcode::Call),
-                &[dst.to_reg()],
+                &[dst],
                 &[src],
                 fields,
             );
@@ -729,15 +723,14 @@ fn optional_validation_is_separate_from_direct_views() {
     );
     function.inst(call).validate().unwrap();
     assert_eq!(function.call_info(call), &info);
-    let missing_callee =
-        function
-            .editor()
-            .writer()
-            .callind(&[dst.to_reg()], src, &[], info.clone());
+    let missing_callee = function
+        .editor()
+        .writer()
+        .callind(&[dst], src, &[], info.clone());
     {
-        function.editor().rewriter(missing_callee).write(
+        function.editor().replace(missing_callee).write(
             veloc_lir::MachineOpcode::Generic(GenericOpcode::Callind),
-            &[dst.to_reg()],
+            &[dst],
             &[],
             [FieldValue::Call(info)],
         );
@@ -745,14 +738,13 @@ fn optional_validation_is_separate_from_direct_views() {
     assert!(function.inst(missing_callee).validate().is_err());
     let ret = function.editor().writer().ret(&[]);
     {
-        function.editor().set_inst_results(ret, &[dst.to_reg()]);
+        function.editor().set_inst_results(ret, &[dst]);
     }
     assert!(function.inst(ret).validate().is_err());
-    let target =
-        function
-            .editor()
-            .writer()
-            .write(MachineOpcode::Target(0), &[dst.to_reg()], &[src], []);
+    let target = function
+        .editor()
+        .writer()
+        .write(MachineOpcode::Target(0), &[dst], &[src], []);
     assert!(function.inst(target).validate().is_err());
     function.editor().invalidate_inst(target);
     assert!(function.inst(target).validate().is_err());
@@ -760,9 +752,9 @@ fn optional_validation_is_separate_from_direct_views() {
     // Access does not run the optional full shape check: unrelated extra
     // attributes are rejected by validation, not by reading an add's registers.
     let add = function.editor().writer().add(dst, src, src);
-    function.editor().rewriter(add).write(
+    function.editor().replace(add).write(
         MachineOpcode::Generic(GenericOpcode::Add),
-        &[dst.to_reg()],
+        &[dst],
         &[src, src],
         [veloc_lir::FieldValue::Imm(7)],
     );

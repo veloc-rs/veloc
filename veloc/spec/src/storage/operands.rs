@@ -325,7 +325,6 @@ impl Operands {
         &self,
         op: &Op,
         receiver: &str,
-        result: &str,
         local: impl Fn(&str) -> String,
     ) -> crate::generate::construction::Write {
         use crate::generate::construction::{Write, slice};
@@ -357,8 +356,6 @@ impl Operands {
                     let value = local(m.binding.as_ref().unwrap());
                     if let Some(codec) = &m.field.codec {
                         format!("{codec}({value})")
-                    } else if domain == Domain::Result {
-                        format!("{result}({value})")
                     } else {
                         value
                     }
@@ -560,8 +557,6 @@ impl Operands {
             }
             let rust = if field.shape == Shape::Sequence {
                 format!("&[{}]", field.rust)
-            } else if domain == Domain::Result {
-                "Self::Def".to_owned()
             } else {
                 field.rust.clone()
             };

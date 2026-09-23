@@ -172,7 +172,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
             if stack_size > 0 {
                 let sub_inst = TargetInst::X86Sub64ri.write(
                     mfunc.editor().writer(),
-                    &[(veloc_lir::Writable(REG_RSP)).to_reg()],
+                    &[(REG_RSP)],
                     &[REG_RSP],
                     [veloc_lir::FieldValue::Imm(stack_size as i64)],
                 );
@@ -223,7 +223,7 @@ impl TargetFrameLowering for X86_64FrameLowering {
                 if stack_size > 0 {
                     let add_inst = TargetInst::X86Add64ri.write(
                         mfunc.editor().writer(),
-                        &[(veloc_lir::Writable(REG_RSP)).to_reg()],
+                        &[(REG_RSP)],
                         &[REG_RSP],
                         [veloc_lir::FieldValue::Imm(stack_size as i64)],
                     );

@@ -4,7 +4,7 @@ use crate::pipeline::{FunctionPass, FunctionPassContext};
 use crate::target::TargetOperandLowering;
 use core::marker::PhantomData;
 use veloc_lir::InstBuild;
-use veloc_lir::{InstId, MachineFunction, Reg, Writable};
+use veloc_lir::{InstId, MachineFunction, Reg};
 
 /// Shared rewriting with separate generic and target instruction copy policies.
 struct OperandConstraintPassImpl<'a, Policy> {
@@ -46,7 +46,7 @@ impl ConstraintPolicy for PreSelectConstraints {
         src: Reg,
     ) -> InstId {
         if dst.is_vreg() && src.is_vreg() {
-            mfunc.editor().writer().copy(Writable(dst), src)
+            mfunc.editor().writer().copy(dst, src)
         } else {
             lowering
                 .build_preselect_reg_copy(mfunc, dst, src)
@@ -205,7 +205,7 @@ mod tests {
     use crate::target::{FixedUseConstraint, OperandConstraintSet, TargetOperandLowering};
     use alloc::vec;
     use veloc_lir::{InstBuild, InstRead};
-    use veloc_lir::{InstId, MachineFunction, Reg, Writable};
+    use veloc_lir::{InstId, MachineFunction, Reg};
 
     struct DummyLowering {
         constraints: OperandConstraintSet,
@@ -232,7 +232,7 @@ mod tests {
             dst: Reg,
             src: Reg,
         ) -> Result<InstId, crate::error::Error> {
-            Ok(mfunc.editor().writer().copy(Writable(dst), src))
+            Ok(mfunc.editor().writer().copy(dst, src))
         }
     }
 
@@ -252,7 +252,7 @@ mod tests {
         let dst = Reg::new_vreg(0);
         let src = Reg::new_vreg(1);
         let fixed = Reg::new_preg(7);
-        let inst = |writer: veloc_lir::InstWriter<'_>| writer.neg(Writable(dst), src);
+        let inst = |writer: veloc_lir::InstWriter<'_>| writer.neg(dst, src);
         let (mut mfunc, inst_id) = make_function_with_inst(inst);
         let lowering = DummyLowering::new(OperandConstraintSet {
             fixed_uses: vec![FixedUseConstraint {

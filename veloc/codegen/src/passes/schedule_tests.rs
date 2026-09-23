@@ -4,7 +4,7 @@ use crate::target::x86_64::{
     X86_64TargetMachine,
     inst::{REG_RAX, TargetInst},
 };
-use veloc_lir::{FieldValue, MachineOpcode, Writable};
+use veloc_lir::{FieldValue, MachineOpcode};
 use veloc_mir::Type;
 
 #[test]
@@ -17,7 +17,7 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
     let imm = {
         let id = f.editor().writer().write(
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
-            &[(Writable(unused)).to_reg()],
+            &[(unused)],
             &[],
             [FieldValue::Imm(42)],
         );
@@ -42,7 +42,7 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
     let consume = {
         let id = f.editor().writer().write(
             MachineOpcode::Target(TargetInst::X86Sete.as_u32()),
-            &[(Writable(REG_RAX)).to_reg()],
+            &[(REG_RAX)],
             &[],
             [],
         );
@@ -66,7 +66,12 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
     assert_eq!(f.inst(divide).implicit_uses(), &[REG_RAX, REG_RDX]);
     assert_eq!(f.inst(divide).implicit_defs(), &[REG_RAX, REG_RDX]);
     f.check_refs().unwrap();
-    TargetInst::X86Mov64.write(f.editor().rewriter(divide), &[a], &[x], []);
+    f.editor().replace(divide).write(
+        veloc_lir::MachineOpcode::Target(TargetInst::X86Mov64 as u32),
+        &[a],
+        &[x],
+        [],
+    );
     assert!(f.inst(divide).implicit_uses().is_empty());
     assert!(f.inst(divide).implicit_defs().is_empty());
     assert_eq!(f.defs(REG_RDX).count(), 0);

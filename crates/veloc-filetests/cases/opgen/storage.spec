@@ -25,8 +25,8 @@ op Routes(cases: successors, default: successor) -> () {
 
 // ----- storage/lir-mappings-can-reorder-inputs-and-results
 // run: opgen
-// check: fn pair(self, low: Self::Def, high: Self::Def, first: crate::Reg, second: crate::Reg)
-// check: &[Self::reg(low), Self::reg(high)], &[second, first], []
+// check: fn pair(self, low: crate::Reg, high: crate::Reg, first: crate::Reg, second: crate::Reg)
+// check: &[low, high], &[second, first], []
 type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue; }
@@ -110,8 +110,8 @@ op Example(value: Value<Type::I32>) -> () { meta = OpInfo { memory: MemoryEffect
 
 // ----- storage/tied-input-and-output-are-explicit
 // run: opgen
-// check: fn update(self, next: Self::Def, previous: crate::Reg)
-// check: &[Self::reg(next)], &[previous], []
+// check: fn update(self, next: crate::Reg, previous: crate::Reg)
+// check: &[next], &[previous], []
 type Reg = rust("crate::Reg");
 enum FieldValue { variants = [Imm(i64)]; }
 storage Operands { opcode = GenericOpcode; view = InstView; reader = InstRead; writer = InstBuild; register = Reg; attributes = FieldValue; }

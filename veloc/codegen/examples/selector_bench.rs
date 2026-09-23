@@ -8,7 +8,7 @@ use std::{
 };
 use veloc_codegen::isel::InstructionSelector;
 use veloc_codegen::{CodegenOptions, CodegenPipeline, TargetConfig, create_target_machine};
-use veloc_lir::{InstBuild, MachineFunction, MachineOpcode, Type, Writable};
+use veloc_lir::{InstBuild, MachineFunction, MachineOpcode, Type};
 
 fn workload(ty: Type, comparisons: bool) -> MachineFunction {
     let mut f = MachineFunction::new("matcher".into());
@@ -31,19 +31,19 @@ fn workload(ty: Type, comparisons: bool) -> MachineFunction {
                 veloc_mir::FloatCC::Gt,
                 veloc_mir::FloatCC::Ge,
             ][i % 6];
-            let cmp = e.writer().fcmp(Writable(flag), value, b, cc);
+            let cmp = e.writer().fcmp(flag, value, b, cc);
             e.append_inst(block, cmp);
-            let select = e.writer().select(Writable(next), flag, value, b);
+            let select = e.writer().select(next, flag, value, b);
             e.append_inst(block, select);
         } else {
             let constant = e.alloc_vreg(ty);
-            let inst = e.writer().constant(Writable(constant), (i % 13 + 1) as i64);
+            let inst = e.writer().constant(constant, (i % 13 + 1) as i64);
             e.append_inst(block, inst);
             let inst = match i % 4 {
-                0 => e.writer().add(Writable(next), value, constant),
-                1 => e.writer().mul(Writable(next), value, b),
-                2 => e.writer().xor(Writable(next), value, constant),
-                _ => e.writer().sub(Writable(next), value, b),
+                0 => e.writer().add(next, value, constant),
+                1 => e.writer().mul(next, value, b),
+                2 => e.writer().xor(next, value, constant),
+                _ => e.writer().sub(next, value, b),
             };
             e.append_inst(block, inst);
         }
@@ -77,16 +77,16 @@ fn memory_workload(stack: bool) -> MachineFunction {
     for _ in 0..96 {
         let address = e.alloc_vreg(Type::PTR);
         let addr = if stack {
-            e.writer().stack_addr(Writable(address), slot)
+            e.writer().stack_addr(address, slot)
         } else {
-            e.writer().ptr_add(Writable(address), base, index)
+            e.writer().ptr_add(address, base, index)
         };
         e.append_inst(block, addr);
         let value = e.alloc_vreg(Type::I64);
         let load = e
             .writer()
             .with_memory(veloc_lir::MemoryAccess::new(veloc_lir::MemoryKind::Read, 8))
-            .load(Writable(value), address, 0);
+            .load(value, address, 0);
         e.append_inst(block, load);
         live.push(value);
     }

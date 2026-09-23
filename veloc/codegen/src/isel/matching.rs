@@ -4,7 +4,7 @@ use super::select::SelectResult;
 use alloc::vec::Vec;
 use smallvec::SmallVec;
 use veloc_lir::{
-    FieldValue, GenericOpcode, InstBuilder, InstId, InstRef, Reg, VRegBuilder, VRegData,
+    FieldValue, GenericOpcode, InstEditor, InstId, InstRef, Reg, VRegBuilder, VRegData,
 };
 use veloc_mir::Type;
 
@@ -105,7 +105,7 @@ impl Field {
 
 /// Generated construction entry points install complete instructions atomically.
 pub(crate) type Target =
-    fn(&mut InstBuilder<'_>, InstId, &[Reg], &[Reg], SmallVec<[FieldValue; 4]>) -> InstId;
+    fn(&mut InstEditor<'_>, InstId, &[Reg], &[Reg], SmallVec<[FieldValue; 4]>) -> InstId;
 
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -186,9 +186,10 @@ pub(crate) fn execute(
     vregs: &mut VRegBuilder<'_>,
     features: &[u64],
     predicate: &dyn Fn(u32, Reg) -> bool,
-    store: &mut InstBuilder<'_>,
+    store: &mut InstEditor<'_>,
     source: InstId,
     out: &mut Vec<InstId>,
+    edge_transfers: &mut Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>,
 ) -> Option<SelectResult> {
     let mut reader = Reader {
         bytes: program.code,
@@ -349,7 +350,13 @@ pub(crate) fn execute(
                         FieldSource::Imm(value) => FieldValue::Imm(value),
                     };
                     if let FieldValue::Edge(edge) = &mut field {
-                        *edge = store.replacement_edge(source, *edge);
+                        assert!(
+                            !edge_transfers.iter().any(|&(old, _)| old == *edge),
+                            "edge transferred twice"
+                        );
+                        let copy = store.clone_edge(source, *edge);
+                        edge_transfers.push((*edge, copy));
+                        *edge = copy;
                     }
                     operands.push(field);
                 }

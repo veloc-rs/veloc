@@ -148,32 +148,21 @@ pub struct InstStore {
     pub(crate) references: References,
 }
 
-/// Instruction construction for selection rules. Replacement/erasure must go
-/// through the function editor. Replacement edges are copied during construction;
-/// the selector transfers their identities only when committing the replacement.
-pub struct InstBuilder<'a> {
-    pub(crate) edge_transfers: Vec<(crate::EdgeId, crate::EdgeId)>,
+/// Append-only instruction storage access. Layout changes and replacement
+/// commits belong to the function editor, not this restricted handle.
+pub struct InstEditor<'a> {
     pub(crate) store: &'a mut InstStore,
     pub(crate) changes: Option<&'a mut crate::EditChanges>,
 }
-impl InstBuilder<'_> {
-    pub fn into_edge_transfers(self) -> Vec<(crate::EdgeId, crate::EdgeId)> {
-        self.edge_transfers
-    }
+impl InstEditor<'_> {
     /// Prepare an independent edge for a replacement; ownership of the source
     /// is unchanged until the selector commits its explicit transfer list.
-    pub fn replacement_edge(&mut self, source: InstId, id: crate::EdgeId) -> crate::EdgeId {
+    pub fn clone_edge(&mut self, source: InstId, id: crate::EdgeId) -> crate::EdgeId {
         assert_eq!(
             self.store.edges[id].as_ref().expect("deleted edge").owner,
             Some(source)
         );
-        assert!(
-            !self.edge_transfers.iter().any(|&(old, _)| old == id),
-            "edge transferred twice"
-        );
-        let copy = self.store.clone_edge(id);
-        self.edge_transfers.push((id, copy));
-        copy
+        self.store.clone_edge(id)
     }
     /// Find a virtual value's unique defining instruction. This is a read-only
     /// SSA query, not permission to move, fold or erase the definition.
@@ -204,11 +193,16 @@ pub struct InstWriter<'a> {
 
 enum WriteMode<'a> {
     Detached,
-    Replace(InstId),
+    Replace { id: InstId, committed: &'a mut bool },
     Insert(crate::function::Insertion<'a>),
 }
 
 impl<'a> InstWriter<'a> {
+    pub(crate) fn replacing(mut self, id: InstId, committed: &'a mut bool) -> Self {
+        assert!(!*committed, "replacement already committed");
+        self.mode = WriteMode::Replace { id, committed };
+        self
+    }
     pub(crate) fn inserting(mut self, insertion: crate::function::Insertion<'a>) -> Self {
         self.mode = WriteMode::Insert(insertion);
         self
@@ -248,7 +242,7 @@ impl<'a> InstWriter<'a> {
             defs: self.effects.defs,
         };
         let (id, block) = match self.mode {
-            WriteMode::Replace(id) => {
+            WriteMode::Replace { id, committed } => {
                 self.store.write_full_at(
                     id,
                     opcode,
@@ -258,6 +252,7 @@ impl<'a> InstWriter<'a> {
                     self.memory,
                     implicit,
                 );
+                *committed = true;
                 (id, None)
             }
             mode => {
@@ -285,10 +280,6 @@ impl<'a> InstWriter<'a> {
 // the conversion from generic to machine opcodes.
 impl crate::InstBuild for InstWriter<'_> {
     type Inst = InstId;
-    type Def = crate::Writable<Reg>;
-    fn reg(value: Self::Def) -> Reg {
-        value.to_reg()
-    }
     fn write(
         self,
         opcode: crate::GenericOpcode,
@@ -317,16 +308,6 @@ impl InstStore {
             store: self,
             changes: None,
             mode: WriteMode::Detached,
-            memory: None,
-            effects: RegEffects::default(),
-        }
-    }
-
-    pub fn rewriter(&mut self, id: InstId) -> InstWriter<'_> {
-        InstWriter {
-            store: self,
-            changes: None,
-            mode: WriteMode::Replace(id),
             memory: None,
             effects: RegEffects::default(),
         }
@@ -860,7 +841,7 @@ impl InstStore {
 mod tests {
     use super::*;
     use crate::InstBuild;
-    use crate::{MachineFunction, MemoryKind, Reg, Writable};
+    use crate::{MachineFunction, MemoryKind, Reg};
 
     #[test]
     fn storage_preserves_views_and_transfers_instruction_properties() {
@@ -868,7 +849,7 @@ mod tests {
         let mut f = MachineFunction::new("store".into());
         let block = f.editor().create_block();
         let reg = f.editor().alloc_vreg(crate::Type::I64);
-        let id = f.editor().writer().constant(Writable(reg), 42);
+        let id = f.editor().writer().constant(reg, 42);
         f.editor().append_inst(crate::BlockId::from_u32(0), id);
         let view = f.inst(id);
         assert_eq!(view.inputs().as_ptr(), f.inst(id).inputs().as_ptr());
@@ -876,13 +857,13 @@ mod tests {
             let access = MemoryAccess::new(MemoryKind::Read, 8);
             assert_eq!(
                 f.editor()
-                    .rewriter(id)
+                    .replace(id)
                     .with_memory(access)
-                    .load(Writable(reg), reg, 16),
+                    .load(reg, reg, 16),
                 id
             );
             assert_eq!(f.inst(id).memory(), Some(access));
-            assert_eq!(f.editor().rewriter(id).constant(Writable(reg), 42), id);
+            assert_eq!(f.editor().replace(id).constant(reg, 42), id);
             assert!(f.inst(id).memory().is_none());
             assert!(f.try_call_info(id).is_none());
         }
@@ -895,11 +876,7 @@ mod tests {
         assert!(f.inst(id).is_generic());
         assert!(f.inst(target).is_target());
         let access = MemoryAccess::new(MemoryKind::Read, 8);
-        let replacement = f
-            .editor()
-            .writer()
-            .with_memory(access)
-            .load(Writable(reg), reg, 0);
+        let replacement = f.editor().writer().with_memory(access).load(reg, reg, 0);
         let operands = f.inst(replacement).inputs().as_ptr();
         f.editor().replace_inst(id, replacement);
         assert_eq!(f.inst(id).inputs().as_ptr(), operands);
@@ -941,9 +918,12 @@ mod tests {
         let mut store = InstStore::default();
         let id = store.writer().write(MachineOpcode::Target(1), &[], &[], []);
         for n in 0..100 {
-            store
-                .rewriter(id)
-                .write(MachineOpcode::Target(1), &[], &[reg], [FieldValue::Imm(n)]);
+            store.writer().replacing(id, &mut false).write(
+                MachineOpcode::Target(1),
+                &[],
+                &[reg],
+                [FieldValue::Imm(n)],
+            );
             store.set_memory(id, Some(MemoryAccess::new(MemoryKind::Read, 8)));
             store.clear(id);
         }
@@ -1005,7 +985,8 @@ mod tests {
         assert_eq!(store.inputs(combined), &[input]);
         store.check_refs().unwrap();
         store
-            .rewriter(combined)
+            .writer()
+            .replacing(combined, &mut false)
             .with_effects(&[physical], &[physical])
             .write(MachineOpcode::Target(4), &[], &[], []);
         assert!(store.inputs(combined).is_empty());

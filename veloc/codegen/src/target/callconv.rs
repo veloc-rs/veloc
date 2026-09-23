@@ -1,9 +1,10 @@
 use super::Reg;
-use super::abi::{AbiAssignment, AbiDescriptor, AbiPlan, AbiState};
+use super::abi::{AbiAssignment, AbiDescriptor, AbiLocation, AbiPlan, AbiState};
 use super::types::TargetArch;
 use alloc::format;
 use alloc::vec::Vec;
 use veloc_mir::Type;
+use veloc_types::DataLayout;
 
 /// 调用约定
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,10 +34,11 @@ impl CallConv {
     pub fn plan(
         &self,
         arch: TargetArch,
+        layout: &DataLayout,
         args: &[Type],
         returns: &[Type],
     ) -> Result<AbiPlan, crate::error::Error> {
-        self.plan_with_descriptor(self.descriptor(arch)?, args, returns)
+        self.plan_with_descriptor(self.descriptor(arch)?, layout, args, returns)
     }
 
     /// 获取该调用约定下需要由被调用者保留的寄存器集合。
@@ -60,6 +62,7 @@ impl CallConv {
     fn plan_with_descriptor(
         &self,
         descriptor: &'static AbiDescriptor,
+        layout: &DataLayout,
         arg_types: &[Type],
         ret_types: &[Type],
     ) -> Result<AbiPlan, crate::error::Error> {
@@ -70,6 +73,18 @@ impl CallConv {
                 .iter()
                 .map(|&ty| {
                     let loc = assign(ty, state)?;
+                    if let AbiLocation::Stack { size, .. } = loc {
+                        let bytes = layout
+                            .layout_of(ty)
+                            .and_then(|layout| layout.store_size.fixed_bytes())
+                            .ok_or_else(|| {
+                                crate::Error::codegen(format!(
+                                    "ABI stack transfer requires a fixed storage layout for {ty:?}"
+                                ))
+                            })?;
+                        // A supported type must fit the slot chosen by the ABI rules.
+                        assert!(bytes <= size, "ABI stack slot cannot hold {ty:?}");
+                    }
                     Ok(AbiAssignment { ty, loc })
                 })
                 .collect::<Result<Vec<_>, crate::error::Error>>()
@@ -105,6 +120,7 @@ mod tests {
         let plan = CallConv::SystemV
             .plan(
                 TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
                 &[
                     Type::I64,
                     Type::I64,
@@ -140,7 +156,12 @@ mod tests {
     #[test]
     fn test_x86_64_systemv_return_plan_uses_rax_rdx() {
         let plan = CallConv::SystemV
-            .plan(TargetArch::X86_64, &[], &[Type::I64, Type::I32])
+            .plan(
+                TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
+                &[],
+                &[Type::I64, Type::I32],
+            )
             .unwrap();
 
         assert_eq!(plan.returns[0].loc, AbiLocation::Reg(REG_RAX));
@@ -153,6 +174,7 @@ mod tests {
         let plan = CallConv::WindowsFastcall
             .plan(
                 TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
                 &[Type::I64, Type::I64, Type::I64, Type::I64, Type::I64],
                 &[Type::I64],
             )
@@ -176,6 +198,7 @@ mod tests {
         let plan = CallConv::SystemV
             .plan(
                 TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
                 &[
                     Type::F32,
                     Type::F64,
@@ -209,6 +232,7 @@ mod tests {
         let plan = CallConv::SystemV
             .plan(
                 TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
                 &[veloc_mir::Type::F32X4],
                 &[veloc_mir::Type::F64X2],
             )
@@ -223,7 +247,12 @@ mod tests {
         let mut types = alloc::vec![Type::F64; 8];
         types.extend([Type::F64, Type::F32X4]);
         let plan = CallConv::SystemV
-            .plan(TargetArch::X86_64, &types, &[Type::F64, Type::F32X4])
+            .plan(
+                TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
+                &types,
+                &[Type::F64, Type::F32X4],
+            )
             .unwrap();
         assert_eq!(plan.returns[0].loc, AbiLocation::Reg(REG_XMM0));
         assert_eq!(plan.returns[1].loc, AbiLocation::Reg(REG_XMM1));
@@ -248,6 +277,7 @@ mod tests {
         let plan = CallConv::SystemV
             .plan(
                 TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
                 &[Type::F64, Type::F32X4, Type::F32],
                 &[],
             )
@@ -259,6 +289,7 @@ mod tests {
         let plan = CallConv::WindowsFastcall
             .plan(
                 TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
                 &[Type::I64, Type::F64, Type::I64, Type::F32, Type::I64],
                 &[],
             )
@@ -277,14 +308,24 @@ mod tests {
         );
         assert_eq!(plan.stack.size, 40);
         let empty = CallConv::WindowsFastcall
-            .plan(TargetArch::X86_64, &[], &[])
+            .plan(
+                TargetArch::X86_64,
+                &crate::target::x86_64::DATA_LAYOUT,
+                &[],
+                &[],
+            )
             .unwrap();
         assert_eq!(empty.stack.size, 32);
         // Indirect vector arguments require a separate conversion plan:
         // never silently pass them directly using the return-value rule.
         assert!(
             CallConv::WindowsFastcall
-                .plan(TargetArch::X86_64, &[Type::F32X4], &[],)
+                .plan(
+                    TargetArch::X86_64,
+                    &crate::target::x86_64::DATA_LAYOUT,
+                    &[Type::F32X4],
+                    &[],
+                )
                 .is_err()
         );
     }

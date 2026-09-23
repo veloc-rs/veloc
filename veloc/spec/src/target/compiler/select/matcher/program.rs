@@ -133,7 +133,7 @@ impl<'a> Adapters<'a> {
             self.builders.insert(build.clone(), body);
         }
         let mut body = format!(
-            "fn {adapter}(store: &mut veloc_lir::InstBuilder<'_>, _source: veloc_lir::InstId, _results: &[Reg], _inputs: &[Reg], _fields: smallvec::SmallVec<[FieldValue; 4]>) -> veloc_lir::InstId {{\n"
+            "fn {adapter}(store: &mut veloc_lir::InstEditor<'_>, _source: veloc_lir::InstId, _results: &[Reg], _inputs: &[Reg], _fields: smallvec::SmallVec<[FieldValue; 4]>) -> veloc_lir::InstId {{\n"
         );
         if !fields.is_empty() {
             body.push_str("let mut fields = _fields.into_iter();\n");

@@ -3,9 +3,7 @@ use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
 use alloc::vec::Vec;
-use veloc_lir::{
-    GenericOpcode, InstBuild, InstRead, InstView, MachineFunction, Successor, Writable,
-};
+use veloc_lir::{GenericOpcode, InstBuild, InstRead, InstView, MachineFunction, Successor};
 use veloc_mir::{IntCC, Type};
 
 /// A target opts into comparison-chain lowering. Keeping this outside legality
@@ -60,11 +58,8 @@ impl FunctionPass for BranchTableLowering {
                 };
                 let value = f.editor().alloc_vreg(ty);
                 let equal = f.editor().alloc_vreg(Type::BOOL);
-                let constant = f.editor().writer().constant(Writable(value), case as i64);
-                let compare = f
-                    .editor()
-                    .writer()
-                    .icmp(Writable(equal), index, value, IntCC::Eq);
+                let constant = f.editor().writer().constant(value, case as i64);
+                let compare = f.editor().writer().icmp(equal, index, value, IntCC::Eq);
                 let yes = f.editor().create_edge(target.block, &target.args);
                 let no = f
                     .editor()

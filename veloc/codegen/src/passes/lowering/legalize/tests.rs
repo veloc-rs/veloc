@@ -7,7 +7,7 @@ use veloc_lir::{InstBuild, InstRead};
 fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
     use crate::target::TargetMachine;
     use crate::target::x86_64::X86_64TargetMachine;
-    use veloc_lir::{MemoryAccess, MemoryKind, Writable};
+    use veloc_lir::{MemoryAccess, MemoryKind};
     use veloc_mir::Type;
     let target = X86_64TargetMachine::new(crate::TargetConfig::default()).unwrap();
     for offset in [
@@ -28,12 +28,11 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
             memory.alignment = 8;
             memory.volatile = true;
             let inst = match kind {
-                MemoryKind::Read => {
-                    f.editor()
-                        .writer()
-                        .with_memory(memory)
-                        .load(Writable(value), base, offset)
-                }
+                MemoryKind::Read => f
+                    .editor()
+                    .writer()
+                    .with_memory(memory)
+                    .load(value, base, offset),
                 MemoryKind::Write => f
                     .editor()
                     .writer()
@@ -109,7 +108,7 @@ impl Mode {
         }
         if f.inst(id).generic_opcode() == Some(GenericOpcode::Sub) {
             f.editor()
-                .rewriter(id)
+                .replace(id)
                 .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], []);
             return Ok(());
         }
@@ -164,7 +163,7 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
             .collect::<Vec<_>>()[0];
         if target_node {
             f.editor()
-                .rewriter(old)
+                .replace(old)
                 .write(MachineOpcode::Target(0), &[], &[], []);
             assert!(
                 !Legalizer::new(&Mode::Missing)
@@ -240,7 +239,7 @@ fn edits_to_previously_visited_instructions_are_revisited() {
                         .flat_map(|b| ctx.block_insts(b))
                         .next()
                         .unwrap();
-                    ctx.editor().rewriter(first).write(
+                    ctx.editor().replace(first).write(
                         MachineOpcode::Generic(GenericOpcode::Sub),
                         &[],
                         &[],
@@ -251,7 +250,7 @@ fn edits_to_previously_visited_instructions_are_revisited() {
                 }),
                 GenericOpcode::Sub => LegalizeAction::rewrite("sub_to_add", |ctx| {
                     let root = ctx.root();
-                    ctx.editor().rewriter(root).write(
+                    ctx.editor().replace(root).write(
                         MachineOpcode::Generic(GenericOpcode::Add),
                         &[],
                         &[],
@@ -309,15 +308,15 @@ fn cycles_across_new_blocks_share_one_budget() {
 
 #[test]
 fn existing_value_replacement_updates_users_without_a_copy() {
-    use veloc_lir::{Type, Writable};
+    use veloc_lir::Type;
     for generated in [false, true] {
         let mut f = MachineFunction::new("replace".into());
         let block = f.entry_block();
         let input = f.editor().alloc_vreg(Type::I64);
         let result = f.editor().alloc_vreg(Type::I64);
         let output = f.editor().alloc_vreg(Type::I64);
-        let root = f.editor().writer().copy(Writable(result), input);
-        let user = f.editor().writer().copy(Writable(output), result);
+        let root = f.editor().writer().copy(result, input);
+        let user = f.editor().writer().copy(output, result);
         f.editor().append_inst(block, root);
         f.editor().append_inst(block, user);
         let action = if generated {

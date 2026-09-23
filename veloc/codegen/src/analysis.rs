@@ -787,7 +787,7 @@ mod tests {
                 .contains(&value)
         );
         let edge = f.editor().create_edge(Block::from_u32(2), &[]);
-        f.editor().rewriter(jump).br(edge);
+        f.editor().replace(jump).br(edge);
         analyses.apply(ChangeSet::INST_OPERANDS);
         assert_eq!(
             analyses.cfg(&f, &target).succs(Block::from_u32(0)),

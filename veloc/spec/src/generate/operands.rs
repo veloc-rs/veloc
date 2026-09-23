@@ -174,8 +174,6 @@ impl Operands {
         out.push_str("}\n");
         writeln!(out, "pub trait {writer}: Sized {{
             type Inst;
-            type Def;
-            fn reg(value: Self::Def) -> {reg};
             fn write(self, opcode: {opcode}, results: &[{reg}], inputs: &[{reg}], fields: impl IntoIterator<Item = {attrs}>) -> Self::Inst;").unwrap();
         for op in &defs.ops {
             self.emit_builder(&mut out, op);
@@ -264,8 +262,7 @@ impl Operands {
         writeln!(
             out,
             "{}\n}}",
-            self.construction(op, "self", "Self::reg", str::to_owned)
-                .emit()
+            self.construction(op, "self", str::to_owned).emit()
         )
         .unwrap();
     }

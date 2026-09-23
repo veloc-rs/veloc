@@ -311,7 +311,7 @@ pub(crate) fn verify_call_frames(
 mod tests {
     use super::*;
     use alloc::string::ToString;
-    use veloc_lir::{Type, Writable};
+    use veloc_lir::Type;
 
     #[test]
     fn checks_representation_invariants_without_phase_tags() {
@@ -322,7 +322,7 @@ mod tests {
                 .unwrap();
         let mut f = MachineFunction::new("boundaries".into());
         let value = f.editor().alloc_vreg(Type::I64);
-        let constant = f.editor().writer().constant(Writable(value), 42);
+        let constant = f.editor().writer().constant(value, 42);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(0), constant);
         let ret = f.editor().writer().ret(&[value]);
@@ -330,13 +330,13 @@ mod tests {
         verify(&f, &target).unwrap();
         assert!(verify_selected(&f, &target).is_err());
 
-        f.editor().rewriter(constant).write(
+        f.editor().replace(constant).write(
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
             &[value],
             &[],
             [FieldValue::Imm(42)],
         );
-        f.editor().rewriter(ret).write(
+        f.editor().replace(ret).write(
             MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
             &[],
             &[],
@@ -345,7 +345,7 @@ mod tests {
         verify_selected(&f, &target).unwrap();
         assert!(verify_allocated(&f, &target).is_err());
 
-        f.editor().rewriter(constant).write(
+        f.editor().replace(constant).write(
             MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
             &[REG_RAX],
             &[],
@@ -380,9 +380,9 @@ mod tests {
         let c = f.editor().alloc_vreg(Type::BOOL);
         let r = f.editor().alloc_vreg(Type::I64);
         f.editor().append_block_param(blocks[3], p);
-        let a = f.editor().writer().constant(Writable(x), 1);
+        let a = f.editor().writer().constant(x, 1);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), a);
-        let b = f.editor().writer().constant(Writable(c), 1);
+        let b = f.editor().writer().constant(c, 1);
         f.editor().append_inst(veloc_lir::BlockId::from_u32(0), b);
         let yes = f.editor().create_edge(blocks[1], &[]);
         let no = f.editor().create_edge(blocks[2], &[]);
@@ -394,7 +394,7 @@ mod tests {
         f.editor().set_edge_args(edge, &[x]);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(1), left);
-        let def_y = f.editor().writer().constant(Writable(y), 2);
+        let def_y = f.editor().writer().constant(y, 2);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(2), def_y);
         let edge = f.editor().create_edge(blocks[3], &[]);
@@ -402,7 +402,7 @@ mod tests {
         f.editor().set_edge_args(edge, &[y]);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(2), right);
-        let copy = f.editor().writer().copy(Writable(r), p);
+        let copy = f.editor().writer().copy(r, p);
         f.editor()
             .append_inst(veloc_lir::BlockId::from_u32(3), copy);
         let ret = f.editor().writer().ret(&[r]);
@@ -410,7 +410,7 @@ mod tests {
         verify(&f, &target).unwrap();
 
         let mut broken = f.clone();
-        broken.editor().rewriter(copy).copy(Writable(p), x);
+        broken.editor().replace(copy).copy(p, x);
         assert!(
             verify(&broken, &target)
                 .unwrap_err()
@@ -444,7 +444,7 @@ mod tests {
                 .contains("type mismatch")
         );
         let mut broken = f.clone();
-        broken.editor().rewriter(a).copy(Writable(x), x);
+        broken.editor().replace(a).copy(x, x);
         assert!(
             verify(&broken, &target)
                 .unwrap_err()

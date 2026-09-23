@@ -159,7 +159,7 @@ pub(super) fn parse(
             crate::generate::packing::constructor(op, format, opcode, parameter)
         ),
         Host::Operands(storage) => storage
-            .construction(op, "self", "core::convert::identity", |name| {
+            .construction(op, "self", |name| {
                 if let Some(member) = op.operands().members.iter().find(|m| {
                     m.domain == crate::storage::operands::Domain::Result
                         && m.binding.as_deref() == Some(name)

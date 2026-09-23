@@ -527,8 +527,6 @@ type InstId = usize;
 struct Sink<'a> {{ store: &'a mut Vec<(Vec<Cell>, Vec<Cell>, Vec<Payload>)> }}
 impl Build for Sink<'_> {{
     type Inst = usize;
-    type Def = Cell;
-    fn reg(value: Cell) -> Cell {{ value }}
     fn write(self, _: Code, results: &[Cell], inputs: &[Cell], fields: impl IntoIterator<Item = Payload>) -> InstId {{
         let id = self.store.len();
         self.store.push((results.to_vec(), inputs.to_vec(), fields.into_iter().collect()));

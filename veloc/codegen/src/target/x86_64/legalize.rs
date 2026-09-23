@@ -2,7 +2,7 @@ use super::inst as generated;
 use crate::passes::lowering::legalize::Query;
 use crate::passes::lowering::{LegalizeAction, RewriteContext};
 use crate::target::TargetLegalizer;
-use veloc_lir::{GenericOpcode, Writable};
+use veloc_lir::GenericOpcode;
 use veloc_lir::{InstBuild, InstRead};
 use veloc_mir::Type;
 
@@ -50,16 +50,10 @@ fn displacement(mfunc: &mut RewriteContext<'_>) -> Result<(), crate::error::Erro
     // before the access rather than silently truncating it.
     let displacement = mfunc.editor().alloc_vreg(Type::I64);
     let address = mfunc.editor().alloc_vreg(Type::PTR);
-    let constant = mfunc
-        .editor()
-        .writer()
-        .constant(Writable(displacement), offset);
-    let add = mfunc
-        .editor()
-        .writer()
-        .ptr_add(Writable(address), base, displacement);
+    let constant = mfunc.editor().writer().constant(displacement, offset);
+    let add = mfunc.editor().writer().ptr_add(address, base, displacement);
     let access = if opcode == GenericOpcode::Load {
-        mfunc.editor().writer().load(Writable(value), address, 0)
+        mfunc.editor().writer().load(value, address, 0)
     } else {
         mfunc.editor().writer().store(value, address, 0)
     };
