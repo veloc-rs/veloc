@@ -51,13 +51,13 @@ fn x86_copy_type_for_regs(
 }
 
 pub(super) fn build_x86_copy_inst(
-    mfunc: &mut MachineFunction,
+    mut insert: veloc_lir::InstInserter<'_>,
     dst: Reg,
     src: Reg,
 ) -> Result<InstId, crate::error::Error> {
-    let ty = x86_copy_type_for_regs(mfunc, dst, src)?;
+    let ty = x86_copy_type_for_regs(&insert, dst, src)?;
     let opcode = x86_mov_opcode_for_type(ty)?;
-    Ok(opcode.write(mfunc.editor().writer(), &[dst], &[src], []))
+    Ok(opcode.write(insert.writer(), &[dst], &[src], []))
 }
 
 /// x86_64 后端共享 lowering helper。

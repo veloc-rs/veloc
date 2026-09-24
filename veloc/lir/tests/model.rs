@@ -9,18 +9,20 @@ use veloc_mir::Linkage;
 #[test]
 fn function_editor_preserves_layout_and_references() {
     let mut f = MachineFunction::new("layout".into());
+    let construction_block = f.entry_block();
     let entry = f.entry_block();
     let exit = f.editor().create_block();
     let a = f
         .editor()
+        .at_end(veloc_lir::BlockId::from_u32(0))
         .writer()
         .write(veloc_lir::MachineOpcode::Target(1), &[], &[], []);
     let b = f
         .editor()
+        .at_end(veloc_lir::BlockId::from_u32(0))
         .writer()
         .write(veloc_lir::MachineOpcode::Target(2), &[], &[], []);
-    f.editor().append_inst(veloc_lir::BlockId::from_u32(0), a);
-    f.editor().append_inst(veloc_lir::BlockId::from_u32(0), b);
+
     f.editor().move_block_before(exit, entry);
     assert_eq!(f.entry_block(), entry);
     assert_eq!(f.blocks().collect::<Vec<_>>(), [exit, entry]);
@@ -47,19 +49,23 @@ fn function_editor_preserves_layout_and_references() {
     assert!(f.inst(b).is_invalid());
     f.check_refs().unwrap();
 
-    let c = f
-        .editor()
-        .writer()
-        .write(veloc_lir::MachineOpcode::Target(3), &[], &[], []);
-    let d = f
-        .editor()
-        .writer()
-        .write(veloc_lir::MachineOpcode::Target(4), &[], &[], []);
+    let c = f.editor().at_end(construction_block).writer().write(
+        veloc_lir::MachineOpcode::Target(3),
+        &[],
+        &[],
+        [],
+    );
+    let d = f.editor().at_end(construction_block).writer().write(
+        veloc_lir::MachineOpcode::Target(4),
+        &[],
+        &[],
+        [],
+    );
     let (tail, changes) = f.editor().track(|f| {
-        f.editor().insert_after(a, c);
-        f.editor().insert_before(c, d);
+        f.editor().after(a).move_here(c);
+        f.editor().before(c).move_here(d);
         let tail = f.editor().split_block(d);
-        f.editor().move_before(c, a);
+        f.editor().before(a).move_here(c);
         tail
     });
     assert!(changes.blocks.contains(&entry));
@@ -79,8 +85,8 @@ fn function_editor_preserves_layout_and_references() {
     let x = f.editor().alloc_vreg(Type::I64);
     let y = f.editor().alloc_vreg(Type::I64);
     let edge = f.editor().create_edge(entry, &[]);
-    let branch = f.editor().writer().br(edge);
-    f.editor().append_inst(exit, branch);
+    let branch = f.editor().at_end(exit).writer().br(edge);
+
     let (_, changes) = f.editor().track(|f| {
         f.editor().redirect_edge(edge, new);
         f.editor().set_edge_args(edge, &[x]);
@@ -100,7 +106,7 @@ fn function_editor_preserves_layout_and_references() {
     f.editor().replace(branch).br(edge);
     assert_eq!(f.inst(branch).edge_ids().collect::<Vec<_>>(), [edge]);
     let copy = f.editor().clone_edge(edge);
-    let replacement = f.editor().writer().br(copy);
+    let replacement = f.editor().at_end(construction_block).writer().br(copy);
     assert_ne!(copy, edge);
     assert_eq!(f.uses(y).count(), 2);
     f.check_refs().unwrap();
@@ -119,15 +125,11 @@ fn function_editor_preserves_layout_and_references() {
     assert_eq!(cloned.uses(y).count(), 1);
     f.check_refs().unwrap();
     cloned.check_refs().unwrap();
-    // Split builders and reborrowed editors retain the same notification sink.
+    // Positioned builders and reborrowed editors retain the same notification sink.
     let ((created, snapshot), changes) = f.editor().track(|edit| {
-        let (mut regs, mut insts) = edit.instruction_parts();
-        let dst = regs.alloc(veloc_lir::VRegData {
-            ty: Type::I64,
-            bank: None,
-        });
+        let mut insts = edit.before(a);
+        let dst = insts.alloc_vreg(Type::I64);
         let created = insts.writer().copy(dst, x);
-        edit.append_inst(entry, created);
         edit.replace_uses(x.as_vreg().unwrap(), y.as_vreg().unwrap());
         (created, MachineFunction::clone(edit))
     });
@@ -142,7 +144,7 @@ fn function_editor_preserves_layout_and_references() {
     f.editor().invalidate_inst(created);
 
     // RAUW reports every existing owner, not only newly built instructions.
-    let user = f.editor().writer().copy(x, y);
+    let user = f.editor().at_end(construction_block).writer().copy(x, y);
     let (_, changes) = f.editor().track(|edit| {
         edit.replace_uses(y.as_vreg().unwrap(), x.as_vreg().unwrap());
     });
@@ -155,7 +157,7 @@ fn function_editor_preserves_layout_and_references() {
             edit.track(|_| ());
         }));
         assert!(nested.is_err());
-        edit.move_before(a, c);
+        edit.before(c).move_here(a);
     });
     assert!(changes.insts.contains(&a));
 
@@ -163,29 +165,49 @@ fn function_editor_preserves_layout_and_references() {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         f.editor().track(|_| panic!("abandon edit"));
     }));
-    let (_, changes) = f.editor().track(|f| f.editor().move_before(a, c));
+    let (_, changes) = f.editor().track(|edit| {
+        edit.after(c).move_here(a);
+        edit.before(c).move_here(a);
+    });
     assert!(changes.blocks.contains(&entry));
+    let (_, changes) = f.editor().track(|edit| {
+        edit.before(c).move_here(a);
+    });
+    assert!(changes.insts.is_empty() && changes.blocks.is_empty());
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f.editor().before(a).move_here(a);
+        }))
+        .is_err()
+    );
 
     // Replacements update the real layout immediately, including retained roots.
     let mut edit = f.editor();
-    let replacement = edit
-        .writer()
-        .write(veloc_lir::MachineOpcode::Target(5), &[], &[], []);
-    edit.replace_with(a, &[replacement, a]);
+    let replacement = edit.at_end(construction_block).writer().write(
+        veloc_lir::MachineOpcode::Target(5),
+        &[],
+        &[],
+        [],
+    );
+    edit.before(a).move_here(replacement);
     assert_eq!(
         edit.block_insts(entry).collect::<Vec<_>>(),
         [replacement, a, c]
     );
-    edit.replace_with(a, &[]);
+    edit.invalidate_inst(a);
     assert!(edit.inst(a).is_invalid());
     assert_eq!(
         edit.block_insts(entry).collect::<Vec<_>>(),
         [replacement, c]
     );
-    let next = edit
-        .writer()
-        .write(veloc_lir::MachineOpcode::Target(6), &[], &[], []);
-    edit.replace_with(c, &[next]);
+    let next = edit.at_end(construction_block).writer().write(
+        veloc_lir::MachineOpcode::Target(6),
+        &[],
+        &[],
+        [],
+    );
+    edit.before(c).move_here(next);
+    edit.invalidate_inst(c);
     assert!(edit.inst(c).is_invalid());
     assert_eq!(edit.inst_block(next), Some(entry));
     assert_eq!(
@@ -199,14 +221,23 @@ fn function_editor_preserves_layout_and_references() {
 fn references_follow_all_store_edits_and_edge_arguments() {
     use veloc_lir::{RefRole, VReg};
     let mut f = MachineFunction::new("references".into());
+    let construction_block = f.entry_block();
     let a = f.editor().alloc_vreg(Type::I64);
     let b = f.editor().alloc_vreg(Type::I64);
     let dst = f.editor().alloc_vreg(Type::I64);
     let block = f.entry_block();
-    let add = f.editor().writer().add(dst, a, a);
+    let add = f
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .add(dst, a, a);
     let yes = f.editor().create_edge(block, &[a, b]);
     let no = f.editor().create_edge(block, &[a]);
-    let branch = f.editor().writer().brcond(a, yes, no);
+    let branch = f
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .brcond(a, yes, no);
     assert_eq!(f.uses(a).count(), 5);
     assert!(f.uses(a).single().is_none());
     assert_eq!(f.defs(dst).single().unwrap().inst(), add);
@@ -241,10 +272,12 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     clone.check_refs().unwrap();
 
     // Replacing a tied input never renames its independent output.
-    let rw = f
-        .editor()
-        .writer()
-        .write(veloc_lir::MachineOpcode::Target(0), &[a], &[b, a], []);
+    let rw = f.editor().at_end(construction_block).writer().write(
+        veloc_lir::MachineOpcode::Target(0),
+        &[a],
+        &[b, a],
+        [],
+    );
     f.editor()
         .replace_uses(a.as_vreg().unwrap(), b.as_vreg().unwrap());
     assert_eq!(f.uses(a).count(), 0);
@@ -252,7 +285,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
     f.editor().invalidate_inst(rw);
     f.check_refs().unwrap();
 
-    let replacement = f.editor().writer().copy(dst, a);
+    let replacement = f.editor().at_end(construction_block).writer().copy(dst, a);
     f.editor().replace_inst(add, replacement);
     assert!(f.inst(replacement).is_invalid());
     assert_eq!(f.uses(a).single().unwrap().inst(), add);
@@ -268,7 +301,7 @@ fn references_follow_all_store_edits_and_edge_arguments() {
         f.check_refs().unwrap();
     }
     // Register references and attribute edits address independent storage domains.
-    let mixed = f.editor().writer().write(
+    let mixed = f.editor().at_end(construction_block).writer().write(
         veloc_lir::MachineOpcode::Target(0),
         &[],
         &[a, a],
@@ -315,10 +348,12 @@ fn references_follow_all_store_edits_and_edge_arguments() {
         f.editor().create_edge(block, &[a]),
     ];
     let fields = edges.map(veloc_lir::FieldValue::Edge);
-    let source =
-        f.editor()
-            .writer()
-            .write(veloc_lir::MachineOpcode::Target(42), &[dst], &[a], fields);
+    let source = f.editor().at_end(construction_block).writer().write(
+        veloc_lir::MachineOpcode::Target(42),
+        &[dst],
+        &[a],
+        fields,
+    );
     f.editor().set_inst_effects(
         source,
         veloc_lir::RegEffects {
@@ -337,6 +372,8 @@ fn references_follow_all_store_edits_and_edge_arguments() {
             .collect::<Vec<_>>(),
         [vec![b, b, b], vec![], vec![b]]
     );
+    // Replacement requires a live destination, not the previously erased ID.
+    let branch = f.editor().at_end(block).trap();
     f.editor().replace_inst(branch, source);
     assert_eq!(f.input_id(branch, 0), source_slot);
     assert!(f.uses(b).all(|r| r.inst() == branch));
@@ -354,8 +391,8 @@ fn standalone_module_supports_instruction_and_stage_apis() {
     let mut function = MachineFunction::new("example".into());
     let block = function.entry_block();
     let reg = function.editor().alloc_vreg(Type::I64);
-    let inst = function.editor().writer().constant(reg, 42);
-    function.editor().append_inst(block, inst);
+    let inst = function.editor().at_end(block).writer().constant(reg, 42);
+
     let veloc_lir::InstView::Constant(constant) = function.inst(inst).view() else {
         panic!("expected constant");
     };
@@ -380,9 +417,14 @@ fn standalone_module_supports_instruction_and_stage_apis() {
 #[test]
 fn operand_edits_preserve_payload_but_replacement_discards_it() {
     let mut function = MachineFunction::new("edit".into());
+    let construction_block = function.entry_block();
     let block = function.entry_block();
     let edge = function.editor().create_edge(block, &[]);
-    let id = function.editor().writer().br(edge);
+    let id = function
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .br(edge);
     function.editor().redirect_edge(edge, block);
     assert_eq!(function.successors(id).next().unwrap().block, block);
 
@@ -408,8 +450,10 @@ fn symbol_interning_does_not_require_a_source_module() {
 #[test]
 fn validation_errors_are_owned_by_lir() {
     let mut function = MachineFunction::new("test".into());
+    let construction_block = function.entry_block();
     let inst = function
         .editor()
+        .at_end(construction_block)
         .writer()
         .constant(veloc_lir::Reg::new_vreg(0), 42);
     {
@@ -451,6 +495,7 @@ fn offline_semantics_use_the_same_emitter_for_operand_storage() {
 #[test]
 fn logical_type_validation_is_separate_from_construction() {
     let mut function = MachineFunction::new("test".into());
+    let construction_block = function.entry_block();
     assert!(
         GenericOpcode::Add
             .validate_types(&[Type::I32, Type::I32], &[Type::I32])
@@ -484,10 +529,11 @@ fn logical_type_validation_is_separate_from_construction() {
             .is_err()
     );
     // Physical construction deliberately cannot inspect register types.
-    let inst = function
-        .editor()
-        .writer()
-        .add(Reg::new_vreg(0), Reg::new_vreg(1), Reg::new_vreg(2));
+    let inst = function.editor().at_end(construction_block).writer().add(
+        Reg::new_vreg(0),
+        Reg::new_vreg(1),
+        Reg::new_vreg(2),
+    );
     assert!(matches!(
         function.inst(inst).view(),
         veloc_lir::InstView::BinaryReg(_)
@@ -497,11 +543,16 @@ fn logical_type_validation_is_separate_from_construction() {
 #[test]
 fn generated_builders_and_views_agree() {
     let mut function = MachineFunction::new("test".into());
+    let construction_block = function.entry_block();
     let dst = Reg::new_vreg(0);
     let lhs = Reg::new_vreg(1);
     let rhs = Reg::new_vreg(2);
     let veloc_lir::InstView::BinaryReg(decoded) = ({
-        let id = function.editor().writer().add(dst, lhs, rhs);
+        let id = function
+            .editor()
+            .at_end(construction_block)
+            .writer()
+            .add(dst, lhs, rhs);
         function.inst(id).view()
     }) else {
         panic!("expected BinaryReg");
@@ -516,13 +567,22 @@ fn generated_builders_and_views_agree() {
 #[test]
 fn carry_input_is_required_exactly_for_carry_instructions() {
     let mut function = MachineFunction::new("test".into());
+    let construction_block = function.entry_block();
     let dst = Reg::new_vreg(0);
     let flag = Reg::new_vreg(1);
     let lhs = Reg::new_vreg(2);
     let rhs = Reg::new_vreg(3);
     let carry = Reg::new_vreg(4);
-    let add = function.editor().writer().uaddo(dst, flag, lhs, rhs);
-    let adc = function.editor().writer().uadde(dst, flag, lhs, rhs, carry);
+    let add = function
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .uaddo(dst, flag, lhs, rhs);
+    let adc = function
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .uadde(dst, flag, lhs, rhs, carry);
     let veloc_lir::InstView::BinaryRegWithFlags(add_view) = function.inst(add).view() else {
         panic!("expected flags");
     };
@@ -557,6 +617,7 @@ fn carry_input_is_required_exactly_for_carry_instructions() {
 #[test]
 fn variable_views_preserve_call_and_return_operands() {
     let mut function = MachineFunction::new("test".into());
+    let construction_block = function.entry_block();
     use veloc_lir::{InstView, SymbolId};
     let results: Vec<_> = (0..8).map(Reg::new_vreg).collect();
     let args: Vec<_> = (8..24).map(Reg::new_vreg).collect();
@@ -571,15 +632,17 @@ fn variable_views_preserve_call_and_return_operands() {
         frame: None,
         stack_args: Default::default(),
     };
-    let direct = function
+    let direct = function.editor().at_end(construction_block).writer().call(
+        &results,
+        symbol,
+        &args,
+        info.clone(),
+    );
+    let indirect = function
         .editor()
+        .at_end(construction_block)
         .writer()
-        .call(&results, symbol, &args, info.clone());
-    let indirect =
-        function
-            .editor()
-            .writer()
-            .callind(&results, Reg::new_vreg(25), &args, info.clone());
+        .callind(&results, Reg::new_vreg(25), &args, info.clone());
     for inst in [direct, indirect] {
         let (actual_results, actual_args) = match function.inst(inst).view() {
             InstView::Call(call) => {
@@ -663,13 +726,21 @@ fn variable_views_preserve_call_and_return_operands() {
         16
     );
 
-    let ret = function.editor().writer().ret(&args);
+    let ret = function
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .ret(&args);
     let InstView::Return(view) = function.inst(ret).view() else {
         panic!("expected return");
     };
     assert_eq!(view.values.len(), args.len());
     assert_eq!(view.values.iter().copied().collect::<Vec<_>>(), args);
-    let empty = function.editor().writer().ret(&[]);
+    let empty = function
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .ret(&[]);
     let InstView::Return(view) = function.inst(empty).view() else {
         panic!("expected return");
     };
@@ -679,11 +750,16 @@ fn variable_views_preserve_call_and_return_operands() {
 #[test]
 fn optional_validation_is_separate_from_direct_views() {
     let mut function = MachineFunction::new("test".into());
+    let construction_block = function.entry_block();
     use veloc_lir::{MachineOpcode, SymbolId};
     use veloc_mir::{FloatCC, IntCC};
     let dst = Reg::new_vreg(0);
     let src = Reg::new_vreg(1);
-    let cmp = function.editor().writer().icmp(dst, src, src, IntCC::Eq);
+    let cmp = function
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .icmp(dst, src, src, IntCC::Eq);
     // Structural validation remains explicit, including low-level writes.
     function.editor().replace(cmp).write(
         MachineOpcode::Generic(GenericOpcode::Icmp),
@@ -698,10 +774,12 @@ fn optional_validation_is_separate_from_direct_views() {
         frame: None,
         stack_args: Default::default(),
     };
-    let call = function
-        .editor()
-        .writer()
-        .call(&[dst], SymbolId::from_u32(0), &[src], info.clone());
+    let call = function.editor().at_end(construction_block).writer().call(
+        &[dst],
+        SymbolId::from_u32(0),
+        &[src],
+        info.clone(),
+    );
     function.inst(call).validate().unwrap();
     // A second, unrelated payload is not representable. Reject it before
     // changing the instruction or its owned call contract.
@@ -725,6 +803,7 @@ fn optional_validation_is_separate_from_direct_views() {
     assert_eq!(function.call_info(call), &info);
     let missing_callee = function
         .editor()
+        .at_end(construction_block)
         .writer()
         .callind(&[dst], src, &[], info.clone());
     {
@@ -736,22 +815,32 @@ fn optional_validation_is_separate_from_direct_views() {
         );
     }
     assert!(function.inst(missing_callee).validate().is_err());
-    let ret = function.editor().writer().ret(&[]);
+    let ret = function
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .ret(&[]);
     {
         function.editor().set_inst_results(ret, &[dst]);
     }
     assert!(function.inst(ret).validate().is_err());
-    let target = function
-        .editor()
-        .writer()
-        .write(MachineOpcode::Target(0), &[dst], &[src], []);
+    let target = function.editor().at_end(construction_block).writer().write(
+        MachineOpcode::Target(0),
+        &[dst],
+        &[src],
+        [],
+    );
     assert!(function.inst(target).validate().is_err());
     function.editor().invalidate_inst(target);
     assert!(function.inst(target).validate().is_err());
 
     // Access does not run the optional full shape check: unrelated extra
     // attributes are rejected by validation, not by reading an add's registers.
-    let add = function.editor().writer().add(dst, src, src);
+    let add = function
+        .editor()
+        .at_end(construction_block)
+        .writer()
+        .add(dst, src, src);
     function.editor().replace(add).write(
         MachineOpcode::Generic(GenericOpcode::Add),
         &[dst],

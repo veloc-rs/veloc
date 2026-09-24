@@ -1,4 +1,5 @@
 //! SSA edge arguments become physical parallel copies only after allocation.
+use super::allocation::Transfer;
 use super::linear_scan::RegisterAllocator;
 use crate::target::SpillKind;
 use crate::{Error, Result};
@@ -8,17 +9,18 @@ use std::vec::Vec;
 use veloc_lir::{InstId, MachineFunction, Reg, StackBatch, StackSlot};
 use veloc_mir::Type;
 
-/// A physical move sequence for one selected branch, detached until materialization.
+/// A physical move plan for one selected branch, emitted during materialization.
 pub struct EdgeAllocation {
     pub(crate) branch: InstId,
-    pub(crate) instructions: Vec<InstId>,
+    pub(crate) instructions: Vec<Transfer>,
+    pub(crate) target: veloc_lir::BlockId,
 }
 
 impl EdgeAllocation {
     pub fn branch(&self) -> InstId {
         self.branch
     }
-    pub fn instructions(&self) -> &[InstId] {
+    pub fn instructions(&self) -> &[Transfer] {
         &self.instructions
     }
 }
@@ -44,7 +46,7 @@ impl RegisterAllocator<'_> {
 
     pub(super) fn plan_edges(
         &self,
-        f: &mut MachineFunction,
+        f: &MachineFunction,
         frame: &mut StackBatch,
     ) -> Result<Vec<EdgeAllocation>> {
         let mut edges = Vec::new();
@@ -101,7 +103,7 @@ impl RegisterAllocator<'_> {
                         .position(|(dst, _, _)| !pending.iter().any(|(_, src, _)| src == dst))
                     {
                         let (dst, src, ty) = pending.remove(index);
-                        self.move_location(f, frame, &mut instructions, dst, src, ty)?;
+                        self.move_location(&mut instructions, dst, src, ty)?;
                     } else {
                         let (_, src, ty) = pending[0];
                         let layout = &self.target.desc().data_layout;
@@ -116,7 +118,7 @@ impl RegisterAllocator<'_> {
                             frame.alloc_object(veloc_lir::StackObject::Local, size, align)
                         });
                         let saved = Location::Stack(slot);
-                        self.move_location(f, frame, &mut instructions, saved, src, ty)?;
+                        self.move_location(&mut instructions, saved, src, ty)?;
                         for (_, input, _) in &mut pending {
                             if *input == src {
                                 *input = saved;
@@ -125,9 +127,9 @@ impl RegisterAllocator<'_> {
                     }
                 }
                 if !instructions.is_empty() {
-                    instructions.push(self.target.jump_instruction(f.editor().writer(), *target)?);
                     edges.push(EdgeAllocation {
                         branch: id,
+                        target: *target,
                         instructions,
                     });
                 }
@@ -140,19 +142,14 @@ impl RegisterAllocator<'_> {
 
     fn move_location(
         &self,
-        f: &mut MachineFunction,
-        frame: &StackBatch,
-        out: &mut Vec<InstId>,
+        out: &mut Vec<Transfer>,
         dst: Location,
         src: Location,
         ty: Type,
     ) -> Result<()> {
         match (dst, src) {
             (Location::Reg(dst), Location::Reg(src)) => {
-                out.push(
-                    self.target
-                        .copy_instruction(f.editor().writer(), dst, src, ty)?,
-                );
+                out.push(Transfer::Copy { dst, src, ty });
             }
             (Location::Stack(dst), Location::Stack(src)) => {
                 let class = self.target.desc().reg_class_for_vreg(&ty, None);
@@ -160,29 +157,14 @@ impl RegisterAllocator<'_> {
                     *self.target.spill_scratch(class).first().ok_or_else(|| {
                         Error::codegen("edge stack copy needs a scratch register")
                     })?;
-                self.move_location(
-                    f,
-                    frame,
-                    out,
-                    Location::Reg(scratch),
-                    Location::Stack(src),
-                    ty,
-                )?;
-                self.move_location(
-                    f,
-                    frame,
-                    out,
-                    Location::Stack(dst),
-                    Location::Reg(scratch),
-                    ty,
-                )?;
+                self.move_location(out, Location::Reg(scratch), Location::Stack(src), ty)?;
+                self.move_location(out, Location::Stack(dst), Location::Reg(scratch), ty)?;
             }
             (Location::Reg(reg), Location::Stack(slot))
             | (Location::Stack(slot), Location::Reg(reg)) => {
                 let load = matches!(dst, Location::Reg(_));
-                out.push(self.target.spill_instruction(
-                    f.editor().writer(),
-                    if load {
+                out.push(Transfer::Spill {
+                    kind: if load {
                         SpillKind::Load
                     } else {
                         SpillKind::Store
@@ -190,7 +172,7 @@ impl RegisterAllocator<'_> {
                     reg,
                     slot,
                     ty,
-                )?);
+                });
             }
         }
         Ok(())

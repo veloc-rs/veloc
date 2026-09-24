@@ -1,8 +1,42 @@
 //! Allocation is a plan over an unchanged function, not a mutation of its values.
+use crate::target::{SpillKind, TargetRegalloc};
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
 use std::vec::Vec;
-use veloc_lir::{InstId, MachineFunction, PReg, StackBatch};
+use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackBatch, StackSlot, Type};
+
+/// A planned physical transfer, not an instruction in the source function.
+#[derive(Debug, Clone, Copy)]
+pub enum Transfer {
+    Copy {
+        dst: Reg,
+        src: Reg,
+        ty: Type,
+    },
+    Spill {
+        kind: SpillKind,
+        reg: Reg,
+        slot: StackSlot,
+        ty: Type,
+    },
+}
+impl Transfer {
+    fn emit(
+        self,
+        target: &dyn TargetRegalloc,
+        writer: veloc_lir::InstWriter<'_>,
+    ) -> crate::Result<InstId> {
+        match self {
+            Self::Copy { dst, src, ty } => target.copy_instruction(writer, dst, src, ty),
+            Self::Spill {
+                kind,
+                reg,
+                slot,
+                ty,
+            } => target.spill_instruction(writer, kind, reg, slot, ty),
+        }
+    }
+}
 
 /// Physical locations and insertions for one instruction. Locations are indexed
 /// separately by result and input occurrence, not by virtual register: split ranges may have different
@@ -11,8 +45,8 @@ use veloc_lir::{InstId, MachineFunction, PReg, StackBatch};
 pub struct InstAllocation {
     pub(crate) results: SmallVec<[PReg; 2]>,
     pub(crate) locations: SmallVec<[PReg; 4]>,
-    pub(crate) before: Vec<InstId>,
-    pub(crate) after: Vec<InstId>,
+    pub(crate) before: Vec<Transfer>,
+    pub(crate) after: Vec<Transfer>,
 }
 
 impl InstAllocation {
@@ -23,11 +57,11 @@ impl InstAllocation {
         &self.locations
     }
 
-    pub fn before(&self) -> &[InstId] {
+    pub fn before(&self) -> &[Transfer] {
         &self.before
     }
 
-    pub fn after(&self) -> &[InstId] {
+    pub fn after(&self) -> &[Transfer] {
         &self.after
     }
 }
@@ -59,8 +93,8 @@ impl Allocation {
     }
 
     /// Physical IR is produced only after all location and spill decisions have
-    /// succeeded. This step neither consults a target nor runs allocation again.
-    pub fn materialize(self) -> MachineFunction {
+    /// succeeded. Target hooks emit transfers at their final insertion points.
+    pub fn materialize(self, target: &dyn TargetRegalloc) -> crate::Result<MachineFunction> {
         let Self {
             mut source,
             mut instructions,
@@ -77,7 +111,7 @@ impl Allocation {
                 let plan = core::mem::take(&mut instructions[id]);
                 let mut edit = source.editor();
                 for inst in plan.before {
-                    edit.insert_before(id, inst);
+                    inst.emit(target, edit.before(id).writer())?;
                 }
                 assert_eq!(plan.results.len(), edit.inst(id).results().len());
                 for (index, reg) in plan.results.into_iter().enumerate() {
@@ -89,8 +123,7 @@ impl Allocation {
                 }
                 let mut after = id;
                 for inst in plan.after {
-                    edit.insert_after(after, inst);
-                    after = inst;
+                    after = inst.emit(target, edit.after(after).writer())?;
                 }
                 cursor = next_id;
             }
@@ -100,9 +133,10 @@ impl Allocation {
         // so conditional branches and critical edges execute only their own moves.
         for edge in edges {
             let block = source.editor().create_block();
-            for id in edge.instructions {
-                source.editor().append_inst(block, id);
+            for transfer in edge.instructions {
+                transfer.emit(target, source.editor().at_end(block).writer())?;
             }
+            target.jump_instruction(source.editor().at_end(block).writer(), edge.target)?;
             let successor = source
                 .inst(edge.branch)
                 .edge_ids()
@@ -127,7 +161,7 @@ impl Allocation {
             source.params().is_empty(),
             "ABI lowering must consume function parameters"
         );
-        source
+        Ok(source)
     }
 }
 
@@ -154,20 +188,29 @@ mod tests {
             let reg = f.editor().alloc_vreg(Type::I64);
             values.push(reg);
             {
-                let id = f.editor().writer().write(
-                    MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
-                    &[reg],
-                    &[],
-                    [FieldValue::Imm(n)],
-                );
-                f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+                let id = f
+                    .editor()
+                    .at_end(veloc_lir::BlockId::from_u32(0))
+                    .writer()
+                    .write(
+                        MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
+                        &[reg],
+                        &[],
+                        [FieldValue::Imm(n)],
+                    );
+
                 id
             };
         }
         for &reg in &values {
             {
-                let id = TargetInst::X86Mov64.write(f.editor().writer(), &[REG_RAX], &[reg], []);
-                f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+                let id = TargetInst::X86Mov64.write(
+                    f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+                    &[REG_RAX],
+                    &[reg],
+                    [],
+                );
+
                 id
             };
         }
@@ -199,11 +242,25 @@ mod tests {
                 (
                     inst.before()
                         .iter()
-                        .map(|&i| plan.source().inst(i).opcode())
+                        .map(|&transfer| {
+                            let mut scratch = MachineFunction::new("transfer".into());
+                            let block = scratch.entry_block();
+                            let id = transfer
+                                .emit(&target, scratch.editor().at_end(block).writer())
+                                .unwrap();
+                            scratch.inst(id).opcode()
+                        })
                         .collect::<Vec<_>>(),
                     inst.after()
                         .iter()
-                        .map(|&i| plan.source().inst(i).opcode())
+                        .map(|&transfer| {
+                            let mut scratch = MachineFunction::new("transfer".into());
+                            let block = scratch.entry_block();
+                            let id = transfer
+                                .emit(&target, scratch.editor().at_end(block).writer())
+                                .unwrap();
+                            scratch.inst(id).opcode()
+                        })
                         .collect::<Vec<_>>(),
                 )
             })
@@ -211,7 +268,7 @@ mod tests {
         assert!(insertions.iter().any(|(before, _)| !before.is_empty()));
         assert!(insertions.iter().any(|(_, after)| !after.is_empty()));
 
-        let physical = plan.materialize();
+        let physical = plan.materialize(&target).unwrap();
         let mut offset = 0;
         for (id, (before, after)) in ids.into_iter().zip(insertions) {
             for op in before {

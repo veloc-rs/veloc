@@ -21,7 +21,7 @@ trait ConstraintPolicy {
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &mut MachineFunction,
+        insert: veloc_lir::InstInserter<'_>,
         dst: Reg,
         src: Reg,
     ) -> InstId;
@@ -41,15 +41,16 @@ impl ConstraintPolicy for PreSelectConstraints {
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &mut MachineFunction,
+        insert: veloc_lir::InstInserter<'_>,
         dst: Reg,
         src: Reg,
     ) -> InstId {
         if dst.is_vreg() && src.is_vreg() {
-            mfunc.editor().writer().copy(dst, src)
+            let mut insert = insert;
+            insert.copy(dst, src)
         } else {
             lowering
-                .build_preselect_reg_copy(mfunc, dst, src)
+                .build_preselect_reg_copy(insert, dst, src)
                 .unwrap_or_else(|err| {
                     panic!(
                         "failed to build pre-select reg copy for {:?} <- {:?}: {}",
@@ -71,12 +72,12 @@ impl ConstraintPolicy for PostSelectConstraints {
 
     fn build_copy(
         lowering: &dyn TargetOperandLowering,
-        mfunc: &mut MachineFunction,
+        insert: veloc_lir::InstInserter<'_>,
         dst: Reg,
         src: Reg,
     ) -> InstId {
         lowering
-            .build_postselect_reg_copy(mfunc, dst, src)
+            .build_postselect_reg_copy(insert, dst, src)
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to build post-select reg copy for {:?} <- {:?}: {}",
@@ -127,9 +128,8 @@ where
                 if current == fixed.reg {
                     continue;
                 }
-                let copy = Policy::build_copy(self.lowering, mfunc, fixed.reg, current);
+                Policy::build_copy(self.lowering, mfunc.editor().before(id), fixed.reg, current);
                 let mut edit = mfunc.editor();
-                edit.insert_before(id, copy);
                 edit.set_inst_input(id, fixed.use_operand, fixed.reg);
                 inst_changed = true;
             }
@@ -228,11 +228,11 @@ mod tests {
 
         fn build_preselect_reg_copy(
             &self,
-            mfunc: &mut MachineFunction,
+            mut insert: veloc_lir::InstInserter<'_>,
             dst: Reg,
             src: Reg,
         ) -> Result<InstId, crate::error::Error> {
-            Ok(mfunc.editor().writer().copy(dst, src))
+            Ok(insert.copy(dst, src))
         }
     }
 
@@ -240,10 +240,13 @@ mod tests {
         build: impl FnOnce(veloc_lir::InstWriter<'_>) -> InstId,
     ) -> (MachineFunction, veloc_lir::InstId) {
         let mut mfunc = MachineFunction::new("test".into());
-        let inst_id = build(mfunc.editor().writer());
-        mfunc
-            .editor()
-            .append_inst(veloc_lir::BlockId::from_u32(0), inst_id);
+        let inst_id = build(
+            mfunc
+                .editor()
+                .at_end(veloc_lir::BlockId::from_u32(0))
+                .writer(),
+        );
+
         (mfunc, inst_id)
     }
 

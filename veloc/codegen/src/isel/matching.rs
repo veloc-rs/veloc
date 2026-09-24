@@ -1,11 +1,9 @@
 //! Selection bytecode. Matching is read-only; Accept enters construction.
-//! The selection driver commits detached instructions and edge transfers.
+//! Accepted recipes insert before the source; the driver finishes replacement and edge transfers.
 use super::select::SelectResult;
 use smallvec::SmallVec;
 use std::vec::Vec;
-use veloc_lir::{
-    FieldValue, GenericOpcode, InstEditor, InstId, InstRef, Reg, VRegBuilder, VRegData,
-};
+use veloc_lir::{FieldValue, GenericOpcode, InstId, InstInserter, InstRef, Reg};
 use veloc_mir::Type;
 
 // Like interpreter::define_opcodes, keep decoding and diagnostics beside the
@@ -103,9 +101,9 @@ impl Field {
     }
 }
 
-/// Generated construction entry points install complete instructions atomically.
+/// Generated construction entry points commit complete, positioned instructions.
 pub(crate) type Target =
-    fn(&mut InstEditor<'_>, InstId, &[Reg], &[Reg], SmallVec<[FieldValue; 4]>) -> InstId;
+    fn(&mut InstInserter<'_>, InstId, &[Reg], &[Reg], SmallVec<[FieldValue; 4]>) -> InstId;
 
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -183,10 +181,9 @@ pub(crate) fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> 
 #[inline(never)]
 pub(crate) fn execute(
     program: &Program,
-    vregs: &mut VRegBuilder<'_>,
     features: &[u64],
     predicate: &dyn Fn(u32, Reg) -> bool,
-    store: &mut InstEditor<'_>,
+    store: &mut InstInserter<'_>,
     source: InstId,
     out: &mut Vec<InstId>,
     edge_transfers: &mut Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>,
@@ -215,15 +212,17 @@ pub(crate) fn execute(
                 let dst = reader.index();
                 let node = reader.index();
                 let field = reader.index();
-                values[dst] = program.accesses[field]
-                    .as_ref()
-                    .map(|field| field.reg(store.get(insts[node].expect("dominating definition"))));
+                values[dst] = program.accesses[field].as_ref().map(|field| {
+                    field.reg(store.inst(insts[node].expect("dominating definition")))
+                });
             }
             Op::GetDef => {
                 assert!(!accepted);
                 let dst = reader.index();
                 let value = reader.index();
-                insts[dst] = values[value].and_then(|reg| store.def(reg));
+                insts[dst] = values[value]
+                    .filter(|reg| reg.is_vreg())
+                    .and_then(|reg| store.defs(reg).single().map(|site| site.inst()));
                 reader.branch(insts[dst].is_some());
             }
             Op::CheckOpcode => {
@@ -231,7 +230,7 @@ pub(crate) fn execute(
                 let node = reader.index();
                 let opcode = reader.index();
                 reader.branch(
-                    store.get(insts[node].unwrap()).generic_opcode()
+                    store.inst(insts[node].unwrap()).generic_opcode()
                         == Some(program.opcodes[opcode]),
                 );
             }
@@ -241,7 +240,7 @@ pub(crate) fn execute(
                 let set = reader.index();
                 reader.branch(
                     values[value]
-                        .and_then(|reg| reg.as_vreg().map(|reg| vregs.get(reg).ty))
+                        .and_then(|reg| reg.is_vreg().then(|| store.vreg_data(reg).ty))
                         .is_some_and(|ty| program.types[set].contains(&ty)),
                 );
             }
@@ -253,7 +252,7 @@ pub(crate) fn execute(
                 reader.branch(
                     program.accesses[field]
                         .as_ref()
-                        .map(|field| field.integer(store.get(insts[node].unwrap())))
+                        .map(|field| field.integer(store.inst(insts[node].unwrap())))
                         == Some(program.integers[constant]),
                 );
             }
@@ -281,7 +280,7 @@ pub(crate) fn execute(
                 let consumer = insts[reader.index()].unwrap();
                 // Only duplicate pure computation. Other users keep the old
                 // definition; DCE may erase it once it becomes unused.
-                let inst = store.get(definition);
+                let inst = store.inst(definition);
                 reader.branch(
                     definition != consumer && inst.is_pure_value() && inst.results().len() == 1,
                 );
@@ -297,16 +296,13 @@ pub(crate) fn execute(
                 let [ty] = program.types[ty] else {
                     panic!("temporary requires one type")
                 };
-                values[dst] = Some(vregs.alloc(VRegData {
-                    ty: *ty,
-                    bank: None,
-                }));
+                values[dst] = Some(store.alloc_vreg(*ty));
             }
             Op::ReadResult => {
                 assert!(accepted);
                 let dst = reader.index();
                 let index = reader.index();
-                values[dst] = Some(store.get(source).results()[index]);
+                values[dst] = Some(store.inst(source).results()[index]);
             }
             Op::ConstReg => {
                 assert!(accepted);
@@ -346,7 +342,7 @@ pub(crate) fn execute(
                 }
                 for _ in 0..reader.index() {
                     let mut field = match fields[reader.index()].expect("initialized field") {
-                        FieldSource::Attribute(inst, index) => store.get(inst).fields().at(index),
+                        FieldSource::Attribute(inst, index) => store.inst(inst).fields().at(index),
                         FieldSource::Imm(value) => FieldValue::Imm(value),
                     };
                     if let FieldValue::Edge(edge) = &mut field {
@@ -354,7 +350,11 @@ pub(crate) fn execute(
                             !edge_transfers.iter().any(|&(old, _)| old == *edge),
                             "edge transferred twice"
                         );
-                        let copy = store.clone_edge(source, *edge);
+                        assert!(
+                            store.inst(source).edge_ids().any(|id| id == *edge),
+                            "edge must belong to selection root"
+                        );
+                        let copy = store.clone_edge(*edge);
                         edge_transfers.push((*edge, copy));
                         *edge = copy;
                     }

@@ -37,10 +37,8 @@ impl FuncEditor<'_> {
         assert!(self.layout().contains_block(block), "unknown block");
         InstInserter {
             editor: self.editor(),
-            position: Position::Insert {
-                block,
-                before: None,
-            },
+            block,
+            before: None,
         }
     }
     pub fn at_start(&mut self, block: Block) -> InstInserter<'_> {
@@ -48,17 +46,16 @@ impl FuncEditor<'_> {
         let before = self.layout().first_inst(block);
         InstInserter {
             editor: self.editor(),
-            position: Position::Insert { block, before },
+            block,
+            before,
         }
     }
     pub fn before(&mut self, inst: InstId) -> InstInserter<'_> {
         let block = self.inst_block(inst).expect("detached insertion anchor");
         InstInserter {
             editor: self.editor(),
-            position: Position::Insert {
-                block,
-                before: Some(inst),
-            },
+            block,
+            before: Some(inst),
         }
     }
     pub fn after(&mut self, inst: InstId) -> InstInserter<'_> {
@@ -66,7 +63,8 @@ impl FuncEditor<'_> {
         let before = self.layout().next_inst(inst);
         InstInserter {
             editor: self.editor(),
-            position: Position::Insert { block, before },
+            block,
+            before,
         }
     }
     pub fn append_param(&mut self, param: Reg) {
@@ -119,6 +117,10 @@ impl FuncEditor<'_> {
         assert!(
             self.function.body.layout.contains_block(block),
             "unknown block"
+        );
+        assert!(
+            param.is_vreg(),
+            "block parameters must be virtual registers"
         );
         self.function.body.blocks[block].params.push(param);
         self.changed_block(block);
@@ -175,63 +177,11 @@ impl FuncEditor<'_> {
         }
         self.changed_block(block);
     }
-    /// Replace one placed instruction with detached instructions in the supplied
-    /// order. Including the root keeps its identity; otherwise it is erased.
-    pub fn replace_with(&mut self, root: InstId, output: &[InstId]) {
-        let block = self.inst_block(root).expect("replacement root is detached");
-        if output == [root] {
-            return;
-        }
-        let next = self.layout().next_inst(root);
-        let mut seen = hashbrown::HashSet::new();
-        for &inst in output {
-            assert!(seen.insert(inst), "duplicate replacement");
-            assert!(
-                inst == root || self.inst_block(inst).is_none(),
-                "replacement must be detached"
-            );
-        }
-        self.detach_inst(root);
-        for &inst in output {
-            if let Some(next) = next {
-                self.insert_before(next, inst);
-            } else {
-                self.append_inst(block, inst);
-            }
-        }
-        if !seen.contains(&root) {
-            self.invalidate_inst(root);
-        }
-    }
-
-    pub fn append_inst(&mut self, block: Block, inst: InstId) {
-        self.function.body.layout.append_inst(block, inst);
-        self.changed_inst(inst);
+    fn detach_inst(&mut self, inst: InstId) {
+        let block = self.inst_block(inst).expect("detached instruction");
         self.changed_block(block);
-    }
-    pub fn insert_before(&mut self, anchor: InstId, inst: InstId) {
-        self.function.body.layout.insert_before(anchor, inst);
-        self.changed_inst(inst);
-        self.changed_block(self.inst_block(anchor).unwrap());
-    }
-    pub fn insert_after(&mut self, anchor: InstId, inst: InstId) {
-        self.function.body.layout.insert_after(anchor, inst);
-        self.changed_inst(inst);
-        self.changed_block(self.inst_block(anchor).unwrap());
-    }
-    pub fn detach_inst(&mut self, inst: InstId) {
-        if let Some(block) = self.inst_block(inst) {
-            self.changed_block(block);
-        }
         self.function.body.layout.detach_inst(inst);
         self.changed_inst(inst);
-    }
-    pub fn move_before(&mut self, inst: InstId, anchor: InstId) {
-        assert!(self.inst_block(anchor).is_some(), "detached anchor");
-        if inst != anchor {
-            self.detach_inst(inst);
-            self.insert_before(anchor, inst);
-        }
     }
     /// Split placement at an instruction. The caller supplies any required
     /// explicit branch and block arguments; no target opcode is guessed here.
@@ -245,8 +195,7 @@ impl FuncEditor<'_> {
         let mut inst = Some(at);
         while let Some(id) = inst {
             inst = self.function.body.layout.next_inst(id);
-            self.detach_inst(id);
-            self.append_inst(block, id);
+            self.at_end(block).move_here(id);
         }
         block
     }
@@ -269,14 +218,6 @@ impl FuncEditor<'_> {
         self.changed_block(block);
     }
 
-    pub fn writer(&mut self) -> InstWriter<'_> {
-        self.function
-            .body
-            .store
-            .writer()
-            .tracking(self.changes.as_deref_mut())
-    }
-
     fn changed_block(&mut self, block: Block) {
         if let Some(changes) = &mut self.changes {
             changes.blocks.push(block);
@@ -285,14 +226,15 @@ impl FuncEditor<'_> {
 
     /// Rebuild one instruction in place, retaining its ID and layout position.
     /// Unspecified memory facts and implicit register effects are cleared.
-    pub fn replace(&mut self, id: InstId) -> InstInserter<'_> {
+    pub fn replace(&mut self, id: InstId) -> InstWriter<'_> {
         assert_ne!(self.inst(id).opcode(), crate::MachineOpcode::Invalid);
-        InstInserter {
-            editor: self.editor(),
-            position: Position::Replace {
-                id,
-                committed: false,
-            },
+        InstWriter {
+            store: &mut self.function.body.store,
+            layout: &mut self.function.body.layout,
+            changes: self.changes.as_deref_mut(),
+            position: Position::Replace(id),
+            memory: None,
+            effects: crate::RegEffects::default(),
         }
     }
 
@@ -311,17 +253,6 @@ impl FuncEditor<'_> {
     /// Create a typed virtual register without prescribing a register bank.
     pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
         self.alloc_vreg_data(VRegData { ty, bank: None })
-    }
-
-    /// Split register allocation from append-only instruction construction.
-    pub fn instruction_parts(&mut self) -> (VRegBuilder<'_>, crate::InstEditor<'_>) {
-        (
-            VRegBuilder(&mut self.function.body.vregs),
-            crate::InstEditor {
-                store: &mut self.function.body.store,
-                changes: self.changes.as_deref_mut(),
-            },
-        )
     }
 
     pub fn set_inst_effects(&mut self, id: InstId, effects: crate::RegEffects) {
@@ -386,21 +317,40 @@ impl FuncEditor<'_> {
         self.function.stack_frame.alloc_object(object, size, align)
     }
 
-    /// Transfer a detached source into a stable destination ID without copying.
-    /// Discards the destination's old payloads and invalidates the source ID.
-    /// Passing the same ID is a no-op; this does not change block layout.
+    /// Replace a destination's contents with an existing instruction.
+    /// The source is removed from its layout; the destination retains its ID and position.
     pub fn replace_inst(&mut self, inst_id: InstId, source: InstId) {
         assert!(
-            inst_id == source || self.inst_block(source).is_none(),
-            "replacement source must be detached"
+            !self.inst(inst_id).is_invalid(),
+            "invalid replacement destination"
         );
+        assert!(
+            !self.inst(source).is_invalid(),
+            "invalid replacement source"
+        );
+        assert!(
+            self.inst_block(inst_id).is_some(),
+            "detached replacement destination"
+        );
+        assert!(
+            self.inst_block(source).is_some(),
+            "detached replacement source"
+        );
+        if inst_id == source {
+            return;
+        }
+        self.detach_inst(source);
         self.function.body.store.replace(inst_id, source);
         self.changed_inst(inst_id);
         self.changed_inst(source);
     }
 
-    /// 将指令标记为无效。
+    /// Erase a live, placed instruction. Repeated deletion is a caller error.
     pub fn invalidate_inst(&mut self, inst_id: InstId) {
+        assert!(
+            !self.inst(inst_id).is_invalid(),
+            "instruction already invalid"
+        );
         self.detach_inst(inst_id);
         self.function.body.store.clear(inst_id);
     }
@@ -467,31 +417,12 @@ impl FuncEditor<'_> {
     }
 }
 
-/// Layout commit supplied by the editor. Storage and instruction construction
-/// do not own the layout; insertion runs only after a complete write.
-pub(crate) struct Insertion<'a> {
-    layout: &'a mut crate::layout::Layout,
-    block: Block,
-    before: Option<InstId>,
-}
-
-impl Insertion<'_> {
-    pub(crate) fn commit(self, inst: InstId) -> Block {
-        if let Some(anchor) = self.before {
-            self.layout.insert_before(anchor, inst);
-        } else {
-            self.layout.append_inst(self.block, inst);
-        }
-        self.block
-    }
-}
-
-/// A construction destination: a stable insertion gap or a single replacement.
-/// Gap writes preserve emission order; replacement permits exactly one commit.
-/// The restricted API prevents moving or deleting the anchor during construction.
+/// A stable insertion gap for constructing or moving instructions.
+/// Repeated operations preserve emission order before the fixed anchor.
 pub struct InstInserter<'a> {
     editor: FuncEditor<'a>,
-    position: Position,
+    block: Block,
+    before: Option<InstId>,
 }
 
 enum Position {
@@ -499,10 +430,7 @@ enum Position {
         block: Block,
         before: Option<InstId>,
     },
-    Replace {
-        id: InstId,
-        committed: bool,
-    },
+    Replace(InstId),
 }
 
 impl core::ops::Deref for InstInserter<'_> {
@@ -513,6 +441,27 @@ impl core::ops::Deref for InstInserter<'_> {
 }
 
 impl InstInserter<'_> {
+    /// Move a placed instruction to this gap without rebuilding its data.
+    /// Moving the anchor is invalid; an instruction already at the gap is a no-op.
+    pub fn move_here(&mut self, inst: InstId) {
+        let source = self.inst_block(inst).expect("detached instruction");
+        assert_ne!(self.before, Some(inst), "cannot move the insertion anchor");
+        if source == self.block && self.layout().next_inst(inst) == self.before {
+            return;
+        }
+        self.editor.detach_inst(inst);
+        if let Some(anchor) = self.before {
+            self.editor.function.body.layout.insert_before(anchor, inst);
+        } else {
+            self.editor
+                .function
+                .body
+                .layout
+                .append_inst(self.block, inst);
+        }
+        self.editor.changed_block(self.block);
+    }
+
     /// Configure one complete instruction before committing it at this gap.
     pub fn with_memory(&mut self, access: crate::MemoryAccess) -> InstWriter<'_> {
         self.writer().with_memory(access)
@@ -523,27 +472,29 @@ impl InstInserter<'_> {
     }
 
     pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
-        self.editor.function.body.store.create_edge(block, args)
+        self.editor.create_edge(block, args)
     }
     pub fn alloc_vreg(&mut self, ty: Type) -> Reg {
         self.editor.alloc_vreg(ty)
     }
+    pub fn clone_edge(&mut self, edge: crate::EdgeId) -> crate::EdgeId {
+        self.editor.clone_edge(edge)
+    }
     pub fn alloc_stack_object(&mut self, object: StackObject, size: u32, align: u32) -> StackSlot {
         self.editor.alloc_stack_object(object, size, align)
     }
-    fn writer(&mut self) -> InstWriter<'_> {
+    pub fn writer(&mut self) -> InstWriter<'_> {
         let body = &mut self.editor.function.body;
-        let writer = body
-            .store
-            .writer()
-            .tracking(self.editor.changes.as_deref_mut());
-        match &mut self.position {
-            Position::Insert { block, before } => writer.inserting(Insertion {
-                layout: &mut body.layout,
-                block: *block,
-                before: *before,
-            }),
-            Position::Replace { id, committed } => writer.replacing(*id, committed),
+        InstWriter {
+            store: &mut body.store,
+            changes: self.editor.changes.as_deref_mut(),
+            layout: &mut body.layout,
+            position: Position::Insert {
+                block: self.block,
+                before: self.before,
+            },
+            memory: None,
+            effects: crate::RegEffects::default(),
         }
     }
 
@@ -571,6 +522,109 @@ impl crate::InstBuild for &mut InstInserter<'_> {
         fields: impl IntoIterator<Item = crate::FieldValue>,
     ) -> InstId {
         self.writer().write(
+            crate::MachineOpcode::Generic(opcode),
+            results,
+            inputs,
+            fields,
+        )
+    }
+}
+
+/// A single committed write. Generated methods encode directly from their typed
+/// arguments; no owning instruction or temporary operand vector is required.
+pub struct InstWriter<'a> {
+    changes: Option<&'a mut crate::EditChanges>,
+    store: &'a mut crate::InstStore,
+    layout: &'a mut crate::layout::Layout,
+    position: Position,
+    memory: Option<crate::MemoryAccess>,
+    effects: crate::RegEffects<&'a [Reg]>,
+}
+
+impl<'a> InstWriter<'a> {
+    pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
+        assert!(self.layout.contains_block(block), "unknown successor");
+        self.store.create_edge(block, args)
+    }
+
+    pub fn with_effects(mut self, uses: &'a [Reg], defs: &'a [Reg]) -> Self {
+        assert!(
+            uses.iter().chain(defs).all(Reg::is_preg),
+            "implicit effects require physical registers"
+        );
+        self.effects = crate::RegEffects { uses, defs };
+        self
+    }
+    pub fn with_memory(mut self, access: crate::MemoryAccess) -> Self {
+        self.memory = Some(access);
+        self
+    }
+
+    /// Convert transient positional fields at a low-level adapter boundary.
+    pub fn write(
+        self,
+        opcode: crate::MachineOpcode,
+        results: &[Reg],
+        inputs: &[Reg],
+        fields: impl IntoIterator<Item = crate::FieldValue>,
+    ) -> InstId {
+        assert_ne!(
+            opcode,
+            crate::MachineOpcode::Invalid,
+            "cannot construct an invalid instruction"
+        );
+        let fields = self.store.pack_fields(fields);
+        let implicit = crate::RegEffects {
+            uses: self.effects.uses,
+            defs: self.effects.defs,
+        };
+        let (id, block) = match self.position {
+            Position::Replace(id) => {
+                self.store.write_full_at(
+                    id,
+                    opcode,
+                    results,
+                    inputs,
+                    fields,
+                    self.memory,
+                    implicit,
+                );
+                (id, None)
+            }
+            Position::Insert { block, before } => {
+                let id =
+                    self.store
+                        .write_full(opcode, results, inputs, fields, self.memory, implicit);
+                if let Some(anchor) = before {
+                    self.layout.insert_before(anchor, id);
+                } else {
+                    self.layout.append_inst(block, id);
+                }
+                (id, Some(block))
+            }
+        };
+        if let Some(changes) = self.changes {
+            changes.insts.push(id);
+            if let Some(block) = block {
+                changes.blocks.push(block);
+            }
+        }
+        id
+    }
+}
+
+// The generated contract owns generic builders; this adapter owns storage and
+// the conversion from generic to machine opcodes.
+impl crate::InstBuild for InstWriter<'_> {
+    type Inst = InstId;
+    fn write(
+        self,
+        opcode: crate::GenericOpcode,
+        results: &[Reg],
+        inputs: &[Reg],
+        fields: impl IntoIterator<Item = crate::FieldValue>,
+    ) -> InstId {
+        self.write(
             crate::MachineOpcode::Generic(opcode),
             results,
             inputs,

@@ -22,6 +22,7 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
     ] {
         for kind in [MemoryKind::Read, MemoryKind::Write] {
             let mut f = MachineFunction::new("offset".into());
+            let block = f.entry_block();
             let base = f.editor().alloc_vreg(Type::PTR);
             let value = f.editor().alloc_vreg(Type::I64);
             let mut memory = MemoryAccess::new(kind, 8);
@@ -30,18 +31,19 @@ fn x86_displacements_are_checked_and_expansion_preserves_access_metadata() {
             let inst = match kind {
                 MemoryKind::Read => f
                     .editor()
+                    .at_end(block)
                     .writer()
                     .with_memory(memory)
                     .load(value, base, offset),
                 MemoryKind::Write => f
                     .editor()
+                    .at_end(block)
                     .writer()
                     .with_memory(memory)
                     .store(value, base, offset),
             };
             let id = {
                 let id = inst;
-                f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
                 id
             };
             Legalizer::new(target.legalizer())
@@ -112,23 +114,26 @@ impl Mode {
                 .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], []);
             return Ok(());
         }
-        let first =
-            f.editor()
-                .writer()
-                .write(MachineOpcode::Generic(GenericOpcode::Sub), &[], &[], []);
+        let first = f.editor().before(id).writer().write(
+            MachineOpcode::Generic(GenericOpcode::Sub),
+            &[],
+            &[],
+            [],
+        );
         if matches!(self, Self::NewBlock) {
             let block = f.editor().create_block();
-            f.editor().append_inst(block, first);
-            f.replace(&[]);
+            f.editor().at_end(block).move_here(first);
+            f.editor().invalidate_inst(id);
             return Ok(());
         }
-        let second = f.editor().writer().write(
+        let second = f.editor().before(id).write(
             MachineOpcode::Generic(GenericOpcode::Constant),
             &[],
             &[],
             [veloc_lir::FieldValue::Imm(0)],
         );
-        f.replace(&[first, second]);
+        let _ = (first, second);
+        f.editor().invalidate_inst(id);
         Ok(())
     }
 }
@@ -136,19 +141,21 @@ impl Mode {
 fn function() -> MachineFunction {
     let mut f = MachineFunction::new("legalize".into());
     {
-        let id =
-            f.editor()
-                .writer()
-                .write(MachineOpcode::Generic(GenericOpcode::Neg), &[], &[], []);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .write(MachineOpcode::Generic(GenericOpcode::Neg), &[], &[], []);
+
         id
     };
     {
-        let id =
-            f.editor()
-                .writer()
-                .write(MachineOpcode::Generic(GenericOpcode::Ret), &[], &[], []);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .write(MachineOpcode::Generic(GenericOpcode::Ret), &[], &[], []);
+
         id
     };
     f
@@ -245,7 +252,8 @@ fn edits_to_previously_visited_instructions_are_revisited() {
                         &[],
                         [],
                     );
-                    ctx.replace(&[]);
+                    let root = ctx.root();
+                    ctx.editor().invalidate_inst(root);
                     Ok(())
                 }),
                 GenericOpcode::Sub => LegalizeAction::rewrite("sub_to_add", |ctx| {
@@ -271,17 +279,15 @@ fn edits_to_previously_visited_instructions_are_revisited() {
 }
 
 #[test]
-fn placement_of_an_existing_detached_instruction_is_reported() {
+fn insertion_is_reported() {
     let mut f = function();
-    let detached =
-        f.editor()
-            .writer()
-            .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], []);
-    let block = f.blocks().next().unwrap();
-    let (_, changes) = f
-        .editor()
-        .track(|f| f.editor().append_inst(block, detached));
-    assert!(changes.insts.contains(&detached));
+    let block = f.entry_block();
+    let (inst, changes) = f.editor().track(|edit| {
+        edit.at_end(block)
+            .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], [])
+    });
+    assert!(changes.insts.contains(&inst));
+    assert!(changes.blocks.contains(&block));
 }
 
 #[test]
@@ -292,8 +298,7 @@ fn cycles_across_new_blocks_share_one_budget() {
             Ok(Some(LegalizeAction::rewrite("cycle", |ctx| {
                 let root = ctx.root();
                 let block = ctx.editor().create_block();
-                ctx.editor().detach_inst(root);
-                ctx.editor().append_inst(block, root);
+                ctx.editor().at_end(block).move_here(root);
                 Ok(())
             })))
         }
@@ -315,10 +320,9 @@ fn existing_value_replacement_updates_users_without_a_copy() {
         let input = f.editor().alloc_vreg(Type::I64);
         let result = f.editor().alloc_vreg(Type::I64);
         let output = f.editor().alloc_vreg(Type::I64);
-        let root = f.editor().writer().copy(result, input);
-        let user = f.editor().writer().copy(output, result);
-        f.editor().append_inst(block, root);
-        f.editor().append_inst(block, user);
+        let root = f.editor().at_end(block).writer().copy(result, input);
+        let user = f.editor().at_end(block).writer().copy(output, result);
+
         let action = if generated {
             LegalizeAction::rewrite("generated_identity", |ctx| {
                 ctx.replace_values(|_, inputs, _, _| inputs[0])

@@ -33,7 +33,7 @@ impl TargetOperandLowering for X86_64OperandLowering {
 
     fn build_preselect_reg_copy(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: veloc_lir::InstInserter<'_>,
         dst: Reg,
         src: Reg,
     ) -> Result<InstId, crate::error::Error> {
@@ -47,7 +47,7 @@ impl TargetOperandLowering for X86_64OperandLowering {
 
     fn build_postselect_reg_copy(
         &self,
-        mfunc: &mut MachineFunction,
+        mfunc: veloc_lir::InstInserter<'_>,
         dst: Reg,
         src: Reg,
     ) -> Result<InstId, crate::error::Error> {

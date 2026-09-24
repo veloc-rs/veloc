@@ -50,15 +50,20 @@ fn displacement(mfunc: &mut RewriteContext<'_>) -> Result<(), crate::error::Erro
     // before the access rather than silently truncating it.
     let displacement = mfunc.editor().alloc_vreg(Type::I64);
     let address = mfunc.editor().alloc_vreg(Type::PTR);
-    let constant = mfunc.editor().writer().constant(displacement, offset);
-    let add = mfunc.editor().writer().ptr_add(address, base, displacement);
-    let access = if opcode == GenericOpcode::Load {
-        mfunc.editor().writer().load(value, address, 0)
+    let mut edit = mfunc.editor();
+    {
+        let mut insert = edit.before(inst_id);
+        insert.constant(displacement, offset);
+        insert.ptr_add(address, base, displacement);
+    }
+    let mut writer = edit.replace(inst_id);
+    if let Some(memory) = memory {
+        writer = writer.with_memory(memory);
+    }
+    if opcode == GenericOpcode::Load {
+        writer.load(value, address, 0);
     } else {
-        mfunc.editor().writer().store(value, address, 0)
-    };
-    mfunc.editor().set_inst_memory(access, memory);
-    mfunc.editor().replace_inst(inst_id, access);
-    mfunc.replace(&[constant, add, inst_id]);
+        writer.store(value, address, 0);
+    }
     Ok(())
 }

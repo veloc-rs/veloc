@@ -148,149 +148,6 @@ pub struct InstStore {
     pub(crate) references: References,
 }
 
-/// Append-only instruction storage access. Layout changes and replacement
-/// commits belong to the function editor, not this restricted handle.
-pub struct InstEditor<'a> {
-    pub(crate) store: &'a mut InstStore,
-    pub(crate) changes: Option<&'a mut crate::EditChanges>,
-}
-impl InstEditor<'_> {
-    /// Prepare an independent edge for a replacement; ownership of the source
-    /// is unchanged until the selector commits its explicit transfer list.
-    pub fn clone_edge(&mut self, source: InstId, id: crate::EdgeId) -> crate::EdgeId {
-        assert_eq!(
-            self.store.edges[id].as_ref().expect("deleted edge").owner,
-            Some(source)
-        );
-        self.store.clone_edge(id)
-    }
-    /// Find a virtual value's unique defining instruction. This is a read-only
-    /// SSA query, not permission to move, fold or erase the definition.
-    pub fn def(&self, reg: Reg) -> Option<InstId> {
-        if !reg.is_vreg() {
-            return None;
-        }
-        Some(self.store.defs(reg).single()?.inst())
-    }
-
-    pub fn get(&self, id: InstId) -> InstRef<'_> {
-        self.store.get(id)
-    }
-    pub fn writer(&mut self) -> InstWriter<'_> {
-        self.store.writer().tracking(self.changes.as_deref_mut())
-    }
-}
-
-/// A single committed write. Generated methods encode directly from their typed
-/// arguments; no owning instruction or temporary operand vector is required.
-pub struct InstWriter<'a> {
-    changes: Option<&'a mut crate::EditChanges>,
-    store: &'a mut InstStore,
-    mode: WriteMode<'a>,
-    memory: Option<crate::MemoryAccess>,
-    effects: RegEffects<&'a [Reg]>,
-}
-
-enum WriteMode<'a> {
-    Detached,
-    Replace { id: InstId, committed: &'a mut bool },
-    Insert(crate::function::Insertion<'a>),
-}
-
-impl<'a> InstWriter<'a> {
-    pub(crate) fn replacing(mut self, id: InstId, committed: &'a mut bool) -> Self {
-        assert!(!*committed, "replacement already committed");
-        self.mode = WriteMode::Replace { id, committed };
-        self
-    }
-    pub(crate) fn inserting(mut self, insertion: crate::function::Insertion<'a>) -> Self {
-        self.mode = WriteMode::Insert(insertion);
-        self
-    }
-    pub fn edge(&mut self, block: crate::BlockId, args: &[Reg]) -> crate::EdgeId {
-        self.store.create_edge(block, args)
-    }
-    pub(crate) fn tracking(mut self, changes: Option<&'a mut crate::EditChanges>) -> Self {
-        self.changes = changes;
-        self
-    }
-
-    pub fn with_effects(mut self, uses: &'a [Reg], defs: &'a [Reg]) -> Self {
-        assert!(
-            uses.iter().chain(defs).all(Reg::is_preg),
-            "implicit effects require physical registers"
-        );
-        self.effects = RegEffects { uses, defs };
-        self
-    }
-    pub fn with_memory(mut self, access: crate::MemoryAccess) -> Self {
-        self.memory = Some(access);
-        self
-    }
-
-    /// Convert transient positional fields at a low-level adapter boundary.
-    pub fn write(
-        self,
-        opcode: crate::MachineOpcode,
-        results: &[Reg],
-        inputs: &[Reg],
-        fields: impl IntoIterator<Item = FieldValue>,
-    ) -> InstId {
-        let fields = self.store.fields.pack(fields);
-        let implicit = RegEffects {
-            uses: self.effects.uses,
-            defs: self.effects.defs,
-        };
-        let (id, block) = match self.mode {
-            WriteMode::Replace { id, committed } => {
-                self.store.write_full_at(
-                    id,
-                    opcode,
-                    results,
-                    inputs,
-                    fields,
-                    self.memory,
-                    implicit,
-                );
-                *committed = true;
-                (id, None)
-            }
-            mode => {
-                let id =
-                    self.store
-                        .write_full(opcode, results, inputs, fields, self.memory, implicit);
-                let block = match mode {
-                    WriteMode::Insert(insertion) => Some(insertion.commit(id)),
-                    _ => None,
-                };
-                (id, block)
-            }
-        };
-        if let Some(changes) = self.changes {
-            changes.insts.push(id);
-            if let Some(block) = block {
-                changes.blocks.push(block);
-            }
-        }
-        id
-    }
-}
-
-// The generated contract owns generic builders; this adapter owns storage and
-// the conversion from generic to machine opcodes.
-impl crate::InstBuild for InstWriter<'_> {
-    type Inst = InstId;
-    fn write(
-        self,
-        opcode: crate::GenericOpcode,
-        results: &[Reg],
-        inputs: &[Reg],
-        fields: impl IntoIterator<Item = FieldValue>,
-    ) -> InstId {
-        self.write(MachineOpcode::Generic(opcode), results, inputs, fields)
-    }
-}
-
 impl InstStore {
     pub(crate) fn with_capacity(insts: usize) -> Self {
         Self {
@@ -303,14 +160,11 @@ impl InstStore {
         }
     }
 
-    pub fn writer(&mut self) -> crate::InstWriter<'_> {
-        crate::InstWriter {
-            store: self,
-            changes: None,
-            mode: WriteMode::Detached,
-            memory: None,
-            effects: RegEffects::default(),
-        }
+    pub(crate) fn pack_fields(
+        &mut self,
+        fields: impl IntoIterator<Item = FieldValue>,
+    ) -> crate::Fields {
+        self.fields.pack(fields)
     }
 
     pub fn len(&self) -> usize {
@@ -387,7 +241,7 @@ impl InstStore {
     pub fn memory(&self, id: InstId) -> Option<MemoryAccess> {
         self.memory[id]
     }
-    fn write_full(
+    pub(crate) fn write_full(
         &mut self,
         opcode: MachineOpcode,
         results: &[Reg],
@@ -457,7 +311,7 @@ impl InstStore {
             },
         );
     }
-    fn write_full_at(
+    pub(crate) fn write_full_at(
         &mut self,
         id: InstId,
         opcode: MachineOpcode,
@@ -847,10 +701,15 @@ mod tests {
     fn storage_preserves_views_and_transfers_instruction_properties() {
         assert!(core::mem::size_of::<StoredInst>() <= 44);
         let mut f = MachineFunction::new("store".into());
+        let entry = f.entry_block();
         let block = f.editor().create_block();
         let reg = f.editor().alloc_vreg(crate::Type::I64);
-        let id = f.editor().writer().constant(reg, 42);
-        f.editor().append_inst(crate::BlockId::from_u32(0), id);
+        let id = f
+            .editor()
+            .at_end(crate::BlockId::from_u32(0))
+            .writer()
+            .constant(reg, 42);
+
         let view = f.inst(id);
         assert_eq!(view.inputs().as_ptr(), f.inst(id).inputs().as_ptr());
         for _ in 0..100 {
@@ -870,13 +729,19 @@ mod tests {
         // The generic and target namespaces use the exact same store.
         let target = f
             .editor()
+            .at_end(crate::BlockId::from_u32(0))
             .writer()
             .write(MachineOpcode::Target(7), &[], &[reg], []);
-        f.editor().append_inst(crate::BlockId::from_u32(0), target);
+
         assert!(f.inst(id).is_generic());
         assert!(f.inst(target).is_target());
         let access = MemoryAccess::new(MemoryKind::Read, 8);
-        let replacement = f.editor().writer().with_memory(access).load(reg, reg, 0);
+        let replacement = f
+            .editor()
+            .at_end(entry)
+            .writer()
+            .with_memory(access)
+            .load(reg, reg, 0);
         let operands = f.inst(replacement).inputs().as_ptr();
         f.editor().replace_inst(id, replacement);
         assert_eq!(f.inst(id).inputs().as_ptr(), operands);
@@ -884,11 +749,10 @@ mod tests {
         assert!(f.inst(replacement).is_invalid());
         assert!(f.inst(replacement).memory().is_none());
         assert!(f.try_call_info(replacement).is_none());
-        // Worklist rewrites detach and reinsert IDs without erasing their data.
+        // Moving instructions preserves their IDs and data.
         for id in f.block_insts(block).collect::<Vec<_>>() {
             let mut edit = f.editor();
-            edit.detach_inst(id);
-            edit.append_inst(block, id);
+            edit.at_end(block).move_here(id);
         }
         assert_eq!(
             f.block_insts(crate::BlockId::from_u32(0))
@@ -916,13 +780,24 @@ mod tests {
         assert_eq!(f.blocks().nth(0).unwrap(), block);
 
         let mut store = InstStore::default();
-        let id = store.writer().write(MachineOpcode::Target(1), &[], &[], []);
+        let id = store.write_full(
+            MachineOpcode::Target(1),
+            &[],
+            &[],
+            crate::Fields::default(),
+            None,
+            RegEffects::default(),
+        );
         for n in 0..100 {
-            store.writer().replacing(id, &mut false).write(
+            let fields = store.pack_fields([FieldValue::Imm(n)]);
+            store.write_full_at(
+                id,
                 MachineOpcode::Target(1),
                 &[],
                 &[reg],
-                [FieldValue::Imm(n)],
+                fields,
+                None,
+                RegEffects::default(),
             );
             store.set_memory(id, Some(MemoryAccess::new(MemoryKind::Read, 8)));
             store.clear(id);
@@ -930,7 +805,14 @@ mod tests {
         assert!(store.fields(id).is_empty());
         assert!(store.memory(id).is_none());
         assert!(store.effects(id).is_none());
-        let source = store.writer().write(MachineOpcode::Target(2), &[], &[], []);
+        let source = store.write_full(
+            MachineOpcode::Target(2),
+            &[],
+            &[],
+            crate::Fields::default(),
+            None,
+            RegEffects::default(),
+        );
         store.set_effects(
             source,
             RegEffects {
@@ -951,11 +833,16 @@ mod tests {
         let input = Reg::new_vreg(7);
         let output = Reg::new_vreg(8);
         let physical = Reg::new_preg(1);
-        let combined = store.writer().with_effects(&[physical], &[physical]).write(
+        let combined = store.write_full(
             MachineOpcode::Target(3),
             &[output],
             &[input],
-            [],
+            crate::Fields::default(),
+            None,
+            RegEffects {
+                uses: &[physical],
+                defs: &[physical],
+            },
         );
         assert_eq!(store.inputs(combined), &[input]);
         assert_eq!(store.results(combined), &[output]);
@@ -984,11 +871,18 @@ mod tests {
         assert_eq!(store.results(combined), &[output, input]);
         assert_eq!(store.inputs(combined), &[input]);
         store.check_refs().unwrap();
-        store
-            .writer()
-            .replacing(combined, &mut false)
-            .with_effects(&[physical], &[physical])
-            .write(MachineOpcode::Target(4), &[], &[], []);
+        store.write_full_at(
+            combined,
+            MachineOpcode::Target(4),
+            &[],
+            &[],
+            crate::Fields::None,
+            None,
+            RegEffects {
+                uses: &[physical],
+                defs: &[physical],
+            },
+        );
         assert!(store.inputs(combined).is_empty());
         assert!(store.results(combined).is_empty());
         assert_eq!(store.get(combined).uses().collect::<Vec<_>>(), [physical]);

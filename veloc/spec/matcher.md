@@ -11,7 +11,7 @@ optional fields. The VM directly reads inputs, results and attribute slots;
 there is no field-ID callback or InstView dispatch. Sequence fields cannot be
 used as scalar accesses and are diagnosed by the selection compiler.
 
-Type queries and temporary allocation use VRegBuilder directly. Feature guards
+Type queries and temporary allocation use the positioned InstInserter directly. Feature guards
 compare word slices; target descriptors reference the existing opcode metadata
 and construct through the common writer, including implicit registers. Only
 explicit custom predicates call a Rust callback. The former Host trait and its

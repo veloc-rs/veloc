@@ -15,38 +15,61 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
     let a = f.editor().alloc_vreg(Type::I64);
     let unused = f.editor().alloc_vreg(Type::I64);
     let imm = {
-        let id = f.editor().writer().write(
-            MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
-            &[(unused)],
-            &[],
-            [FieldValue::Imm(42)],
-        );
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .write(
+                MachineOpcode::Target(TargetInst::X86Mov64Imm64.as_u32()),
+                &[(unused)],
+                &[],
+                [FieldValue::Imm(42)],
+            );
+
         id
     };
     let copy = {
-        let id = TargetInst::X86Mov64.write(f.editor().writer(), &[a], &[x], []);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = TargetInst::X86Mov64.write(
+            f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+            &[a],
+            &[x],
+            [],
+        );
+
         id
     };
     let first = {
-        let id = TargetInst::X86IMul64.write(f.editor().writer(), &[a], &[x, a], []);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = TargetInst::X86IMul64.write(
+            f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+            &[a],
+            &[x, a],
+            [],
+        );
+
         id
     };
     let last = {
-        let id = TargetInst::X86IMul64.write(f.editor().writer(), &[a], &[x, a], []);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = TargetInst::X86IMul64.write(
+            f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+            &[a],
+            &[x, a],
+            [],
+        );
+
         id
     };
     let consume = {
-        let id = f.editor().writer().write(
-            MachineOpcode::Target(TargetInst::X86Sete.as_u32()),
-            &[(REG_RAX)],
-            &[],
-            [],
-        );
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .write(
+                MachineOpcode::Target(TargetInst::X86Sete.as_u32()),
+                &[(REG_RAX)],
+                &[],
+                [],
+            );
+
         id
     };
     assert_eq!(
@@ -60,7 +83,12 @@ fn fills_a_dependency_gap_without_reordering_flag_consumers() {
     );
     // Schema constructors supply fixed implicit operands even outside Spec.
     use crate::target::x86_64::inst::REG_RDX;
-    let divide = TargetInst::X86IDiv64.write(f.editor().writer(), &[], &[x], []);
+    let divide = TargetInst::X86IDiv64.write(
+        f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+        &[],
+        &[x],
+        [],
+    );
     assert_eq!(f.inst(divide).inputs(), &[x]);
     assert!(f.inst(divide).results().is_empty());
     assert_eq!(f.inst(divide).implicit_uses(), &[REG_RAX, REG_RDX]);
@@ -86,28 +114,47 @@ fn preserves_register_anti_dependencies_and_memory_barriers() {
     let b = f.editor().alloc_vreg(Type::I64);
     let c = f.editor().alloc_vreg(Type::I64);
     let read = {
-        let id = TargetInst::X86Mov64.write(f.editor().writer(), &[b], &[a], []);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = TargetInst::X86Mov64.write(
+            f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+            &[b],
+            &[a],
+            [],
+        );
+
         id
     };
     let overwrite = {
-        let id = TargetInst::X86Mov64.write(f.editor().writer(), &[a], &[c], []);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = TargetInst::X86Mov64.write(
+            f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+            &[a],
+            &[c],
+            [],
+        );
+
         id
     };
     let store = {
-        let id = f.editor().writer().write(
-            MachineOpcode::Target(TargetInst::X86Store64.as_u32()),
-            &[],
-            &[b, a],
-            [FieldValue::Imm(0)],
-        );
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .write(
+                MachineOpcode::Target(TargetInst::X86Store64.as_u32()),
+                &[],
+                &[b, a],
+                [FieldValue::Imm(0)],
+            );
+
         id
     };
     let after = {
-        let id = TargetInst::X86Mov64.write(f.editor().writer(), &[c], &[a], []);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+        let id = TargetInst::X86Mov64.write(
+            f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+            &[c],
+            &[a],
+            [],
+        );
+
         id
     };
     schedule(&mut f, &target, &mut FunctionAnalysisCtx::default());

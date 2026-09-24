@@ -322,11 +322,18 @@ mod tests {
                 .unwrap();
         let mut f = MachineFunction::new("boundaries".into());
         let value = f.editor().alloc_vreg(Type::I64);
-        let constant = f.editor().writer().constant(value, 42);
-        f.editor()
-            .append_inst(veloc_lir::BlockId::from_u32(0), constant);
-        let ret = f.editor().writer().ret(&[value]);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), ret);
+        let constant = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .constant(value, 42);
+
+        let ret = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .ret(&[value]);
+
         verify(&f, &target).unwrap();
         assert!(verify_selected(&f, &target).is_err());
 
@@ -380,33 +387,55 @@ mod tests {
         let c = f.editor().alloc_vreg(Type::BOOL);
         let r = f.editor().alloc_vreg(Type::I64);
         f.editor().append_block_param(blocks[3], p);
-        let a = f.editor().writer().constant(x, 1);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), a);
-        let b = f.editor().writer().constant(c, 1);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(0), b);
+        let a = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .constant(x, 1);
+
+        f.editor()
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .constant(c, 1);
+
         let yes = f.editor().create_edge(blocks[1], &[]);
         let no = f.editor().create_edge(blocks[2], &[]);
-        let branch = f.editor().writer().brcond(c, yes, no);
         f.editor()
-            .append_inst(veloc_lir::BlockId::from_u32(0), branch);
+            .at_end(veloc_lir::BlockId::from_u32(0))
+            .writer()
+            .brcond(c, yes, no);
+
         let edge = f.editor().create_edge(blocks[3], &[]);
-        let left = f.editor().writer().br(edge);
+        let left = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(1))
+            .writer()
+            .br(edge);
         f.editor().set_edge_args(edge, &[x]);
+
         f.editor()
-            .append_inst(veloc_lir::BlockId::from_u32(1), left);
-        let def_y = f.editor().writer().constant(y, 2);
-        f.editor()
-            .append_inst(veloc_lir::BlockId::from_u32(2), def_y);
+            .at_end(veloc_lir::BlockId::from_u32(2))
+            .writer()
+            .constant(y, 2);
+
         let edge = f.editor().create_edge(blocks[3], &[]);
-        let right = f.editor().writer().br(edge);
+        f.editor()
+            .at_end(veloc_lir::BlockId::from_u32(2))
+            .writer()
+            .br(edge);
         f.editor().set_edge_args(edge, &[y]);
+
+        let copy = f
+            .editor()
+            .at_end(veloc_lir::BlockId::from_u32(3))
+            .writer()
+            .copy(r, p);
+
         f.editor()
-            .append_inst(veloc_lir::BlockId::from_u32(2), right);
-        let copy = f.editor().writer().copy(r, p);
-        f.editor()
-            .append_inst(veloc_lir::BlockId::from_u32(3), copy);
-        let ret = f.editor().writer().ret(&[r]);
-        f.editor().append_inst(veloc_lir::BlockId::from_u32(3), ret);
+            .at_end(veloc_lir::BlockId::from_u32(3))
+            .writer()
+            .ret(&[r]);
+
         verify(&f, &target).unwrap();
 
         let mut broken = f.clone();

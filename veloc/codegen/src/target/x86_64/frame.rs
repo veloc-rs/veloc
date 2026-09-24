@@ -159,45 +159,30 @@ impl TargetFrameLowering for X86_64FrameLowering {
 
         {
             let entry = mfunc.entry_block();
-            let mut pending_prologue = Vec::new();
+            let mut edit = mfunc.editor();
+            let mut insert = edit.at_start(entry);
 
-            let push_inst =
-                TargetInst::X86PushRbp.write(mfunc.editor().writer(), &[], &[REG_RBP], []);
-            pending_prologue.push(push_inst);
+            let _ = TargetInst::X86PushRbp.write(insert.writer(), &[], &[REG_RBP], []);
 
-            let mov_inst =
-                TargetInst::X86MovRbpRsp.write(mfunc.editor().writer(), &[REG_RBP], &[REG_RSP], []);
-            pending_prologue.push(mov_inst);
+            let _ = TargetInst::X86MovRbpRsp.write(insert.writer(), &[REG_RBP], &[REG_RSP], []);
 
             if stack_size > 0 {
-                let sub_inst = TargetInst::X86Sub64ri.write(
-                    mfunc.editor().writer(),
+                let _ = TargetInst::X86Sub64ri.write(
+                    insert.writer(),
                     &[(REG_RSP)],
                     &[REG_RSP],
                     [veloc_lir::FieldValue::Imm(stack_size as i64)],
                 );
-                pending_prologue.push(sub_inst);
             }
 
             for index in 0..saved_count {
-                let save = mfunc.stack_frame.layout().unwrap().saves[index];
-                let save_inst = TargetInst::X86Store64Stack.write(
-                    mfunc.editor().writer(),
+                let save = insert.stack_frame.layout().unwrap().saves[index];
+                let _ = TargetInst::X86Store64Stack.write(
+                    insert.writer(),
                     &[],
                     &[save.reg],
                     [veloc_lir::FieldValue::StackSlot(save.slot)],
                 );
-                pending_prologue.push(save_inst);
-            }
-
-            let first = mfunc.layout().first_inst(entry);
-            let mut edit = mfunc.editor();
-            for inst in pending_prologue {
-                if let Some(first) = first {
-                    edit.insert_before(first, inst);
-                } else {
-                    edit.append_inst(entry, inst);
-                }
             }
         }
 
@@ -211,28 +196,29 @@ impl TargetFrameLowering for X86_64FrameLowering {
             if is_ret {
                 for index in (0..saved_count).rev() {
                     let save = mfunc.stack_frame.layout().unwrap().saves[index];
-                    let restore_inst = TargetInst::X86Load64Stack.write(
-                        mfunc.editor().writer(),
+                    let _ = TargetInst::X86Load64Stack.write(
+                        mfunc.editor().before(id).writer(),
                         &[save.reg],
                         &[],
                         [veloc_lir::FieldValue::StackSlot(save.slot)],
                     );
-                    mfunc.editor().insert_before(id, restore_inst);
                 }
 
                 if stack_size > 0 {
-                    let add_inst = TargetInst::X86Add64ri.write(
-                        mfunc.editor().writer(),
+                    let _ = TargetInst::X86Add64ri.write(
+                        mfunc.editor().before(id).writer(),
                         &[(REG_RSP)],
                         &[REG_RSP],
                         [veloc_lir::FieldValue::Imm(stack_size as i64)],
                     );
-                    mfunc.editor().insert_before(id, add_inst);
                 }
 
-                let pop_inst =
-                    TargetInst::X86PopRbp.write(mfunc.editor().writer(), &[REG_RBP], &[], []);
-                mfunc.editor().insert_before(id, pop_inst);
+                let _ = TargetInst::X86PopRbp.write(
+                    mfunc.editor().before(id).writer(),
+                    &[REG_RBP],
+                    &[],
+                    [],
+                );
             }
         }
     }

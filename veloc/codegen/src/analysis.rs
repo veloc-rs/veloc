@@ -616,15 +616,23 @@ mod tests {
             f.editor().create_block();
         }
         {
-            let id = f.editor().writer().trap();
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+            let id = f
+                .editor()
+                .at_end(veloc_lir::BlockId::from_u32(0))
+                .writer()
+                .trap();
+
             id
         };
         // Dead instructions cannot introduce successors after a trap.
         {
             let edge = f.editor().create_edge(Block::from_u32(2), &[]);
-            let id = f.editor().writer().br(edge);
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+            let id = f
+                .editor()
+                .at_end(veloc_lir::BlockId::from_u32(0))
+                .writer()
+                .br(edge);
+
             id
         };
         {
@@ -632,14 +640,19 @@ mod tests {
             let no = f.editor().create_edge(Block::from_u32(3), &[]);
             let id = f
                 .editor()
+                .at_end(veloc_lir::BlockId::from_u32(1))
                 .writer()
                 .brcond(veloc_lir::Reg::new_vreg(0), yes, no);
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(1), id);
+
             id
         };
         {
-            let id = f.editor().writer().ret(&[]);
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(2), id);
+            let id = f
+                .editor()
+                .at_end(veloc_lir::BlockId::from_u32(2))
+                .writer()
+                .ret(&[]);
+
             id
         };
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();
@@ -675,11 +688,13 @@ mod tests {
                     .iter()
                     .map(|&b| FieldValue::Edge(f.editor().create_edge(Block::from_u32(b), &[])))
                     .collect();
-                let id =
-                    f.editor()
-                        .writer()
-                        .write(MachineOpcode::Target(op.as_u32()), &[], &[], fields);
-                f.editor().append_inst(Block::from_u32(block), id);
+                let id = f.editor().at_end(Block::from_u32(block)).writer().write(
+                    MachineOpcode::Target(op.as_u32()),
+                    &[],
+                    &[],
+                    fields,
+                );
+
                 id
             };
         };
@@ -732,13 +747,17 @@ mod tests {
             &[Block::from_u32(2)]
         );
         {
-            let id = f.editor().writer().write(
-                MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
-                &[],
-                &[],
-                [],
-            );
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+            let id = f
+                .editor()
+                .at_end(veloc_lir::BlockId::from_u32(0))
+                .writer()
+                .write(
+                    MachineOpcode::Target(TargetInst::X86Ret.as_u32()),
+                    &[],
+                    &[],
+                    [],
+                );
+
             id
         };
         analyses.apply(ChangeSet::SELECTED_OPCODES);
@@ -759,18 +778,30 @@ mod tests {
         let value = f.editor().alloc_vreg(Type::I64);
         let jump = {
             let edge = f.editor().create_edge(Block::from_u32(1), &[]);
-            let id = f.editor().writer().br(edge);
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+            let id = f
+                .editor()
+                .at_end(veloc_lir::BlockId::from_u32(0))
+                .writer()
+                .br(edge);
+
             id
         };
         {
-            let id = f.editor().writer().ret(&[value]);
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(1), id);
+            let id = f
+                .editor()
+                .at_end(veloc_lir::BlockId::from_u32(1))
+                .writer()
+                .ret(&[value]);
+
             id
         };
         {
-            let id = f.editor().writer().ret(&[]);
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(2), id);
+            let id = f
+                .editor()
+                .at_end(veloc_lir::BlockId::from_u32(2))
+                .writer()
+                .ret(&[]);
+
             id
         };
         let target = X86_64TargetMachine::new(TargetConfig::default()).unwrap();

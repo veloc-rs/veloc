@@ -31,30 +31,32 @@ fn workload(ty: Type, comparisons: bool) -> MachineFunction {
                 veloc_mir::FloatCC::Gt,
                 veloc_mir::FloatCC::Ge,
             ][i % 6];
-            let cmp = e.writer().fcmp(flag, value, b, cc);
-            e.append_inst(block, cmp);
-            let select = e.writer().select(next, flag, value, b);
-            e.append_inst(block, select);
+            let _ = e.at_end(block).writer().fcmp(flag, value, b, cc);
+
+            let _ = e.at_end(block).writer().select(next, flag, value, b);
         } else {
             let constant = e.alloc_vreg(ty);
-            let inst = e.writer().constant(constant, (i % 13 + 1) as i64);
-            e.append_inst(block, inst);
-            let inst = match i % 4 {
-                0 => e.writer().add(next, value, constant),
-                1 => e.writer().mul(next, value, b),
-                2 => e.writer().xor(next, value, constant),
-                _ => e.writer().sub(next, value, b),
+            let _ = e
+                .at_end(block)
+                .writer()
+                .constant(constant, (i % 13 + 1) as i64);
+
+            let _ = match i % 4 {
+                0 => e.at_end(block).writer().add(next, value, constant),
+                1 => e.at_end(block).writer().mul(next, value, b),
+                2 => e.at_end(block).writer().xor(next, value, constant),
+                _ => e.at_end(block).writer().sub(next, value, b),
             };
-            e.append_inst(block, inst);
         }
         value = next;
     }
     // An already selected sink keeps the result alive without ABI lowering.
     // This selector-only fixture is never encoded as an executable function.
-    let sink = e
+    let _ = e
+        .at_end(block)
         .writer()
         .write(MachineOpcode::Target(0), &[], &[value], []);
-    e.append_inst(block, sink);
+
     f
 }
 
@@ -76,22 +78,26 @@ fn memory_workload(stack: bool) -> MachineFunction {
     let mut live = Vec::new();
     for _ in 0..96 {
         let address = e.alloc_vreg(Type::PTR);
-        let addr = if stack {
-            e.writer().stack_addr(address, slot)
+        let _ = if stack {
+            e.at_end(block).writer().stack_addr(address, slot)
         } else {
-            e.writer().ptr_add(address, base, index)
+            e.at_end(block).writer().ptr_add(address, base, index)
         };
-        e.append_inst(block, addr);
+
         let value = e.alloc_vreg(Type::I64);
-        let load = e
+        let _ = e
+            .at_end(block)
             .writer()
             .with_memory(veloc_lir::MemoryAccess::new(veloc_lir::MemoryKind::Read, 8))
             .load(value, address, 0);
-        e.append_inst(block, load);
+
         live.push(value);
     }
-    let sink = e.writer().write(MachineOpcode::Target(0), &[], &live, []);
-    e.append_inst(block, sink);
+    let _ = e
+        .at_end(block)
+        .writer()
+        .write(MachineOpcode::Target(0), &[], &live, []);
+
     f
 }
 fn median(mut values: Vec<Duration>) -> f64 {

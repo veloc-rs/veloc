@@ -39,7 +39,10 @@ impl TargetInstructionSelector for X86_64Selector {
                 // otherwise dead instructions moved by the scheduler.
                 let inputs = inst.inputs().to_vec();
                 let ret = TargetInst::X86Ret.write(
-                    ctx.mfunc.editor().writer().with_effects(&inputs, &[]),
+                    ctx.mfunc
+                        .editor()
+                        .before(ctx.inst_id)
+                        .with_effects(&inputs, &[]),
                     &[],
                     &[],
                     [],
@@ -50,8 +53,11 @@ impl TargetInstructionSelector for X86_64Selector {
             veloc_lir::InstView::UnaryReg(copy)
                 if copy.opcode == veloc_lir::UnaryRegOpcode::Copy =>
             {
-                ctx.selected
-                    .push(build_x86_copy_inst(ctx.mfunc, copy.dst, copy.src)?);
+                ctx.selected.push(build_x86_copy_inst(
+                    ctx.mfunc.editor().before(ctx.inst_id),
+                    copy.dst,
+                    copy.src,
+                )?);
                 return Ok(SelectResult::InPlace);
             }
             _ => {}
@@ -59,12 +65,11 @@ impl TargetInstructionSelector for X86_64Selector {
 
         let result = {
             let mut edit = ctx.mfunc.editor();
-            let (mut vregs, mut store) = edit.instruction_parts();
+            let mut insert = edit.before(ctx.inst_id);
             let result = generated::select_instructions(
                 &self.lowering,
-                &mut vregs,
                 features,
-                &mut store,
+                &mut insert,
                 ctx.inst_id,
                 ctx.selected,
                 ctx.edge_transfers,

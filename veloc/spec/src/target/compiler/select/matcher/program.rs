@@ -133,7 +133,7 @@ impl<'a> Adapters<'a> {
             self.builders.insert(build.clone(), body);
         }
         let mut body = format!(
-            "fn {adapter}(store: &mut veloc_lir::InstEditor<'_>, _source: veloc_lir::InstId, _results: &[Reg], _inputs: &[Reg], _fields: smallvec::SmallVec<[FieldValue; 4]>) -> veloc_lir::InstId {{\n"
+            "fn {adapter}(store: &mut veloc_lir::InstInserter<'_>, _source: veloc_lir::InstId, _results: &[Reg], _inputs: &[Reg], _fields: smallvec::SmallVec<[FieldValue; 4]>) -> veloc_lir::InstId {{\n"
         );
         if !fields.is_empty() {
             body.push_str("let mut fields = _fields.into_iter();\n");
@@ -147,7 +147,7 @@ impl<'a> Adapters<'a> {
                 .iter()
                 .find(|m| m.domain == Domain::Input && m.field.shape == Shape::Sequence)
                 .expect("call construction requires source ABI arguments");
-            writeln!(body, "let source = store.get(_source);").unwrap();
+            writeln!(body, "let source = store.inst(_source);").unwrap();
             writeln!(body, "let abi_args = smallvec::SmallVec::<[Reg; 8]>::from_slice(&source.inputs()[{}..]);", input.index).unwrap();
             body.push_str(
                 "let abi_results = smallvec::SmallVec::<[Reg; 4]>::from_slice(source.results());\n",

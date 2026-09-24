@@ -2,7 +2,6 @@
 
 use super::{CallInfo, InstId, InstRef, Reg, StackSlot, VReg, VRegData};
 use crate::BlockId as Block;
-use crate::InstWriter;
 use crate::RegisterBank;
 use alloc::format;
 use alloc::string::String;
@@ -63,17 +62,6 @@ impl FuncBody {
     }
 }
 
-/// Append-only access for selection rules that need fresh virtual registers.
-pub struct VRegBuilder<'a>(pub(crate) &'a mut PrimaryMap<VReg, VRegData>);
-impl VRegBuilder<'_> {
-    pub fn alloc(&mut self, data: VRegData) -> Reg {
-        Reg::new_vreg(self.0.push(data).as_u32())
-    }
-    pub fn get(&self, reg: VReg) -> &VRegData {
-        &self.0[reg]
-    }
-}
-
 mod frame;
 pub use frame::*;
 
@@ -89,8 +77,7 @@ mod cursor;
 pub use cursor::InstCursor;
 
 mod edit;
-pub(crate) use edit::Insertion;
-pub use edit::{EditChanges, FuncEditor, InstInserter};
+pub use edit::{EditChanges, FuncEditor, InstInserter, InstWriter};
 
 impl MachineFunction {
     pub fn new(name: String) -> Self {

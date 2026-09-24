@@ -353,7 +353,7 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 目标相关语义在进入后续阶段前已经明确。
     fn build_preselect_reg_copy(
         &self,
-        _mfunc: &mut MachineFunction,
+        _mfunc: veloc_lir::InstInserter<'_>,
         _dst: Reg,
         _src: Reg,
     ) -> Result<InstId, crate::error::Error> {
@@ -363,7 +363,7 @@ pub trait TargetOperandLowering: Send + Sync {
     /// 为 post-isel 约束阶段构造一条目标相关的寄存器拷贝指令。
     fn build_postselect_reg_copy(
         &self,
-        _mfunc: &mut MachineFunction,
+        _mfunc: veloc_lir::InstInserter<'_>,
         _dst: Reg,
         _src: Reg,
     ) -> Result<InstId, crate::error::Error> {

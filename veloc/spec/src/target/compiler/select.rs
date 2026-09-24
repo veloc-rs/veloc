@@ -582,9 +582,9 @@ pub(crate) fn generate_select_instruction(
         "// Selection entry point; programs and host adapters are defined separately."
     )
     .unwrap();
-    writeln!(output, "pub fn select_instructions<C: {context}>(ctx: &C, vregs: &mut veloc_lir::VRegBuilder<'_>, features: FeatureSet, store: &mut veloc_lir::InstEditor<'_>, source: veloc_lir::InstId, out: &mut alloc::vec::Vec<veloc_lir::InstId>, edge_transfers: &mut alloc::vec::Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>) -> Result<SelectResult, crate::error::Error> {{").unwrap();
+    writeln!(output, "pub fn select_instructions<C: {context}>(ctx: &C, features: FeatureSet, store: &mut veloc_lir::InstInserter<'_>, source: veloc_lir::InstId, out: &mut alloc::vec::Vec<veloc_lir::InstId>, edge_transfers: &mut alloc::vec::Vec<(veloc_lir::EdgeId, veloc_lir::EdgeId)>) -> Result<SelectResult, crate::error::Error> {{").unwrap();
     writeln!(output, "use crate::isel::matching::Program;").unwrap();
-    writeln!(output, "let opcode = store.get(source).opcode(); let veloc_lir::MachineOpcode::Generic(generic) = opcode else {{ return Ok(SelectResult::Keep) }};").unwrap();
+    writeln!(output, "let opcode = store.inst(source).opcode(); let veloc_lir::MachineOpcode::Generic(generic) = opcode else {{ return Ok(SelectResult::Keep) }};").unwrap();
     writeln!(output, "let program: &'static Program = match generic {{").unwrap();
     for opcode in opcodes {
         let name = sanitize_ident(opcode).to_ascii_uppercase();
@@ -599,6 +599,6 @@ pub(crate) fn generate_select_instruction(
         "_ => return Err(crate::error::Error::select(opcode, \"No selection program\")), }};"
     )
     .unwrap();
-    writeln!(output, "let predicate = |id, reg| selection_predicate(ctx, id, reg); crate::isel::matching::execute(program, vregs, features.as_words(), &predicate, store, source, out, edge_transfers).ok_or_else(|| crate::error::Error::select(opcode, \"No matching selection rule\")) }}").unwrap();
+    writeln!(output, "let predicate = |id, reg| selection_predicate(ctx, id, reg); crate::isel::matching::execute(program, features.as_words(), &predicate, store, source, out, edge_transfers).ok_or_else(|| crate::error::Error::select(opcode, \"No matching selection rule\")) }}").unwrap();
     adapters.emit(output, context, extractors, &decls);
 }

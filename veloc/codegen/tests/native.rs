@@ -266,6 +266,7 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
         "r13", "r14", "r15",
     ];
     let mut f = MachineFunction::new("encoding".into());
+    let block = f.entry_block();
     let mut emitter = veloc_codegen::Emitter::new();
     let mut assembly = String::from(".text\n");
     let mut cases = Vec::new();
@@ -282,7 +283,12 @@ fn extension_encodings_match_system_assembler_for_every_register_pair() {
                 let line = format!("{mnemonic} %{}, %{}\n", sources[src], destinations[dst]);
                 cases.push((emitter.position(), line.clone()));
                 assembly.push_str(&line);
-                let inst = opcode.write(f.editor().writer(), &[regs[dst]], &[regs[src]], []);
+                let inst = opcode.write(
+                    f.editor().at_end(block).writer(),
+                    &[regs[dst]],
+                    &[regs[src]],
+                    [],
+                );
                 opcode.emit(&mut emitter, &f.inst(inst), &f).unwrap();
             }
         }
@@ -1031,7 +1037,8 @@ int main(void) {
         {
             use veloc_codegen::target::x86_64::inst::{REG_RAX, REG_RDI, TargetInst};
             let mut function = veloc_lir::MachineFunction::new("feature_check".into());
-            let id = function.editor().writer().write(
+            let block = function.entry_block();
+            let id = function.editor().at_end(block).writer().write(
                 veloc_lir::MachineOpcode::Target(TargetInst::X86Popcnt64 as u32),
                 &[REG_RAX],
                 &[REG_RDI],

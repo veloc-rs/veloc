@@ -43,11 +43,11 @@ impl FunctionPass for BranchTableLowering {
             }
             if cases.is_empty() {
                 let edge = f.editor().create_edge(default.block, &default.args);
-                let branch = f.editor().writer().br(edge);
-                f.editor().replace_with(id, &[branch]);
+                f.editor().replace(id).br(edge);
                 continue;
             }
             let ty = f.vreg_data(index).ty;
+            f.editor().invalidate_inst(id);
             let mut current = block;
             for (case, target) in cases.iter().enumerate() {
                 let last = case + 1 == cases.len();
@@ -58,21 +58,15 @@ impl FunctionPass for BranchTableLowering {
                 };
                 let value = f.editor().alloc_vreg(ty);
                 let equal = f.editor().alloc_vreg(Type::BOOL);
-                let constant = f.editor().writer().constant(value, case as i64);
-                let compare = f.editor().writer().icmp(equal, index, value, IntCC::Eq);
+                f.editor().at_end(current).constant(value, case as i64);
+                f.editor()
+                    .at_end(current)
+                    .icmp(equal, index, value, IntCC::Eq);
                 let yes = f.editor().create_edge(target.block, &target.args);
                 let no = f
                     .editor()
                     .create_edge(next, if last { &default.args } else { &[] });
-                let branch = f.editor().writer().brcond(equal, yes, no);
-                let output = [constant, compare, branch];
-                if case == 0 {
-                    f.editor().replace_with(id, &output);
-                } else {
-                    for inst in output {
-                        f.editor().append_inst(current, inst);
-                    }
-                }
+                f.editor().at_end(current).brcond(equal, yes, no);
                 current = next;
             }
         }

@@ -257,9 +257,6 @@ impl RewriteContext<'_> {
     pub fn editor(&mut self) -> veloc_lir::function::FuncEditor<'_> {
         self.function.editor()
     }
-    pub fn replace(&mut self, output: &[InstId]) {
-        self.function.editor().replace_with(self.root, output);
-    }
 }
 
 fn replace_uses(editor: &mut veloc_lir::FuncEditor<'_>, old: veloc_lir::Reg, new: veloc_lir::Reg) {
@@ -283,13 +280,12 @@ impl ValueRewrite for RewriteContext<'_> {
             Some(value) => value,
             None => self.function.alloc_vreg(ty),
         };
-        let inst = self.function.writer().write(
+        self.function.before(self.root).write(
             veloc_lir::MachineOpcode::Generic(opcode),
             &[dst],
             inputs,
             fields.iter().cloned(),
         );
-        self.function.insert_before(self.root, inst);
         dst
     }
 }

@@ -1,4 +1,5 @@
 //! Global linear scan with CFG liveness, fixed registers and whole-range spills.
+use super::allocation::Transfer;
 use super::allocation::{Allocation, InstAllocation};
 use crate::analysis::FunctionAnalysisCtx;
 use crate::target::{RegClass, SpillKind, TargetRegalloc};
@@ -425,18 +426,12 @@ impl<'a> RegisterAllocator<'a> {
                     }
                     // Reloads precede input copies; output copies precede spill stores.
                     for (dst, src, ty) in copies_after {
-                        plan.after.push(self.target.copy_instruction(
-                            f.editor().writer(),
-                            dst,
-                            src,
-                            ty,
-                        )?);
+                        plan.after.push(Transfer::Copy { dst, src, ty });
                     }
                     for (load, accesses) in [(true, loads), (false, stores)] {
                         for (slot, reg, ty) in accesses {
-                            let inst = self.target.spill_instruction(
-                                f.editor().writer(),
-                                if load {
+                            let inst = Transfer::Spill {
+                                kind: if load {
                                     SpillKind::Load
                                 } else {
                                     SpillKind::Store
@@ -444,7 +439,7 @@ impl<'a> RegisterAllocator<'a> {
                                 reg,
                                 slot,
                                 ty,
-                            )?;
+                            };
                             if load {
                                 plan.before.push(inst);
                             } else {
@@ -453,12 +448,7 @@ impl<'a> RegisterAllocator<'a> {
                         }
                     }
                     for (dst, src, ty) in copies_before {
-                        plan.before.push(self.target.copy_instruction(
-                            f.editor().writer(),
-                            dst,
-                            src,
-                            ty,
-                        )?);
+                        plan.before.push(Transfer::Copy { dst, src, ty });
                     }
                     instructions[id] = plan;
                 }
@@ -487,8 +477,13 @@ mod tests {
             let lhs = f.editor().alloc_vreg(Type::I64);
             let rhs = f.editor().alloc_vreg(Type::I64);
             let dst = f.editor().alloc_vreg(Type::I64);
-            let id = TargetInst::X86Sub64.write(f.editor().writer(), &[dst], &[rhs, lhs], []);
-            f.editor().append_inst(veloc_lir::BlockId::from_u32(0), id);
+            let id = TargetInst::X86Sub64.write(
+                f.editor().at_end(veloc_lir::BlockId::from_u32(0)).writer(),
+                &[dst],
+                &[rhs, lhs],
+                [],
+            );
+
             let mut allocator = RegisterAllocator::new(&target);
             let mut frame = f.stack_frame.batch();
             if mode == 2 {
@@ -520,7 +515,8 @@ mod tests {
                 edges: Vec::new(),
                 frame,
             }
-            .materialize();
+            .materialize(&target)
+            .unwrap();
             assert_eq!(
                 Some(physical.inst(id).results()[0]),
                 physical.inst(id).inputs().get(1).copied()

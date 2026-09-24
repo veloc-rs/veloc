@@ -380,7 +380,7 @@ impl<'a> CodegenPipeline<'a> {
         let start = self.options.collect_stats.then(std::time::Instant::now);
         let allocation = crate::regalloc::RegisterAllocator::new(self.target)
             .allocate(mfunc, ctx.function_analyses)?;
-        let mut mfunc = allocation.materialize();
+        let mut mfunc = allocation.materialize(self.target)?;
         if let Some(start) = start {
             *ctx.stats.pass_times.entry("regalloc".into()).or_default() += start.elapsed();
         }

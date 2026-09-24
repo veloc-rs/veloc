@@ -40,9 +40,9 @@ pub enum SelectResult {
     /// 保持原指令不变
     Keep,
     /// 原地替换为新指令（保持 InstId）
-    /// 选择结果已写入临时缓冲区
+    /// 新指令已插入原指令前
     InPlace,
-    /// 用多条新指令替换（替换结果已写入输出缓冲区）
+    /// 用多条新指令替换（新指令已插入原指令前）
     Replace,
     /// 删除该指令
     Remove,
@@ -92,9 +92,7 @@ fn apply_select_result(
             edit.replace_inst(id, selected.pop().unwrap());
         }
         SelectResult::Replace => {
-            for inst in selected.drain(..) {
-                edit.insert_before(id, inst);
-            }
+            selected.clear();
             edit.invalidate_inst(id);
         }
         SelectResult::Remove => {
