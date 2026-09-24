@@ -3,9 +3,9 @@
 //! Preserves semantic operations and SSA; ABI and target legalization run later.
 
 use crate::error::{Error, Result};
-use alloc::{format, vec::Vec};
 use cranelift_entity::PrimaryMap;
 use smallvec::SmallVec;
+use std::{format, vec::Vec};
 use veloc_lir::InstBuild;
 use veloc_lir::{BlockId, CallInfo, MachineFunction, MachineModule, Reg};
 use veloc_mir::{InstView, Module, Opcode, TypeInfo, Value};
@@ -61,7 +61,7 @@ impl<'a> IRTranslator<'a> {
                 )));
             }
         }
-        let mut mmodule = MachineModule::new(alloc::string::String::from("default"));
+        let mut mmodule = MachineModule::new(std::string::String::from("default"));
 
         for (_, func) in self.module.functions().filter(|(_, f)| f.body.is_some()) {
             let mfunc = FuncTranslator::new(
@@ -410,7 +410,7 @@ impl<'a> FuncTranslator<'a> {
             }
 
             InstView::Call { func_id, args } => {
-                let callee = &self.module.decls[*func_id];
+                let callee = &self.module.decls()[*func_id];
                 let symbol = self
                     .mmodule
                     .symbols_mut()

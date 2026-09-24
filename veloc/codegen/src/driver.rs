@@ -13,8 +13,8 @@ use crate::pipeline::{
 };
 use crate::target::TargetMachine;
 use crate::translate::IRTranslator;
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
+use std::collections::BTreeMap;
+use std::vec::Vec;
 use veloc_lir::{MachineFunction, MachineModule};
 use veloc_mir::{FuncId, FunctionRef, Module};
 
@@ -39,8 +39,8 @@ pub struct CodegenStats {
     pub stack_frame_size: u64,
     /// Total emitted code and embedded data bytes, excluding object metadata.
     pub code_bytes: usize,
-    /// Per-function pass time, aggregated by name. Available with std.
-    pub pass_times: BTreeMap<alloc::string::String, core::time::Duration>,
+    /// Per-function pass time, aggregated by name.
+    pub pass_times: BTreeMap<std::string::String, core::time::Duration>,
 }
 
 /// 代码生成选项
@@ -52,9 +52,9 @@ pub struct CodegenOptions {
     /// 是否启用优化
     pub optimize: bool,
     /// Pass names whose output should be printed; `*` selects every pass.
-    pub dump_after: Vec<alloc::string::String>,
+    pub dump_after: Vec<std::string::String>,
     /// Restrict pass dumps to one function (None selects all functions).
-    pub dump_function: Option<alloc::string::String>,
+    pub dump_function: Option<std::string::String>,
     /// 是否打印中间结果（调试用）
     pub dump_lir: bool,
     /// Collect aggregate pipeline counters. Disabled by default so production
@@ -114,12 +114,11 @@ impl TargetFunctionPipelines {
 }
 
 impl<'a> CodegenPipeline<'a> {
-    #[cfg(feature = "std")]
     fn maybe_dump_mfunc(&self, stage: &str, mfunc: &MachineFunction) {
         use std::env;
 
         let filter = if self.options.dump_lir {
-            Some(alloc::string::String::from("*"))
+            Some(std::string::String::from("*"))
         } else {
             env::var("VELOC_DUMP_LIR").ok()
         };
@@ -134,9 +133,6 @@ impl<'a> CodegenPipeline<'a> {
         std::eprintln!("===== LIR {}: {} =====", stage, mfunc.name);
         std::eprintln!("{}", mfunc.format_for_dump());
     }
-
-    #[cfg(not(feature = "std"))]
-    fn maybe_dump_mfunc(&self, _stage: &str, _mfunc: &MachineFunction) {}
 
     /// 创建新的代码生成驱动。
     pub fn new(target: &'a dyn TargetMachine) -> Self {
@@ -381,12 +377,10 @@ impl<'a> CodegenPipeline<'a> {
         self.verify_function("scheduled", &mfunc, verify_selected)?;
 
         // Allocation owns its exact input until its plan is materialized.
-        #[cfg(feature = "std")]
         let start = self.options.collect_stats.then(std::time::Instant::now);
         let allocation = crate::regalloc::RegisterAllocator::new(self.target)
             .allocate(mfunc, ctx.function_analyses)?;
         let mut mfunc = allocation.materialize();
-        #[cfg(feature = "std")]
         if let Some(start) = start {
             *ctx.stats.pass_times.entry("regalloc".into()).or_default() += start.elapsed();
         }
@@ -471,8 +465,7 @@ impl<'a> CodegenPipeline<'a> {
         verify: fn(&MachineFunction, &dyn crate::target::TargetInstructions) -> Result<()>,
     ) -> Result<()> {
         if self.options.verify {
-            verify(mfunc, self.target)
-                .map_err(|e| Error::codegen(alloc::format!("{name}: {e}")))?;
+            verify(mfunc, self.target).map_err(|e| Error::codegen(std::format!("{name}: {e}")))?;
         }
         self.maybe_dump_mfunc(name, mfunc);
         Ok(())
@@ -487,7 +480,6 @@ impl<'a> CodegenPipeline<'a> {
             return Err(Error::codegen("function entry must be first at emission"));
         }
         let emitter = self.target.emitter();
-        #[cfg(feature = "std")]
         let start = self.options.collect_stats.then(std::time::Instant::now);
         let mut output = crate::Emitter::new();
 
@@ -496,7 +488,7 @@ impl<'a> CodegenPipeline<'a> {
             for inst_id in mfunc.block_insts(block) {
                 let inst = &mfunc.inst(inst_id);
                 if inst.is_generic() || inst.defs().chain(inst.uses()).any(|r| r.is_vreg()) {
-                    return Err(Error::codegen(alloc::format!(
+                    return Err(Error::codegen(std::format!(
                         "unlowered instruction reached emission in {}: {:?}",
                         mfunc.name,
                         inst
@@ -515,7 +507,6 @@ impl<'a> CodegenPipeline<'a> {
                 .total_size as u64;
         }
         let emitted = output.finish()?;
-        #[cfg(feature = "std")]
         if let Some(start) = start {
             *stats.pass_times.entry("emit".into()).or_default() += start.elapsed();
         }
@@ -539,7 +530,7 @@ impl<'a> CodegenPipeline<'a> {
 #[cfg(test)]
 mod memory_tests {
     use super::*;
-    use alloc::string::ToString;
+    use std::string::ToString;
     use veloc_lir::MemoryKind;
 
     #[test]

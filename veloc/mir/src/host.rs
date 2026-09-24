@@ -3,7 +3,7 @@
 //! Verification reads constants and signatures through the current function
 //! and its containing module.
 use crate::type_methods::{SignatureInfo, VerifyContextInfo};
-use crate::{FunctionRef, ModuleData, SigId, Type, VectorConst};
+use crate::{FunctionRef, Module, SigId, Type, VectorConst};
 
 impl SignatureInfo for veloc_types::Signature {
     fn params(&self) -> &[Type] {
@@ -18,11 +18,11 @@ impl SignatureInfo for veloc_types::Signature {
 }
 
 pub struct VerifyContext<'a> {
-    module: &'a ModuleData,
+    module: &'a Module,
     function: &'a FunctionRef<'a>,
 }
 impl<'a> VerifyContext<'a> {
-    pub fn new(module: &'a ModuleData, function: &'a FunctionRef<'a>) -> Self {
+    pub fn new(module: &'a Module, function: &'a FunctionRef<'a>) -> Self {
         Self { module, function }
     }
 }

@@ -2,11 +2,11 @@
 //! Optional arguments: phase (all/types/build/validate/fold), iteration multiplier.
 use std::hint::black_box;
 use std::time::Instant;
-use veloc_mir::{CallConv, Linkage, ModuleBuilder, ModuleData, Opcode, Type};
+use veloc_mir::{CallConv, Linkage, Module, ModuleBuilder, Opcode, Type};
 use veloc_optimizer::Metrics;
 use veloc_optimizer::passes::function::expression::{Budget, run};
 
-fn module() -> ModuleData {
+fn module() -> Module {
     let mut module = ModuleBuilder::new();
     let sig = module.make_signature(vec![], vec![Type::I32], CallConv::SystemV);
     let id = module.declare_function("arithmetic".into(), sig, Linkage::Local);
@@ -25,7 +25,7 @@ fn module() -> ModuleData {
         }
         ins.ret(&[value]);
     }
-    module.build_data()
+    module.build()
 }
 
 fn measure(name: &str, iterations: usize, mut run: impl FnMut()) {
@@ -93,11 +93,7 @@ fn main() {
                 let mut data = source.clone();
                 let mut metrics = Metrics::default();
                 let start = Instant::now();
-                for function in data
-                    .bodies
-                    .iter_mut()
-                    .filter_map(|(_, body)| body.as_deref_mut())
-                {
+                for function in data.bodies_mut().map(|(_, body)| body) {
                     assert!(run(function, Budget::DEFAULT, false, &mut metrics));
                 }
                 elapsed += start.elapsed().as_secs_f64();

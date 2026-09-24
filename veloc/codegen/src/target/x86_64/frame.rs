@@ -1,6 +1,6 @@
 use super::inst as generated;
 use crate::target::{CallConv as TargetCallConv, TargetArch, TargetFrameLowering};
-use alloc::vec::Vec;
+use std::vec::Vec;
 use veloc_lir::MachineFunction;
 
 #[derive(Debug, Clone, Copy)]

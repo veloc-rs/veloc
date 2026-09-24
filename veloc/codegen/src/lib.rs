@@ -1,7 +1,5 @@
-#![no_std]
+// Shared Spec generators emit alloc paths even in std-only consumers.
 extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
 
 pub mod backend;
 pub mod driver;
@@ -31,10 +29,10 @@ pub use target::{
 };
 
 /// 根据目标配置创建对应的目标机器
-pub fn create_target_machine(config: TargetConfig) -> Result<alloc::boxed::Box<dyn TargetMachine>> {
+pub fn create_target_machine(config: TargetConfig) -> Result<std::boxed::Box<dyn TargetMachine>> {
     use target::TargetArch;
     match config.arch {
-        TargetArch::X86_64 => Ok(alloc::boxed::Box::new(
+        TargetArch::X86_64 => Ok(std::boxed::Box::new(
             target::x86_64::X86_64TargetMachine::new(config)?,
         )),
         _ => Err(Error::target_machine_unavailable(config.arch)),
@@ -43,7 +41,7 @@ pub fn create_target_machine(config: TargetConfig) -> Result<alloc::boxed::Box<d
 
 pub use error::{Error, Result};
 
-pub use alloc::format;
-pub use alloc::string::String;
-pub use alloc::vec::Vec;
+pub use std::format;
+pub use std::string::String;
+pub use std::vec::Vec;
 pub use veloc_lir::SymbolId;

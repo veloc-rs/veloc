@@ -3,7 +3,9 @@ use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
 use crate::target::{AbiAssignment, AbiLocation, AbiPlan, CallConv, TargetMachine};
 use smallvec::SmallVec;
-use veloc_lir::{GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackSlot};
+use veloc_lir::{
+    CallFrameId, GenericOpcode, InstId, MachineFunction, MachineOpcode, Reg, StackObject, StackSlot,
+};
 use veloc_lir::{InstBuild, InstRead};
 use veloc_lir::{MemoryAccess, MemoryKind};
 
@@ -41,13 +43,6 @@ fn registers(assignments: &[AbiAssignment]) -> impl Iterator<Item = Reg> + '_ {
     })
 }
 
-/// The semantic argument area is independent of the physical frame strategy.
-#[derive(Clone, Copy)]
-enum ArgArea {
-    Incoming,
-    Outgoing(veloc_lir::CallFrameId),
-}
-
 /// Converts ABI locations into transfers; layout insertion is owned by LIR.
 struct Transfer<'a> {
     target: &'a dyn TargetMachine,
@@ -59,11 +54,7 @@ impl<'a> Transfer<'a> {
         Self { target, func }
     }
 
-    fn address(&mut self, area: ArgArea, offset: u32, size: u32, align: u32) -> (Reg, StackSlot) {
-        let object = match area {
-            ArgArea::Incoming => veloc_lir::StackObject::Incoming { offset },
-            ArgArea::Outgoing(frame) => veloc_lir::StackObject::Outgoing { frame, offset },
-        };
+    fn address(&mut self, object: StackObject, size: u32, align: u32) -> (Reg, StackSlot) {
         let slot = self.func.alloc_stack_object(object, size, align);
         let address = self.func.alloc_vreg(veloc_lir::Type::PTR);
         self.func.stack_addr(address, slot);
@@ -84,7 +75,7 @@ impl<'a> Transfer<'a> {
         access
     }
 
-    fn read(&mut self, dst: Reg, assignment: &AbiAssignment, area: ArgArea) {
+    fn read(&mut self, dst: Reg, assignment: &AbiAssignment) {
         match assignment.loc {
             AbiLocation::Reg(reg) => self.func.copy(dst, reg),
             AbiLocation::Stack {
@@ -92,14 +83,19 @@ impl<'a> Transfer<'a> {
                 size,
                 align,
             } => {
-                let (address, _) = self.address(area, offset, size, align);
+                let (address, _) = self.address(StackObject::Incoming { offset }, size, align);
                 let access = self.access(assignment, align, MemoryKind::Read);
                 self.func.with_memory(access).load(dst, address, 0)
             }
         };
     }
 
-    fn write(&mut self, src: Reg, assignment: &AbiAssignment, area: ArgArea) -> Option<StackSlot> {
+    fn write(
+        &mut self,
+        src: Reg,
+        assignment: &AbiAssignment,
+        frame: CallFrameId,
+    ) -> Option<StackSlot> {
         match assignment.loc {
             AbiLocation::Reg(reg) => {
                 self.func.copy(reg, src);
@@ -110,7 +106,8 @@ impl<'a> Transfer<'a> {
                 size,
                 align,
             } => {
-                let (address, slot) = self.address(area, offset, size, align);
+                let (address, slot) =
+                    self.address(StackObject::Outgoing { frame, offset }, size, align);
                 let access = self.access(assignment, align, MemoryKind::Write);
                 self.func.with_memory(access).store(src, address, 0);
                 Some(slot)
@@ -133,7 +130,7 @@ fn lower_formal_arguments(
     let params = mfunc.take_params();
     let mut transfer = Transfer::new(target, mfunc.at_start(entry));
     for (dst, assignment) in params.into_iter().zip(&plan.args) {
-        transfer.read(dst, assignment, ArgArea::Incoming);
+        transfer.read(dst, assignment);
     }
 }
 
@@ -143,16 +140,6 @@ pub(super) fn lower_call(
     id: InstId,
 ) -> Result<()> {
     let plan = plan_signature(target, &mfunc.call_info(id).sig)?;
-    lower_callsite(target, mfunc, id, &plan);
-    Ok(())
-}
-
-fn lower_callsite(
-    target: &dyn TargetMachine,
-    mfunc: &mut veloc_lir::FuncEditor<'_>,
-    id: InstId,
-    plan: &AbiPlan,
-) {
     let inst = mfunc.inst(id);
     let (results, args, callee) = match inst.view() {
         veloc_lir::InstView::Call(call) => (call.results, call.args, None),
@@ -177,7 +164,7 @@ fn lower_callsite(
         for (index, assignment) in plan.args.iter().enumerate() {
             // Borrow only long enough to copy one ID; insertion may grow the store.
             let src = transfer.func.inst(id).inputs()[index + usize::from(callee.is_some())];
-            stack_args.extend(transfer.write(src, assignment, ArgArea::Outgoing(frame)));
+            stack_args.extend(transfer.write(src, assignment, frame));
         }
     }
 
@@ -195,6 +182,7 @@ fn lower_callsite(
         insert.copy(dst, reg);
     }
     insert.call_frame_destroy(frame);
+    Ok(())
 }
 
 fn lower_return(

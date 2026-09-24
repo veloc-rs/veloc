@@ -203,7 +203,7 @@ impl<'a> FunctionPass for PostSelectOperandConstraintPass<'a> {
 mod tests {
     use super::PreSelectOperandConstraintPass;
     use crate::target::{FixedUseConstraint, OperandConstraintSet, TargetOperandLowering};
-    use alloc::vec;
+    use std::vec;
     use veloc_lir::{InstBuild, InstRead};
     use veloc_lir::{InstId, MachineFunction, Reg};
 
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(
             mfunc
                 .block_insts(veloc_lir::BlockId::from_u32(0))
-                .collect::<alloc::vec::Vec<_>>()
+                .collect::<std::vec::Vec<_>>()
                 .len(),
             2
         );
@@ -277,7 +277,7 @@ mod tests {
             .inst(
                 mfunc
                     .block_insts(veloc_lir::BlockId::from_u32(0))
-                    .collect::<alloc::vec::Vec<_>>()[0],
+                    .collect::<std::vec::Vec<_>>()[0],
             )
             .view()
         else {

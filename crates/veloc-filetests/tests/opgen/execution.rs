@@ -26,7 +26,7 @@ fn generated_rust_executes_checked_arithmetic_and_short_circuit_loops() {
         r#"
 #![allow(dead_code)]
 extern crate self as veloc_types;
-type ModuleData = ();
+type Module = ();
 type Inst = usize;
 type Type = ();
 type Result<T> = std::result::Result<T, String>;

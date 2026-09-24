@@ -1125,9 +1125,9 @@ block1():
 "#,
             )
             .unwrap();
-        let mut module = (*parsed).clone();
+        let mut module = parsed;
         module.validate().unwrap();
-        let f = module.bodies[veloc_mir::FuncId(0)].as_deref_mut().unwrap();
+        let f = module.body_mut(veloc_mir::FuncId(0)).unwrap();
         let load = f
             .layout()
             .block_order()

@@ -1,5 +1,5 @@
-use alloc::string::String;
 use core::fmt;
+use std::string::String;
 
 use crate::target::TargetArch;
 use veloc_lir::MachineOpcode;
@@ -189,13 +189,10 @@ impl fmt::Display for InstructionError {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for Error {}
 
-#[cfg(feature = "std")]
 impl std::error::Error for CodegenError {}
 
-#[cfg(feature = "std")]
 impl std::error::Error for InstructionError {}
 
 impl From<String> for Error {

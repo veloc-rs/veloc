@@ -1,8 +1,8 @@
 //! Selection bytecode. Matching is read-only; Accept enters construction.
 //! The selection driver commits detached instructions and edge transfers.
 use super::select::SelectResult;
-use alloc::vec::Vec;
 use smallvec::SmallVec;
+use std::vec::Vec;
 use veloc_lir::{
     FieldValue, GenericOpcode, InstEditor, InstId, InstRef, Reg, VRegBuilder, VRegData,
 };

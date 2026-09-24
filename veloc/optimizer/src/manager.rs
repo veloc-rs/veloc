@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use std::time::Instant;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::{ModuleData, function::FuncBody};
+use veloc_mir::{Module, function::FuncBody};
 
 /// 优化流程管理器。
 pub struct PassManager {
@@ -58,7 +58,7 @@ impl PassManager {
     }
 
     /// 在整个模块上运行所有 Pass。
-    pub fn run_on_module(&mut self, module: &mut ModuleData) -> bool {
+    pub fn run_on_module(&mut self, module: &mut Module) -> bool {
         let mut changed = false;
         self.stats.start_session();
         let total_start = Instant::now();
@@ -79,10 +79,7 @@ impl PassManager {
                 }
                 Pass::Function(fp) => {
                     let mut fp_changed = false;
-                    for (_, body) in module.bodies.iter_mut() {
-                        let Some(func) = body.as_deref_mut() else {
-                            continue;
-                        };
+                    for (_, func) in module.bodies_mut() {
                         let mut analyses = AnalysisManager::new(func);
                         let pa = fp.run(&mut analyses, &self.config, &mut self.stats.metrics);
                         if pa.changed() {

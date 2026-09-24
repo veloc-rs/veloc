@@ -32,9 +32,9 @@ fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
         let k = f.ins().closure_new(body, &[], cleanup, ty);
         f.ins().tail_call_value(k, &[arg]);
     }
-    let mut module = module.build_data();
+    let mut module = module.build();
     module.validate().unwrap();
-    let function = module.bodies[entry].as_deref_mut().unwrap();
+    let function = module.body_mut(entry).unwrap();
     let create = function.layout().first_inst(Block(0)).unwrap();
     function
         .edit()
@@ -52,8 +52,8 @@ fn generated_callable_builders_share_ssa_storage_and_explicit_validation() {
 
 #[test]
 fn deeply_nested_callable_signatures_validate_without_recursive_stack_growth() {
-    use veloc_mir::{CallConv, CallableKind, ModuleData, SigId, Signature, Type};
-    let mut module = ModuleData::default();
+    use veloc_mir::{CallConv, CallableKind, Module, SigId, Signature, Type};
+    let mut module = Module::default();
     // Forward references force the validator to visit the entire chain before
     // any suffix has been marked done. Text cannot directly encode these IDs.
     for index in 0..20_000 {
@@ -70,8 +70,8 @@ fn deeply_nested_callable_signatures_validate_without_recursive_stack_growth() {
 
 #[test]
 fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
-    use veloc_mir::{CallConv, CallableKind, ModuleData, SigId, Signature, Type};
-    let mut module = ModuleData::default();
+    use veloc_mir::{CallConv, CallableKind, Module, SigId, Signature, Type};
+    let mut module = Module::default();
     let sig = module.types_mut().insert_signature(Signature::new(
         vec![Type::callable(SigId(1), CallableKind::Shared)],
         vec![],
@@ -92,7 +92,7 @@ fn callable_signature_diagnostics_identify_cycles_and_unknown_references() {
     assert!(error.contains("active signature sig0"), "{error}");
 }
 
-fn example() -> veloc_mir::ModuleData {
+fn example() -> veloc_mir::Module {
     let module = ModuleParser::new()
         .parse(
             "local function choose(bool, i32, i32) -> i32\n\
@@ -104,14 +104,14 @@ fn example() -> veloc_mir::ModuleData {
            return v4\n",
         )
         .unwrap();
-    (*module).clone()
+    module
 }
 
 #[test]
 fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
     let mut module = example();
     module.validate().unwrap();
-    let func = module.bodies[veloc_mir::FuncId(0)].as_deref_mut().unwrap();
+    let func = module.body_mut(veloc_mir::FuncId(0)).unwrap();
     let inst = func.layout().first_inst(Block(0)).unwrap();
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -141,7 +141,7 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
     assert_eq!(func.cfg().blocks()[Block(2)].preds, [Block(0)]);
     module.validate().unwrap();
 
-    let func = module.bodies[veloc_mir::FuncId(0)].as_deref_mut().unwrap();
+    let func = module.body_mut(veloc_mir::FuncId(0)).unwrap();
     func.edit()
         .redirect_edge(EdgeRef { inst, index: 0 }, Block(2), &[Value(1)]);
     assert!(func.cfg().blocks()[Block(1)].preds.is_empty());
@@ -156,7 +156,7 @@ fn editing_one_edge_preserves_other_occurrences_and_use_chains() {
 #[test]
 fn validator_rejects_detached_targets_and_unknown_values_without_panicking() {
     let mut module = example();
-    let func = module.bodies[veloc_mir::FuncId(0)].as_deref_mut().unwrap();
+    let func = module.body_mut(veloc_mir::FuncId(0)).unwrap();
     let inst = func.layout().first_inst(Block(1)).unwrap();
     func.edit().set_operand(inst, 0, Value(1000));
     assert!(
@@ -270,7 +270,7 @@ fn fallible_visitors_preserve_order_and_stop_at_the_first_error() {
 #[test]
 fn modules_share_types_but_detach_before_extending_them() {
     use std::sync::Arc;
-    use veloc_mir::{CallConv, Linkage, ModuleBuilder, ModuleData, Signature, Type};
+    use veloc_mir::{CallConv, Linkage, Module, ModuleBuilder, Signature, Type};
     use veloc_types::TypeContext;
 
     let mut types = TypeContext::default();
@@ -283,12 +283,12 @@ fn modules_share_types_but_detach_before_extending_them() {
         let value = f.func().params()[0];
         f.ins().ret(&[value]);
     }
-    let mut left = left.build_data();
-    let right = ModuleData::with_types(shared);
+    let mut left = left.build();
+    let right = Module::with_types(shared);
     assert!(Arc::ptr_eq(&left.shared_types(), &right.shared_types()));
     left.validate().unwrap();
     right.validate().unwrap();
-    assert!(right.decls.is_empty());
+    assert!(right.decls().is_empty());
 
     let old = left.clone();
     let added = left.intern_signature(Signature::new([Type::F64], [], CallConv::SystemV));

@@ -1,5 +1,5 @@
 //! Execute emitted ELF objects, including ABI calls and forced spills.
-#![cfg(all(feature = "std", target_arch = "x86_64", target_os = "linux"))]
+#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
 use std::{
     fs,
     path::PathBuf,

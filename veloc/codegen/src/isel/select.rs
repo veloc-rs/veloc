@@ -6,11 +6,11 @@
 //! 通过 TargetInstructionSelector trait 委托给具体的目标后端实现。
 
 use crate::target::TargetInstructionSelector;
-use alloc::vec::Vec;
+use std::vec::Vec;
 use veloc_lir::{InstId, MachineFunction};
 
-fn format_select_failure_inst(mfunc: &MachineFunction, inst_id: InstId) -> alloc::string::String {
-    use alloc::format;
+fn format_select_failure_inst(mfunc: &MachineFunction, inst_id: InstId) -> std::string::String {
+    use std::format;
 
     let inst = &mfunc.inst(inst_id);
     let operand_types = inst
@@ -169,7 +169,7 @@ impl<'a> InstructionSelector<'a> {
                         Err(crate::error::Error::Select(err)) => {
                             return Err(crate::error::Error::select(
                                 err.opcode.clone(),
-                                alloc::format!(
+                                std::format!(
                                     "{}; inst_id={:?}, inst={}",
                                     err.reason,
                                     inst_id,

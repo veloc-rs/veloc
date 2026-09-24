@@ -115,10 +115,13 @@ other currently rejected MIR operations still require dedicated lowering.
 
 ## Verification and measurements
 
+`veloc-codegen` requires `std`; disabling default features does not enable a
+`no_std` mode. Lower-level crates retain their independent feature policies.
+
 ```sh
 CARGO_INCREMENTAL=0 cargo test -p veloc-codegen --test native
 CARGO_INCREMENTAL=0 cargo test --workspace
-CARGO_INCREMENTAL=0 cargo check -p veloc-codegen --no-default-features
+CARGO_INCREMENTAL=0 cargo check -p veloc-codegen --all-targets
 CARGO_INCREMENTAL=0 cargo test -p veloc-codegen --release --test native \
   backend_benchmark -- --ignored --nocapture
 ```

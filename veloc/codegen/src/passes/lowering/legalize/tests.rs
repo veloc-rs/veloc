@@ -1,5 +1,5 @@
 use super::*;
-use alloc::vec::Vec;
+use std::vec::Vec;
 use veloc_lir::{GenericOpcode, MachineOpcode};
 use veloc_lir::{InstBuild, InstRead};
 
@@ -176,7 +176,7 @@ fn expansions_are_revisited_in_order_including_in_place_changes() {
         Legalizer::new(&Mode::Chain)
             .legalize(&mut f, |_, _| unreachable!("test contains no calls"))
             .unwrap();
-        let ops: alloc::vec::Vec<_> = f
+        let ops: std::vec::Vec<_> = f
             .block_insts(veloc_lir::BlockId::from_u32(0))
             .collect::<Vec<_>>()
             .iter()
@@ -201,13 +201,13 @@ fn missing_rules_and_nonconvergent_expansions_are_errors() {
             unreachable!("test contains no calls")
         })
         .unwrap_err();
-    assert!(alloc::format!("{error}").contains("missing legalization rule for Generic(Sub)"));
+    assert!(std::format!("{error}").contains("missing legalization rule for Generic(Sub)"));
     let error = Legalizer::new(&Mode::Loop)
         .legalize(&mut function(), |_, _| {
             unreachable!("test contains no calls")
         })
         .unwrap_err();
-    assert!(alloc::format!("{error}").contains("made no edits"));
+    assert!(std::format!("{error}").contains("made no edits"));
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn cycles_across_new_blocks_share_one_budget() {
             unreachable!("test contains no calls")
         })
         .unwrap_err();
-    assert!(alloc::format!("{error}").contains("did not converge"));
+    assert!(std::format!("{error}").contains("did not converge"));
 }
 
 #[test]

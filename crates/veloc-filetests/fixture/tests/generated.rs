@@ -244,12 +244,8 @@ fn variadic_ranges_grow_recycle_and_remain_independent_after_clone() {
 #[test]
 fn function_edits_keep_layout_and_successor_edges_in_sync() {
     let module = veloc_mir::ModuleParser::new().parse("local function main() -> void\nblock0():\n  jump block1()\nblock1():\n  return\nblock2():\n  return\n").unwrap();
-    let mut data = (*module).clone();
-    let func = data
-        .bodies
-        .iter_mut()
-        .find_map(|(_, body)| body.as_deref_mut())
-        .unwrap();
+    let mut data = module.clone();
+    let func = data.bodies_mut().map(|(_, body)| body).next().unwrap();
     let entry = func.entry_block();
     let old = func.layout().block_order().nth(1).unwrap();
     let new = func.layout().block_order().nth(2).unwrap();
@@ -276,7 +272,7 @@ fn function_edits_keep_layout_and_successor_edges_in_sync() {
     // Exercise both ends and mixed-direction iteration after in-place edits.
     let first = func
         .edit()
-        .at_start(entry, &module.decls, module.signatures())
+        .at_start(entry, module.decls(), module.signatures())
         .insert(|w| w.nop(), &[]);
     let middle = func.edit().insert_after(first, |w| w.nop(), &[]);
     let last = func.edit().insert_before(replacement, |w| w.nop(), &[]);
@@ -757,14 +753,14 @@ fn builders_preserve_logical_order_independently_of_storage_and_text() {
         .unwrap();
     // Inferred text cannot construct mismatched result types, but callers of
     // the in-memory IR can. Check the generated validator independently too.
-    let mut malformed = (*module).clone();
-    malformed.bodies[id]
-        .as_deref_mut()
+    let mut malformed = module.clone();
+    malformed
+        .body_mut(id)
         .unwrap()
         .edit()
         .set_value_type(last, Type::I32);
-    malformed.bodies[id]
-        .as_deref_mut()
+    malformed
+        .body_mut(id)
         .unwrap()
         .edit()
         .set_value_type(first_arg, Type::PTR);

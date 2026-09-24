@@ -35,7 +35,7 @@ pub struct Program {
 /// Stages one module and commits it only after every import is linked.
 pub struct ProgramBuilder<'a> {
     program: &'a mut Program,
-    module: Module,
+    module: Arc<Module>,
     id: ModuleId,
     targets: PrimaryMap<FuncId, Option<CallTarget>>,
     signatures: Vec<veloc_mir::SigId>,
@@ -54,7 +54,7 @@ impl Program {
         match target {
             CallTarget::Bytecode(module, func) => {
                 let target = &self.modules[module];
-                source == target.signatures[target.ir.decls[func].signature.0 as usize]
+                source == target.signatures[target.ir.decls()[func].signature.0 as usize]
             }
             CallTarget::Host(host) => self.host_signatures[host] == Some(source),
         }
@@ -96,7 +96,7 @@ impl Program {
             .ok_or(Error::InvalidModule(module))?;
         let function = loaded
             .ir
-            .decls
+            .decls()
             .get(func)
             .ok_or(Error::InvalidFunction { module, func })?;
         Ok(&loaded.ir.signatures()[function.signature])
@@ -105,8 +105,8 @@ impl Program {
     /// Validate and canonicalize types before linking. Abandoned builders leave
     /// deduplicated type entries in the append-only pool, but publish no module
     /// or function references.
-    pub fn builder(&mut self, module: Module) -> Result<ProgramBuilder<'_>> {
-        ProgramBuilder::new(self, module)
+    pub fn builder(&mut self, module: impl Into<Arc<Module>>) -> Result<ProgramBuilder<'_>> {
+        ProgramBuilder::new(self, module.into())
     }
 
     /// Get a host function ID by name
@@ -227,7 +227,7 @@ impl Program {
 }
 
 impl<'a> ProgramBuilder<'a> {
-    fn new(program: &'a mut Program, module: Module) -> Result<Self> {
+    fn new(program: &'a mut Program, module: Arc<Module>) -> Result<Self> {
         module
             .validate()
             .map_err(|e| Error::Message(e.to_string()))?;
@@ -285,20 +285,20 @@ impl<'a> ProgramBuilder<'a> {
                 .ir
         };
         let target_data = target
-            .decls
+            .decls()
             .get(target_func)
             .ok_or(Error::InvalidFunction {
                 module: target_module,
                 func: target_func,
             })?;
-        if target.bodies[target_func].is_none() {
+        if target.function(target_func).body.is_none() {
             return Err(Error::InvalidFunction {
                 module: target_module,
                 func: target_func,
             });
         }
 
-        let source = &self.module.decls[import];
+        let source = &self.module.decls()[import];
         let source_sig = self.signatures[source.signature.0 as usize];
         let target_sig = if target_module == self.id {
             self.signatures[target_data.signature.0 as usize]
@@ -326,7 +326,7 @@ impl<'a> ProgramBuilder<'a> {
             .host_signatures
             .get(host)
             .ok_or(Error::InvalidHostFunction(host))?;
-        let source = &self.module.decls[import];
+        let source = &self.module.decls()[import];
         if self.module.signatures()[source.signature]
             .types()
             .iter()
@@ -416,7 +416,7 @@ impl<'a> ProgramBuilder<'a> {
     fn validate_import(&self, import: FuncId) -> Result<()> {
         let func = self
             .module
-            .decls
+            .decls()
             .get(import)
             .ok_or(Error::InvalidFunction {
                 module: self.id,

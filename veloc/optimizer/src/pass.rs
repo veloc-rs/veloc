@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 use core::any::TypeId;
 use hashbrown::HashSet;
 use veloc_analyzer::AnalysisManager;
-use veloc_mir::ModuleData;
+use veloc_mir::Module;
 
 /// 声明在 Pass 执行后保留的分析结果。
 pub struct PreservedAnalyses {
@@ -55,7 +55,7 @@ pub trait ModulePass {
     fn name(&self) -> &str;
     fn run(
         &self,
-        module: &mut ModuleData,
+        module: &mut Module,
         config: &OptConfig,
         metrics: &mut Metrics,
     ) -> PreservedAnalyses;

@@ -16,7 +16,7 @@ use veloc_mir::{FuncId, Module};
 /// Runtime representation of a compiled module
 pub(crate) struct RuntimeModule {
     /// The original IR module
-    ir: Module,
+    ir: alloc::sync::Arc<Module>,
     /// Local signature IDs remapped into the immutable program type context.
     signatures: alloc::vec::Vec<veloc_mir::SigId>,
     /// Compiled bytecode functions (None for imports)

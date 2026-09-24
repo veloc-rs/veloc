@@ -28,7 +28,7 @@ pub use inst::{
     SuccessorMut, Successors, VectorMemOptions,
 };
 pub use intrinsic::{Intrinsic, ids as intrinsic_ids};
-pub use module::{Global, Linkage, Module, ModuleData};
+pub use module::{Global, Linkage, Module};
 pub use text::{ModuleParser, ParseError};
 pub use types::{
     Block, BlockCall, CallConv, CallableKind, FuncId, ModuleId, ScalarType, SigId, Signature, Type,

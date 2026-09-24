@@ -26,7 +26,7 @@ impl<'a> Legalizer<'a> {
                 .try_call_info(id)
                 .is_some_and(|info| info.frame.is_none())
             {
-                return Err(Error::codegen(alloc::format!("unlowered ABI call {id:?}")));
+                return Err(Error::codegen(std::format!("unlowered ABI call {id:?}")));
             }
             if inst.is_generic() && !inst.is_call_frame() {
                 let query = Query::from_inst(inst, function.vregs())?;
@@ -34,7 +34,7 @@ impl<'a> Legalizer<'a> {
                     self.target.legalize_action(&query)?,
                     Some(LegalizeAction::Legal)
                 ) {
-                    return Err(Error::codegen(alloc::format!(
+                    return Err(Error::codegen(std::format!(
                         "illegal instruction at selection boundary: {id:?}"
                     )));
                 }
@@ -49,7 +49,7 @@ impl<'a> Legalizer<'a> {
         mfunc: &mut MachineFunction,
         mut lower_call: impl FnMut(&mut veloc_lir::FuncEditor<'_>, veloc_lir::InstId) -> Result<()>,
     ) -> Result<bool> {
-        use alloc::collections::VecDeque;
+        use std::collections::VecDeque;
         const REWRITES_PER_INST: usize = 1024;
         const TRACE_LENGTH: usize = 16;
 
@@ -101,7 +101,7 @@ impl<'a> Legalizer<'a> {
             }
             let query = Query::from_inst(inst, mfunc.vregs())?;
             let action = self.target.legalize_action(&query)?.ok_or_else(|| {
-                Error::codegen(alloc::format!("missing legalization rule for {opcode:?}"))
+                Error::codegen(std::format!("missing legalization rule for {opcode:?}"))
             })?;
             let LegalizeAction::Rewrite(rewrite) = action else {
                 continue;
@@ -121,14 +121,14 @@ impl<'a> Legalizer<'a> {
             }
             let rule = rewrite.name;
             if rewrites == budget {
-                return Err(Error::codegen(alloc::format!(
+                return Err(Error::codegen(std::format!(
                     "legalization did not converge after {budget} rewrites; recent rules: {trace:?}; next: {id:?} {opcode:?} {rule:?}"
                 )));
             }
             let (result, changes) = mfunc.editor().track(|f| rewrite.apply(id, f));
             result?;
             if changes.insts.is_empty() && changes.blocks.is_empty() {
-                return Err(Error::codegen(alloc::format!(
+                return Err(Error::codegen(std::format!(
                     "legalization rule {rule:?} made no edits for {id:?} {opcode:?}"
                 )));
             }

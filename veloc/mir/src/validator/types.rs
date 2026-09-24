@@ -1,9 +1,9 @@
 //! Module type structure and restrictions on where types may be used.
-use crate::{CallableKind, ModuleData, Result, Type};
+use crate::{CallableKind, Module, Result, Type};
 use alloc::format;
 use veloc_types::TypeInfo;
 
-pub(super) fn validate(module: &ModuleData) -> Result<()> {
+pub(super) fn validate(module: &Module) -> Result<()> {
     for (id, sig) in module.signatures().iter() {
         for (role, types) in [("parameter", sig.params()), ("return", sig.returns())] {
             for (index, &ty) in types.iter().enumerate() {
@@ -30,7 +30,7 @@ pub(super) fn validate(module: &ModuleData) -> Result<()> {
 }
 
 /// Check encoding and references, independently of how this type is used.
-pub(super) fn check_type(module: &ModuleData, ty: Type) -> Result<()> {
+pub(super) fn check_type(module: &Module, ty: Type) -> Result<()> {
     if !ty.is_valid() {
         return Err(crate::Error::Message("invalid value type".into()));
     }
@@ -56,7 +56,7 @@ fn check_returns(returns: &[Type]) -> Result<()> {
 }
 
 /// Shared iterative graph checking handles forward references and deep nesting.
-fn check_cycles(module: &ModuleData) -> Result<()> {
+fn check_cycles(module: &Module) -> Result<()> {
     module
         .signatures()
         .dependency_order()

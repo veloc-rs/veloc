@@ -47,12 +47,12 @@ impl TargetEmitter for X86_64CodeEmitter {
             MachineOpcode::Target(target_inst_code) => {
                 let target = crate::target::x86_64::inst::TargetInst::from_u32(*target_inst_code);
                 if target.is_pseudo() || !target.has_encoding() {
-                    return Err(crate::Error::codegen(alloc::format!(
+                    return Err(crate::Error::codegen(std::format!(
                         "{target:?} has no final encoding"
                     )));
                 }
                 if !self.features.contains_all(target.required_features()) {
-                    return Err(crate::Error::codegen(alloc::format!(
+                    return Err(crate::Error::codegen(std::format!(
                         "{target:?} requires unavailable target features"
                     )));
                 }
@@ -67,7 +67,7 @@ impl TargetEmitter for X86_64CodeEmitter {
                     }
                 }
                 target.emit(emitter, inst, mfunc).map_err(|error| {
-                    crate::Error::codegen(alloc::format!("{target:?}: {error}; {inst:?}"))
+                    crate::Error::codegen(std::format!("{target:?}: {error}; {inst:?}"))
                 })
             }
         }
@@ -142,7 +142,7 @@ pub(crate) fn encode_instruction(
     emission: Emission,
 ) -> crate::Result<()> {
     use veloc_encoder::x86_64 as x86;
-    let error = |e| crate::Error::codegen(alloc::format!("x86 encoding: {e}"));
+    let error = |e| crate::Error::codegen(std::format!("x86 encoding: {e}"));
     match emission {
         Emission::Legacy(descriptor, form, immediate) => {
             let encoded = x86::encode(descriptor, form, immediate).map_err(error)?;

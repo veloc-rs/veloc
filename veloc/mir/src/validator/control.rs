@@ -3,7 +3,7 @@
 
 use super::ValidationError;
 use crate::function::Dominators;
-use crate::{Block, FunctionRef, ModuleData, Result, Value, ValueDef};
+use crate::{Block, FunctionRef, Module, Result, Value, ValueDef};
 use alloc::vec::Vec;
 
 // Positions are assigned only to instructions attached to a block.
@@ -19,14 +19,14 @@ pub(super) struct Structure {
 /// Temporary membership sets are needed only while checking the structure.
 struct Checker<'a> {
     func: &'a FunctionRef<'a>,
-    module: &'a ModuleData,
+    module: &'a Module,
     blocks: Vec<bool>,
     defined: Vec<bool>,
     structure: Structure,
 }
 
 impl Structure {
-    pub(super) fn check(func: &FunctionRef, module: &ModuleData) -> Result<Self> {
+    pub(super) fn check(func: &FunctionRef, module: &Module) -> Result<Self> {
         let body = func.body.expect("defined function");
         let blocks = body.dfg().blocks.len();
         let mut checker = Checker {

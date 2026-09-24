@@ -3,10 +3,10 @@ use super::allocation::{Allocation, InstAllocation};
 use crate::analysis::FunctionAnalysisCtx;
 use crate::target::{RegClass, SpillKind, TargetRegalloc};
 use crate::{Error, Result};
-use alloc::format;
-use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use hashbrown::HashMap;
+use std::format;
+use std::vec::Vec;
 use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackBatch, StackSlot, VReg};
 
 #[derive(Clone)]

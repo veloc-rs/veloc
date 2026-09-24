@@ -1,7 +1,7 @@
 //! MIR validation: module types, instruction contracts, SSA and ownership.
 use crate::host::VerifyContext;
 use crate::inst::Inst;
-use crate::{Block, FunctionRef, InstView, ModuleData, Opcode, Result, Successor, Type, Value};
+use crate::{Block, FunctionRef, InstView, Module, Opcode, Result, Successor, Type, Value};
 use alloc::string::String;
 use core::fmt;
 use smallvec::SmallVec;
@@ -31,7 +31,7 @@ impl fmt::Display for ValidationError {
     }
 }
 
-impl ModuleData {
+impl Module {
     pub fn validate(&self) -> Result<()> {
         types::validate(self)?;
         for (_, function) in self.functions() {
@@ -48,12 +48,12 @@ impl ModuleData {
 }
 
 impl FunctionRef<'_> {
-    pub fn validate(&self, module: &ModuleData) -> Result<()> {
+    pub fn validate(&self, module: &Module) -> Result<()> {
         types::validate(module)?;
         self.validate_body(module)
     }
 
-    fn validate_body(&self, module: &ModuleData) -> Result<()> {
+    fn validate_body(&self, module: &Module) -> Result<()> {
         if module.signatures().get(self.decl.signature).is_none() {
             return self.fail("unknown function signature".into());
         }
@@ -73,7 +73,7 @@ impl FunctionRef<'_> {
 
     fn validate_inst(
         &self,
-        module: &ModuleData,
+        module: &Module,
         inst: Inst,
         context: &VerifyContext<'_>,
     ) -> Result<()> {
@@ -227,7 +227,7 @@ mod tests {
             (target, *params.last().unwrap())
         };
         module.validate().unwrap();
-        let mut module = module.build_data();
+        let mut module = module.build();
 
         // A mismatch beyond the inline capacity must not be skipped.
         module.bodies[caller]
@@ -271,7 +271,7 @@ mod tests {
             builder.ins().br_table(index, default, &[]);
         }
         module.validate().unwrap();
-        let mut module = module.build_data();
+        let mut module = module.build();
         let func = module.bodies[func].as_deref_mut().unwrap();
         let inst = func.layout().last_inst(func.entry_block()).unwrap();
         let crate::InstView::BrTable { index, .. } = func.dfg().inst(inst) else {

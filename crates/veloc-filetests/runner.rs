@@ -19,12 +19,8 @@ fn main() {
         let module = ModuleParser::new().parse(
             "local function main(i32, i32) -> i32\nblock0(v0: i32, v1: i32):\n  return v0\n",
         )?;
-        let mut data = (*module).clone();
-        let func = data
-            .bodies
-            .iter_mut()
-            .find_map(|(_, body)| body.as_deref_mut())
-            .unwrap();
+        let mut data = module;
+        let func = data.bodies_mut().map(|(_, body)| body).next().unwrap();
         let ret = func.layout().last_inst(func.entry_block()).unwrap();
         let second = func.params()[1];
         let mut analyses = AnalysisManager::new(func);
@@ -288,11 +284,11 @@ fn execute(mode: &str, source: &str) -> Result<String> {
 }
 
 fn optimize(module: &Module) -> Module {
-    let mut data = (**module).clone();
+    let mut data = module.clone();
     PassManager::new_o1()
         .with_layout(veloc_codegen::target::x86_64::DATA_LAYOUT)
         .run_on_module(&mut data);
-    Module::new(data)
+    data
 }
 
 fn interpret(module: Module) -> Result<String> {
@@ -308,7 +304,7 @@ fn interpret(module: Module) -> Result<String> {
     let main = module
         .find_function("main")
         .ok_or("execute needs a main function")?;
-    let signature = &module.signatures()[module.decls[main].signature];
+    let signature = &module.signatures()[module.decls()[main].signature];
     if !signature.params().is_empty() {
         return Err("execute requires main() with no parameters".into());
     }
@@ -366,12 +362,8 @@ fn roundtrip(module: &Module) -> Result<String> {
 }
 
 fn simplify(module: Module) -> Result<Module> {
-    let mut data = (*module).clone();
-    for function in data
-        .bodies
-        .iter_mut()
-        .filter_map(|(_, body)| body.as_deref_mut())
-    {
+    let mut data = module;
+    for function in data.bodies_mut().map(|(_, body)| body) {
         let mut metrics = Metrics::default();
         expression::run(function, expression::Budget::DEFAULT, false, &mut metrics);
         let before = format!("{function:?}");
@@ -384,5 +376,5 @@ fn simplify(module: Module) -> Result<Module> {
             ));
         }
     }
-    Ok(Module::new(data))
+    Ok(data)
 }

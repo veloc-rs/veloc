@@ -1,9 +1,9 @@
 use crate::target::TargetInstructions;
-use alloc::vec::Vec;
 use core::ops::{BitOr, BitOrAssign};
 use cranelift_entity::SecondaryMap;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
+use std::vec::Vec;
 use veloc_lir::BlockId as Block;
 use veloc_lir::{MachineFunction, Reg};
 
@@ -671,7 +671,7 @@ mod tests {
         }
         let mut emit = |block, op: TargetInst, targets: &[u32]| {
             {
-                let fields: alloc::vec::Vec<_> = targets
+                let fields: std::vec::Vec<_> = targets
                     .iter()
                     .map(|&b| FieldValue::Edge(f.editor().create_edge(Block::from_u32(b), &[])))
                     .collect();

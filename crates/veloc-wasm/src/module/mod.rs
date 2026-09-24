@@ -22,7 +22,7 @@ pub use self::runtime::*;
 pub use self::types::*;
 
 pub enum ModuleArtifact {
-    Interpreter(veloc::mir::Module),
+    Interpreter(Arc<veloc::mir::Module>),
     Jit(LoadedObject<()>),
 }
 
@@ -270,7 +270,7 @@ impl Module {
             }
         }
 
-        let mut ir_data = ir.build_data();
+        let mut ir = ir.build();
 
         // 5. Run optimizations
         if engine.config().opt_level > 0 {
@@ -297,7 +297,7 @@ impl Module {
                 PassManager::new(config)
             };
 
-            pm.run_on_module(&mut ir_data);
+            pm.run_on_module(&mut ir);
 
             // 如果配置了 trace_file，则直接输出
             if let Some(ref path) = engine.config().trace_file {
@@ -309,8 +309,6 @@ impl Module {
                 }
             }
         }
-
-        let ir = veloc_mir::Module::new(ir_data);
 
         if engine.config().dump_ir {
             println!("Generated IR for module:");
@@ -381,7 +379,7 @@ impl Module {
                 .relocate()?;
             ModuleArtifact::Jit(loaded)
         } else {
-            ModuleArtifact::Interpreter(ir)
+            ModuleArtifact::Interpreter(Arc::new(ir))
         };
 
         let inner = Arc::new(ModuleInner {

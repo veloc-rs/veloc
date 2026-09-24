@@ -2,9 +2,9 @@
 use super::linear_scan::RegisterAllocator;
 use crate::target::SpillKind;
 use crate::{Error, Result};
-use alloc::format;
-use alloc::vec::Vec;
 use smallvec::SmallVec;
+use std::format;
+use std::vec::Vec;
 use veloc_lir::{InstId, MachineFunction, Reg, StackBatch, StackSlot};
 use veloc_mir::Type;
 
@@ -48,7 +48,7 @@ impl RegisterAllocator<'_> {
         frame: &mut StackBatch,
     ) -> Result<Vec<EdgeAllocation>> {
         let mut edges = Vec::new();
-        let mut cycle_slots = alloc::collections::BTreeMap::new();
+        let mut cycle_slots = std::collections::BTreeMap::new();
         let mut block = f.blocks().next();
         while let Some(current_block) = block {
             let next_block = f.layout().next_block(current_block);

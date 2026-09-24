@@ -8,8 +8,8 @@ build = "build.rs"
 veloc-analyzer.workspace = true
 veloc-encoder.workspace = true
 veloc-types = { workspace = true }
-veloc-mir = { path = "../mir" }
-veloc-lir = { workspace = true }
+veloc-mir = { path = "../mir", features = ["std"] }
+veloc-lir = { workspace = true, features = ["std"] }
 cranelift-entity = { workspace = true }
 object = { version = "0.36", features = ["write"] }
 hashbrown = { workspace = true }
@@ -18,11 +18,3 @@ smallvec.workspace = true
 [build-dependencies]
 # 构建时依赖
 veloc-spec = { workspace = true }
-
-[features]
-default = ["std"]
-std = ["veloc-mir/std", "veloc-lir/std"]
-
-[[example]]
-name = "native"
-required-features = ["std"]

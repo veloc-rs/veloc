@@ -1,7 +1,7 @@
 use super::Reg;
 use super::types::TargetArch;
-use alloc::vec::Vec;
 use smallvec::SmallVec;
+use std::vec::Vec;
 use veloc_mir::Type;
 
 /// Locations are relative to the ABI argument area, not a concrete frame.

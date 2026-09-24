@@ -4,7 +4,6 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::ops::Deref;
 use cranelift_entity::{PrimaryMap, SecondaryMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,15 +41,38 @@ pub struct Global {
     pub linkage: Linkage,
 }
 
+/// Owned MIR data. Cloning copies declarations and function bodies; callers
+/// that need shared ownership should hold an `Arc<Module>` instead.
+/// Construction and sharing do not imply validation.
 #[derive(Debug, Default, Clone)]
-pub struct ModuleData {
-    pub decls: PrimaryMap<FuncId, FuncDecl>,
-    pub bodies: SecondaryMap<FuncId, Option<Box<FuncBody>>>,
+pub struct Module {
+    pub(crate) decls: PrimaryMap<FuncId, FuncDecl>,
+    pub(crate) bodies: SecondaryMap<FuncId, Option<Box<FuncBody>>>,
     types: Arc<veloc_types::TypeContext>,
-    pub globals: Vec<Global>,
+    pub(crate) globals: Vec<Global>,
 }
 
-impl ModuleData {
+impl Module {
+    pub fn decls(&self) -> &PrimaryMap<FuncId, FuncDecl> {
+        &self.decls
+    }
+
+    pub fn globals(&self) -> &[Global] {
+        &self.globals
+    }
+
+    pub fn body_mut(&mut self, id: FuncId) -> Option<&mut FuncBody> {
+        assert!(self.decls.get(id).is_some(), "unknown function");
+        self.bodies[id].as_deref_mut()
+    }
+
+    /// Iterate existing definitions without exposing body insertion or removal.
+    pub fn bodies_mut(&mut self) -> impl Iterator<Item = (FuncId, &mut FuncBody)> {
+        self.bodies
+            .iter_mut()
+            .filter_map(|(id, body)| body.as_deref_mut().map(|body| (id, body)))
+    }
+
     /// Bind a module to an existing immutable type universe.
     pub fn with_types(types: Arc<veloc_types::TypeContext>) -> Self {
         Self {
@@ -136,25 +158,5 @@ impl ModuleData {
 
     pub fn add_global(&mut self, name: String, ty: Type, linkage: Linkage) {
         self.globals.push(Global { name, ty, linkage });
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct Module {
-    pub(crate) inner: Arc<ModuleData>,
-}
-
-impl Module {
-    pub fn new(data: ModuleData) -> Self {
-        Self {
-            inner: Arc::new(data),
-        }
-    }
-}
-
-impl Deref for Module {
-    type Target = ModuleData;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
     }
 }

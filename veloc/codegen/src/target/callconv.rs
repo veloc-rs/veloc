@@ -1,8 +1,8 @@
 use super::Reg;
 use super::abi::{AbiAssignment, AbiDescriptor, AbiLocation, AbiPlan, AbiState};
 use super::types::TargetArch;
-use alloc::format;
-use alloc::vec::Vec;
+use std::format;
+use std::vec::Vec;
 use veloc_mir::Type;
 use veloc_types::DataLayout;
 
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn mixed_domains_share_occupancy_and_stack_alignment() {
         use crate::target::x86_64::inst::*;
-        let mut types = alloc::vec![Type::F64; 8];
+        let mut types = std::vec![Type::F64; 8];
         types.extend([Type::F64, Type::F32X4]);
         let plan = CallConv::SystemV
             .plan(

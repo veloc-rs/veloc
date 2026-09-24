@@ -1,8 +1,8 @@
 //! Code layout and symbolic fixups. Architecture encoders only supply bytes
 //! and relative-field descriptions; they never own labels or linker symbols.
 use crate::{Error, Result};
-use alloc::{format, vec, vec::Vec};
 use hashbrown::HashMap;
+use std::{format, vec, vec::Vec};
 use veloc_encoder::{Encoded, Fixup};
 use veloc_lir::BlockId as Block;
 use veloc_lir::SymbolId;

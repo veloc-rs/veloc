@@ -6,7 +6,7 @@
 use crate::driver::CodegenPipeline;
 use crate::error::Result;
 use crate::target::{TargetConfig, TargetMachine};
-use alloc::boxed::Box;
+use std::boxed::Box;
 use veloc_mir::Module;
 
 pub struct Backend {
@@ -34,7 +34,7 @@ impl Backend {
     }
 
     /// 将整个 IR 模块编译为一个 relocatable object。
-    pub fn compile_object(&self, module: &Module) -> Result<alloc::vec::Vec<u8>> {
+    pub fn compile_object(&self, module: &Module) -> Result<std::vec::Vec<u8>> {
         CodegenPipeline::new(self.target()).compile_object(module)
     }
 }

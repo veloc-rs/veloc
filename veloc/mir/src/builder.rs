@@ -2,26 +2,26 @@ use super::function::{FuncBody, FuncEditor, InstCursor};
 use super::inst::{InstWriter, VectorExtData};
 use super::types::{Block, BlockCall, FuncId, Type, Value, Variable};
 use crate::Opcode;
-use crate::{CallConv, Linkage, Module, ModuleData, Result, SigId};
+use crate::{CallConv, Linkage, Module, Result, SigId};
 use alloc::vec::Vec;
 use hashbrown::{HashMap, HashSet};
 
 include!(concat!(env!("OUT_DIR"), "/builders.rs"));
 
 pub struct ModuleBuilder {
-    data: ModuleData,
+    data: Module,
 }
 
 impl ModuleBuilder {
     pub fn new() -> Self {
         Self {
-            data: ModuleData::default(),
+            data: Module::default(),
         }
     }
 
     pub fn with_types(types: alloc::sync::Arc<veloc_types::TypeContext>) -> Self {
         Self {
-            data: ModuleData::with_types(types),
+            data: Module::with_types(types),
         }
     }
 
@@ -58,10 +58,6 @@ impl ModuleBuilder {
     }
 
     pub fn build(self) -> Module {
-        Module::new(self.data)
-    }
-
-    pub fn build_data(self) -> ModuleData {
         self.data
     }
 }
@@ -93,7 +89,7 @@ pub struct SsaBuilder<'a> {
 }
 
 impl<'a> SsaBuilder<'a> {
-    pub(crate) fn new(module: &'a mut ModuleData, func_id: FuncId) -> Self {
+    pub(crate) fn new(module: &'a mut Module, func_id: FuncId) -> Self {
         let (decls, signatures, function) = module.define_body(func_id);
         let entry = function.entry_block();
         Self {

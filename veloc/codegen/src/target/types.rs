@@ -1,7 +1,7 @@
 use super::Reg;
-use alloc::string::String;
-use alloc::string::ToString;
-use alloc::vec::Vec;
+use std::string::String;
+use std::string::ToString;
+use std::vec::Vec;
 use veloc_lir::RegisterBank;
 use veloc_mir::{Type, TypeInfo};
 use veloc_types::DataLayout;

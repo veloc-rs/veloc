@@ -2,7 +2,7 @@
 use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::{Error, Result};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
-use alloc::vec::Vec;
+use std::vec::Vec;
 use veloc_lir::{GenericOpcode, InstBuild, InstRead, InstView, MachineFunction, Successor};
 use veloc_mir::{IntCC, Type};
 

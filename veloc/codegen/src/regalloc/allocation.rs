@@ -1,7 +1,7 @@
 //! Allocation is a plan over an unchanged function, not a mutation of its values.
-use alloc::vec::Vec;
 use cranelift_entity::SecondaryMap;
 use smallvec::SmallVec;
+use std::vec::Vec;
 use veloc_lir::{InstId, MachineFunction, PReg, StackBatch};
 
 /// Physical locations and insertions for one instruction. Locations are indexed

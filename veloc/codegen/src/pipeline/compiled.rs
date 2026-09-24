@@ -1,5 +1,5 @@
-use alloc::string::String;
-use alloc::vec::Vec;
+use std::string::String;
+use std::vec::Vec;
 use veloc_lir::{MachineFunction, SymbolTable};
 use veloc_mir::FuncId;
 

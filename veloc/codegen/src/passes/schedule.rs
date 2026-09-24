@@ -5,10 +5,10 @@
 use crate::analysis::{ChangeSet, FunctionAnalysisCtx, PassEffect, RegSet};
 use crate::pipeline::{FunctionPass, FunctionPassContext};
 use crate::target::{RegClass, ScheduleInfo, TargetDescription, TargetSchedule};
-use alloc::vec;
-use alloc::vec::Vec;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
+use std::vec;
+use std::vec::Vec;
 use veloc_lir::{InstId, MachineFunction, Reg};
 
 #[cfg(test)]

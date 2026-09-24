@@ -123,7 +123,7 @@ impl X86_64TargetMachine {
             .iter()
             .find(|cpu| cpu.name == config.cpu)
             .ok_or_else(|| {
-                crate::Error::codegen(alloc::format!("unknown x86-64 CPU: {}", config.cpu))
+                crate::Error::codegen(std::format!("unknown x86-64 CPU: {}", config.cpu))
             })?;
         let features = cpu
             .features
@@ -163,7 +163,7 @@ impl TargetInstructions for X86_64TargetMachine {
         let opcode = inst::TargetInst::from_u32(op);
         for feature in opcode.required_features().iter() {
             if !self.features.contains(feature) {
-                return Err(crate::Error::codegen(alloc::format!(
+                return Err(crate::Error::codegen(std::format!(
                     "{opcode:?} requires target feature {}",
                     feature.name()
                 )));

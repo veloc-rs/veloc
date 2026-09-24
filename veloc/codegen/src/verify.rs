@@ -4,8 +4,8 @@ use crate::{
     Error, Result,
     target::{TargetInstructions, ValidationMode},
 };
-use alloc::{format, vec::Vec};
 use hashbrown::{HashMap, HashSet};
+use std::{format, vec::Vec};
 use veloc_lir::BlockId as Block;
 #[cfg(test)]
 use veloc_lir::InstBuild;
@@ -139,7 +139,7 @@ pub fn verify(f: &MachineFunction, target: &dyn TargetInstructions) -> Result<()
         ));
     }
     let mut reachable = HashSet::new();
-    let mut pending: Vec<_> = alloc::vec![f.entry_block()];
+    let mut pending: Vec<_> = std::vec![f.entry_block()];
     while let Some(block) = pending.pop() {
         if reachable.insert(block) {
             pending.extend_from_slice(cfg.succs(block));
@@ -310,7 +310,7 @@ pub(crate) fn verify_call_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
+    use std::string::ToString;
     use veloc_lir::Type;
 
     #[test]

@@ -4,14 +4,14 @@
 
 use crate::error::{Error, Result};
 use crate::target::{TargetArch, TargetMachine};
-use alloc::format;
-use alloc::string::String;
 use hashbrown::HashMap;
 use object::write::{Object, Relocation, StandardSection, Symbol, SymbolId, SymbolSection};
 use object::{
     Architecture, BinaryFormat, Endianness, RelocationEncoding, RelocationFlags, RelocationKind,
     SymbolFlags, SymbolKind, SymbolScope,
 };
+use std::format;
+use std::string::String;
 use veloc_mir::{FunctionRef, Linkage};
 
 const TEXT_ALIGN: u64 = 16;
@@ -79,7 +79,7 @@ impl ObjectFileBuilder {
         self.ensure_function_symbol(func);
     }
 
-    pub(crate) fn finish(self) -> Result<alloc::vec::Vec<u8>> {
+    pub(crate) fn finish(self) -> Result<std::vec::Vec<u8>> {
         self.object
             .write()
             .map_err(|err| Error::object_file_write_error(format!("{err}")))
@@ -156,11 +156,11 @@ fn symbol_scope(linkage: Linkage) -> SymbolScope {
 #[cfg(test)]
 mod tests {
     use crate::{CodegenPipeline, TargetArch, TargetConfig, create_target_machine};
-    use alloc::string::ToString;
-    use alloc::vec;
-    use alloc::vec::Vec;
     use object::read::{Object as _, ObjectSection as _, ObjectSymbol as _};
     use object::{BinaryFormat, RelocationEncoding, RelocationKind, RelocationTarget, SymbolScope};
+    use std::string::ToString;
+    use std::vec;
+    use std::vec::Vec;
     use veloc_mir::{CallConv, Linkage, ModuleBuilder};
 
     fn parse_symbol<'a>(

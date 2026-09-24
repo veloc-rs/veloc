@@ -8,8 +8,8 @@ pub use pass::{FunctionPass, ModuleCodegenPass};
 
 use crate::analysis::{ChangeSet, PassEffect};
 use crate::error::Result;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use std::boxed::Box;
+use std::vec::Vec;
 use veloc_lir::MachineFunction;
 
 /// Shared execution for built-in and target passes.
@@ -18,12 +18,10 @@ pub(crate) fn run_function_pass(
     function: &mut MachineFunction,
     ctx: &mut FunctionPassContext<'_>,
 ) -> crate::Result<PassEffect> {
-    #[cfg(feature = "std")]
     let start = ctx.options.collect_stats.then(std::time::Instant::now);
     let effect = pass
         .run(function, ctx)
-        .map_err(|e| crate::Error::codegen(alloc::format!("{}: {e}", pass.name())))?;
-    #[cfg(feature = "std")]
+        .map_err(|e| crate::Error::codegen(std::format!("{}: {e}", pass.name())))?;
     if let Some(start) = start {
         *ctx.stats.pass_times.entry(pass.name().into()).or_default() += start.elapsed();
     }
@@ -33,7 +31,6 @@ pub(crate) fn run_function_pass(
 }
 
 pub(crate) fn dump_after(name: &str, function: &MachineFunction, options: &crate::CodegenOptions) {
-    #[cfg(feature = "std")]
     if options.dump_after.iter().any(|p| p == "*" || p == name)
         && options
             .dump_function
@@ -46,8 +43,6 @@ pub(crate) fn dump_after(name: &str, function: &MachineFunction, options: &crate
             function.format_for_dump()
         );
     }
-    #[cfg(not(feature = "std"))]
-    let _ = (name, function, options);
 }
 
 pub struct FunctionPassPipeline {

@@ -5,8 +5,8 @@
 
 use super::lexer::{Cursor, Kind, Location};
 use crate::{
-    Block, BlockCall, CallConv, FuncBody, FuncId, Linkage, MemFlags, Module, ModuleData, Opcode,
-    Result, SigId, Signature, Type, Value,
+    Block, BlockCall, CallConv, FuncBody, FuncId, Linkage, MemFlags, Module, Opcode, Result, SigId,
+    Signature, Type, Value,
 };
 use alloc::boxed::Box;
 use alloc::{
@@ -71,7 +71,7 @@ impl Functions {
         name: &str,
         signature: SigId,
         location: Location,
-        module: &mut ModuleData,
+        module: &mut Module,
     ) -> ParseResult<FuncId> {
         if let Some(&id) = self.names.get(name) {
             if module.decls[id].signature != signature {
@@ -94,7 +94,7 @@ impl Functions {
         &mut self,
         header: &FunctionHeader,
         location: Location,
-        module: &mut ModuleData,
+        module: &mut Module,
     ) -> ParseResult<FuncId> {
         if self
             .names
@@ -111,7 +111,7 @@ impl Functions {
         Ok(id)
     }
 
-    fn finish(self, module: &mut ModuleData) -> ParseResult<()> {
+    fn finish(self, module: &mut Module) -> ParseResult<()> {
         let mut map = vec![FuncId(u32::MAX); self.entries.len()];
         for (index, &id) in self.order.iter().enumerate() {
             map[id.0 as usize] = FuncId(index as u32);
@@ -182,13 +182,13 @@ impl ModuleParser {
     /// Resolve names/result types, without validating IR contracts.
     /// Call `Module::validate` explicitly when validation is required.
     pub fn parse(&mut self, source: &str) -> Result<Module> {
-        parse_module(source).map(Module::new).map_err(Into::into)
+        parse_module(source).map_err(Into::into)
     }
 }
 
-fn parse_module(source: &str) -> ParseResult<ModuleData> {
+fn parse_module(source: &str) -> ParseResult<Module> {
     let mut input = Cursor::new(source);
-    let mut module = ModuleData::default();
+    let mut module = Module::default();
     let mut functions = Functions::default();
     let mut current: Option<FunctionParser> = None;
     input.skip_newlines();
@@ -244,7 +244,7 @@ impl FunctionParser {
         &mut self,
         input: &mut Cursor<'_>,
         functions: &mut Functions,
-        module: &mut ModuleData,
+        module: &mut Module,
     ) -> ParseResult<()> {
         if self.func.is_none() {
             let entry = input
@@ -276,7 +276,7 @@ impl FunctionParser {
         Ok(())
     }
 
-    fn finish(self, module: &mut ModuleData) -> ParseResult<()> {
+    fn finish(self, module: &mut Module) -> ParseResult<()> {
         self.symbols.finish()?;
         module.bodies[self.id] = self.func;
         Ok(())
@@ -392,7 +392,7 @@ fn declare_block(
     input: &mut Cursor<'_>,
     func: &mut FuncBody,
     symbols: &mut Symbols,
-    module: &mut ModuleData,
+    module: &mut Module,
 ) -> ParseResult<Block> {
     let location = input.location();
     let name = input.word()?;
@@ -463,7 +463,7 @@ pub(super) struct OperandParser<'a> {
     func: &'a mut FuncBody,
     symbols: &'a mut Symbols,
     functions: &'a mut Functions,
-    module: &'a mut ModuleData,
+    module: &'a mut Module,
 }
 
 impl OperandParser<'_> {
@@ -616,10 +616,7 @@ struct TypedName<'a> {
     location: Location,
 }
 
-fn parse_typed_name<'a>(
-    input: &mut Cursor<'a>,
-    module: &mut ModuleData,
-) -> ParseResult<TypedName<'a>> {
+fn parse_typed_name<'a>(input: &mut Cursor<'a>, module: &mut Module) -> ParseResult<TypedName<'a>> {
     let location = input.location();
     let name = input.word()?;
     input.expect(Kind::Colon)?;
@@ -674,7 +671,7 @@ fn parse_opcode(word: &str) -> core::result::Result<(Opcode, &str), String> {
     Ok((opcode, &word[end..]))
 }
 
-fn parse_type(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Type> {
+fn parse_type(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<Type> {
     let location = input.location();
     let name = input.word()?;
     if !input.eat(Kind::Less) {
@@ -712,7 +709,7 @@ fn parse_type(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Ty
         .ok_or_else(|| location.error(format!("invalid vector type `{name}`")))
 }
 
-fn parse_types(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Vec<Type>> {
+fn parse_types(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<Vec<Type>> {
     input.expect(Kind::LParen)?;
     let mut types = Vec::new();
     if !input.eat(Kind::RParen) {
@@ -727,10 +724,7 @@ fn parse_types(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<V
     Ok(types)
 }
 
-fn parse_function_returns(
-    input: &mut Cursor<'_>,
-    module: &mut ModuleData,
-) -> ParseResult<Vec<Type>> {
+fn parse_function_returns(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<Vec<Type>> {
     if input.is("void") {
         input.advance();
         return Ok(Vec::new());
@@ -748,7 +742,7 @@ fn parse_function_returns(
     Ok(types)
 }
 
-fn parse_signature(input: &mut Cursor<'_>, module: &mut ModuleData) -> ParseResult<Signature> {
+fn parse_signature(input: &mut Cursor<'_>, module: &mut Module) -> ParseResult<Signature> {
     let params = parse_types(input, module)?;
     input.expect(Kind::Arrow)?;
     let returns = if input.is("void") {
@@ -776,7 +770,7 @@ fn is_function_header(input: &mut Cursor<'_>) -> bool {
 
 fn parse_function_header(
     input: &mut Cursor<'_>,
-    module: &mut ModuleData,
+    module: &mut Module,
 ) -> ParseResult<FunctionHeader> {
     let linkage = parse_linkage(input)?;
     input.keyword("function")?;
@@ -796,7 +790,7 @@ fn parse_function_header(
 
 fn parse_global(
     input: &mut Cursor<'_>,
-    module: &mut ModuleData,
+    module: &mut Module,
 ) -> ParseResult<(String, Type, Linkage)> {
     input.keyword("global")?;
     let name = input.word()?.to_string();
@@ -846,7 +840,7 @@ mod tests {
     fn with_parser(test: impl FnOnce(&mut OperandParser<'_>)) {
         let mut func = FuncBody::new(&[]);
         let mut symbols = Symbols::default();
-        let mut module = ModuleData::default();
+        let mut module = Module::default();
         let mut functions = Functions::default();
         test(&mut OperandParser {
             func: &mut func,
@@ -1053,7 +1047,7 @@ mod tests {
         symbols
             .blocks
             .insert("block0".into(), (block, Location { line: 1, column: 1 }));
-        let mut module = ModuleData::default();
+        let mut module = Module::default();
         let mut functions = Functions::default();
         let mut parser = OperandParser {
             func: &mut func,

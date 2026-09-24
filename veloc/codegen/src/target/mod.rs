@@ -11,9 +11,9 @@ mod types;
 use crate::Emitter;
 pub use crate::passes::lowering::{LegalizeAction, RewriteContext};
 use crate::pipeline::{FunctionPass, ModuleCodegenPass};
-use alloc::borrow::Cow;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use std::borrow::Cow;
+use std::boxed::Box;
+use std::vec::Vec;
 pub use veloc_lir::{InstId, MachineFunction, Reg, VReg};
 use veloc_mir::Type;
 
