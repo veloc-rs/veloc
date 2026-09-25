@@ -495,10 +495,6 @@ impl Graph {
                 }
                 let ty = f.dfg().value_type(result);
                 let opcode = f.dfg().opcode(inst);
-                let args = self.canonical_args(f, inst);
-                if args.iter().any(|&v| f.dfg().value_type(v) != ty) {
-                    continue;
-                }
                 if !ty.is_integer() && ty != Type::BOOL {
                     continue;
                 }

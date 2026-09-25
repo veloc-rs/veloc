@@ -563,7 +563,7 @@ pub(crate) fn generate_select_instruction(
     .unwrap();
     writeln!(
         output,
-        "mod selection_programs {{ use super::*; use crate::isel::matching::{{Op, Program}};"
+        "mod selection_programs {{ use super::*; use crate::isel::matching::Program;"
     )
     .unwrap();
     for opcode in &opcodes {

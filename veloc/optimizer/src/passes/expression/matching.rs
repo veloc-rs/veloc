@@ -9,28 +9,7 @@ use veloc_mir::constant::ScalarConst;
 use veloc_mir::function::Expressions;
 use veloc_types::TypeInfo;
 
-use veloc_bytecode::{Reader, opcodes};
-
-// u32 operands; Build additionally carries a length-prefixed slot list.
-opcodes! {
-    enum Op {
-        CheckType(1, true),
-        Begin(3, false),
-        Open(3, false),
-        Next(1, true),
-        Bind(2, false),
-        CheckEqual(2, true),
-        CheckConstant(3, true),
-        Capture(0, false),
-        Jump(0, true),
-        Constant(2, false),
-        Build(3, false),
-        Union(1, false),
-        SetConstant(1, false),
-        NextMatch(0, true),
-        Return(0, false),
-    }
-}
+use veloc_bytecode::{Reader, equivalence::Instruction as Op};
 
 struct Group {
     slots: usize,
@@ -64,20 +43,59 @@ pub(super) struct Machine {
     cursors: Vec<Option<Cursor>>,
     relations: Vec<Relation>,
     index: HashMap<(Value, Opcode), usize>,
-    row: SmallVec<[Value; 3]>,
-    output: Vec<Value>,
+    matches: Matches,
     args: SmallVec<[Value; 3]>,
 }
 
 struct Cursor {
     relation: usize,
     row: usize,
+    plan: usize,
 }
 
 struct Relation {
     cursor: RuleCursor,
     rows: Vec<SmallVec<[Value; 3]>>,
     exhausted: bool,
+}
+
+/// Captured RHS inputs for one rule. Search fills the buffer before Apply
+/// starts iteration; the allocation is reused by subsequent rules.
+#[derive(Default)]
+struct Matches {
+    values: Vec<Value>,
+    captures: &'static [usize],
+    // A match with no captured inputs still counts as one match.
+    count: usize,
+    next: usize,
+}
+
+impl Matches {
+    fn begin(&mut self, captures: &'static [usize]) {
+        self.values.clear();
+        self.captures = captures;
+        self.count = 0;
+    }
+
+    fn capture(&mut self, slots: &[Value]) {
+        self.values
+            .extend(self.captures.iter().map(|&slot| slots[slot]));
+        self.count += 1;
+    }
+
+    fn apply(&mut self) {
+        self.next = 0;
+    }
+
+    fn next(&mut self) -> Option<&[Value]> {
+        if self.next == self.count {
+            return None;
+        }
+        let width = self.captures.len();
+        let start = self.next * width;
+        self.next += 1;
+        Some(&self.values[start..start + width])
+    }
 }
 
 impl Machine {
@@ -87,8 +105,7 @@ impl Machine {
             cursors: Vec::new(),
             relations: Vec::new(),
             index: HashMap::new(),
-            row: SmallVec::new(),
-            output: Vec::new(),
+            matches: Matches::default(),
             args: SmallVec::new(),
         }
     }
@@ -108,66 +125,97 @@ impl Machine {
         self.slots[0] = ctx.canonical(root);
         self.cursors.clear();
         self.cursors.resize_with(group.cursors, || None);
-        self.output.clear();
-        self.relations.clear();
+        // Reuse relation row allocations. Clearing the index invalidates all
+        // entries; Open resets each buffer when assigning it a new query.
         self.index.clear();
         let mut revision = ctx.revision();
-        let mut captures = &PROGRAM.captures[0..0];
         let mut name = "";
-        let mut count = 0;
-        let mut current = 0;
-        let mut next_match = group.entry;
         let mut reader = Reader {
             bytes: PROGRAM.code,
             pc: group.entry,
         };
         loop {
-            let pc = reader.pc;
-            match Op::decode(reader.byte()) {
-                Op::CheckType => {
-                    let types = PROGRAM.types[reader.u32()];
-                    reader.branch(types.contains(&ctx.ty()));
+            let inst = Op::read(&mut reader);
+            match inst {
+                Op::CheckTypeIn {
+                    value,
+                    types,
+                    failure,
+                } => {
+                    if !PROGRAM.types[types]
+                        .contains(&ctx.ir.body().dfg().value_type(self.slots[value]))
+                    {
+                        reader.pc = failure;
+                    }
                 }
-                Op::Begin => {
-                    if *fuel == 0 || ctx.constant(root).is_some() {
+                Op::CheckSameType { lhs, rhs, failure } => {
+                    let dfg = ctx.ir.body().dfg();
+                    if dfg.value_type(self.slots[lhs]) != dfg.value_type(self.slots[rhs]) {
+                        reader.pc = failure;
+                    }
+                }
+                Op::StopIfConstant {} => {
+                    if ctx.constant(root).is_some() {
                         return;
                     }
-                    name = PROGRAM.names[reader.u32()];
-                    let start = reader.u32();
-                    let len = reader.u32();
-                    captures = &PROGRAM.captures[start..start + len];
+                }
+                Op::Begin {
+                    name: rule,
+                    captures: start,
+                    len,
+                } => {
+                    if *fuel == 0 {
+                        return;
+                    }
+                    name = PROGRAM.names[rule];
+                    self.matches.begin(&PROGRAM.captures[start..start + len]);
                     self.slots[0] = ctx.canonical(root);
                     self.cursors.clear();
                     self.cursors.resize_with(group.cursors, || None);
-                    self.output.clear();
-                    count = 0;
-                    current = 0;
                     // Cached rows are reusable across rules, but never across
                     // graph mutations. Populate them lazily under query fuel.
                     if revision != ctx.revision() {
-                        self.relations.clear();
                         self.index.clear();
                         revision = ctx.revision();
                     }
                 }
-                Op::Open => {
-                    let cursor = reader.u32();
-                    let source = reader.u32();
-                    let opcode = PROGRAM.opcodes[reader.u32()];
-                    let class = ctx.canonical(self.slots[source]);
+                Op::Open {
+                    cursor,
+                    source,
+                    opcode,
+                } => {
+                    let opcode = PROGRAM.opcodes[opcode];
+                    // Query slots contain canonical values throughout the
+                    // stable search phase, which ends at Apply.
+                    let class = self.slots[source];
+                    let id = self.index.len();
                     let relation = *self.index.entry((class, opcode)).or_insert_with(|| {
-                        let id = self.relations.len();
-                        self.relations.push(Relation {
-                            cursor: ctx.open(class, opcode),
-                            rows: Vec::new(),
-                            exhausted: false,
-                        });
+                        let cursor = ctx.open(class, opcode);
+                        if let Some(relation) = self.relations.get_mut(id) {
+                            relation.cursor = cursor;
+                            relation.rows.clear();
+                            relation.exhausted = false;
+                        } else {
+                            self.relations.push(Relation {
+                                cursor,
+                                rows: Vec::new(),
+                                exhausted: false,
+                            });
+                        }
                         id
                     });
-                    self.cursors[cursor] = Some(Cursor { relation, row: 0 });
+                    self.cursors[cursor] = Some(Cursor {
+                        relation,
+                        row: 0,
+                        plan: 0,
+                    });
                 }
-                Op::Next => {
-                    let cursor = reader.u32();
+                Op::Next {
+                    cursor,
+                    plans,
+                    failure,
+                    bindings,
+                } => {
                     // Budget exhaustion follows the ordinary exhausted-query
                     // branches, so already captured matches still get applied.
                     let found = *fuel > 0 && {
@@ -175,93 +223,116 @@ impl Machine {
                         let cursor = self.cursors[cursor].as_mut().expect("opened query cursor");
                         let relation = &mut self.relations[cursor.relation];
                         if cursor.row == relation.rows.len() && !relation.exhausted {
-                            if ctx.next(&mut relation.cursor, &mut self.row) {
-                                relation.rows.push(self.row.clone());
+                            if let Some(row) = ctx.next(&mut relation.cursor) {
+                                relation.rows.push(row);
                             } else {
                                 relation.exhausted = true;
                             }
                         }
                         if let Some(row) = relation.rows.get(cursor.row) {
-                            self.row.clone_from(row);
-                            cursor.row += 1;
+                            assert!(plans > 0, "nonempty binding plans");
+                            assert_eq!(row.len() * plans, bindings.len(), "pattern operand count");
+                            // Plans map relation columns to slots. The VM does
+                            // not need to know why a rule has several plans.
+                            let start = cursor.plan * row.len();
+                            for (slot, &value) in
+                                bindings.iter().skip(start).take(row.len()).zip(row)
+                            {
+                                self.slots[slot] = value;
+                            }
+                            cursor.plan += 1;
+                            if cursor.plan == plans {
+                                cursor.plan = 0;
+                                cursor.row += 1;
+                            }
                             true
                         } else {
                             false
                         }
                     };
-                    reader.branch(found);
+                    if !found {
+                        reader.pc = failure;
+                    }
                 }
-                Op::Bind => {
-                    let column = reader.u32();
-                    let slot = reader.u32();
-                    self.slots[slot] = ctx.canonical(self.row[column]);
+                Op::CheckEqual { lhs, rhs, failure } => {
+                    if self.slots[lhs] != self.slots[rhs] {
+                        reader.pc = failure;
+                    }
                 }
-                Op::CheckEqual => {
-                    let lhs = self.slots[reader.u32()];
-                    let rhs = self.slots[reader.u32()];
-                    reader.branch(ctx.canonical(lhs) == ctx.canonical(rhs));
+                Op::CheckConstantEq {
+                    value,
+                    constant,
+                    failure,
                 }
-                Op::CheckConstant => {
-                    let value = self.slots[reader.u32()];
-                    let bits = PROGRAM.constants[reader.u32()] & mask;
-                    let equal = reader.u32() != 0;
-                    reader.branch(ctx.constant(value).is_some_and(|c| (c == bits) == equal));
+                | Op::CheckConstantNe {
+                    value,
+                    constant,
+                    failure,
+                } => {
+                    let value = self.slots[value];
+                    let bits = PROGRAM.constants[constant] & mask;
+                    if !ctx.graph.constants[value].is_some_and(|c| {
+                        (c.to_bits() == bits) == matches!(inst, Op::CheckConstantEq { .. })
+                    }) {
+                        reader.pc = failure;
+                    }
                 }
-                Op::Capture => {
-                    self.output
-                        .extend(captures.iter().map(|&slot| self.slots[slot]));
-                    count += 1;
+                Op::Capture {} => {
+                    self.matches.capture(&self.slots);
                 }
-                Op::NextMatch => {
+                Op::Apply {} => {
                     // No relation cursor survives a graph update. The captured
                     // IDs remain valid, and are canonicalized after prior unions.
                     self.cursors.clear();
-                    next_match = pc;
-                    let available = current < count && ctx.constant(root).is_none();
-                    reader.branch(available);
-                    if available {
-                        let start = current * captures.len();
-                        for (slot, &value) in self.output[start..start + captures.len()]
-                            .iter()
-                            .enumerate()
-                        {
-                            self.slots[slot] = ctx.canonical(value);
+                    self.matches.apply();
+                }
+                Op::NextMatch { failure } => {
+                    if let Some(values) = self.matches.next() {
+                        for (slot, &value) in values.iter().enumerate() {
+                            self.slots[slot + 1] = ctx.canonical(value);
                         }
-                        current += 1;
+                    } else {
+                        reader.pc = failure;
                     }
                 }
-                Op::Jump => reader.pc = reader.u32(),
-                Op::Constant => {
-                    let slot = reader.u32();
-                    let bits = PROGRAM.constants[reader.u32()] & mask;
+                Op::Jump { target } => reader.pc = target,
+                Op::Constant {
+                    dst: slot,
+                    constant,
+                    failure,
+                } => {
+                    let bits = PROGRAM.constants[constant] & mask;
                     if let Some(value) = ctx.literal(bits) {
                         self.slots[slot] = value;
                     } else {
-                        reader.pc = next_match;
+                        reader.pc = failure;
                     }
                 }
-                Op::Build => {
-                    let slot = reader.u32();
-                    let opcode = PROGRAM.opcodes[reader.u32()];
+                Op::Build {
+                    dst: slot,
+                    opcode,
+                    args,
+                    failure,
+                } => {
+                    let opcode = PROGRAM.opcodes[opcode];
                     self.args.clear();
-                    for _ in 0..reader.u32() {
-                        self.args.push(ctx.canonical(self.slots[reader.u32()]));
-                    }
+                    self.args
+                        .extend(args.iter().map(|slot| ctx.canonical(self.slots[slot])));
                     if let Some(value) = ctx.build(opcode, &self.args) {
                         self.slots[slot] = value;
                     } else {
-                        reader.pc = next_match;
+                        reader.pc = failure;
                     }
                 }
-                Op::Union => {
-                    ctx.union(root, self.slots[reader.u32()]);
+                Op::Union { value } => {
+                    ctx.union(root, self.slots[value]);
                     log::trace!("egraph rule {}", name);
                 }
-                Op::SetConstant => {
-                    ctx.set_constant(root, PROGRAM.constants[reader.u32()] & mask);
+                Op::SetConstant { constant } => {
+                    ctx.set_constant(root, PROGRAM.constants[constant] & mask);
                     log::trace!("egraph rule {}", name);
                 }
-                Op::Return => return,
+                Op::Return {} => return,
             }
         }
     }
@@ -282,30 +353,10 @@ impl Group {
             pc: self.entry,
         };
         loop {
-            write!(out, "{:04x}: ", reader.pc)?;
-            let op = Op::decode(reader.byte());
-            write!(out, "{op:?}")?;
-            let (arity, branch) = op.format();
-            let mut last = 0;
-            for _ in 0..arity {
-                last = reader.u32();
-                write!(out, " {last}")?;
-            }
-            if matches!(op, Op::Build) {
-                write!(out, " [")?;
-                for i in 0..last {
-                    if i != 0 {
-                        write!(out, ", ")?;
-                    }
-                    write!(out, "{}", reader.u32())?;
-                }
-                write!(out, "]")?;
-            }
-            if branch {
-                write!(out, " -> {:04x}", reader.u32())?;
-            }
-            writeln!(out)?;
-            if matches!(op, Op::Return) {
+            let pc = reader.pc;
+            let op = Op::read(&mut reader);
+            writeln!(out, "{pc:04x}: {op:?}")?;
+            if matches!(op, Op::Return {}) {
                 return Ok(());
             }
         }
@@ -323,16 +374,11 @@ struct RuleCursor {
     class: Value,
     opcode: Opcode,
     row: usize,
-    reverse: bool,
 }
 
 impl RuleContext<'_, '_> {
     fn revision(&self) -> usize {
         self.graph.revision
-    }
-
-    fn ty(&self) -> Type {
-        self.ty
     }
 
     fn canonical(&self, value: Value) -> Value {
@@ -344,41 +390,22 @@ impl RuleContext<'_, '_> {
 
     fn open(&self, value: Value, opcode: Opcode) -> RuleCursor {
         RuleCursor {
-            class: self.graph.find(value),
+            class: value,
             opcode,
             row: 0,
-            reverse: false,
         }
     }
 
-    fn next(&self, cursor: &mut RuleCursor, row: &mut SmallVec<[Value; 3]>) -> bool {
-        let Some(values) = self.graph.relations.get(&(cursor.class, cursor.opcode)) else {
-            return false;
-        };
-        while let Some(&value) = values.get(cursor.row) {
-            let f = self.ir.body();
-            let inst = f.dfg().value_inst(value).expect("relation result");
-            if f.dfg().inst_results(inst).len() != 1 || f.dfg().value_type(value) != self.ty {
-                cursor.row += 1;
-                continue;
-            }
-            *row = self.graph.canonical_args(f, inst);
-            if row.iter().any(|&v| f.dfg().value_type(v) != self.ty) {
-                cursor.row += 1;
-                continue;
-            }
-            if cursor.reverse {
-                row.swap(0, 1);
-                cursor.reverse = false;
-                cursor.row += 1;
-            } else if cursor.opcode.spec().is_commutative() && row.len() == 2 && row[0] != row[1] {
-                cursor.reverse = true;
-            } else {
-                cursor.row += 1;
-            }
-            return true;
-        }
-        false
+    fn next(&self, cursor: &mut RuleCursor) -> Option<SmallVec<[Value; 3]>> {
+        let values = self.graph.relations.get(&(cursor.class, cursor.opcode))?;
+        let &value = values.get(cursor.row)?;
+        cursor.row += 1;
+        let f = self.ir.body();
+        let inst = f.dfg().value_inst(value).expect("relation result");
+        // The compiler accepts only single-result pattern operations. Result
+        // types are shared by all members of the queried equivalence class;
+        // operand type requirements are emitted in the matching program.
+        Some(self.graph.canonical_args(f, inst))
     }
     fn union(&mut self, lhs: Value, rhs: Value) {
         self.graph.union(self.ir.body(), lhs, rhs);

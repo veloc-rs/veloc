@@ -2,7 +2,7 @@
 //! Matching uses tables; schema-generated constructors install complete instructions.
 use super::*;
 use crate::bytecode::intern;
-use veloc_bytecode::encode_uleb as uleb;
+use veloc_bytecode::{Lebs, Reader, selection::Instruction as Op};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Access {
@@ -13,7 +13,6 @@ enum Access {
 pub(in super::super) struct Adapters<'a> {
     layouts: &'a BTreeMap<String, crate::storage::operands::Projection>,
     predicates: Vec<String>,
-    encodings: BTreeMap<&'static str, (usize, bool)>,
     builders: BTreeMap<String, String>,
 }
 impl<'a> Adapters<'a> {
@@ -23,7 +22,6 @@ impl<'a> Adapters<'a> {
         Self {
             layouts,
             predicates: Vec::new(),
-            encodings: BTreeMap::new(),
             builders: BTreeMap::new(),
         }
     }
@@ -199,11 +197,6 @@ impl<'a> Adapters<'a> {
         for builder in self.builders.values() {
             out.push_str(builder);
         }
-        writeln!(out, "const _: () = {{").unwrap();
-        for (op, (arity, branch)) in &self.encodings {
-            writeln!(out, "let (arity, branch) = crate::isel::matching::Op::{op}.format(); assert!(arity == {arity} && branch == {branch});").unwrap();
-        }
-        writeln!(out, "}};").unwrap();
         writeln!(out, "fn selection_predicate<C: {context}>(_ctx: &C, id: u32, reg: Reg) -> bool {{ let Some(_v) = reg.as_vreg() else {{ return false }}; match id {{").unwrap();
         for (id, name) in self.predicates.iter().enumerate() {
             let condition = generate_pattern_condition(&extractors[name].body, "_v", decls)
@@ -215,8 +208,7 @@ impl<'a> Adapters<'a> {
 }
 
 struct Instruction {
-    op: &'static str,
-    args: Vec<usize>,
+    bytes: Vec<u8>,
     failure: Option<usize>,
 }
 #[derive(Default)]
@@ -244,19 +236,17 @@ impl Code {
         let _ = adapters.field(opcode, field, access);
         intern(&mut self.accesses, (opcode.into(), field.into(), access))
     }
-    fn op(&mut self, op: &'static str, args: &[usize]) {
+    fn op(&mut self, op: Op<'_>) {
+        let mut bytes = Vec::new();
+        op.encode(&mut bytes);
         self.instructions.push(Instruction {
-            op,
-            args: args.into(),
+            bytes,
             failure: None,
         });
     }
-    fn branch(&mut self, op: &'static str, args: &[usize], target: usize) {
-        self.instructions.push(Instruction {
-            op,
-            args: args.into(),
-            failure: Some(target),
-        });
+    fn branch(&mut self, op: Op<'_>, target: usize) {
+        self.op(op);
+        self.instructions.last_mut().unwrap().failure = Some(target);
     }
     fn read_reg(
         &mut self,
@@ -268,7 +258,7 @@ impl Code {
     ) {
         let (node, schema, field) = resolve_field(plan, root, path);
         let field = self.field(adapters, schema, field, Access::Reg);
-        self.op("ReadReg", &[dst, node, field]);
+        self.op(Op::ReadReg { dst, node, field });
         self.values = self.values.max(dst + 1);
     }
     fn test(
@@ -283,9 +273,23 @@ impl Code {
             Test::Definition(slot) => {
                 let def = &plan.definitions[*slot];
                 self.read_reg(plan, adapters, root, &def.input, 0);
-                self.branch("GetDef", &[slot + 1, 0], failure);
+                self.branch(
+                    Op::GetDef {
+                        dst: slot + 1,
+                        value: 0,
+                        failure: 0,
+                    },
+                    failure,
+                );
                 let opcode = intern(&mut self.opcodes, def.opcode.clone());
-                self.branch("CheckOpcode", &[slot + 1, opcode], failure);
+                self.branch(
+                    Op::CheckOpcode {
+                        node: slot + 1,
+                        opcode,
+                        failure: 0,
+                    },
+                    failure,
+                );
             }
             Test::Field {
                 field,
@@ -295,12 +299,26 @@ impl Code {
                 Guard::Types(types) => {
                     self.read_reg(plan, adapters, root, field, 0);
                     let set = intern(&mut self.types, types.clone());
-                    self.branch("CheckType", &[0, set], failure);
+                    self.branch(
+                        Op::CheckType {
+                            value: 0,
+                            set,
+                            failure: 0,
+                        },
+                        failure,
+                    );
                 }
                 Guard::Extractor(name) => {
                     self.read_reg(plan, adapters, root, field, 0);
                     let predicate = intern(&mut adapters.predicates, name.clone());
-                    self.branch("CallPredicate", &[0, predicate], failure);
+                    self.branch(
+                        Op::CallPredicate {
+                            value: 0,
+                            id: predicate,
+                            failure: 0,
+                        },
+                        failure,
+                    );
                 }
                 Guard::Integer(_) | Guard::Condition(_) => {
                     let (access, constant) = match guard {
@@ -317,14 +335,29 @@ impl Code {
                     let (node, schema, field) = resolve_field(plan, root, field);
                     let field = self.field(adapters, schema, field, access);
                     let constant = intern(&mut self.integers, constant);
-                    self.branch("CheckInt", &[node, field, constant], failure);
+                    self.branch(
+                        Op::CheckInt {
+                            node,
+                            field,
+                            constant,
+                            failure: 0,
+                        },
+                        failure,
+                    );
                 }
             },
             Test::Features(features) => {
                 let set = intern(&mut self.features, features.clone());
-                self.branch("CheckFeatures", &[set], failure);
+                self.branch(Op::CheckFeatures { set, failure: 0 }, failure);
             }
-            Test::Foldable(slot) => self.branch("CheckFoldable", &[slot + 1, 0], failure),
+            Test::Foldable(slot) => self.branch(
+                Op::CheckFoldable {
+                    definition: slot + 1,
+                    consumer: 0,
+                    failure: 0,
+                },
+                failure,
+            ),
         }
     }
     fn recipe(
@@ -335,7 +368,7 @@ impl Code {
         instructions: &HashMap<String, FinalInstDef>,
         regs: &HashMap<String, u32>,
     ) {
-        self.op("Accept", &[]);
+        self.op(Op::Accept {});
         let fields = collect_field_variable_bindings(&rule.fields);
         let mut temps = HashMap::new();
         let mut values = 1; // Slot zero is matching scratch, not a rule binding.
@@ -343,7 +376,7 @@ impl Code {
         for (name, ty) in &rule.temps {
             temps.insert(name.as_str(), values);
             let ty = intern(&mut self.types, vec![ty.clone()]);
-            self.op("MakeTemp", &[values, ty]);
+            self.op(Op::MakeTemp { dst: values, ty });
             values += 1;
         }
         let mut builds = Vec::new();
@@ -365,7 +398,10 @@ impl Code {
                     && category == 0
                     && args.len() - cursor == min_explicit_args_from(&definition.operands, index)
                 {
-                    self.op("ReadResult", &[values, source_result]);
+                    self.op(Op::ReadResult {
+                        dst: values,
+                        index: source_result,
+                    });
                     lists[0].push(values);
                     values += 1;
                     source_result += 1;
@@ -387,7 +423,7 @@ impl Code {
                                 }
                                 Constructor::Reg(name) => {
                                     let reg = intern(&mut self.registers, regs[name]);
-                                    self.op("ConstReg", &[dst, reg]);
+                                    self.op(Op::ConstReg { dst, reg });
                                 }
                                 _ => panic!("non-register target operand"),
                             }
@@ -400,14 +436,14 @@ impl Code {
                     match arg {
                         Constructor::Imm(value) => {
                             let imm = intern(&mut self.integers, value.to_string());
-                            self.op("ConstImm", &[dst, imm]);
+                            self.op(Op::ConstImm { dst, imm });
                         }
                         Constructor::Variable(name) => {
                             let (node, schema, field) =
                                 resolve_field(plan, &rule.opcode, &fields[name]);
                             let access = Access::Attribute;
                             let field = self.field(adapters, schema, field, access);
-                            self.op("ReadField", &[dst, node, field]);
+                            self.op(Op::ReadField { dst, node, field });
                         }
                         _ => panic!("invalid target payload"),
                     }
@@ -417,66 +453,87 @@ impl Code {
             }
             assert_eq!(cursor, args.len(), "target operand count");
             let builder = adapters.builder(opcode, &rule.opcode, definition);
-            let mut encoded = vec![intern(&mut self.targets, builder)];
-            for list in lists {
-                encoded.push(list.len());
-                encoded.extend(list);
-            }
-            builds.push(encoded);
+            builds.push((intern(&mut self.targets, builder), lists));
         }
         // Read all source fields before any target instruction is installed.
-        for build in builds {
-            self.op("BuildInst", &build);
+        for (target, [results, inputs, fields]) in builds {
+            self.op(Op::BuildInst {
+                target,
+                results: Lebs::Values(&results),
+                inputs: Lebs::Values(&inputs),
+                fields: Lebs::Values(&fields),
+            });
         }
-        self.op("Finish", &[]);
+        self.op(Op::Finish {});
         self.values = self.values.max(values);
         self.fields = self.fields.max(payloads);
     }
     fn describe(&self, inst: &Instruction, adapters: &Adapters) -> String {
-        let args = &inst.args;
+        let op = Op::read(&mut Reader {
+            bytes: &inst.bytes,
+            pc: 0,
+        });
         let field = |id: usize| {
             let (schema, name, _) = &self.accesses[id];
             format!("{schema}.{name}")
         };
-        match inst.op {
-            "ReadReg" => format!("v{} <- n{} {}", args[0], args[1], field(args[2])),
-            "ReadField" => format!("f{} <- n{} {}", args[0], args[1], field(args[2])),
-            "GetDef" => format!("n{} <- def(v{})", args[0], args[1]),
-            "CheckOpcode" => format!("n{} == {}", args[0], self.opcodes[args[1]]),
-            "CheckType" => format!("v{} in [{}]", args[0], self.types[args[1]].join(", ")),
-            "CheckInt" => format!(
-                "n{} {} == {}",
-                args[0],
-                field(args[1]),
-                self.integers[args[2]]
-            ),
-            "CheckFeatures" => self.features[args[0]].join(" + "),
-            "CallPredicate" => format!("{}(v{})", adapters.predicates[args[1]], args[0]),
-            "CheckFoldable" => format!("n{} into n{}", args[0], args[1]),
-            "MakeTemp" => format!("v{}: {}", args[0], self.types[args[1]].join(", ")),
-            "ReadResult" => format!("v{} <- root.results[{}]", args[0], args[1]),
-            "ConstReg" => format!("v{} <- preg{}", args[0], self.registers[args[1]]),
-            "ConstImm" => format!("f{} <- {}", args[0], self.integers[args[1]]),
-            "BuildInst" => {
-                let mut cursor = 1;
-                let mut text = self.targets[args[0]].clone();
-                for (name, prefix) in [("results", "v"), ("inputs", "v"), ("fields", "f")] {
-                    let len = args[cursor];
-                    cursor += 1;
-                    let slots = args[cursor..cursor + len]
+        match op {
+            Op::ReadReg {
+                dst,
+                node,
+                field: f,
+            } => format!("v{dst} <- n{node} {}", field(f)),
+            Op::ReadField {
+                dst,
+                node,
+                field: f,
+            } => format!("f{dst} <- n{node} {}", field(f)),
+            Op::GetDef { dst, value, .. } => format!("n{dst} <- def(v{value})"),
+            Op::CheckOpcode { node, opcode, .. } => format!("n{node} == {}", self.opcodes[opcode]),
+            Op::CheckType { value, set, .. } => {
+                format!("v{value} in [{}]", self.types[set].join(", "))
+            }
+            Op::CheckInt {
+                node,
+                field: f,
+                constant,
+                ..
+            } => format!("n{node} {} == {}", field(f), self.integers[constant]),
+            Op::CheckFeatures { set, .. } => self.features[set].join(" + "),
+            Op::CallPredicate { value, id, .. } => format!("{}(v{value})", adapters.predicates[id]),
+            Op::CheckFoldable {
+                definition,
+                consumer,
+                ..
+            } => format!("n{definition} into n{consumer}"),
+            Op::MakeTemp { dst, ty } => format!("v{dst}: {}", self.types[ty].join(", ")),
+            Op::ReadResult { dst, index } => format!("v{dst} <- root.results[{index}]"),
+            Op::ConstReg { dst, reg } => format!("v{dst} <- preg{}", self.registers[reg]),
+            Op::ConstImm { dst, imm } => format!("f{dst} <- {}", self.integers[imm]),
+            Op::BuildInst {
+                target,
+                results,
+                inputs,
+                fields,
+            } => {
+                let mut text = self.targets[target].clone();
+                for (name, prefix, list) in [
+                    ("results", "v", results),
+                    ("inputs", "v", inputs),
+                    ("fields", "f", fields),
+                ] {
+                    let slots = list
                         .iter()
                         .map(|id| format!("{prefix}{id}"))
                         .collect::<Vec<_>>()
                         .join(", ");
                     write!(text, " {name}=[{slots}]").unwrap();
-                    cursor += len;
                 }
                 text
             }
-            "Accept" => "begin construction (no fallback)".into(),
-            "Finish" => "return replacement to driver".into(),
-            "Reject" | "Jump" => String::new(),
-            _ => unreachable!("unknown generated selection opcode"),
+            Op::Accept {} => "begin construction (no fallback)".into(),
+            Op::Finish {} => "return replacement to driver".into(),
+            Op::Reject {} | Op::Jump { .. } => String::new(),
         }
     }
 
@@ -485,9 +542,7 @@ impl Code {
         let mut size = 0usize;
         for inst in &self.instructions {
             offsets.push(size);
-            size += 1
-                + inst.args.iter().map(|&a| uleb(a).len()).sum::<usize>()
-                + if inst.failure.is_some() { 4 } else { 0 };
+            size += inst.bytes.len();
         }
         assert!(size <= u32::MAX as usize, "selection program too large");
         writeln!(
@@ -502,12 +557,20 @@ impl Code {
         )
         .unwrap();
         for (index, inst) in self.instructions.iter().enumerate() {
+            let op = Op::read(&mut Reader {
+                bytes: &inst.bytes,
+                pc: 0,
+            });
             let mut description = self.describe(inst, adapters);
             if let Some(label) = inst.failure {
                 write!(
                     description,
                     " {}@{:04x}",
-                    if inst.op == "Jump" { "" } else { "else " },
+                    if matches!(op, Op::Jump { .. }) {
+                        ""
+                    } else {
+                        "else "
+                    },
                     offsets[self.labels[label]]
                 )
                 .unwrap();
@@ -515,20 +578,23 @@ impl Code {
             let decoded = format!(
                 "{:04x} {:<14} {}",
                 offsets[index],
-                inst.op,
+                format!("{:?}", op.opcode()),
                 description.trim()
             );
             writeln!(out, "        // @{}", decoded.trim_end()).unwrap();
-            write!(out, "        Op::{} as u8,", inst.op).unwrap();
-            for &arg in &inst.args {
-                for byte in uleb(arg) {
-                    write!(out, " {byte},").unwrap();
-                }
-            }
+            let mut bytes = inst.bytes.clone();
             if let Some(label) = inst.failure {
-                for byte in veloc_bytecode::encode_u32(offsets[self.labels[label]]) {
-                    write!(out, " {byte},").unwrap();
-                }
+                let field = if matches!(op, Op::Jump { .. }) {
+                    "target"
+                } else {
+                    "failure"
+                };
+                let offset = op.field_offset(field).expect("branch target field");
+                bytes[offset..offset + 4]
+                    .copy_from_slice(&veloc_bytecode::encode_u32(offsets[self.labels[label]]));
+            }
+            for byte in bytes {
+                write!(out, " {byte},").unwrap();
             }
             writeln!(out).unwrap();
         }
@@ -635,27 +701,14 @@ pub(in super::super) fn emit(
     for node in &graph.nodes {
         code.labels.push(code.instructions.len());
         match node {
-            Node::Reject => code.op("Reject", &[]),
+            Node::Reject => code.op(Op::Reject {}),
             Node::Accept(rule) => {
                 code.recipe(&plan, &plan.rules[*rule], adapters, instructions, regs)
             }
             Node::Check { test, yes, no } => {
                 code.test(&plan, adapters, &rules[0].opcode, &plan.tests[*test], *no);
-                code.branch("Jump", &[], *yes);
+                code.branch(Op::Jump { target: 0 }, *yes);
             }
-        }
-    }
-    for inst in &code.instructions {
-        let format = (
-            if inst.op == "BuildInst" {
-                1
-            } else {
-                inst.args.len()
-            },
-            inst.failure.is_some(),
-        );
-        if let Some(previous) = adapters.encodings.insert(inst.op, format) {
-            assert_eq!(previous, format, "inconsistent opcode encoding");
         }
     }
     let name = sanitize_ident(&rules[0].opcode).to_ascii_uppercase();

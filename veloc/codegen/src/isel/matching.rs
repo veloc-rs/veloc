@@ -6,32 +6,7 @@ use std::vec::Vec;
 use veloc_lir::{FieldValue, GenericOpcode, InstId, InstInserter, InstRef, Reg};
 use veloc_mir::Type;
 
-use veloc_bytecode::{Reader, opcodes};
-
-// Arity counts ULEB128 operands. Branch adds a little-endian u32 byte offset.
-// BuildInst additionally carries three length-prefixed slot lists.
-opcodes! {
-    pub(crate) enum Op {
-        Reject(0, false),
-        Jump(0, true),
-        ReadReg(3, false),       // value slot, instruction slot, field accessor
-        GetDef(2, true),         // instruction slot, value slot, failure
-        CheckOpcode(2, true),    // instruction slot, opcode constant, failure
-        CheckType(2, true),      // value slot, type-set constant, failure
-        CheckInt(3, true),       // instruction slot, field accessor, constant, failure
-        CheckFeatures(1, true),  // feature-set constant, failure
-        CallPredicate(2, true),  // value slot, host predicate, failure
-        CheckFoldable(2, true),  // definition slot, consumer slot, failure
-        Accept(0, false),
-        MakeTemp(2, false),      // value slot, singleton type-set constant
-        ReadResult(2, false),    // value slot, source result index
-        ConstReg(2, false),      // value slot, physical register constant
-        ReadField(3, false),     // field slot, instruction slot, field accessor
-        ConstImm(2, false),      // field slot, integer constant
-        BuildInst(1, false),     // target constant, result slots, input slots, field slots
-        Finish(0, false),
-    }
-}
+use veloc_bytecode::{Reader, selection::Instruction as Op};
 
 pub(crate) struct Program {
     pub code: &'static [u8],
@@ -96,30 +71,8 @@ pub(crate) fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> 
         pc: 0,
     };
     while reader.pc < reader.bytes.len() {
-        write!(out, "{:04x}: ", reader.pc)?;
-        let op = Op::decode(reader.byte());
-        write!(out, "{op:?}")?;
-        let (arity, branch) = op.format();
-        for _ in 0..arity {
-            write!(out, " {}", reader.uleb())?;
-        }
-        if matches!(op, Op::BuildInst) {
-            for _ in 0..3 {
-                let len = reader.uleb();
-                write!(out, " [")?;
-                for index in 0..len {
-                    if index != 0 {
-                        write!(out, ", ")?;
-                    }
-                    write!(out, "{}", reader.uleb())?;
-                }
-                write!(out, "]")?;
-            }
-        }
-        if branch {
-            write!(out, " -> {:04x}", reader.u32())?;
-        }
-        writeln!(out)?;
+        let pc = reader.pc;
+        writeln!(out, "{pc:04x}: {:?}", Op::read(&mut reader))?;
     }
     Ok(())
 }
@@ -147,122 +100,127 @@ pub(crate) fn execute(
     let start = out.len();
     let mut accepted = false;
     loop {
-        let op = Op::decode(reader.byte());
+        let op = Op::read(&mut reader);
         match op {
-            Op::Reject => {
+            Op::Reject {} => {
                 assert!(!accepted);
                 return None;
             }
-            Op::Jump => {
-                reader.pc = reader.u32();
+            Op::Jump { target } => {
+                reader.pc = target;
             }
-            Op::ReadReg => {
-                let dst = reader.uleb();
-                let node = reader.uleb();
-                let field = reader.uleb();
+            Op::ReadReg { dst, node, field } => {
                 values[dst] = program.accesses[field].as_ref().map(|field| {
                     field.reg(store.inst(insts[node].expect("dominating definition")))
                 });
             }
-            Op::GetDef => {
+            Op::GetDef {
+                dst,
+                value,
+                failure,
+            } => {
                 assert!(!accepted);
-                let dst = reader.uleb();
-                let value = reader.uleb();
                 insts[dst] = values[value]
                     .filter(|reg| reg.is_vreg())
                     .and_then(|reg| store.defs(reg).single().map(|site| site.inst()));
-                reader.branch(insts[dst].is_some());
+                if !(insts[dst].is_some()) {
+                    reader.pc = failure;
+                }
             }
-            Op::CheckOpcode => {
+            Op::CheckOpcode {
+                node,
+                opcode,
+                failure,
+            } => {
                 assert!(!accepted);
-                let node = reader.uleb();
-                let opcode = reader.uleb();
-                reader.branch(
-                    store.inst(insts[node].unwrap()).generic_opcode()
-                        == Some(program.opcodes[opcode]),
-                );
+                if !(store.inst(insts[node].unwrap()).generic_opcode()
+                    == Some(program.opcodes[opcode]))
+                {
+                    reader.pc = failure;
+                }
             }
-            Op::CheckType => {
+            Op::CheckType {
+                value,
+                set,
+                failure,
+            } => {
                 assert!(!accepted);
-                let value = reader.uleb();
-                let set = reader.uleb();
-                reader.branch(
-                    values[value]
-                        .and_then(|reg| reg.is_vreg().then(|| store.vreg_data(reg).ty))
-                        .is_some_and(|ty| program.types[set].contains(&ty)),
-                );
+                if !(values[value]
+                    .and_then(|reg| reg.is_vreg().then(|| store.vreg_data(reg).ty))
+                    .is_some_and(|ty| program.types[set].contains(&ty)))
+                {
+                    reader.pc = failure;
+                }
             }
-            Op::CheckInt => {
+            Op::CheckInt {
+                node,
+                field,
+                constant,
+                failure,
+            } => {
                 assert!(!accepted);
-                let node = reader.uleb();
-                let field = reader.uleb();
-                let constant = reader.uleb();
-                reader.branch(
-                    program.accesses[field]
-                        .as_ref()
-                        .map(|field| field.integer(store.inst(insts[node].unwrap())))
-                        == Some(program.integers[constant]),
-                );
+                if !(program.accesses[field]
+                    .as_ref()
+                    .map(|field| field.integer(store.inst(insts[node].unwrap())))
+                    == Some(program.integers[constant]))
+                {
+                    reader.pc = failure;
+                }
             }
-            Op::CheckFeatures => {
+            Op::CheckFeatures { set, failure } => {
                 assert!(!accepted);
-                let set = reader.uleb();
-                reader.branch(
-                    program.features[set]
-                        .iter()
-                        .enumerate()
-                        .all(|(i, required)| {
-                            features.get(i).copied().unwrap_or(0) & required == *required
-                        }),
-                );
+                if !(program.features[set]
+                    .iter()
+                    .enumerate()
+                    .all(|(i, required)| {
+                        features.get(i).copied().unwrap_or(0) & required == *required
+                    }))
+                {
+                    reader.pc = failure;
+                }
             }
-            Op::CallPredicate => {
+            Op::CallPredicate { value, id, failure } => {
                 assert!(!accepted);
-                let value = reader.uleb();
-                let id = reader.uleb();
-                reader.branch(values[value].is_some_and(|reg| predicate(id as u32, reg)));
+                if !(values[value].is_some_and(|reg| predicate(id as u32, reg))) {
+                    reader.pc = failure;
+                }
             }
-            Op::CheckFoldable => {
+            Op::CheckFoldable {
+                definition,
+                consumer,
+                failure,
+            } => {
                 assert!(!accepted);
-                let definition = insts[reader.uleb()].unwrap();
-                let consumer = insts[reader.uleb()].unwrap();
+                let definition = insts[definition].unwrap();
+                let consumer = insts[consumer].unwrap();
                 // Only duplicate pure computation. Other users keep the old
                 // definition; DCE may erase it once it becomes unused.
                 let inst = store.inst(definition);
-                reader.branch(
-                    definition != consumer && inst.is_pure_value() && inst.results().len() == 1,
-                );
+                if !(definition != consumer && inst.is_pure_value() && inst.results().len() == 1) {
+                    reader.pc = failure;
+                }
             }
-            Op::Accept => {
+            Op::Accept {} => {
                 assert!(!accepted);
                 accepted = true;
             }
-            Op::MakeTemp => {
+            Op::MakeTemp { dst, ty } => {
                 assert!(accepted);
-                let dst = reader.uleb();
-                let ty = reader.uleb();
                 let [ty] = program.types[ty] else {
                     panic!("temporary requires one type")
                 };
                 values[dst] = Some(store.alloc_vreg(*ty));
             }
-            Op::ReadResult => {
+            Op::ReadResult { dst, index } => {
                 assert!(accepted);
-                let dst = reader.uleb();
-                let index = reader.uleb();
                 values[dst] = Some(store.inst(source).results()[index]);
             }
-            Op::ConstReg => {
+            Op::ConstReg { dst, reg } => {
                 assert!(accepted);
-                let dst = reader.uleb();
-                let reg = reader.uleb();
                 values[dst] = Some(program.registers[reg]);
             }
-            Op::ReadField => {
+            Op::ReadField { dst, node, field } => {
                 assert!(accepted);
-                let dst = reader.uleb();
-                let node = reader.uleb();
-                let field = reader.uleb();
                 fields[dst] = program.accesses[field].as_ref().map(|field| {
                     let Field::Attribute(index) = *field else {
                         panic!("register used as an attribute")
@@ -270,26 +228,28 @@ pub(crate) fn execute(
                     FieldSource::Attribute(insts[node].unwrap(), index)
                 });
             }
-            Op::ConstImm => {
+            Op::ConstImm { dst, imm } => {
                 assert!(accepted);
-                let dst = reader.uleb();
-                let imm = reader.uleb();
                 fields[dst] = Some(FieldSource::Imm(program.integers[imm]));
             }
-            Op::BuildInst => {
+            Op::BuildInst {
+                target,
+                results: result_slots,
+                inputs: input_slots,
+                fields: field_slots,
+            } => {
                 assert!(accepted);
-                let target = reader.uleb();
                 let mut results = SmallVec::<[Reg; 2]>::new();
                 let mut inputs = SmallVec::<[Reg; 4]>::new();
                 let mut operands = SmallVec::<[FieldValue; 4]>::new();
-                for _ in 0..reader.uleb() {
-                    results.push(values[reader.uleb()].expect("initialized result"));
+                for slot in result_slots.iter() {
+                    results.push(values[slot].expect("initialized result"));
                 }
-                for _ in 0..reader.uleb() {
-                    inputs.push(values[reader.uleb()].expect("initialized input"));
+                for slot in input_slots.iter() {
+                    inputs.push(values[slot].expect("initialized input"));
                 }
-                for _ in 0..reader.uleb() {
-                    let mut field = match fields[reader.uleb()].expect("initialized field") {
+                for slot in field_slots.iter() {
+                    let mut field = match fields[slot].expect("initialized field") {
                         FieldSource::Attribute(inst, index) => store.inst(inst).fields().at(index),
                         FieldSource::Imm(value) => FieldValue::Imm(value),
                     };
@@ -312,7 +272,7 @@ pub(crate) fn execute(
                     store, source, &results, &inputs, operands,
                 ));
             }
-            Op::Finish => {
+            Op::Finish {} => {
                 assert!(accepted);
                 return Some(if out.len() - start == 1 {
                     SelectResult::InPlace
