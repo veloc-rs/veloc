@@ -286,9 +286,9 @@ impl Module {
                 let mut pm = PassManager::new(config);
                 pm.add_function_pass(veloc_optimizer::ExpressionPass {
                     budget: if engine.config().fast_egraph {
-                        veloc_optimizer::passes::function::expression::Budget::FAST
+                        veloc_optimizer::passes::expression::Budget::FAST
                     } else {
-                        veloc_optimizer::passes::function::expression::Budget::DEFAULT
+                        veloc_optimizer::passes::expression::Budget::DEFAULT
                     },
                 });
                 pm.add_function_pass(veloc_optimizer::DcePass);

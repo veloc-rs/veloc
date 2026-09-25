@@ -3,6 +3,7 @@
 //! Definitions are checked before Rust generation. This crate does not depend
 //! on a runtime IR; the MIR emitter is one consumer of its definition model.
 
+mod bytecode;
 mod emit;
 mod generate;
 pub use emit::{Artifacts, Decisions, Emit, Equivalences, Options, Target, ValueRules};

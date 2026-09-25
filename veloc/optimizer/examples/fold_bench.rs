@@ -11,7 +11,7 @@ use veloc_mir::constant::ScalarConst;
 use veloc_mir::{Opcode, Type};
 use veloc_semantics::{Outcome, Sort, Value};
 
-fn graph(op: Opcode, args: &[ScalarConst], results: &[Type]) -> Option<Vec<ScalarConst>> {
+fn graph(op: Opcode, args: &[ScalarConst], results: &[Type]) -> Option<SmallVec<[ScalarConst; 2]>> {
     let types = args.iter().map(|c| c.ty()).collect::<SmallVec<[Type; 4]>>();
     op.validate_types(&types, results).ok()?;
     let sort = |ty: Type| {
@@ -75,6 +75,13 @@ fn main() {
         } else {
             &[Type::I64][..]
         };
+        // Construct MIR once: the timed path only queries facts and folds it.
+        let mut body = veloc_mir::FuncBody::new(&[Type::I64, Type::I64]);
+        let block = body.entry_block();
+        let inputs = body.dfg().block_params(block).to_vec();
+        let inst = body
+            .edit()
+            .append_inst(block, |w| w.from_values(op, &inputs).unwrap(), results);
         let evaluate = |fast, i| {
             let args = [
                 ScalarConst::from(i as i64 ^ i64::MIN),
@@ -82,7 +89,12 @@ fn main() {
             ];
             let (op, args, results) = black_box((op, args, results));
             if fast {
-                veloc_optimizer::rewrite::evaluate(op, &args, results, &[])
+                veloc_optimizer::evaluate::fold(body.dfg(), inst, |value| {
+                    inputs
+                        .iter()
+                        .position(|&input| input == value)
+                        .map(|index| args[index])
+                })
             } else {
                 graph(op, &args, results)
             }

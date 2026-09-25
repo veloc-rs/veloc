@@ -1,5 +1,5 @@
 use crate::pass::{FunctionPass, ModulePass, OptConfig, Pass};
-use crate::passes::function::dce;
+use crate::passes::dce;
 use crate::stats::{PipelineStats, TimingGuard};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -26,11 +26,11 @@ impl PassManager {
     pub fn new_o1() -> Self {
         let mut pm = Self::new(OptConfig::new(true));
         pm.add_function_pass(crate::ExpressionPass {
-            budget: crate::passes::function::expression::Budget::DEFAULT,
+            budget: crate::passes::expression::Budget::DEFAULT,
         });
-        pm.add_function_pass(crate::passes::function::MemoryPass);
+        pm.add_function_pass(crate::passes::MemoryPass);
         pm.add_function_pass(crate::ExpressionPass {
-            budget: crate::passes::function::expression::Budget::DEFAULT,
+            budget: crate::passes::expression::Budget::DEFAULT,
         });
         pm.add_function_pass(dce::DcePass);
         pm

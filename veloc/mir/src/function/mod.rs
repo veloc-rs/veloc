@@ -7,11 +7,13 @@ use alloc::string::String;
 mod cfg;
 mod dominance;
 mod edit;
+mod expressions;
 mod layout;
 pub use cfg::ControlFlowGraph;
 pub use dominance::Dominators;
 pub use edit::{EdgeRef, FuncEditor, InstCursor};
-pub use layout::Layout;
+pub use expressions::{Expressions, FrozenExpressions};
+pub use layout::{InstOrder, Layout};
 
 #[derive(Debug, Clone)]
 pub struct FuncDecl {

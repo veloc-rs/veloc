@@ -1,6 +1,8 @@
 //! Compile the shared matching graph and construction recipes to bytecode.
 //! Matching uses tables; schema-generated constructors install complete instructions.
 use super::*;
+use crate::bytecode::intern;
+use veloc_bytecode::encode_uleb as uleb;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Access {
@@ -14,16 +16,6 @@ pub(in super::super) struct Adapters<'a> {
     encodings: BTreeMap<&'static str, (usize, bool)>,
     builders: BTreeMap<String, String>,
 }
-fn intern<T: PartialEq>(items: &mut Vec<T>, item: T) -> usize {
-    if let Some(id) = items.iter().position(|old| *old == item) {
-        id
-    } else {
-        let id = items.len();
-        items.push(item);
-        id
-    }
-}
-
 impl<'a> Adapters<'a> {
     pub(in super::super) fn new(
         layouts: &'a BTreeMap<String, crate::storage::operands::Projection>,
@@ -240,18 +232,6 @@ struct Code {
     features: Vec<Vec<String>>,
     values: usize,
     fields: usize,
-}
-fn uleb(value: usize) -> Vec<u8> {
-    let mut value = u32::try_from(value).expect("selection index overflow");
-    let mut bytes = Vec::new();
-    loop {
-        let byte = (value & 127) as u8;
-        value >>= 7;
-        bytes.push(byte | if value != 0 { 128 } else { 0 });
-        if value == 0 {
-            return bytes;
-        }
-    }
 }
 impl Code {
     fn field(
@@ -546,8 +526,7 @@ impl Code {
                 }
             }
             if let Some(label) = inst.failure {
-                let dest = u32::try_from(offsets[self.labels[label]]).unwrap();
-                for byte in dest.to_le_bytes() {
+                for byte in veloc_bytecode::encode_u32(offsets[self.labels[label]]) {
                     write!(out, " {byte},").unwrap();
                 }
             }

@@ -6,6 +6,39 @@ use veloc_mir::constant::ScalarConst;
 use veloc_mir::{IntCC, Opcode, Type};
 use veloc_semantics::{Outcome, Sort, Trap, Value};
 
+// Exercise the generated folder through real MIR, while keeping the offline
+// interpreter's data-oriented samples convenient to construct.
+fn evaluate(
+    op: Opcode,
+    args: &[ScalarConst],
+    results: &[Type],
+    properties: &[IntCC],
+) -> Option<Vec<ScalarConst>> {
+    let types: Vec<_> = args.iter().map(|c| c.ty()).collect();
+    let mut body = veloc_mir::FuncBody::new(&types);
+    let block = body.entry_block();
+    let inputs = body.dfg().block_params(block).to_vec();
+    let inst = body.edit().append_inst(
+        block,
+        |w| {
+            if op == Opcode::Icmp {
+                w.int_compare(properties[0], [inputs[0], inputs[1]])
+            } else {
+                assert!(properties.is_empty());
+                w.from_values(op, &inputs).expect("value-only operation")
+            }
+        },
+        results,
+    );
+    veloc_optimizer::evaluate::fold(body.dfg(), inst, |value| {
+        inputs
+            .iter()
+            .position(|&input| input == value)
+            .map(|index| args[index])
+    })
+    .map(|values| values.into_vec())
+}
+
 fn program(op: Opcode) -> veloc_semantics::Program<'static> {
     let specs = offline::SPECS;
     specs
@@ -27,7 +60,7 @@ fn offline_table_matches_runtime_metadata_without_duplicate_opcodes() {
         spec.program.validate().unwrap();
     }
     assert!(Opcode::ALL.iter().all(
-        |op| !veloc_optimizer::rewrite::can_fold(*op) || specs.iter().any(|s| s.opcode == *op)
+        |op| !veloc_optimizer::evaluate::can_fold(*op) || specs.iter().any(|s| s.opcode == *op)
     ));
     assert!(!specs.iter().any(|s| s.opcode == Opcode::FAdd));
 }
@@ -218,17 +251,14 @@ fn mixed_width_and_boolean_constants_use_typed_results() {
             ScalarConst::from(1i32),
         ),
     ] {
-        assert_eq!(
-            veloc_optimizer::rewrite::evaluate(op, &[input], &[ty], &[]),
-            Some(vec![expected])
-        );
+        assert_eq!(evaluate(op, &[input], &[ty], &[]), Some(vec![expected]));
     }
     assert_eq!(
         ScalarConst::from(true).binary_op(ScalarConst::from(false), Opcode::IAnd),
         Some(ScalarConst::from(false))
     );
     assert_eq!(
-        veloc_optimizer::rewrite::evaluate(
+        evaluate(
             Opcode::ExtendS,
             &[ScalarConst::from(1i64)],
             &[Type::I8],
@@ -237,16 +267,11 @@ fn mixed_width_and_boolean_constants_use_typed_results() {
         None
     );
     assert_eq!(
-        veloc_optimizer::rewrite::evaluate(
-            Opcode::Wrap,
-            &[ScalarConst::from(1i8)],
-            &[Type::I64],
-            &[]
-        ),
+        evaluate(Opcode::Wrap, &[ScalarConst::from(1i8)], &[Type::I64], &[]),
         None
     );
     assert_eq!(
-        veloc_optimizer::rewrite::evaluate(
+        evaluate(
             Opcode::IAddWithOverflow,
             &[ScalarConst::from(127i8), ScalarConst::from(1i8)],
             &[Type::I8, Type::BOOL],
@@ -309,7 +334,7 @@ fn generated_evaluators_match_graphs_for_all_scalar_signatures() {
     let mut seed = 0x9183_acf2_ee74_b01du64;
     let mut checked = 0;
     for &op in Opcode::ALL {
-        if !veloc_optimizer::rewrite::can_fold(op) {
+        if !veloc_optimizer::evaluate::can_fold(op) {
             continue;
         }
         let program = program(op);
@@ -391,7 +416,7 @@ fn generated_evaluators_match_graphs_for_all_scalar_signatures() {
                         ),
                     };
                     assert_eq!(
-                        veloc_optimizer::rewrite::evaluate(op, &args, outputs, &properties),
+                        evaluate(op, &args, outputs, &properties),
                         expected,
                         "{op:?} {signature:?} {args:?} {properties:?}"
                     );
@@ -414,9 +439,7 @@ trait Fold {
         Self: Sized;
 }
 fn fold(op: Opcode, args: &[ScalarConst], result: Type) -> Option<ScalarConst> {
-    veloc_optimizer::rewrite::evaluate(op, args, &[result], &[])?
-        .first()
-        .copied()
+    evaluate(op, args, &[result], &[])?.first().copied()
 }
 impl Fold for ScalarConst {
     fn binary_op(self, other: Self, op: Opcode) -> Option<Self> {
@@ -431,7 +454,7 @@ impl Fold for ScalarConst {
         fold(op, &[self], result)
     }
     fn icmp(self, other: Self, cc: IntCC) -> Option<Self> {
-        veloc_optimizer::rewrite::evaluate(Opcode::Icmp, &[self, other], &[Type::BOOL], &[cc])?
+        evaluate(Opcode::Icmp, &[self, other], &[Type::BOOL], &[cc])?
             .first()
             .copied()
     }
@@ -476,12 +499,7 @@ fn signed_saturation_and_overflow_match_widened_arithmetic() {
                         expected.push(ScalarConst::from(mathematical < min || mathematical > max));
                     }
                     assert_eq!(
-                        veloc_optimizer::rewrite::evaluate(
-                            opcode,
-                            &[constant(x), constant(y)],
-                            &types,
-                            &[]
-                        ),
+                        evaluate(opcode, &[constant(x), constant(y)], &types, &[]),
                         Some(expected),
                         "{opcode:?} i{bits}: {x}, {y}"
                     );

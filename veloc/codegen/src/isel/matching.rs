@@ -6,48 +6,31 @@ use std::vec::Vec;
 use veloc_lir::{FieldValue, GenericOpcode, InstId, InstInserter, InstRef, Reg};
 use veloc_mir::Type;
 
-// Like interpreter::define_opcodes, keep decoding and diagnostics beside the
-// instruction declaration. Unlike that VM, indexes here use compact ULEB128.
-// The generator references symbolic Op names: numeric codes have one owner.
-macro_rules! opcodes {
-    ($($name:ident($arity:literal, $branch:literal)),* $(,)?) => {
-        #[derive(Clone, Copy, Debug)]
-        #[repr(u8)]
-        pub(crate) enum Op { $($name),* }
-        impl Op {
-            fn decode(byte: u8) -> Self {
-                match byte {
-                    $(x if x == Self::$name as u8 => Self::$name,)*
-                    _ => panic!("invalid selection opcode {byte}"),
-                }
-            }
-            pub(crate) const fn format(self) -> (usize, bool) {
-                match self { $(Self::$name => ($arity, $branch),)* }
-            }
-        }
-    };
-}
+use veloc_bytecode::{Reader, opcodes};
+
 // Arity counts ULEB128 operands. Branch adds a little-endian u32 byte offset.
 // BuildInst additionally carries three length-prefixed slot lists.
 opcodes! {
-    Reject(0, false),
-    Jump(0, true),
-    ReadReg(3, false),       // value slot, instruction slot, field accessor
-    GetDef(2, true),         // instruction slot, value slot, failure
-    CheckOpcode(2, true),    // instruction slot, opcode constant, failure
-    CheckType(2, true),      // value slot, type-set constant, failure
-    CheckInt(3, true),       // instruction slot, field accessor, constant, failure
-    CheckFeatures(1, true),  // feature-set constant, failure
-    CallPredicate(2, true),  // value slot, host predicate, failure
-    CheckFoldable(2, true),  // definition slot, consumer slot, failure
-    Accept(0, false),
-    MakeTemp(2, false),      // value slot, singleton type-set constant
-    ReadResult(2, false),    // value slot, source result index
-    ConstReg(2, false),      // value slot, physical register constant
-    ReadField(3, false),     // field slot, instruction slot, field accessor
-    ConstImm(2, false),      // field slot, integer constant
-    BuildInst(1, false),     // target constant, result slots, input slots, field slots
-    Finish(0, false),
+    pub(crate) enum Op {
+        Reject(0, false),
+        Jump(0, true),
+        ReadReg(3, false),       // value slot, instruction slot, field accessor
+        GetDef(2, true),         // instruction slot, value slot, failure
+        CheckOpcode(2, true),    // instruction slot, opcode constant, failure
+        CheckType(2, true),      // value slot, type-set constant, failure
+        CheckInt(3, true),       // instruction slot, field accessor, constant, failure
+        CheckFeatures(1, true),  // feature-set constant, failure
+        CallPredicate(2, true),  // value slot, host predicate, failure
+        CheckFoldable(2, true),  // definition slot, consumer slot, failure
+        Accept(0, false),
+        MakeTemp(2, false),      // value slot, singleton type-set constant
+        ReadResult(2, false),    // value slot, source result index
+        ConstReg(2, false),      // value slot, physical register constant
+        ReadField(3, false),     // field slot, instruction slot, field accessor
+        ConstImm(2, false),      // field slot, integer constant
+        BuildInst(1, false),     // target constant, result slots, input slots, field slots
+        Finish(0, false),
+    }
 }
 
 pub(crate) struct Program {
@@ -105,41 +88,6 @@ impl Field {
 pub(crate) type Target =
     fn(&mut InstInserter<'_>, InstId, &[Reg], &[Reg], SmallVec<[FieldValue; 4]>) -> InstId;
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    pc: usize,
-}
-impl Reader<'_> {
-    fn byte(&mut self) -> u8 {
-        let b = self.bytes[self.pc];
-        self.pc += 1;
-        b
-    }
-    fn index(&mut self) -> usize {
-        let mut value = 0u32;
-        for shift in (0..35).step_by(7) {
-            let byte = self.byte();
-            assert!(shift != 28 || byte & 0xf0 == 0, "selection index overflow");
-            value |= u32::from(byte & 0x7f) << shift;
-            if byte & 0x80 == 0 {
-                return value as usize;
-            }
-        }
-        unreachable!()
-    }
-    fn offset(&mut self) -> usize {
-        let bytes = self.bytes[self.pc..self.pc + 4].try_into().unwrap();
-        self.pc += 4;
-        u32::from_le_bytes(bytes) as usize
-    }
-    fn branch(&mut self, success: bool) {
-        let failure = self.offset();
-        if !success {
-            self.pc = failure;
-        }
-    }
-}
-
 /// Debug output describes the actual bytecode, including byte offsets.
 #[allow(dead_code)]
 pub(crate) fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> core::fmt::Result {
@@ -153,23 +101,23 @@ pub(crate) fn disassemble(program: &Program, out: &mut dyn core::fmt::Write) -> 
         write!(out, "{op:?}")?;
         let (arity, branch) = op.format();
         for _ in 0..arity {
-            write!(out, " {}", reader.index())?;
+            write!(out, " {}", reader.uleb())?;
         }
         if matches!(op, Op::BuildInst) {
             for _ in 0..3 {
-                let len = reader.index();
+                let len = reader.uleb();
                 write!(out, " [")?;
                 for index in 0..len {
                     if index != 0 {
                         write!(out, ", ")?;
                     }
-                    write!(out, "{}", reader.index())?;
+                    write!(out, "{}", reader.uleb())?;
                 }
                 write!(out, "]")?;
             }
         }
         if branch {
-            write!(out, " -> {:04x}", reader.offset())?;
+            write!(out, " -> {:04x}", reader.u32())?;
         }
         writeln!(out)?;
     }
@@ -206,20 +154,20 @@ pub(crate) fn execute(
                 return None;
             }
             Op::Jump => {
-                reader.pc = reader.offset();
+                reader.pc = reader.u32();
             }
             Op::ReadReg => {
-                let dst = reader.index();
-                let node = reader.index();
-                let field = reader.index();
+                let dst = reader.uleb();
+                let node = reader.uleb();
+                let field = reader.uleb();
                 values[dst] = program.accesses[field].as_ref().map(|field| {
                     field.reg(store.inst(insts[node].expect("dominating definition")))
                 });
             }
             Op::GetDef => {
                 assert!(!accepted);
-                let dst = reader.index();
-                let value = reader.index();
+                let dst = reader.uleb();
+                let value = reader.uleb();
                 insts[dst] = values[value]
                     .filter(|reg| reg.is_vreg())
                     .and_then(|reg| store.defs(reg).single().map(|site| site.inst()));
@@ -227,8 +175,8 @@ pub(crate) fn execute(
             }
             Op::CheckOpcode => {
                 assert!(!accepted);
-                let node = reader.index();
-                let opcode = reader.index();
+                let node = reader.uleb();
+                let opcode = reader.uleb();
                 reader.branch(
                     store.inst(insts[node].unwrap()).generic_opcode()
                         == Some(program.opcodes[opcode]),
@@ -236,8 +184,8 @@ pub(crate) fn execute(
             }
             Op::CheckType => {
                 assert!(!accepted);
-                let value = reader.index();
-                let set = reader.index();
+                let value = reader.uleb();
+                let set = reader.uleb();
                 reader.branch(
                     values[value]
                         .and_then(|reg| reg.is_vreg().then(|| store.vreg_data(reg).ty))
@@ -246,9 +194,9 @@ pub(crate) fn execute(
             }
             Op::CheckInt => {
                 assert!(!accepted);
-                let node = reader.index();
-                let field = reader.index();
-                let constant = reader.index();
+                let node = reader.uleb();
+                let field = reader.uleb();
+                let constant = reader.uleb();
                 reader.branch(
                     program.accesses[field]
                         .as_ref()
@@ -258,7 +206,7 @@ pub(crate) fn execute(
             }
             Op::CheckFeatures => {
                 assert!(!accepted);
-                let set = reader.index();
+                let set = reader.uleb();
                 reader.branch(
                     program.features[set]
                         .iter()
@@ -270,14 +218,14 @@ pub(crate) fn execute(
             }
             Op::CallPredicate => {
                 assert!(!accepted);
-                let value = reader.index();
-                let id = reader.index();
+                let value = reader.uleb();
+                let id = reader.uleb();
                 reader.branch(values[value].is_some_and(|reg| predicate(id as u32, reg)));
             }
             Op::CheckFoldable => {
                 assert!(!accepted);
-                let definition = insts[reader.index()].unwrap();
-                let consumer = insts[reader.index()].unwrap();
+                let definition = insts[reader.uleb()].unwrap();
+                let consumer = insts[reader.uleb()].unwrap();
                 // Only duplicate pure computation. Other users keep the old
                 // definition; DCE may erase it once it becomes unused.
                 let inst = store.inst(definition);
@@ -291,8 +239,8 @@ pub(crate) fn execute(
             }
             Op::MakeTemp => {
                 assert!(accepted);
-                let dst = reader.index();
-                let ty = reader.index();
+                let dst = reader.uleb();
+                let ty = reader.uleb();
                 let [ty] = program.types[ty] else {
                     panic!("temporary requires one type")
                 };
@@ -300,21 +248,21 @@ pub(crate) fn execute(
             }
             Op::ReadResult => {
                 assert!(accepted);
-                let dst = reader.index();
-                let index = reader.index();
+                let dst = reader.uleb();
+                let index = reader.uleb();
                 values[dst] = Some(store.inst(source).results()[index]);
             }
             Op::ConstReg => {
                 assert!(accepted);
-                let dst = reader.index();
-                let reg = reader.index();
+                let dst = reader.uleb();
+                let reg = reader.uleb();
                 values[dst] = Some(program.registers[reg]);
             }
             Op::ReadField => {
                 assert!(accepted);
-                let dst = reader.index();
-                let node = reader.index();
-                let field = reader.index();
+                let dst = reader.uleb();
+                let node = reader.uleb();
+                let field = reader.uleb();
                 fields[dst] = program.accesses[field].as_ref().map(|field| {
                     let Field::Attribute(index) = *field else {
                         panic!("register used as an attribute")
@@ -324,24 +272,24 @@ pub(crate) fn execute(
             }
             Op::ConstImm => {
                 assert!(accepted);
-                let dst = reader.index();
-                let imm = reader.index();
+                let dst = reader.uleb();
+                let imm = reader.uleb();
                 fields[dst] = Some(FieldSource::Imm(program.integers[imm]));
             }
             Op::BuildInst => {
                 assert!(accepted);
-                let target = reader.index();
+                let target = reader.uleb();
                 let mut results = SmallVec::<[Reg; 2]>::new();
                 let mut inputs = SmallVec::<[Reg; 4]>::new();
                 let mut operands = SmallVec::<[FieldValue; 4]>::new();
-                for _ in 0..reader.index() {
-                    results.push(values[reader.index()].expect("initialized result"));
+                for _ in 0..reader.uleb() {
+                    results.push(values[reader.uleb()].expect("initialized result"));
                 }
-                for _ in 0..reader.index() {
-                    inputs.push(values[reader.index()].expect("initialized input"));
+                for _ in 0..reader.uleb() {
+                    inputs.push(values[reader.uleb()].expect("initialized input"));
                 }
-                for _ in 0..reader.index() {
-                    let mut field = match fields[reader.index()].expect("initialized field") {
+                for _ in 0..reader.uleb() {
+                    let mut field = match fields[reader.uleb()].expect("initialized field") {
                         FieldSource::Attribute(inst, index) => store.inst(inst).fields().at(index),
                         FieldSource::Imm(value) => FieldValue::Imm(value),
                     };

@@ -6,7 +6,7 @@ mod pool;
 pub use pool::{Pool, PoolId};
 
 mod layout;
-pub use layout::EntityLayout;
+pub use layout::{EntityLayout, InstOrder};
 
 use alloc::vec::Vec;
 use cranelift_entity::{EntityRef, packed_option::PackedOption};

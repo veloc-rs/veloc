@@ -5,8 +5,9 @@ edition = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
+veloc-bytecode = { workspace = true }
 veloc-types = { workspace = true }
-veloc-mir = { workspace = true }
+veloc-mir = { workspace = true, features = ["std"] }
 veloc-analyzer = { workspace = true }
 hashbrown = { workspace = true }
 log = { workspace = true }
@@ -18,7 +19,3 @@ veloc-spec = { workspace = true }
 
 [dev-dependencies]
 veloc-semantics = { workspace = true }
-
-[features]
-default = ["std"]
-std = ["veloc-mir/std"]

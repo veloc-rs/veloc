@@ -1,4 +1,4 @@
-use crate::{Error, Result, metrics::Metrics};
+use crate::{Error, Result, stats::Metrics};
 use alloc::boxed::Box;
 use core::any::TypeId;
 use hashbrown::HashSet;

@@ -5,7 +5,7 @@ mod compiler;
 use filecheck::{CheckerBuilder, NO_VARIABLES};
 use libtest_mimic::{Arguments, Trial};
 use veloc_mir::{Module, ModuleParser, TypeInfo};
-use veloc_optimizer::{Metrics, PassManager, passes::function::expression};
+use veloc_optimizer::{Metrics, PassManager, passes::expression};
 
 type Result<T> = std::result::Result<T, String>;
 

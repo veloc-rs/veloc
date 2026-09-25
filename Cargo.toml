@@ -11,6 +11,7 @@ members = [
 	"veloc/mir",
 	"veloc/types",
 	"veloc/collections",
+	"veloc/bytecode",
 	"veloc/lir",
 	"veloc/interpreter",
 	"veloc/codegen",
@@ -30,6 +31,7 @@ rust-version = "1.93.0"
 veloc = { path = "." }
 veloc-types = { path = "veloc/types" }
 veloc-collections = { path = "veloc/collections" }
+veloc-bytecode = { path = "veloc/bytecode" }
 veloc-mir = { path = "veloc/mir" }
 veloc-lir = { path = "veloc/lir" }
 veloc-optimizer = { path = "veloc/optimizer" }

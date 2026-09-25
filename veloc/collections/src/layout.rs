@@ -4,6 +4,7 @@
 //! removal update only neighboring links; instruction ownership stays directly
 //! queryable. Iteration borrows the layout, so mutating passes use stable anchors
 //! or explicitly collect a snapshot when they need one.
+use alloc::sync::Arc;
 use cranelift_entity::{
     EntityRef, SecondaryMap,
     packed_option::{PackedOption, ReservedValue},
@@ -23,15 +24,36 @@ struct InstNode<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValu
     block: PackedOption<Block>,
     prev: PackedOption<Inst>,
     next: PackedOption<Inst>,
+    /// Changes on every placement, even when an ID is detached and reused.
+    stamp: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EntityLayout<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> {
     blocks: SecondaryMap<Block, BlockNode<Block, Inst>>,
     first: PackedOption<Block>,
     last: PackedOption<Block>,
     insts: SecondaryMap<Inst, InstNode<Block, Inst>>,
     len: usize,
+    identity: Arc<()>,
+    stamp: u64,
+}
+
+impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> Clone
+    for EntityLayout<Block, Inst>
+{
+    fn clone(&self) -> Self {
+        Self {
+            blocks: self.blocks.clone(),
+            first: self.first,
+            last: self.last,
+            insts: self.insts.clone(),
+            len: self.len,
+            stamp: self.stamp,
+            // A clone can diverge independently, so it cannot share cache identity.
+            identity: Arc::new(()),
+        }
+    }
 }
 
 impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> Default
@@ -55,6 +77,7 @@ impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> Default
             block: None.into(),
             prev: None.into(),
             next: None.into(),
+            stamp: 0,
         }
     }
 }
@@ -68,6 +91,8 @@ impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> Default
             first: None.into(),
             last: None.into(),
             len: 0,
+            identity: Arc::new(()),
+            stamp: 0,
         }
     }
 }
@@ -82,6 +107,8 @@ impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> EntityLa
             last: None.into(),
             insts: SecondaryMap::with_capacity(insts),
             len: 0,
+            identity: Arc::new(()),
+            stamp: 0,
         }
     }
     pub fn remove_insts(&mut self, insts: &[Inst]) {
@@ -196,10 +223,12 @@ impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> EntityLa
             self.inst_block(inst).is_none(),
             "instruction already in layout"
         );
+        self.stamp = self.stamp.checked_add(1).expect("layout version overflow");
         self.insts[inst] = InstNode {
             block: block.into(),
             prev: prev.into(),
             next: next.into(),
+            stamp: self.stamp,
         };
         if let Some(prev) = prev {
             self.insts[prev].next = inst.into();
@@ -247,6 +276,136 @@ impl<Block: EntityRef + ReservedValue, Inst: EntityRef + ReservedValue> EntityLa
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct Rank {
+    stamp: u64,
+    label: u64,
+}
+
+/// Lazy, incremental order queries over one layout at a time.
+///
+/// Layout links are authoritative. Cached labels remain valid across deletions
+/// and insertions elsewhere: neither changes the order of surviving placements.
+/// A placement stamp invalidates only a moved/reinserted instruction. Queries
+/// number an unranked run between cached neighbors, using gaps for future edits.
+/// If the gap is exhausted, only that block is renumbered. A cache hit is O(1);
+/// repair costs O(run length), or O(block length) when renumbering is necessary.
+/// No worst-case constant-time update guarantee is made for adversarial edits.
+///
+/// The identity token survives moves of the layout, but not cloning/replacement.
+/// Switching layouts clears the cache; no pointer to the layout itself is kept.
+#[derive(Debug)]
+pub struct InstOrder<Inst: EntityRef> {
+    identity: Option<Arc<()>>,
+    ranks: SecondaryMap<Inst, Rank>,
+}
+
+impl<Inst: EntityRef> Default for InstOrder<Inst> {
+    fn default() -> Self {
+        Self {
+            identity: None,
+            ranks: SecondaryMap::new(),
+        }
+    }
+}
+
+impl<Inst: EntityRef + ReservedValue> InstOrder<Inst> {
+    /// Strict order within a block. Cross-block and detached comparisons are
+    /// programming errors; use CFG dominance for cross-block availability.
+    pub fn comes_before<Block: EntityRef + ReservedValue>(
+        &mut self,
+        layout: &EntityLayout<Block, Inst>,
+        a: Inst,
+        b: Inst,
+    ) -> bool {
+        let block = layout.inst_block(a).expect("instruction is not placed");
+        assert!(
+            Some(block) == layout.inst_block(b),
+            "order comparison requires the same block"
+        );
+        if self
+            .identity
+            .as_ref()
+            .is_none_or(|id| !Arc::ptr_eq(id, &layout.identity))
+        {
+            self.ranks.clear();
+            self.identity = Some(layout.identity.clone());
+        }
+        if a == b {
+            return false;
+        }
+        self.ensure(layout, a);
+        self.ensure(layout, b);
+        self.ranks[a].label < self.ranks[b].label
+    }
+
+    fn valid<Block: EntityRef + ReservedValue>(
+        &self,
+        layout: &EntityLayout<Block, Inst>,
+        inst: Inst,
+    ) -> bool {
+        let stamp = layout.insts[inst].stamp;
+        stamp != 0 && self.ranks[inst].stamp == stamp
+    }
+
+    fn ensure<Block: EntityRef + ReservedValue>(
+        &mut self,
+        layout: &EntityLayout<Block, Inst>,
+        inst: Inst,
+    ) {
+        if self.valid(layout, inst) {
+            return;
+        }
+        let mut first = inst;
+        let mut last = inst;
+        let mut count = 1u64;
+        while let Some(prev) = layout.prev_inst(first) {
+            if self.valid(layout, prev) {
+                break;
+            }
+            first = prev;
+            count += 1;
+        }
+        while let Some(next) = layout.next_inst(last) {
+            if self.valid(layout, next) {
+                break;
+            }
+            last = next;
+            count += 1;
+        }
+        let low = layout.prev_inst(first).map_or(0, |i| self.ranks[i].label);
+        let high = layout
+            .next_inst(last)
+            .map_or(u64::MAX, |i| self.ranks[i].label);
+        let step = (high - low) / (count + 1);
+        if step == 0 {
+            let block = layout.inst_block(inst).expect("placed instruction");
+            let count = layout.block_insts(block).count() as u64;
+            let step = u64::MAX / (count + 1);
+            for (index, i) in layout.block_insts(block).enumerate() {
+                self.ranks[i] = Rank {
+                    stamp: layout.insts[i].stamp,
+                    label: step * (index as u64 + 1),
+                };
+            }
+            return;
+        }
+        let mut cursor = first;
+        let mut label = low;
+        loop {
+            label += step;
+            self.ranks[cursor] = Rank {
+                stamp: layout.insts[cursor].stamp,
+                label,
+            };
+            if cursor == last {
+                break;
+            }
+            cursor = layout.next_inst(cursor).expect("contiguous unranked run");
+        }
+    }
+}
+
 struct Order<T, F> {
     front: Option<T>,
     back: Option<T>,
@@ -275,5 +434,101 @@ impl<T: Copy + Eq, F: Fn(T) -> (Option<T>, Option<T>)> DoubleEndedIterator for O
             self.back = (self.links)(item).0;
         }
         Some(item)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec::Vec;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    struct Block(u32);
+    cranelift_entity::entity_impl!(Block, "block");
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    struct Inst(u32);
+    cranelift_entity::entity_impl!(Inst, "inst");
+
+    fn check(layout: &EntityLayout<Block, Inst>, order: &mut InstOrder<Inst>) {
+        for block in layout.block_order() {
+            let insts: Vec<_> = layout.block_insts(block).collect();
+            for (i, &a) in insts.iter().enumerate() {
+                for (j, &b) in insts.iter().enumerate() {
+                    assert_eq!(order.comes_before(layout, a, b), i < j);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cached_order_tracks_edits_and_layout_identity() {
+        let mut layout = EntityLayout::new();
+        for b in 0..2 {
+            layout.append_block(Block(b));
+        }
+        for i in 0..16 {
+            layout.append_inst(Block(i % 2), Inst(i));
+        }
+        let mut order = InstOrder::default();
+        let mut other_cache = InstOrder::default();
+        check(&layout, &mut order);
+        check(&layout, &mut other_cache);
+
+        // Repeated movement, including cross-block moves and reused IDs.
+        for n in 0..160 {
+            let inst = Inst(n % 16);
+            let anchor = Inst((n * 7 + 3) % 16);
+            if inst == anchor {
+                continue;
+            }
+            layout.detach_inst(inst);
+            if n % 2 == 0 {
+                layout.insert_before(anchor, inst);
+            } else {
+                layout.insert_after(anchor, inst);
+            }
+            check(&layout, &mut order);
+            // Caches need not observe each intermediate edit.
+            if n % 11 == 0 {
+                check(&layout, &mut other_cache);
+            }
+        }
+
+        // Concentrated insertion exhausts label gaps and exercises renumbering.
+        for n in 16..160 {
+            layout.insert_before(Inst(0), Inst(n));
+            assert!(order.comes_before(&layout, Inst(n), Inst(0)));
+            if n % 17 == 0 {
+                check(&layout, &mut order);
+            }
+        }
+        check(&layout, &mut order);
+        check(&layout, &mut other_cache);
+
+        // Divergent clones can have identical placement counters and IDs.
+        let mut clone = layout.clone();
+        layout.detach_inst(Inst(1));
+        layout.insert_before(Inst(0), Inst(1));
+        clone.detach_inst(Inst(1));
+        clone.insert_after(Inst(0), Inst(1));
+        for current in [&layout, &clone, &layout] {
+            check(current, &mut order);
+        }
+
+        let moved = layout;
+        check(&moved, &mut order);
+        let mut fresh = EntityLayout::new();
+        fresh.append_block(Block(0));
+        fresh.append_inst(Block(0), Inst(1));
+        fresh.append_inst(Block(0), Inst(0));
+        check(&fresh, &mut order);
+
+        // Removing and reusing a block ID must not revive old instruction ranks.
+        fresh.remove_insts(&[Inst(0), Inst(1)]);
+        fresh.remove_block(Block(0));
+        fresh.append_block(Block(0));
+        fresh.append_inst(Block(0), Inst(0));
+        fresh.append_inst(Block(0), Inst(1));
+        check(&fresh, &mut order);
     }
 }

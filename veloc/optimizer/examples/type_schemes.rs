@@ -4,7 +4,7 @@ use std::hint::black_box;
 use std::time::Instant;
 use veloc_mir::{CallConv, Linkage, Module, ModuleBuilder, Opcode, Type};
 use veloc_optimizer::Metrics;
-use veloc_optimizer::passes::function::expression::{Budget, run};
+use veloc_optimizer::passes::expression::{Budget, run};
 
 fn module() -> Module {
     let mut module = ModuleBuilder::new();

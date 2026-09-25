@@ -48,6 +48,34 @@ impl Module {
 }
 
 impl FunctionRef<'_> {
+    pub(crate) fn validate_expressions(&self, module: &Module, candidates: &[Inst]) -> Result<()> {
+        self.validate(module)?;
+        let body = self.body.expect("defined function");
+        let dfg = body.dfg();
+        let context = VerifyContext::new(module, self);
+        for &inst in candidates {
+            if body.layout().inst_block(inst).is_some() || !dfg.inst(inst).can_speculate() {
+                return self.fail(format!("invalid floating expression {inst}"));
+            }
+            for &value in dfg.operands(inst) {
+                let Some(data) = dfg.values().get(value) else {
+                    return self.fail(format!("unknown operand {value} at {inst}"));
+                };
+                if let crate::ValueDef::Inst(def) = data.def {
+                    if !dfg.inst_results(def).contains(&value)
+                        || (body.layout().inst_block(def).is_none()
+                            && (!candidates.contains(&def) || def.0 >= inst.0))
+                    {
+                        return self
+                            .fail(format!("invalid candidate dependency {value} at {inst}"));
+                    }
+                }
+            }
+            self.validate_inst(module, inst, &context)?;
+        }
+        Ok(())
+    }
+
     pub fn validate(&self, module: &Module) -> Result<()> {
         types::validate(module)?;
         self.validate_body(module)

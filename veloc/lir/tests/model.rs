@@ -68,8 +68,8 @@ fn function_editor_preserves_layout_and_references() {
         f.editor().before(a).move_here(c);
         tail
     });
-    assert!(changes.blocks.contains(&entry));
-    assert!(changes.blocks.contains(&tail));
+    assert!(changes.insts.contains(&c));
+    assert!(changes.insts.contains(&d));
     assert_eq!(f.block_insts(entry).collect::<Vec<_>>(), [c, a]);
     assert_eq!(f.block_insts(entry).rev().collect::<Vec<_>>(), [a, c]);
     assert_eq!(f.block_insts(tail).collect::<Vec<_>>(), [d]);
@@ -169,11 +169,11 @@ fn function_editor_preserves_layout_and_references() {
         edit.after(c).move_here(a);
         edit.before(c).move_here(a);
     });
-    assert!(changes.blocks.contains(&entry));
+    assert!(changes.insts.contains(&a));
     let (_, changes) = f.editor().track(|edit| {
         edit.before(c).move_here(a);
     });
-    assert!(changes.insts.is_empty() && changes.blocks.is_empty());
+    assert!(changes.insts.is_empty());
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             f.editor().before(a).move_here(a);

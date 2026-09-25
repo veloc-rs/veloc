@@ -1,11 +1,11 @@
 //! Structural editing and scoped change reporting. Whole-program validation is explicit.
 use super::*;
 
-/// Mechanical edit notifications. They do not replace type or SSA validation.
+/// Instruction content and placement changes for incremental worklists.
+/// Block-only edits are not reported; this is not an analysis invalidation log.
 #[derive(Debug, Default)]
 pub struct EditChanges {
     pub insts: Vec<InstId>,
-    pub blocks: Vec<Block>,
 }
 
 /// Exclusive structural editing. Reads are available through Deref, but there
@@ -73,12 +73,10 @@ impl FuncEditor<'_> {
             "function parameters must be virtual registers"
         );
         self.function.body.params.push(param);
-        self.changed_block(self.function.body.entry);
     }
 
     /// Transfer formal definitions to the ABI entry instructions.
     pub fn take_params(&mut self) -> Vec<Reg> {
-        self.changed_block(self.function.body.entry);
         core::mem::take(&mut self.function.body.params)
     }
 
@@ -95,13 +93,8 @@ impl FuncEditor<'_> {
         }
     }
     pub fn create_block(&mut self) -> Block {
-        let last = self.function.body.layout.block_order().next_back();
-        if let Some(last) = last {
-            self.changed_block(last);
-        }
         let block = self.function.body.blocks.push(BlockData::default());
         self.function.body.layout.append_block(block);
-        self.changed_block(block);
         block
     }
     pub fn set_entry_block(&mut self, block: Block) {
@@ -109,9 +102,8 @@ impl FuncEditor<'_> {
             self.function.body.layout.contains_block(block),
             "unknown entry block"
         );
-        self.changed_block(self.function.body.entry);
+
         self.function.body.entry = block;
-        self.changed_block(block);
     }
     pub fn append_block_param(&mut self, block: Block, param: Reg) {
         assert!(
@@ -123,29 +115,15 @@ impl FuncEditor<'_> {
             "block parameters must be virtual registers"
         );
         self.function.body.blocks[block].params.push(param);
-        self.changed_block(block);
     }
     pub fn clear_block_params(&mut self) {
         let mut next = self.blocks().next();
         while let Some(block) = next {
             next = self.layout().next_block(block);
             self.function.body.blocks[block].params.clear();
-            self.changed_block(block);
         }
     }
     pub fn move_block_before(&mut self, block: Block, before: Block) {
-        // Moving a physical block can change implicit fallthrough edges.
-        for id in [
-            Some(block),
-            Some(before),
-            self.function.body.layout.prev_block(block),
-            self.function.body.layout.prev_block(before),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            self.changed_block(id);
-        }
         self.function.body.layout.move_block_before(block, before);
     }
     /// Commit a permutation of the existing block instructions; no insertion,
@@ -175,11 +153,10 @@ impl FuncEditor<'_> {
             self.function.body.layout.append_inst(block, inst);
             self.changed_inst(inst);
         }
-        self.changed_block(block);
     }
     fn detach_inst(&mut self, inst: InstId) {
-        let block = self.inst_block(inst).expect("detached instruction");
-        self.changed_block(block);
+        self.inst_block(inst).expect("detached instruction");
+
         self.function.body.layout.detach_inst(inst);
         self.changed_inst(inst);
     }
@@ -207,21 +184,11 @@ impl FuncEditor<'_> {
             self.function.body.layout.contains_block(block),
             "unknown block"
         );
-        if let Some(prev) = self.function.body.layout.prev_block(block) {
-            self.changed_block(prev);
-        }
         while let Some(inst) = self.function.body.layout.first_inst(block) {
             self.invalidate_inst(inst);
         }
         self.function.body.blocks[block].params.clear();
         self.function.body.layout.remove_block(block);
-        self.changed_block(block);
-    }
-
-    fn changed_block(&mut self, block: Block) {
-        if let Some(changes) = &mut self.changes {
-            changes.blocks.push(block);
-        }
     }
 
     /// Rebuild one instruction in place, retaining its ID and layout position.
@@ -399,7 +366,7 @@ impl FuncEditor<'_> {
         self.changed_inst(inst);
     }
 
-    /// Run an edit session and report changed instructions and blocks. Edits
+    /// Run an edit session and report changed instructions. Edits
     /// commit as they happen; errors and unwinding do not imply rollback.
     /// Nested tracking is rejected; reborrow the active editor instead.
     pub fn track<R>(&mut self, rewrite: impl FnOnce(&mut FuncEditor<'_>) -> R) -> (R, EditChanges) {
@@ -411,8 +378,6 @@ impl FuncEditor<'_> {
         });
         changes.insts.sort_unstable();
         changes.insts.dedup();
-        changes.blocks.sort_unstable();
-        changes.blocks.dedup();
         (result, changes)
     }
 }
@@ -459,7 +424,6 @@ impl InstInserter<'_> {
                 .layout
                 .append_inst(self.block, inst);
         }
-        self.editor.changed_block(self.block);
     }
 
     /// Configure one complete instruction before committing it at this gap.
@@ -578,7 +542,7 @@ impl<'a> InstWriter<'a> {
             uses: self.effects.uses,
             defs: self.effects.defs,
         };
-        let (id, block) = match self.position {
+        let id = match self.position {
             Position::Replace(id) => {
                 self.store.write_full_at(
                     id,
@@ -589,7 +553,7 @@ impl<'a> InstWriter<'a> {
                     self.memory,
                     implicit,
                 );
-                (id, None)
+                id
             }
             Position::Insert { block, before } => {
                 let id =
@@ -600,14 +564,11 @@ impl<'a> InstWriter<'a> {
                 } else {
                     self.layout.append_inst(block, id);
                 }
-                (id, Some(block))
+                id
             }
         };
         if let Some(changes) = self.changes {
             changes.insts.push(id);
-            if let Some(block) = block {
-                changes.blocks.push(block);
-            }
         }
         id
     }

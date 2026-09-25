@@ -8,7 +8,99 @@ use cranelift_entity::SecondaryMap;
 use hashbrown::HashMap;
 use std::format;
 use std::vec::Vec;
-use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackBatch, StackSlot, VReg};
+use veloc_lir::{InstId, MachineFunction, PReg, Reg, StackBatch, StackSlot, Type, VReg};
+
+/// Physical occupancy after whole-range allocation. Register IDs denote storage
+/// roots (e.g. eax/rax share one ID), not independently allocatable views.
+#[derive(Default)]
+struct RegisterLiveness {
+    fixed: Vec<Vec<(u32, u32)>>,
+    assigned: Vec<Vec<(u32, u32, Type)>>,
+}
+
+impl RegisterLiveness {
+    fn fixed_at(&self, reg: Reg, pos: u32) -> bool {
+        self.fixed.get(reg.index() as usize).is_some_and(|ranges| {
+            let next = ranges.partition_point(|&(_, end)| end < pos);
+            ranges.get(next).is_some_and(|&(start, _)| start <= pos + 1)
+        })
+    }
+
+    fn value_at(&self, reg: Reg, pos: u32) -> Option<Type> {
+        let ranges = self.assigned.get(reg.index() as usize)?;
+        let next = ranges.partition_point(|&(_, end, _)| end < pos);
+        ranges
+            .get(next)
+            .and_then(|&(start, _, ty)| (start <= pos + 1).then_some(ty))
+    }
+}
+
+/// One instruction's temporary locations and preservation transfers. Never
+/// borrow an operand location, even if its occurrence is processed later.
+struct Temporaries<'a> {
+    target: &'a dyn TargetRegalloc,
+    live: &'a RegisterLiveness,
+    inst: InstId,
+    pos: u32,
+    blocked: Vec<Reg>,
+    restore: bool,
+    frame: &'a mut StackBatch,
+    slots: &'a mut HashMap<(Reg, Type), StackSlot>,
+    saved: Vec<(Reg, StackSlot, Type)>,
+}
+
+impl Temporaries<'_> {
+    fn take(&mut self, class: RegClass, accepts: impl Fn(Reg) -> bool) -> Result<Reg> {
+        let candidates = || {
+            self.target
+                .spill_scratch(class)
+                .iter()
+                .chain(self.target.desc().allocatable_regs_in_class(class))
+                .copied()
+        };
+        let available = |reg: Reg| {
+            accepts(reg) && !self.blocked.contains(&reg) && !self.live.fixed_at(reg, self.pos)
+        };
+        let free =
+            candidates().find(|&reg| available(reg) && self.live.value_at(reg, self.pos).is_none());
+        let reg = free
+            .or_else(|| {
+                self.restore
+                    .then(|| candidates().find(|&reg| available(reg)))
+                    .flatten()
+            })
+            .ok_or_else(|| {
+                Error::codegen(format!(
+                    "no compatible {class:?} temporary at {:?}",
+                    self.inst
+                ))
+            })?;
+        if let Some(ty) = self.live.value_at(reg, self.pos) {
+            // Preserve the resident value's width, not the new temporary's width.
+            let slot = if let Some(&slot) = self.slots.get(&(reg, ty)) {
+                slot
+            } else {
+                let layout = self
+                    .target
+                    .desc()
+                    .data_layout
+                    .layout_of(ty)
+                    .ok_or_else(|| Error::codegen("unknown borrowed register storage layout"))?;
+                let size = layout.alloc_size().ok_or_else(|| {
+                    Error::codegen("borrowed register requires fixed storage size")
+                })?;
+                let slot =
+                    self.frame
+                        .alloc_object(veloc_lir::StackObject::Local, size, layout.align);
+                self.slots.insert((reg, ty), slot);
+                slot
+            };
+            self.saved.push((reg, slot, ty));
+        }
+        self.blocked.push(reg);
+        Ok(reg)
+    }
+}
 
 #[derive(Clone)]
 struct Interval {
@@ -218,7 +310,28 @@ impl<'a> RegisterAllocator<'a> {
                 self.spill(interval.reg, f, &mut frame)?;
             }
         }
-        let instructions = self.plan(&mut source)?;
+        let mut physical = RegisterLiveness {
+            fixed,
+            assigned: Vec::new(),
+        };
+        for (vreg, range) in ranges.iter() {
+            if let (Some(preg), Some((start, end))) = (self.allocation[vreg], *range) {
+                let reg: Reg = preg.into();
+                let index = reg.index() as usize;
+                physical
+                    .assigned
+                    .resize_with(physical.assigned.len().max(index + 1), Vec::new);
+                physical.assigned[index].push((
+                    start,
+                    end,
+                    source.vreg_data(Reg::new_vreg(vreg.as_u32())).ty,
+                ));
+            }
+        }
+        for ranges in &mut physical.assigned {
+            ranges.sort_unstable_by_key(|&(start, _, _)| start);
+        }
+        let instructions = self.plan(&source, &mut frame, &physical)?;
         let edges = self.plan_edges(&mut source, &mut frame)?;
         Ok(Allocation {
             source,
@@ -249,8 +362,15 @@ impl<'a> RegisterAllocator<'a> {
         Ok(())
     }
 
-    fn plan(&self, f: &mut MachineFunction) -> Result<SecondaryMap<InstId, InstAllocation>> {
+    fn plan(
+        &self,
+        f: &MachineFunction,
+        frame: &mut StackBatch,
+        live: &RegisterLiveness,
+    ) -> Result<SecondaryMap<InstId, InstAllocation>> {
         let mut instructions = SecondaryMap::new();
+        let mut slots = HashMap::new();
+        let mut pos = 0;
         let mut block = f.blocks().next();
         while let Some(current_block) = block {
             let next_block = f.layout().next_block(current_block);
@@ -279,16 +399,45 @@ impl<'a> RegisterAllocator<'a> {
                             })
                             .all(|constraint| constraint.registers.contains(&reg))
                     };
+                    let accepts_value = |value: Reg, location: Reg| {
+                        inst.inputs()
+                            .iter()
+                            .enumerate()
+                            .all(|(i, &reg)| reg != value || accepts(false, i, location))
+                            && inst
+                                .results()
+                                .iter()
+                                .enumerate()
+                                .all(|(i, &reg)| reg != value || accepts(true, i, location))
+                    };
                     if ties.len() > 1 {
                         return Err(Error::codegen(
                             "multiple output reuse constraints require parallel allocation edits",
                         ));
                     }
                     let mut plan = InstAllocation::default();
-                    let mut occupied: Vec<_> = inst.uses().filter(|r| r.is_preg()).collect();
-                    if !self.target.is_call(inst) {
-                        occupied.extend(inst.defs().chain(inst.clobbers()).filter(|r| r.is_preg()));
-                    }
+                    let blocked = inst
+                        .uses()
+                        .chain(inst.defs())
+                        .chain(inst.clobbers())
+                        .filter_map(|reg| reg.as_preg().or_else(|| self.assigned(reg)))
+                        .map(Reg::from)
+                        .collect();
+                    let mut temps = Temporaries {
+                        target: self.target,
+                        live,
+                        inst: id,
+                        pos,
+                        blocked,
+                        // Restores after branches/returns would not execute on all paths.
+                        restore: matches!(
+                            self.target.control_flow(inst),
+                            veloc_lir::ControlFlow::Next | veloc_lir::ControlFlow::Call
+                        ),
+                        frame,
+                        slots: &mut slots,
+                        saved: Vec::new(),
+                    };
                     let mut bindings = HashMap::new();
                     let mut loads = Vec::new();
                     let mut stores = Vec::new();
@@ -329,24 +478,49 @@ impl<'a> RegisterAllocator<'a> {
                                     bindings.insert(reg, preg);
                                     preg
                                 } else {
-                                    let preg = self
-                                .target
-                                .spill_scratch(class)
-                                .iter()
-                                .copied()
-                                .find(|r| {
-                                    accepts(
-                                        write,
-                                        if write { index } else { index - result_count },
-                                        *r,
-                                    ) && !occupied.contains(r)
-                                        && !bindings.values().any(|s| s == r)
-                                })
-                                .ok_or_else(|| {
-                                    Error::codegen(
-                                        "insufficient dedicated spill temporaries for instruction",
-                                    )
-                                })?;
+                                    // Inputs are read before results are written. An
+                                    // untied spilled result may reuse one reload's
+                                    // location, but two distinct inputs may not.
+                                    let reuse = read
+                                        .then(|| {
+                                            inst.results()
+                                                .iter()
+                                                .enumerate()
+                                                .filter(|(result, _)| {
+                                                    !ties.iter().any(|tie| tie.result == *result)
+                                                })
+                                                .filter_map(|(_, dst)| bindings.get(dst).copied())
+                                                .find(|r| {
+                                                    accepts_value(reg, *r)
+                                                        && self
+                                                            .target
+                                                            .desc()
+                                                            .registers
+                                                            .reg_class(class)
+                                                            .is_some_and(|info| {
+                                                                info.members.contains(r)
+                                                            })
+                                                        && !loads
+                                                            .iter()
+                                                            .any(|&(_, loaded, _)| loaded == *r)
+                                                })
+                                        })
+                                        .flatten();
+                                    let preg = if let Some(reg) = reuse {
+                                        reg
+                                    } else {
+                                        temps.take(class, |location| {
+                                            accepts_value(reg, location)
+                                                && ties.iter().all(|tie| {
+                                                    !write
+                                                        || tie.result != index
+                                                        || accepts_value(
+                                                            inst.inputs()[tie.use_operand],
+                                                            location,
+                                                        )
+                                                })
+                                        })?
+                                    };
                                     bindings.insert(reg, preg);
                                     preg
                                 };
@@ -401,19 +575,13 @@ impl<'a> RegisterAllocator<'a> {
                         let work = if conflicts {
                             let data = f.vreg_data(if dst.is_vreg() { dst } else { input });
                             let class = self.target.desc().reg_class_for_vreg(&ty, data.bank);
-                            self.target
-                                .spill_scratch(class)
-                                .iter()
-                                .filter_map(|r| r.as_preg())
-                                .find(|r| {
-                                    accepts(true, tie.result, (*r).into())
-                                        && accepts(false, input_index, (*r).into())
-                                        && !plan.locations.contains(r)
-                                        && !plan.results.contains(r)
-                                })
-                                .ok_or_else(|| {
-                                    Error::codegen("insufficient temporary for tied output")
+                            temps
+                                .take(class, |reg| {
+                                    accepts(true, tie.result, reg)
+                                        && accepts(false, input_index, reg)
                                 })?
+                                .as_preg()
+                                .expect("physical temporary")
                         } else {
                             output_location
                         };
@@ -423,6 +591,15 @@ impl<'a> RegisterAllocator<'a> {
                         }
                         plan.results[tie.result] = work;
                         plan.locations[input_index] = work;
+                    }
+                    // Preservation encloses all reloads, copies and result stores.
+                    for &(reg, slot, ty) in &temps.saved {
+                        plan.before.push(Transfer::Spill {
+                            kind: SpillKind::Store,
+                            reg,
+                            slot,
+                            ty,
+                        });
                     }
                     // Reloads precede input copies; output copies precede spill stores.
                     for (dst, src, ty) in copies_after {
@@ -450,8 +627,17 @@ impl<'a> RegisterAllocator<'a> {
                     for (dst, src, ty) in copies_before {
                         plan.before.push(Transfer::Copy { dst, src, ty });
                     }
+                    for (reg, slot, ty) in temps.saved {
+                        plan.after.push(Transfer::Spill {
+                            kind: SpillKind::Load,
+                            reg,
+                            slot,
+                            ty,
+                        });
+                    }
                     instructions[id] = plan;
                 }
+                pos += 2;
                 cursor = next_id;
             }
             block = next_block;
@@ -463,11 +649,84 @@ impl<'a> RegisterAllocator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::TargetInfo;
     use crate::target::x86_64::{
         X86_64TargetMachine,
         inst::{REG_RAX, REG_RCX, REG_RDX, TargetInst},
     };
     use veloc_lir::Type;
+
+    #[test]
+    fn three_spilled_inputs_use_free_or_preserved_registers() {
+        let target = X86_64TargetMachine::new(crate::TargetConfig::default()).unwrap();
+        for occupied in [false, true] {
+            let mut f = MachineFunction::new("indexed_store".into());
+            let src = f.editor().alloc_vreg(Type::I64);
+            let base = f.editor().alloc_vreg(Type::PTR);
+            let index = f.editor().alloc_vreg(Type::PTR);
+            let mut ids = Vec::new();
+            for _ in 0..2 {
+                let block = f.entry_block();
+                ids.push(TargetInst::X86Store64Index.write(
+                    f.editor().at_end(block).writer(),
+                    &[],
+                    &[src, base, index],
+                    [veloc_lir::FieldValue::Imm(16)],
+                ));
+            }
+            let mut allocator = RegisterAllocator::new(&target);
+            let mut frame = f.stack_frame.batch();
+            for value in [src, base, index] {
+                allocator.spill(value, &f, &mut frame).unwrap();
+            }
+            let mut live = RegisterLiveness::default();
+            if occupied {
+                for &reg in target.desc().allocatable_regs_in_class(RegClass::GPR) {
+                    if target.spill_scratch(RegClass::GPR).contains(&reg) {
+                        continue;
+                    }
+                    let index = reg.index() as usize;
+                    live.assigned
+                        .resize_with(live.assigned.len().max(index + 1), Vec::new);
+                    live.assigned[index].push((0, 100, Type::I64));
+                }
+            }
+            let plans = allocator.plan(&f, &mut frame, &live).unwrap();
+            // Repeated borrowing reuses the preservation slot.
+            assert_eq!(frame.slots().len(), 3 + usize::from(occupied));
+            for id in ids {
+                let plan = &plans[id];
+                let mut locations = plan.locations.to_vec();
+                locations.sort_unstable();
+                locations.dedup();
+                assert_eq!(locations.len(), 3);
+                assert_eq!(plan.before.len(), 3 + usize::from(occupied));
+                assert_eq!(plan.after.len(), usize::from(occupied));
+                if occupied {
+                    let Transfer::Spill {
+                        kind: SpillKind::Store,
+                        reg,
+                        slot,
+                        ty,
+                    } = plan.before[0]
+                    else {
+                        panic!("save before reloads")
+                    };
+                    let Transfer::Spill {
+                        kind: SpillKind::Load,
+                        reg: restored,
+                        slot: saved,
+                        ty: saved_ty,
+                    } = plan.after[0]
+                    else {
+                        panic!("restore after instruction")
+                    };
+                    assert_eq!((reg, slot, ty), (restored, saved, saved_ty));
+                    assert_eq!(ty, Type::I64);
+                }
+            }
+        }
+    }
 
     #[test]
     fn tied_allocation_preserves_inputs_with_collisions_and_spills() {
@@ -495,7 +754,9 @@ mod tests {
                 allocator.assign(rhs, REG_RCX);
                 allocator.assign(dst, if mode == 0 { REG_RDX } else { REG_RCX });
             }
-            let instructions = allocator.plan(&mut f).unwrap();
+            let instructions = allocator
+                .plan(&f, &mut frame, &RegisterLiveness::default())
+                .unwrap();
             let plan = &instructions[id];
             assert_eq!(plan.results[0], plan.locations[1]);
             assert_ne!(plan.results[0], plan.locations[0]);

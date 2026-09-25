@@ -95,8 +95,9 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
     let mut code = String::from(
         "// @generated from checked operation semantics.\n\
          #[allow(unused_variables, unreachable_patterns)]\n\
-         pub fn evaluate(opcode: Opcode, args: &[ScalarConst], results: &[Type], properties: &[IntCC]) -> Option<Vec<ScalarConst>> {\n\
-         match opcode {\n",
+         pub fn fold(dfg: &veloc_mir::dfg::DataFlowGraph, inst: veloc_mir::Inst, mut constant: impl FnMut(Value) -> Option<ScalarConst>) -> Option<smallvec::SmallVec<[ScalarConst; 2]>> {\n\
+         let data = dfg.inst(inst);\n\
+         match data.opcode() {\n",
     );
     let mut supported = Vec::new();
     for prepared in &plan.operations {
@@ -123,10 +124,6 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
                 .map(|s| format!("Type::{}", s.exact()))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let properties = (0..sem.properties.len())
-                .map(|i| format!("p{i}"))
-                .collect::<Vec<_>>()
-                .join(", ");
             let guard = scalars[..inputs]
                 .iter()
                 .enumerate()
@@ -138,7 +135,7 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
             } else {
                 format!(" if {guard}")
             };
-            writeln!(arms, "([{args}], [{results}], [{properties}]){guard} => {{").unwrap();
+            writeln!(arms, "([{args}], [{results}]){guard} => {{").unwrap();
             emit(sem, instance, &variants[inputs..], &mut arms);
             arms.push_str("},\n");
         }
@@ -147,9 +144,32 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
             let inputs = sem.inputs as usize;
             let results = prepared.cases[0].instance.kinds.len() - inputs;
             let constraints = applicability(op);
+            let args = (0..inputs)
+                .map(|i| format!("constant(operands[{i}])?"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let types = (0..results)
+                .map(|i| format!("dfg.value_type(outputs[{i}])"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let fields = prepared
+                .properties
+                .iter()
+                .enumerate()
+                .map(|(i, field)| format!("{field}: p{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let properties = if fields.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "let veloc_mir::InstView::{} {{ {fields}, .. }} = data else {{ unreachable!(\"semantic property layout\") }};\n",
+                    op.format
+                )
+            };
             writeln!(
                 code,
-                "Opcode::{} if args.len() == {inputs} && results.len() == {results} => {{\n{constraints}match (args, results, properties) {{\n{arms}_ => None,\n}}\n}},",
+                "Opcode::{} => {{\nlet operands = dfg.operands(inst);\nlet outputs = dfg.inst_results(inst);\nassert_eq!(operands.len(), {inputs}, \"semantic operand count\");\nassert_eq!(outputs.len(), {results}, \"semantic result count\");\nlet args = [{args}];\nlet results = [{types}];\nfor (&value, constant) in operands.iter().zip(&args) {{ assert_eq!(dfg.value_type(value), constant.ty(), \"constant fact type\"); }}\n{properties}{constraints}match (&args, &results) {{\n{arms}_ => None,\n}}\n}},",
                 op.name,
             )
             .unwrap();
@@ -163,7 +183,6 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
     };
     writeln!(code, "/// Whether this opcode has a generated scalar constant evaluator.\npub const fn can_fold(opcode: Opcode) -> bool {{ {supported} }}").unwrap();
     code.push_str(&properties(defs, plan));
-    code.push_str(&algebraic_rules(defs));
     code
 }
 
@@ -313,7 +332,7 @@ fn emit(sem: &Semantic, instance: &Instance, results: &[String], code: &mut Stri
         })
         .collect::<Vec<_>>()
         .join(", ");
-    writeln!(code, "Some(alloc::vec![{values}])").unwrap();
+    writeln!(code, "Some(smallvec::smallvec![{values}])").unwrap();
 }
 fn comparison(p: IntPredicate, bits: u16, lhs: u16, rhs: u16) -> String {
     let operator = match p.outcomes() {
@@ -335,61 +354,6 @@ fn comparison(p: IntPredicate, bits: u16, lhs: u16, rhs: u16) -> String {
         }
     };
     format!("u128::from({} {operator} {})", operand(lhs), operand(rhs))
-}
-
-fn algebraic_rules(defs: &Definitions) -> String {
-    let mut code = String::from(
-        "#[allow(unused_variables, unreachable_patterns)] pub(crate) fn algebraic<V: Copy + PartialEq>(op: Opcode, args: &[V; 2], constants: &[Option<ScalarConst>; 2]) -> Option<Replacement<V>> { match op {\n",
-    );
-    for op in &defs.ops {
-        let Some(sem) = &op.semantics else { continue };
-        // Only reviewed primitive laws are currently available. No speculative
-        // inference for effects, traps, or composed expressions.
-        if sem.primitive().is_none()
-            || (op.identity.is_none()
-                && op.absorbing.is_none()
-                && !op.traits.contains("IDEMPOTENT"))
-        {
-            continue;
-        }
-        writeln!(code, "Opcode::{} => {{", op.name).unwrap();
-        for (value, absorbing) in [(op.identity, false), (op.absorbing, true)] {
-            let Some(value) = value else { continue };
-            let patterns = [
-                ("I8", 8),
-                ("I16", 16),
-                ("I32", 32),
-                ("I64", 64),
-                ("Bool", 1),
-            ]
-            .into_iter()
-            .map(|(variant, bits)| {
-                let raw = value.eval(bits).unwrap();
-                let ty = if variant == "Bool" { "BOOL" } else { variant };
-                format!("(c.ty() == Type::{ty} && c.to_bits() == {raw}u64)")
-            })
-            .collect::<Vec<_>>()
-            .join(" || ");
-            for i in 0..2 {
-                let result = if absorbing {
-                    "Replacement::Constants(alloc::vec![c])".into()
-                } else {
-                    format!("Replacement::Value(args[{}])", 1 - i)
-                };
-                writeln!(
-                    code,
-                    "if let Some(c) = constants[{i}] && ({patterns}) {{ return Some({result}); }}"
-                )
-                .unwrap();
-            }
-        }
-        if op.traits.contains("IDEMPOTENT") {
-            code.push_str("if args[0] == args[1] { return Some(Replacement::Value(args[0])); }\n");
-        }
-        code.push_str("None\n},\n");
-    }
-    code.push_str("_ => None,\n}\n}\n");
-    code
 }
 
 /// Concrete backend for the trusted bitvector vocabulary. The reference evaluator

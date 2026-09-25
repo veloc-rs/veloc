@@ -127,9 +127,9 @@ impl<'a> Legalizer<'a> {
             }
             let (result, changes) = mfunc.editor().track(|f| rewrite.apply(id, f));
             result?;
-            if changes.insts.is_empty() && changes.blocks.is_empty() {
+            if changes.insts.is_empty() {
                 return Err(Error::codegen(std::format!(
-                    "legalization rule {rule:?} made no edits for {id:?} {opcode:?}"
+                    "legalization rule {rule:?} made no instruction edits for {id:?} {opcode:?}"
                 )));
             }
             rewrites += 1;

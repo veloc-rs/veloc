@@ -214,7 +214,7 @@ fn missing_rules_and_nonconvergent_expansions_are_errors() {
             unreachable!("test contains no calls")
         })
         .unwrap_err();
-    assert!(std::format!("{error}").contains("made no edits"));
+    assert!(std::format!("{error}").contains("made no instruction edits"));
 }
 
 #[test]
@@ -287,7 +287,6 @@ fn insertion_is_reported() {
             .write(MachineOpcode::Generic(GenericOpcode::Add), &[], &[], [])
     });
     assert!(changes.insts.contains(&inst));
-    assert!(changes.blocks.contains(&block));
 }
 
 #[test]

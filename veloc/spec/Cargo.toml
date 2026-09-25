@@ -13,5 +13,6 @@ path = "src/bin/veloc-spec.rs"
 required-features = ["cli"]
 
 [dependencies]
+veloc-bytecode = { workspace = true }
 clap = { workspace = true, optional = true }
 veloc-semantics = { workspace = true }

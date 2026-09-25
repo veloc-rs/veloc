@@ -29,10 +29,20 @@ pub struct InstWriter<'a> {
 impl InstWriter<'_> {
     /// Copy an instruction in this DFG, retaining its logical inputs but owning new pooled data.
     pub fn copy(self, inst: Inst) -> Inst {
+        let values = self.dfg.inst(inst).operands_owned();
+        self.copy_with_operands(inst, &values)
+    }
+
+    /// Copy properties and replace all inputs as one construction operation.
+    pub fn copy_with_operands(self, inst: Inst, values: &[Value]) -> Inst {
+        assert_eq!(
+            self.dfg.operands(inst).len(),
+            values.len(),
+            "operand count mismatch"
+        );
         let fields = self.dfg.instructions[inst].fields.clone();
         let fields = fields.clone_in(&mut self.dfg.fields);
-        let values = self.dfg.inst(inst).operands_owned();
-        self.write(fields, &values)
+        self.write(fields, values)
     }
 
     fn write(self, fields: InstFields, values: &[Value]) -> Inst {
