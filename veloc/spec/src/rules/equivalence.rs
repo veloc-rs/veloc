@@ -186,30 +186,11 @@ pub(crate) fn generate(
         "fn group(opcode: {opcode}) -> Option<Group> {{\nmatch opcode {{"
     )
     .unwrap();
-    let mut dependencies = BTreeSet::new();
     for (root, rules) in groups {
-        for rule in &rules {
-            rule.lhs
-                .dependencies(&root, &mut Vec::new(), &mut dependencies);
-        }
         let group = program.group(&rules);
         writeln!(output, "{opcode}::{root} => Some(Group {{ {group} }}),").unwrap();
     }
     writeln!(output, "_ => None,\n}}\n}}").unwrap();
-    writeln!(output, "static DEPENDENCIES: &[Dependency] = &[").unwrap();
-    for (root, path) in dependencies {
-        let path = path
-            .iter()
-            .map(|op| format!("{opcode}::{op}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(
-            output,
-            "Dependency {{ root: {opcode}::{root}, path: &[{path}] }},"
-        )
-        .unwrap();
-    }
-    writeln!(output, "];").unwrap();
     output.push_str(&program.emit(opcode));
     Ok(output)
 }
@@ -219,7 +200,6 @@ struct CheckedRule {
     rhs: Expr,
     guard: Option<(usize, u64, bool)>,
     types: String,
-    parameters: usize,
     name: String,
 }
 
@@ -272,7 +252,6 @@ impl Checker<'_> {
             rhs: rhs_expr,
             guard,
             types: accepted,
-            parameters: self.parameters.len(),
             name: name.to_owned(),
         })
     }
@@ -405,17 +384,120 @@ impl Code {
     }
 }
 
+struct Action {
+    entry: usize,
+    slots: usize,
+    name: String,
+    captures: Vec<usize>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Step {
+    Type(usize),
+    Scan {
+        source: usize,
+        opcode: usize,
+        cursor: usize,
+        bindings: Vec<Vec<usize>>,
+    },
+    Same(usize, usize),
+    Equal(usize, usize),
+    Constant(usize, usize, bool),
+    Capture(usize),
+}
+
+struct Search {
+    step: Step,
+    scan: Option<usize>,
+    children: Vec<Search>,
+}
+
+/// Assign identities on the structured plan, before bytecode layout exists.
+fn number_scans(nodes: &mut [Search], next: &mut usize) {
+    for node in nodes {
+        if matches!(node.step, Step::Scan { .. }) {
+            node.scan = Some(*next);
+            *next += 1;
+        }
+        number_scans(&mut node.children, next);
+    }
+}
+
+/// Prune at generation time; the VM never dispatches on a requested rule.
+fn serves(node: &Search, rules: &BTreeSet<usize>) -> bool {
+    match node.step {
+        Step::Capture(rule) => rules.contains(&rule),
+        _ => node.children.iter().any(|child| serves(child, rules)),
+    }
+}
+
+fn insert_path(nodes: &mut Vec<Search>, steps: &[Step]) {
+    let Some((step, rest)) = steps.split_first() else {
+        return;
+    };
+    let index = nodes
+        .iter()
+        .position(|node| node.step == *step)
+        .unwrap_or_else(|| {
+            nodes.push(Search {
+                step: step.clone(),
+                scan: None,
+                children: Vec::new(),
+            });
+            nodes.len() - 1
+        });
+    insert_path(&mut nodes[index].children, rest);
+}
+
+fn collect_vars(expr: &Expr, out: &mut BTreeSet<usize>) {
+    match expr {
+        Expr::Variable(v) => {
+            out.insert(*v);
+        }
+        Expr::Apply(_, args) => {
+            for arg in args {
+                collect_vars(arg, out);
+            }
+        }
+        Expr::Constant(_) => {}
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Edge {
+    opcode: usize,
+    columns: Vec<usize>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Event {
+    Added(usize),
+    Constant,
+    Merged,
+}
+
+struct Trigger {
+    root: usize,
+    // Used only to select a query subtree during generation.
+    rules: BTreeSet<usize>,
+    entry: usize,
+    slot: usize,
+    event: Event,
+    scan: Option<usize>,
+    path: Vec<Edge>,
+}
+
 struct Bytecode {
+    scans: usize,
     code: Code,
     opcodes: Vec<String>,
     constants: Vec<u64>,
-    captures: Vec<usize>,
+    bindings: Vec<Vec<Vec<usize>>>,
+    actions: Vec<Action>,
+    triggers: Vec<Trigger>,
     types: Vec<String>,
-    names: Vec<String>,
-    bound: BTreeSet<usize>,
     slots: usize,
     cursors: usize,
-    retry: usize,
     commutative: BTreeSet<String>,
     input_types: BTreeMap<String, Vec<bool>>,
 }
@@ -423,16 +505,16 @@ struct Bytecode {
 impl Bytecode {
     fn new(defs: &Definitions) -> Self {
         Self {
+            scans: 0,
             code: Code::default(),
             opcodes: Vec::new(),
             constants: Vec::new(),
-            captures: Vec::new(),
+            bindings: Vec::new(),
+            actions: Vec::new(),
+            triggers: Vec::new(),
             types: Vec::new(),
-            names: Vec::new(),
-            bound: BTreeSet::new(),
             slots: 0,
             cursors: 0,
-            retry: 0,
             commutative: defs
                 .ops
                 .iter()
@@ -461,109 +543,268 @@ impl Bytecode {
 
     fn group(&mut self, rules: &[CheckedRule]) -> String {
         let entry = self.code.bytes.len();
-        let (mut slots, mut cursors) = (0, 0);
-        let mut previous = None;
-        let mut exit = None;
+        let first = self.actions.len();
+        let mut tree = Vec::new();
+        let (mut slots, mut cursors) = (1, 0);
         for rule in rules {
+            self.slots = 1;
+            self.cursors = 0;
+            let mut vars = BTreeMap::new();
             let ty = crate::bytecode::intern(&mut self.types, rule.types.clone());
-            if previous != Some(ty) {
-                if let Some(offset) = exit {
-                    self.code.patch(offset, "failure", self.code.bytes.len());
-                }
-                exit = Some(self.code.emit(Op::CheckTypeIn {
-                    value: 0,
-                    types: ty,
-                    failure: 0,
-                }));
-                previous = Some(ty);
+            let mut steps = vec![Step::Type(ty)];
+            self.pattern(&rule.lhs, 0, &mut vars, &mut steps);
+            if let Some((var, value, equal)) = rule.guard {
+                let constant = self.constant(value);
+                steps.push(Step::Constant(vars[&var], constant, equal));
             }
-            let name = crate::bytecode::intern(&mut self.names, rule.name.clone());
-            self.code.emit(Op::StopIfConstant {});
-            let begin = self.code.emit(Op::Begin {
-                name,
-                captures: self.captures.len(),
-                len: 0,
+            let mut captures = BTreeSet::new();
+            collect_vars(&rule.rhs, &mut captures);
+            let captures: Vec<_> = captures.into_iter().collect();
+            let action = self.actions.len();
+            self.actions.push(Action {
+                entry: 0,
+                slots: 0,
+                name: rule.name.clone(),
+                captures: captures.iter().map(|v| vars[v]).collect(),
             });
-            let start = self.captures.len();
-            let size = self.compile(&rule.lhs, &rule.rhs, rule.guard, rule.parameters);
-            self.code.patch(begin, "len", self.captures.len() - start);
-            slots = slots.max(size);
+            steps.push(Step::Capture(action));
+            insert_path(&mut tree, &steps);
+            slots = slots.max(self.slots);
             cursors = cursors.max(self.cursors);
         }
-        if let Some(offset) = exit {
-            self.code.patch(offset, "failure", self.code.bytes.len());
+        number_scans(&mut tree, &mut self.scans);
+        let first_trigger = self.triggers.len();
+        self.collect_triggers(&tree, &mut Vec::new());
+
+        // A shared input activates all relevant rules, not one rule task at a
+        // time. Exact input identity includes the stable scan and reverse path.
+        let mut queries = BTreeMap::new();
+        for trigger in self.triggers.drain(first_trigger..) {
+            let key = (
+                trigger.root,
+                trigger.slot,
+                trigger.event.clone(),
+                trigger.scan,
+                trigger.path.clone(),
+            );
+            queries
+                .entry(key)
+                .and_modify(|old: &mut Trigger| old.rules.extend(trigger.rules.iter().copied()))
+                .or_insert(trigger);
         }
+        let mut entries = BTreeMap::new();
+        let mut exits = Vec::new();
+        for (_, mut trigger) in queries {
+            // Different inputs can use the same selected query. Emit it once.
+            trigger.entry = if let Some(&entry) = entries.get(&trigger.rules) {
+                entry
+            } else {
+                let entry = self.code.bytes.len();
+                exits.extend(self.search(&tree, &trigger.rules));
+                entries.insert(trigger.rules.clone(), entry);
+                entry
+            };
+            self.triggers.push(trigger);
+        }
+        self.patch_exits(exits, self.code.bytes.len());
         self.code.emit(Op::Return {});
+        for (offset, rule) in rules.iter().enumerate() {
+            self.actions[first + offset].entry = self.code.bytes.len();
+            let mut captures = BTreeSet::new();
+            collect_vars(&rule.rhs, &mut captures);
+            let captures: Vec<_> = captures.into_iter().collect();
+            let mut values = captures.len() + 1;
+            if let Expr::Constant(value) = rule.rhs {
+                let constant = self.constant(value);
+                self.code.emit(Op::SetConstant { constant });
+            } else {
+                let value = self.build(&rule.rhs, &captures, &mut values);
+                self.code.emit(Op::Union { value });
+            }
+            self.code.emit(Op::Return {});
+            self.actions[first + offset].slots = values;
+        }
         format!("entry: {entry}, slots: {slots}, cursors: {cursors}")
     }
 
-    fn compile(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        guard: Option<(usize, u64, bool)>,
-        parameters: usize,
-    ) -> usize {
-        self.bound.clear();
-        self.slots = parameters + 1;
-        self.cursors = 0;
-        self.retry = 0;
-        let query_exit = self.scan(lhs, 0);
-        if let Some((variable, value, equal)) = guard {
-            let constant = self.constant(value);
-            self.code.emit(if equal {
-                Op::CheckConstantEq {
-                    value: variable + 1,
-                    constant,
-                    failure: self.retry,
-                }
-            } else {
-                Op::CheckConstantNe {
-                    value: variable + 1,
-                    constant,
-                    failure: self.retry,
-                }
-            });
+    fn patch_exits(&mut self, exits: Vec<(usize, &'static str)>, target: usize) {
+        for (pc, field) in exits {
+            self.code.patch(pc, field, target);
         }
-        self.code.emit(Op::Capture {});
-        self.code.emit(Op::Jump { target: self.retry });
+    }
 
-        fn capture(expr: &Expr, variables: &mut BTreeSet<usize>) {
-            match expr {
-                Expr::Variable(v) => {
-                    variables.insert(*v);
+    /// Siblings are alternatives, not exclusive cases. Exhaust every child
+    /// before advancing its parent scan; failed checks try the next sibling.
+    fn search(&mut self, nodes: &[Search], rules: &BTreeSet<usize>) -> Vec<(usize, &'static str)> {
+        let mut exits = Vec::new();
+        for node in nodes {
+            if !serves(node, rules) {
+                continue;
+            }
+            self.patch_exits(exits, self.code.bytes.len());
+            exits = Vec::new();
+            match &node.step {
+                Step::Scan {
+                    source,
+                    opcode,
+                    cursor,
+                    bindings,
+                } => {
+                    let scan = node.scan.expect("numbered scan");
+                    let bindings = crate::bytecode::intern(&mut self.bindings, bindings.clone());
+                    self.code.emit(Op::OpenScan {
+                        scan,
+                        cursor: *cursor,
+                        source: *source,
+                        opcode: *opcode,
+                        bindings,
+                    });
+                    let retry = self.code.bytes.len();
+                    let pc = self.code.emit(Op::ScanNext {
+                        cursor: *cursor,
+                        exhausted: 0,
+                    });
+                    let children = self.search(&node.children, rules);
+                    self.patch_exits(children, retry);
+                    exits.push((pc, "exhausted"));
                 }
-                Expr::Apply(_, args) => {
-                    for arg in args {
-                        capture(arg, variables);
-                    }
+                Step::Capture(rule) => {
+                    self.code.emit(Op::Capture { rule: *rule });
+                    exits.push((self.code.emit(Op::Jump { target: 0 }), "target"));
                 }
-                Expr::Constant(_) => {}
+                step => {
+                    let op = match *step {
+                        Step::Type(types) => Op::CheckTypeIn {
+                            value: 0,
+                            types,
+                            otherwise: 0,
+                        },
+                        Step::Same(lhs, rhs) => Op::CheckSameType {
+                            lhs,
+                            rhs,
+                            otherwise: 0,
+                        },
+                        Step::Equal(lhs, rhs) => Op::CheckEqual {
+                            lhs,
+                            rhs,
+                            otherwise: 0,
+                        },
+                        Step::Constant(value, constant, true) => Op::CheckConstantEq {
+                            value,
+                            constant,
+                            otherwise: 0,
+                        },
+                        Step::Constant(value, constant, false) => Op::CheckConstantNe {
+                            value,
+                            constant,
+                            otherwise: 0,
+                        },
+                        _ => unreachable!(),
+                    };
+                    exits.push((self.code.emit(op), "otherwise"));
+                    exits.extend(self.search(&node.children, rules));
+                }
             }
         }
-        let mut captures = BTreeSet::new();
-        capture(rhs, &mut captures);
-        let captures: Vec<_> = captures.into_iter().collect();
-        self.code
-            .patch(query_exit, "failure", self.code.bytes.len());
-        self.code.emit(Op::Apply {});
-        let next_match = self.code.bytes.len();
-        self.code.emit(Op::StopIfConstant {});
-        let match_exit = self.code.emit(Op::NextMatch { failure: 0 });
-        // Slot zero remains the root in both phases.
-        let mut values = captures.len() + 1;
-        if let Expr::Constant(value) = rhs {
-            let constant = self.constant(*value);
-            self.code.emit(Op::SetConstant { constant });
-        } else {
-            let value = self.build(rhs, &captures, &mut values, next_match);
-            self.code.emit(Op::Union { value });
+        exits
+    }
+
+    fn collect_triggers(&mut self, nodes: &[Search], prefix: &mut Vec<(Step, usize)>) {
+        for node in nodes {
+            if let Step::Capture(rule) = node.step {
+                self.triggers_for(rule, prefix);
+            } else {
+                prefix.push((node.step.clone(), node.scan.unwrap_or(0)));
+                self.collect_triggers(&node.children, prefix);
+                prefix.pop();
+            }
         }
-        self.code.emit(Op::Jump { target: next_match });
-        self.code
-            .patch(match_exit, "failure", self.code.bytes.len());
-        self.captures.extend(captures.iter().map(|v| v + 1));
-        self.slots.max(values)
+    }
+
+    /// Derive wake-up entries and operand indexes from the exact scan plan
+    /// that emitted the matcher, not a second traversal of the source pattern.
+    fn triggers_for(&mut self, rule: usize, prefix: &[(Step, usize)]) {
+        let mut paths: BTreeMap<usize, Vec<Edge>> = BTreeMap::from([(0, Vec::new())]);
+        let mut root = None;
+        for (step, scan) in prefix {
+            if let Step::Scan {
+                source,
+                opcode,
+                bindings,
+                ..
+            } = step
+            {
+                root.get_or_insert(*opcode);
+                let parent = paths[source].clone();
+                self.triggers.push(Trigger {
+                    root: root.unwrap(),
+                    rules: BTreeSet::from([rule]),
+                    entry: 0,
+                    slot: *source,
+                    event: Event::Added(*opcode),
+                    scan: Some(*scan),
+                    path: parent.clone(),
+                });
+                let slots = &bindings[0];
+                for &slot in slots {
+                    // Canonical argument sorting may swap physical columns,
+                    // even for a symmetric pattern that needs only one binding.
+                    let columns =
+                        if self.commutative.contains(&self.opcodes[*opcode]) && slots.len() == 2 {
+                            vec![0, 1]
+                        } else {
+                            bindings
+                                .iter()
+                                .flat_map(|binding| binding.iter().enumerate())
+                                .filter_map(|(i, &s)| (s == slot).then_some(i))
+                                .collect::<BTreeSet<_>>()
+                                .into_iter()
+                                .collect()
+                        };
+                    let mut path = vec![Edge {
+                        opcode: *opcode,
+                        columns,
+                    }];
+                    path.extend(parent.clone());
+                    paths.insert(slot, path);
+                }
+            }
+        }
+        let root = root.expect("rule root scan");
+        let constants: BTreeSet<_> = prefix
+            .iter()
+            .filter_map(|(step, _)| {
+                if let Step::Constant(slot, _, _) = step {
+                    Some(*slot)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (slot, path) in paths {
+            if constants.contains(&slot) {
+                self.triggers.push(Trigger {
+                    root,
+                    rules: BTreeSet::from([rule]),
+                    entry: 0,
+                    slot,
+                    event: Event::Constant,
+                    scan: None,
+                    path: path.clone(),
+                });
+            }
+            // Unions can create new joins and satisfy repeated-variable checks
+            // without adding any expression. Every bound class is a dependency.
+            self.triggers.push(Trigger {
+                root,
+                rules: BTreeSet::from([rule]),
+                entry: 0,
+                slot,
+                event: Event::Merged,
+                scan: None,
+                path,
+            });
+        }
     }
 
     fn emit(&self, opcode: &str) -> String {
@@ -593,8 +834,92 @@ impl Bytecode {
             .map(|t| format!("&[{t}]"))
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(output, "#[rustfmt::skip]\nstatic PROGRAM: Program = Program {{\n    types: &[{types}],\n    names: &{:?},\n    captures: &{:?},\n    opcodes: &[{opcodes}],\n    constants: &{:?},\n    code: &[{}\n    ],\n}};",
-            self.names, self.captures, self.constants, code).unwrap();
+        let bindings = self
+            .bindings
+            .iter()
+            .enumerate()
+            .map(|(id, bindings)| {
+                let rows = bindings
+                    .iter()
+                    .map(|slots| format!("&{slots:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("        /* {id} */ &[{rows}],")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let actions = self
+            .actions
+            .iter()
+            .map(|action| {
+                format!(
+                    "Rule {{ entry: {}, slots: {}, name: {:?}, captures: &{:?} }}",
+                    action.entry, action.slots, action.name, action.captures
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        writeln!(output, "#[rustfmt::skip]\nstatic PROGRAM: Program = Program {{\n    types: &[{types}],\n    rules: &[{actions}],\n    opcodes: &[{opcodes}],\n    constants: &{:?},\n    bindings: &[\n{bindings}\n    ],\n    code: &[{}\n],\n}};",
+            self.constants, code).unwrap();
+        writeln!(output, "static TRIGGERS: &[Trigger] = &[").unwrap();
+        let mut added: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        let mut constants = Vec::new();
+        let mut merged = Vec::new();
+        let mut indexes: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+        for (id, trigger) in self.triggers.iter().enumerate() {
+            match trigger.event {
+                Event::Added(op) => added.entry(op).or_default().push(id),
+                Event::Constant => constants.push(id),
+                Event::Merged => merged.push(id),
+            }
+            let path = trigger
+                .path
+                .iter()
+                .map(|edge| {
+                    indexes
+                        .entry(edge.opcode)
+                        .or_default()
+                        .extend(&edge.columns);
+                    format!(
+                        "Edge {{ opcode: {opcode}::{}, columns: &{:?} }}",
+                        self.opcodes[edge.opcode], edge.columns
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(output, "Trigger {{ root: {opcode}::{}, entry: {}, slot: {}, scan: {:?}, path: &[{path}] }},",
+                self.opcodes[trigger.root], trigger.entry, trigger.slot, trigger.scan).unwrap();
+        }
+        writeln!(output, "];").unwrap();
+        writeln!(
+            output,
+            "pub(super) fn added(op: {opcode}) -> &'static [usize] {{ match op {{"
+        )
+        .unwrap();
+        for (op, ids) in added {
+            writeln!(output, "{opcode}::{} => &{:?},", self.opcodes[op], ids).unwrap();
+        }
+        writeln!(output, "_ => &[], }} }}").unwrap();
+        writeln!(
+            output,
+            "pub(super) const CONSTANT_TRIGGERS: &[usize] = &{constants:?};"
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "pub(super) const MERGE_TRIGGERS: &[usize] = &{merged:?};"
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "pub(super) fn indexed_columns(op: {opcode}) -> &'static [usize] {{ match op {{"
+        )
+        .unwrap();
+        for (op, columns) in indexes {
+            let columns: Vec<_> = columns.into_iter().collect();
+            writeln!(output, "{opcode}::{} => &{:?},", self.opcodes[op], columns).unwrap();
+        }
+        writeln!(output, "_ => &[], }} }}").unwrap();
         output
     }
 
@@ -612,102 +937,70 @@ impl Bytecode {
         slot
     }
 
-    fn scan(&mut self, expr: &Expr, source: usize) -> usize {
+    /// Slots follow structural traversal, independent of source variable names.
+    /// Ancestor bindings are never overwritten by descendant alternatives.
+    fn pattern(
+        &mut self,
+        expr: &Expr,
+        source: usize,
+        vars: &mut BTreeMap<usize, usize>,
+        steps: &mut Vec<Step>,
+    ) {
         let Expr::Apply(op, args) = expr else {
-            unreachable!("checked operation pattern")
+            unreachable!("operation pattern")
         };
         let cursor = self.cursors;
         self.cursors += 1;
         let opcode = self.opcode(op);
-        self.code.emit(Op::Open {
-            cursor,
-            source,
-            opcode,
-        });
-        let retry = self.code.bytes.len();
-        // Equal leaves have identical bindings in both orientations, including
-        // their uses in guards and the RHS. Keep both orientations otherwise:
-        // structural symmetry alone does not prove bindings interchangeable.
         let symmetric = match args.as_slice() {
             [Expr::Variable(a), Expr::Variable(b)] => a == b,
             [Expr::Constant(a), Expr::Constant(b)] => a == b,
             _ => false,
         };
         let commutative = args.len() == 2 && self.commutative.contains(op) && !symmetric;
-        // Allocate all destinations before emitting conditions. Repeated
-        // variables get distinct slots so CheckEqual can compare both values.
-        let slots: Vec<_> = args
-            .iter()
-            .map(|arg| match arg {
-                Expr::Variable(v) if self.bound.insert(*v) => v + 1,
-                _ => self.slot(),
-            })
-            .collect();
-        let mut bindings = slots.clone();
+        let slots: Vec<_> = args.iter().map(|_| self.slot()).collect();
+        let mut bindings = vec![slots.clone()];
         if commutative {
-            bindings.extend(slots.iter().rev().copied());
+            bindings.push(slots.iter().rev().copied().collect());
         }
-        let exit = self.code.emit(Op::Next {
+        steps.push(Step::Scan {
+            source,
+            opcode,
             cursor,
-            plans: if commutative { 2 } else { 1 },
-            failure: self.retry,
-            bindings: Words::Values(&bindings),
+            bindings,
         });
-        self.retry = retry;
         let mut children = Vec::new();
-        // Next binds the entire row before conditions or nested scans execute.
         for (column, (arg, &slot)) in args.iter().zip(&slots).enumerate() {
-            // The source is already known to have the rule type: CheckTypeIn
-            // establishes it at the root, and parent bindings establish it
-            // for nested patterns. Reuse the operation's equality constraints.
-            // A commutative scan may swap columns, so both must be inferred
-            // before omitting checks for either orientation.
             let inferred = &self.input_types[op];
-            let same_type = if commutative {
+            let same = if commutative {
                 inferred.iter().all(|&same| same)
             } else {
                 inferred[column]
             };
-            if !same_type {
-                self.code.emit(Op::CheckSameType {
-                    lhs: slot,
-                    rhs: source,
-                    failure: retry,
-                });
+            if !same {
+                steps.push(Step::Same(slot, source));
             }
             match arg {
-                Expr::Variable(v) if slot != v + 1 => {
-                    self.code.emit(Op::CheckEqual {
-                        lhs: v + 1,
-                        rhs: slot,
-                        failure: retry,
-                    });
+                Expr::Variable(v) => {
+                    if let Some(&previous) = vars.get(v) {
+                        steps.push(Step::Equal(previous, slot));
+                    } else {
+                        vars.insert(*v, slot);
+                    }
                 }
                 Expr::Constant(value) => {
                     let constant = self.constant(*value);
-                    self.code.emit(Op::CheckConstantEq {
-                        value: slot,
-                        constant,
-                        failure: retry,
-                    });
+                    steps.push(Step::Constant(slot, constant, true));
                 }
                 Expr::Apply(..) => children.push((arg, slot)),
-                _ => {}
             }
         }
         for (child, slot) in children {
-            self.scan(child, slot);
+            self.pattern(child, slot, vars, steps);
         }
-        exit
     }
 
-    fn build(
-        &mut self,
-        expr: &Expr,
-        captures: &[usize],
-        values: &mut usize,
-        failure: usize,
-    ) -> usize {
+    fn build(&mut self, expr: &Expr, captures: &[usize], values: &mut usize) -> usize {
         match expr {
             Expr::Variable(v) => {
                 return captures.binary_search(v).expect("captured RHS variable") + 1;
@@ -717,45 +1010,23 @@ impl Bytecode {
                 self.code.emit(Op::Constant {
                     dst: *values,
                     constant,
-                    failure,
                 });
             }
             Expr::Apply(op, args) => {
                 let args: Vec<_> = args
                     .iter()
-                    .map(|arg| self.build(arg, captures, values, failure))
+                    .map(|arg| self.build(arg, captures, values))
                     .collect();
                 let opcode = self.opcode(op);
                 self.code.emit(Op::Build {
                     dst: *values,
                     opcode,
                     args: Words::Values(&args),
-                    failure,
                 });
             }
         }
         let slot = *values;
         *values += 1;
         slot
-    }
-}
-
-impl Expr {
-    /// A change at any pattern position can affect the root. Store the reverse
-    /// opcode path so scheduling walks only users occurring in some pattern.
-    fn dependencies(
-        &self,
-        root: &str,
-        ancestors: &mut Vec<String>,
-        out: &mut BTreeSet<(String, Vec<String>)>,
-    ) {
-        out.insert((root.to_owned(), ancestors.iter().rev().cloned().collect()));
-        if let Self::Apply(op, args) = self {
-            ancestors.push(op.clone());
-            for arg in args {
-                arg.dependencies(root, ancestors, out);
-            }
-            ancestors.pop();
-        }
     }
 }

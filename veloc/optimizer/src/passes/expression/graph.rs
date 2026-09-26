@@ -1,5 +1,5 @@
 //! Equality indexes, congruence rebuilding and saturation over MIR values.
-use super::matching::{self, RuleContext};
+use super::matching;
 use core::hash::BuildHasher;
 use cranelift_entity::{EntityRef, SecondaryMap, packed_option::PackedOption};
 use hashbrown::{HashMap, HashSet, HashTable, hash_map::DefaultHashBuilder};
@@ -7,7 +7,7 @@ use smallvec::SmallVec;
 use veloc_mir::constant::ScalarConst;
 use veloc_mir::function::Expressions;
 use veloc_mir::{FuncBody, Inst, IntCC, Opcode as Op, Value};
-use veloc_types::{Type, TypeInfo};
+use veloc_types::Type;
 
 /// Equivalence is an overlay on MIR value identities. MIR definitions are never
 /// rewritten to union-find representatives during saturation.
@@ -102,6 +102,15 @@ struct Key {
     properties: SmallVec<[IntCC; 1]>,
 }
 
+/// Mutations are batched until congruence indexes have been repaired.
+/// Query batches order events by kind (added, constant, merged), then by ID.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Change {
+    Added(Inst),
+    Constant(Value),
+    Merged(Value),
+}
+
 /// All expression storage belongs to MIR. This structure holds only equality,
 /// analysis facts, and indexes over existing MIR values/instructions.
 pub(super) struct Graph {
@@ -117,16 +126,16 @@ pub(super) struct Graph {
     value_queued: SecondaryMap<Value, u8>,
     inst_queued: SecondaryMap<Inst, u8>,
     dirty_users: Worklist<Value, 1>,
-    changed_classes: Worklist<Value, 2>,
+    changes: Vec<Change>,
+    // Only opcode/column pairs requested by the generated query plans.
+    parents: SecondaryMap<Value, HashMap<(Op, usize), Vec<Value>>>,
     rebuild_work: Worklist<Inst, 1>,
-    rule_work: Worklist<Inst, 2>,
     analysis_work: Worklist<Inst, 4>,
     memo: HashTable<Inst>,
     hashes: SecondaryMap<Inst, u64>,
     hasher: DefaultHashBuilder,
     pub(super) relations: HashMap<(Value, Op), Vec<Value>>,
     class_ops: SecondaryMap<Value, Vec<Op>>,
-    pub(super) revision: usize,
     pub(super) limit: usize,
 }
 
@@ -144,15 +153,14 @@ impl Graph {
             inst_queued: SecondaryMap::new(),
             dirty_users: Worklist::default(),
             rebuild_work: Worklist::default(),
-            rule_work: Worklist::default(),
             analysis_work: Worklist::default(),
-            changed_classes: Worklist::default(),
+            changes: Vec::new(),
+            parents: SecondaryMap::new(),
             memo: HashTable::new(),
             hashes: SecondaryMap::new(),
             hasher: DefaultHashBuilder::default(),
             relations: HashMap::new(),
             class_ops: SecondaryMap::new(),
-            revision: 0,
             limit: usize::MAX,
         }
     }
@@ -251,12 +259,17 @@ impl Graph {
             row.push(result);
             // A new alternative can satisfy a nested pattern in an existing
             // parent even when no operand or constant fact changes.
-            self.changed_classes.push(&mut self.value_queued, class);
+            self.changes.push(Change::Added(inst));
+            for &column in matching::indexed_columns(opcode) {
+                let arg = self.find(f.dfg().operands(inst)[column]);
+                self.parents[arg]
+                    .entry((opcode, column))
+                    .or_default()
+                    .push(result);
+            }
             self.rebuild_work.push(&mut self.inst_queued, inst);
-            self.rule_work.push(&mut self.inst_queued, inst);
         }
         self.analysis_work.push(&mut self.inst_queued, inst);
-        self.revision += 1;
     }
 
     pub(super) fn union(&mut self, f: &FuncBody, a: Value, b: Value) {
@@ -301,8 +314,10 @@ impl Graph {
             target.extend(source);
         }
         self.dirty_users.push(&mut self.value_queued, a);
-        self.changed_classes.push(&mut self.value_queued, a);
-        self.revision += 1;
+        for (key, values) in core::mem::take(&mut self.parents[b]) {
+            self.parents[a].entry(key).or_default().extend(values);
+        }
+        self.changes.push(Change::Merged(a));
     }
 
     pub(super) fn constant(&self, value: Value) -> Option<ScalarConst> {
@@ -324,8 +339,7 @@ impl Graph {
         for &user in &self.users[class] {
             self.analysis_work.push(&mut self.inst_queued, user);
         }
-        self.changed_classes.push(&mut self.value_queued, class);
-        self.revision += 1;
+        self.changes.push(Change::Constant(class));
         if let Some(&other) = self.const_classes.get(&constant) {
             self.union(f, class, other);
         } else {
@@ -354,7 +368,6 @@ impl Graph {
             } else {
                 self.memo.insert_unique(hash, inst, |&i| self.hashes[i]);
             }
-            self.rule_work.push(&mut self.inst_queued, inst);
         }
         // Consolidate once after a wave of unions, rather than sorting the
         // growing winner list after every individual merge.
@@ -362,53 +375,89 @@ impl Graph {
             if self.find(class) == class {
                 self.users[class].sort_unstable();
                 self.users[class].dedup();
+                for rows in self.parents[class].values_mut() {
+                    rows.sort_unstable();
+                    rows.dedup();
+                }
             }
         }
     }
 
-    /// Follow only ancestor paths present in rule patterns. Class changes are
-    /// conservative (union, new alternative, or constant fact), but unrelated
-    /// user chains never enter the rule worklist.
-    fn wake_rules(&mut self, f: &FuncBody) {
-        let mut seen = HashSet::new();
+    /// Resolve delta entries through the operand indexes requested by the
+    /// matcher plan. Each root/opcode batch keeps all affected input positions;
+    /// seeds at the same position are searched together, not as separate tasks.
+    pub(super) fn schedule(&mut self, f: &FuncBody, queries: &mut Vec<matching::Query>) {
+        let mut changes = core::mem::take(&mut self.changes);
+        // Distinct events may become duplicates after their classes merge.
+        // Normalize once at the stable query boundary, before ordering them.
+        for change in &mut changes {
+            match change {
+                Change::Added(_) => {}
+                Change::Constant(value) | Change::Merged(value) => {
+                    *value = self.find(*value);
+                }
+            }
+        }
+        changes.sort_unstable();
+        changes.dedup();
+
+        let mut batches = HashMap::new();
         let mut frontier = HashSet::new();
         let mut next = HashSet::new();
-        while let Some(value) = self.changed_classes.pop(&mut self.value_queued) {
-            let class = self.find(value);
-            if !seen.insert(class) {
-                continue;
-            }
-            for dependency in matching::dependencies() {
+        for change in changes.drain(..) {
+            let (seed, entries) = match change {
+                Change::Added(inst) => (
+                    f.dfg().first_result(inst).expect("expression result"),
+                    matching::added(f.dfg().opcode(inst)),
+                ),
+                Change::Constant(value) => (value, matching::CONSTANT_TRIGGERS),
+                Change::Merged(value) => (value, matching::MERGE_TRIGGERS),
+            };
+            for &entry in entries {
+                let trigger = matching::trigger(entry);
                 frontier.clear();
-                frontier.insert(class);
-                for &opcode in dependency.path {
+                frontier.insert(self.find(seed));
+                for edge in trigger.path {
                     next.clear();
-                    for &value in &frontier {
-                        for &user in &self.users[value] {
-                            if self.floating[user] && f.dfg().opcode(user) == opcode {
-                                for &result in f.dfg().inst_results(user) {
-                                    next.insert(self.find(result));
-                                }
+                    for &class in &frontier {
+                        for &column in edge.columns {
+                            if let Some(rows) = self.parents[class].get(&(edge.opcode, column)) {
+                                next.extend(rows.iter().map(|&v| self.find(v)));
                             }
                         }
                     }
-                    std::mem::swap(&mut frontier, &mut next);
+                    core::mem::swap(&mut frontier, &mut next);
                     if frontier.is_empty() {
                         break;
                     }
                 }
-                for &class in &frontier {
-                    if let Some(rows) = self.relations.get(&(class, dependency.root)) {
-                        for &value in rows {
-                            self.rule_work.push(
-                                &mut self.inst_queued,
-                                f.dfg().value_inst(value).expect("relation result"),
-                            );
-                        }
+                for &root in &frontier {
+                    if !self.relations.contains_key(&(root, trigger.root)) {
+                        continue;
                     }
+                    let batch = *batches.entry((root, trigger.root)).or_insert_with(|| {
+                        let id = queries.len();
+                        queries.push(matching::Query {
+                            root,
+                            opcode: trigger.root,
+                            inputs: Default::default(),
+                        });
+                        id
+                    });
+                    queries[batch].inputs.entry(entry).or_default().push(seed);
                 }
             }
         }
+        self.changes = changes;
+        // Sort once after aggregation. Added seeds retain node identity, while
+        // grouping by class makes constrained candidate slices cheap to locate.
+        for query in queries.iter_mut() {
+            for seeds in query.inputs.values_mut() {
+                seeds.sort_unstable_by_key(|&v| (self.find(v), v));
+                seeds.dedup();
+            }
+        }
+        queries.sort_unstable_by_key(|query| (query.root, query.opcode as usize));
     }
 
     pub(super) fn literal(
@@ -462,62 +511,31 @@ impl Graph {
             "rule operation lacks a semantic recipe"
         );
         self.register_inst(ir.body(), inst);
-        self.rebuild(ir.body());
+        // Make new nodes reusable within this update batch. Existing keys made
+        // stale by unions are repaired together at the next query boundary.
+        let hash = self.hasher.hash_one(&key);
+        self.hashes[inst] = hash;
+        self.memo.insert_unique(hash, inst, |&i| self.hashes[i]);
         ir.body().dfg().first_result(inst)
     }
 
-    pub(super) fn saturate(&mut self, ir: &mut Expressions<'_>, rounds: usize, fuel: &mut usize) {
-        let mut matcher = matching::Machine::new();
-        let mut searched = HashSet::new();
-        for _ in 0..rounds {
-            let before = self.revision;
-            self.fold_constants(ir, fuel);
+    /// Close congruence and analysis work before exposing the graph to queries.
+    /// Analysis consumes exploration fuel; structural repair always finishes,
+    /// even when no budget remains, so extraction never sees stale indexes.
+    pub(super) fn prepare(&mut self, ir: &mut Expressions<'_>, fuel: &mut usize) {
+        loop {
             self.rebuild(ir.body());
-            self.wake_rules(ir.body());
-            searched.clear();
-            while *fuel > 0 {
-                let Some(inst) = self.rule_work.pop(&mut self.inst_queued) else {
-                    break;
-                };
-                *fuel -= 1;
-                if !self.floating[inst] {
-                    continue;
-                }
-                let f = ir.body();
-                let [result] = f.dfg().inst_results(inst) else {
-                    continue;
-                };
-                let result = *result;
-                // Constant classes are settled for MIR simplification. Retain
-                // their expressions for nested matches, but stop expanding them.
-                if self.constants[self.find(result)].is_some() {
-                    continue;
-                }
-                let ty = f.dfg().value_type(result);
-                let opcode = f.dfg().opcode(inst);
-                if !ty.is_integer() && ty != Type::BOOL {
-                    continue;
-                }
-                // Each search scans the entire class/opcode relation. Multiple
-                // concrete instructions must not repeat an unchanged query.
-                let query = (self.find(result), opcode);
-                if !searched.insert(query) {
-                    continue;
-                }
-                let mask = u64::MAX >> (64 - ty.element_bits().unwrap());
-                let mut context = RuleContext {
-                    graph: self,
-                    ir,
-                    ty,
-                };
-                matcher.run(&mut context, opcode, result, mask, fuel);
+            if self.analysis_work.pending.is_empty() || *fuel == 0 {
+                return;
             }
             self.fold_constants(ir, fuel);
-            if self.revision == before || *fuel == 0 {
-                break;
-            }
         }
-        self.rebuild(ir.body());
+    }
+
+    pub(super) fn is_idle(&self) -> bool {
+        self.changes.is_empty()
+            && self.analysis_work.pending.is_empty()
+            && self.rebuild_work.pending.is_empty()
     }
 
     fn fold_constants(&mut self, ir: &mut Expressions<'_>, fuel: &mut usize) {

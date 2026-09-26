@@ -1,6 +1,6 @@
 //! One equality-graph pipeline; fast mode changes budgets, not semantics.
 //!
-//! Search creates ordinary, detached MIR instructions. A Value denotes one
+//! Rewrites create ordinary, detached MIR instructions. A Value denotes one
 //! concrete result; union-find adds equivalence without changing its definition.
 //! Rebuilding repairs indexes, not MIR edges. Extraction then copies the chosen
 //! expressions into dominance-valid positions and commits only executable uses.
@@ -137,7 +137,8 @@ impl<'a> EqualitySession<'a> {
     }
 
     fn saturate(&mut self, rounds: usize, fuel: &mut usize) {
-        self.graph.saturate(&mut self.ir, rounds, fuel);
+        let stop = saturate(&mut self.graph, &mut self.ir, rounds, fuel);
+        log::debug!("egraph stopped: {stop:?}");
     }
 
     fn finish(self, model: &dyn CostModel) -> (u64, Vec<Inst>) {
@@ -181,6 +182,60 @@ impl<'a> EqualitySession<'a> {
             }
         }
         (changed, removable)
+    }
+}
+
+/// Budget stops are not saturation: unsearched inputs or pending facts may
+/// still yield useful rewrites. Every exit leaves structural indexes repaired.
+#[derive(Clone, Copy, Debug)]
+enum Stop {
+    Saturated,
+    Rounds,
+    Work,
+    Matches,
+    Nodes,
+}
+
+fn saturate(graph: &mut Graph, ir: &mut Expressions<'_>, rounds: usize, fuel: &mut usize) -> Stop {
+    let mut machine = matching::Machine::new();
+    let mut queries = Vec::new();
+    graph.prepare(ir, fuel);
+    for _ in 0..rounds {
+        if graph.is_idle() {
+            return Stop::Saturated;
+        }
+        if *fuel == 0 {
+            return Stop::Work;
+        }
+        queries.clear();
+        graph.schedule(ir.body(), &mut queries);
+        // Nothing relevant to a rule changed. Analysis is already drained by
+        // prepare, so an empty query set really is a fixed point.
+        if queries.is_empty() {
+            return Stop::Saturated;
+        }
+
+        // All roots see the same immutable graph. Even a partial search has
+        // sound matches worth applying before returning a budget stop.
+        let searched = machine.search(graph, ir.body(), &queries, fuel);
+        let applied = machine.apply(graph, ir);
+        graph.prepare(ir, fuel);
+        if let Err(limit) = searched {
+            return match limit {
+                matching::QueryLimit::Work => Stop::Work,
+                matching::QueryLimit::Matches => Stop::Matches,
+            };
+        }
+        if !applied {
+            return Stop::Nodes;
+        }
+    }
+    if graph.is_idle() {
+        Stop::Saturated
+    } else if *fuel == 0 {
+        Stop::Work
+    } else {
+        Stop::Rounds
     }
 }
 
@@ -297,7 +352,7 @@ block1():
             let left = graph.build(&mut ir, Op::IAdd, &[x, max], ty).unwrap();
             let wrapped = graph.build(&mut ir, Op::IAdd, &[left, one], ty).unwrap();
             let mut fuel = Budget::DEFAULT.match_steps;
-            graph.saturate(&mut ir, Budget::DEFAULT.rounds, &mut fuel);
+            super::saturate(&mut graph, &mut ir, Budget::DEFAULT.rounds, &mut fuel);
             assert_eq!(graph.find(cancel), graph.find(y), "{ty:?}");
             assert_eq!(graph.find(wrapped), graph.find(x), "{ty:?}");
             let extracted = graph.extract(ir.body(), &[wrapped], &GenericCost).unwrap();
