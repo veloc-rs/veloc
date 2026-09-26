@@ -315,6 +315,16 @@ impl<'a> WasmTranslator<'a> {
         offset: u64,
         access_size: u32,
     ) {
+        // The backend currently encodes the immediate as u32. Do not silently
+        // truncate a larger memory offset even if the module validates.
+        if offset > u32::MAX as u64 {
+            let always = self.builder.ins().i32const(1);
+            self.trap_if(always, TrapCode::MemoryOutOfBounds);
+            return;
+        }
+        if self.hardware_memory_checks {
+            return;
+        }
         let (_, len_var) = self.memory_vars[index as usize];
         let length = self.builder.use_var(len_var);
         let addr_i64 = self.addr_to_i64(addr);

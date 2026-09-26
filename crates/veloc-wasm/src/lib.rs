@@ -11,6 +11,7 @@ pub mod linker;
 pub mod module;
 pub mod store;
 pub mod translator;
+mod trap;
 pub mod vm;
 pub mod wasi;
 

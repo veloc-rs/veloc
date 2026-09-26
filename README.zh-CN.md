@@ -42,6 +42,16 @@ CARGO_INCREMENTAL=0 cargo test --release -p veloc-wasm --test jit \
 
 CLI 接受 `.wasm` 和 `.wat` 文件，默认调用 `_start`，并提供 `interpreter`、`jit` 和 `auto` 三种执行策略。
 
+在使用 glibc 的 Linux x86-64 上，解释器可使用受保护的虚拟内存检查 Wasm 内存读写越界：
+
+```bash
+cargo run --release -p veloc-wasm --bin veloc-wasm -- \
+  path/to/module.wasm --strategy interpreter --hardware-memory-checks
+```
+
+该选项默认关闭；JIT 仍使用软件边界检查。
+启用后会安装进程级 SIGSEGV/SIGBUS 处理器，并要求 Rust 构建支持 unwind。
+
 ## 查看生成结果
 
 ```bash

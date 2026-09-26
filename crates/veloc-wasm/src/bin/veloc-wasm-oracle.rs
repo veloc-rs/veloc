@@ -98,6 +98,7 @@ fn run_once(
         let config = Config {
             codegen: Default::default(),
             strategy,
+            hardware_memory_checks: false,
             dump_ir,
             ir_names: false,
             verify_ir: true,

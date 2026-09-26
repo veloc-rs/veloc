@@ -866,6 +866,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "veloc-fastjit"
+version = "0.1.0"
+dependencies = [
+ "object",
+ "veloc-mir",
+]
+
+[[package]]
 name = "veloc-filetests"
 version = "0.1.0"
 dependencies = [
@@ -984,6 +992,7 @@ dependencies = [
  "libc",
  "mmap-rs",
  "veloc",
+ "veloc-fastjit",
  "veloc-mir",
  "veloc-optimizer",
  "veloc-types",

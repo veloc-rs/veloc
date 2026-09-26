@@ -203,6 +203,15 @@ impl Module {
         if strategy == Strategy::Auto {
             strategy = Strategy::Jit;
         }
+        let hardware_memory_checks = engine.config().hardware_memory_checks;
+        if hardware_memory_checks {
+            if strategy != Strategy::Interpreter {
+                return Err(crate::error::Error::Unsupported(
+                    "hardware memory checks require the interpreter strategy".into(),
+                ));
+            }
+            crate::trap::install()?;
+        }
 
         // 1. Declare runtime functions and offsets
         let runtime = RuntimeFunctions::declare(&mut ir);
@@ -219,7 +228,7 @@ impl Module {
 
         // 2. Generate function declarations and trampolines
         generate_trampolines(&mut ir, &mut metadata);
-        if strategy == Strategy::Jit {
+        if matches!(strategy, Strategy::Jit | Strategy::FastJit) {
             host::generate(&mut ir, &metadata);
         }
 
@@ -254,6 +263,7 @@ impl Module {
                     runtime,
                     engine.config().ir_names,
                 );
+                translator.hardware_memory_checks = hardware_memory_checks;
                 translator.translate(body, &params)?;
 
                 func_count += 1;
@@ -322,31 +332,36 @@ impl Module {
             println!("IR written to: {}", path.display());
         }
 
-        let artifact = if strategy == Strategy::Jit {
-            let pipeline = veloc::codegen::CodegenPipeline::with_options(
-                engine.backend().target(),
-                engine.config().codegen.clone(),
-            );
-            let object_data = if engine.config().print_stats {
-                let (object, stats) = pipeline
-                    .compile_object_with_stats(&ir)
-                    .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?;
-                eprintln!(
-                    "Codegen: {} -> {} -> {} -> {} instructions, {} code bytes",
-                    stats.initial_inst_count,
-                    stats.legalized_inst_count,
-                    stats.selected_inst_count,
-                    stats.final_inst_count,
-                    stats.code_bytes
-                );
-                for (pass, time) in stats.pass_times {
-                    eprintln!("  {pass}: {:.3} ms", time.as_secs_f64() * 1000.0);
-                }
-                object
+        let artifact = if matches!(strategy, Strategy::Jit | Strategy::FastJit) {
+            let object_data = if strategy == Strategy::FastJit {
+                veloc_fastjit::compile_object(&ir)
+                    .map_err(|e| crate::error::Error::Compile(format!("Fast JIT: {e}")))?
             } else {
-                pipeline
-                    .compile_object(&ir)
-                    .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?
+                let pipeline = veloc::codegen::CodegenPipeline::with_options(
+                    engine.backend().target(),
+                    engine.config().codegen.clone(),
+                );
+                if engine.config().print_stats {
+                    let (object, stats) = pipeline
+                        .compile_object_with_stats(&ir)
+                        .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?;
+                    eprintln!(
+                        "Codegen: {} -> {} -> {} -> {} instructions, {} code bytes",
+                        stats.initial_inst_count,
+                        stats.legalized_inst_count,
+                        stats.selected_inst_count,
+                        stats.final_inst_count,
+                        stats.code_bytes
+                    );
+                    for (pass, time) in stats.pass_times {
+                        eprintln!("  {pass}: {:.3} ms", time.as_secs_f64() * 1000.0);
+                    }
+                    object
+                } else {
+                    pipeline
+                        .compile_object(&ir)
+                        .map_err(|e| crate::error::Error::Compile(format!("Codegen error: {e}")))?
+                }
             };
 
             // Load JIT object and relocate

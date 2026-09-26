@@ -21,6 +21,7 @@ pub struct WasmTranslator<'a> {
     results: Vec<VelocType>,
     terminated: bool,
     use_names: bool,
+    pub(crate) hardware_memory_checks: bool,
 
     pub metadata: &'a WasmMetadata,
     pub ir_sig_ids: &'a [SigId],
@@ -73,6 +74,7 @@ impl<'a> WasmTranslator<'a> {
             runtime,
             next_var_idx: 0,
             use_names,
+            hardware_memory_checks: false,
             memory_vars: Vec::new(),
             table_vars: Vec::new(),
             global_ptr_vars: Vec::new(),

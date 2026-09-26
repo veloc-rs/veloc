@@ -39,6 +39,18 @@ pub struct Store {
 }
 
 impl Store {
+    pub(crate) fn memory_ranges(&self) -> Vec<crate::trap::MemoryRange> {
+        let mut ranges: Vec<_> = self
+            .memories
+            .iter()
+            .map(|(_, memory)| crate::trap::MemoryRange::new(memory))
+            .collect();
+        for (_, instance) in self.instances.iter() {
+            ranges.extend(instance.memory_ranges());
+        }
+        ranges
+    }
+
     pub fn new() -> Self {
         let mut program = Program::new();
         register_builtins(&mut program);

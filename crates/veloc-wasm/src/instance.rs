@@ -39,6 +39,11 @@ impl Drop for InstanceHandle {
             let total_size = (offset_of_vmctx as u32) + instance.module.vm_offsets().total_size;
             let layout = std::alloc::Layout::from_size_align(total_size as usize, 16).unwrap();
 
+            let memories = (*instance.vmctx_ptr()).local_memories_ptr(instance.module.vm_offsets());
+            for index in 0..instance.initialized_memories {
+                std::ptr::drop_in_place(memories.add(index));
+            }
+
             std::ptr::drop_in_place(self.0);
             std::alloc::dealloc(self.0 as *mut u8, layout);
         }
@@ -66,10 +71,28 @@ pub(crate) struct VMInstance {
     pub(crate) element_lengths: Vec<usize>,
     pub(crate) data_lengths: Vec<usize>,
     pub(crate) vmctx_self_reference: *mut VMContext,
+    initialized_memories: usize,
     pub(crate) vmctx: VMContext,
 }
 
 impl VMInstance {
+    pub(crate) fn memory_ranges(&self) -> Vec<crate::trap::MemoryRange> {
+        let mut ranges = Vec::with_capacity(self.module.metadata().memories.len());
+        let imported = self.module.metadata().num_imported_memories;
+        let offsets = self.module.vm_offsets();
+        unsafe {
+            for i in 0..imported {
+                let memory = (*self.vmctx_ptr()).get_memory_mut(offsets, i as u32, imported as u32);
+                ranges.push(crate::trap::MemoryRange::new(&*memory));
+            }
+            let locals = (*self.vmctx_ptr()).local_memories_ptr(offsets);
+            for i in 0..self.initialized_memories {
+                ranges.push(crate::trap::MemoryRange::new(&*locals.add(i)));
+            }
+        }
+        ranges
+    }
+
     pub(crate) unsafe fn from_vmctx(ptr: *mut VMContext) -> &'static mut VMInstance {
         unsafe {
             let offset = std::mem::offset_of!(VMInstance, vmctx);
@@ -709,6 +732,7 @@ impl VMInstance {
                     })
                     .collect(),
                 vmctx_self_reference: vmctx_ptr,
+                initialized_memories: 0,
                 vmctx: VMContext {
                     _maker: core::marker::PhantomPinned,
                 },
@@ -717,6 +741,7 @@ impl VMInstance {
             };
             std::ptr::write(instance_ptr, instance);
         }
+        let handle = InstanceHandle(instance_ptr);
 
         // 3. 实例化资源并填充 VMContext
         unsafe {
@@ -766,6 +791,7 @@ impl VMInstance {
             }
 
             // Functions
+            let initialized_memories = std::ptr::addr_of_mut!(instance.initialized_memories);
             let vm_functions = instance.functions();
             for i in 0..meta.num_imported_funcs {
                 let mut func_ref = imported_funcs[i];
@@ -869,13 +895,16 @@ impl VMInstance {
 
             // Local Memories (直接内联存储)
             let num_local_memories = meta.memories.len() - meta.num_imported_memories;
-            let vm_local_memories = (*vmctx_ptr).local_memories_mut(&offsets, num_local_memories);
+            let vm_local_memories = (*vmctx_ptr).local_memories_ptr(&offsets);
             for i in 0..num_local_memories {
                 let mem_idx = meta.num_imported_memories + i;
                 let initial = meta.memories[mem_idx].initial as u32;
                 let maximum = meta.memories[mem_idx].maximum.map(|m| m as u32);
                 // 直接使用 VMMemory::new 初始化
-                vm_local_memories[i] = VMMemory::new(initial, maximum)?;
+                vm_local_memories
+                    .add(i)
+                    .write(VMMemory::new(initial, maximum)?);
+                *initialized_memories += 1;
             }
 
             // Imported Tables (存储指针)
@@ -981,12 +1010,17 @@ impl VMInstance {
             }
         }
 
-        unsafe {
-            // 4. 调用初始化函数 (初始化 globals, tables, memories)
-            (&mut *instance_ptr).call_init(&store.program)?;
+        if crate::trap::enabled() {
+            let mut ranges = store.memory_ranges();
+            ranges.extend(handle.memory_ranges());
+            crate::trap::scope(ranges, || {
+                crate::trap::catch(|| unsafe { (&mut *instance_ptr).call_init(&store.program) })
+            })?;
+        } else {
+            unsafe { (&mut *instance_ptr).call_init(&store.program)? };
         }
 
-        Ok(store.push_instance(InstanceHandle(instance_ptr)))
+        Ok(store.push_instance(handle))
     }
 }
 
@@ -1106,6 +1140,17 @@ pub struct TypedFunc {
 
 impl TypedFunc {
     pub fn call(&self, store: &mut Store, args: &[Val]) -> crate::error::Result<Vec<Val>> {
+        if crate::trap::enabled() {
+            let ranges = store.memory_ranges();
+            crate::trap::scope(ranges, || {
+                crate::trap::catch(|| self.call_inner(store, args))
+            })
+        } else {
+            self.call_inner(store, args)
+        }
+    }
+
+    fn call_inner(&self, store: &mut Store, args: &[Val]) -> crate::error::Result<Vec<Val>> {
         let vmctx_ptr = self.func_ref.vmctx;
 
         unsafe {

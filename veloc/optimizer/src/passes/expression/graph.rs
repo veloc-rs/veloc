@@ -9,6 +9,9 @@ use veloc_mir::function::Expressions;
 use veloc_mir::{FuncBody, Inst, IntCC, Opcode as Op, Value};
 use veloc_types::Type;
 
+const REBUILD: u8 = 1;
+const FOLD: u8 = 2;
+
 /// Equivalence is an overlay on MIR value identities. MIR definitions are never
 /// rewritten to union-find representatives during saturation.
 #[derive(Default)]
@@ -120,7 +123,7 @@ pub(super) struct Graph {
     pub(super) floating: SecondaryMap<Inst, bool>,
     // Equal constants identify the same class, without requiring a literal node.
     const_classes: HashMap<ScalarConst, Value>,
-    // Constant analysis facts belong to classes and store their actual value.
+    // Facts belong to class roots. None means unknown, never proven nonconstant.
     pub(super) constants: SecondaryMap<Value, Option<ScalarConst>>,
     pub(super) users: SecondaryMap<Value, Vec<Inst>>,
     value_queued: SecondaryMap<Value, u8>,
@@ -129,8 +132,8 @@ pub(super) struct Graph {
     changes: Vec<Change>,
     // Only opcode/column pairs requested by the generated query plans.
     parents: SecondaryMap<Value, HashMap<(Op, usize), Vec<Value>>>,
-    rebuild_work: Worklist<Inst, 1>,
-    analysis_work: Worklist<Inst, 4>,
+    rebuild_work: Worklist<Inst, REBUILD>,
+    fold_work: Worklist<Inst, FOLD>,
     memo: HashTable<Inst>,
     hashes: SecondaryMap<Inst, u64>,
     hasher: DefaultHashBuilder,
@@ -153,7 +156,7 @@ impl Graph {
             inst_queued: SecondaryMap::new(),
             dirty_users: Worklist::default(),
             rebuild_work: Worklist::default(),
-            analysis_work: Worklist::default(),
+            fold_work: Worklist::default(),
             changes: Vec::new(),
             parents: SecondaryMap::new(),
             memo: HashTable::new(),
@@ -269,7 +272,9 @@ impl Graph {
             }
             self.rebuild_work.push(&mut self.inst_queued, inst);
         }
-        self.analysis_work.push(&mut self.inst_queued, inst);
+        // Inputs can already be known when the instruction is first registered;
+        // otherwise their future fact changes will wake this dependency.
+        self.queue_fold(f, inst);
     }
 
     pub(super) fn union(&mut self, f: &FuncBody, a: Value, b: Value) {
@@ -278,30 +283,25 @@ impl Graph {
             f.dfg().value_type(b),
             "cannot equate different types"
         );
+        if let (Some(x), Some(y)) = (self.constant(a), self.constant(b)) {
+            assert_eq!(x, y, "rewrite equated distinct constants");
+        }
         let Some((a, b)) = self.classes.union(a, b) else {
             return;
         };
-        if let (Some(x), Some(y)) = (self.constants[a], self.constants[b]) {
-            assert_eq!(x, y, "rewrite equated distinct constants");
+        // Move the loser's fact to the root before checking any user's inputs.
+        // Publishing wakes the winner's users only if it learns a new fact.
+        let b_const = self.constants[b].take();
+        if let Some(constant) = b_const {
+            self.learn_const(f, a, constant);
         }
-        let a_const = self.constants[a];
-        let b_const = self.constants[b];
-        // Only users on the side that just learned the constant need another
-        // analysis pass. Keep the two complementary cases explicit here.
-        let retry_a = a_const.is_none() && b_const.is_some();
-        let retry_b = a_const.is_some() && b_const.is_none();
-        self.constants[a] = a_const.or(b_const);
-        if retry_a {
-            for &user in &self.users[a] {
-                self.analysis_work.push(&mut self.inst_queued, user);
-            }
-        }
+        let retry_b = b_const.is_none() && self.constants[a].is_some();
         for user in core::mem::take(&mut self.users[b]) {
             if self.floating[user] {
                 self.rebuild_work.push(&mut self.inst_queued, user);
             }
             if retry_b {
-                self.analysis_work.push(&mut self.inst_queued, user);
+                self.queue_fold(f, user);
             }
             self.users[a].push(user);
         }
@@ -335,15 +335,44 @@ impl Graph {
             assert_eq!(old, constant, "inconsistent constant class");
             return;
         }
-        self.constants[class] = Some(constant);
-        for &user in &self.users[class] {
-            self.analysis_work.push(&mut self.inst_queued, user);
-        }
-        self.changes.push(Change::Constant(class));
         if let Some(&other) = self.const_classes.get(&constant) {
+            // Reuse the known class, propagating its fact through the same
+            // merge path as rewrites. No literal instruction is needed.
             self.union(f, class, other);
         } else {
             self.const_classes.insert(constant, class);
+            self.learn_const(f, class, constant);
+        }
+    }
+
+    /// Publish a new fact on a class root without creating an expression.
+    /// Literal import, evaluation and rule rewrites all reach this path.
+    fn learn_const(&mut self, f: &FuncBody, class: Value, constant: ScalarConst) {
+        debug_assert_eq!(self.find(class), class, "constant fact belongs to root");
+        if let Some(old) = self.constants[class] {
+            assert_eq!(old, constant, "inconsistent constant class");
+            return;
+        }
+        self.constants[class] = Some(constant);
+        self.changes.push(Change::Constant(class));
+        for index in 0..self.users[class].len() {
+            self.queue_fold(f, self.users[class][index]);
+        }
+    }
+
+    /// Queue only unfinished instructions whose generated evaluator can read
+    /// all required facts. Dependencies remain registered even when not ready.
+    fn queue_fold(&mut self, f: &FuncBody, inst: Inst) {
+        if self.inst_queued[inst] & FOLD != 0
+            || f.dfg()
+                .inst_results(inst)
+                .iter()
+                .all(|&v| self.constant(v).is_some())
+        {
+            return;
+        }
+        if crate::evaluate::ready(f.dfg(), inst, |v| self.constant(v).is_some()) {
+            self.fold_work.push(&mut self.inst_queued, inst);
         }
     }
 
@@ -525,7 +554,7 @@ impl Graph {
     pub(super) fn prepare(&mut self, ir: &mut Expressions<'_>, fuel: &mut usize) {
         loop {
             self.rebuild(ir.body());
-            if self.analysis_work.pending.is_empty() || *fuel == 0 {
+            if self.fold_work.pending.is_empty() || *fuel == 0 {
                 return;
             }
             self.fold_constants(ir, fuel);
@@ -534,13 +563,13 @@ impl Graph {
 
     pub(super) fn is_idle(&self) -> bool {
         self.changes.is_empty()
-            && self.analysis_work.pending.is_empty()
+            && self.fold_work.pending.is_empty()
             && self.rebuild_work.pending.is_empty()
     }
 
     fn fold_constants(&mut self, ir: &mut Expressions<'_>, fuel: &mut usize) {
         while *fuel > 0 {
-            let Some(inst) = self.analysis_work.pop(&mut self.inst_queued) else {
+            let Some(inst) = self.fold_work.pop(&mut self.inst_queued) else {
                 break;
             };
             *fuel -= 1;

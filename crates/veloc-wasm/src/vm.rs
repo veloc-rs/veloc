@@ -2,57 +2,71 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
 use libc;
-use mmap_rs::MmapOptions;
+use mmap_rs::{MmapNone, MmapOptions};
 use wasmparser::ValType;
 
 const WASM_PAGE_SIZE: usize = 65536;
-const WASM_RESERVATION_SIZE: usize = 4 * 1024 * 1024 * 1024; // 4GB static memory
+// A memory32 address and its u32 load/store offset can sum to almost 8 GiB.
+// The final page also catches accesses that straddle the end of 4 GiB.
+#[cfg(target_pointer_width = "64")]
+const WASM_RESERVATION_SIZE: usize = 8 * 1024 * 1024 * 1024 + WASM_PAGE_SIZE;
+#[cfg(not(target_pointer_width = "64"))]
+const WASM_RESERVATION_SIZE: usize = 0;
 
 /// 传递给 JIT 代码的底层内存视图
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct VMMemory {
     pub base: *mut u8,
     pub current_length: usize,
     pub maximum_pages: u32,
+    mapping: MmapNone,
 }
 
 impl VMMemory {
     pub fn new(initial_pages: u32, maximum_pages: Option<u32>) -> crate::error::Result<Self> {
+        let maximum_pages = maximum_pages.unwrap_or(65536);
+        if WASM_RESERVATION_SIZE == 0 || maximum_pages > 65536 || initial_pages > maximum_pages {
+            return Err(crate::error::Error::Memory(
+                "Invalid memory32 limits".into(),
+            ));
+        }
         let initial_size = (initial_pages as usize) * WASM_PAGE_SIZE;
-        let maximum_pages = maximum_pages.unwrap_or(65536); // Default 4GB
 
-        // 1. 预留完整的 4GB 虚拟地址空间
-        // 我们先分配 PROT_NONE 的内存以预留空间
         let mut mmap = MmapOptions::new(WASM_RESERVATION_SIZE)
             .map_err(|e| crate::error::Error::Memory(format!("MmapOptions failed: {:?}", e)))?
-            .map_mut()
+            .map_none()
             .map_err(|e| {
                 crate::error::Error::Memory(format!("Memory reservation failed: {:?}", e))
             })?;
 
         let base = mmap.as_mut_ptr();
 
-        // 初始时将整个区域设为不可访问，然后再 commit 初始大小的部分
-        unsafe {
-            libc::mprotect(base as *mut _, WASM_RESERVATION_SIZE, libc::PROT_NONE);
-            if initial_size > 0 {
+        if initial_size > 0
+            && unsafe {
                 libc::mprotect(
-                    base as *mut _,
+                    base.cast(),
                     initial_size,
                     libc::PROT_READ | libc::PROT_WRITE,
-                );
-            }
+                )
+            } != 0
+        {
+            return Err(crate::error::Error::Memory(format!(
+                "Memory commit failed: {}",
+                std::io::Error::last_os_error()
+            )));
         }
-
-        // 泄漏 mmap 以保持其在 Instance 生命周期内有效
-        std::mem::forget(mmap);
 
         Ok(Self {
             base,
             current_length: initial_size,
             maximum_pages,
+            mapping: mmap,
         })
+    }
+
+    pub(crate) fn reservation(&self) -> (usize, usize) {
+        (self.base as usize, self.mapping.end())
     }
 
     pub fn grow(&mut self, delta_pages: u32) -> Option<u32> {
@@ -369,19 +383,11 @@ impl VMContext {
         unsafe { core::slice::from_raw_parts_mut(ptr, count) }
     }
 
-    /// 获取本地定义的 memories 的切片（直接内联存储）
-    pub unsafe fn local_memories_mut(
-        &mut self,
-        offsets: &VMOffsets,
-        count: usize,
-    ) -> &mut [VMMemory] {
-        if count == 0 {
-            return &mut [];
-        }
-        let ptr = unsafe {
+    /// Pointer to uninitialized inline memory definitions during instantiation.
+    pub unsafe fn local_memories_ptr(&mut self, offsets: &VMOffsets) -> *mut VMMemory {
+        unsafe {
             (self as *mut Self as *mut u8).add(offsets.local_memories as usize) as *mut VMMemory
-        };
-        unsafe { core::slice::from_raw_parts_mut(ptr, count) }
+        }
     }
 
     /// 获取本地定义的 tables 的切片（直接内联存储）

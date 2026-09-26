@@ -9,6 +9,7 @@ pub enum Strategy {
     #[default]
     Auto,
     Jit,
+    FastJit,
     Interpreter,
 }
 
@@ -17,6 +18,9 @@ pub enum Strategy {
 pub struct Config {
     pub codegen: veloc::codegen::CodegenOptions,
     pub strategy: Strategy,
+    /// Use protected linear memory and signal traps for interpreter loads/stores.
+    /// Currently supported on Linux x86-64 with glibc.
+    pub hardware_memory_checks: bool,
     pub dump_ir: bool,
     pub ir_names: bool,
     /// Validate translated MIR before optimization and code generation.
@@ -40,6 +44,7 @@ impl Default for Config {
         Self {
             codegen: Default::default(),
             strategy: Strategy::Auto,
+            hardware_memory_checks: false,
             dump_ir: false,
             ir_names: false,
             verify_ir: cfg!(debug_assertions),

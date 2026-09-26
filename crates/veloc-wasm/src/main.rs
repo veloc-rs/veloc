@@ -22,6 +22,10 @@ struct Args {
     #[arg(short, long, value_enum, default_value = "interpreter")]
     strategy: Strategy,
 
+    /// Use guard pages for interpreter linear-memory bounds checks
+    #[arg(long)]
+    hardware_memory_checks: bool,
+
     /// Dump generated IR to stdout
     #[arg(long, group = "ir-output")]
     dump_ir: bool,
@@ -105,6 +109,7 @@ fn main() -> Result<()> {
             ..Default::default()
         },
         strategy: args.strategy,
+        hardware_memory_checks: args.hardware_memory_checks,
         dump_ir: args.dump_ir,
         ir_names: output_only,
         verify_ir: cfg!(debug_assertions),

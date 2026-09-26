@@ -42,6 +42,16 @@ CARGO_INCREMENTAL=0 cargo test --release -p veloc-wasm --test jit \
 
 The CLI accepts `.wasm` and `.wat` files, invokes `_start` by default, and supports `interpreter`, `jit`, and `auto` execution strategies.
 
+On Linux x86-64 with glibc, the interpreter can use protected virtual memory for Wasm load/store bounds checks:
+
+```bash
+cargo run --release -p veloc-wasm --bin veloc-wasm -- \
+  path/to/module.wasm --strategy interpreter --hardware-memory-checks
+```
+
+This is opt-in. The JIT continues to use software bounds checks.
+Enabling it installs process-wide SIGSEGV/SIGBUS handlers and requires unwind-enabled Rust builds.
+
 ## Inspect generated code
 
 ```bash

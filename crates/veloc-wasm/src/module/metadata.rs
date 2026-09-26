@@ -58,10 +58,7 @@ impl WasmMetadata {
                             }
                             wasmparser::TypeRef::Memory(ty) => {
                                 num_imported_memories += 1;
-                                memories.push(WasmMemory {
-                                    initial: ty.initial,
-                                    maximum: ty.maximum,
-                                });
+                                memories.push(wasm_memory(ty)?);
                                 ExternalKind::Memory
                             }
                             wasmparser::TypeRef::Global(ty) => {
@@ -142,11 +139,7 @@ impl WasmMetadata {
                 }
                 Payload::MemorySection(reader) => {
                     for memory in reader {
-                        let memory = memory?;
-                        memories.push(WasmMemory {
-                            initial: memory.initial,
-                            maximum: memory.maximum,
-                        });
+                        memories.push(wasm_memory(memory?)?);
                     }
                 }
                 Payload::GlobalSection(reader) => {
@@ -273,6 +266,23 @@ impl WasmMetadata {
             num_imported_globals,
         })
     }
+}
+
+fn wasm_memory(ty: wasmparser::MemoryType) -> crate::error::Result<WasmMemory> {
+    if ty.memory64 || ty.shared || ty.page_size_log2.is_some_and(|size| size != 16) {
+        return Err(crate::error::Error::Unsupported(
+            "Only unshared memory32 with 64 KiB pages is supported".into(),
+        ));
+    }
+    if ty.initial > 65536 || ty.maximum.is_some_and(|maximum| maximum > 65536) {
+        return Err(crate::error::Error::Unsupported(
+            "memory32 exceeds 65536 pages".into(),
+        ));
+    }
+    Ok(WasmMemory {
+        initial: ty.initial,
+        maximum: ty.maximum,
+    })
 }
 
 fn parse_init_expr(

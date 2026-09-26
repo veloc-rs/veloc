@@ -100,6 +100,7 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
          match data.opcode() {\n",
     );
     let mut supported = Vec::new();
+    let mut inputs_by_count = std::collections::BTreeMap::<usize, Vec<String>>::new();
     for prepared in &plan.operations {
         let op = &defs.ops[prepared.opcode];
         let sem = op.semantics.as_ref().expect("prepared semantic operation");
@@ -142,6 +143,10 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
         if !arms.is_empty() {
             supported.push(format!("Opcode::{} => true,", op.name));
             let inputs = sem.inputs as usize;
+            inputs_by_count
+                .entry(inputs)
+                .or_default()
+                .push(format!("Opcode::{}", op.name));
             let results = prepared.cases[0].instance.kinds.len() - inputs;
             let constraints = applicability(op);
             let args = (0..inputs)
@@ -182,6 +187,26 @@ pub(crate) fn generate(defs: &Definitions, plan: &Plan) -> String {
         format!("match opcode {{ {} _ => false }}", supported.join("\n"))
     };
     writeln!(code, "/// Whether this opcode has a generated scalar constant evaluator.\npub const fn can_fold(opcode: Opcode) -> bool {{ {supported} }}").unwrap();
+    // Keep scheduling requirements beside the operand reads emitted above.
+    // This is readiness for concrete evaluation, not a second simplifier.
+    code.push_str("/// Whether the facts required by the evaluator are available.\n\
+        /// A ready instruction may still fail to fold, e.g. because it traps.\n\
+        #[allow(unused_variables, unused_mut)]\n\
+        pub fn ready(dfg: &veloc_mir::dfg::DataFlowGraph, inst: veloc_mir::Inst, mut known: impl FnMut(Value) -> bool) -> bool {\n\
+        let operands = dfg.operands(inst);\n\
+        match dfg.opcode(inst) {\n");
+    for (count, ops) in inputs_by_count {
+        let condition = if count == 0 {
+            "true".to_owned()
+        } else {
+            (0..count)
+                .map(|i| format!("known(operands[{i}])"))
+                .collect::<Vec<_>>()
+                .join(" && ")
+        };
+        writeln!(code, "{} => {{ debug_assert_eq!(operands.len(), {count}, \"semantic operand count\"); {condition} }},", ops.join(" | ")).unwrap();
+    }
+    code.push_str("_ => false,\n}\n}\n");
     code.push_str(&properties(defs, plan));
     code
 }
