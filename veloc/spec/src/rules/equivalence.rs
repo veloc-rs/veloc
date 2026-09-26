@@ -85,15 +85,13 @@ pub(crate) fn generate(
             }
         }
         for ((identity, absorbing), domain) in domains {
-            let parameters = BTreeMap::from([("x".into(), 0)]);
             let mut checker = Checker {
                 source: source.text(),
                 dialect,
                 domain: &domain,
                 defs,
                 operations: &operations,
-                parameters: &parameters,
-                bound: BTreeSet::new(),
+                parameters: BTreeMap::new(),
             };
             let node = |kind| Node { offset: 0, kind };
             let x = node(Kind::Name("x".into()));
@@ -138,48 +136,89 @@ pub(crate) fn generate(
         if domain.is_empty() {
             return Err(fail("empty equivalence type domain"));
         }
-        let mut parameters = BTreeMap::new();
-        for (i, p) in sig.params.iter().enumerate() {
-            if p.moves
-                || !matches!(&p.ty.kind, Kind::Name(n) if n == &generic.name)
-                || parameters.insert(p.name.clone(), i).is_some()
-            {
-                return Err(fail(
-                    "equivalence parameters must have the declared common type and unique names",
-                ));
-            }
-        }
-        for field in decl.fields.keys() {
-            if !matches!(field.as_str(), "match" | "emit" | "when") {
-                return Err(fail("unknown equivalence rule field"));
-            }
-        }
-        let field = |key: &str| {
-            decl.fields
-                .get(key)
-                .ok_or_else(|| fail("equivalence requires a source and replacement"))
+        let [root] = sig.params.as_slice() else {
+            return Err(fail(
+                "equivalence group requires one root instruction parameter",
+            ));
         };
+        let Kind::Call(path, args) = &root.ty.kind else {
+            return Err(fail(
+                "expected a root instruction type such as mir::ISub<T>",
+            ));
+        };
+        if root.moves
+            || !matches!(args.as_slice(), [Node { kind: Kind::Name(name), .. }] if name == &generic.name)
+        {
+            return Err(fail("root instruction must use the group's type parameter"));
+        }
+        let name = path
+            .strip_prefix(&format!("{dialect}::"))
+            .filter(|name| operations.contains_key(*name))
+            .ok_or_else(|| fail("unknown equivalence root instruction"))?;
+        let Some(Node {
+            kind: Kind::List(cases),
+            ..
+        }) = decl.fields.get("cases")
+        else {
+            return Err(fail("equivalence group requires case patterns"));
+        };
+        if cases.is_empty() || decl.fields.len() != 1 {
+            return Err(fail(
+                "equivalence group requires nonempty cases and no extra fields",
+            ));
+        }
         let mut checker = Checker {
             source: source.text(),
             dialect,
             domain: &domain,
             defs,
             operations: &operations,
-            parameters: &parameters,
-            bound: BTreeSet::new(),
+            parameters: BTreeMap::new(),
         };
-        let rule = checker.rule(
-            field("match")?,
-            field("emit")?,
-            decl.fields.get("when"),
-            types,
-            &format!("rule at byte {}", decl.offset),
-        )?;
-        let Kind::Call(root, _) = &field("match")?.kind else {
-            unreachable!("checked operation pattern")
-        };
-        let root = root.strip_prefix(&format!("{dialect}::")).unwrap();
-        groups.entry(root.to_owned()).or_default().push(rule);
+        for case in cases {
+            let Kind::Record(fields) = &case.kind else {
+                return Err(Error::at(
+                    source.text(),
+                    case.offset,
+                    "expected an equivalence case",
+                ));
+            };
+            let Some(Node {
+                kind: Kind::List(args),
+                ..
+            }) = fields.get("match")
+            else {
+                return Err(Error::at(
+                    source.text(),
+                    case.offset,
+                    "case requires operand patterns",
+                ));
+            };
+            let rhs = fields.get("emit").ok_or_else(|| {
+                Error::at(source.text(), case.offset, "case requires a replacement")
+            })?;
+            let lhs = Node {
+                offset: case.offset,
+                kind: Kind::Call(path.clone(), args.clone()),
+            };
+            let rule = checker.rule(
+                &lhs,
+                rhs,
+                fields.get("when"),
+                types,
+                &format!("{name} case at byte {}", case.offset),
+            )?;
+            if checker.parameters.contains_key(&root.name)
+                || checker.parameters.contains_key(&generic.name)
+            {
+                return Err(Error::at(
+                    source.text(),
+                    case.offset,
+                    "pattern binding shadows the root or type parameter",
+                ));
+            }
+            groups.entry(name.to_owned()).or_default().push(rule);
+        }
     }
     writeln!(
         output,
@@ -209,8 +248,7 @@ struct Checker<'a> {
     domain: &'a [String],
     defs: &'a Definitions,
     operations: &'a BTreeMap<String, crate::schema::Operation>,
-    parameters: &'a BTreeMap<String, usize>,
-    bound: BTreeSet<String>,
+    parameters: BTreeMap<String, usize>,
 }
 impl Checker<'_> {
     fn rule(
@@ -221,7 +259,7 @@ impl Checker<'_> {
         types: &str,
         name: &str,
     ) -> Result<CheckedRule, Error> {
-        self.bound.clear();
+        self.parameters.clear();
         let lhs_expr = self.pattern(lhs, true)?;
         if !matches!(&lhs.kind, Kind::Call(..)) {
             return Err(Error::at(
@@ -260,16 +298,16 @@ impl Checker<'_> {
         let fail = |message| Error::at(self.source, node.offset, message);
         match &node.kind {
             Kind::Name(name) => {
-                let index = self
-                    .parameters
-                    .get(name)
-                    .ok_or_else(|| fail("undeclared pattern variable"))?;
-                if bind {
-                    self.bound.insert(name.clone());
-                } else if !self.bound.contains(name) {
-                    return Err(fail("replacement uses an unmatched variable"));
-                }
-                Ok(Expr::Variable(*index))
+                let next = self.parameters.len();
+                let index = if bind {
+                    *self.parameters.entry(name.clone()).or_insert(next)
+                } else {
+                    *self
+                        .parameters
+                        .get(name)
+                        .ok_or_else(|| fail("replacement uses an unmatched variable"))?
+                };
+                Ok(Expr::Variable(index))
             }
             Kind::Number(n) => Ok(Expr::Constant(u64::from(*n))),
             Kind::Integer(n) => {
@@ -343,13 +381,25 @@ impl Checker<'_> {
         let Kind::Name(name) = &left.kind else {
             return Err(fail());
         };
-        if !self.bound.contains(name) {
+        if !self.parameters.contains_key(name) {
             return Err(fail());
         }
-        let Kind::Number(value) = right.kind else {
-            return Err(fail());
+        let value = match right.kind {
+            Kind::Number(value) => u64::from(value),
+            Kind::Integer(value) => u64::try_from(value)
+                .or_else(|_| i64::try_from(value).map(|n| n as u64))
+                .map_err(|_| fail())?,
+            Kind::Unary("-", ref value) => match value.kind {
+                Kind::Integer(value) => value
+                    .checked_neg()
+                    .and_then(|n| i64::try_from(n).ok())
+                    .map(|n| n as u64)
+                    .ok_or_else(fail)?,
+                _ => return Err(fail()),
+            },
+            _ => return Err(fail()),
         };
-        Ok((self.parameters[name], u64::from(value), *op == "=="))
+        Ok((self.parameters[name], value, *op == "=="))
     }
 }
 

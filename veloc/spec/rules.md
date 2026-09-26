@@ -44,6 +44,36 @@ Type checking is **not semantic equivalence verification**. Explicit rules
 remain reviewed transformations, including trap and floating-point contracts;
 there is no SMT invocation or new proof claim here.
 
+## Expression equivalences
+
+`Emit::Equivalences` compiles opcode groups into the e-graph's query and apply
+bytecode. The root instruction is explicit; each case describes its operands:
+
+```text
+rule<T: ScalarInteger>(root: mir::ISub<T>) {
+    case (x, x) => 0;
+    case (x, 0) => x;
+    case (mir::IAdd(x, y), x) => y;
+    case (x, mir::ISub(x, y)) => y;
+}
+```
+
+Pattern variables bind independently in each case. Repeated names require the
+same equivalence class; replacements and guards may only reference variables
+bound by that case. The root parameter names the instruction, not an operand
+variable. Operand arity and the common scalar type domain are checked against
+OpSpec. Guards use `case (x, y) if y == 0 => x;`; the current guard language
+supports equality or inequality between a bound value and an integer literal.
+
+Every matching case contributes an equality, subject to the exploration budget.
+`=>` specifies the search/build direction, not destructive replacement or
+first-match selection. Cost-based extraction remains separate. Type checking
+does not prove the equality.
+
+Multiple groups and ordinary template expansions may contribute rules for the
+same root opcode. The compiler merges them and shares matching prefixes before
+emitting bytecode; source grouping does not define separate runtime searches.
+
 ## Target descriptions
 
 `Source::generate` with `Emit::Target` consumes OpSpec instruction contracts and the target-selection

@@ -292,16 +292,43 @@ impl<'a> Parser<'a> {
         if declaration_name == "rule" && (self.at(TokenKind::Lt) || self.at(TokenKind::LParen)) {
             let signature = self.signature(None, false, true)?;
             self.expect(TokenKind::LBrace)?;
-            let lhs = self.expression(0, Context::Rewrite)?;
-            self.expect(TokenKind::FatArrow)?;
-            let rhs = self.expression(0, Context::Rewrite)?;
-            self.expect(TokenKind::Semi)?;
+            let mut cases = Vec::new();
+            while !self.at(TokenKind::RBrace) {
+                let at = self.token.offset;
+                self.expect(TokenKind::Name("case"))?;
+                self.expect(TokenKind::LParen)?;
+                let args =
+                    self.sequence(TokenKind::RParen, |p| p.expression(0, Context::Rewrite))?;
+                let mut fields = BTreeMap::from([(
+                    "match".into(),
+                    Node {
+                        offset: at,
+                        kind: Kind::List(args),
+                    },
+                )]);
+                if self.eat(TokenKind::Name("if"))? {
+                    fields.insert("when".into(), self.expression(0, Context::Condition)?);
+                }
+                self.expect(TokenKind::FatArrow)?;
+                fields.insert("emit".into(), self.expression(0, Context::Rewrite)?);
+                self.expect(TokenKind::Semi)?;
+                cases.push(Node {
+                    offset: at,
+                    kind: Kind::Record(fields),
+                });
+            }
             self.expect(TokenKind::RBrace)?;
             return Ok(Decl {
                 offset,
                 name: String::new(),
                 kind: DeclKind::Rule(signature),
-                fields: BTreeMap::from([("match".into(), lhs), ("emit".into(), rhs)]),
+                fields: BTreeMap::from([(
+                    "cases".into(),
+                    Node {
+                        offset,
+                        kind: Kind::List(cases),
+                    },
+                )]),
             });
         }
         let name = self.name()?;
